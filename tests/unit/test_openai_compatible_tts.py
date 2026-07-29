@@ -382,6 +382,98 @@ def test_exact_configured_vllm_voice_wins_over_same_id_clone(monkeypatch):
     assert provider_key == "vllm_omni"
 
 
+def test_vllm_resolve_keeps_selection_snapshot_when_disk_changes(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    cm.snapshot.update(
+        {
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "wss://snapshot.example.com/v1",
+            "ttsModelId": "snapshot-model",
+            "ttsVoiceId": "snapshot-voice",
+        }
+    )
+    cm.raw.update(
+        {
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "wss://new-disk.example.com/v1",
+            "ttsModelId": "new-disk-model",
+            "ttsModelApiKey": "new-disk-key",
+            "ttsVoiceId": "new-disk-voice",
+        }
+    )
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+    monkeypatch.setattr(
+        tts_client,
+        "_get_voice_meta",
+        lambda _voice_id: {
+            "provider": "vllm_omni",
+            "source": "clone",
+            "clone_sample_b64": "QUJDRA==",
+            "clone_sample_mime": "audio/wav",
+        },
+    )
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=True,
+        voice_id="snapshot-voice",
+    )
+
+    assert isinstance(worker, partial)
+    assert worker.func is tts_client.vllm_omni_tts_worker
+    assert worker.keywords == {
+        "base_url": "wss://snapshot.example.com/v1",
+        "model": "snapshot-model",
+        "voice": "snapshot-voice",
+    }
+    # Sensitive credentials are intentionally resolved from raw storage only.
+    # 敏感 API Key 不进会话快照，仍只从原始配置解析。
+    assert api_key == "new-disk-key"
+    assert provider_key == "vllm_omni"
+
+
+def test_vllm_resolve_does_not_send_new_provider_key_to_stale_snapshot(monkeypatch):
+    cm = _CustomTtsConfigManager()
+    cm.snapshot.update(
+        {
+            "ttsModelProvider": "vllm_omni",
+            "ttsModelUrl": "wss://snapshot.example.com/v1",
+            "ttsModelId": "snapshot-model",
+            "ttsVoiceId": "snapshot-voice",
+        }
+    )
+    cm.raw.update(
+        {
+            "ttsModelProvider": "custom",
+            "ttsModelUrl": "https://new-provider.example.com/v1",
+            "ttsModelApiKey": "new-provider-secret",
+        }
+    )
+    monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
+
+    worker, api_key, provider_key = tts_client.get_tts_worker(
+        core_api_type="qwen",
+        has_custom_voice=False,
+        voice_id="snapshot-voice",
+    )
+
+    assert worker is tts_infra_module.configured_tts_unavailable_worker
+    assert api_key == ""
+    assert provider_key == "vllm_omni"
+
+
+def test_vllm_selection_respects_explicit_empty_snapshot_provider():
+    cm = _CustomTtsConfigManager()
+    cm.raw["ttsModelProvider"] = "vllm_omni"
+    ctx = provider_registry.DispatchContext(
+        core_config={"ENABLE_CUSTOM_API": True, "ttsModelProvider": ""},
+        cm=cm,
+    )
+
+    assert vllm_worker_module._vllm_omni_is_selected(ctx) is False
+    assert cm.load_count == 0
+
+
 def test_configured_custom_voice_is_saveable_for_character():
     cm = _CustomTtsConfigManager()
 

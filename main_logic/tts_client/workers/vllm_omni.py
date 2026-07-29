@@ -639,8 +639,9 @@ def _vllm_omni_is_selected(ctx) -> bool:
         # Selection uses the existing sanitized snapshot; sensitive credentials
         # remain a resolver-only disk read.
         # 选中判断只读现有快照，API Key 仍只在 resolve 阶段读取原始配置。
-        configured_provider = str(core_config.get('ttsModelProvider') or '').strip()
-        if not configured_provider:
+        if 'ttsModelProvider' in core_config:
+            configured_provider = str(core_config.get('ttsModelProvider') or '').strip()
+        else:
             try:
                 raw = ctx.cm.load_json_config('core_config.json', {}) or {}
                 configured_provider = str(raw.get('ttsModelProvider') or '').strip()
@@ -715,16 +716,27 @@ def _vllm_omni_resolve(ctx):
         # WSS 与 HTTPS 配置读取失败都先回报原 provider，再进入同一保底接缝。
         return configured_tts_unavailable_worker, "", "vllm_omni"
 
-    configured_voice = (raw.get('ttsVoiceId') or '').strip() or 'default'
-    configured_provider = str(
-        raw.get('ttsModelProvider')
-        or ctx.core_config.get('ttsModelProvider')
-        or ''
-    ).strip()
+    def _config_value(key):
+        # Selection and resolution must use one session snapshot. Disk is only
+        # a compatibility fallback when an older snapshot omits the field.
+        # 选中与解析共用会话快照；仅旧快照缺字段时回退磁盘配置。
+        if key in ctx.core_config:
+            return ctx.core_config.get(key)
+        return raw.get(key)
+
+    configured_voice = str(_config_value('ttsVoiceId') or '').strip() or 'default'
+    configured_provider = str(_config_value('ttsModelProvider') or '').strip()
     config_selected = (
         _as_bool(ctx.core_config.get('ENABLE_CUSTOM_API'), False)
         and configured_provider == 'vllm_omni'
     )
+    raw_provider = str(raw.get('ttsModelProvider') or '').strip()
+    if config_selected and raw_provider and raw_provider != configured_provider:
+        # The raw credential may already belong to a newly selected provider.
+        # Never send it to the endpoint retained by this session snapshot.
+        # 磁盘中的凭证可能已属于新 provider，禁止发往旧会话快照的端点。
+        log_configured_tts_failure("vllm_omni", "configuration")
+        return configured_tts_unavailable_worker, "", "vllm_omni"
     # The exact configured preset owns a same-ID collision; a different clone
     # still keeps the historical clone-first behavior.
     # 仅当角色音色与配置 Voice ID 精确相同时，显式配置才压过同名克隆；
@@ -748,10 +760,13 @@ def _vllm_omni_resolve(ctx):
         and not configured_preset_selected
     ):
         return _vllm_omni_clone_resolve(ctx)
-    vllm_url = (raw.get('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
-    vllm_model = (raw.get('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
+    vllm_url = str(_config_value('ttsModelUrl') or '').strip() or VLLM_OMNI_DEFAULT_BASE_URL
+    vllm_model = str(_config_value('ttsModelId') or '').strip() or VLLM_OMNI_DEFAULT_MODEL
     vllm_voice = configured_voice
-    # 凭证防泄漏：无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
+    # Credentials remain a resolver-only raw read and never enter the session
+    # snapshot; an empty key must still block fallback to another provider's key.
+    # 凭证仍只在 resolve 阶段读原始配置，不进会话快照；空 key 也禁止借用其他 provider 凭证。
+    # 无 key 时返回空字符串而非 None，配合 core.resolve_tts_api_key
     # 的 provider_key=='vllm_omni' 特判，禁止 fallback 到别家 provider 的 key
     # （见 get_tts_worker 原注释 / PR #1764 review 第三轮 #3）。
     vllm_key = (raw.get('ttsModelApiKey') or '').strip()
