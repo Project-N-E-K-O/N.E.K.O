@@ -421,6 +421,9 @@ class _ResponseMixin:
                 self._proactive_inject_awaiting_outcome = True
             try:
                 await self._gemini_send_user_turn(text)
+            except asyncio.CancelledError:
+                self._settle_gemini_proactive_inject(notify=False)
+                raise
             except Exception:
                 self._settle_gemini_proactive_inject(notify=False)
                 raise
@@ -588,6 +591,7 @@ class _ResponseMixin:
             self._inject_rejection_handlers.pop(create_event_id, None)
             _close_outcome_window()
             raise
+        return ticket
 
     def _settle_gemini_proactive_inject(
         self,
@@ -863,6 +867,7 @@ class _ResponseMixin:
         def _on_completed() -> None:
             outcome_observed.set()
 
+        proactive_ticket = None
         try:
             # Text-triggered turns do not produce the server-VAD
             # speech_stopped event that normally starts a fresh TTS turn.
@@ -871,7 +876,7 @@ class _ResponseMixin:
             # preceding turn's already-closed speech ID.
             if self._has_server_vad and self.on_sid_rotate is not None:
                 await self.on_sid_rotate()
-            await self.inject_text_and_request_response(
+            proactive_ticket = await self.inject_text_and_request_response(
                 text,
                 on_rejected=_on_rejected,
                 on_completed=_on_completed,
@@ -896,7 +901,13 @@ class _ResponseMixin:
             # cancel lifecycle never arrives, the existing 60s TTL remains the
             # conservative final backstop.
             try:
-                await self.cancel_response()
+                if proactive_ticket is not None:
+                    await self._ensure_response_arbiter().cancel_ticket(
+                        proactive_ticket,
+                        wait=False,
+                    )
+                else:
+                    await self.cancel_response()
             except Exception as cancel_exc:
                 logger.warning(
                     "prompt_ephemeral: timed-out response cancel failed; keeping inject quarantined: %s",

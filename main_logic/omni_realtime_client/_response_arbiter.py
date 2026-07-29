@@ -293,6 +293,8 @@ class RealtimeResponseArbiter:
         self,
         ticket: ResponseTicket,
         timeout: float = 3.0,
+        *,
+        wait: bool = True,
     ) -> None:
         """Cancel one exact queued/in-flight request without touching its peers."""
 
@@ -311,6 +313,8 @@ class RealtimeResponseArbiter:
             and ticket.sent.exception() is None
         ):
             await self._send_event({"type": "response.cancel"})
+        if not wait:
+            return
         assert queued.completed is not None
         try:
             await asyncio.wait_for(asyncio.shield(queued.completed), timeout)

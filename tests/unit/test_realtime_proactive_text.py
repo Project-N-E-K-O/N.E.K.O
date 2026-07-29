@@ -264,7 +264,8 @@ async def test_inject_completion_waits_for_its_own_queued_response_done():
     else:
         raise AssertionError("queued proactive response.create was not sent")
 
-    assert await task is None
+    returned_ticket = await task
+    assert returned_ticket is not None
     assert completed.is_set() is False
     assert rejected == []
     client._response_arbiter.notify_response_created(
@@ -470,6 +471,61 @@ async def test_gemini_delivery_timeout_uses_native_client_content_interrupt(monk
         _gemini_lifecycle_response(interrupted=True)
     )
     assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_gemini_cancelled_send_clears_pending_outcome():
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+    send_started = asyncio.Event()
+    hold_send = asyncio.Event()
+
+    async def blocked_send(*_args, **_kwargs):
+        send_started.set()
+        await hold_send.wait()
+
+    client._gemini_session.send_client_content.side_effect = blocked_send
+    task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "cancel Gemini SDK send",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: None,
+        )
+    )
+    await send_started.wait()
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        assert await task is None
+
+    assert client._gemini_proactive_outcome is None
+    assert client._proactive_inject_outcome_token is None
+    assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_delivery_timeout_cancels_only_returned_proactive_ticket(monkeypatch):
+    client = _make_client()
+    ticket = object()
+    client.inject_text_and_request_response = AsyncMock(return_value=ticket)
+    client._response_arbiter.cancel_ticket = AsyncMock()
+    client.cancel_response = AsyncMock()
+    monkeypatch.setattr(
+        responses_module,
+        "_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    delivered = await client.prompt_ephemeral("time out exact ticket")
+
+    assert delivered is False
+    client._response_arbiter.cancel_ticket.assert_awaited_once_with(
+        ticket,
+        wait=False,
+    )
+    client.cancel_response.assert_not_awaited()
     await client.close()
 
 
