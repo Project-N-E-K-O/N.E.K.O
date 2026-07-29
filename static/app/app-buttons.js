@@ -2219,19 +2219,19 @@
                     }
                 });
 
-                // Send start session (ensure WS open)
-                await window.ensureWebSocketOpen();
-                ensureVoiceStartCurrent();
-
+                // Send start session (ensure WS open).
+                //
                 // The reconnect is an await like any other, and a text send
-                // inside it displaces this flow's claim. Sending anyway is the
-                // worst outcome available: the backend gets a stale audio
+                // inside it displaces this flow's claim -- hence the stand-down
+                // between the two lines below. Sending anyway is the worst
+                // outcome available: the backend gets a stale audio
                 // start_session, and this flow then waits forever on a promise
                 // whose resolver has been replaced -- its own timeout returns
                 // early because it is no longer current, so none of the
                 // stand-downs further down are ever reached (codex P2).
+                await window.ensureWebSocketOpen();
+                ensureVoiceStartCurrent();
                 if (micStartMustStandDown()) return;
-
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio'

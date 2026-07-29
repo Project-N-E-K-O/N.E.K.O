@@ -2785,18 +2785,17 @@
                                         }
                                     });
 
-                                    await ensureWebSocketOpen();
-
-                                    // The pre-claim check does not cover the reconnect: a
-                                    // text send or a mic press inside it takes the slot, and
-                                    // sending anyway hands the backend a stale audio
+                                    // The pre-claim check does not cover the reconnect below:
+                                    // a text send or a mic press inside it takes the slot,
+                                    // and sending anyway hands the backend a stale audio
                                     // start_session, overwrites the shared timeout handle
                                     // and leaves this flow awaiting a promise whose resolver
                                     // is no longer installed -- its own owner-gated timeout
                                     // returns early, so nothing settles it and no later
-                                    // stand-down runs (codex P2).
+                                    // stand-down runs. Hence the check between the two lines
+                                    // that follow (codex P2).
+                                    await ensureWebSocketOpen();
                                     if (restartMustStandDown()) return;
-
                                     S.socket.send(JSON.stringify({ action: 'start_session', input_type: 'audio' }));
 
                                     window.sessionTimeoutId = setTimeout(function () {
