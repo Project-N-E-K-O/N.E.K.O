@@ -181,8 +181,8 @@ from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
 from main_routers.game_router import router as game_router  # noqa
 from main_routers.card_drop_router import (  # noqa
-    _facts_cors_headers as _card_forge_cors_headers,
-    _local_mutation_origin_allowed as _card_forge_mutation_origin_allowed,
+    _facts_cors_headers as _card_drop_cors_headers,
+    _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
     router as card_drop_router,
 )
 from main_routers.community_oauth import (  # noqa
@@ -207,10 +207,10 @@ async def health():
     return build_health_response("main", instance_id=INSTANCE_ID)
 
 
-# ── Card-Forge cross-process active-character snapshot ─────────────────────
-# The forge frontend polls this endpoint for the current character name and
-# uses it as the runtime character hint for private fact reads.
-_card_forge_active_character: dict[str, str] = {}
+# ── Card-drop cross-process active-character snapshot ──────────────────────
+# Community-card native delegation reads this snapshot for the current
+# character identity and optional avatar/reference images.
+_card_drop_active_character: dict[str, str] = {}
 
 
 async def _fallback_active_character_identity() -> tuple[str, str]:
@@ -226,34 +226,32 @@ def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
     """Preserve native local reads; restrict browser reads to the social origin."""
     if not (request.headers.get("origin") or "").strip():
         return {"Cache-Control": "no-store", "Pragma": "no-cache"}
-    return _card_forge_cors_headers(request)
+    return _card_drop_cors_headers(request)
 
 
-@app.post("/card-forge/active-character")
 @app.post("/api/card-drop/active-character")
-async def set_card_forge_active_character(request: Request, payload: dict):
+async def set_card_drop_active_character(request: Request, payload: dict):
     """Apply supplied fields, dropping avatar payloads that belong to a prior name."""
-    if not _card_forge_mutation_origin_allowed(request):
+    if not _card_drop_mutation_origin_allowed(request):
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
     if not isinstance(payload, dict):
         return {"ok": True}
     if "name" in payload:
         next_name = str(payload.get("name") or "")
-        if next_name != _card_forge_active_character.get("name", ""):
+        if next_name != _card_drop_active_character.get("name", ""):
             for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
                 if avatar_field not in payload:
-                    _card_forge_active_character.pop(avatar_field, None)
-        _card_forge_active_character["name"] = next_name
+                    _card_drop_active_character.pop(avatar_field, None)
+        _card_drop_active_character["name"] = next_name
     if "dataUrl" in payload:
-        _card_forge_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
+        _card_drop_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
     if "characterReferenceDataUrl" in payload:
-        _card_forge_active_character["characterReferenceDataUrl"] = str(
+        _card_drop_active_character["characterReferenceDataUrl"] = str(
             payload.get("characterReferenceDataUrl") or ""
         )
     return {"ok": True}
 
 
-@app.options("/card-forge/active-character")
 @app.options("/api/card-drop/active-character")
 async def active_character_options(request: Request):
     """Allow only the configured community origin to read the local snapshot."""
@@ -263,16 +261,15 @@ async def active_character_options(request: Request):
     return JSONResponse({"ok": True}, headers=cors)
 
 
-@app.get("/card-forge/active-character")
 @app.get("/api/card-drop/active-character")
-async def get_card_forge_active_character(
+async def get_card_drop_active_character(
     request: Request, include_avatar: bool = False
 ):
     """Return the active name and optionally the larger avatar payloads."""
     cors = _active_character_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
-    name = str(_card_forge_active_character.get("name", "") or "").strip()
+    name = str(_card_drop_active_character.get("name", "") or "").strip()
     master_name = ""
     # Community forge used to treat an empty live snapshot as "本体未连接" even
     # when the local ledger/credits were healthy. Fall back to the configured
@@ -285,8 +282,8 @@ async def get_card_forge_active_character(
     if master_name:
         payload["master_name"] = master_name
     if include_avatar and not used_fallback:
-        payload["dataUrl"] = _card_forge_active_character.get("dataUrl", "")
-        payload["characterReferenceDataUrl"] = _card_forge_active_character.get(
+        payload["dataUrl"] = _card_drop_active_character.get("dataUrl", "")
+        payload["characterReferenceDataUrl"] = _card_drop_active_character.get(
             "characterReferenceDataUrl", ""
         )
     return JSONResponse(payload, headers=cors)

@@ -5,6 +5,9 @@ import pytest
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_CHAT_AVATAR_PATH = PROJECT_ROOT / "static" / "app" / "app-chat-avatar.js"
+GUIDE_MESSAGE_RELAY_PATH = (
+    PROJECT_ROOT / "static" / "app" / "app-interpage" / "guide-message-relay.js"
+)
 
 
 def _read(path: Path) -> str:
@@ -12,15 +15,17 @@ def _read(path: Path) -> str:
 
 
 @pytest.mark.unit
-def test_card_forge_character_reference_retries_independently_of_avatar_cache():
+def test_card_drop_character_reference_retries_independently_of_avatar_cache():
     source = _read(APP_CHAT_AVATAR_PATH)
 
+    assert "fetch('/api/card-drop/active-character'" in source
+    assert "/card-forge/active-character" not in source
     assert "const CHARACTER_REFERENCE_RETRY_LIMIT = 30;" in source
     assert "function scheduleCharacterReferenceSync(reason)" in source
-    assert "function syncCharacterReferenceToCardForge(reason)" in source
+    assert "function syncCharacterReferenceToCardDrop(reason)" in source
     assert "function queueCharacterReferenceRetry(reason)" in source
     assert "characterReferenceRetryAttempts >= CHARACTER_REFERENCE_RETRY_LIMIT" in source
-    assert "postCharacterReferenceToCardForge(characterReferenceDataUrl)" in source
+    assert "postCharacterReferenceToCardDrop(characterReferenceDataUrl)" in source
     assert "scheduleCharacterReferenceSync('avatar-sync');" in source
     assert (
         "if (hasUsableCachedPreview()) {\n"
@@ -29,15 +34,15 @@ def test_card_forge_character_reference_retries_independently_of_avatar_cache():
     assert (
         "if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {\n"
         "            // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称\n"
-        "            // 和缓存预览重新 POST 给 Card Forge。该函数内部也会安排参考图同步。\n"
-        "            syncAvatarToCardForge(cachedPreview.dataUrl);"
+        "            // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。\n"
+        "            syncAvatarToCardDrop(cachedPreview.dataUrl);"
     ) in source
     assert "scheduleCharacterReferenceSync(reason || 'cached-avatar-model-loaded');" not in source
     assert "captureCharacterReferenceDataUrl().then(function (characterReferenceDataUrl)" not in source
 
 
 @pytest.mark.unit
-def test_card_forge_name_sync_does_not_wait_for_avatar_capture():
+def test_card_drop_name_sync_does_not_wait_for_avatar_capture():
     source = _read(APP_CHAT_AVATAR_PATH)
     model_loaded_block = source.split("function handleModelLoaded(reason)", 1)[1].split(
         "function bindModelLoadListeners()",
@@ -48,17 +53,17 @@ def test_card_forge_name_sync_does_not_wait_for_avatar_capture():
         1,
     )[0]
 
-    assert "syncAvatarToCardForge('');" in model_loaded_block
-    assert model_loaded_block.index("syncAvatarToCardForge('');") < model_loaded_block.index(
+    assert "syncAvatarToCardDrop('');" in model_loaded_block
+    assert model_loaded_block.index("syncAvatarToCardDrop('');") < model_loaded_block.index(
         "scheduleAutoCapture(reason);"
     )
-    assert "syncAvatarToCardForge('');" in empty_init_block
+    assert "syncAvatarToCardDrop('');" in empty_init_block
 
 
 @pytest.mark.unit
-def test_card_forge_character_reference_http_failures_remain_retryable():
+def test_card_drop_character_reference_http_failures_remain_retryable():
     source = _read(APP_CHAT_AVATAR_PATH)
-    post_block = source.split("function postCharacterReferenceToCardForge", 1)[1].split(
+    post_block = source.split("function postCharacterReferenceToCardDrop", 1)[1].split(
         "function queueCharacterReferenceRetry",
         1,
     )[0]
@@ -112,3 +117,20 @@ def test_character_reference_pending_capture_is_bound_to_its_cache_key():
     assert capture_block.index(stale_result_guard) < capture_block.index(
         pending_capture_binding
     )
+
+
+@pytest.mark.unit
+def test_card_drop_character_reference_keeps_full_body_capture_contract():
+    source = _read(GUIDE_MESSAGE_RELAY_PATH)
+    character_reference_block = source.split(
+        "var captureOptions = captureMode === 'character_reference'",
+        1,
+    )[1].split(
+        ": {",
+        1,
+    )[0]
+
+    assert "width: 768, height: 1024, padding: 0.08" in character_reference_block
+    assert "cropMode: 'portrait'" in character_reference_block
+    assert "includeDataUrl: true" in character_reference_block
+    assert "includeSourceDataUrl: false" in character_reference_block
