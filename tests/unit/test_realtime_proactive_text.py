@@ -555,6 +555,32 @@ async def test_delivery_timeout_cancels_only_returned_proactive_ticket(monkeypat
 
 
 @pytest.mark.unit
+async def test_delivery_timeout_acknowledges_exact_ticket_already_completed(monkeypatch):
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    ticket_done = asyncio.get_running_loop().create_future()
+    ticket_done.set_result(SimpleNamespace())
+    ticket = SimpleNamespace(done=ticket_done)
+    client.inject_text_and_request_response = AsyncMock(return_value=ticket)
+    client._response_arbiter.cancel_ticket = AsyncMock()
+    client.cancel_response = AsyncMock()
+    monkeypatch.setattr(
+        responses_module,
+        "_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    delivered = await client.prompt_ephemeral("complete at timeout boundary")
+
+    assert delivered is True
+    assert client._proactive_image_consumed is True
+    client._response_arbiter.cancel_ticket.assert_not_awaited()
+    client.cancel_response.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_cancelled_completion_wait_cancels_exact_proactive_ticket():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64

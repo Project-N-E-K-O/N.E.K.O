@@ -925,30 +925,52 @@ class _ResponseMixin:
                 )
             raise
         except asyncio.TimeoutError:
-            # Keep this request quarantined until its own terminal lifecycle
-            # arrives: clearing the shared maps here would let a late
-            # response.done sweep handlers registered by a retry. Ask the
-            # provider to terminate the hanging response so the normal
-            # response.done/error path releases the gate promptly. If even the
-            # cancel lifecycle never arrives, the existing 60s TTL remains the
-            # conservative final backstop.
-            try:
-                if proactive_ticket is not None:
-                    await self._ensure_response_arbiter().cancel_ticket(
-                        proactive_ticket,
-                        wait=False,
-                    )
+            # ``response.done`` can resolve the exact ticket at the timeout
+            # boundary before its observer gets a turn to set
+            # ``outcome_observed``. Treat that completed result as the
+            # authoritative delivery outcome; otherwise we would preserve an
+            # already-consumed visual snapshot and resend it on the next
+            # scheduler attempt.
+            ticket_completed = False
+            ticket_done = getattr(proactive_ticket, "done", None)
+            if ticket_done is not None and ticket_done.done():
+                try:
+                    ticket_done.result()
+                except asyncio.CancelledError:
+                    pass
+                except Exception:
+                    pass
                 else:
-                    await self.cancel_response()
-            except Exception as cancel_exc:
-                logger.warning(
-                    "prompt_ephemeral: timed-out response cancel failed; keeping inject quarantined: %s",
-                    cancel_exc,
+                    ticket_completed = True
+            if ticket_completed:
+                logger.info(
+                    "prompt_ephemeral: proactive ticket completed at delivery timeout boundary"
                 )
-            logger.warning(
-                "prompt_ephemeral: proactive text delivery timed out; keeping visual context for retry"
-            )
-            return False
+            else:
+                # Keep this request quarantined until its own terminal
+                # lifecycle arrives: clearing the shared maps here would let a
+                # late response.done sweep handlers registered by a retry.
+                # Ask the provider to terminate the hanging response so the
+                # normal response.done/error path releases the gate promptly.
+                # If even the cancel lifecycle never arrives, the existing 60s
+                # TTL remains the conservative final backstop.
+                try:
+                    if proactive_ticket is not None:
+                        await self._ensure_response_arbiter().cancel_ticket(
+                            proactive_ticket,
+                            wait=False,
+                        )
+                    else:
+                        await self.cancel_response()
+                except Exception as cancel_exc:
+                    logger.warning(
+                        "prompt_ephemeral: timed-out response cancel failed; keeping inject quarantined: %s",
+                        cancel_exc,
+                    )
+                logger.warning(
+                    "prompt_ephemeral: proactive text delivery timed out; keeping visual context for retry"
+                )
+                return False
         if delivery_rejected:
             logger.info(
                 "prompt_ephemeral: proactive text delivery failed; keeping visual context for retry: %s",
