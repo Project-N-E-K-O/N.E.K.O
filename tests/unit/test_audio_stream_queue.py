@@ -2886,6 +2886,39 @@ async def test_audio_start_ack_reaches_the_window_that_asked_for_it():
     ]
 
 
+async def test_session_preparing_reaches_the_window_that_asked_for_it():
+    # Completes the set with session_started / session_failed. Only cosmetic on
+    # its own -- it drives the "preparing" banner -- but a requester that sees
+    # neither this nor the ack has no feedback for the whole start.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+
+    await LLMSessionManager.send_session_preparing(mgr, "audio")
+
+    expected = {"type": "session_preparing", "input_mode": "audio"}
+    assert [json.loads(x) for x in recorder.sent] == [expected]
+    assert [json.loads(x) for x in chat.sent] == [expected]
+
+
+async def test_session_preparing_is_not_duplicated_for_a_single_window():
+    recorder, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = recorder
+
+    await LLMSessionManager.send_session_preparing(mgr, "audio")
+
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_preparing", "input_mode": "audio"}
+    ]
+
+
 async def test_audio_start_failure_reaches_the_window_that_asked_for_it():
     # Codex P2, the failure twin of the start ack. self.websocket is reassigned
     # to every newly accepted socket, so a second window opening during a start

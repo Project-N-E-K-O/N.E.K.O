@@ -623,6 +623,53 @@ async function postCommitFailureCase() {
          'a failure AFTER the commit must not stop the live microphone');
 }
 
+async function stopRecordingCancelsAnInFlightStartCase() {
+  // S.isRecording only flips at the very END of startAudioWorklet, so every
+  // "stop the mic" path -- the user pressing stop, the server's auto_close_mic,
+  // a websocket close -- hit stopRecording's `if (!S.isRecording) return` and
+  // left an in-flight start to commit afterwards: the UI flipped back to
+  // recording and the client re-claimed a lease the backend had just released.
+  // Only the text-takeover and blocked-route aborts bumped the token.
+  const env = loadModule();
+  const release = env.parkAddModule();
+  const attempt = env.mod.startMicCapture();
+  await settle();
+  assert(env.S.isRecording === false, 'the start has not committed yet');
+
+  env.mod.stopRecording({ notifyServer: false });
+  release();
+  await attempt;
+
+  assert(env.S.isRecording === false,
+         'a stop during the open window must cancel the start, not be overwritten by it');
+  assert(env.streams[0].getTracks()[0].stopped === true,
+         'the cancelled start must release the device it opened');
+  assert(env.S.stream === null, 'a cancelled start must not publish its stream');
+}
+
+async function entryTeardownReconcilesIsRecordingCase() {
+  // The entry teardown closes the previous pipeline before the token gate. It
+  // used to leave S.isRecording true, describing a microphone that no longer
+  // exists -- and if the new attempt then unwound, the caller's UI restore was
+  // skipped precisely BECAUSE S.isRecording was true.
+  const env = loadModule();
+  await env.mod.startMicCapture();
+  assert(env.S.isRecording === true, 'the first start committed');
+  const firstContext = env.S.audioContext;
+
+  const release = env.parkAddModule();
+  const restart = env.mod.startMicCapture();
+  await settle();
+
+  assert(firstContext.state === 'closed', 'the restart closed the previous pipeline');
+  assert(env.S.isRecording === false,
+         'the flag must not claim a live microphone once its pipeline is closed');
+
+  release();
+  await restart;
+  assert(env.S.isRecording === true, 'a successful restart still ends up recording');
+}
+
 (async () => {
   await raceCase();
   await preWorkletSetupFailureCase();
@@ -633,6 +680,8 @@ async function postCommitFailureCase() {
   await failClosedCase();
   await restartThenFailClosedCase();
   await addModuleFailureCase();
+  await stopRecordingCancelsAnInFlightStartCase();
+  await entryTeardownReconcilesIsRecordingCase();
   console.log('HARNESS_OK');
 })().catch((error) => {
   console.log('HARNESS_FAILED: ' + (error && error.message ? error.message : error));

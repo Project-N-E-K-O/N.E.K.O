@@ -750,6 +750,18 @@
         recognition.onerror = function (event) {
             const errorCode = (event && event.error) || 'unknown';
             console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
+            // Same staleness guard its onstart/onend siblings carry, which this
+            // handler was missing. An abandoned recognizer still fires onerror,
+            // and the not-allowed branch below calls
+            // restoreOrdinaryMicCaptureAfterGameVoiceSttFailure -> a fresh
+            // startMicCapture: a permission toast for a recognizer nobody uses
+            // any more, plus a microphone restart over a healthy live pipeline.
+            // Logged before returning so the diagnostics this handler exists
+            // for survive; only the side effects are gated.
+            if (S.gameVoiceSttRecognition !== recognition) {
+                console.warn('[GameVoiceSTT] ignoring error from a superseded recognizer');
+                return;
+            }
             if (errorCode === 'no-speech') {
                 console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
             }
@@ -1317,6 +1329,26 @@
                 S.workletNode = null;
                 S.micGainNode = null;
                 S.inputAnalyser = null;
+                // Reconcile the recording flag with what just happened. The
+                // pipeline that was feeding it is closed, so leaving
+                // S.isRecording true describes a microphone that no longer
+                // exists: the mic button keeps its recording/active styling and
+                // the floating button stays lit, canUploadOrdinaryMicFrame's
+                // callers still believe frames are flowing, and if THIS attempt
+                // then unwinds (superseded, fail-closed, addModule failure)
+                // nothing ever puts it right -- the caller's UI restore is
+                // skipped precisely because S.isRecording is true.
+                //
+                // The winning attempt sets it back to true at its own commit,
+                // so a successful restart is unchanged; only the window between
+                // teardown and commit now tells the truth.
+                if (S.isRecording) {
+                    S.isRecording = false;
+                    window.isRecording = false;
+                    if (typeof window.syncFloatingMicButtonState === 'function') {
+                        window.syncFloatingMicButtonState(false);
+                    }
+                }
             }
         }
 
@@ -1927,6 +1959,21 @@
         // re-runs the route on every start_session).
         S.independentAsrActive = false;
         S.independentAsrProvider = '';
+        // Cancel a start still inside its getUserMedia()/addModule() window,
+        // BEFORE the isRecording early-out below. S.isRecording only flips at
+        // the very end of startAudioWorklet, so every "stop the mic" path --
+        // the user pressing stop, the server's auto_close_mic, a websocket
+        // close -- used to early-return here and leave the in-flight attempt to
+        // commit afterwards: the UI flipped back to recording and the client
+        // re-claimed the lease from a backend that had just released it. Only
+        // the text-takeover and blocked-route aborts bumped this counter, so
+        // every other teardown was unable to cancel a start it had every right
+        // to cancel.
+        //
+        // Safe for the restart flows: each of them calls startMicCapture()
+        // afterwards, which mints its own token, so invalidating here cannot
+        // cancel the start they are about to make.
+        invalidatePendingMicStart();
         if (!S.isRecording) return;
 
         S.isRecording = false;

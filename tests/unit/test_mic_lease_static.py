@@ -166,3 +166,34 @@ def test_game_owner_and_hard_mute_are_independent_state_fields() -> None:
     assert "owner: resolveMicLeaseOwner()" in snapshot
     assert "hard_muted: S.isMicMuted === true" in snapshot
     assert "focus_suppressed:" in snapshot
+
+
+def test_game_stt_error_handler_carries_the_same_staleness_guard_as_its_siblings() -> None:
+    # recognition.onstart and recognition.onend both bail on
+    # `S.gameVoiceSttRecognition !== recognition`; onerror did not. An abandoned
+    # recognizer still fires onerror, and its not-allowed branch calls
+    # restoreOrdinaryMicCaptureAfterGameVoiceSttFailure -> a fresh
+    # startMicCapture: a permission toast for a recognizer nobody uses any more,
+    # plus a microphone restart over a healthy live pipeline.
+    source = CAPTURE.read_text(encoding="utf-8")
+    guard = "S.gameVoiceSttRecognition !== recognition"
+
+    handler = source.split("recognition.onerror = function (event) {", 1)[1].split(
+        "recognition.onend", 1
+    )[0]
+    # Compare on CODE only: the explanatory comment above the guard names
+    # restoreOrdinaryMicCaptureAfterGameVoiceSttFailure too, and an ordering
+    # assertion that a comment can satisfy is not an ordering assertion.
+    handler_code = "\n".join(
+        line for line in handler.splitlines() if not line.strip().startswith("//")
+    )
+    assert guard in handler_code, "onerror must not act on a superseded recognizer"
+
+    # The guard has to precede the side-effecting branch, not merely exist.
+    assert handler_code.index(guard) < handler_code.index(
+        "restoreOrdinaryMicCaptureAfterGameVoiceSttFailure"
+    )
+    # Siblings keep theirs too -- this is the invariant, not a one-off patch.
+    for sibling in ("recognition.onstart = function () {", "recognition.onend = function () {"):
+        block = source.split(sibling, 1)[1][:400]
+        assert guard in block, f"{sibling} lost its staleness guard"

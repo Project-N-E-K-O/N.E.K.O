@@ -456,10 +456,30 @@ class NotifyMixin:
             return False
 
     async def send_session_preparing(self, input_mode: str): # 通知前端session正在准备（静默期）
+        payload = {"type": "session_preparing", "input_mode": input_mode}
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "session_preparing", "input_mode": input_mode})
-                await self.websocket.send_text(data)
+                try:
+                    await self.websocket.send_text(json.dumps(payload))
+                except WebSocketDisconnect:
+                    # Isolated like the sibling senders: a display socket dying
+                    # between the CONNECTED check and the send must not skip the
+                    # lease-holder copy below.
+                    pass
+                except Exception as e:
+                    logger.error(f"💥 WS Send Session Preparing Error: {e}")
+            if getattr(self, "_voice_lease_owner", "none") != "game":
+                # Completes the set with session_started / session_failed: the
+                # window that asked for an audio session is the LEASE holder,
+                # while self.websocket is whichever socket connected most
+                # recently. This one only drives the "preparing" banner, so
+                # losing it is cosmetic rather than a stuck microphone -- but a
+                # requester that never sees "preparing" and then never sees the
+                # ack has no feedback at all for the whole start.
+                #
+                # No-op for a single window: _voice_owner_socket returns None
+                # when the lease holder IS the current socket.
+                await self._send_to_voice_owner(dict(payload))
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass

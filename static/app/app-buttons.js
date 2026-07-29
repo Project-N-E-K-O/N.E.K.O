@@ -2156,11 +2156,18 @@
                     S._pendingSessionStartMode = 'audio';
                     // Re-arm the fail-closed voice latch on user intent, strictly
                     // before start_session goes out and therefore before any route
-                    // verdict for this session can arrive. Residual, tracked
-                    // separately: the start_session dedupe path (lifecycle.py
-                    // _start_session_activate re-sends session_started for a
-                    // same-mode concurrent start WITHOUT re-running the route
-                    // decision) can still clear a latch whose verdict still holds.
+                    // verdict for this session can arrive.
+                    //
+                    // This assignment was MISSING while the comment describing it
+                    // was not: the automatic-restart path in app-websocket.js has
+                    // it, this one did not, so a latch set by one failed session
+                    // survived into the next explicit attempt and the mic refused
+                    // with nothing on screen to explain it. Restoring it is safe
+                    // now that session_started carries `microphone_route`: if the
+                    // route really is still blocked, the ack re-sets the latch
+                    // before the promise settles, so clearing it here can no
+                    // longer open the mic onto a dead route.
+                    S.voiceInputRouteBlocked = false;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
