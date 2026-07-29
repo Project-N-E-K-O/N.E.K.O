@@ -224,12 +224,20 @@ async def test_failed_response_done_returns_false_and_preserves_image():
 
 
 @pytest.mark.unit
-async def test_prompt_waits_for_its_own_queued_response_done():
+async def test_inject_completion_waits_for_its_own_queued_response_done():
     client = _make_client()
     earlier = await client._response_arbiter.enqueue(source="earlier")
     await earlier.sent
 
-    task = asyncio.create_task(client.prompt_ephemeral("queued proactive turn"))
+    completed = asyncio.Event()
+    rejected = []
+    task = asyncio.create_task(
+        client.inject_text_and_request_response(
+            "queued proactive turn",
+            on_completed=completed.set,
+            on_rejected=rejected.append,
+        )
+    )
     await asyncio.sleep(0)
 
     client._response_arbiter.notify_response_created(
@@ -255,7 +263,9 @@ async def test_prompt_waits_for_its_own_queued_response_done():
     else:
         raise AssertionError("queued proactive response.create was not sent")
 
-    assert task.done() is False
+    await task
+    assert completed.is_set() is False
+    assert rejected == []
     client._response_arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-proactive"}}
     )
@@ -265,7 +275,43 @@ async def test_prompt_waits_for_its_own_queued_response_done():
             "response": {"id": "resp-proactive", "status": "completed"},
         }
     )
-    assert await task is True
+    for _ in range(20):
+        if completed.is_set():
+            break
+        await asyncio.sleep(0)
+    assert completed.is_set() is True
+    assert rejected == []
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_prompt_defers_sid_rotation_while_response_arbiter_is_busy():
+    client = _make_client()
+    client.on_sid_rotate = AsyncMock()
+    earlier = await client._response_arbiter.enqueue(source="earlier")
+    await earlier.sent
+
+    delivered = await client.prompt_ephemeral("defer this proactive turn")
+
+    assert delivered is False
+    client.on_sid_rotate.assert_not_awaited()
+    assert len(
+        [
+            event
+            for event in _sent_events(client)
+            if event.get("type") == "response.create"
+        ]
+    ) == 1
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-earlier"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-earlier", "status": "completed"},
+        }
+    )
+    await earlier.done
     await client.close()
 
 

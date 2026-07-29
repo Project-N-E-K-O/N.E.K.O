@@ -680,8 +680,10 @@ class _ResponseMixin:
                 return False
         elif self.ws is None:
             return False
-        if self._is_responding:
-            logger.debug("prompt_ephemeral: skipped — already responding")
+        if self.is_active_response():
+            logger.debug(
+                "prompt_ephemeral: skipped — response arbiter is active or queued"
+            )
             return False
         _now = time.time()
         # ── AI-speech guard（对称于 _user_recent_activity_time）─────────
