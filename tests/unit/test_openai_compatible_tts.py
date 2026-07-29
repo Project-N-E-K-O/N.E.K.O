@@ -642,6 +642,34 @@ def test_configured_provider_predicate_failure_redacts_exception(monkeypatch):
     assert all(secret not in "\n".join(errors) for secret in secrets)
 
 
+def test_configured_preset_ownership_failure_is_redacted_and_non_fatal(monkeypatch):
+    errors = []
+    secrets = ("sk-secret-should-not-log", "token=signed-query", "角色原文不能记录")
+    monkeypatch.setattr(
+        provider_registry,
+        "selected_preset_provider_key",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(" ".join(secrets))
+        ),
+    )
+    monkeypatch.setattr(
+        tts_infra_module.logger,
+        "error",
+        lambda message, *args, **_kwargs: errors.append(message % args),
+    )
+
+    assert (
+        tts_client.selected_configured_tts_preset_provider_key(
+            {}, SimpleNamespace(), "configured-voice"
+        )
+        is None
+    )
+    assert errors == [
+        "code=TTS_CONFIGURED_API_FAILURE provider=configured stage=ownership"
+    ]
+    assert all(secret not in "\n".join(errors) for secret in secrets)
+
+
 def test_configured_sentence_worker_redacts_exception_and_input(monkeypatch):
     errors = []
     secrets = ("sk-secret-should-not-log", "token=signed-query", "角色原文不能记录")

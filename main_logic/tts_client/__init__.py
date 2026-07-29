@@ -43,6 +43,7 @@ from ._infra import (
     _parse_env_float,
     _enqueue_error,
     _ws_is_open,
+    log_configured_tts_failure,
     SentenceBuffer,
     _AudioQueueProxy,
     _non_bistream_tts_main_loop,
@@ -495,14 +496,21 @@ def selected_configured_tts_preset_provider_key(core_config, cm, voice_id):
     """Return the selected configured-preset owner for ``voice_id``, if any."""
     # Reuse registry dispatch so core never hardcodes custom/vLLM ownership.
     # 复用注册表判定，让 core 不需要识别 custom、vLLM 等具体 provider 名称。
-    provider_key = _tts_providers.selected_preset_provider_key(
-        core_config,
-        cm,
-        voice_id,
-    )
-    if not _tts_providers.uses_configured_preset_voice(provider_key):
+    try:
+        provider_key = _tts_providers.selected_preset_provider_key(
+            core_config,
+            cm,
+            voice_id,
+        )
+        if not _tts_providers.uses_configured_preset_voice(provider_key):
+            return None
+        return provider_key
+    except Exception:
+        # Ownership lookup is advisory. A malformed provider must not abort the
+        # session, and its exception may contain credentials or signed URLs.
+        # 音色归属查询失败时按旧路由继续，且不记录可能含凭证的原始异常。
+        log_configured_tts_failure("configured", "ownership")
         return None
-    return provider_key
 
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
