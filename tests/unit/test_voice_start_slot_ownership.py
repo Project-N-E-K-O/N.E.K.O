@@ -27,7 +27,6 @@ no-op.
 """
 
 import json
-import re
 import shutil
 import textwrap
 from pathlib import Path
