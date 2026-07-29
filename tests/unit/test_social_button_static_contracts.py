@@ -80,7 +80,11 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.index("const nativeDelegate = await delegatePromise;") < listener.index(
         "openElectronSocialWindow(delegateTargetUrl.toString())"
     )
-    assert "delegateTargetUrl.hash = '';" in listener
+    assert re.search(
+        r"const delegateTargetUrl = await attachNativeSyncTicket\(\s*"
+        r"new URL\(targetUrl, window\.location\.href\)\s*\);",
+        listener,
+    )
     assert "attachNativeDelegate(delegateTargetUrl, nativeDelegate);" in listener
     assert "const completeInitialCommunityHandoff = async (targetUrl, delegatePromise) => {" in listener
     assert listener.count(

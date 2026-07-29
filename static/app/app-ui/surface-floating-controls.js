@@ -371,9 +371,12 @@
                 }
                 const nativeDelegate = await delegatePromise;
                 if (nativeDelegate) {
-                    const delegateTargetUrl = new URL(targetUrl, window.location.href);
-                    // 首次页面已接收 native_sync；二次导航只交付 delegate，避免重放一次性票据。
-                    delegateTargetUrl.hash = '';
+                    // 二次导航使用新签发的 native_sync，并与 delegate 一次性交付。
+                    // 即使首次页面尚未读取 fragment 而被替换，也不会丢失同步能力；
+                    // 同时不会重放首次导航中的一次性票据。
+                    const delegateTargetUrl = await attachNativeSyncTicket(
+                        new URL(targetUrl, window.location.href)
+                    );
                     attachNativeDelegate(delegateTargetUrl, nativeDelegate);
                     if (isElectron) {
                         if (!openElectronSocialWindow(delegateTargetUrl.toString())) {

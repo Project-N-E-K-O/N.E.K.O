@@ -40,6 +40,7 @@ _DEFAULT_AUTH_URL = "https://auth.project-neko.cn"
 _HTTP_TIMEOUT_SEC = 30.0
 _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _oauth_start_lock = asyncio.Lock()
+_oauth_status_lock = asyncio.Lock()
 
 _CALLBACK_PAGE = """<!doctype html>
 <html lang="zh-CN">
@@ -282,7 +283,7 @@ async def _refresh_oauth_token(
     return "ok", payload
 
 
-async def resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
+async def _resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
     """Validate and, for expired OAuth credentials, refresh the saved session."""
     snapshot, auth = await asyncio.to_thread(_load_oauth_status_records)
     if not snapshot or not snapshot.get("access_token"):
@@ -346,7 +347,7 @@ async def resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
                         "auth": refreshed_auth,
                     }
                 if refreshed_snapshot and _attempt < 2:
-                    return await resolve_saved_oauth_status(_attempt + 1)
+                    return await _resolve_saved_oauth_status(_attempt + 1)
                 return {
                     "logged_in": False,
                     "snapshot": refreshed_snapshot,
@@ -359,7 +360,7 @@ async def resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
                 and not _status_snapshot_matches(current, snapshot)
                 and _attempt < 2
             ):
-                return await resolve_saved_oauth_status(_attempt + 1)
+                return await _resolve_saved_oauth_status(_attempt + 1)
             return {"logged_in": False, "snapshot": current, "auth": current_auth}
         if outcome == "unavailable":
             return {"logged_in": False, "snapshot": snapshot, "auth": auth}
@@ -376,12 +377,18 @@ async def resolve_saved_oauth_status(_attempt: int = 0) -> dict[str, Any]:
         and _attempt < 2
     ):
         # A concurrent login replaced the rejected snapshot while cleanup ran.
-        return await resolve_saved_oauth_status(_attempt + 1)
+        return await _resolve_saved_oauth_status(_attempt + 1)
     return {
         "logged_in": False,
         "snapshot": current or snapshot,
         "auth": current_auth or auth,
     }
+
+
+async def resolve_saved_oauth_status() -> dict[str, Any]:
+    """Share one refresh-capable saved-session resolution at a time."""
+    async with _oauth_status_lock:
+        return await _resolve_saved_oauth_status()
 
 
 def _load_oauth_logout_records() -> tuple[dict, dict, dict]:
