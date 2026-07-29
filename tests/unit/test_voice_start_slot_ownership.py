@@ -457,6 +457,34 @@ def test_the_mic_flow_rechecks_cancellation_after_proactive_vision():
 
 
 @pytest.mark.unit
+def test_every_start_promise_has_a_handler_from_the_moment_it_exists():
+    """A takeover can settle a start before its flow reaches the await.
+
+    claimSessionStart rejects the start it displaces, and that can land while
+    the displaced flow is still inside ensureWebSocketOpen -- or before a
+    stand-down returns without ever awaiting at all. An unhandled rejected
+    promise raises ``unhandledrejection``, which the health diagnostics record
+    as a runtime error, for what is a routine takeover.
+
+    Mutation-verified: drop the handler from any claim site and this reddens
+    with the count for that file.
+    """
+    for path, claims in (("app-buttons.js", 3), ("app-websocket.js", 1)):
+        source = (_STATIC_APP / path).read_text(encoding="utf-8")
+        found = source.count("= window.claimSessionStart(")
+        assert found == claims, (
+            f"{path}: expected {claims} claim sites, found {found} -- if a flow was added "
+            "or removed, this case and its count need updating together."
+        )
+        handled = source.count("sessionStartPromise.catch(")
+        assert handled >= claims, (
+            f"{path}: {handled} of {claims} start promises have a rejection handler from "
+            "creation; the rest raise unhandledrejection when a takeover settles them "
+            "before their flow awaits."
+        )
+
+
+@pytest.mark.unit
 def test_a_displaced_start_is_abandoned_quietly_not_reported_as_a_failure():
     """Being taken over is the user's own next action, not a failure.
 

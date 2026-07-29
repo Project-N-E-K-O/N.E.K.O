@@ -2226,6 +2226,14 @@
                         window.sessionTimeoutId = null;
                     }
                 });
+                // Consume the rejection up front. claimSessionStart settles the start it
+                // displaces, and that can land while this flow is still inside
+                // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                // stand-down returns without ever awaiting at all. Without a handler on the
+                // promise itself a routine takeover surfaces as an unhandledrejection and
+                // the health diagnostics log it as a runtime error. `await` below still sees
+                // the rejection: this attaches a handler, it does not swallow one.
+                sessionStartPromise.catch(function () { });
 
                 // Send start session (ensure WS open).
                 //
@@ -2730,6 +2738,14 @@
                         }
                     }, 15000);
                 });
+                // Consume the rejection up front. claimSessionStart settles the start it
+                // displaces, and that can land while this flow is still inside
+                // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                // stand-down returns without ever awaiting at all. Without a handler on the
+                // promise itself a routine takeover surfaces as an unhandledrejection and
+                // the health diagnostics log it as a runtime error. `await` below still sees
+                // the rejection: this attaches a handler, it does not swallow one.
+                sessionStartPromise.catch(function () { });
 
                 // Start text session
                 await window.ensureWebSocketOpen();
@@ -2974,6 +2990,14 @@
                                     window.sessionTimeoutId = null;
                                 }
                             });
+                            // Consume the rejection up front. claimSessionStart settles the start it
+                            // displaces, and that can land while this flow is still inside
+                            // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                            // stand-down returns without ever awaiting at all. Without a handler on the
+                            // promise itself a routine takeover surfaces as an unhandledrejection and
+                            // the health diagnostics log it as a runtime error. `await` below still sees
+                            // the rejection: this attaches a handler, it does not swallow one.
+                            sessionStartPromise.catch(function () { });
 
                             await window.ensureWebSocketOpen();
                             S.socket.send(JSON.stringify({
