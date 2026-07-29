@@ -3445,9 +3445,20 @@
                         window.sessionTimeoutId = null;
                     }
 
+                    // Capture the pending start THIS ack belongs to. The resolve
+                    // is deferred 500ms (to let the UI settle) but the slot is
+                    // shared, and on mobile the composer stays visible during an
+                    // audio session -- see _shouldHide above -- so the user can
+                    // send text inside that window. app-buttons.js then installs
+                    // a NEW resolver + mode for the text start, and this old
+                    // audio timer would resolve that promise, clear its timeout
+                    // and let the queued message go out before the backend has
+                    // acknowledged the text session at all (Codex P2). Resolve
+                    // only if the slot still holds the very start we acked.
+                    var _ackedResolver = S.sessionStartedResolver;
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
-                        if (S.sessionStartedResolver) {
+                        if (S.sessionStartedResolver && S.sessionStartedResolver === _ackedResolver) {
                             if (window.sessionTimeoutId) {
                                 clearTimeout(window.sessionTimeoutId);
                                 window.sessionTimeoutId = null;

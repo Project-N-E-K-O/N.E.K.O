@@ -3393,3 +3393,36 @@ def test_text_takeover_cancels_a_pending_microphone_start():
 
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     assert "window.invalidatePendingMicStart = invalidatePendingMicStart;" in capture_source
+
+
+def test_deferred_session_start_resolve_is_pinned_to_the_ack_it_belongs_to():
+    # Codex P2. A matching session_started clears the start timeout immediately
+    # but defers the resolve by 500ms to let the UI settle. The resolver lives
+    # in a SHARED slot, and on mobile the composer stays visible during an audio
+    # session (the `_shouldHide` guard excludes mobile), so the user can send
+    # text inside that window. app-buttons.js then installs a new resolver and
+    # mode for the text start -- and the old audio timer, which only checked
+    # that SOME resolver existed, resolved that text promise, cleared its
+    # timeout, and let the queued message go out before the backend had
+    # acknowledged the text session at all.
+    source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+
+    capture = "var _ackedResolver = S.sessionStartedResolver;"
+    assert capture in source, (
+        "the ack must capture the pending start it belongs to"
+    )
+
+    # The capture has to happen at ack time, i.e. before the deferred callback
+    # is scheduled -- capturing inside it would read the same shared slot again
+    # and pin nothing.
+    deferred = source.index("}, 500);")
+    assert source.index(capture) < deferred
+
+    guard_block = source[source.index(capture):deferred]
+    assert "S.sessionStartedResolver === _ackedResolver" in guard_block, (
+        "the deferred resolve must fire only for the start this ack matched"
+    )
+    # ...and the resolve itself must sit behind that identity check, not beside it.
+    assert guard_block.index("S.sessionStartedResolver === _ackedResolver") < guard_block.index(
+        "S.sessionStartedResolver(response.input_mode);"
+    )

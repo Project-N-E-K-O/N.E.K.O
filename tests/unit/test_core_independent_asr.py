@@ -1240,6 +1240,41 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
     replacement.submit_external_voice_turn.assert_not_awaited()
 
 
+async def test_final_transcript_is_dropped_when_the_route_leaves_core_mid_restore() -> None:
+    # Codex P2, the other half of the case above. Pinning session_ref protects
+    # only the SESSION: a game or text takeover landing inside the preview
+    # restore's websocket send moves _voice_lease_owner off "core" WITHOUT
+    # necessarily replacing self.session, and the transcript was still injected
+    # and an ordinary Core response started after the route had left Core.
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    timed_session = runtime.session
+
+    takeover_ran = False
+
+    async def _game_takeover_mid_restore(*_args, **_kwargs) -> None:
+        nonlocal takeover_ran
+        takeover_ran = True
+        runtime._voice_lease_owner = "game"
+
+    runtime._restore_core_asr_preview_after_final = _game_takeover_mid_restore
+
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hello"),
+    )
+
+    # Pin from OUTSIDE the hook that the race was actually manufactured; without
+    # this the case degrades into an ordinary final that never left Core.
+    assert takeover_ran
+    assert runtime._voice_lease_owner == "game"
+    # Session identity never moved, so only the route check can catch this.
+    assert runtime.session is timed_session
+    # No Core response is started for a route that has moved on.
+    timed_session.create_response.assert_not_awaited()
+
+
 async def test_transcript_dispatch_failure_releases_keyed_external_turn_pause() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)

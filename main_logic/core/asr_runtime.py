@@ -2191,13 +2191,24 @@ class AsrRuntimeMixin:
                 source="independent_asr",
                 metadata={"provider": event.provider},
             )
-            operation_still_current = (
-                self.session is session_ref
-                and transition_generation
-                == self._voice_input_transition_generation
-                and self._voice_lease_owner == "core"
-                and self._ingress_token_matches(token)
-            )
+            def route_still_core() -> bool:
+                """The route-identity half, re-checkable across an await.
+
+                Deliberately excludes ``self.session is session_ref``: a hot
+                swap promoting a new session is NOT a reason to drop this
+                transcript, it is a reason to submit it to the session it was
+                validated against -- which ``_submit_core_voice_turn`` does via
+                ``session_ref``. Folding the session check in here would make a
+                hot swap silently discard the user's finished utterance.
+                """
+                return (
+                    transition_generation
+                    == self._voice_input_transition_generation
+                    and self._voice_lease_owner == "core"
+                    and self._ingress_token_matches(token)
+                )
+
+            operation_still_current = self.session is session_ref and route_still_core()
             if not accepted or not operation_still_current:
                 if not accepted and operation_still_current:
                     # Rejected text (echo suppression, takeover routing) also
@@ -2211,6 +2222,16 @@ class AsrRuntimeMixin:
                 external_turn_id,
                 session_epoch=token.session_epoch,
             )
+            # Re-fence: the restore above awaited a websocket send, and pinning
+            # session_ref only protects the SESSION half of what was checked
+            # before it. A game or text takeover landing inside that await moves
+            # _voice_lease_owner / _voice_input_transition_generation without
+            # necessarily replacing self.session, and this would still inject
+            # the transcript and start an ordinary Core response after the route
+            # had left Core (Codex P2). Same shape as the fence-notify-re-fence
+            # order _fail_closed_voice_route owns.
+            if not route_still_core():
+                return
             # Submit through the session validated above, not whatever
             # self.session happens to be now: the preview restore awaited a
             # websocket send, and a hot swap promoting a new session inside that
