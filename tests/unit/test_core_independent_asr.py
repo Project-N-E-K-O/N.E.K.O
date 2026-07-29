@@ -1227,6 +1227,12 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
         VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hello"),
     )
 
+    # CodeRabbit: the race is manufactured inside a hook, so if that hook ever
+    # stops being called -- preview restore skipped, moved, or bypassed on the
+    # accepted branch -- runtime.session would never move, and all three
+    # assertions below would pass while modelling an ordinary final with no hot
+    # swap at all. Pin that the swap really happened first.
+    assert runtime.session is replacement
     # The turn lands on the session that produced it...
     timed_session.create_response.assert_awaited_once_with("hello")
     # ...and never touches the one that replaced it.

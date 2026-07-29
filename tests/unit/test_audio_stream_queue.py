@@ -2575,6 +2575,7 @@ async def test_silence_timeout_still_delivers_when_only_the_mute_state_moved():
     mgr.core_api_type = "paid"
     mgr.end_session = AsyncMock()
     generation_before = mgr._voice_lease_generation
+    mid_send: list[str] = []
 
     async def _mute_mid_send(_payload: dict) -> None:
         # Same window, same lease -- it just muted itself.
@@ -2583,8 +2584,7 @@ async def test_silence_timeout_still_delivers_when_only_the_mute_state_moved():
             generation_before + 1,
         )
         assert applied is True
-        assert mgr._voice_lease_generation != generation_before
-        assert mgr._voice_lease_connection_id == "socket-a"
+        mid_send.append("muted")
 
     chat.send_json = _mute_mid_send
 
@@ -2592,6 +2592,16 @@ async def test_silence_timeout_still_delivers_when_only_the_mute_state_moved():
         mgr,
         expected_session=mgr.session,
     )
+
+    # CodeRabbit: assertions inside the callback only bind if the callback
+    # RUNS. Should the display send ever stop happening -- the CONNECTED guard
+    # changing, or the fake socket losing send_json -- this would silently
+    # decay into a duplicate of the "nothing moved" case and stay green while
+    # covering none of the mute path. Pin the race itself from out here.
+    assert mid_send == ["muted"]
+    assert mgr._voice_lease_generation != generation_before
+    assert mgr._voice_lease_hard_muted is True
+    assert mgr._voice_lease_connection_id == "socket-a"
 
     assert [json.loads(x)["type"] for x in recorder.sent] == ["auto_close_mic"]
     mgr.end_session.assert_awaited_once()
