@@ -25,11 +25,6 @@ from utils.stepfun_tts_voices import (
 )
 from utils.tts.providers import stepfun as stepfun_provider
 import main_logic.tts_client as tts_client
-from main_logic.tts_client import (
-    free_realtime_tts_worker,
-    get_tts_worker,
-    step_realtime_tts_worker,
-)
 from main_logic.tts_client.workers import free as free_worker_module
 
 
@@ -54,11 +49,11 @@ def test_stepfun_and_free_dispatch_to_dedicated_workers(monkeypatch):
         lambda: EmptyConfigManager(),
     )
 
-    free_worker, free_key, free_provider = get_tts_worker(core_api_type="free")
-    step_worker, step_key, step_provider = get_tts_worker(core_api_type="step")
+    free_worker, free_key, free_provider = tts_client.get_tts_worker(core_api_type="free")
+    step_worker, step_key, step_provider = tts_client.get_tts_worker(core_api_type="step")
 
-    assert free_worker is free_realtime_tts_worker
-    assert step_worker is step_realtime_tts_worker
+    assert free_worker is tts_client.free_realtime_tts_worker
+    assert step_worker is tts_client.step_realtime_tts_worker
     assert free_worker is not step_worker
     assert (free_key, free_provider) == (None, "free")
     assert (step_key, step_provider) == (None, "step")
@@ -76,7 +71,7 @@ def test_legacy_step_worker_free_mode_delegates_to_free_worker(monkeypatch):
         fake_free_worker,
     )
 
-    result = step_realtime_tts_worker(
+    result = tts_client.step_realtime_tts_worker(
         "requests",
         "responses",
         "api-key",

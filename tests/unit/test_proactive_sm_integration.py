@@ -1128,6 +1128,52 @@ async def test_voice_mode_callback_image_rejection_after_ack_is_ignored():
     mgr._schedule_proactive_retry.assert_not_called()
 
 
+async def test_voice_mode_rejected_media_does_not_restore_superseded_callback():
+    sess = _make_voice_sess()
+    image_rejections = []
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        image_rejections.append(on_rejected)
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    future = asyncio.get_running_loop().create_future()
+    old_cb = {
+        "_callback_delivery_id": "id-old-weather",
+        "status": "completed",
+        "summary": "old weather",
+        "media_images": ["old-weather-image"],
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+        DELIVERY_ACK_FUTURE_KEY: future,
+    }
+    old_extra = {
+        "_callback_delivery_id": "id-old-weather",
+        "summary": "old weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    mgr.pending_agent_callbacks = [old_cb]
+    mgr.pending_extra_replies = [old_extra]
+    mgr._schedule_proactive_retry = MagicMock()
+
+    assert await core_module.LLMSessionManager.trigger_agent_callbacks(mgr) is True
+    mgr._coalesce_latest = {"weather": 2}
+    image_rejections[0]("superseded callback image rejected")
+
+    assert old_cb[DELIVERY_RETRACTED_KEY] is True
+    assert future.result() is False
+    assert mgr.pending_agent_callbacks == []
+    assert mgr.pending_extra_replies == []
+    mgr._schedule_proactive_retry.assert_not_called()
+
+
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
     """Prune unstamped callbacks through the object-ID fallback after delivery."""
     sess = _make_voice_sess()

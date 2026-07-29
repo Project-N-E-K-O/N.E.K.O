@@ -726,10 +726,24 @@ class ProactiveMixin:
                 ) -> bool:
                     if _state["rejected"] or _state["acknowledged"]:
                         return False
+                    # A newer cue with the same coalesce key can supersede a
+                    # callback after this local delivery snapshot was checked
+                    # out. Do not restore that obsolete cue (or retry its
+                    # already-rejected media) into provider context.
+                    self._retract_stale_coalesced(_snapshot)
+                    retry_snapshot = [
+                        cb
+                        for cb in _snapshot
+                        if not cb.get(DELIVERY_RETRACTED_KEY)
+                    ]
                     _state["rejected"] = True
+                    if not retry_snapshot:
+                        self._purge_retracted_agent_callback_extras(_snapshot)
+                        self._purge_retracted_agent_callbacks()
+                        return False
                     logger.warning(
                         "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
-                        _lanlan, error_msg, len(_snapshot),
+                        _lanlan, error_msg, len(retry_snapshot),
                     )
                     # Restore BOTH queues in lockstep — only entries whose
                     # delivery_id is not already present. Present means the
@@ -753,7 +767,12 @@ class ProactiveMixin:
                         for extra in self.pending_extra_replies
                         if extra.get("_callback_delivery_id")
                     }
-                    for cb in _snapshot:
+                    retry_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in retry_snapshot
+                        if cb.get("_callback_delivery_id")
+                    }
+                    for cb in retry_snapshot:
                         cb_id = cb.get("_callback_delivery_id")
                         if (cb_id and cb_id in existing_cb_ids) or (
                             not cb_id and id(cb) in existing_cb_obj_ids
@@ -766,6 +785,8 @@ class ProactiveMixin:
                             existing_cb_obj_ids.add(id(cb))
                     for extra in _extra_snapshot:
                         extra_id = extra.get("_callback_delivery_id")
+                        if extra_id not in retry_ids:
+                            continue
                         if extra_id and extra_id in existing_extra_ids:
                             continue
                         self.pending_extra_replies.append(extra)
