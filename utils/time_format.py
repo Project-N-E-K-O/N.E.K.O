@@ -17,7 +17,7 @@
 
 from config.prompts.prompts_sys import _loc
 from config.prompts.prompts_memory import (
-    ELAPSED_TIME_DH, ELAPSED_TIME_D,
+    ELAPSED_TIME_DH, ELAPSED_TIME_D, ELAPSED_TIME_DM,
     ELAPSED_TIME_HM, ELAPSED_TIME_H, ELAPSED_TIME_M,
 )
 
@@ -30,8 +30,9 @@ def format_elapsed(lang: str, gap_seconds: float) -> str:
     if days > 0:
         if hours > 0:
             return _loc(ELAPSED_TIME_DH, lang).format(d=days, h=hours)
-        else:
-            return _loc(ELAPSED_TIME_D, lang).format(d=days)
+        if minutes > 0:
+            return _loc(ELAPSED_TIME_DM, lang).format(d=days, m=minutes)
+        return _loc(ELAPSED_TIME_D, lang).format(d=days)
     elif hours > 0 and hours < 3 and minutes > 0:
         return _loc(ELAPSED_TIME_HM, lang).format(h=hours, m=minutes)
     elif hours > 0:
