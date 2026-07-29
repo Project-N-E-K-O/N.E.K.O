@@ -209,6 +209,22 @@ assert(W.sessionStartSuperseded(ownerR) === false,
 assert(W.voiceStartEpochIsCurrent(restartEpoch) === false,
        'the epoch must know the user walked away');
 
+// --- a flow with no owner token yet still has a snapshot -------------------
+// The automatic restart sits in a 7.5s timer before it claims anything, and a
+// whole text session can start AND finish inside that window: its resolver is
+// gone by the time the restart looks, and text never mints an epoch. The claim
+// count taken when the restart was scheduled is the only thing that remembers.
+const scheduledAt = W.sessionStartClaimSeq();
+assert(W.sessionStartsSince(scheduledAt) === false, 'nothing has started yet');
+
+const ghost = W.claimSessionStart('text', () => {}, () => {});
+W.releaseSessionStart(ghost);
+assert(S.sessionStartedResolver === null, 'the text start finished and released');
+assert(W.sessionStartSuperseded(null) === false,
+       'with no owner token, "who holds it now" sees nothing at all');
+assert(W.sessionStartsSince(scheduledAt) === true,
+       'the scheduling snapshot must still see the start that came and went');
+
 console.log('HARNESS_OK');
 """
 
@@ -218,9 +234,14 @@ console.log('HARNESS_OK');
 _MODE_TEST = "_pendingSessionStartMode !== 'audio'"
 
 # file -> (stand-down check, how many points in that flow must call it)
+#
+# app-buttons.js:   after the start promise, after getUserMedia, after the
+#                   proactive-vision acquisition, and in the outer catch.
+# app-websocket.js: before the claim, after the start promise, after
+#                   showCurrentModel, after the capture awaits, and in the catch.
 STAND_DOWN_CHECKS = {
-    "app-buttons.js": ("micStartMustStandDown", 3),
-    "app-websocket.js": ("restartMustStandDown", 4),
+    "app-buttons.js": ("micStartMustStandDown", 4),
+    "app-websocket.js": ("restartMustStandDown", 5),
 }
 
 
@@ -363,7 +384,7 @@ def test_the_automatic_restart_stands_down_at_every_resumption_point():
     helper_body = _region(
         source, "function restartMustStandDown()", "try {", "app-websocket.js"
     )
-    for signal in ("sessionStartSuperseded", "voiceStartEpochIsCurrent"):
+    for signal in ("sessionStartSuperseded", "voiceStartEpochIsCurrent", "sessionStartsSince"):
         assert signal in helper_body, (
             f"app-websocket.js: the restart's stand-down check ignores {signal}, so a "
             f"takeover it cannot see reaches the microphone.\n{helper_body}"
@@ -380,26 +401,32 @@ def test_the_automatic_restart_stands_down_at_every_resumption_point():
 
 
 @pytest.mark.unit
-def test_the_restart_snapshots_its_epoch_before_the_delay():
+def test_the_restart_takes_both_snapshots_before_the_delay():
     """Snapshot when the restart is DECIDED, not 7.5s later inside the callback.
 
-    A goodbye or avatar drop during the delay bumps the epoch through
-    cancelPendingSessionStart. A snapshot taken inside the callback reads that
-    cancellation as its own starting point, so every check against it passes and
-    the restart proceeds against a user who has already walked away.
+    Both signals, because the delay is long enough for either kind of event: a
+    goodbye or avatar drop bumps the epoch through cancelPendingSessionStart,
+    and a whole text session can be started and finished, which moves only the
+    claim count. A snapshot taken inside the callback reads whatever happened
+    during the delay as its own starting point, so every later check passes and
+    the restart proceeds against a user who has already moved on.
 
-    Mutation-verified: move the snapshot inside the callback and this reddens.
+    Mutation-verified: move either snapshot inside the callback and this reddens.
     """
     source = (_STATIC_APP / "app-websocket.js").read_text(encoding="utf-8")
-    snapshot = source.find("var restartVoiceEpoch = S.voiceSessionStartEpoch;")
-    assert snapshot != -1, "the automatic restart no longer snapshots the intent epoch"
     helper = source.find("function restartMustStandDown()")
     assert helper != -1, "the automatic restart's stand-down check has been renamed"
     scheduled = source.rfind("setTimeout(async function ()", 0, helper)
     assert scheduled != -1, "the automatic restart is no longer scheduled on a timer"
 
-    assert snapshot < scheduled, (
-        "app-websocket.js: the epoch snapshot sits inside the delayed callback, so a "
-        "cancellation during the delay becomes its own baseline and every check "
-        "against it passes."
-    )
+    for what, marker in (
+        ("intent epoch", "var restartVoiceEpoch = S.voiceSessionStartEpoch;"),
+        ("claim sequence", "var restartClaimSeq = window.sessionStartClaimSeq();"),
+    ):
+        snapshot = source.find(marker)
+        assert snapshot != -1, f"the automatic restart no longer snapshots the {what}"
+        assert snapshot < scheduled, (
+            f"app-websocket.js: the {what} snapshot sits inside the delayed callback, so "
+            "whatever happened during the delay becomes its own baseline and every check "
+            "against it passes."
+        )

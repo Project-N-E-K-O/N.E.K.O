@@ -2694,18 +2694,34 @@
                             // ensureVoiceStartCurrent, and ownership alone cannot see an
                             // ABA -- see voiceStartEpochIsCurrent.
                             var restartVoiceEpoch = S.voiceSessionStartEpoch;
+                            // ...and the claim count with it. Until the callback claims, it
+                            // has no owner token to compare against, and a whole text
+                            // session can be started AND finished inside the 7.5s: by the
+                            // time we look, its resolver is gone, and text never moves the
+                            // epoch. Only the claim count still remembers it (codex P2).
+                            var restartClaimSeq = window.sessionStartClaimSeq();
 
                             setTimeout(async function () {
                                 var restartStartOwner = null;
 
-                                // Both points where this flow resumes from an await ask the
-                                // same question, and asking only half of it is how the last
-                                // two rounds of this bug survived: ownership cannot see a
+                                // Every point where this flow resumes from an await asks the
+                                // same question, and asking only part of it is how round
+                                // after round of this bug survived: ownership cannot see a
                                 // cancel-and-clear (the slot is back to empty), and the
                                 // epoch cannot see a TEXT takeover (text starts never mint
                                 // one). Returns true when this restart must stand down.
+                                //
+                                // Before the claim there is no owner token to compare
+                                // against, so the snapshot taken at scheduling time stands
+                                // in: it catches a text session that both started and
+                                // finished during the delay, which leaves nothing else
+                                // behind. After the claim the owner's own sequence carries
+                                // the same fact.
                                 function restartMustStandDown() {
-                                    if (window.sessionStartSuperseded(restartStartOwner)
+                                    var takenOver = restartStartOwner
+                                        ? window.sessionStartSuperseded(restartStartOwner)
+                                        : window.sessionStartsSince(restartClaimSeq);
+                                    if (takenOver
                                             || (S._pendingSessionStartMode
                                                 && S._pendingSessionStartMode !== 'audio')) {
                                         // The unwind is global -- it bumps the mic
@@ -2842,6 +2858,15 @@
                                     if (S.screenCaptureStream != null) {
                                         if (typeof window.startScreenSharing === 'function') await window.startScreenSharing();
                                     }
+
+                                    // The capture awaits are the last wide-open window, and
+                                    // the dual of the mic-button flow's post-getUserMedia
+                                    // check: a text takeover invalidates an in-flight mic
+                                    // start, but that cancellation path RETURNS rather than
+                                    // throws, so without this the restart lights the
+                                    // floating controls and reports "restart complete" over
+                                    // the text session (codex P2).
+                                    if (restartMustStandDown()) return;
 
                                     if (window.live2dManager && window.live2dManager._floatingButtons) {
                                         if (typeof window.syncFloatingMicButtonState === 'function') window.syncFloatingMicButtonState(true);

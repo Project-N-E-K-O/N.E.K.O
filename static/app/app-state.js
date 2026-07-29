@@ -304,6 +304,22 @@
         return true;
     };
 
+    /**
+     * The current claim count, for a flow that must detect takeovers BEFORE it
+     * has an owner token of its own -- the automatic restart spends 7.5s in a
+     * timer before it claims, and a text session can be started and finished
+     * whole inside that window. Snapshot this when the work is scheduled and
+     * ask sessionStartsSince when it runs.
+     */
+    window.sessionStartClaimSeq = function () {
+        return startClaimSeq;
+    };
+
+    /** True when any start has claimed since ``seq`` was taken. */
+    window.sessionStartsSince = function (seq) {
+        return startClaimSeq > seq;
+    };
+
     /** True while ``owner`` is still the pending start. */
     window.sessionStartIsCurrent = function (owner) {
         return !!owner && S.sessionStartedResolver === owner;

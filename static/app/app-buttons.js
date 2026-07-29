@@ -2341,6 +2341,15 @@
                     console.warn(window.t('console.startVoiceActiveVisionFailed'), e);
                 }
 
+                // acquireProactiveVisionStream awaits a backend request AND a
+                // display-capture prompt, so this is the longest window of all
+                // -- and the last one before the success path commits. A text
+                // send completing inside it would otherwise get proactive
+                // vision started, ready-to-speak scheduled and
+                // neko:voice-session-started dispatched over its session
+                // (codex P2).
+                if (micStartMustStandDown()) return;
+
                 // Success — hide preparing toast, show ready
                 window.hideVoicePreparingToast();
 
