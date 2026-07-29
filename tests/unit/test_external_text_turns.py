@@ -81,6 +81,78 @@ async def test_barge_in_cancelled_response_done_releases_response_lane():
 
 
 @pytest.mark.asyncio
+async def test_cancelled_terminal_after_started_timeout_does_not_fail_closed():
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "response.cancel":
+            arbiter.notify_response_terminal(
+                {
+                    "type": "response.done",
+                    "response": {"status": "cancelled"},
+                }
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="started-timeout",
+        response_started_timeout=0.01,
+        cancel_timeout=0.2,
+    )
+
+    await asyncio.wait_for(ticket.sent, 0.2)
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(ticket.done, 0.5)
+
+    assert [event["type"] for event in sent] == [
+        "response.create",
+        "response.cancel",
+    ]
+    assert aborted == []
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_terminal_reports_ticket_failure_without_aborting_transport():
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        if event["type"] != "response.create":
+            return
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-cancelled"}}
+        )
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {
+                    "id": "resp-cancelled",
+                    "status": "cancelled",
+                },
+            }
+        )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(source="server-cancelled")
+
+    with pytest.raises(RuntimeError, match="status=cancelled"):
+        await asyncio.wait_for(ticket.done, 0.2)
+
+    assert aborted == []
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_response_arbiter_holds_lane_until_response_done():
     sent = []
     arbiter = None

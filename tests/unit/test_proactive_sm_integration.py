@@ -1008,6 +1008,7 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
     }
     mgr.pending_agent_callbacks = [cb]
     mgr.pending_extra_replies = [extra]
+    mgr._schedule_proactive_retry = MagicMock()
 
     delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
 
@@ -1015,6 +1016,9 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
     assert sess.inject_calls == 0
     assert mgr.pending_agent_callbacks == [cb]
     assert mgr.pending_extra_replies == [extra]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
 
 
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():

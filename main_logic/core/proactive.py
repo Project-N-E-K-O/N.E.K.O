@@ -807,6 +807,9 @@ class ProactiveMixin:
                         "[%s] trigger_agent_callbacks: proactive media rejected before text inject; keeping %d cb(s) queued for retry",
                         self.lanlan_name, len(voice_snapshot),
                     )
+                    self._schedule_proactive_retry(
+                        self.proactive_manager.min_gap_s
+                    )
                     return False
                 # Pull-model staleness: a newer same-coalesce_key cue may have
                 # been submitted during the media await above (possibly still

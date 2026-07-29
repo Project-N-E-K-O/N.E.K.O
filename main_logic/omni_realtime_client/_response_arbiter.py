@@ -96,6 +96,7 @@ class _QueuedResponse:
     ticket: ResponseTicket = field(compare=False)
     item_ack: asyncio.Future[None] | None = field(default=None, compare=False)
     terminal: asyncio.Future[None] | None = field(default=None, compare=False)
+    terminal_error: BaseException | None = field(default=None, compare=False)
     response_id: str | None = field(default=None, compare=False)
     event_ids: frozenset[str] = field(default_factory=frozenset, compare=False)
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
@@ -511,10 +512,13 @@ class RealtimeResponseArbiter:
                     RuntimeError("response terminated before response.created")
                 )
             if owner.terminal is not None and not owner.terminal.done():
-                if terminal_error is not None:
-                    owner.terminal.set_exception(terminal_error)
-                else:
-                    owner.terminal.set_result(None)
+                # A terminal event always resolves the lifecycle waiter,
+                # including an acknowledged response.cancel. Keep the
+                # response outcome separate so cancellation/timeout cleanup
+                # does not mistake a non-success terminal for a missing
+                # terminal and fail-close a healthy connection.
+                owner.terminal_error = terminal_error
+                owner.terminal.set_result(None)
             self._response_owner = None
         # The owner (if any) has terminated; the lane opens only once no
         # server-initiated response is still live, so a queued
@@ -875,6 +879,8 @@ class RealtimeResponseArbiter:
 
             if queued.interrupted:
                 raise RuntimeError("response dispatch interrupted")
+            if queued.terminal_error is not None:
+                raise queued.terminal_error
 
             result = ResponseDispatchResult(
                 item_acknowledged=item_acked,
