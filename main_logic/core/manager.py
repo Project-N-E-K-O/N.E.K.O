@@ -293,6 +293,7 @@ class LLMSessionManager(
         self._tts_replay_speech_id: Optional[str] = None
         self._tts_replay_chunks: list[tuple[Optional[str], str]] = []
         self._tts_replay_done: bool = False
+        self._tts_replay_audio_emitted: bool = False
         # A failed configured preset must not leak its identity into legacy clone routing.
         # 配置型 preset 失败后，本会话保留角色配置，但替代 worker 使用默认音色，
         # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。

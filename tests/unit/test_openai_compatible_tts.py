@@ -491,6 +491,7 @@ def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch)
         ("speech-1", "second"),
     ]
     mgr._tts_replay_done = True
+    mgr._tts_replay_audio_emitted = False
     mgr._tts_done_queued_for_turn = True
     mgr._tts_done_pending_until_ready = False
     mgr._tts_fallback_uses_default_voice = False
@@ -523,6 +524,80 @@ def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch)
     assert mgr._tts_done_pending_until_ready is True
     assert LLMSessionManager._effective_tts_route(mgr) == ("", False)
     assert any("fallback_provider=qwen" in message for message in warnings)
+
+
+def test_fallback_skips_complete_replay_after_audio_reached_playback(monkeypatch):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._tts_active_provider_key = "custom"
+    mgr._tts_excluded_provider_keys = frozenset()
+    mgr.tts_request_queue = queue.Queue()
+    mgr.current_speech_id = "speech-1"
+    mgr.tts_pending_chunks = []
+    mgr._tts_replay_speech_id = "speech-1"
+    mgr._tts_replay_chunks = [("speech-1", "already heard")]
+    mgr._tts_replay_done = True
+    mgr._tts_replay_audio_emitted = True
+    mgr._tts_done_queued_for_turn = True
+    mgr._tts_done_pending_until_ready = False
+    mgr._tts_fallback_uses_default_voice = False
+    mgr._reset_tts_stream_normalizer = lambda: None
+
+    def start_fallback(*, preserve_provider_exclusions=False):
+        assert preserve_provider_exclusions is True
+        mgr._tts_active_provider_key = "qwen"
+
+    mgr._start_tts_thread = start_fallback
+    monkeypatch.setattr(tts_runtime_module.logger, "warning", lambda *_args, **_kwargs: None)
+
+    assert LLMSessionManager._activate_configured_tts_fallback(mgr, "运行时") is True
+    assert mgr.tts_pending_chunks == []
+    assert mgr._tts_done_pending_until_ready is False
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "audio_message",
+    [b"audio-prefix", ("__audio__", "speech-1", b"audio-prefix")],
+)
+async def test_tts_handler_marks_audio_before_runtime_fallback(audio_message):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    old_queue = queue.Queue()
+    new_queue = queue.Queue()
+    old_queue.put(audio_message)
+    old_queue.put(("__error__", "late upstream failure"))
+    new_queue.put(("__ready__", True))
+    mgr.tts_response_queue = old_queue
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.tts_ready = True
+    mgr._tts_replay_audio_emitted = False
+    mgr._last_tts_error_code = ""
+    mgr._tts_retry_notify_count = 0
+    observed = []
+    ready_seen = asyncio.Event()
+
+    async def send_speech(*_args, **_kwargs):
+        return True
+
+    def activate(_stage):
+        observed.append(mgr._tts_replay_audio_emitted)
+        mgr.tts_response_queue = new_queue
+        return True
+
+    async def flush_pending():
+        ready_seen.set()
+
+    mgr.send_speech = send_speech
+    mgr._confirm_pending_ai_voice_echo = lambda *_args: None
+    mgr._discard_pending_ai_voice_echo = lambda: None
+    mgr._activate_configured_tts_fallback = activate
+    mgr._flush_tts_pending_chunks = flush_pending
+
+    task = asyncio.create_task(LLMSessionManager.tts_response_handler(mgr))
+    await asyncio.wait_for(ready_seen.wait(), timeout=1)
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+
+    assert observed == [True]
 
 
 def test_configured_tts_failure_replays_ledger_after_current_speech_id_rotates(

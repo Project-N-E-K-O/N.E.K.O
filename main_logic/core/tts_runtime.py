@@ -155,6 +155,7 @@ class TtsRuntimeMixin:
         self._tts_replay_speech_id = None
         self._tts_replay_chunks = []
         self._tts_replay_done = False
+        self._tts_replay_audio_emitted = False
 
     def _remember_tts_replay_chunk(self, speech_id, text: str) -> None:
         """Retain one raw text chunk until the active utterance is replaced."""
@@ -554,6 +555,16 @@ class TtsRuntimeMixin:
             or getattr(self, "_tts_done_queued_for_turn", False)
             or getattr(self, "_tts_done_pending_until_ready", False)
         )
+        audio_emitted = bool(getattr(self, "_tts_replay_audio_emitted", False))
+        if audio_emitted:
+            # Once audio reached playback, replaying the whole ledger would repeat
+            # an audible prefix. The replacement is kept for subsequent speech.
+            # 已播放过音频时不重放整句，避免保底 provider 把已听到的前缀再念一遍。
+            replay_chunks = []
+            replay_done = bool(pending_chunks and replay_done)
+            logger.warning(
+                "自定义 TTS API 已输出部分音频，跳过当前句重放以避免重复播报"
+            )
 
         # Excluding one failed provider lets get_tts_worker reuse every existing
         # fallback rule below it; no fallback provider or priority is hardcoded.
@@ -1139,6 +1150,7 @@ class TtsRuntimeMixin:
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
+                        self._tts_replay_audio_emitted = True
                         self._confirm_pending_ai_voice_echo(speech_id)
                         # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
                         # note_core_loop_completed 的"用户已开口"前置，构成 D1
@@ -1156,7 +1168,8 @@ class TtsRuntimeMixin:
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
-                await self.send_speech(data)
+                if await self.send_speech(data):
+                    self._tts_replay_audio_emitted = True
                 self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")
