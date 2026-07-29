@@ -225,6 +225,21 @@ STAND_DOWN_CHECKS = {
 }
 
 
+def _region(source: str, opening: str, closing: str, where: str) -> str:
+    """Slice between two markers, refusing to degrade into "the rest of the file".
+
+    A missing marker makes ``find`` return -1, and ``source[start:-1]`` would then
+    hand every later ``in`` assertion nearly the whole file to match against: the
+    guard under test could be deleted outright and the case would stay green.
+    Anything this returns is bounded by markers that were actually found.
+    """
+    start = source.find(opening)
+    assert start != -1, f"{where}: `{opening}` is gone"
+    end = source.find(closing, start)
+    assert end != -1, f"{where}: `{closing}` no longer follows `{opening}`"
+    return source[start:end]
+
+
 def _run(script: str):
     node_path = shutil.which("node")
     if not node_path:
@@ -279,9 +294,7 @@ def test_each_flow_decides_takeovers_in_exactly_one_place():
     for path in START_FLOW_PATHS:
         source = path.read_text(encoding="utf-8")
         name = STAND_DOWN_CHECKS[path.name][0]
-        start = source.find(f"function {name}()")
-        assert start != -1, f"{path.name}: the stand-down check {name} has been renamed"
-        body = source[start:source.find("try {", start)]
+        body = _region(source, f"function {name}()", "try {", path.name)
         for signal in required:
             assert signal in body, (
                 f"{path.name}: {name} ignores `{signal}`, so a takeover it cannot see "
@@ -324,12 +337,9 @@ def test_the_mic_failure_cleanup_stands_down_before_ending_the_session():
     Mutation-verified: remove the stand-down call and this reddens.
     """
     source = (_STATIC_APP / "app-buttons.js").read_text(encoding="utf-8")
-    anchor = source.find("var micStartStillOurs")
-    assert anchor != -1, "the mic handler's failure cleanup has been rewritten"
-    end_session = source.find("action: 'end_session'", anchor)
-    assert end_session != -1, "expected the failure cleanup to send end_session"
-
-    guard_region = source[anchor:end_session]
+    guard_region = _region(
+        source, "var micStartStillOurs", "action: 'end_session'", "app-buttons.js"
+    )
     assert "micStartMustStandDown()" in guard_region, (
         "app-buttons.js: the mic start's failure cleanup reaches end_session without "
         "standing down first -- it would tear down the session of whoever took over.\n"
@@ -351,21 +361,18 @@ def test_the_automatic_restart_stands_down_at_every_resumption_point():
     predicate, and this reddens.
     """
     source = (_STATIC_APP / "app-websocket.js").read_text(encoding="utf-8")
-    helper = source.find("function restartMustStandDown()")
-    assert helper != -1, "the automatic restart's stand-down check has been renamed"
-    helper_body = source[helper:source.find("try {", helper)]
+    helper_body = _region(
+        source, "function restartMustStandDown()", "try {", "app-websocket.js"
+    )
     for signal in ("sessionStartSuperseded", "voiceStartEpochIsCurrent"):
         assert signal in helper_body, (
             f"app-websocket.js: the restart's stand-down check ignores {signal}, so a "
             f"takeover it cannot see reaches the microphone.\n{helper_body}"
         )
 
-    resumed = source.find("await sessionStartPromise;", helper)
-    assert resumed != -1, "the automatic restart no longer awaits its start promise"
-    opens_mic = source.find("window.startMicCapture()", resumed)
-    assert opens_mic != -1, "the automatic restart no longer opens the mic"
-
-    resumption = source[resumed:opens_mic]
+    resumption = _region(
+        source, "await sessionStartPromise;", "window.startMicCapture()", "app-websocket.js"
+    )
     assert resumption.count("restartMustStandDown()") >= 2, (
         "app-websocket.js: the automatic restart resumes twice before opening the "
         "microphone -- from its start promise and from showCurrentModel -- and must "
