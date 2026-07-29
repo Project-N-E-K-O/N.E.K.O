@@ -1004,9 +1004,11 @@ async def test_voice_mode_callback_image_rejection_before_inject_keeps_cb():
         _image_b64,
         *,
         bypass_rate_limit=False,
+        cache_latest=True,
         on_rejected=None,
     ):
         assert bypass_rate_limit is True
+        assert cache_latest is False
         assert on_rejected is not None
         on_rejected("callback image rejected")
 
@@ -1045,9 +1047,11 @@ async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
         _image_b64,
         *,
         bypass_rate_limit=False,
+        cache_latest=True,
         on_rejected=None,
     ):
         assert bypass_rate_limit is True
+        assert cache_latest is False
         assert on_rejected is not None
         image_rejections.append(on_rejected)
 
@@ -1092,9 +1096,11 @@ async def test_voice_mode_callback_image_rejection_after_ack_is_ignored():
         _image_b64,
         *,
         bypass_rate_limit=False,
+        cache_latest=True,
         on_rejected=None,
     ):
         assert bypass_rate_limit is True
+        assert cache_latest is False
         image_rejections.append(on_rejected)
 
     sess.stream_image = _stream_image
@@ -1136,9 +1142,11 @@ async def test_voice_mode_rejected_media_does_not_restore_superseded_callback():
         _image_b64,
         *,
         bypass_rate_limit=False,
+        cache_latest=True,
         on_rejected=None,
     ):
         assert bypass_rate_limit is True
+        assert cache_latest is False
         image_rejections.append(on_rejected)
 
     sess.stream_image = _stream_image

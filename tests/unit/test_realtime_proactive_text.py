@@ -344,7 +344,7 @@ async def test_server_vad_prompt_rotates_tts_sid_before_text_response():
 
 
 @pytest.mark.unit
-async def test_delayed_inject_rejection_returns_false_and_preserves_image():
+async def test_delayed_response_conflict_accounts_for_persisted_image():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
     client._proactive_image_consumed = False
@@ -362,7 +362,7 @@ async def test_delayed_inject_rejection_returns_false_and_preserves_image():
     delivered = await client.prompt_ephemeral("describe what you notice")
 
     assert delivered is False
-    assert client._proactive_image_consumed is False
+    assert client._proactive_image_consumed is True
     assert client._latest_image_b64 == DUMMY_IMAGE_B64
     await client.close()
 

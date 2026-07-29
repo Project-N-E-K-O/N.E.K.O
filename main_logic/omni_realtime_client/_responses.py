@@ -879,6 +879,18 @@ class _ResponseMixin:
             nonlocal delivery_rejected, rejection_message
             delivery_rejected = True
             rejection_message = error_msg
+            if (
+                not visual_delivery_rejected
+                and self._looks_like_response_conflict(error_msg)
+            ):
+                # A response-conflict rejection happens only after the arbiter
+                # has persisted every event preceding response.create,
+                # including this snapshot's native image or Step description.
+                # The competing response can already see that context, so do
+                # not offer it to the next scheduled proactive turn. Exact
+                # visual-event rejection still re-arms it via
+                # _on_visual_rejected instead.
+                _mark_snapshot_consumed_if_current()
             logger.warning("prompt_ephemeral: proactive text rejected: %s", error_msg)
             outcome_observed.set()
 

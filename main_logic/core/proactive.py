@@ -1577,12 +1577,12 @@ class ProactiveMixin:
 
         VOICE path only: OmniRealtimeClient.stream_image() persists the image
         as a conversation.item the immediately-following proactive
-        response.create sees (same-turn), and the realtime conversation is an
-        accumulating log (not a single-consume queue), so adding a proactive
-        image can't steal a user's pending frame. TEXT mode does NOT go through
-        here — its proactive images are passed explicitly to prompt_ephemeral()
-        (separate from the user's _pending_images staging queue); see
-        _deliver_agent_callbacks_text.
+        response.create sees (same-turn), but callback-owned media is excluded
+        from the ambient latest-frame cache. Otherwise a successfully delivered
+        callback image could be selected again by the next scheduled proactive
+        prompt. TEXT mode does NOT go through here — its proactive images are
+        passed explicitly to prompt_ephemeral() (separate from the user's
+        _pending_images staging queue); see _deliver_agent_callbacks_text.
 
         Media is LEFT on the cb (NOT popped) until the cb is delivered &
         pruned, so a deferred / failed-and-retried cb re-streams it instead of
@@ -1609,6 +1609,7 @@ class ProactiveMixin:
                     await si(
                         b64,
                         bypass_rate_limit=True,
+                        cache_latest=False,
                         on_rejected=on_rejected,
                     )
                     streamed += 1
