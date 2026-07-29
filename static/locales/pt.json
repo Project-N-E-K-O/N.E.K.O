@@ -1765,7 +1765,6 @@
         "close": "Fechar",
         "catgirlMemory": "Personagens",
         "compactLibraryLabel": "Lista de personagens",
-        "currentRole": "Personagem atual:",
         "autoReview": "Revisão automática de memória",
         "globalActionsAria": "Ações de memória",
         "openTutorialManager": "Guia",
@@ -1791,6 +1790,7 @@
         "autoReviewTooltipLabel": "Sobre a revisão automática de memória",
         "strongMemoryTooltipLabel": "Sobre a memória reforçada",
         "externalImportTooltipLabel": "Sobre a importação de memória externa",
+        "roleSourceTooltip": "Origem: {{source}}",
         "loading": "Carregando...",
         "externalImportTitle": "Importar memória externa",
         "externalImportNote": "Importe USER.md, SOUL.md, MEMORY.md, notas diárias ou um ZIP do OpenClaw ou Hermes para a personagem selecionada.",
@@ -1827,7 +1827,6 @@
         "olderSection": "Antes",
         "me": "Meu:",
         "memoNone": "Nenhum.",
-        "delete": "Excluir",
         "deleteEntryAria": "Excluir a memória {{position}} de {{speaker}}",
         "pleaseSelectFile": "Selecione um arquivo primeiro",
         "saveFailed": "Falha ao salvar: {{error}}",
@@ -2376,7 +2375,7 @@
             "never": "Não me lembre novamente"
         },
         "screenSource": {
-            "notAvailable": "Seleção de fonte de tela disponível apenas na versão desktop",
+            "notAvailable": "A seleção de fonte de tela não está disponível no ambiente atual",
             "loading": "Carregando...",
             "noSources": "Nenhuma fonte de tela disponível",
             "loadFailed": "Falha ao carregar fontes da tela",
@@ -2384,7 +2383,8 @@
             "screenLabel": "Tela {{index}}",
             "windows": "Windows",
             "selected": "Selecionado {{source}}",
-            "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia"
+            "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia",
+            "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente"
         },
         "deviceSwitchFailed": "Falha na troca de dispositivo",
         "deviceSwitching": "Dispositivo de comutação...",
@@ -2687,9 +2687,11 @@
             "visionInterval": "Intervalo de Percepção"
         },
         "widgetMode": {
-            "enabledNotice": "O Modo de encaixe na borda Beta está ativo.",
-            "disabledNotice": "O Modo de encaixe na borda Beta está desativado. O Live2D voltou ao encaixe normal nas bordas.",
-            "toggleFailed": "Não foi possível alternar o Modo de encaixe na borda Beta. Tente novamente mais tarde."
+            "enabledNotice": "Espiar pela borda está ativo.",
+            "disabledNotice": "Espiar pela borda está desativado. O Live2D voltou a ficar visível e arrastável.",
+            "stealthEnabledNotice": "O modo oculto está ativo.",
+            "stealthDisabledNotice": "O modo oculto está desativado. Yui continuará espiando pela borda.",
+            "toggleFailed": "Não foi possível alternar Espiar pela borda. Tente novamente mais tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupção",
@@ -2697,8 +2699,6 @@
             "avatarReactionBubble": "Bolha de Expressão",
             "focusCognition": "Modo de concentração",
             "focusCognitionTooltip": "Quando ativado, ela se concentra e pensa mais profundamente quando você desabafa ou pergunta algo complexo; desativado desliga a concentração.",
-            "widgetMode": "Modo de encaixe na borda Beta",
-            "widgetModeTooltip": "Ative manualmente o modo de encaixe para o Live2D espiar por seis âncoras da borda.",
             "slopFilter": "Expressão natural",
             "slopFilterTooltip": "Reduz formas de dizer repetitivas e estereotipadas nas respostas anteriores para que ela se expresse com mais naturalidade.",
             "autoCat": "Modo gato automático",

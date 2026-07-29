@@ -156,6 +156,7 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     wait_teardown = _js_function_block(source, "waitForAvatarDropVoiceTeardown")
     prepare_text_mode = _js_function_block(source, "prepareAvatarDropTextMode")
     send_payload = _js_function_block(source, "sendAvatarDropPayload")
+    send_text_internal = _js_function_block(source, "sendTextPayloadInternal")
     audio_capture_source = _read(APP_AUDIO_CAPTURE_PATH)
     stop_recording = _js_function_block(audio_capture_source, "stopRecording")
     app_websocket_source = _read(APP_WEBSOCKET_PATH)
@@ -186,6 +187,14 @@ def test_avatar_drop_payload_sends_full_prompt_but_records_memory_summary_only()
     assert "memoryText: displayText" in send_payload
     assert "memoryText: prompt" not in send_payload
     assert "extraImageDataUrls: imageDataUrls" in send_payload
+    normalize_extra_images = (
+        "extraImageDataUrls = await Promise.all(extraImageDataUrls.map(function (dataUrl)"
+    )
+    assert normalize_extra_images in send_text_internal
+    assert "return mod.normalizeImageDataUrlForPendingList(dataUrl);" in send_text_internal
+    assert send_text_internal.index(normalize_extra_images) < send_text_internal.index(
+        "var optimisticImageUrls"
+    )
     assert "input_type: 'avatar_drop_image',\n                                request_id: requestId" in source
     assert "var messageSource = typeof options.source === 'string' ? options.source.trim() : '';" in source
     assert "extraMessage.source = messageSource" in source

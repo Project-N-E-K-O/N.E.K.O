@@ -32,6 +32,8 @@
     const MUSIC_PLAY_URL_CLAIM_CLEANUP_MS = 60000;
     const MUSIC_PLAY_URL_COORD_CHANNEL_NAME = 'neko_music_play_url_coord';
     const MUSIC_PLAY_URL_COORD_STORAGE_KEY = 'neko_music_play_url_coord';
+    const CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS = 250;
+    const CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS = 40;
     let _pendingUserActivityCancelTimer = 0;
     let _pendingUserActivityCancelTurnId = null;
     let _lanlanNameWaitAttempts = 0;
@@ -56,6 +58,44 @@
     function textSendButton()     { return $id('textSendButton'); }
     function screenshotButton()   { return $id('screenshotButton'); }
     function chatContainer()      { return $id('chatContainer'); }
+
+    function resolveDesktopCaptureProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
+    function announceCaptureBridgeStatus(socket) {
+        if (!socket || socket !== S.socket || socket.readyState !== WebSocket.OPEN) {
+            return true;
+        }
+        try {
+            var dc = resolveDesktopCaptureProvider();
+            var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
+            socket.send(JSON.stringify({
+                action: 'capture_bridge_status',
+                available: available,
+                capabilities: {
+                    getSources: !!(dc && dc.getSources),
+                    captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
+                    captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
+                }
+            }));
+            return available;
+        } catch (_) {
+            return false;
+        }
+    }
+
+    function reannounceCaptureBridgeWhenReady(socket, attempt) {
+        if (attempt >= CAPTURE_BRIDGE_REANNOUNCE_MAX_ATTEMPTS) return;
+        setTimeout(function () {
+            if (!socket || socket !== S.socket || socket.readyState !== WebSocket.OPEN) return;
+            if (!announceCaptureBridgeStatus(socket)) {
+                reannounceCaptureBridgeWhenReady(socket, attempt + 1);
+            }
+        }, CAPTURE_BRIDGE_REANNOUNCE_INTERVAL_MS);
+    }
 
     function isGoodbyeUiSuppressed() {
         try {
@@ -647,6 +687,17 @@
         return String(turnId);
     }
 
+    function resolveAssistantRequestId(requestId, responseMeta) {
+        var meta = responseMeta && typeof responseMeta === 'object' ? responseMeta : {};
+        return normalizeAssistantTurnId(
+            requestId
+            || meta.request_id
+            || meta.requestId
+            || meta.interaction_id
+            || meta.interactionId
+        );
+    }
+
     function allocateAssistantTurnId(serverTurnId) {
         var normalized = normalizeAssistantTurnId(serverTurnId);
         if (normalized) {
@@ -991,7 +1042,7 @@
         })();
     }
 
-    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta) {
+    function ensureAssistantTurnStarted(source, serverTurnId, responseMeta, requestId) {
         if (S.assistantTurnId) {
             window._nekoAssistantTurnId = S.assistantTurnId;
             clearPendingAssistantTurnStart();
@@ -1016,6 +1067,7 @@
         clearPendingAssistantTurnStart();
         emitAssistantLifecycleEvent('neko-assistant-turn-start', {
             turnId: S.assistantTurnId,
+            requestId: resolveAssistantRequestId(requestId, responseMeta),
             source: source || 'visible_gemini_bubble',
             meta: responseMeta
         });
@@ -1126,6 +1178,11 @@
     function clearAssistantLifecycleOnDisconnect(source) {
         clearPendingUserActivityCancel();
         emitAssistantSpeechCancel(source || 'socket_close');
+        try {
+            window.dispatchEvent(new CustomEvent('neko:websocket-disconnected', {
+                detail: { source: source || 'socket_close' }
+            }));
+        } catch (_) {}
         S.assistantSpeechActiveTurnId = null;
         S.assistantTurnId = null;
         window._nekoAssistantTurnId = null;
@@ -1438,30 +1495,18 @@
             }).catch(function () { });
 
             // Capture bridge: tell the backend whether this renderer can
-            // service window-level captures via Electron's desktopCapturer.
+            // service window-level captures through the active desktop host.
             // The backend uses this to fail /api/capture/health fast when
-            // no Electron renderer is available (e.g. running in a plain
+            // no desktop renderer is available (e.g. running in a plain
             // browser tab), which matters for the galgame OCR fallback path
             // on Linux pure-Wayland where MSS / PyAutoGUI can't see other
             // windows.
-            // Note: intentionally broadcast for all renderers; non-Electron
+            // Note: intentionally broadcast for all renderers; non-desktop
             // environments send available=false and the backend ignores them.
-            try {
-                var dc = window.electronDesktopCapturer;
-                var available = !!(dc && dc.getSources && dc.captureSourceAsDataUrl);
-                if (_thisSocket && _thisSocket.readyState === WebSocket.OPEN) {
-                    _thisSocket.send(JSON.stringify({
-                        action: 'capture_bridge_status',
-                        available: available,
-                        capabilities: {
-                            getSources: !!(dc && dc.getSources),
-                            captureSourceAsDataUrl: !!(dc && dc.captureSourceAsDataUrl),
-                            captureSourceWithoutNeko: !!(dc && dc.captureSourceWithoutNeko)
-                        }
-                    }));
-                }
-            } catch (_capErr) {
-                // capture bridge is best-effort; never block the rest of onopen
+            if (!announceCaptureBridgeStatus(_thisSocket)) {
+                // Tauri injects its bridge after navigation. Re-announce for a
+                // bounded window so a late bridge does not require reconnecting.
+                reannounceCaptureBridgeWhenReady(_thisSocket, 0);
             }
 
             // Start heartbeat
@@ -1647,7 +1692,8 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var createdVisibleBubble = false;
@@ -1667,7 +1713,8 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     if (response.turn_id) {
@@ -1688,6 +1735,16 @@
                             willRetry: !!response.will_retry
                         });
                         return;
+                    }
+                    if (!response.will_retry) {
+                        try {
+                            window.dispatchEvent(new CustomEvent('neko:assistant-response-cancelled', {
+                                detail: {
+                                    reason: response.reason || 'response-discarded',
+                                    requestId: resolveAssistantRequestId(response.request_id, response.meta)
+                                }
+                            }));
+                        } catch (_) {}
                     }
                     emitAssistantSpeechCancel('response_discarded');
                     S.assistantTurnId = null;
@@ -1860,6 +1917,15 @@
 
                 // -------- user_transcript --------
                 } else if (response.type === 'user_transcript') {
+                    var normalizedVoiceTranscript = String(response.text || '').trim();
+                    if (normalizedVoiceTranscript) {
+                        window.dispatchEvent(new CustomEvent('neko:user-voice-content-received', {
+                            detail: {
+                                requestId: resolveAssistantRequestId(response.request_id, response.meta),
+                                source: 'voice'
+                            }
+                        }));
+                    }
                     // 语音转写也属于用户首次输入；这里只标记，成就仍等 AI 首次可见回复时触发
                     if (window.appChat && typeof window.appChat.isFirstUserInput === 'function' && window.appChat.isFirstUserInput()) {
                         window.appChat.markFirstUserInput();
@@ -1930,7 +1996,8 @@
                         ensureAssistantTurnStarted(
                             'audio_chunk_header_fallback',
                             response.turn_id,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var speechId = response.speech_id;
@@ -2561,7 +2628,7 @@
                             return (typeof result.dataUrl === 'string' && result.dataUrl) ? result.dataUrl : null;
                         };
                         try {
-                            var dc = window.electronDesktopCapturer;
+                            var dc = resolveDesktopCaptureProvider();
                             if (!dc || !dc.getSources) {
                                 sendResp({ success: false, error: 'unavailable' });
                                 return;
@@ -2625,7 +2692,11 @@
                             var captureResult = null;
                             if (typeof dc.captureSourceWithoutNeko === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceWithoutNeko(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceWithoutNeko',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_woNekoErr) {
                                     dataUrl = null;
@@ -2633,7 +2704,11 @@
                             }
                             if (!dataUrl && typeof dc.captureSourceAsDataUrl === 'function') {
                                 try {
-                                    captureResult = await dc.captureSourceAsDataUrl(matched.id);
+                                    captureResult = await window.captureDesktopSourceWithTimeout(
+                                        dc,
+                                        'captureSourceAsDataUrl',
+                                        matched.id
+                                    );
                                     dataUrl = normalizeCaptureBridgeImage(captureResult);
                                 } catch (_dataUrlErr) {
                                     dataUrl = null;
@@ -2706,7 +2781,8 @@
                         ensureAssistantTurnStarted(
                             'turn_end_agent_callback_fallback',
                             undefined,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var agentCallbackTurnId = resolveAssistantLifecycleTurnId();
@@ -2716,6 +2792,7 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: agentCallbackTurnId,
+                            requestId: resolveAssistantRequestId(response.request_id, response.meta),
                             source: 'turn_end_agent_callback',
                             meta: response.meta
                         });
@@ -2751,7 +2828,8 @@
                         ensureAssistantTurnStarted(
                             'turn_end_fallback',
                             undefined,
-                            response.meta
+                            response.meta,
+                            response.request_id
                         );
                     }
                     var assistantTurnId = resolveAssistantLifecycleTurnId();
@@ -2761,6 +2839,7 @@
                         });
                         emitAssistantLifecycleEvent('neko-assistant-turn-end', {
                             turnId: assistantTurnId,
+                            requestId: resolveAssistantRequestId(response.request_id, response.meta),
                             source: 'turn_end',
                             meta: response.meta
                         });

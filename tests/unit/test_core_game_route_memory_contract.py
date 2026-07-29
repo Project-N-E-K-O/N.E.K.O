@@ -200,6 +200,11 @@ def _make_manager():
             "metadata": metadata,
             "request_id": _kwargs.get("request_id"),
         })
+        # 真实实现在 track_ai_turn 为真时同步累加 AI turn buffer（turn end 时
+        # 交给 activity tracker）。stub 不照做的话，凡是断言 buffer 内容的用例
+        # 都会对"send 到底 track 了没有"失明。
+        if _kwargs.get("track_ai_turn", True):
+            mgr._current_ai_turn_text += text
 
     async def ensure_tts_pipeline_alive():
         return None
@@ -1091,6 +1096,207 @@ async def test_openclaw_magic_command_falls_back_when_openclaw_not_ready(monkeyp
 
     mgr._fire_task.assert_not_called()
     mgr.session.stream_text.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_text_stream_discard_callback_keeps_original_request_owner(monkeypatch):
+    """A late discard from request A must not clear request B's frontend output."""
+    mgr = _make_transcript_manager()
+    mgr.session = object.__new__(core_module.OmniOfflineClient)
+    mgr.session._pending_images = []
+    mgr.session.update_max_response_length = Mock()
+    mgr.session.stream_text = AsyncMock()
+    mgr.is_active = True
+    mgr._starting_session_count = 0
+    mgr._session_start_circuit_open = False
+    mgr._emit_cooldown_turn_end_if_needed = Mock(return_value=False)
+    mgr._is_agent_enabled = Mock(return_value=False)
+    mgr.agent_flags = {}
+    mgr.pending_agent_callbacks = []
+    mgr._fire_task = Mock()
+    monkeypatch.setattr(core_module, "dispatch_text_user_message", lambda name, text: None)
+
+    await core_module.LLMSessionManager._process_stream_data_internal(
+        mgr,
+        {"input_type": "text", "data": "request A", "request_id": "req-A"},
+    )
+
+    discard_callback = mgr.session.stream_text.await_args.kwargs["response_discarded_callback"]
+    mgr._active_text_request_id = "req-B"
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr._clear_tts_pipeline = AsyncMock()
+
+    await discard_callback("guard", 1, 3, False, None)
+
+    assert mgr.websocket.sent == []
+    assert mgr._active_text_request_id == "req-B"
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    assert {
+        "type": "system",
+        "data": "response_discarded_clear",
+    } not in mgr.sync_message_queue.messages
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_truncated_recovery_does_not_mutate_newer_request_state():
+    """Request A's late recovery must not emit or consume request B's turn state.
+
+    Session-level wrap-up is deliberately NOT behind that ownership gate: A's turn
+    really did end, and skipping its archive/prewarm accounting is exactly what
+    re-opens the "context grows -> keeps truncating and recovering" loop.
+    """
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = ["request-B-history"]
+    mgr._active_text_request_id = "req-B"
+    mgr.current_speech_id = "speech-B"
+    mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"stale response A"}',
+        request_id="req-A",
+    )
+
+    assert mgr._active_text_request_id == "req-B"
+    assert mgr.current_speech_id == "speech-B"
+    assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
+    assert mgr.session._conversation_history == ["request-B-history"]
+    assert mgr.sent_responses == []
+    mgr._clear_tts_pipeline.assert_not_awaited()
+    mgr._emit_turn_end.assert_not_awaited()
+    assert mgr.websocket.sent == []
+    # Shared-output writes are suppressed, session accounting still runs.
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_truncated_recovery_stops_when_new_request_starts_during_ui_send():
+    """Request A must re-check ownership after yielding to its recovery UI send.
+
+    Losing ownership mid-sequence stops the remaining shared-output steps, but the
+    session-level wrap-up still runs — see the sibling stale-recovery test.
+    """
+    mgr = _make_manager()
+    mgr.websocket = _FakeConnectedWebSocket()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = ["history-before-A"]
+    mgr._active_text_request_id = "req-A"
+    mgr.current_speech_id = "speech-A"
+    mgr._pending_turn_meta = {"kind": "text", "request_id": "req-A"}
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    async def send_recovery_then_start_request_b(
+        text,
+        is_first_chunk=False,
+        turn_id=None,
+        metadata=None,
+        **kwargs,
+    ):
+        mgr.sent_responses.append({
+            "text": text,
+            "is_first_chunk": is_first_chunk,
+            "turn_id": turn_id,
+            "metadata": metadata,
+            "request_id": kwargs.get("request_id"),
+        })
+        mgr._active_text_request_id = "req-B"
+        mgr.current_speech_id = "speech-B"
+        mgr._pending_turn_meta = {"kind": "text", "request_id": "req-B"}
+        mgr.session._conversation_history.append("request-B-history")
+
+    mgr.send_lanlan_response = send_recovery_then_start_request_b
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovery response A"}',
+        request_id="req-A",
+    )
+
+    assert mgr._active_text_request_id == "req-B"
+    assert mgr.current_speech_id == "speech-B"
+    assert mgr._pending_turn_meta == {"kind": "text", "request_id": "req-B"}
+    assert mgr.session._conversation_history == [
+        "history-before-A",
+        "request-B-history",
+    ]
+    assert mgr.sent_responses == [{
+        "text": "recovery response A",
+        "is_first_chunk": True,
+        "turn_id": "speech-A",
+        "metadata": None,
+        "request_id": "req-A",
+    }]
+    mgr._emit_turn_end.assert_not_awaited()
+    # Shared-output writes stop at the ownership loss, session accounting still runs.
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_owned_truncated_recovery_still_finalizes_when_owner_stays_current():
+    """Dynamic ownership checks must not suppress A's normal turn finalization."""
+    mgr = _make_manager()
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovery response A"}',
+        request_id="req-A",
+    )
+
+    mgr._emit_turn_end.assert_awaited_once_with("req-A")
+    mgr._finalize_turn_after_emit.assert_awaited_once()
+    assert mgr._active_text_request_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unowned_discard_callback_keeps_global_clear_behavior():
+    """Legacy/proactive discard callbacks still clear shared output globally."""
+    mgr = _make_manager()
+    mgr._active_text_request_id = "req-current"
+    mgr._clear_tts_pipeline = AsyncMock()
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        1,
+        3,
+        True,
+    )
+
+    mgr._clear_tts_pipeline.assert_awaited_once()
+    assert {
+        "type": "system",
+        "data": "response_discarded_clear",
+    } in mgr.sync_message_queue.messages
 
 
 @pytest.mark.unit
@@ -2137,3 +2343,95 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
     assert mgr._current_ai_turn_text == ""
     assert mgr.tts_pending_chunks == []
     assert mgr.sync_message_queue.messages == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_discarded_retry_drops_stream_text_from_activity_buffer():
+    """A discarded reply must not stay queued for the tracker across the retry."""
+    mgr = _make_manager()
+    # 流式阶段每个 chunk 都走 send_lanlan_response，默认 track_ai_turn=True，
+    # 所以被丢弃的那版正文此刻还躺在 buffer 里。
+    mgr._current_ai_turn_text = "discarded stream body"
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        1,
+        3,
+        True,
+    )
+
+    assert mgr._current_ai_turn_text == ""
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_truncated_recovery_flushes_only_recovery_body_to_tracker():
+    """Turn end must see the recovery body alone, not the discarded draft too."""
+    mgr = _make_manager()
+    mgr._current_ai_turn_text = "discarded stream body"
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._finalize_turn_after_emit = AsyncMock()
+
+    # fixture 的 send_lanlan_response stub 已经照真实实现按 track_ai_turn 累加；
+    # recovery 路径显式传 track_ai_turn=False，改由 _track_recovery_ai_turn_text
+    # 在 turn end 前一步补记。
+    #
+    # _flush_ai_turn_text_to_tracker 由 _emit_turn_end 调用，捕获调用当刻的 buffer。
+    buffer_at_turn_end = []
+
+    async def capture_emit(request_id):
+        buffer_at_turn_end.append(mgr._current_ai_turn_text)
+
+    mgr._emit_turn_end = capture_emit
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovered body"}',
+    )
+
+    assert buffer_at_turn_end == ["recovered body"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_losing_ownership_mid_tts_leaves_no_tracker_text_for_b():
+    """A's recovery body must not survive into B's tracker turn.
+
+    Ownership can be lost inside any recovery step's await. The AI-turn text is
+    therefore recorded in a synchronous step right before turn end, so an earlier
+    break leaves the shared buffer untouched.
+    """
+    mgr = _make_manager()
+    mgr.use_tts = True
+    mgr.session = MagicMock()
+    mgr.session._conversation_history = []
+    mgr._active_text_request_id = "req-A"
+    mgr._clear_tts_pipeline = AsyncMock()
+    mgr._emit_turn_end = AsyncMock()
+    mgr._finalize_turn_after_emit = AsyncMock()
+    mgr._request_tts_done_for_turn = AsyncMock()
+
+    async def feed_then_start_request_b(text, expected_speech_id=None):
+        mgr._active_text_request_id = "req-B"
+
+    mgr.feed_tts_chunk = feed_then_start_request_b
+
+    await core_module.LLMSessionManager.handle_response_discarded(
+        mgr,
+        "guard",
+        3,
+        3,
+        False,
+        '{"code":"RESPONSE_LENGTH_TRUNCATED","text":"recovered body"}',
+        request_id="req-A",
+    )
+
+    assert mgr._current_ai_turn_text == ""
+    mgr._emit_turn_end.assert_not_awaited()

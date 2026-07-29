@@ -251,6 +251,9 @@ test('avatar floating reset toasts resolve through i18n keys', () => {
 });
 
 test('Day1 return control cursor moves to the capsule primary target before the operation runs', () => {
+  const returnControlSceneBlock = getSceneBlock(day1Source, 'day1_takeover_return_control');
+
+  assert.match(returnControlSceneBlock, /preserveExternalizedChatGuideTarget:\s*true/);
   assert.match(sceneOrchestratorSource, /await director\.moveAvatarFloatingCursor\(scene,\s*cursorTarget \|\| primaryTarget,\s*secondaryTarget,\s*previousSceneId/);
   assert.match(sceneOrchestratorSource, /externalizedSceneTargetKind && scene\.cursorAction === 'move'[\s\S]*await director\.waitForExternalizedChatCursorMove/);
   assert.match(directorSource, /if \(sceneId === 'day1_takeover_return_control'\) \{[\s\S]*this\.getAvatarFloatingSceneCursorAnchor\('day1_takeover_capture_cursor'\)/);

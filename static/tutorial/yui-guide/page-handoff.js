@@ -40,7 +40,7 @@
 
         if (typeof window.handleShowMainUI === 'function') {
             try {
-                window.handleShowMainUI();
+                window.handleShowMainUI({ owner: 'yui-page-handoff' });
             } catch (_) {}
         }
     }
@@ -97,12 +97,14 @@
         }
         window._openedWindows[fullName] = childWin;
 
-        try {
-            childWin.focus();
-        } catch (_) {}
+        if (!isModelManagerPageUrl(targetUrl)) {
+            try {
+                childWin.focus();
+            } catch (_) {}
+        }
 
         if (!normalizedOptions.keepMainUIVisible && typeof window.handleHideMainUI === 'function') {
-            window.handleHideMainUI();
+            window.handleHideMainUI({ owner: 'yui-page-handoff' });
         }
 
         return Promise.resolve(childWin);
@@ -859,7 +861,8 @@
 
     function isModelManagerPageUrl(openUrl) {
         try {
-            return new URL(openUrl, window.location.origin).pathname === '/model_manager';
+            var pathname = new URL(openUrl, window.location.origin).pathname;
+            return pathname === '/model_manager' || pathname === '/l2d';
         } catch (_) {
             return false;
         }
