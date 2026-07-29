@@ -618,6 +618,9 @@ class QQSessionMemoryService:
         snapshot: dict[str, list] = {}
         snapshot_labels: dict[str, str] = {}
         flush_target: dict[str, Any] = {}
+        # 会话在飞行期间没了、但授权还在时，把最后一次重试排到锁外——
+        # 会话已经不存在，在锁内发 30s 的请求只会挡住同 key 的新会话。
+        orphan_retry: dict[str, Any] = {}
 
         async def _take_snapshot() -> bool:
             user_data = self.plugin._user_sessions.get(session_key)
@@ -687,6 +690,18 @@ class QQSessionMemoryService:
                 if isinstance(held, dict):
                     stranded = len(held.get("group_member_memory_messages") or {})
                     self._finish_member_flush_generation(held)
+                if snapshot and (
+                    getattr(self.plugin, "_qq_settings", {}) or {}
+                ).get("group_member_memory_enabled", False) and (
+                    getattr(self.plugin, "_qq_settings", {}) or {}
+                ).get("group_memory_enabled", False):
+                    # 开关都还开着 = 会话不是被 opt-out 撤掉的，这些桶仍是
+                    # 已授权且唯一的副本。排在锁外再试一次：改前会话锁挡着
+                    # 结算，紧随其后的 finalize 总会替它们重试一次，本 PR
+                    # 拆锁之后没人接手了。opt-out 撤的场景照旧丢弃（fail
+                    # closed），不在这里复活。
+                    orphan_retry["snapshot"] = dict(snapshot)
+                    orphan_retry["labels"] = dict(snapshot_labels)
                 if snapshot or stranded:
                     replaced = "并已被新会话顶替" if user_data is not None else ""
                     self.plugin.logger.error(
@@ -772,6 +787,28 @@ class QQSessionMemoryService:
             await self.plugin._run_with_session_lock(
                 session_key, _return_snapshot,
             )
+            if orphan_retry.get("snapshot"):
+                try:
+                    await self._flush_member_buckets(
+                        flush_target["user_data"],
+                        group_id=flush_target["group_id"],
+                        her_name=flush_target["her_name"],
+                        reason="member_bucket_orphan_retry",
+                        buckets=orphan_retry["snapshot"],
+                        labels=orphan_retry["labels"],
+                    )
+                except Exception as exc:
+                    self.plugin.logger.error(
+                        f"[member_bucket_orphan_retry] 群 "
+                        f"{flush_target.get('group_id')} 末次重试失败: {exc}"
+                    )
+                left = len(orphan_retry["snapshot"])
+                if left:
+                    self.plugin.logger.error(
+                        f"[member_bucket_orphan_retry] 群 "
+                        f"{flush_target.get('group_id')} 末次重试后仍有 "
+                        f"{left} 个成员队列未能入库，就此丢失"
+                    )
 
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,

@@ -104,7 +104,10 @@ async def test_silent_turn_never_caches_unauthorized_private_history():
 
 
 def _group_drain_harness(post_scoped):
-    """The smallest group session that can really run the drain."""
+    """The smallest group session that can really run the drain.
+
+    ``post_scoped`` may be None when the caller rebinds
+    ``plugin.memory_bridge.post_scoped_memory_history`` itself."""
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -969,3 +972,54 @@ async def test_a_single_drain_never_exceeds_one_participant_quota():
     # 剩下的还在队列里，并且已经重新举起 due 标等下一轮。
     assert len(user_data["group_member_memory_messages"]) == quota
     assert user_data.get("member_flush_due") is True
+
+
+@pytest.mark.asyncio
+async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
+    """Losing the session must not skip the retry the old code gave.
+
+    Before the lock was released, teardown queued behind the drain and the
+    finalize that followed retried its failed buckets once. With the lock
+    gone nobody picks them up, so the drain retries them itself — outside
+    the session lock, since a same-key replacement must not wait on it.
+    """
+    attempts: list[str] = []
+    lock_holders: list[str] = []
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    service, plugin, user_data, _locks = _group_drain_harness(None)
+    original_lock = plugin._run_with_session_lock
+
+    async def _tracking_lock(session_key, coro_factory):
+        lock_holders.append("held")
+        try:
+            return await original_lock(session_key, coro_factory)
+        finally:
+            lock_holders.pop()
+
+    plugin._run_with_session_lock = _tracking_lock
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        attempts.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        if len(attempts) == 1:
+            in_flight.set()
+            await released.wait()
+            return {"status": "error", "message": "memory server hiccup"}
+        # 末次重试必须在锁外发：会话已经没了，占着这把锁只会挡住同 key
+        # 建起来的新会话。
+        assert not lock_holders, "末次重试是在会话锁里发的"
+        return {"status": "ok"}
+
+    plugin.memory_bridge.post_scoped_memory_history = _post_scoped
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    # 结算把会话弹掉了，而两个开关都还开着（不是 opt-out）。
+    plugin._user_sessions.pop("group:7788")
+    released.set()
+    await asyncio.wait_for(drain, timeout=3.0)
+
+    assert attempts == ["qq:7788:2046", "qq:7788:2046"], (
+        "会话没了但授权还在，失败的桶应当再试一次"
+    )
