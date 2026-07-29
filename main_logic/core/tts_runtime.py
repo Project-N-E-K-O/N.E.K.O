@@ -154,8 +154,10 @@ class TtsRuntimeMixin:
         """Forget text retained for configured-provider runtime recovery."""
         self._tts_replay_speech_id = None
         self._tts_replay_chunks = []
+        self._tts_replay_sent_chunks = []
         self._tts_replay_done = False
         self._tts_replay_audio_emitted = False
+        self._tts_replay_sentence_audio_emitted = False
 
     def _remember_tts_replay_chunk(self, speech_id, text: str) -> None:
         """Retain one raw text chunk until the active utterance is replaced."""
@@ -164,6 +166,29 @@ class TtsRuntimeMixin:
             self._tts_replay_speech_id = speech_id
         if text:
             self._tts_replay_chunks.append((speech_id, text))
+
+    def _remember_tts_sent_chunk(self, speech_id, text: str) -> None:
+        """Retain text actually submitted to a sentence-aware worker."""
+        if speech_id == getattr(self, "_tts_replay_speech_id", None) and text:
+            self._tts_replay_sent_chunks.append((speech_id, text))
+
+    def _consume_tts_replay_sentence(self, speech_id, sentence: str) -> None:
+        """Remove one confirmed audible sentence from the fallback suffix."""
+        if speech_id != getattr(self, "_tts_replay_speech_id", None) or not sentence:
+            return
+        remaining = "".join(
+            text
+            for sid, text in getattr(self, "_tts_replay_sent_chunks", ())
+            if sid == speech_id
+        )
+        if not remaining.startswith(sentence):
+            # 边界不一致时宁可保留文本，也不能误删尚未播出的内容。
+            logger.warning("TTS 回放句界不匹配，保留现有未确认文本")
+            return
+        remaining = remaining[len(sentence):]
+        self._tts_replay_sent_chunks = (
+            [(speech_id, remaining)] if remaining else []
+        )
 
     def _enqueue_tts_text_chunk(self, speech_id, text: str) -> None:
         """Enqueue a text chunk into the TTS queue; http_sentence-class providers go through the normalizer.
@@ -201,6 +226,7 @@ class TtsRuntimeMixin:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
+        self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)
 
     def _reset_tts_stream_normalizer(self) -> None:
@@ -241,6 +267,7 @@ class TtsRuntimeMixin:
         self._tts_bracket_stripper.flush()
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
+            self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
             self._remember_pending_ai_voice_echo(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
@@ -506,6 +533,9 @@ class TtsRuntimeMixin:
         # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
         meta = TTS_PROVIDER_REGISTRY.get(provider_key) if provider_key else None
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
+        self._tts_replay_progress_supported = bool(
+            meta and meta.category == "http_sentence"
+        )
 
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
@@ -557,14 +587,25 @@ class TtsRuntimeMixin:
         )
         audio_emitted = bool(getattr(self, "_tts_replay_audio_emitted", False))
         if audio_emitted:
-            # Once audio reached playback, replaying the whole ledger would repeat
-            # an audible prefix. The replacement is kept for subsequent speech.
-            # 已播放过音频时不重放整句，避免保底 provider 把已听到的前缀再念一遍。
-            replay_chunks = []
-            replay_done = bool(pending_chunks and replay_done)
-            logger.warning(
-                "自定义 TTS API 已输出部分音频，跳过当前句重放以避免重复播报"
-            )
+            if getattr(self, "_tts_replay_progress_supported", False):
+                # HTTP 分句 worker 会逐句确认进度：已播句从该账本删除，失败句若
+                # 已输出部分音频也只跳过本句，后续完整句仍交给保底 provider。
+                replay_chunks = [
+                    item
+                    for item in getattr(self, "_tts_replay_sent_chunks", ())
+                    if active_speech_id is None or item[0] == active_speech_id
+                ]
+                replay_done = bool((replay_chunks or pending_chunks) and replay_done)
+                logger.warning(
+                    "自定义 TTS API 已输出部分音频，仅重放未确认的后续文本"
+                )
+            else:
+                # WS 双流协议没有文本到音频位置确认，不能安全推导精确后缀。
+                replay_chunks = []
+                replay_done = bool(pending_chunks and replay_done)
+                logger.warning(
+                    "自定义 TTS API 已输出部分音频，跳过当前句重放以避免重复播报"
+                )
 
         # Excluding one failed provider lets get_tts_worker reuse every existing
         # fallback rule below it; no fallback provider or priority is hardcoded.
@@ -572,6 +613,9 @@ class TtsRuntimeMixin:
         self._tts_excluded_provider_keys = excluded | {failed_provider}
         if _core_facade.tts_provider_uses_configured_preset_voice(failed_provider):
             self._tts_fallback_uses_default_voice = True
+        # 替代 worker 不继承故障 provider 的错误码和提示次数。
+        self._last_tts_error_code = ''
+        self._tts_retry_notify_count = 0
         old_request_queue = self.tts_request_queue
         try:
             old_request_queue.put(("__shutdown__", None))
@@ -1001,6 +1045,21 @@ class TtsRuntimeMixin:
                 if isinstance(data, tuple) and len(data) == 2 and data[0] == "__handler_exit__":
                     continue
 
+                if (
+                    isinstance(data, tuple)
+                    and len(data) == 3
+                    and data[0] in {"__tts_sentence_done__", "__tts_sentence_failed__"}
+                ):
+                    _, speech_id, sentence = data
+                    if speech_id == getattr(self, "_tts_replay_speech_id", None):
+                        # marker 排在该句所有音频之后；只有音频实际送达前端才推进边界。
+                        # 失败句若已播放过前缀也整体跳过，避免 fallback 从句首重念；
+                        # 其后的未确认句仍保留在账本中。
+                        if getattr(self, "_tts_replay_sentence_audio_emitted", False):
+                            self._consume_tts_replay_sentence(speech_id, str(sentence))
+                        self._tts_replay_sentence_audio_emitted = False
+                    continue
+
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
@@ -1166,6 +1225,7 @@ class TtsRuntimeMixin:
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
                         self._tts_replay_audio_emitted = True
+                        self._tts_replay_sentence_audio_emitted = True
                         self._confirm_pending_ai_voice_echo(speech_id)
                         # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
                         # note_core_loop_completed 的"用户已开口"前置，构成 D1
@@ -1185,6 +1245,7 @@ class TtsRuntimeMixin:
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
                 if await self.send_speech(data):
                     self._tts_replay_audio_emitted = True
+                    self._tts_replay_sentence_audio_emitted = True
                 self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")

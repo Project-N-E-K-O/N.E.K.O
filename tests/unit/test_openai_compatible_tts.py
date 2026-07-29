@@ -546,6 +546,8 @@ def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch)
     mgr._tts_done_queued_for_turn = True
     mgr._tts_done_pending_until_ready = False
     mgr._tts_fallback_uses_default_voice = False
+    mgr._last_tts_error_code = "API_KEY_REJECTED"
+    mgr._tts_retry_notify_count = 2
     mgr._reset_tts_stream_normalizer = lambda: None
     starts = []
     warnings = []
@@ -573,6 +575,8 @@ def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch)
     ]
     assert mgr._tts_done_queued_for_turn is False
     assert mgr._tts_done_pending_until_ready is True
+    assert mgr._last_tts_error_code == ""
+    assert mgr._tts_retry_notify_count == 0
     assert LLMSessionManager._effective_tts_route(mgr) == ("", False)
     assert any("fallback_provider=qwen" in message for message in warnings)
 
@@ -588,6 +592,7 @@ def test_fallback_skips_complete_replay_after_audio_reached_playback(monkeypatch
     mgr._tts_replay_chunks = [("speech-1", "already heard")]
     mgr._tts_replay_done = True
     mgr._tts_replay_audio_emitted = True
+    mgr._tts_replay_progress_supported = False
     mgr._tts_done_queued_for_turn = True
     mgr._tts_done_pending_until_ready = False
     mgr._tts_fallback_uses_default_voice = False
@@ -603,6 +608,54 @@ def test_fallback_skips_complete_replay_after_audio_reached_playback(monkeypatch
     assert LLMSessionManager._activate_configured_tts_fallback(mgr, "运行时") is True
     assert mgr.tts_pending_chunks == []
     assert mgr._tts_done_pending_until_ready is False
+
+
+def test_http_fallback_replays_only_unconfirmed_sentence_suffix(monkeypatch):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._tts_active_provider_key = "custom"
+    mgr._tts_excluded_provider_keys = frozenset()
+    mgr.tts_request_queue = queue.Queue()
+    mgr.current_speech_id = "speech-1"
+    mgr.tts_pending_chunks = []
+    mgr._tts_replay_speech_id = "speech-1"
+    mgr._tts_replay_chunks = [("speech-1", "heard.unheard suffix.")]
+    mgr._tts_replay_sent_chunks = [("speech-1", "unheard suffix.")]
+    mgr._tts_replay_done = True
+    mgr._tts_replay_audio_emitted = True
+    mgr._tts_replay_sentence_audio_emitted = False
+    mgr._tts_replay_progress_supported = True
+    mgr._tts_done_queued_for_turn = True
+    mgr._tts_done_pending_until_ready = False
+    mgr._tts_fallback_uses_default_voice = False
+    mgr._last_tts_error_code = "TTS_CONNECTION_FAILED"
+    mgr._tts_retry_notify_count = 2
+    mgr._reset_tts_stream_normalizer = lambda: None
+
+    def start_fallback(*, preserve_provider_exclusions=False):
+        assert preserve_provider_exclusions is True
+        mgr._tts_active_provider_key = "qwen"
+
+    mgr._start_tts_thread = start_fallback
+    monkeypatch.setattr(tts_runtime_module.logger, "warning", lambda *_args, **_kwargs: None)
+
+    assert LLMSessionManager._activate_configured_tts_fallback(mgr, "运行时") is True
+    assert mgr.tts_pending_chunks == [("speech-1", "unheard suffix.")]
+    assert mgr._tts_done_pending_until_ready is True
+
+
+def test_sentence_progress_prunes_only_the_confirmed_prefix():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr._tts_replay_speech_id = "speech-1"
+    mgr._tts_replay_sent_chunks = [
+        ("speech-1", "first."),
+        ("speech-1", "second."),
+        ("speech-1", "third."),
+    ]
+
+    LLMSessionManager._consume_tts_replay_sentence(mgr, "speech-1", "first.")
+    LLMSessionManager._consume_tts_replay_sentence(mgr, "speech-1", "second.")
+
+    assert mgr._tts_replay_sent_chunks == [("speech-1", "third.")]
 
 
 @pytest.mark.asyncio
@@ -852,6 +905,52 @@ def _run_worker_once(
     return clients, request_queue, response_queue, thread
 
 
+def test_sentence_worker_reports_audible_boundaries_before_runtime_error():
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+
+    async def setup(queue_proxy):
+        async def synthesize(text, _speech_id):
+            if text == "First.":
+                queue_proxy.put(b"first-audio")
+                return
+            queue_proxy.put(b"partial-second-audio")
+            raise RuntimeError("late failure")
+
+        return synthesize, None
+
+    thread = threading.Thread(
+        target=tts_client._run_sentence_tts_worker,
+        args=(request_queue, response_queue, setup),
+        kwargs={"label": "Mock TTS"},
+        daemon=True,
+    )
+    thread.start()
+    assert _wait_for_item(response_queue, lambda item: item == ("__ready__", True)) == (
+        "__ready__",
+        True,
+    )
+    request_queue.put(("speech-1", "First.Second."))
+    request_queue.put((None, None))
+
+    delivered = []
+    while not delivered or delivered[-1][0] != "__error__":
+        item = response_queue.get(timeout=5)
+        delivered.append(item)
+
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert delivered[:5] == [
+        b"first-audio",
+        ("__tts_sentence_done__", "speech-1", "First."),
+        b"partial-second-audio",
+        ("__tts_sentence_failed__", "speech-1", "Second."),
+        ("__error__", "Mock TTS 合成失败: late failure"),
+    ]
+
+
 def test_custom_worker_uses_openai_sdk_and_siliconflow_extensions(monkeypatch):
     monkeypatch.setattr(
         openai_worker_module,
@@ -888,6 +987,8 @@ def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_blank(
     monkeypatch,
     audio_api_key,
 ):
+    from openai import omit as openai_omit
+
     clients, request_queue, response_queue, thread = _run_worker_once(
         monkeypatch,
         [b"\x00\x00"],
@@ -897,10 +998,14 @@ def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_blank(
     _wait_for_item(response_queue, lambda item: isinstance(item, bytes))
     request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
     thread.join(timeout=5)
+    assert not thread.is_alive()
 
     assert clients[0].client_kwargs == {
-        "api_key": "",
+        "api_key": openai_worker_module._AUTH_FREE_API_KEY_PLACEHOLDER,
         "base_url": "http://127.0.0.1:8000/v1",
+    }
+    assert clients[0].create_calls[0]["extra_headers"] == {
+        "Authorization": openai_omit,
     }
 
 
@@ -913,6 +1018,7 @@ def test_custom_worker_forwards_endpoint_query_as_sdk_default_query(monkeypatch)
     _wait_for_item(response_queue, lambda item: isinstance(item, bytes))
     request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
     thread.join(timeout=5)
+    assert not thread.is_alive()
 
     assert clients[0].client_kwargs == {
         "api_key": "sk-test",
@@ -922,14 +1028,40 @@ def test_custom_worker_forwards_endpoint_query_as_sdk_default_query(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_openai_sdk_omits_authorization_for_empty_api_key():
-    from openai import AsyncOpenAI
+async def test_openai_sdk_request_omits_authorization_for_auth_free_endpoint():
+    from openai import AsyncOpenAI, omit as openai_omit
 
-    client = AsyncOpenAI(api_key="", base_url="http://127.0.0.1:8000/v1")
+    requests = []
+
+    async def handle_request(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=b"\x00\x00",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle_request))
+    client = AsyncOpenAI(
+        api_key=openai_worker_module._AUTH_FREE_API_KEY_PLACEHOLDER,
+        base_url="http://127.0.0.1:8000/v1",
+        http_client=http_client,
+    )
     try:
-        assert "Authorization" not in client.auth_headers
+        async with client.audio.speech.with_streaming_response.create(
+            model="tts-model",
+            voice="voice-a",
+            input="hello",
+            response_format="pcm",
+            extra_headers={"Authorization": openai_omit},
+        ) as response:
+            async for _chunk in response.iter_bytes():
+                pass
     finally:
         await client.close()
+
+    assert len(requests) == 1
+    assert "Authorization" not in requests[0].headers
 
 
 def test_builtin_openai_worker_keeps_sdk_default_endpoint_and_body(monkeypatch):

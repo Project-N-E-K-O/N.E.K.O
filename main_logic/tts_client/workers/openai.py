@@ -41,6 +41,10 @@ from utils.openai_tts import (
 
 logger = get_module_logger(__name__, "Main")
 
+# 新版 SDK 会在初始化时拒绝空 key。免鉴权端点使用仅存在于客户端内存中的
+# 占位值通过校验，并在每次请求上显式删除 Authorization 头；占位值不会发往服务端。
+_AUTH_FREE_API_KEY_PLACEHOLDER = "sk-auth-free-not-sent"
+
 
 def openai_tts_worker(
     request_queue,
@@ -61,7 +65,7 @@ def openai_tts_worker(
     audio_api_key = str(audio_api_key or "").strip()
 
     try:
-        from openai import AsyncOpenAI
+        from openai import AsyncOpenAI, omit as openai_omit
     except ImportError:
         logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
         response_queue.put(("__ready__", False))
@@ -78,9 +82,11 @@ def openai_tts_worker(
     effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        # The SDK omits Authorization for an empty key, matching connectivity probes.
-        # 自托管免鉴权服务不应收到伪造的 Bearer 凭证，运行时行为要与探测一致。
-        client_kwargs = {"api_key": audio_api_key}
+        # 免鉴权服务仍需兼容会拒绝空 key 的新版 SDK；占位值只用于客户端初始化，
+        # synthesize 会用 Omit 删除实际请求头，运行时行为与连接测试保持一致。
+        client_kwargs = {
+            "api_key": audio_api_key or _AUTH_FREE_API_KEY_PLACEHOLDER,
+        }
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
@@ -97,6 +103,10 @@ def openai_tts_worker(
             request_kwargs = {**base_payload, "input": text}
             if extra_body:
                 request_kwargs["extra_body"] = extra_body
+            if not audio_api_key:
+                request_kwargs["extra_headers"] = {
+                    "Authorization": openai_omit,
+                }
             async with client.audio.speech.with_streaming_response.create(
                 **request_kwargs,
             ) as response:

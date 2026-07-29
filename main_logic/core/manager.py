@@ -292,8 +292,12 @@ class LLMSessionManager(
         # 用它把本轮文本与 done 信号交给替代 worker，避免整段回复静音。
         self._tts_replay_speech_id: Optional[str] = None
         self._tts_replay_chunks: list[tuple[Optional[str], str]] = []
+        # HTTP 分句 worker 回报已完成/失败的句界后，只保留尚未播出的规范化文本。
+        self._tts_replay_sent_chunks: list[tuple[Optional[str], str]] = []
         self._tts_replay_done: bool = False
         self._tts_replay_audio_emitted: bool = False
+        self._tts_replay_sentence_audio_emitted: bool = False
+        self._tts_replay_progress_supported: bool = False
         # A failed configured preset must not leak its identity into legacy clone routing.
         # 配置型 preset 失败后，本会话保留角色配置，但替代 worker 使用默认音色，
         # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。

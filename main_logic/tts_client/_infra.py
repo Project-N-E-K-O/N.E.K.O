@@ -354,6 +354,7 @@ async def _non_bistream_tts_main_loop(
     _slot_new_data: dict[int, asyncio.Event] = {}       # seq_id → 有新数据通知
     _tasks: dict[int, asyncio.Task] = {}                # seq_id → synth task
     _sentence_enqueued_at: dict[int, float] = {}        # seq_id → enqueue monotonic time
+    _slot_sentences: dict[int, tuple[str, str]] = {}    # seq_id → (speech_id, sentence)
     _sem = asyncio.Semaphore(max_concurrent)
     _drain_seq: int = 0                                 # drain 当前正在投递的序号
     _drain_task: asyncio.Task | None = None
@@ -382,6 +383,7 @@ async def _non_bistream_tts_main_loop(
         _slot_new_data.pop(seq, None)
         _tasks.pop(seq, None)
         _sentence_enqueued_at.pop(seq, None)
+        _slot_sentences.pop(seq, None)
 
     def _slot_put(seq: int, gen_id: int, item) -> None:
         """Write one chunk into the given slot's buffer (called back by the proxy)."""
@@ -445,6 +447,7 @@ async def _non_bistream_tts_main_loop(
                 continue
 
             cursor = 0
+            had_error = False
             while gen_id == _generation_id:
                 # 转发已有的 chunk
                 while cursor < len(buf):
@@ -452,7 +455,10 @@ async def _non_bistream_tts_main_loop(
                     cursor += 1
                     if (isinstance(item, tuple) and len(item) >= 2
                             and item[0] == "__synth_error__"):
+                        sid, sentence = _slot_sentences.get(seq, ("", ""))
+                        real_queue.put(("__tts_sentence_failed__", sid, sentence))
                         _enqueue_error(real_queue, item[1])
+                        had_error = True
                     else:
                         real_queue.put(item)
 
@@ -463,9 +469,15 @@ async def _non_bistream_tts_main_loop(
                         cursor += 1
                         if (isinstance(item, tuple) and len(item) >= 2
                                 and item[0] == "__synth_error__"):
+                            sid, sentence = _slot_sentences.get(seq, ("", ""))
+                            real_queue.put(("__tts_sentence_failed__", sid, sentence))
                             _enqueue_error(real_queue, item[1])
+                            had_error = True
                         else:
                             real_queue.put(item)
+                    if not had_error:
+                        sid, sentence = _slot_sentences.get(seq, ("", ""))
+                        real_queue.put(("__tts_sentence_done__", sid, sentence))
                     _free_slot(seq)
                     _drain_seq = seq + 1
                     break
@@ -487,6 +499,7 @@ async def _non_bistream_tts_main_loop(
     def _enqueue_sentence(text: str, sid: str) -> None:
         seq = _alloc_slot()
         _sentence_enqueued_at[seq] = time.perf_counter()
+        _slot_sentences[seq] = (sid, text)
         _trace_sentence("enqueue", seq, sid, text)
         task = asyncio.create_task(_synth_one(seq, text, sid, _generation_id))
         _tasks[seq] = task
@@ -529,6 +542,7 @@ async def _non_bistream_tts_main_loop(
         _slot_new_data.clear()
         _tasks.clear()
         _sentence_enqueued_at.clear()
+        _slot_sentences.clear()
         _next_seq = 0
         _drain_seq = 0
         if proxy is not None:
