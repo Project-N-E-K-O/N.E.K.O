@@ -422,6 +422,18 @@ class RealtimeResponseArbiter:
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
         response_id = self._event_response_id(event)
+        response = (event or {}).get("response")
+        response_status = (
+            str(response.get("status") or "").strip().lower()
+            if isinstance(response, dict)
+            else ""
+        )
+        terminal_error = (
+            RuntimeError(f"response.done status={response_status}")
+            if response_status
+            and response_status not in {"completed", "success", "succeeded"}
+            else None
+        )
         if owner is not None and response_id is not None:
             if not owner.ticket.started.done():
                 # The owner has not seen its response.created yet, and a
@@ -455,7 +467,10 @@ class RealtimeResponseArbiter:
                     RuntimeError("response terminated before response.created")
                 )
             if owner.terminal is not None and not owner.terminal.done():
-                owner.terminal.set_result(None)
+                if terminal_error is not None:
+                    owner.terminal.set_exception(terminal_error)
+                else:
+                    owner.terminal.set_result(None)
             self._response_owner = None
         # The owner (if any) has terminated; the lane opens only once no
         # server-initiated response is still live, so a queued

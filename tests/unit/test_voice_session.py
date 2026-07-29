@@ -324,7 +324,7 @@ async def test_receive_text_delta(realtime_client):
 
 
 @pytest.mark.unit
-async def test_cancelled_response_done_rejects_pending_proactive_inject(
+async def test_cancelled_response_done_is_forwarded_to_response_arbiter(
     realtime_client,
 ):
     realtime_client.ws = AsyncMock()
@@ -334,13 +334,16 @@ async def test_cancelled_response_done_rejects_pending_proactive_inject(
             "response": {"id": "resp_cancelled", "status": "cancelled"},
         }),
     ]
-    realtime_client._sweep_inject_rejection_handlers = MagicMock()
+    realtime_client._response_arbiter.notify_response_terminal = MagicMock()
     realtime_client.on_response_done = AsyncMock()
 
     await realtime_client.handle_messages()
 
-    realtime_client._sweep_inject_rejection_handlers.assert_called_once_with(
-        error_msg="response.done status=cancelled",
+    realtime_client._response_arbiter.notify_response_terminal.assert_called_once_with(
+        {
+            "type": "response.done",
+            "response": {"id": "resp_cancelled", "status": "cancelled"},
+        }
     )
 
 

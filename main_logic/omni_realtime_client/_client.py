@@ -378,19 +378,16 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # was optimistically pruned after send. Entries also self-expire to
         # avoid leaks if the server never acks.
         self._inject_rejection_handlers: Dict[str, Callable[[str], None]] = {}
-        # Matching success callbacks. A provider does not echo our client
-        # event_id on response.created, so response.done is the first lifecycle
-        # boundary that proves no asynchronous rejection can still arrive.
-        self._inject_completion_handlers: Dict[str, Callable[[], None]] = {}
         # One-shot gate for the no-event_id content fallback in
         # ``_route_inject_rejection``. True only between "a proactive inject
         # just sent its ``response.create``" and "that inject's outcome was
-        # observed" (rejection fired, or a response lifecycle event arrived).
+        # observed" on its exact arbiter ticket.
         # Without this, a no-id ``response_already_active`` from a DIFFERENT
         # ``response.create`` sender (create_response / tool-result /
         # signal_user_activity_end) could content-match a lingering — already
         # succeeded — proactive handler and wrongly re-enqueue its cb.
         self._proactive_inject_awaiting_outcome = False
+        self._proactive_inject_outcome_token: Optional[str] = None
 
     def _create_audio_processor(self) -> AudioProcessor:
         """Create session-owned audio state, including native RNNoise state."""

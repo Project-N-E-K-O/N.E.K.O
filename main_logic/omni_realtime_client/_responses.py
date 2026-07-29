@@ -375,8 +375,10 @@ class _ResponseMixin:
         message loop will invoke it when ``error.event_id`` matches the
         client-side id we stamp on ``response.create``. The caller can use
         it to put the optimistically-pruned cb back in the queue.
-        ``on_completed`` is fired at ``response.done``, the first lifecycle
-        boundary that proves the request was not asynchronously rejected.
+        ``on_completed`` is fired only when this request's arbiter ticket
+        reaches ``response.done``. It is deliberately not tied to the next
+        global terminal event: another queued or active response may finish
+        before this request is even dispatched.
 
         Provider dispatch (all realtime providers supported — symmetric with
         ``create_response``):
@@ -446,16 +448,24 @@ class _ResponseMixin:
         # even if both event_ids somehow error, and unregisters both handlers.
         item_event_id = f"event_inject_item_{uuid.uuid4().hex}"
         create_event_id = f"event_inject_resp_{uuid.uuid4().hex}"
+        outcome_token = create_event_id
         item_id = f"item_neko_{uuid.uuid4().hex}"
         expected_item_id = item_id
+
+        def _close_outcome_window() -> None:
+            if (
+                getattr(self, "_proactive_inject_outcome_token", None)
+                == outcome_token
+            ):
+                self._proactive_inject_outcome_token = None
+                self._proactive_inject_awaiting_outcome = False
+
         if on_rejected is not None or on_completed is not None:
             _fired = False
 
             def _remove_outcome_handlers() -> None:
                 self._inject_rejection_handlers.pop(item_event_id, None)
                 self._inject_rejection_handlers.pop(create_event_id, None)
-                self._inject_completion_handlers.pop(item_event_id, None)
-                self._inject_completion_handlers.pop(create_event_id, None)
 
             def _reject_once(error_msg: str) -> None:
                 nonlocal _fired
@@ -464,6 +474,7 @@ class _ResponseMixin:
                 if _fired:
                     return
                 _fired = True
+                _close_outcome_window()
                 if on_rejected is not None:
                     on_rejected(error_msg)
 
@@ -473,32 +484,22 @@ class _ResponseMixin:
                 if _fired:
                     return
                 _fired = True
+                _close_outcome_window()
                 if on_completed is not None:
                     on_completed()
 
             if on_rejected is not None:
                 self._inject_rejection_handlers[item_event_id] = _reject_once
                 self._inject_rejection_handlers[create_event_id] = _reject_once
-            if on_completed is not None:
-                self._inject_completion_handlers[item_event_id] = _complete_once
-                self._inject_completion_handlers[create_event_id] = _complete_once
-            # The realtime API echoes our event_id on ``error`` but NOT on
-            # ``response.created`` — so a successful inject leaves the handlers
-            # registered with no natural cleanup signal. Primary cleanup is
-            # lifecycle-based: ``response.done`` sweeps the dict (see
-            # ``_sweep_inject_rejection_handlers`` — a rejection is always
-            # emitted before the blocking response completes, so any pending
-            # rejection has already fired by any response.done). This TTL is
-            # only a backstop for the pathological "no response.done ever"
-            # case (session hangs); 60s is generous vs the sub-second
-            # rejection latency, so a real ``response_already_active`` reject
-            # under transient backpressure is still caught (Codex P2).
+            # The realtime API echoes our event_id on ``error`` but not on
+            # ``response.created``. Completion is therefore observed from the
+            # exact arbiter ticket below, never by sweeping callbacks on an
+            # unrelated global ``response.done``.
             self._fire_task(self._expire_inject_rejection_handler(item_event_id, 60.0))
             self._fire_task(self._expire_inject_rejection_handler(create_event_id, 60.0))
             # Open the no-id content-fallback window for THIS inject. Closed
-            # when its outcome is observed (rejection fired, or the next
-            # response lifecycle event / done sweep) — see
-            # _route_inject_rejection.
+            # when its own arbiter ticket completes or is rejected.
+            self._proactive_inject_outcome_token = outcome_token
             self._proactive_inject_awaiting_outcome = True
 
         item_event: Dict[str, Any] = {
@@ -544,34 +545,33 @@ class _ResponseMixin:
                 raise RuntimeError(
                     "realtime connection lost after proactive response.create"
                 )
+
+            if on_rejected is not None or on_completed is not None:
+                async def _observe_ticket_outcome() -> None:
+                    try:
+                        await asyncio.shield(ticket.done)
+                    except Exception as exc:
+                        _reject_once(str(exc))
+                    else:
+                        _complete_once()
+
+                self._fire_task(_observe_ticket_outcome())
         except Exception:
             self._inject_rejection_handlers.pop(item_event_id, None)
             self._inject_rejection_handlers.pop(create_event_id, None)
-            self._inject_completion_handlers.pop(item_event_id, None)
-            self._inject_completion_handlers.pop(create_event_id, None)
-            if (
-                not self._inject_rejection_handlers
-                and not self._inject_completion_handlers
-            ):
-                self._proactive_inject_awaiting_outcome = False
+            _close_outcome_window()
             raise
 
     async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
-        """TTL backstop cleanup for the inject rejection handler dict (see
-        ``inject_text_and_request_response``). Primary cleanup is the
-        lifecycle sweep in ``_sweep_inject_rejection_handlers``; this only
-        catches the pathological "no response.done ever" case."""
+        """TTL backstop for a ticket whose terminal lifecycle never arrives."""
         try:
             await asyncio.sleep(ttl)
         except asyncio.CancelledError:
             return
         self._inject_rejection_handlers.pop(event_id, None)
-        getattr(self, "_inject_completion_handlers", {}).pop(event_id, None)
-        if (
-            not self._inject_rejection_handlers
-            and not getattr(self, "_inject_completion_handlers", {})
-        ):
+        if not self._inject_rejection_handlers:
             self._proactive_inject_awaiting_outcome = False
+            self._proactive_inject_outcome_token = None
 
     @staticmethod
     def _looks_like_response_conflict(error_msg: str) -> bool:
@@ -651,62 +651,6 @@ class _ResponseMixin:
             for handler in list(self._inject_rejection_handlers.values()):
                 _fire(handler)
             self._inject_rejection_handlers.clear()
-
-    def _sweep_inject_rejection_handlers(
-        self,
-        error_msg: Optional[str] = None,
-    ) -> None:
-        """Resolve pending inject handlers on a ``response.done`` boundary.
-
-        (Only the WS-realtime ``response.done`` path calls this — the Gemini
-        branch of ``inject_text_and_request_response`` returns early via
-        ``_gemini_send_user_turn`` and never registers rejection handlers, so
-        Gemini's turn-complete has nothing to sweep.)
-
-        Safe because a server rejection of our ``response.create`` /
-        ``conversation.item.create`` is emitted the instant the server
-        receives a request it can't honor — and the only reason it can't
-        honor a ``response.create`` is that another response is already
-        active. That blocking response's ``response.done`` is therefore
-        strictly LATER than the rejection. So by the time ANY response.done
-        arrives, every pending rejection for a prior send has already fired
-        (and its handler self-removed via ``_reject_once``). Whatever remains
-        in the dict belongs to this completed response. Explicit failed,
-        cancelled, or incomplete response statuses are routed through
-        ``error_msg`` and must reject the delivery rather than acknowledge it.
-        """
-        # The inject's outcome has been observed (a response completed), so
-        # close the no-id content-fallback window too.
-        self._proactive_inject_awaiting_outcome = False
-        completion_handler_map = getattr(self, "_inject_completion_handlers", {})
-        if error_msg is not None:
-            rejection_handlers = list({
-                id(handler): handler
-                for handler in self._inject_rejection_handlers.values()
-            }.values())
-            for handler in rejection_handlers:
-                try:
-                    handler(error_msg)
-                except Exception as cb_exc:
-                    logger.warning(
-                        "proactive inject terminal failure handler raised: %s",
-                        cb_exc,
-                    )
-            self._inject_rejection_handlers.clear()
-            completion_handler_map.clear()
-            return
-
-        completion_handlers = list({
-            id(handler): handler
-            for handler in completion_handler_map.values()
-        }.values())
-        self._inject_rejection_handlers.clear()
-        completion_handler_map.clear()
-        for handler in completion_handlers:
-            try:
-                handler()
-            except Exception as cb_exc:
-                logger.warning("proactive inject completion handler raised: %s", cb_exc)
 
     async def prompt_ephemeral(
         self,

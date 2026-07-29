@@ -76,7 +76,15 @@ async def _prompt_and_complete(client, *args, **kwargs):
         await asyncio.sleep(0)
     else:
         raise AssertionError("prompt_ephemeral did not send response.create")
-    client._sweep_inject_rejection_handlers()
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-proactive"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-proactive", "status": "completed"},
+        }
+    )
     return await task
 
 
@@ -196,13 +204,68 @@ async def test_failed_response_done_returns_false_and_preserves_image():
         await asyncio.sleep(0)
     else:
         raise AssertionError("prompt_ephemeral did not send response.create")
-    client._sweep_inject_rejection_handlers(
-        error_msg="response.done status=cancelled",
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-proactive-failed"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-proactive-failed",
+                "status": "cancelled",
+            },
+        }
     )
 
     assert await task is False
     assert client._proactive_image_consumed is False
     assert client._latest_image_b64 == DUMMY_IMAGE_B64
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_prompt_waits_for_its_own_queued_response_done():
+    client = _make_client()
+    earlier = await client._response_arbiter.enqueue(source="earlier")
+    await earlier.sent
+
+    task = asyncio.create_task(client.prompt_ephemeral("queued proactive turn"))
+    await asyncio.sleep(0)
+
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-earlier"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-earlier", "status": "completed"},
+        }
+    )
+    await earlier.done
+
+    for _ in range(20):
+        events = _sent_events(client)
+        _ack_pending_input_item(client, events)
+        response_creates = [
+            event for event in events if event.get("type") == "response.create"
+        ]
+        if len(response_creates) >= 2:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("queued proactive response.create was not sent")
+
+    assert task.done() is False
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-proactive"}}
+    )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-proactive", "status": "completed"},
+        }
+    )
+    assert await task is True
     await client.close()
 
 
@@ -215,20 +278,31 @@ async def test_delivery_timeout_cancels_and_quarantines_until_lifecycle(monkeypa
         0.01,
     )
 
-    delivered = await client.prompt_ephemeral("retry after timeout")
+    delivered = await asyncio.wait_for(
+        client.prompt_ephemeral("retry after timeout"),
+        timeout=3,
+    )
 
     assert delivered is False
     assert _sent_events(client)[-1]["type"] == "response.cancel"
     assert client._proactive_inject_awaiting_outcome is True
     assert client._inject_rejection_handlers
-    assert client._inject_completion_handlers
 
-    client._sweep_inject_rejection_handlers(
-        error_msg="response.done status=cancelled",
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-timeout"}}
     )
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {"id": "resp-timeout", "status": "cancelled"},
+        }
+    )
+    for _ in range(20):
+        if not client._proactive_inject_awaiting_outcome:
+            break
+        await asyncio.sleep(0)
     assert client._proactive_inject_awaiting_outcome is False
     assert client._inject_rejection_handlers == {}
-    assert client._inject_completion_handlers == {}
     await client.close()
 
 
