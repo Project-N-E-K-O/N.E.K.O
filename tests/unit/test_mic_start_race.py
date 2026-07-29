@@ -539,9 +539,20 @@ async function addModuleFailureCase() {
   // microphone track leak with no later attempt able to find them.
   const env = loadModule();
   env.failAddModule(new Error('boom'));
-  const only = await env.mod.startMicCapture();
+  // A real setup failure must PROPAGATE, not look like a benign supersession:
+  // returning falsy let app-buttons.js sail into its success path -- toast,
+  // proactive vision, neko:voice-session-started -- with no capture pipeline
+  // behind it, and never reach the error path that sends end_session.
+  let workletThrew = null;
+  try {
+    await env.mod.startMicCapture();
+  } catch (err) {
+    workletThrew = err;
+  }
 
-  assert(only === undefined, 'startMicCapture resolves without a value');
+  assert(workletThrew, 'a worklet setup failure must reach the session starter');
+  assert(workletThrew.voiceWorkletSetupFailed === true,
+         'a real setup failure must be distinguishable from an intentional cancellation');
   assert(env.S.isRecording === false, 'a failed addModule must not commit');
   const own = env.contexts.filter((c) => c !== env.S.audioPlayerContext).pop();
   assert(own, 'the attempt should have created a capture context');

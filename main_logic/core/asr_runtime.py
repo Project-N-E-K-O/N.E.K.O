@@ -1554,6 +1554,16 @@ class AsrRuntimeMixin:
 
     async def _flush_hot_swap_audio_cache(self) -> None:
         damaged_frames: list[_HotSwapAudioFrame] = []
+        # Cached pre-swap frames carry a stale route generation, so replay
+        # REBINDS them onto the new session -- but only the local send token is
+        # rebound; the frame objects in ``damaged_frames`` keep their original
+        # token. The damage check at the end therefore missed them, skipped
+        # _invalidate_interrupted_voice_turn, and left a prefix that had already
+        # reached the new provider in place: later speech got concatenated
+        # across the missing tail instead of the damaged turn being cleared
+        # (Codex P2). Track current-route damage explicitly rather than trying
+        # to reconstruct it from tokens that were never updated.
+        rebound_to_current_route = False
         flush_complete = False
         async with self.hot_swap_cache_lock:
             self.is_flushing_hot_swap_cache = True
@@ -1584,6 +1594,7 @@ class AsrRuntimeMixin:
                 paced: bool,
             ) -> bool:
                 """Replay drained frames; ``False`` means a send failed."""
+                nonlocal rebound_to_current_route
                 index = 0
                 while index < len(audio_frames):
                     frame = audio_frames[index]
@@ -1610,6 +1621,11 @@ class AsrRuntimeMixin:
                             index += 1
                             continue
                         token = rebound
+                        # From here on this frame's audio is being sent on the
+                        # LIVE route, so any later damage in this flush belongs
+                        # to the current turn even though the recorded frames
+                        # still carry their pre-swap tokens.
+                        rebound_to_current_route = True
                     batch_end = index + 1
                     if self._asr_route_mode == "native":
                         while (
@@ -1690,10 +1706,17 @@ class AsrRuntimeMixin:
                     self.is_flushing_hot_swap_cache = False
                     self.is_hot_swap_imminent = False
             # One abort invalidates the whole candidate turn, however many
-            # damaged tokens remain current.
-            if any(
-                self._ingress_token_matches(frame.token)
-                for frame in damaged_frames
+            # damaged tokens remain current. rebound_to_current_route covers the
+            # frames whose send token was rebound onto the live session while
+            # the recorded frame kept its pre-swap token -- without it a replay
+            # that failed AFTER delivering a rebound prefix looked like damage
+            # to a turn nobody was listening to.
+            if damaged_frames and (
+                rebound_to_current_route
+                or any(
+                    self._ingress_token_matches(frame.token)
+                    for frame in damaged_frames
+                )
             ):
                 await self._invalidate_interrupted_voice_turn(
                     "ingress_backpressure"

@@ -916,8 +916,28 @@
                 }
                 S.workletNode = null;
 
+                // Snapshot the cancellation counter BEFORE the delay below.
+                // wasRecording was taken even earlier, so on its own it cannot
+                // see a teardown that lands during the wait -- and the restart
+                // then MINTS A NEWER TOKEN, which defeats the very
+                // invalidation that teardown performed. An auto_close_mic, a
+                // text-session takeover or a plain stopRecording() inside this
+                // window would be silently overridden and the hardware
+                // microphone reopened, re-claiming a lease the backend had
+                // already released (Codex P2).
+                //
+                // This function's own teardown above closes the graph directly
+                // rather than through stopRecording(), so it does not bump the
+                // counter and cannot cancel its own restart.
+                const restartGeneration = micStartGeneration;
+
                 // 等待一小段时间，确保选择提示显示出来
                 await new Promise(resolve => setTimeout(resolve, 500));
+
+                if (micStartGeneration !== restartGeneration) {
+                    console.log('[App] microphone switch superseded during the restart delay; not reopening');
+                    return;
+                }
 
                 if (wasRecording) {
                     await startMicCapture();
@@ -1593,7 +1613,21 @@
             // which would stop a concurrent WINNER's detection; discard only
             // does that when no pipeline is live.)
             discardOwnPipeline();
-            return false;
+            // RETHROW. `false` means "this attempt was deliberately cancelled"
+            // -- superseded, or the route came back fail-closed -- and the
+            // caller treats it as benign: it restores the pre-start UI and
+            // returns without error. A real setup failure returned the same
+            // value, so app-buttons.js sailed past `await startMicCapture()`
+            // into the success path: ready-to-speak toast, proactive vision,
+            // the neko:voice-session-started event, and never the error path
+            // that sends end_session -- announcing a live voice call with no
+            // capture pipeline behind it (Codex P2).
+            //
+            // Marked so startMicCapture's own catch does not stack a generic
+            // "cannot access microphone" toast on top of the accurate one
+            // already shown above.
+            err.voiceWorkletSetupFailed = true;
+            throw err;
         }
     }
 
@@ -1811,7 +1845,13 @@
             }
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
-            window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            // A worklet setup failure already showed its own, more accurate
+            // toast before rethrowing; do not stack "cannot access microphone"
+            // on top of "AudioWorklet failed to load" -- microphone access
+            // demonstrably succeeded in that case.
+            if (!(err && err.voiceWorkletSetupFailed)) {
+                window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            }
 
             // Release a device this attempt opened but never published. Guarded
             // on `S.stream !== ownStream` so a throw from the SUCCESS path (the

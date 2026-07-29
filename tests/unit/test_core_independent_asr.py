@@ -6547,3 +6547,44 @@ async def test_teardown_routines_share_one_turn_state_reset() -> None:
             and isinstance(node.func, ast.Attribute)
         }
         assert "_reset_asr_turn_state" in calls, method_name
+
+
+def test_hot_swap_replay_damage_accounts_for_rebound_frames() -> None:
+    # Codex P2. Cached pre-swap frames carry a stale route generation, so replay
+    # rebinds them onto the new session -- but only the local SEND token is
+    # rebound; the frame objects appended to damaged_frames keep their original
+    # token. The final `any(_ingress_token_matches(frame.token) ...)` check was
+    # therefore false, _invalidate_interrupted_voice_turn was skipped, and a
+    # prefix that had already reached the new provider stayed in place: later
+    # speech got concatenated across the missing tail instead of the damaged
+    # turn being cleared.
+    #
+    # Structural, and deliberately so: driving _flush_hot_swap_audio_cache to a
+    # mid-replay failure needs a cache, live session, route mode and token
+    # generations. What this pins is that the rebind records current-route
+    # damage and that the damage check consults it.
+    import inspect
+
+    from main_logic.core import asr_runtime as asr_runtime_module
+
+    source = inspect.getsource(asr_runtime_module.AsrRuntimeMixin._flush_hot_swap_audio_cache)
+
+    assert "rebound_to_current_route = False" in source, (
+        "the flush must track whether any frame was rebound onto the live route"
+    )
+    assert "nonlocal rebound_to_current_route" in source, (
+        "replay_frames must be able to record the rebind"
+    )
+    # Set at the rebind, consulted at the damage check, in that order.
+    set_at = source.index("rebound_to_current_route = True")
+    # Anchor on the damage condition itself: a bare-name match also hits the
+    # `nonlocal` declaration, which sits BEFORE the rebind and inverted this
+    # ordering assertion into a false failure.
+    checked_at = source.index("if damaged_frames and (")
+    assert source.index("token = rebound") < set_at, (
+        "the flag belongs with the rebind it records"
+    )
+    assert set_at < checked_at
+    assert "_invalidate_interrupted_voice_turn" in source[checked_at:], (
+        "the damage check must still be what gates the invalidation"
+    )
