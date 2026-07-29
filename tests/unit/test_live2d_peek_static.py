@@ -124,6 +124,17 @@ def test_live2d_widget_mode_edge_peek_prefers_head_anchor_and_preserves_vertical
     assert "getLive2DPeekVerticalCorrection" in edge_peek_source
 
 
+def test_live2d_widget_mode_show_buttons_clears_hide_timer_before_peek_suppression():
+    source = _source(LIVE2D_INTERACTION_PATH)
+    show_buttons_source = source.split("const showButtons = () => {", 1)[1]
+    show_buttons_source = show_buttons_source.split("const startHideTimer", 1)[0]
+
+    peek_guard = show_buttons_source.split("if (this.isLive2DPeekActive()) {", 1)[1].split("return;", 1)[0]
+    assert "clearTimeout(this._hideButtonsTimer);" in peek_guard
+    assert "this._hideButtonsTimer = null;" in peek_guard
+    assert "this._setLive2DPeekControlsSuppressed(true);" in peek_guard
+
+
 def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits():
     source = _source(LIVE2D_INTERACTION_PATH)
     drag_source = source.split("Live2DManager.prototype.setupDragAndDrop = function", 1)[1]

@@ -1884,6 +1884,10 @@ Live2DManager.prototype.enableMouseTracking = function (model, options = {}) {
         const floatingButtons = document.getElementById('live2d-floating-buttons');
 
         if (this.isLive2DPeekActive()) {
+            if (this._hideButtonsTimer) {
+                clearTimeout(this._hideButtonsTimer);
+                this._hideButtonsTimer = null;
+            }
             this._setLive2DPeekControlsSuppressed(true);
             return;
         }
