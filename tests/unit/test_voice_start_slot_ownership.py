@@ -461,9 +461,10 @@ def test_a_displaced_start_is_abandoned_quietly_not_reported_as_a_failure():
     """Being taken over is the user's own next action, not a failure.
 
     Now that claimSessionStart settles the start it displaces, every flow that
-    awaits a start promise can be rejected by a takeover -- and the text flows
-    reported that as "启动失败 / 回来失败", carrying the internal English reason
-    string into a toast.
+    awaits a start promise can be rejected by a takeover -- and both text flows
+    reported that through their start-failure toast, which interpolates the
+    error message and would therefore have put the internal English reason
+    string in front of the user.
 
     Mutation-verified: remove either quiet-abandon branch and this reddens.
     """
