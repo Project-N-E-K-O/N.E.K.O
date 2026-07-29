@@ -2130,6 +2130,7 @@
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
             var micStartOwner = null;
+            var micStartRejecter = null;
 
             // Every point this handler resumes from an await asks the same
             // question, and each await is wide open: on mobile the composer
@@ -2198,6 +2199,10 @@
                     // resolver itself). Every release below is gated on it, so
                     // this flow can never clear a slot that a newer start owns.
                     micStartOwner = window.claimSessionStart('audio', resolve, reject);
+                    // Kept separately from the slot: once a newer start claims,
+                    // S.sessionStartedRejecter is THEIRS, and this is the only
+                    // remaining handle on our own promise.
+                    micStartRejecter = reject;
                     // Re-arm the fail-closed voice latch on user intent, strictly
                     // before start_session goes out and therefore before any route
                     // verdict for this session can arrive.
@@ -2242,7 +2247,26 @@
                     // Only fire for the start this timer was armed for: a newer
                     // start may own the slot by now, and rejecting/clearing it
                     // here would strand the promise its awaiter is holding.
-                    if (!window.sessionStartIsCurrent(micStartOwner)) return;
+                    if (!window.sessionStartIsCurrent(micStartOwner)) {
+                        // But settle OUR OWN promise on the way out, or this
+                        // flow never resumes at all: once displaced, our ack is
+                        // dropped by the cross-mode guard in app-websocket.js
+                        // and this timer was the only other thing that could
+                        // have settled us. Suspended forever means suspended
+                        // holding window.isMicStarting and an active/disabled
+                        // mic button, straight through the session that took
+                        // over (codex P2). Nothing shared is touched here --
+                        // not the slot, not window.sessionTimeoutId, not the
+                        // socket; they belong to the newer start. Rejecting
+                        // hands control to the outer catch, which stands down
+                        // and unwinds exactly as much as it is allowed to.
+                        if (micStartRejecter) {
+                            micStartRejecter(typeof window.makeNekoSessionAbortError === 'function'
+                                ? window.makeNekoSessionAbortError('Voice start superseded')
+                                : new Error('Voice start superseded'));
+                        }
+                        return;
+                    }
                     if (S.sessionStartedRejecter) {
                         var rejecter = S.sessionStartedRejecter;
                         window.releaseSessionStart(micStartOwner);

@@ -430,6 +430,38 @@ def test_the_mic_flow_rechecks_cancellation_after_proactive_vision():
 
 
 @pytest.mark.unit
+def test_a_displaced_start_still_settles_its_own_promise():
+    """Refusing to fire is not the same as having nothing to do.
+
+    A start that loses the slot has its acknowledgement dropped by the
+    cross-mode guard in the session_started handler, so its own timeout is the
+    only thing left that can settle it. Returning early there -- correct about
+    the shared state -- left the flow suspended forever at
+    ``await sessionStartPromise``, holding ``window.isMicStarting`` and an
+    active/disabled mic button straight through the session that took over. It
+    keeps its own rejecter precisely because ``S.sessionStartedRejecter`` is the
+    newer start's by then.
+
+    Mutation-verified: drop the rejecter call from either timeout and this
+    reddens naming that file.
+    """
+    for path in START_FLOW_PATHS:
+        source = path.read_text(encoding="utf-8")
+        branch = _region(
+            source, "if (!window.sessionStartIsCurrent(", "return;", path.name
+        )
+        assert "Rejecter(" in branch, (
+            f"{path.name}: the timeout of a displaced start returns without settling its "
+            "own promise, so that flow never resumes and never releases the voice-start "
+            f"UI.\n{branch}"
+        )
+        assert "window.sessionTimeoutId = null" not in branch, (
+            f"{path.name}: a displaced start must not clear the shared timer handle -- it "
+            f"belongs to the start that displaced it.\n{branch}"
+        )
+
+
+@pytest.mark.unit
 def test_the_mic_failure_cleanup_stands_down_before_ending_the_session():
     """A failed start that was superseded must not end the winner's session.
 
