@@ -96,6 +96,7 @@ def test_siliconflow_pins_streaming_pcm_sample_rate_without_polluting_other_prov
 class _CustomTtsConfigManager:
     def __init__(self):
         self.load_count = 0
+        self.voices = {}
         self.raw = {
             "enableCustomApi": True,
             "ttsModelProvider": "custom",
@@ -117,7 +118,7 @@ class _CustomTtsConfigManager:
         return dict(self.raw)
 
     def get_voices_for_current_api(self, **_kwargs):
-        return {}
+        return dict(self.voices)
 
     async def aensure_region_resolved(self):
         return True
@@ -244,6 +245,30 @@ async def test_voices_endpoint_maps_configured_custom_voice_to_character_catalog
 
 
 @pytest.mark.asyncio
+async def test_configured_custom_voice_hides_same_id_clone_from_character_catalog(
+    monkeypatch,
+):
+    cm = _CustomTtsConfigManager()
+    cm.voices["vendor-voice"] = {
+        "voice_id": "vendor-voice",
+        "provider": "cosyvoice",
+        "source": "clone",
+    }
+    monkeypatch.setattr(voice_preview_module, "get_config_manager", lambda: cm)
+
+    result = await voice_preview_module.get_voices()
+
+    assert "vendor-voice" not in result["voices"]
+    assert result["native_voices"]["vendor-voice"]["provider"] == "custom"
+    assert voice_preview_module._is_unpreviewable_selected_preset_voice(
+        cm,
+        cm.snapshot,
+        "vendor-voice",
+        cm.voices["vendor-voice"],
+    ) is True
+
+
+@pytest.mark.asyncio
 async def test_voices_endpoint_maps_vllm_default_to_custom_api_catalog(monkeypatch):
     cm = _CustomTtsConfigManager()
     cm.raw.update(
@@ -285,7 +310,7 @@ def test_configured_custom_voice_is_saveable_for_character():
     )
 
 
-def test_custom_config_read_failure_uses_existing_default_route(monkeypatch):
+def test_custom_config_read_failure_stays_owned_until_supervised_fallback(monkeypatch):
     cm = _CustomTtsConfigManager()
     errors = []
 
@@ -295,39 +320,89 @@ def test_custom_config_read_failure_uses_existing_default_route(monkeypatch):
     cm.load_json_config = broken_load
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
     monkeypatch.setattr(
-        provider_registry.logger,
+        openai_worker_module.logger,
         "error",
         lambda message, *args, **_kwargs: errors.append(message % args),
     )
 
-    _worker, _api_key, provider_key = tts_client.get_tts_worker(
+    worker, api_key, provider_key = tts_client.get_tts_worker(
         core_api_type="qwen",
         has_custom_voice=True,
         voice_id="vendor-voice",
     )
 
-    # The legacy dispatch sends a custom character voice to CosyVoice before
-    # reaching core-native Qwen. Fallback must preserve that exact order.
-    # 这里验证沿用旧保底顺序，不能为了自定义 API 另造一条 Qwen 快捷路径。
-    assert provider_key == "cosyvoice"
-    assert any("既有顺序尝试保底 provider" in message for message in errors)
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    worker(request_queue, response_queue, api_key, "vendor-voice")
+
+    # Keep ownership until core strips the failed preset identity and credentials.
+    # 读取失败不能直接误入 CosyVoice；先保留 custom 身份，再由监管层安全回退。
+    assert provider_key == "custom"
+    assert api_key == ""
+    assert response_queue.get_nowait() == ("__ready__", False)
+    assert any("配置读取或校验失败" in message for message in errors)
 
 
-def test_excluding_failed_custom_provider_preserves_default_route(monkeypatch):
+def test_failed_configured_preset_redispatch_uses_default_voice_route(monkeypatch):
     cm = _CustomTtsConfigManager()
     monkeypatch.setattr(tts_client, "get_config_manager", lambda: cm)
 
     _worker, _api_key, provider_key = tts_client.get_tts_worker(
         core_api_type="qwen",
-        has_custom_voice=True,
-        voice_id="vendor-voice",
+        has_custom_voice=False,
+        voice_id="",
         excluded_provider_keys={"custom"},
     )
 
-    assert provider_key == "cosyvoice"
+    assert provider_key == "qwen"
 
 
-def test_vllm_config_read_failure_logs_and_uses_existing_default_route(monkeypatch):
+def test_supervised_fallback_uses_default_voice_and_default_credentials(monkeypatch):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    config_slots = []
+    dispatch_calls = []
+    thread_args = []
+
+    class _FakeThread:
+        def __init__(self, *, target, args, daemon):
+            _ = target, daemon
+            thread_args.append(args)
+
+        def start(self):
+            return None
+
+    def get_model_api_config(slot):
+        config_slots.append(slot)
+        return {"api_key": "sk-default" if slot == "tts_default" else "sk-custom"}
+
+    def get_worker(**kwargs):
+        dispatch_calls.append(kwargs)
+        return (lambda *_args: None), None, "qwen"
+
+    mgr._config_manager = SimpleNamespace(
+        get_core_config=lambda: {},
+        get_model_api_config=get_model_api_config,
+    )
+    mgr.core_api_type = "qwen"
+    mgr.voice_id = "vendor-voice"
+    mgr._is_free_preset_voice = False
+    mgr._tts_fallback_uses_default_voice = True
+    mgr._tts_excluded_provider_keys = frozenset({"custom"})
+    mgr._build_tts_runtime_key = lambda: ("fallback",)
+    monkeypatch.setattr(tts_runtime_module, "Thread", _FakeThread)
+    monkeypatch.setattr(tts_runtime_module._core_facade, "get_tts_worker", get_worker)
+
+    LLMSessionManager._start_tts_thread(mgr, preserve_provider_exclusions=True)
+
+    # The replacement sees neither the failed Voice ID nor the custom credential.
+    # 替代 worker 只能收到默认路由的空音色和默认凭证，不能复用失败配置。
+    assert dispatch_calls[0]["voice_id"] == ""
+    assert dispatch_calls[0]["has_custom_voice"] is False
+    assert config_slots == ["tts_default"]
+    assert thread_args[0][2:] == ("sk-default", "")
+
+
+def test_vllm_config_read_failure_stays_owned_until_supervised_fallback(monkeypatch):
     cm = _CustomTtsConfigManager()
     cm.raw["ttsModelProvider"] = "vllm_omni"
     cm.snapshot.update(cm.raw)
@@ -344,13 +419,19 @@ def test_vllm_config_read_failure_logs_and_uses_existing_default_route(monkeypat
         lambda message, *args, **_kwargs: errors.append(message % args),
     )
 
-    _worker, _api_key, provider_key = tts_client.get_tts_worker(
+    worker, api_key, provider_key = tts_client.get_tts_worker(
         core_api_type="qwen",
         has_custom_voice=False,
         voice_id="default",
     )
 
-    assert provider_key == "qwen"
+    request_queue = queue.Queue()
+    response_queue = queue.Queue()
+    worker(request_queue, response_queue, api_key, "default")
+
+    assert provider_key == "vllm_omni"
+    assert api_key == ""
+    assert response_queue.get_nowait() == ("__ready__", False)
     assert any("既有保底流程" in message for message in errors)
 
 
@@ -401,6 +482,19 @@ def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch)
     mgr._tts_active_provider_key = "custom"
     mgr._tts_excluded_provider_keys = frozenset()
     mgr.tts_request_queue = queue.Queue()
+    mgr.current_speech_id = "speech-1"
+    mgr.tts_pending_chunks = [("speech-1", "later")]
+    mgr._tts_replay_speech_id = "speech-1"
+    mgr._tts_replay_chunks = [
+        ("old-speech", "stale"),
+        ("speech-1", "first"),
+        ("speech-1", "second"),
+    ]
+    mgr._tts_replay_done = True
+    mgr._tts_done_queued_for_turn = True
+    mgr._tts_done_pending_until_ready = False
+    mgr._tts_fallback_uses_default_voice = False
+    mgr._reset_tts_stream_normalizer = lambda: None
     starts = []
     warnings = []
 
@@ -419,7 +513,83 @@ def test_configured_tts_failure_switches_to_existing_dispatch_order(monkeypatch)
     assert mgr._tts_excluded_provider_keys == frozenset({"custom"})
     assert mgr.tts_request_queue.get_nowait() == ("__shutdown__", None)
     assert starts == [True]
+    assert mgr._tts_fallback_uses_default_voice is True
+    assert mgr.tts_pending_chunks == [
+        ("speech-1", "first"),
+        ("speech-1", "second"),
+        ("speech-1", "later"),
+    ]
+    assert mgr._tts_done_queued_for_turn is False
+    assert mgr._tts_done_pending_until_ready is True
+    assert LLMSessionManager._effective_tts_route(mgr) == ("", False)
     assert any("fallback_provider=qwen" in message for message in warnings)
+
+
+def test_configured_tts_failure_replays_ledger_after_current_speech_id_rotates(
+    monkeypatch,
+):
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.core_api_type = "qwen"
+    mgr.voice_id = "vendor-voice"
+    mgr.current_speech_id = "next-speech"
+    mgr._tts_active_provider_key = "custom"
+    mgr._tts_excluded_provider_keys = frozenset()
+    mgr.tts_request_queue = queue.Queue()
+    mgr.tts_pending_chunks = []
+    mgr._tts_replay_speech_id = "completed-speech"
+    mgr._tts_replay_chunks = [("completed-speech", "complete reply")]
+    mgr._tts_replay_done = True
+    mgr._tts_done_queued_for_turn = True
+    mgr._tts_done_pending_until_ready = False
+    mgr._tts_fallback_uses_default_voice = False
+    mgr._reset_tts_stream_normalizer = lambda: None
+    mgr._start_tts_thread = lambda **_kwargs: None
+    monkeypatch.setattr(
+        tts_runtime_module._core_facade,
+        "tts_provider_falls_back_on_failure",
+        lambda provider: provider == "custom",
+    )
+    monkeypatch.setattr(
+        tts_runtime_module._core_facade,
+        "tts_provider_uses_configured_preset_voice",
+        lambda provider: provider == "custom",
+    )
+
+    assert LLMSessionManager._activate_configured_tts_fallback(mgr, "运行时") is True
+
+    assert mgr.tts_pending_chunks == [("completed-speech", "complete reply")]
+    assert mgr._tts_done_pending_until_ready is True
+
+
+@pytest.mark.asyncio
+async def test_replayed_utterance_and_done_flush_to_replacement_worker():
+    mgr = LLMSessionManager.__new__(LLMSessionManager)
+    mgr.tts_cache_lock = asyncio.Lock()
+    mgr.tts_pending_chunks = [
+        ("speech-1", "first"),
+        ("speech-1", "second"),
+        ("speech-1", "later"),
+    ]
+    mgr._tts_done_pending_until_ready = True
+    mgr.tts_thread = SimpleNamespace(is_alive=lambda: True)
+    mgr.tts_request_queue = queue.Queue()
+    mgr._enqueue_tts_text_chunk = lambda sid, text: mgr.tts_request_queue.put((sid, text))
+
+    def request_done():
+        mgr.tts_request_queue.put((None, None))
+        mgr._tts_done_pending_until_ready = False
+        return "queued"
+
+    mgr._request_tts_done_locked = request_done
+
+    await LLMSessionManager._flush_tts_pending_chunks(mgr)
+
+    assert [mgr.tts_request_queue.get_nowait() for _ in range(4)] == [
+        ("speech-1", "first"),
+        ("speech-1", "second"),
+        ("speech-1", "later"),
+        (None, None),
+    ]
 
 
 @pytest.mark.asyncio
@@ -523,7 +693,15 @@ def _install_fake_openai(monkeypatch, chunks):
     return clients
 
 
-def _run_worker_once(monkeypatch, chunks, *, base_url=None, model=None, voice_id="character-voice"):
+def _run_worker_once(
+    monkeypatch,
+    chunks,
+    *,
+    base_url=None,
+    model=None,
+    voice_id="character-voice",
+    audio_api_key="sk-test",
+):
     clients = _install_fake_openai(monkeypatch, chunks)
     request_queue = queue.Queue()
     response_queue = queue.Queue()
@@ -534,7 +712,7 @@ def _run_worker_once(monkeypatch, chunks, *, base_url=None, model=None, voice_id
         kwargs["model"] = model
     thread = threading.Thread(
         target=tts_client.openai_tts_worker,
-        args=(request_queue, response_queue, "sk-test", voice_id),
+        args=(request_queue, response_queue, audio_api_key, voice_id),
         kwargs=kwargs,
         daemon=True,
     )
@@ -577,6 +755,34 @@ def test_custom_worker_uses_openai_sdk_and_siliconflow_extensions(monkeypatch):
         "extra_body": {"sample_rate": 24000, "stream": True},
     }]
     assert clients[0].closed is True
+
+
+def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_empty(monkeypatch):
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00"],
+        base_url="http://127.0.0.1:8000/v1",
+        audio_api_key="",
+    )
+    _wait_for_item(response_queue, lambda item: isinstance(item, bytes))
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+
+    assert clients[0].client_kwargs == {
+        "api_key": "",
+        "base_url": "http://127.0.0.1:8000/v1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_openai_sdk_omits_authorization_for_empty_api_key():
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(api_key="", base_url="http://127.0.0.1:8000/v1")
+    try:
+        assert "Authorization" not in client.auth_headers
+    finally:
+        await client.close()
 
 
 def test_builtin_openai_worker_keeps_sdk_default_endpoint_and_body(monkeypatch):

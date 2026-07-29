@@ -415,6 +415,14 @@ def falls_back_on_failure(provider_key: str | None) -> bool:
     return bool(provider and provider.fallback_on_failure)
 
 
+def uses_configured_preset_voice(provider_key: str | None) -> bool:
+    """Whether the provider owns the configured voice field as its preset."""
+    # Core and storage query metadata here instead of hardcoding custom/vllm keys.
+    # core 与存储层统一查元数据，避免写死 custom/vllm provider 名称。
+    provider = get(provider_key)
+    return bool(provider and provider.configured_preset_voice)
+
+
 # ── Preset-catalog queries (single source of truth for built-in voices) ──────
 # Primitives are keyed by provider; the ``selected_*`` variants gate on which
 # provider actually wins for the current config (via ``selected_provider``), so

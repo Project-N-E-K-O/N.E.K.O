@@ -32,6 +32,20 @@ logger = get_module_logger(__name__, "Main")
 # worker 的 sid is None 分支）。两种语义必须分开。
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
+
+def configured_tts_unavailable_worker(
+    request_queue,
+    response_queue,
+    _audio_api_key,
+    _voice_id,
+):
+    """Report a configured-provider setup failure through the normal ready channel."""
+    # Keep the failed provider as the active owner until core observes readiness;
+    # this prevents legacy clone fallthrough from reusing its voice ID or API key.
+    # 配置解析失败也要先归属原 provider，再由统一监管层清空音色和凭证后回退。
+    _ = request_queue
+    response_queue.put(("__ready__", False))
+
 def _parse_env_float(env_name: str, default: float, min_value: float) -> float:
     raw = os.getenv(env_name)
     if raw is None or raw == "":

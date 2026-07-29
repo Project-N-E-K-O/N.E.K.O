@@ -288,3 +288,36 @@ def test_configured_custom_tts_voice_saves_with_runtime_owner(
         "ref": voice_id,
     }
     assert read_legacy_voice_id(stored) == voice_id
+
+
+@pytest.mark.unit
+def test_configured_custom_voice_owner_wins_over_same_id_clone(
+    config_manager,
+    monkeypatch,
+):
+    _write_core_config(
+        config_manager,
+        {
+            "coreApi": "qwen",
+            "enableCustomApi": True,
+            "ttsModelProvider": "custom",
+            "ttsModelUrl": "https://speech.example.com/v1",
+            "ttsModelId": "vendor-tts",
+            "ttsVoiceId": "vendor-voice",
+        },
+    )
+    monkeypatch.setattr(
+        config_manager,
+        "get_voices_for_current_api",
+        lambda **_kwargs: {
+            "vendor-voice": {"provider": "cosyvoice", "source": "clone"}
+        },
+    )
+
+    stored = config_manager.voice_id_to_storage_value("vendor-voice")
+
+    assert stored == {
+        "source": "preset",
+        "provider": "custom",
+        "ref": "vendor-voice",
+    }

@@ -287,6 +287,16 @@ class LLMSessionManager(
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
+        # Keep one utterance ledger so a replacement worker can replay consumed text.
+        # 已送入当前 worker 的原始文本账本。配置型 provider 运行时失败时，
+        # 用它把本轮文本与 done 信号交给替代 worker，避免整段回复静音。
+        self._tts_replay_speech_id: Optional[str] = None
+        self._tts_replay_chunks: list[tuple[Optional[str], str]] = []
+        self._tts_replay_done: bool = False
+        # A failed configured preset must not leak its identity into legacy clone routing.
+        # 配置型 preset 失败后，本会话保留角色配置，但替代 worker 使用默认音色，
+        # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。
+        self._tts_fallback_uses_default_voice: bool = False
         self._active_text_request_id: Optional[str] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()

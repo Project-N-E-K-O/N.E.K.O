@@ -25,7 +25,12 @@ from urllib.parse import urlparse, urlunparse
 from utils.config_manager import _as_bool
 from utils.gptsovits_config import redact_url_for_log
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import (
+    TTS_SHUTDOWN_SENTINEL,
+    _enqueue_error,
+    _resample_audio,
+    configured_tts_unavailable_worker,
+)
 from .._telemetry import _record_tts_telemetry
 from .dummy import dummy_tts_worker
 from utils.logger_config import get_module_logger
@@ -706,7 +711,11 @@ def _vllm_omni_resolve(ctx):
             "无法读取自定义 WebSocket TTS API 配置，将进入既有保底流程",
             exc_info=True,
         )
-        raise RuntimeError("无法读取自定义 WebSocket TTS API 配置") from exc
+        # Preserve WSS/HTTPS provider symmetry: both report setup failure through
+        # the same ready channel before core activates the existing fallback.
+        # WSS 与 HTTPS 配置读取失败都先回报原 provider，再进入同一保底接缝。
+        _ = exc
+        return configured_tts_unavailable_worker, "", "vllm_omni"
 
     # 克隆音色始终优先于配置默认（preset）：用户选了克隆音色 = 明确意图用克隆，
     # 无论是否配置了 vllm_omni 作为默认 provider 都应走 clone resolve。之前的

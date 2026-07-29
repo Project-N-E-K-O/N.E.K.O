@@ -178,7 +178,7 @@ __all__ = [
     "_vllm_omni_normalize_ws_endpoint",
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
-    "tts_provider_falls_back_on_failure",
+    "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -483,6 +483,11 @@ def tts_provider_falls_back_on_failure(provider_key):
     # active worker opted into replacement after failure.
     # 通过门面隔离 provider 策略；core 只查询当前 worker 是否允许故障切换。
     return _tts_providers.falls_back_on_failure(provider_key)
+
+
+def tts_provider_uses_configured_preset_voice(provider_key):
+    """Expose configured-preset ownership without importing utils in core mixins."""
+    return _tts_providers.uses_configured_preset_voice(provider_key)
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
 # 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities

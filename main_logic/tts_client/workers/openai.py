@@ -19,7 +19,12 @@ from functools import partial
 import numpy as np
 import soxr
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _run_sentence_tts_worker
+from .._infra import (
+    TTS_SHUTDOWN_SENTINEL,
+    _resample_audio,
+    _run_sentence_tts_worker,
+    configured_tts_unavailable_worker,
+)
 from .._telemetry import _record_tts_telemetry
 from utils.config_manager import _as_bool
 from utils.logger_config import get_module_logger
@@ -67,9 +72,10 @@ def openai_tts_worker(
     effective_voice = str(voice_id or "").strip() or str(voice or "").strip()
 
     async def setup(response_queue):
-        client_kwargs = {
-            "api_key": audio_api_key or ("sk-placeholder" if base_url else audio_api_key),
-        }
+        # The SDK omits Authorization for an empty key, matching connectivity probes.
+        # 空字符串可让新版 OpenAI SDK 不生成 Authorization 头；自托管免鉴权
+        # 服务不应收到伪造的 Bearer 凭证，行为也要与连通性探测保持一致。
+        client_kwargs = {"api_key": audio_api_key or ""}
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
@@ -169,20 +175,22 @@ def _custom_openai_tts_is_selected(ctx) -> bool:
 def _custom_openai_tts_resolve(ctx):
     try:
         raw = ctx.cm.load_json_config("core_config.json", {}) or {}
-    except Exception as exc:
-        logger.error("无法读取自定义 TTS API 配置，将进入既有保底流程", exc_info=True)
-        raise RuntimeError("无法读取自定义 TTS API 配置") from exc
+        base_url = str(raw.get("ttsModelUrl") or "").strip()
+        model = str(raw.get("ttsModelId") or "").strip()
+        configured_voice = str(raw.get("ttsVoiceId") or "").strip()
+        effective_voice = str(ctx.voice_id or "").strip() or configured_voice
 
-    base_url = str(raw.get("ttsModelUrl") or "").strip()
-    model = str(raw.get("ttsModelId") or "").strip()
-    configured_voice = str(raw.get("ttsVoiceId") or "").strip()
-    effective_voice = str(ctx.voice_id or "").strip() or configured_voice
-
-    # Fail before spawning the worker so registry dispatch can select the next
-    # existing provider without changing its established order.
-    # 在线程启动前校验配置，失败时让注册表按原顺序选择保底 provider。
-    openai_tts_base_url(base_url)
-    build_openai_tts_payload("", model, effective_voice)
+        # Validate before spawning the network worker, but retain the provider
+        # identity so the shared supervisor can sanitize and replay on fallback.
+        # 在线程启动前校验配置；失败时仍保留 provider 身份，交给监管层安全回退。
+        openai_tts_base_url(base_url)
+        build_openai_tts_payload("", model, effective_voice)
+    except Exception:
+        logger.error(
+            "自定义 TTS API 配置读取或校验失败，将进入既有保底流程",
+            exc_info=True,
+        )
+        return configured_tts_unavailable_worker, "", "custom"
 
     worker = partial(
         openai_tts_worker,

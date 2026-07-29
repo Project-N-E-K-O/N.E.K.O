@@ -1016,6 +1016,9 @@ class LifecycleMixin:
         async with self.tts_cache_lock:
             self.tts_ready = preserve_tts_ready
             self.tts_pending_chunks.clear()
+            # Session replacement invalidates the previous utterance replay ledger.
+            # 新会话不得继承上一轮的 TTS 回放文本或结束信号。
+            self._reset_tts_replay_state()
 
         # 重置输入缓存状态
         async with self.input_cache_lock:

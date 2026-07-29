@@ -63,6 +63,7 @@ from main_logic.tts_client import (
     get_tts_worker,
     dummy_tts_worker,
     tts_provider_falls_back_on_failure,
+    tts_provider_uses_configured_preset_voice,
     TTS_PROVIDER_REGISTRY,
     VLLM_OMNI_DEFAULT_BASE_URL,
     VLLM_OMNI_DEFAULT_MODEL,
