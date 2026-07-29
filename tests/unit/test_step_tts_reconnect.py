@@ -62,6 +62,11 @@ class _AutoShutdownQueue:
             return self._items.pop(0)
         return (TTS_SHUTDOWN_SENTINEL, None)
 
+    def get_nowait(self):
+        if self._items:
+            return self._items.pop(0)
+        raise queue.Empty
+
 
 def test_buffered_delta_failure_reconnects_and_replays_text(monkeypatch):
     initial = _FakeTtsSocket([
@@ -274,8 +279,13 @@ def test_finish_retry_precedes_queued_new_speech(monkeypatch):
         {"type": "tts.connection.done", "data": {"session_id": "new"}},
     ])
     sockets = iter([initial, old_broken, old_recovered, new_socket])
+    connect_attempt = 0
 
     async def connect(*_args, **_kwargs):
+        nonlocal connect_attempt
+        connect_attempt += 1
+        if connect_attempt == 3:
+            raise RuntimeError("first terminal reconnect failed")
         return next(sockets)
 
     real_sleep = _step_protocol.asyncio.sleep
@@ -311,3 +321,47 @@ def test_finish_retry_precedes_queued_new_speech(monkeypatch):
         "tts.text.delta",
     ]
     assert new_socket.sent[1]["data"]["text"] == "new text remains open"
+
+
+def test_interrupt_preempts_finish_retry_after_backoff(monkeypatch):
+    initial = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
+        {"type": "tts.response.created"},
+    ])
+    old_broken = _FakeTtsSocket(
+        [{"type": "tts.connection.done", "data": {"session_id": "old-broken"}}],
+        fail_send_from=1,
+    )
+    unexpected_retry = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "unexpected"}},
+    ])
+    sockets = iter([initial, old_broken, unexpected_retry])
+
+    async def connect(*_args, **_kwargs):
+        return next(sockets)
+
+    real_sleep = _step_protocol.asyncio.sleep
+
+    async def no_delay(_seconds):
+        await real_sleep(0)
+
+    monkeypatch.setattr(_step_protocol.websockets, "connect", connect)
+    monkeypatch.setattr(_step_protocol.asyncio, "sleep", no_delay)
+
+    requests = _AutoShutdownQueue()
+    responses = queue.Queue()
+    requests.put(("speech-old", "old"))
+    requests.put((None, None))
+    requests.put(("__interrupt__", None))
+    requests.put((TTS_SHUTDOWN_SENTINEL, None))
+
+    _step_protocol.run_step_protocol_tts_worker(
+        requests,
+        responses,
+        "test-key",
+        "test-voice",
+        provider_key="step",
+    )
+
+    assert unexpected_retry.sent == []
+    assert old_broken._closed is True

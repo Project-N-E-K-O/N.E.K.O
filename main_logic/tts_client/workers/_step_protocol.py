@@ -28,6 +28,8 @@ import websockets
 import io
 import wave
 import asyncio
+import queue as queue_module
+from collections import deque
 
 from utils.config_manager import get_config_manager
 from utils.tts.providers.stepfun import STEPFUN_TTS_DEFAULT_VOICE, get_stepfun_tts_default_voice, normalize_stepfun_tts_voice
@@ -156,6 +158,7 @@ def run_step_protocol_tts_worker(
         session_created = False
         pending_text_buffer = ""
         pending_finish_retry_speech_id = None
+        deferred_requests = deque()
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         # StepFun/免费上游首包后第一个 inter-chunk gap 偏大，会让开头几个字 jitter。
@@ -517,9 +520,30 @@ def run_step_protocol_tts_worker(
             loop = asyncio.get_running_loop()
             while True:
                 if pending_finish_retry_speech_id is not None:
-                    sid = _FINISH_RETRY_SENTINEL
-                    tts_text = pending_finish_retry_speech_id
-                    pending_finish_retry_speech_id = None
+                    control_request = None
+                    while True:
+                        try:
+                            queued_request = request_queue.get_nowait()
+                        except queue_module.Empty:
+                            break
+                        except (AttributeError, NotImplementedError):
+                            break
+                        if queued_request[0] in {
+                            TTS_SHUTDOWN_SENTINEL,
+                            "__interrupt__",
+                        }:
+                            control_request = queued_request
+                            break
+                        deferred_requests.append(queued_request)
+                    if control_request is not None:
+                        pending_finish_retry_speech_id = None
+                        sid, tts_text = control_request
+                    else:
+                        sid = _FINISH_RETRY_SENTINEL
+                        tts_text = pending_finish_retry_speech_id
+                        pending_finish_retry_speech_id = None
+                elif deferred_requests:
+                    sid, tts_text = deferred_requests.popleft()
                 else:
                     try:
                         sid, tts_text = await loop.run_in_executor(None, request_queue.get)
@@ -569,6 +593,7 @@ def run_step_protocol_tts_worker(
                         text_done_sent = False
                         session_created = False
                         pending_text_buffer = ""
+                        deferred_requests.clear()
                         audio_jitter.reset()  # 打断：丢弃未放出的缓冲音频
                         audio_jitter.end_interrupt()
                     continue
@@ -723,11 +748,10 @@ def run_step_protocol_tts_worker(
                         if 'HTTP 503' in str(e):
                             _enqueue_error(response_queue, json.dumps({"code": "UPSTREAM_SERVER_BUSY"}))
                         response_queue.put(("__reconnecting__", "TTS_RECONNECTING"))
-                        await asyncio.sleep(1.0)
                         if finish_requested:
-                            request_queue.put(
-                                (_FINISH_RETRY_SENTINEL, current_speech_id)
-                            )
+                            await _queue_finish_retry(current_speech_id)
+                        else:
+                            await asyncio.sleep(1.0)
                         continue
 
                 if finish_requested:
