@@ -1765,7 +1765,6 @@
         "close": "Cerca",
         "catgirlMemory": "Personajes",
         "compactLibraryLabel": "Lista de personajes",
-        "currentRole": "Personaje actual:",
         "autoReview": "Revisión automática de memoria",
         "globalActionsAria": "Acciones de memoria",
         "openTutorialManager": "Guía",
@@ -1791,6 +1790,7 @@
         "autoReviewTooltipLabel": "Acerca de la revisión automática de memoria",
         "strongMemoryTooltipLabel": "Acerca de la memoria reforzada",
         "externalImportTooltipLabel": "Acerca de importar memoria externa",
+        "roleSourceTooltip": "Origen: {{source}}",
         "loading": "Cargando...",
         "externalImportTitle": "Importar memoria externa",
         "externalImportNote": "Importa USER.md, SOUL.md, MEMORY.md, notas diarias o un ZIP de OpenClaw o Hermes al personaje seleccionado.",
@@ -1827,7 +1827,6 @@
         "olderSection": "Antes",
         "me": "Yo:",
         "memoNone": "Ninguno.",
-        "delete": "Borrar",
         "deleteEntryAria": "Eliminar el recuerdo {{position}} de {{speaker}}",
         "pleaseSelectFile": "Por favor seleccione un archivo primero",
         "saveFailed": "Error al guardar: {{error}}",
@@ -2376,7 +2375,7 @@
             "never": "No recordar de nuevo"
         },
         "screenSource": {
-            "notAvailable": "Selección de fuente de pantalla solo disponible en la versión de escritorio",
+            "notAvailable": "La selección de fuente de pantalla no está disponible en el entorno actual",
             "loading": "Cargando...",
             "noSources": "No hay fuentes de pantalla disponibles",
             "loadFailed": "No se pudieron cargar las fuentes de la pantalla",
@@ -2384,7 +2383,8 @@
             "screenLabel": "Pantalla {{index}}",
             "windows": "ventanas",
             "selected": "Seleccionado {{source}}",
-            "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa"
+            "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
+            "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente"
         },
         "deviceSwitchFailed": "Error en el cambio de dispositivo",
         "deviceSwitching": "Dispositivo de conmutación...",
@@ -2687,9 +2687,11 @@
             "visionInterval": "Intervalo de percepción"
         },
         "widgetMode": {
-            "enabledNotice": "Modo de acoplamiento al borde Beta está activado.",
-            "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
+            "enabledNotice": "Asomarse por el borde está activado.",
+            "disabledNotice": "Asomarse por el borde está desactivado. Live2D vuelve a estar visible y se puede arrastrar.",
+            "stealthEnabledNotice": "El modo oculto está activado.",
+            "stealthDisabledNotice": "El modo oculto está desactivado. Yui seguirá asomándose por el borde.",
+            "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
@@ -2697,8 +2699,6 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "widgetMode": "Modo de acoplamiento al borde Beta",
-            "widgetModeTooltip": "Activa manualmente el modo de acoplamiento para que Live2D pueda asomarse desde seis anclajes del borde.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",

@@ -145,11 +145,19 @@ const LIVE2D_PEEK_VISIBLE_MIN_PX = 96;
 const LIVE2D_PEEK_VISIBLE_MAX_PX = 180;
 const LIVE2D_PEEK_SIDE_ROTATION_DEGREES = 60;
 const LIVE2D_PEEK_CORNER_ROTATION_DEGREES = 45;
+// live2d-core.js performs its final cross-display renderer resize after 120ms.
+// Restore the semantic edge anchor only after that pass can no longer clear it.
+const LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS = 160;
 const LIVE2D_PEEK_TOP_CORNER_ROTATION_DEGREES = 135;
 const LIVE2D_PEEK_HEAD_Y_RATIO = 0.24;
 const LIVE2D_PEEK_VISIBLE_MARGIN_PX = 8;
-const LIVE2D_PEEK_ANIMATION_MS = 200;
+const LIVE2D_PEEK_HIDDEN_MARGIN_PX = 2;
+const LIVE2D_PEEK_REVEAL_ANIMATION_MS = 300;
+const LIVE2D_PEEK_HIDE_ANIMATION_MS = 220;
+const LIVE2D_PEEK_RESTORE_ANIMATION_MS = 260;
 let live2DPeekDisplayContext = null;
+let live2DPeekDisplayReconcileId = 0;
+let live2DPeekPendingDisplayRestoreAnchor = null;
 let live2DPeekDisplayRefresh = null;
 
 function getLive2DNiriPetVirtualViewport() {
@@ -168,19 +176,9 @@ function getLive2DNiriPetVirtualViewport() {
         return null;
     }
 }
-
-function isLive2DPeekMacRuntime() {
-    try {
-        return !!(window.__NEKO_DESKTOP_RUNTIME__ &&
-            window.__NEKO_DESKTOP_RUNTIME__.platform === 'darwin');
-    } catch (_) {
-        return false;
-    }
-}
-
 function isLive2DPeekDesktopRuntime() {
     try {
-        return isLive2DPeekMacRuntime() || !!(
+        return !!window.__NEKO_DESKTOP_RUNTIME__ || !!(
             window.electronScreen &&
             typeof window.electronScreen.getCurrentDisplay === 'function'
         );
@@ -285,9 +283,21 @@ function getLive2DPeekTriggerViewport(viewport) {
 
 function isLive2DPeekEnabled() {
     try {
-        return !!(window.nekoWidgetMode &&
+        return !!(isLive2DPeekDesktopRuntime() &&
+            window.nekoWidgetMode &&
             typeof window.nekoWidgetMode.isEnabled === 'function' &&
             window.nekoWidgetMode.isEnabled());
+    } catch (_) {
+        return false;
+    }
+}
+
+function isLive2DPeekStealthEnabled() {
+    try {
+        return !!(isLive2DPeekEnabled() &&
+            window.nekoWidgetMode &&
+            typeof window.nekoWidgetMode.isStealthEnabled === 'function' &&
+            window.nekoWidgetMode.isStealthEnabled());
     } catch (_) {
         return false;
     }
@@ -636,6 +646,14 @@ function getLive2DPeekPlacement(model, bounds, manager = null) {
     }
     const visibleBounds = getLive2DPeekViewportIntersection(targetBounds, viewport);
     if (!visibleBounds) return null;
+    const edgeAnchorRatio = clampLive2DPeekCoordinate(
+        visibleBounds.centerY / viewport.height,
+        0,
+        1
+    );
+    const hiddenOffsetX = side === 'left'
+        ? viewport.left - targetBounds.right - LIVE2D_PEEK_HIDDEN_MARGIN_PX
+        : viewport.right - targetBounds.left + LIVE2D_PEEK_HIDDEN_MARGIN_PX;
 
     return {
         edge,
@@ -649,11 +667,20 @@ function getLive2DPeekPlacement(model, bounds, manager = null) {
         headAnchorSource: transformedHeadAnchorSource,
         waistAnchored: useWaistAnchor,
         revealWidth,
-        visibleBounds
+        edgeAnchorRatio,
+        visibleBounds,
+        hiddenX: baseX + offsetX + hiddenOffsetX,
+        hiddenY: baseY + offsetY
     };
 }
 
-function animateLive2DPeekTransform(model, target, duration = LIVE2D_PEEK_ANIMATION_MS, shouldContinue = null) {
+function animateLive2DPeekTransform(
+    model,
+    target,
+    duration = LIVE2D_PEEK_REVEAL_ANIMATION_MS,
+    shouldContinue = null,
+    easingType = 'easeOutCubic'
+) {
     return new Promise((resolve) => {
         if (!model || model.destroyed || !target) {
             resolve(false);
@@ -666,9 +693,26 @@ function animateLive2DPeekTransform(model, target, duration = LIVE2D_PEEK_ANIMAT
             scaleX: model.scale && Number.isFinite(Number(model.scale.x)) ? Number(model.scale.x) : 1
         };
         const startTime = performance.now();
-        const total = Math.max(0, Number(duration) || 0);
+        const reduceMotion = (() => {
+            try {
+                return typeof window.matchMedia === 'function'
+                    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            } catch (_) {
+                return false;
+            }
+        })();
+        const total = reduceMotion ? 0 : Math.max(0, Number(duration) || 0);
+        const easingFn = easingType === 'easeOutSoftBack'
+            ? (progress) => {
+                const overshoot = 0.9;
+                const shifted = progress - 1;
+                return 1
+                    + (overshoot + 1) * Math.pow(shifted, 3)
+                    + overshoot * Math.pow(shifted, 2);
+            }
+            : (EasingFunctions[easingType] || EasingFunctions.easeOutCubic);
         const apply = (progress) => {
-            const eased = EasingFunctions.easeOutCubic(progress);
+            const eased = easingFn(progress);
             model.x = start.x + (target.x - start.x) * eased;
             model.y = start.y + (target.y - start.y) * eased;
             model.rotation = start.rotation + (target.rotation - start.rotation) * eased;
@@ -757,6 +801,20 @@ Live2DManager.prototype._setLive2DPeekControlsSuppressed = function (active) {
     });
 };
 
+function isLive2DWidgetInteractionActive() {
+    try {
+        return !!(window.NekoWidgetInteraction &&
+            typeof window.NekoWidgetInteraction.isActive === 'function' &&
+            window.NekoWidgetInteraction.isActive());
+    } catch (_) {
+        return false;
+    }
+}
+
+function shouldRevealLive2DPeek() {
+    return !isLive2DPeekStealthEnabled() || isLive2DWidgetInteractionActive();
+}
+
 Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options = {}) {
     const state = this._live2DPeekState;
     const model = state && state.model && !state.model.destroyed ? state.model : null;
@@ -771,6 +829,7 @@ Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options =
         if (model.scale && Number.isFinite(Number(state.baseScaleX))) {
             model.scale.x = state.baseScaleX;
         }
+        model.interactive = state.baseInteractive;
     }
     this._live2DPeekState = null;
     if (document.body) {
@@ -779,7 +838,7 @@ Live2DManager.prototype.clearLive2DPeek = function (reason = 'manual', options =
     this._setLive2DPeekControlsSuppressed(false);
     try {
         window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
-            detail: { active: false, reason }
+            detail: { active: false, phase: 'unanchored', reason }
         }));
     } catch (_) {}
 };
@@ -788,7 +847,11 @@ Live2DManager.prototype.restoreLive2DPeek = async function (reason = 'manual-res
     const state = this._live2DPeekState;
     const model = state && state.model && !state.model.destroyed ? state.model : null;
     if (!state || !state.active || !model) return false;
-    const transitionId = state.transitionId;
+    const transitionId = (this._live2DPeekTransitionId || 0) + 1;
+    this._live2DPeekTransitionId = transitionId;
+    state.transitionId = transitionId;
+    state.phase = 'hiding';
+    model.interactive = false;
     const stillCurrent = () => {
         const activeState = this._live2DPeekState;
         return !!(activeState &&
@@ -801,9 +864,76 @@ Live2DManager.prototype.restoreLive2DPeek = async function (reason = 'manual-res
         y: state.baseY,
         rotation: state.baseRotation,
         scaleX: state.baseScaleX
-    }, LIVE2D_PEEK_ANIMATION_MS, stillCurrent);
+    }, LIVE2D_PEEK_RESTORE_ANIMATION_MS, stillCurrent, 'easeInOutQuad');
     if (!animated || !stillCurrent()) return false;
     this.clearLive2DPeek(reason);
+    return true;
+};
+
+Live2DManager.prototype._setLive2DPeekVisibility = async function (visible, reason = 'interaction-state') {
+    const state = this._live2DPeekState;
+    const model = state && state.model && !state.model.destroyed ? state.model : null;
+    if (!state || !state.active || !model) return false;
+
+    const shouldReveal = visible === true;
+    if (shouldReveal && (state.phase === 'revealing' || state.phase === 'peeking')) return true;
+    if (!shouldReveal && (state.phase === 'hiding' || state.phase === 'hidden')) return true;
+
+    const transitionId = (this._live2DPeekTransitionId || 0) + 1;
+    this._live2DPeekTransitionId = transitionId;
+    state.transitionId = transitionId;
+    state.phase = shouldReveal ? 'revealing' : 'hiding';
+    model.interactive = shouldReveal ? state.baseInteractive : false;
+
+    const target = shouldReveal
+        ? {
+            x: state.peekX,
+            y: state.peekY,
+            rotation: state.peekRotation,
+            scaleX: state.peekScaleX
+        }
+        : {
+            x: state.hiddenX,
+            y: state.hiddenY,
+            rotation: state.peekRotation,
+            scaleX: state.peekScaleX
+        };
+    const stillCurrent = () => {
+        const activeState = this._live2DPeekState;
+        return !!(activeState &&
+            activeState.active &&
+            activeState.model === model &&
+            activeState.transitionId === transitionId);
+    };
+    const animated = await animateLive2DPeekTransform(
+        model,
+        target,
+        shouldReveal
+            ? LIVE2D_PEEK_REVEAL_ANIMATION_MS
+            : LIVE2D_PEEK_HIDE_ANIMATION_MS,
+        stillCurrent,
+        shouldReveal ? 'easeOutSoftBack' : 'easeInOutQuad'
+    );
+    if (!animated || !stillCurrent()) return false;
+
+    model.x = target.x;
+    model.y = target.y;
+    model.rotation = target.rotation;
+    if (model.scale) model.scale.x = target.scaleX;
+    state.phase = shouldReveal ? 'peeking' : 'hidden';
+    model.interactive = shouldReveal ? state.baseInteractive : false;
+    try {
+        window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
+            detail: {
+                active: true,
+                visible: shouldReveal,
+                phase: state.phase,
+                edge: state.edge,
+                visibleBounds: shouldReveal ? state.visibleBounds : null,
+                reason
+            }
+        }));
+    } catch (_) {}
     return true;
 };
 
@@ -812,8 +942,13 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
         this.clearLive2DPeek('widget-mode-disabled');
         return false;
     }
-    if (isLive2DPeekDesktopRuntime()) {
+    if (window.electronScreen &&
+            typeof window.electronScreen.getCurrentDisplay === 'function') {
         await refreshLive2DPeekDisplayContext();
+    }
+    if (!isLive2DPeekEnabled() || !model || model.destroyed) {
+        this.clearLive2DPeek('widget-mode-disabled-after-display-check');
+        return false;
     }
     const bounds = getLive2DPeekBounds(model);
     const target = getLive2DPeekPlacement(model, bounds, this);
@@ -837,55 +972,43 @@ Live2DManager.prototype._tryApplyLive2DPeek = async function (model) {
         baseY,
         baseRotation,
         baseScaleX,
+        baseInteractive: model.interactive,
         transitionId,
         peekX: target.x,
         peekY: target.y,
         peekRotation: target.rotation,
         peekScaleX: target.scaleX,
+        hiddenX: target.hiddenX,
+        hiddenY: target.hiddenY,
+        phase: 'unanchored',
         headAnchored: target.headAnchored,
         headAnchorSource: target.headAnchorSource,
         waistAnchored: target.waistAnchored,
+        edgeAnchorRatio: target.edgeAnchorRatio,
         visibleBounds: target.visibleBounds
     };
     if (document.body) {
         document.body.classList.add('neko-live2d-peek');
     }
     this._setLive2DPeekControlsSuppressed(true);
-    const stillCurrent = () => {
-        const activeState = this._live2DPeekState;
-        return !!(activeState &&
-            activeState.active &&
-            activeState.model === model &&
-            activeState.transitionId === transitionId);
-    };
-    const animated = await animateLive2DPeekTransform(
-        model,
-        target,
-        LIVE2D_PEEK_ANIMATION_MS,
-        stillCurrent
+    return await this._setLive2DPeekVisibility(
+        shouldRevealLive2DPeek(),
+        'anchor-created'
     );
-    if (!animated || !stillCurrent()) return false;
-    model.x = target.x;
-    model.y = target.y;
-    model.rotation = target.rotation;
-    if (model.scale) {
-        model.scale.x = target.scaleX;
-    }
-    const finalBounds = getLive2DPeekBounds(model);
-    const viewport = getLive2DPeekViewport(finalBounds || bounds, this);
-    const visibleBounds = getLive2DPeekViewportIntersection(finalBounds, viewport) || target.visibleBounds;
-    if (this._live2DPeekState && this._live2DPeekState.model === model) {
-        this._live2DPeekState.visibleBounds = visibleBounds;
-    }
-    try {
-        window.dispatchEvent(new CustomEvent('neko:live2d-peek-changed', {
-            detail: { active: true, edge: target.edge, visibleBounds }
-        }));
-    } catch (_) {}
-    return true;
 };
 
 function clearLive2DPeek(reason, options) {
+    const clearReason = String(reason || '');
+    const preservesDisplayRestore = (
+        clearReason === 'display-changed'
+        || clearReason.startsWith('viewport-changed:electron-display-changed')
+    );
+    if (!preservesDisplayRestore) {
+        // Drag/reload/disable/manual clears represent newer user or lifecycle
+        // intent and must win over an in-flight cross-display restoration.
+        live2DPeekPendingDisplayRestoreAnchor = null;
+        live2DPeekDisplayReconcileId += 1;
+    }
     const manager = window.live2dManager;
     if (manager && typeof manager.clearLive2DPeek === 'function') {
         manager.clearLive2DPeek(reason, options);
@@ -898,7 +1021,27 @@ function clearLive2DPeekOnDisabled(event) {
     const detail = event && event.detail && typeof event.detail === 'object' ? event.detail : {};
     if (detail.enabled === false) {
         clearLive2DPeek('widget-mode-disabled');
+        return;
     }
+    const manager = window.live2dManager;
+    if (manager && typeof manager._setLive2DPeekVisibility === 'function') {
+        void manager._setLive2DPeekVisibility(
+            shouldRevealLive2DPeek(),
+            'widget-mode-state'
+        );
+    }
+}
+
+function syncLive2DPeekWithInteraction(event) {
+    const manager = window.live2dManager;
+    if (!manager || typeof manager._setLive2DPeekVisibility !== 'function') return;
+    const detail = event && event.detail && typeof event.detail === 'object'
+        ? event.detail
+        : {};
+    void manager._setLive2DPeekVisibility(
+        !isLive2DPeekStealthEnabled() || detail.active === true,
+        detail.reason || 'interaction-state'
+    );
 }
 
 function clearLive2DPeekOnGoodbye(event) {
@@ -924,12 +1067,15 @@ function captureLive2DPeekRestoreAnchor() {
     const viewport = getLive2DPeekViewport(bounds, manager);
     const visibleBounds = state.visibleBounds || getLive2DPeekViewportIntersection(bounds, viewport);
     if (!viewport || !visibleBounds || viewport.height <= 0) return null;
+    const storedEdgeAnchorRatio = Number(state.edgeAnchorRatio);
     return {
         kind: 'live2d-edge-peek',
         edge,
         side: state.side,
         edgeAnchorRatio: clampLive2DPeekCoordinate(
-            visibleBounds.centerY / viewport.height,
+            Number.isFinite(storedEdgeAnchorRatio)
+                ? storedEdgeAnchorRatio
+                : visibleBounds.centerY / viewport.height,
             0,
             1
         ),
@@ -974,6 +1120,26 @@ async function restoreLive2DPeekAnchor(anchor) {
     return await manager._tryApplyLive2DPeek(model);
 }
 
+async function reconcileLive2DPeekAfterDisplayChange() {
+    const reconcileId = ++live2DPeekDisplayReconcileId;
+    const restoreAnchor = captureLive2DPeekRestoreAnchor();
+    if (restoreAnchor) {
+        live2DPeekPendingDisplayRestoreAnchor = restoreAnchor;
+    }
+    clearLive2DPeek('display-changed');
+    live2DPeekDisplayContext = null;
+    await refreshLive2DPeekDisplayContext(true);
+    if (live2DPeekPendingDisplayRestoreAnchor) {
+        await new Promise((resolve) => {
+            setTimeout(resolve, LIVE2D_PEEK_DISPLAY_RESIZE_SETTLE_MS);
+        });
+        if (reconcileId !== live2DPeekDisplayReconcileId) return;
+        const pendingRestoreAnchor = live2DPeekPendingDisplayRestoreAnchor;
+        live2DPeekPendingDisplayRestoreAnchor = null;
+        await restoreLive2DPeekAnchor(pendingRestoreAnchor);
+    }
+}
+
 if (typeof window !== 'undefined') {
     window.nekoLive2DPeek = {
         clear: clearLive2DPeek,
@@ -982,13 +1148,14 @@ if (typeof window !== 'undefined') {
         restoreAnchor: restoreLive2DPeekAnchor
     };
     window.addEventListener('neko:widget-mode-state-changed', clearLive2DPeekOnDisabled);
+    window.addEventListener('neko:widget-interaction-state-changed', syncLive2DPeekWithInteraction);
     window.addEventListener('live2d-goodbye-click', clearLive2DPeekOnGoodbye);
     if (isLive2DPeekDesktopRuntime()) {
         void refreshLive2DPeekDisplayContext();
-        window.addEventListener('electron-display-changed', () => {
-            live2DPeekDisplayContext = null;
-            void refreshLive2DPeekDisplayContext(true);
-        });
+        window.addEventListener(
+            'electron-display-changed',
+            reconcileLive2DPeekAfterDisplayChange
+        );
     }
 }
 
@@ -1243,7 +1410,7 @@ Live2DManager.prototype._checkAndPerformSnap = async function (model, options = 
 
 // 设置拖拽功能
 Live2DManager.prototype.setupDragAndDrop = function (model) {
-    this.clearLive2DPeek('model-reload');
+    clearLive2DPeek('model-reload');
     model.interactive = true;
     // 移除 stage.hitArea = screen，避免阻挡背景点击
     // this.pixi_app.stage.interactive = true;
@@ -1344,7 +1511,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
         edgePeekStartedDrag = edgePeekOnPointerDown;
         edgePeekDragCleared = false;
         if (!edgePeekOnPointerDown) {
-            this.clearLive2DPeek('drag-start');
+            clearLive2DPeek('drag-start');
         }
         this._isDraggingModel = true;
         if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
@@ -1394,11 +1561,6 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             if (!hasMoved && clickDuration < CLICK_THRESHOLD_TIME) {
                 // 这是一个点击
                 console.log(`[Interaction] 检测到点击（时长: ${clickDuration}ms）`);
-                if (edgePeekStartedDrag) {
-                    await this.restoreLive2DPeek('click-restore');
-                    return; // edge peek click restores instead of triggering touch motions
-                }
-                
                 // 只在教程模式下，通过点击检测触发随机动画
                 // 非教程模式下，通过 hit 事件处理
                 await new Promise(resolve => setTimeout(resolve, 300));
@@ -1483,7 +1645,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
             }
 
             if (edgePeekStartedDrag && hasMoved && !edgePeekDragCleared) {
-                this.clearLive2DPeek('drag-start', { restore: false });
+                clearLive2DPeek('drag-start', { restore: false });
                 dragStartPos.x = x - model.x;
                 dragStartPos.y = y - model.y;
                 edgePeekDragCleared = true;

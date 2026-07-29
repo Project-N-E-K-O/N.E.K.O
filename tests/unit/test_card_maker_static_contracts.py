@@ -26,6 +26,7 @@ CHARACTER_CARD_MANAGER_PART_NAMES = (
     "sync-and-legacy-memory.js",
 )
 MODEL_MANAGER_PART_NAMES = (
+    "named-window-registration.js",
     "runtime-loaders.js",
     "dropdown-manager.js",
     "page-bridge.js",
@@ -126,7 +127,7 @@ def test_model_manager_parts_load_in_dependency_order():
     ]
     assert script_positions == sorted(script_positions)
 
-    loaders = (MODEL_MANAGER_JS_DIR / MODEL_MANAGER_PART_NAMES[0]).read_text(encoding="utf-8")
+    loaders = (MODEL_MANAGER_JS_DIR / "runtime-loaders.js").read_text(encoding="utf-8")
     assert loaders.index("window._vrmModulesLoading = true;") < loaders.index(
         "'/static/vrm/vrm-init.js'"
     )

@@ -5,7 +5,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
 def test_soccer_vrm0_fixed_camera_facing_fix_is_scoped_to_vrm0():
-    source = (PROJECT_ROOT / "templates/soccer_demo.html").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
 
     assert "function isSoccerVrm0(gltf, vrm)" in source
     assert "if (exts.includes('VRMC_vrm')) return false;" in source
@@ -14,7 +14,7 @@ def test_soccer_vrm0_fixed_camera_facing_fix_is_scoped_to_vrm0():
 
 
 def test_soccer_vrm0_fixed_camera_facing_fix_uses_bone_and_head_evidence():
-    source = (PROJECT_ROOT / "templates/soccer_demo.html").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
 
     assert "function countSoccerVrmReversedBonePairs(vrm)" in source
     assert "['leftEye', 'rightEye']" in source
@@ -24,7 +24,7 @@ def test_soccer_vrm0_fixed_camera_facing_fix_uses_bone_and_head_evidence():
 
 
 def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
-    source = (PROJECT_ROOT / "templates/soccer_demo.html").read_text(encoding="utf-8")
+    source = (PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
 
     assert "function syncSoccerVrmCameraTarget(manager, lookY, dist)" in source
     assert "manager.controls.target.copy(cameraTarget);" in source
@@ -38,7 +38,7 @@ def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
     helper_section = source.split(
         "window.__SoccerLoadVrmIntoManager = async function loadVrmIntoManager",
         1,
-    )[1].split("return vrm;", 1)[0]
+    )[1].split("return manager.currentModel;", 1)[0]
     assert "applySoccerVrm0FixedCameraFacingFix(gltf, vrm, manager);" in helper_section
     assert "fitVrmManagerCamera(manager, containerId, label);" in helper_section
 
@@ -51,7 +51,7 @@ def test_soccer_vrm0_fixed_camera_facing_fix_runs_on_both_soccer_load_paths():
 
 
 def test_soccer_vrm0_fixed_camera_facing_fix_keeps_yaw_offset_alive():
-    soccer_source = (PROJECT_ROOT / "templates/soccer_demo.html").read_text(encoding="utf-8")
+    soccer_source = (PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js").read_text(encoding="utf-8")
     interaction_source = (PROJECT_ROOT / "static/vrm/vrm-interaction.js").read_text(encoding="utf-8")
 
     assert "manager.__soccerFixedCameraNormalizeYaw = shouldNormalizeYaw;" in soccer_source

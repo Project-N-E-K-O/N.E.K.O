@@ -1765,7 +1765,6 @@
         "close": "Close",
         "catgirlMemory": "Characters",
         "compactLibraryLabel": "Character List",
-        "currentRole": "Current role:",
         "autoReview": "Auto Memory Review",
         "globalActionsAria": "Memory actions",
         "openTutorialManager": "Guide",
@@ -1791,6 +1790,7 @@
         "autoReviewTooltipLabel": "About automatic memory review",
         "strongMemoryTooltipLabel": "About powerful memory",
         "externalImportTooltipLabel": "About importing external memory",
+        "roleSourceTooltip": "Source: {{source}}",
         "loading": "Loading...",
         "externalImportTitle": "Import External Memory",
         "externalImportNote": "Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily notes, or a workspace ZIP into the selected character.",
@@ -1827,7 +1827,6 @@
         "olderSection": "Earlier",
         "me": "Me:",
         "memoNone": "None.",
-        "delete": "Delete",
         "deleteEntryAria": "Delete memory {{position}} from {{speaker}}",
         "pleaseSelectFile": "Please select a file first",
         "saveFailed": "Save failed: {{error}}",
@@ -2376,7 +2375,7 @@
             "never": "Do not remind me"
         },
         "screenSource": {
-            "notAvailable": "Screen source selection only available in desktop version",
+            "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
@@ -2384,7 +2383,8 @@
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "selected": "Selected {{source}}",
-            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
+            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
+            "captureFailed": "Screen capture stopped. Check system permissions or select the source again"
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",
@@ -2687,9 +2687,11 @@
             "visionInterval": "Perception Interval"
         },
         "widgetMode": {
-            "enabledNotice": "Edge Dock Mode Beta is on.",
-            "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
-            "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
+            "enabledNotice": "Edge Peek is on.",
+            "disabledNotice": "Edge Peek is off. Live2D is visible and draggable again.",
+            "stealthEnabledNotice": "Stealth Mode is on.",
+            "stealthDisabledNotice": "Stealth Mode is off. Yui will remain peeking from the edge.",
+            "toggleFailed": "Failed to switch Edge Peek. Please try again later."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
@@ -2697,8 +2699,6 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
-            "widgetMode": "Edge Dock Mode Beta",
-            "widgetModeTooltip": "Manually enable Edge Dock Mode to let Live2D peek from six screen-edge anchors.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",

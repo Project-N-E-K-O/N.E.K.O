@@ -49,6 +49,7 @@ from typing import Dict
 from multiprocessing import Process, freeze_support, Event
 import config as config_module
 from config import APP_NAME, MAIN_SERVER_PORT, MEMORY_SERVER_PORT, TOOL_SERVER_PORT
+from utils import parent_guard, single_instance
 from utils.port_utils import (
     probe_neko_health,
     acquire_startup_lock,
@@ -131,6 +132,17 @@ SHUTDOWN_MODULE_ORDER = (
 MERGED_SERVER_READY_TIMEOUT = 30.0
 MERGED_SERVER_READY_POLL_INTERVAL = 0.25
 MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
+
+#: Set by ``run_merged_servers`` while the in-process servers are running, so an
+#: owner-death teardown can drive the ordered shutdown instead of hard-exiting
+#: past it. ``None`` in multi-process mode, where ``cleanup_servers`` covers it.
+_merged_shutdown_request = None
+_merged_shutdown_complete = threading.Event()
+
+#: Upper bound on how long owner death waits for the merged ordered shutdown.
+#: Matches the watchdog inside ``_begin_merged_shutdown``: once that fires the
+#: process is going down regardless, so waiting longer buys nothing.
+OWNER_DEATH_MERGED_SHUTDOWN_BUDGET = 45.0
 MERGED_SERVER_SHUTDOWN_TIMEOUTS = {
     "Main": 20.0,
     "Memory": 12.0,
@@ -317,20 +329,101 @@ def _build_launcher_relaunch_command() -> list[str]:
     return [sys.executable, os.path.abspath(__file__), *sys.argv[1:]]
 
 
-def _should_detach_stdio_for_relaunch() -> bool:
-    for stream_name in ("stdin", "stdout", "stderr"):
-        stream = getattr(sys, stream_name, None)
-        isatty = getattr(stream, "isatty", None)
-        if callable(isatty):
-            try:
-                if isatty():
-                    return True
-            except Exception:
-                continue
-    return False
+#: Set by an owner that will relaunch the runtime itself after a clean exit.
+#: When present, a storage restart is a *request*, not a self-spawn.
+OWNER_RELAUNCH_ENV = "NEKO_OWNER_RELAUNCH"
+
+#: Marks the replacement launcher of a generation handoff so it can wait out the
+#: outgoing launcher's single-instance lock instead of concluding "already running".
+RESTART_HANDOFF_ENV = "NEKO_LAUNCHER_RESTART_HANDOFF"
+
+#: How long a losing launcher waits for the winner to publish its record before
+#: reporting the duplicate with an empty owner. Bounded: a winner whose record
+#: write failed would otherwise hang us indefinitely.
+DUPLICATE_RECORD_READ_BUDGET = 0.25
+
+RESTART_HANDOFF_LOCK_RETRIES = 40
+RESTART_HANDOFF_LOCK_RETRY_INTERVAL = 0.25
+
+
+def _owner_will_relaunch() -> bool:
+    return os.environ.get(OWNER_RELAUNCH_ENV, "").strip().lower() in ("1", "true", "yes")
+
+
+def _relax_job_kill_on_close() -> None:
+    """Stop our own Job Object from taking the replacement launcher with us.
+
+    ``setup_job_object`` sets ``KILL_ON_JOB_CLOSE`` so our servers cannot outlive
+    us. A replacement launcher spawned for a storage restart inherits the job
+    (it must — breaking away would be the very detachment we forbid), so the
+    flag has to be cleared before we exit. By this point ``cleanup_servers`` has
+    already run, so nothing else depends on the flag.
+    """
+    if sys.platform != "win32" or not JOB_HANDLE:
+        return
+    try:
+        kernel32 = ctypes.windll.kernel32
+
+        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ('PerProcessUserTimeLimit', ctypes.c_int64),
+                ('PerJobUserTimeLimit', ctypes.c_int64),
+                ('LimitFlags', ctypes.c_uint32),
+                ('MinimumWorkingSetSize', ctypes.c_size_t),
+                ('MaximumWorkingSetSize', ctypes.c_size_t),
+                ('ActiveProcessLimit', ctypes.c_uint32),
+                ('Affinity', ctypes.c_size_t),
+                ('PriorityClass', ctypes.c_uint32),
+                ('SchedulingClass', ctypes.c_uint32),
+            ]
+
+        class IO_COUNTERS(ctypes.Structure):
+            _fields_ = [
+                ('ReadOperationCount', ctypes.c_uint64),
+                ('WriteOperationCount', ctypes.c_uint64),
+                ('OtherOperationCount', ctypes.c_uint64),
+                ('ReadTransferCount', ctypes.c_uint64),
+                ('WriteTransferCount', ctypes.c_uint64),
+                ('OtherTransferCount', ctypes.c_uint64),
+            ]
+
+        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+            _fields_ = [
+                ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                ('IoInfo', IO_COUNTERS),
+                ('ProcessMemoryLimit', ctypes.c_size_t),
+                ('JobMemoryLimit', ctypes.c_size_t),
+                ('PeakProcessMemoryUsed', ctypes.c_size_t),
+                ('PeakJobMemoryUsed', ctypes.c_size_t),
+            ]
+
+        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info.BasicLimitInformation.LimitFlags = 0
+        if not kernel32.SetInformationJobObject(
+            JOB_HANDLE,
+            9,  # JobObjectExtendedLimitInformation
+            ctypes.byref(info),
+            ctypes.sizeof(info),
+        ):
+            print(
+                f"[Launcher] Warning: failed to relax Job kill-on-close (err={_get_last_error()})",
+                flush=True,
+            )
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to relax Job kill-on-close: {exc}", flush=True)
 
 
 def _spawn_restarted_launcher() -> None:
+    """Start the next launcher generation *attached*, never detached.
+
+    The previous implementation used ``DETACHED_PROCESS`` / ``start_new_session``
+    so the replacement would survive this process's exit. That handed the owner a
+    runtime it had never spawned and could not prove it owned — the single
+    biggest reason downstream needed a process-group anchor and a persistent
+    ownership lease at all. The replacement now stays in this process group and
+    this Job, inherits the owner's stdio (so its ``NEKO_EVENT`` stream keeps
+    flowing over the same pipe), and is told to watch the *owner*, not us.
+    """
     command = _build_launcher_relaunch_command()
     relaunch_env = os.environ.copy()
     # ``main_server`` uses this marker only to suppress duplicate module-level
@@ -338,24 +431,69 @@ def _spawn_restarted_launcher() -> None:
     # A storage-location relaunch is a brand-new launcher instance and must
     # re-run full startup initialization, so we must not inherit the marker.
     relaunch_env.pop("_NEKO_MAIN_SERVER_INITIALIZED", None)
-    kwargs: dict[str, object] = {
-        "cwd": os.getcwd(),
-        "env": relaunch_env,
-        "close_fds": True,
-    }
-    if _should_detach_stdio_for_relaunch():
-        kwargs["stdin"] = subprocess.DEVNULL
-        kwargs["stdout"] = subprocess.DEVNULL
-        kwargs["stderr"] = subprocess.DEVNULL
-    if sys.platform == "win32":
-        creationflags = 0
-        creationflags |= int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0))
-        creationflags |= int(getattr(subprocess, "DETACHED_PROCESS", 0))
-        if creationflags:
-            kwargs["creationflags"] = creationflags
+    # We are about to exit; the replacement's parent-death guard must track the
+    # process that owns *both* of us rather than this soon-to-be-dead launcher.
+    # The owner is *propagated* across generations rather than recomputed from
+    # our direct parent: from the second handoff onwards our own parent is the
+    # previous launcher, which has already exited, so os.getppid() would name
+    # init (or a stale pid) and the next generation would watch nothing. The
+    # guard already resolved the real owner once, at install time.
+    guard = _parent_death_guard
+    owner_pid = guard.parent_pid if guard is not None else 0
+    if owner_pid <= 1:
+        owner_pid = os.getppid() if hasattr(os, "getppid") else 0
+    if owner_pid and owner_pid > 1:
+        relaunch_env[parent_guard.PARENT_PID_ENV] = str(owner_pid)
+        # Hand down the owner's start token as well. We could verify it against
+        # the kernel while the owner was still our own parent; the replacement
+        # cannot, and would otherwise record whatever process holds that pid by
+        # the time it starts — matching a stranger forever after.
+        token = guard.owner_start_token if guard is not None else ""
+        if token:
+            relaunch_env[parent_guard.OWNER_TOKEN_ENV] = token
+        else:
+            relaunch_env.pop(parent_guard.OWNER_TOKEN_ENV, None)
     else:
-        kwargs["start_new_session"] = True
-    subprocess.Popen(command, **kwargs)
+        relaunch_env.pop(parent_guard.PARENT_PID_ENV, None)
+        relaunch_env.pop(parent_guard.OWNER_TOKEN_ENV, None)
+    relaunch_env[RESTART_HANDOFF_ENV] = "1"
+
+    # Relax the Job only once the replacement actually exists. Clearing
+    # KILL_ON_JOB_CLOSE first means a failed spawn leaves us with a Job that no
+    # longer reaps anything, so any server we did not record would survive our
+    # exit — losing containment in exchange for a replacement that never
+    # started. The replacement inherits the Job at spawn time, so clearing the
+    # flag immediately afterwards is still in time to spare it.
+    #
+    # Known residual, POSIX: if this generation happens to lead its own process
+    # group, the replacement inherits that pgid but is not its leader, so
+    # _own_process_group_id() returns None for it and a later owner death skips
+    # the group sweep. Only reachable where the *first* generation was a group
+    # leader — a terminal job, or an owner that spawned us detached — since the
+    # normal shape leaves us inside the owner's group, where no generation ever
+    # had that anchor. Not fixed by giving the replacement its own group: that
+    # means setpgid, which would leave the owner's group and defeat the owner's
+    # own sweep, i.e. exactly the escape this branch exists to remove. Setting
+    # NEKO_OWNER_RELAUNCH avoids the self-spawn path entirely.
+    #
+    # Known residual, Windows self-spawn path only: clearing the flag also
+    # un-manages anything that outlived cleanup_servers() in the outgoing Job
+    # (plugins, MCP servers, Chromium). The replacement's own setup_job_object()
+    # creates a *different* Job and cannot recapture them. There is no cheap fix
+    # — keeping the flag would kill the replacement along with us, since it is a
+    # member. The owner-driven path does not have this gap at all: with
+    # NEKO_OWNER_RELAUNCH set we exit cleanly, the Job closes with the flag
+    # intact and reaps everything, and the owner spawns the next generation
+    # fresh. That is why owner relaunch is the preferred branch and this is the
+    # fallback.
+    proc = subprocess.Popen(
+        command,
+        cwd=os.getcwd(),
+        env=relaunch_env,
+        close_fds=True,
+    )
+    _relax_job_kill_on_close()
+    return proc
 
 
 def _mark_expected_launcher_shutdown() -> None:
@@ -393,6 +531,15 @@ def _is_pending_storage_restart_request() -> bool:
 
 
 def _maybe_schedule_storage_restart() -> bool:
+    if _owner_death_in_progress:
+        # The owner is gone, so this generation must die rather than deliver the
+        # next one. On Windows the self-spawn path clears KILL_ON_JOB_CLOSE to
+        # spare the replacement, which would strip the only containment anchor we
+        # have left just as the teardown is about to exit — and the replacement
+        # would immediately exit too, having no owner. The pending restart stays
+        # in root_state and is applied by the next launcher the owner starts.
+        return False
+
     pre_restart_root_state: dict[str, object] = {}
     try:
         config_manager = get_config_manager(APP_NAME, migrate=False)
@@ -434,6 +581,7 @@ def _maybe_schedule_storage_restart() -> bool:
     if not restart_reason:
         return False
 
+    owner_relaunch = _owner_will_relaunch()
     emit_frontend_event(
         "storage_migration_restart",
         {
@@ -442,9 +590,23 @@ def _maybe_schedule_storage_restart() -> bool:
             "error_message": str(migration_result.get("error_message") or ""),
             "layout": storage_bootstrap.get("layout") or {},
             "restart_reason": restart_reason,
+            # 告诉属主由谁负责起下一代：属主重启是首选，自旋是无属主时的回退。
+            "relaunch": "owner" if owner_relaunch else "self",
         },
     )
-    release_startup_lock()
+    if _owner_death_in_progress:
+        # The owner died while we were resolving the storage layout. The entry
+        # check above was true when we started; this is the commit point, and
+        # past it we would release the lock and spawn a replacement for an owner
+        # that no longer exists.
+        return False
+
+    release_single_instance_ownership()
+    if owner_relaunch:
+        # 前台进程不自己复活。属主声明了会重启我们，就干净退出，让下一代由
+        # 属主 spawn —— 这样它天生就是被属主拥有、被属主监督的进程。
+        print("[Launcher] Storage restart delegated to owner; exiting cleanly", flush=True)
+        return True
     _spawn_restarted_launcher()
     return True
 
@@ -487,19 +649,214 @@ def _get_last_error() -> int:
     return ctypes.windll.kernel32.GetLastError()
 
 
-def _detach_child_process_session() -> None:
-    """Keep launcher-managed child servers out of the launcher's Ctrl+C process group.
+_child_graceful_stop_hooks: list = []
 
-    Without this on macOS/Linux, terminal SIGINT reaches the launcher and all child
-    servers at once. That lets ``memory_server`` exit before ``main_server`` finishes
-    its shutdown release/cleanup sequence, which defeats the cloudsave cleanup order.
+#: Set inside a child server: the launcher pid recorded before the fork, and the
+#: event the launcher sets when it starts its own ordered shutdown. Together they
+#: let a child tell "the launcher is driving this" from "nobody is".
+_spawning_launcher_pid = 0
+_launcher_shutdown_event = None
+
+#: How long a child waits for the launcher's ordered shutdown to reach it before
+#: stopping on its own. Bounded: if the launcher never gets there, ignoring the
+#: signal outright would be the residency violation this branch exists to remove.
+CHILD_DEFER_TO_LAUNCHER_SECONDS = 10.0
+
+
+def register_launcher_shutdown_event(event) -> None:
+    """Remember the launcher's ordered-shutdown event inside a child server."""
+    global _launcher_shutdown_event
+    _launcher_shutdown_event = event
+
+
+def register_child_graceful_stop_hook(hook) -> None:
+    """Register a callable that stops this child server gracefully on SIGTERM."""
+    _child_graceful_stop_hooks.append(hook)
+
+
+def _handle_child_termination_signal(signum, _frame):
+    """Stop this child server gracefully instead of dying where it stands.
+
+    Reached when the whole process group is signalled (owner death, forced
+    fallback) rather than through the launcher's ordered shutdown. Running the
+    server's own shutdown lifecycle here preserves the release/cleanup ordering
+    that the launcher would otherwise have driven.
+    """
+    # Guarded, and it matters here more than anywhere: this line runs *before* the
+    # hooks that set uvicorn's should_exit, and every path that reaches this
+    # handler — the group TERM after owner death, cleanup's terminate(), Linux
+    # pdeathsig — is a path on which the owner has already closed the read end of
+    # this pipe. A raise here would skip Main's release/cloudsave lifecycle
+    # entirely, and on the pdeathsig path nothing else would come along to finish
+    # the job.
+    _teardown_print(f"[Launcher] Child server received signal {signum}; stopping gracefully")
+
+    # A group-wide TERM (kill -- -<pgid>, a process-manager stopping the group)
+    # reaches us and the launcher at the same instant. Stopping right now would
+    # close Memory's listener while Main is still calling it to release the
+    # character — the ordering the launcher's cleanup_servers exists to enforce.
+    # Before this branch os.setsid() hid children from such a broadcast; removing
+    # it is what exposed them, so this is where that ordering is put back.
+    #
+    # Only defer while the launcher is demonstrably still there and driving:
+    # bounded, and if its shutdown never arrives we stop anyway. Ignoring a
+    # termination signal outright is the one outcome not on the table.
+    event = _launcher_shutdown_event
+    if (
+        event is not None
+        and not event.is_set()
+        and _spawning_launcher_pid
+        and os.name == "posix"
+        and parent_guard._safe_getppid() == int(_spawning_launcher_pid)
+    ):
+        threading.Thread(
+            target=_stop_child_after_launcher,
+            args=(event,),
+            name="neko-child-defer-stop",
+            daemon=True,
+        ).start()
+        return
+
+    _run_child_graceful_stop()
+
+
+def _stop_child_after_launcher(event) -> None:
+    if not event.wait(CHILD_DEFER_TO_LAUNCHER_SECONDS):
+        _teardown_print(
+            "[Launcher] Launcher did not start its ordered shutdown within "
+            f"{CHILD_DEFER_TO_LAUNCHER_SECONDS}s; stopping on our own"
+        )
+    _run_child_graceful_stop()
+
+
+def _run_child_graceful_stop() -> None:
+    for hook in list(_child_graceful_stop_hooks):
+        try:
+            hook()
+        except Exception as exc:
+            _teardown_print(f"[Launcher] Warning: child graceful stop hook failed: {exc}")
+    if not _child_graceful_stop_hooks:
+        raise SystemExit(0)
+
+
+def _apply_child_process_signal_policy() -> None:
+    """Shield launcher-managed servers from terminal SIGINT *without detaching*.
+
+    This used to call ``os.setsid()``. That did stop a terminal ``Ctrl+C`` from
+    racing ``memory_server`` ahead of ``main_server``'s release sequence, but it
+    also put every server in a brand-new session — outside the launcher's
+    process group. The group therefore never actually contained the servers, so
+    a group-level sweep by an owner (or by the launcher itself) reached only the
+    launcher, and the servers were free to outlive everything. That is exactly
+    the daemonization escape the foreground-residency invariant forbids.
+
+    The ordering intent is preserved with signal dispositions instead:
+    ``SIGINT`` is ignored so only the launcher reacts to ``Ctrl+C`` and drives
+    the ordered shutdown, while ``SIGTERM`` runs this server's own graceful
+    shutdown. Both keep the child inside the launcher's process group.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        return
+
+    # A ``fork``ed child inherits the launcher's single-instance lock fd and its
+    # module state. Drop the reference so the child neither keeps the lock alive
+    # past the launcher nor deletes the record on its own exit path.
+    single_instance.drop_inherited_reference()
+
+    # register_shutdown_hooks() runs before start_server(), so a forked child
+    # inherits the launcher's atexit teardown. Running it here would walk the
+    # launcher's SERVERS list with process handles that mean nothing in this
+    # process.
+    try:
+        atexit.unregister(cleanup_servers)
+    except Exception:
+        pass
+
+    # Every platform, not just POSIX. On Windows a source (non-frozen) run is
+    # multi-process and the children share the launcher's console, so Ctrl+C is
+    # delivered to all four processes; combined with the uvicorn signal handlers
+    # this function disables, each child would raise KeyboardInterrupt on its own
+    # instead of letting the launcher drive the one ordered shutdown. The
+    # try/except already covers a platform that refuses the disposition.
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+    except Exception as e:
+        print(f"[Launcher] Warning: failed to shield child from SIGINT: {e}", flush=True)
+
+    for name in ("SIGTERM", "SIGBREAK"):
+        handler_signal = getattr(signal, name, None)
+        if handler_signal is None:
+            continue
+        try:
+            signal.signal(handler_signal, _handle_child_termination_signal)
+        except Exception as e:
+            print(f"[Launcher] Warning: failed to install child {name} handler: {e}", flush=True)
+
+    # multiprocessing records the launcher's pid before forking us, so this
+    # survives the case where the launcher dies before we get here.
+    global _spawning_launcher_pid
+    _spawning_parent = multiprocessing.parent_process()
+    _spawning_launcher_pid = _spawning_parent.pid if _spawning_parent is not None else 0
+    parent_guard.install_child_guard(
+        _spawning_parent.pid if _spawning_parent is not None else None
+    )
+
+
+def _own_process_group_id() -> int | None:
+    """Return this process's group id when it is the group *leader*, else ``None``.
+
+    Only a leader may sweep its own group: if the launcher was started inside
+    somebody else's group (a terminal's foreground job), a group signal would
+    reach that owner too.
     """
     if os.name != "posix":
-        return
+        return None
     try:
-        os.setsid()
-    except Exception as e:
-        print(f"[Launcher] Warning: failed to detach child process session: {e}", flush=True)
+        pgid = os.getpgid(0)
+    except OSError:
+        return None
+    return pgid if pgid == os.getpid() else None
+
+
+def _sweep_own_process_group(sig: int) -> bool:
+    """Signal every process in our own group. No-op unless we lead the group.
+
+    This is the POSIX counterpart of the Windows Job Object: the containment
+    anchor lives *inside* the runtime, so no external holder has to keep one
+    alive on its behalf.
+    """
+    pgid = _own_process_group_id()
+    if pgid is None:
+        return False
+    previous = None
+    try:
+        # The group signal comes back to us as well, and it must not terminate
+        # the process that is running the sweep — that would stop the escalation
+        # at its first step and strand exactly the grandchildren it exists to
+        # reap.
+        #
+        # signal.signal() only works on the main thread, and this runs on a
+        # daemon thread for every mechanism except Linux pdeathsig. Off the main
+        # thread the disposition therefore cannot be changed here at all; what
+        # protects us instead is _owner_death_in_progress, which makes
+        # _handle_termination_signal return instead of exiting. Setting the
+        # disposition is still worth doing when we *are* on the main thread,
+        # because it also covers the startup window before that handler exists.
+        try:
+            if threading.current_thread() is threading.main_thread():
+                previous = signal.signal(sig, signal.SIG_IGN)
+        except (ValueError, OSError):
+            previous = None
+        os.killpg(pgid, sig)
+        return True
+    except (OSError, ProcessLookupError):
+        return False
+    finally:
+        if previous is not None:
+            try:
+                signal.signal(sig, previous)
+            except (ValueError, OSError):
+                pass
 
 
 def _iter_servers_for_shutdown():
@@ -869,9 +1226,8 @@ def run_merged_servers() -> int:
         # budgets as multi-process cleanup. Keep the watchdog as a final escape,
         # not as a shorter competing deadline.
         watchdog_timeout = 60 if reason == "storage_location_restart" else 45
-        print(
-            f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)",
-            flush=True,
+        _teardown_print(
+            f"\n[Merged] Shutting down... (reason={reason}, watchdog={watchdog_timeout}s)"
         )
         # Main must finish release/cloudsave work while Memory is still alive.
         # The async coordinator advances Memory and Agent in order afterwards.
@@ -881,10 +1237,16 @@ def run_merged_servers() -> int:
                 server.should_exit = True
                 break
         if not _shutdown_watchdog_started:
+            def _watchdog(timeout=watchdog_timeout):
+                time.sleep(timeout)
+                # The owner-death teardown waits on this same budget, so on a hung
+                # merged shutdown this fires first and used to exit without ever
+                # reaching the group escalation. Run it here before leaving.
+                _escalate_own_process_group()
+                os._exit(1)
+
             threading.Thread(
-                target=lambda timeout=watchdog_timeout: (time.sleep(timeout), os._exit(1)),
-                daemon=True,
-                name="merged-shutdown-watchdog",
+                target=_watchdog, daemon=True, name="merged-shutdown-watchdog",
             ).start()
             _shutdown_watchdog_started = True
         return True
@@ -924,6 +1286,15 @@ def run_merged_servers() -> int:
     if hasattr(signal, "SIGBREAK"):
         signal.signal(signal.SIGBREAK, _on_exit_signal)
 
+    # Owner death has to reach the same ordered shutdown. In merged mode the
+    # three servers live in *this* process, so SERVERS carries no child handles
+    # and cleanup_servers() has nothing to act on — without this hand-off,
+    # _handle_owner_death would run straight to os._exit(0) and take Main's
+    # release/cloudsave sequence with it.
+    global _merged_shutdown_request
+    _merged_shutdown_complete.clear()
+    _merged_shutdown_request = _begin_merged_shutdown
+
     async def _serve_all() -> None:
         # 并发启动所有 uvicorn.Server
         tasks = {
@@ -952,6 +1323,7 @@ def run_merged_servers() -> int:
                     _persist_post_startup_root_state(_config_manager)
                 except Exception as e:
                     print(f"[Merged] Warning: failed to persist root_state boot success: {e}", flush=True)
+                _publish_ready_runtime_record("merged")
                 emit_frontend_event("startup_ready", {
                     "instance_id": INSTANCE_ID,
                     "selected": {
@@ -995,6 +1367,10 @@ def run_merged_servers() -> int:
         signal.signal(signal.SIGTERM, _prev_sigterm)
         if hasattr(signal, "SIGBREAK") and _prev_sigbreak is not None:
             signal.signal(signal.SIGBREAK, _prev_sigbreak)
+        # The servers are down; anyone waiting on the ordered shutdown (an
+        # owner-death teardown) may proceed.
+        _merged_shutdown_request = None
+        _merged_shutdown_complete.set()
 
     return 0
 
@@ -1007,7 +1383,7 @@ def run_memory_server(
 ):
     """Run the Memory Server"""
     try:
-        _detach_child_process_session()
+        _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -1046,19 +1422,36 @@ def run_memory_server(
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+        # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
+        # 处置，把 Ctrl+C 重新变成"每个子服务各自退出"。禁掉它，保持单一
+        # launcher 拥有的信号策略（与合并模式同一处理）。
+        _disable_uvicorn_signal_handlers(server)
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
-                print("[Memory Server] Shutdown lifecycle complete", flush=True)
+                # Same ordering rule as _watch_shutdown: this is the event
+                # cleanup_servers actually waits on, so it must not be gated
+                # behind a write to a pipe whose reader has gone.
                 shutdown_complete_event.set()
+                _teardown_print("[Memory Server] Shutdown lifecycle complete")
 
             memory_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
+        # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
+        # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
+        register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
+
         if shutdown_event is not None:
+            register_launcher_shutdown_event(shutdown_event)
+
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
-                print("[Memory Server] Shutdown requested by launcher", flush=True)
+                # Set first, log second. The owner is gone by the time this fires,
+                # so the pipe is usually broken and a print here would kill this
+                # thread before should_exit was ever set — the launcher would then
+                # wait out the full graceful budget for a request it never made.
                 server.should_exit = True
+                _teardown_print("[Memory Server] Shutdown requested by launcher")
 
             threading.Thread(target=_watch_shutdown, name="memory-shutdown-watch", daemon=True).start()
 
@@ -1104,7 +1497,7 @@ def run_agent_server(
 ):
     """Run the Agent Server (no need to wait for initialization)"""
     try:
-        _detach_child_process_session()
+        _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -1145,19 +1538,36 @@ def run_agent_server(
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+        # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
+        # 处置，把 Ctrl+C 重新变成"每个子服务各自退出"。禁掉它，保持单一
+        # launcher 拥有的信号策略（与合并模式同一处理）。
+        _disable_uvicorn_signal_handlers(server)
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
-                print("[Agent Server] Shutdown lifecycle complete", flush=True)
+                # Same ordering rule as _watch_shutdown: this is the event
+                # cleanup_servers actually waits on, so it must not be gated
+                # behind a write to a pipe whose reader has gone.
                 shutdown_complete_event.set()
+                _teardown_print("[Agent Server] Shutdown lifecycle complete")
 
             agent_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
+        # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
+        # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
+        register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
+
         if shutdown_event is not None:
+            register_launcher_shutdown_event(shutdown_event)
+
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
-                print("[Agent Server] Shutdown requested by launcher", flush=True)
+                # Set first, log second. The owner is gone by the time this fires,
+                # so the pipe is usually broken and a print here would kill this
+                # thread before should_exit was ever set — the launcher would then
+                # wait out the full graceful budget for a request it never made.
                 server.should_exit = True
+                _teardown_print("[Agent Server] Shutdown requested by launcher")
 
             threading.Thread(target=_watch_shutdown, name="agent-shutdown-watch", daemon=True).start()
 
@@ -1178,7 +1588,7 @@ def run_main_server(
 ):
     """Run the Main Server"""
     try:
-        _detach_child_process_session()
+        _apply_child_process_signal_policy()
         _reload_runtime_config_from_env()
         # 确保工作目录正确
         if IS_FROZEN:
@@ -1210,6 +1620,10 @@ def run_main_server(
             forwarded_allow_ips="*" if _behind_proxy else None,
         )
         server = uvicorn.Server(config)
+        # uvicorn 在主线程运行时会覆盖 _apply_child_process_signal_policy 装好的
+        # 处置，把 Ctrl+C 重新变成"每个子服务各自退出"。禁掉它，保持单一
+        # launcher 拥有的信号策略（与合并模式同一处理）。
+        _disable_uvicorn_signal_handlers(server)
         try:
             main_server.set_start_config(
                 {
@@ -1225,16 +1639,29 @@ def run_main_server(
 
         if shutdown_complete_event is not None:
             async def _notify_shutdown_complete() -> None:
-                print("[Main Server] Shutdown lifecycle complete", flush=True)
+                # Same ordering rule as _watch_shutdown: this is the event
+                # cleanup_servers actually waits on, so it must not be gated
+                # behind a write to a pipe whose reader has gone.
                 shutdown_complete_event.set()
+                _teardown_print("[Main Server] Shutdown lifecycle complete")
 
             main_server.app.add_event_handler("shutdown", _notify_shutdown_complete)
 
+        # 组级信号（属主猝死、强制兜底）不走 launcher 的有序关闭，
+        # 由本进程自己驱动 uvicorn 的优雅退出，保持释放/清理顺序。
+        register_child_graceful_stop_hook(lambda: setattr(server, "should_exit", True))
+
         if shutdown_event is not None:
+            register_launcher_shutdown_event(shutdown_event)
+
             def _watch_shutdown() -> None:
                 shutdown_event.wait()
-                print("[Main Server] Shutdown requested by launcher", flush=True)
+                # Set first, log second. The owner is gone by the time this fires,
+                # so the pipe is usually broken and a print here would kill this
+                # thread before should_exit was ever set — the launcher would then
+                # wait out the full graceful budget for a request it never made.
                 server.should_exit = True
+                _teardown_print("[Main Server] Shutdown requested by launcher")
 
             threading.Thread(target=_watch_shutdown, name="main-shutdown-watch", daemon=True).start()
 
@@ -1769,104 +2196,518 @@ def cleanup_servers():
             return
         _cleanup_done = True
 
-    print("\n正在关闭服务器...", flush=True)
-    for server in _iter_servers_for_shutdown():
-        proc = server.get('process')
-        if not proc:
-            continue
+    try:
+        _teardown_print("\n正在关闭服务器...")
+        for server in _iter_servers_for_shutdown():
+            proc = server.get('process')
+            if not proc:
+                continue
 
-        try:
-            shutdown_evt = server.get('shutdown_event')
-            shutdown_complete_evt = server.get('shutdown_complete_event')
-            graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
+            try:
+                shutdown_evt = server.get('shutdown_event')
+                shutdown_complete_evt = server.get('shutdown_complete_event')
+                graceful_timeout = float(server.get('graceful_shutdown_timeout') or 8)
 
-            # 先请求子进程优雅退出
-            if proc.is_alive():
-                if shutdown_evt is not None:
-                    shutdown_evt.set()
-                if shutdown_complete_evt is not None:
+                # 先请求子进程优雅退出
+                if proc.is_alive():
+                    if shutdown_evt is not None:
+                        shutdown_evt.set()
+                    if shutdown_complete_evt is not None:
+                        try:
+                            shutdown_complete_evt.wait(timeout=graceful_timeout)
+                        except KeyboardInterrupt:
+                            _teardown_print(f"[Launcher] {server['name']} shutdown wait interrupted, continuing cleanup")
+                        try:
+                            proc.join(timeout=2)
+                        except KeyboardInterrupt:
+                            _teardown_print(f"[Launcher] {server['name']} join interrupted, escalating shutdown")
+                    else:
+                        try:
+                            proc.join(timeout=graceful_timeout)
+                        except KeyboardInterrupt:
+                            _teardown_print(f"[Launcher] {server['name']} join interrupted, escalating shutdown")
+
+                # 第二步：仍存活则发送终止信号
+                if proc.is_alive():
+                    proc.terminate()
                     try:
-                        shutdown_complete_evt.wait(timeout=graceful_timeout)
+                        proc.join(timeout=5)
                     except KeyboardInterrupt:
-                        print(f"[Launcher] {server['name']} shutdown wait interrupted, continuing cleanup", flush=True)
+                        _teardown_print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown")
+
+                # 第三步：仍存活则 kill
+                if proc.is_alive():
+                    proc.kill()
                     try:
                         proc.join(timeout=2)
                     except KeyboardInterrupt:
-                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
-                else:
-                    try:
-                        proc.join(timeout=graceful_timeout)
-                    except KeyboardInterrupt:
-                        print(f"[Launcher] {server['name']} join interrupted, escalating shutdown", flush=True)
+                        _teardown_print(f"[Launcher] {server['name']} kill wait interrupted, moving on")
 
-            # 第二步：仍存活则发送终止信号
-            if proc.is_alive():
-                proc.terminate()
-                try:
-                    proc.join(timeout=5)
-                except KeyboardInterrupt:
-                    print(f"[Launcher] {server['name']} terminate wait interrupted, forcing shutdown", flush=True)
-
-            # 第三步：仍存活则 kill
-            if proc.is_alive():
-                proc.kill()
-                try:
-                    proc.join(timeout=2)
-                except KeyboardInterrupt:
-                    print(f"[Launcher] {server['name']} kill wait interrupted, moving on", flush=True)
-
-            # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
-            if proc.is_alive():
-                pid = proc.pid
-                if pid:
-                    if sys.platform == 'win32':
-                        subprocess.run(
-                            ["taskkill", "/PID", str(pid), "/T", "/F"],
-                            stdout=subprocess.DEVNULL,
-                            stderr=subprocess.DEVNULL,
-                            check=False
-                        )
-                    else:
-                        # macOS / Linux 下兜底强杀整个进程树
-                        try:
-                            import psutil
+                # 第四步：仅在父进程仍存活时兜底强杀整个进程树，避免 PID 复用误杀
+                if proc.is_alive():
+                    pid = proc.pid
+                    if pid:
+                        if sys.platform == 'win32':
+                            subprocess.run(
+                                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                                check=False
+                            )
+                        else:
+                            # macOS / Linux 下兜底强杀整个进程树
                             try:
-                                parent = psutil.Process(pid)
-                                for child in parent.children(recursive=True):
-                                    child.kill()
-                                parent.kill()
-                            except psutil.NoSuchProcess:
-                                pass
-                        except ImportError:
-                            try:
-                                # 尽力而为的 pkill 兜底
-                                subprocess.run(
-                                    ["pkill", "-9", "-P", str(pid)],
-                                    stdout=subprocess.DEVNULL,
-                                    stderr=subprocess.DEVNULL,
-                                    check=False
-                                )
-                            except Exception:
-                                pass
+                                import psutil
+                                try:
+                                    parent = psutil.Process(pid)
+                                    for child in parent.children(recursive=True):
+                                        child.kill()
+                                    parent.kill()
+                                except psutil.NoSuchProcess:
+                                    pass
+                            except ImportError:
+                                try:
+                                    # 尽力而为的 pkill 兜底
+                                    subprocess.run(
+                                        ["pkill", "-9", "-P", str(pid)],
+                                        stdout=subprocess.DEVNULL,
+                                        stderr=subprocess.DEVNULL,
+                                        check=False
+                                    )
+                                except Exception:
+                                    pass
 
-            print(f"✓ {server['name']} 已关闭", flush=True)
-        except Exception as e:
-            print(f"✗ {server['name']} 关闭失败: {e}", flush=True)
+                _teardown_print(f"✓ {server['name']} 已关闭")
+            except Exception as e:
+                _teardown_print(f"✗ {server['name']} 关闭失败: {e}")
 
-    # 显式关闭 Job handle（如果存在）
-    if JOB_HANDLE and sys.platform == 'win32':
-        try:
-            ctypes.windll.kernel32.CloseHandle(JOB_HANDLE)
-        except Exception:
-            pass
+        # 不在这里关闭 Job handle。这个 Job 带 KILL_ON_JOB_CLOSE 且 launcher 自己
+        # 就是成员，关掉最后一个句柄会连本进程一起终止——cleanup_servers 之后的
+        # 一切（存储重启调度、单实例锁释放、退出码）都会变成死代码。句柄在进程
+        # 退出时由内核关闭，那时终止整个 Job 正是我们要的语义。
+    finally:
+        _cleanup_complete.set()
+
+
+def _safe_getppid_for_owner_check() -> int:
+    try:
+        return int(os.getppid())
+    except Exception:
+        return 0
 
 
 def _handle_termination_signal(signum, _frame):
     """Handle termination signals, doing our best to ensure cleanup logic runs."""
+    # 属主之死的清扫正在进行：这一发 TERM 就是我们自己那次组级清扫打回本进程的。
+    # 此刻退出会把「TERM → 宽限 → 组级 KILL」停在第一步，正好放走它要收割的那些
+    # 孙子进程。_handle_owner_death 必定以 os._exit 收尾，所以在它跑完之前忽略
+    # 停止请求是正确语义，而不是把信号吞了。
+    # Also yield once the guard has merely *fired*. Between fire() setting that
+    # flag and _handle_owner_death setting _owner_death_in_progress there are a
+    # few dozen bytecodes, and on Linux the pdeathsig callback runs on this very
+    # thread — so a concurrent SIGTERM can land in that gap, take the ordinary
+    # path, and raise SystemExit straight out of fire() before the callback runs.
+    # The reverse interleaving is worse: SIGTERM arriving just *before*
+    # fire() sets its flag ran the whole owner-death teardown twice, with two
+    # finisher threads.
+    guard = _parent_death_guard
+    if _owner_death_in_progress or (guard is not None and guard.fired):
+        return
+
+    # 兜底：属主已经死了，但送达的是普通 SIGTERM 而不是 guard 的专用信号
+    # （比如属主用组级 TERM 清扫）。属主之死需要组级清扫，而这条普通关闭路径
+    # 没有——所以改走 _handle_owner_death，它不会返回。
+    #
+    # 只在属主就是直连父进程时才用这条判据。交接世代里属主是祖父，我们的父进程
+    # 是那个已经按计划退出的上一代 launcher，于是「getppid() 不等于属主」在正常
+    # 运行下恒为真——那样任何一次普通 SIGTERM 都会被误读成属主之死，进而触发组级
+    # 清扫。guard 自己知道这个区别，问它。
+    if (
+        guard is not None
+        and guard.parent_pid > 1
+        and os.name == "posix"
+        and guard.owner_is_direct_parent
+        and _safe_getppid_for_owner_check() != guard.parent_pid
+    ):
+        _handle_owner_death("termination_signal_orphaned")
+        return
+
     _mark_expected_launcher_shutdown()
     print(f"\n收到终止信号 ({signum})，正在关闭...", flush=True)
     cleanup_servers()
     raise SystemExit(0)
+
+
+_parent_death_guard = None
+_single_instance_handle = None
+
+#: Set for the duration of _handle_owner_death. The group sweep it performs
+#: signals this process too, and on every mechanism except Linux pdeathsig that
+#: sweep runs on a daemon thread, where signal.signal() cannot change the
+#: disposition. This flag is what keeps the returning signal from cutting the
+#: escalation short.
+_owner_death_in_progress = False
+
+#: The thread running _finish_owner_death, so main() can wait for it. Making it
+#: non-daemon is not enough on its own: merged mode ends at os._exit(), which
+#: bypasses interpreter shutdown and therefore joins nothing.
+_owner_death_finisher = None
+
+#: Set when cleanup_servers() has run to completion. ``_cleanup_done`` only says
+#: it *started*, so an owner death arriving mid-cleanup would otherwise sail past
+#: an in-flight ordered shutdown and group-KILL Main during its release sequence.
+_cleanup_complete = threading.Event()
+
+#: Bounded grace between the group TERM and the group KILL on owner death.
+OWNER_DEATH_GROUP_GRACE_SECONDS = 0.5
+
+
+def _teardown_print(message: str) -> None:
+    """print() that cannot abort the teardown it is narrating.
+
+    Once the owner is gone the read end of our stdout pipe went with it, so every
+    print on a shutdown path is a live BrokenPipeError risk — and raising there
+    skips the rest of the teardown, i.e. loses the guarantee in order to log
+    about it. Used by every function reachable from owner death, not only the
+    owner-death functions themselves: the first unguarded print in a callee ends
+    the sequence just as effectively.
+    """
+    try:
+        print(message, flush=True)
+    except Exception:
+        # Nowhere left to report this: stdout is the thing that just failed.
+        pass
+
+
+def _handle_owner_death(mechanism: str) -> None:
+    """Tear the whole topology down when the process that owns us disappears.
+
+    This is the guarantee that lets an owner stop building external anchors: a
+    runtime that cannot outlive its owner needs no supervising shell holding its
+    process group, no externally owned Job holder, and no persistent lease to
+    replay after a crash, because there is never anything left to recover.
+    """
+    global _owner_death_in_progress, _owner_death_finisher
+
+    _owner_death_in_progress = True
+    _mark_expected_launcher_shutdown()
+    _teardown_print(f"[Launcher] Owner process is gone ({mechanism}); shutting down runtime")
+    try:
+        emit_frontend_event("owner_exit", {"mechanism": mechanism})
+    except Exception:
+        # 通知前端只是尽力而为：属主已死，stdout 管道很可能已断。任何 IPC
+        # 失败都不能挡住下面的拆除流程与最终的 os._exit(0)。
+        pass
+
+    # 合并模式（打包默认）下三个 server 就在本进程里，SERVERS 里没有任何子进程
+    # 句柄，cleanup_servers() 无事可做。必须先驱动有序关停，让 Main 在 Memory
+    # 还活着的时候跑完 release/cloudsave，否则下面几行会直接 os._exit 把它连根
+    # 切掉。收尾放到独立线程：Linux 的 pdeathsig 回调跑在主线程信号处理器里，
+    # 而 asyncio 事件循环也在主线程——就地等待会让我们等的那个关停永远推进不了。
+    requester = _merged_shutdown_request
+    if requester is not None:
+        try:
+            requester(reason=f"owner_death:{mechanism}")
+        except Exception as exc:
+            _teardown_print(f"[Launcher] Warning: merged shutdown request failed: {exc}")
+        # Deliberately NOT a daemon thread. run_merged_servers() returns as soon
+        # as the ordered shutdown completes and main() then walks to its own
+        # exit; a daemon would be cut off mid-teardown, losing the group sweep
+        # and the very grandchildren it exists to reap. Non-daemon makes the
+        # interpreter wait for it — and it ends in os._exit(0) regardless, so
+        # the wait is bounded by the merged-shutdown budget above.
+    # Always on its own thread, in every mode. On Linux this function runs as a
+    # signal handler on the main thread, and the stack it interrupted may be the
+    # cleanup it is about to wait for — waiting in place deadlocks against
+    # ourselves, permanently if the signal landed inside _cleanup_lock. Handing
+    # off lets the interrupted cleanup resume and finish the ordered shutdown,
+    # which is what the teardown wanted from it in the first place.
+    _owner_death_finisher = threading.Thread(
+        target=_finish_owner_death,
+        args=(mechanism, requester is not None),
+        name="neko-owner-death-finish",
+        daemon=False,
+    )
+    _owner_death_finisher.start()
+
+
+def _finish_owner_death(mechanism: str, wait_for_merged: bool) -> None:
+    """Second half of owner-death teardown: cleanup, release, group sweep, exit."""
+    if wait_for_merged:
+        # 有界等待：超时后照常收尾。_begin_merged_shutdown 自带的看门狗也会在
+        # 同样的预算后 os._exit(1)，两道保险都不会让这里无限期挂住。
+        if not _merged_shutdown_complete.wait(OWNER_DEATH_MERGED_SHUTDOWN_BUDGET):
+            _teardown_print(
+                "[Launcher] Warning: merged shutdown did not finish within "
+                f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown"
+            )
+
+    try:
+        cleanup_servers()
+        # _cleanup_done only means "started". If another thread got there first,
+        # returning now would group-KILL Main 0.5s later, mid release/cloudsave.
+        # Bounded, and the event is set from a finally, so the sweep and the
+        # os._exit(0) below stay reachable even if cleanup raises.
+        # If our own call did the work its finally already set this, so the wait
+        # below is skipped. Only an in-flight cleanup owned by another thread
+        # leaves it clear, and that is exactly the case worth waiting out.
+        if not _cleanup_complete.is_set() and not _cleanup_complete.wait(
+            OWNER_DEATH_MERGED_SHUTDOWN_BUDGET
+        ):
+            _teardown_print(
+                "[Launcher] Warning: in-flight cleanup did not finish within "
+                f"{OWNER_DEATH_MERGED_SHUTDOWN_BUDGET}s; continuing owner-death teardown"
+            )
+    except Exception as exc:
+        _teardown_print(f"[Launcher] Warning: cleanup after owner death failed: {exc}")
+
+    # Deliberately no explicit release here. The lock is documented as held for
+    # the owning process's whole lifetime, and everything below — the group TERM,
+    # the grace period, the final KILL — happens while this process is still
+    # alive. Releasing first opened a window where the lock was free but this
+    # generation was not yet gone. The kernel drops it when we die, which is
+    # exactly the semantics this module relies on everywhere else. The record
+    # left behind is harmless: owner_status() proves liveness from the lock and
+    # ignores any record whose lock it can take.
+
+    try:
+        sys.stdout.flush()
+        sys.stderr.flush()
+    except Exception:
+        # 属主关掉管道后 flush 抛 BrokenPipeError 是常态；退出路径不能因此中断。
+        pass
+
+    # 最后一步：收掉 cleanup 未记录的孙子进程（插件、MCP、Chromium…）。
+    #
+    # 要如实说明它的适用范围：这一步只在 launcher **自己是进程组组长**时才发生。
+    # 而最常见的拓扑恰恰不是——属主直接 spawn 我们、我们继承属主的组，此时
+    # `_own_process_group_id()` 恒为 None，下面整段是死代码。所以它不是"POSIX 上
+    # 对应 Windows Job 的收容锚点"（早先的注释这么写，是过度声称）：Windows 的 Job
+    # 无条件生效，这一段有条件。终端直接跑、或属主以 detached 方式拉起时才有它。
+    #
+    # 非组长拓扑下真正在收容的是：cleanup_servers() 对仍存活的已记录 server 做
+    # psutil 整树强杀，以及各 server 自己的优雅停机路径。裸露的只剩一类——被一个
+    # **已经死掉**的 server 遗弃的后代：它们当场被内核改挂到 init，既不再是该
+    # server 的后代，也不在我们能清扫的组里。那是 main 上的既有缺口（本 PR 只改了
+    # 那段的缩进），要补需要按 create_time 记名跟踪后代，属于独立改动。
+    _escalate_own_process_group()
+    os._exit(0)
+
+
+def _escalate_own_process_group() -> None:
+    """TERM, a bounded grace, then a group KILL — where we lead the group.
+
+    Only reached when this process is its own process-group leader. In the
+    ordinary shape the owner spawns us into *its* group, so this does nothing:
+    see the residual recorded on cleanup_servers().
+    """
+    if _own_process_group_id() is None:
+        return
+    if _sweep_own_process_group(signal.SIGTERM):
+        time.sleep(OWNER_DEATH_GROUP_GRACE_SECONDS)
+    try:
+        os.killpg(os.getpid(), signal.SIGKILL)
+    except OSError:
+        # ESRCH/EPERM 意味着没有可收的组成员，交给调用方继续退出。
+        pass
+
+
+def install_parent_death_guard():
+    """Arm foreground residency and report honestly what could be armed."""
+    global _parent_death_guard
+
+    guard = parent_guard.install(_handle_owner_death)
+    _parent_death_guard = guard
+    if guard.mechanisms:
+        print(
+            f"[Launcher] Foreground residency armed via {', '.join(guard.mechanisms)} "
+            f"(owner pid {guard.parent_pid})",
+            flush=True,
+        )
+    else:
+        print(
+            "[Launcher] Warning: no parent-death mechanism available; "
+            "this runtime cannot self-clean if its owner dies",
+            flush=True,
+        )
+    emit_frontend_event(
+        "foreground_residency",
+        {
+            "owner_pid": guard.parent_pid,
+            "mechanisms": list(guard.mechanisms),
+            "guaranteed": bool(guard.mechanisms),
+        },
+    )
+    return guard
+
+
+def _single_instance_extra_fields() -> dict:
+    guard = _parent_death_guard
+    return {
+        "owner_pid": guard.parent_pid if guard is not None else 0,
+        "foreground_residency": list(guard.mechanisms) if guard is not None else [],
+        "launch_mode": os.environ.get("NEKO_LAUNCH_MODE", "") or "",
+    }
+
+
+def _acquire_single_instance_ownership() -> bool:
+    """Prove uniqueness with an OS lock and publish the authoritative record.
+
+    Returns ``True`` when this process owns the runtime. Returns ``False`` when
+    a live instance already exists — in which case the loser has already told
+    the frontend *which* instance to attach to, instead of leaving it to rediscover
+    the answer by probing ports.
+    """
+    global _single_instance_handle
+
+    handoff = os.environ.get(RESTART_HANDOFF_ENV, "").strip().lower() in ("1", "true", "yes")
+    try:
+        handle = single_instance.acquire_single_instance(
+            instance_id=INSTANCE_ID,
+            launch_id=LAUNCH_ID,
+            extra=_single_instance_extra_fields(),
+            retries=RESTART_HANDOFF_LOCK_RETRIES if handoff else 0,
+            retry_interval=RESTART_HANDOFF_LOCK_RETRY_INTERVAL,
+        )
+    except OSError as exc:
+        # 拿不到锁文件不等于"已有实例在跑"（只读 HOME、磁盘满、权限）。这是
+        # unknown，不能塌缩成"有人在跑"而拒绝启动，也不能塌缩成"没人在跑"而
+        # 谎称唯一性成立——如实上报，照常启动。
+        print(
+            f"[Launcher] Warning: single-instance lock unavailable ({exc}); "
+            "starting without a uniqueness proof",
+            flush=True,
+        )
+        emit_frontend_event(
+            "single_instance",
+            {"role": "unverified", "reason": str(exc)},
+        )
+        return True
+
+    if handle is None:
+        # The winner takes the lock a moment before it publishes, so an immediate
+        # read can legitimately come back empty. Give it a bounded moment rather
+        # than telling the frontend "somebody else owns this" with no idea who.
+        owner = {}
+        deadline = time.monotonic() + DUPLICATE_RECORD_READ_BUDGET
+        while True:
+            status, record = single_instance.owner_status()
+            if status == single_instance.OWNER_OWNED and record:
+                owner = record
+                break
+            if status != single_instance.OWNER_OWNED or time.monotonic() >= deadline:
+                # FREE is handled below; UNKNOWN cannot be improved by waiting;
+                # and a winner that never publishes must not hang us forever.
+                break
+            time.sleep(0.02)
+        if not owner and single_instance.owner_status()[0] == single_instance.OWNER_FREE:
+            # The holder let go between our failed attempt and this read — it was
+            # on its way out. There is no instance to attach to, so exiting as a
+            # duplicate would leave the user with nothing running. Try once more;
+            # arbitration is still the kernel lock alone, and losing again falls
+            # through to the duplicate branch exactly as before.
+            try:
+                handle = single_instance.acquire_single_instance(
+                    instance_id=INSTANCE_ID,
+                    launch_id=LAUNCH_ID,
+                    extra=_single_instance_extra_fields(),
+                )
+            except OSError:
+                # Deliberately unlike the first acquisition, which fails open on
+                # OSError. By here we already know somebody won the lock at least
+                # once, so refusing to start is the safe direction rather than an
+                # unclearable block.
+                handle = None
+            if handle is None:
+                # A third launcher took it between our probe and this attempt, so
+                # the empty record we are holding belongs to whoever just left.
+                # Read once more; still bounded, still no arbitration by probing.
+                owner = single_instance.read_owner_record() or {}
+
+    if handle is None:
+        msg = "Another N.E.K.O runtime already holds the single-instance lock"
+        print(
+            f"[Launcher] {msg} (pid={owner.get('pid')}, instance_id={owner.get('instance_id')})",
+            flush=True,
+        )
+        emit_frontend_event(
+            "single_instance",
+            {"role": "duplicate", "owner": owner, "record_path": str(single_instance.record_path())},
+        )
+        # 保留既有事件名，老版本前端仍能识别"已有实例在启动"这一场景。
+        emit_frontend_event("startup_in_progress", {"message": msg, "owner": owner})
+        return False
+
+    # Upgrade window. An older build resolved its lock path from XDG_RUNTIME_DIR
+    # or the shared temp dir; this one resolves a stable per-user path, so a
+    # runtime still holding one of those is invisible to the lock we just took.
+    # Probing them can only make us refuse to start — it can never make us
+    # wrongly claim uniqueness — and UNKNOWN deliberately does not block.
+    legacy_status, legacy_owner = single_instance.legacy_owner_status()
+    if legacy_status == single_instance.OWNER_OWNED:
+        msg = "An older N.E.K.O runtime is still running from a previous state directory"
+        print(f"[Launcher] {msg}", flush=True)
+        handle.release()
+        emit_frontend_event(
+            "single_instance",
+            {"role": "duplicate", "owner": legacy_owner or {}, "legacy": True},
+        )
+        emit_frontend_event("startup_in_progress", {"message": msg, "owner": legacy_owner or {}})
+        return False
+
+    _single_instance_handle = handle
+    os.environ.pop(RESTART_HANDOFF_ENV, None)
+    emit_frontend_event(
+        "single_instance",
+        {
+            "role": "owner",
+            "record": handle.record(),
+            "record_path": str(handle.record_file),
+            "lock_path": str(handle.lock_file),
+        },
+    )
+    return True
+
+
+def _publish_ready_runtime_record(launch_mode: str) -> None:
+    """Freeze the final, authoritative runtime record once services are up.
+
+    From this point an owner needs exactly one fact — this record — to know the
+    instance id, the pid, and every negotiated port. It never has to reconstruct
+    them by probing the three default ports and hoping the answers agree.
+    """
+    publish_single_instance_state(
+        state=single_instance.STATE_READY,
+        launch_mode=launch_mode,
+        ports={
+            "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+            "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+            "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+        },
+    )
+
+
+def publish_single_instance_state(**fields) -> None:
+    """Update the authoritative runtime record, if this process owns it."""
+    handle = _single_instance_handle
+    if handle is None or not handle.held:
+        return
+    try:
+        handle.publish(**fields)
+    except Exception as exc:
+        print(f"[Launcher] Warning: failed to publish runtime record: {exc}", flush=True)
+
+
+def release_single_instance_ownership() -> None:
+    global _single_instance_handle
+
+    handle = _single_instance_handle
+    _single_instance_handle = None
+    if handle is not None:
+        try:
+            handle.release()
+        except Exception as exc:
+            print(f"[Launcher] Warning: failed to release single-instance lock: {exc}", flush=True)
 
 
 def register_shutdown_hooks():
@@ -2050,14 +2891,12 @@ def main():
     emit_frontend_event("startup_begin", {"instance_id": INSTANCE_ID})
     os.environ["NEKO_LAUNCHER_PID"] = str(os.getpid())
 
-    # ── 单实例启动锁 ──────────────────────────────────
-    if not acquire_startup_lock():
-        msg = "Another N.E.K.O launcher is already starting up"
-        print(f"[Launcher] {msg}", flush=True)
-        emit_frontend_event("startup_in_progress", {
-            "message": msg,
-        })
-        return 0  # 非错误场景：前端应附加到已有进程
+    # ── 前台常驻：属主一死，整套拓扑自清理 ──────────────
+    install_parent_death_guard()
+
+    # ── 单实例自证：进程生命周期文件锁 + 权威运行时记录 ──
+    if not _acquire_single_instance_ownership():
+        return 0  # 非错误场景：前端应附加到已有实例
 
     restart_scheduled = False
     allow_storage_restart = False
@@ -2065,10 +2904,26 @@ def main():
     try:
         port_result = apply_port_strategy()
         if port_result == "attach":
-            # 已有 N.E.K.O 后端在运行，无需再次拉起。
+            # 已有 N.E.K.O 后端在运行，无需再次拉起。这里**不**写运行时记录：
+            # 记录的寿命刻意绑定在锁的寿命上，而我们马上就要在 finally 里释放锁
+            # 并删掉记录——写了也是死写入。属主要认的那个既有后端，
+            # apply_port_strategy() 已经通过 port_plan / attach_existing 两条
+            # NEKO_EVENT 把 instance_id 与端口推过去了，那才是它消费的通道。
             return 0
         if not port_result:
             return 1
+
+        publish_single_instance_state(
+            ports={
+                "MAIN_SERVER_PORT": MAIN_SERVER_PORT,
+                "MEMORY_SERVER_PORT": MEMORY_SERVER_PORT,
+                "TOOL_SERVER_PORT": TOOL_SERVER_PORT,
+            },
+            internal_ports={
+                key: int(os.environ.get(f"NEKO_{key}", value))
+                for key, value in INTERNAL_DEFAULT_PORTS.items()
+            },
+        )
 
         register_shutdown_hooks()
 
@@ -2203,6 +3058,7 @@ def main():
         except Exception as e:
             print(f"[Launcher] Warning: failed to persist root_state boot success: {e}", flush=True)
 
+        _publish_ready_runtime_record("multi")
         emit_frontend_event("startup_ready", {
             "instance_id": INSTANCE_ID,
             "selected": {
@@ -2350,8 +3206,13 @@ def main():
                 print(f"[Launcher] Warning: failed to schedule storage migration restart: {e}", flush=True)
                 restart_scheduled = False
 
-        if not restart_scheduled:
-            release_startup_lock()
+        # 交接路径已在 _maybe_schedule_storage_restart 里先释放过锁并把句柄置空；
+        # 这里再判一次，是为了覆盖调度本身抛异常、锁仍在手上的分支。
+        # Not while an owner-death teardown is running: its thread is still
+        # sweeping the process group, and releasing here would reopen the same
+        # window the teardown path just closed.
+        if not restart_scheduled and not _owner_death_in_progress:
+            release_single_instance_ownership()
         # 如果还有残留进程，使用非零退出码
         if has_alive:
             sys.exit(1)
@@ -2359,6 +3220,17 @@ def main():
         print("\n所有服务器已关闭", flush=True)
         print("再见！\n", flush=True)
         if os.environ.get("NEKO_LAUNCH_MODE", "").strip().lower() == "merged":
+            # os._exit bypasses interpreter shutdown, so a non-daemon finisher
+            # thread is not joined by it. Without this wait the main thread gets
+            # here in milliseconds while the finisher is still inside its
+            # TERM -> grace -> group KILL escalation, and the KILL never lands.
+            #
+            # Bounded on purpose: an unbounded join would let a stuck finisher
+            # keep the runtime alive past its owner, which is the guarantee this
+            # branch exists to provide. Worst case we exit a few seconds later.
+            finisher = _owner_death_finisher
+            if finisher is not None:
+                finisher.join(OWNER_DEATH_GROUP_GRACE_SECONDS + 5.0)
             os._exit(exit_code)
     return exit_code
 

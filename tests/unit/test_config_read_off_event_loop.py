@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.fake_clock import patch_module_clock
 from utils.config_manager import core_config as core_config_module
 from utils.config_manager.core_config import CoreConfigMixin
 
@@ -533,7 +534,8 @@ def test_startup_migration_retries_a_transient_write_failure(monkeypatch):
     Losing the retry would leave openclawUrl at 8089 for the whole run, and the settings
     form would then post that stale value straight back -- the migration never converges.
     """
-    monkeypatch.setattr(core_config_module.time, "sleep", lambda _s: None)
+    # 退避 sleep 在 core_config.migrate_openclaw_url_port 里，读时钟的就是本模块
+    patch_module_clock(monkeypatch, core_config_module, sleep=lambda _s: None)
     manager = _FlakyWriteManager({"openclawUrl": "http://127.0.0.1:8089"}, fail_times=2)
 
     assert manager.migrate_openclaw_url_port() is True
@@ -544,7 +546,8 @@ def test_startup_migration_retries_a_transient_write_failure(monkeypatch):
 @pytest.mark.unit
 def test_startup_migration_gives_up_after_the_attempt_budget(monkeypatch):
     """Bounded, not infinite: a permanently unwritable config must not hang startup."""
-    monkeypatch.setattr(core_config_module.time, "sleep", lambda _s: None)
+    # 同上：退避 sleep 由 core_config 自己调用
+    patch_module_clock(monkeypatch, core_config_module, sleep=lambda _s: None)
     manager = _FlakyWriteManager({"openclawUrl": "http://127.0.0.1:8089"}, fail_times=99)
 
     assert manager.migrate_openclaw_url_port() is False

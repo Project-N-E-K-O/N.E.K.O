@@ -86,7 +86,9 @@ class QQReplyPostprocessNode:
             # <keyboard>
             kb_el = msg_el.find("keyboard")
             if kb_el is not None and kb_el.text:
-                block.keyboard = kb_el.text.strip()
+                block.keyboard = QQReplyPostprocessNode._normalize_keyboard(
+                    kb_el.text
+                )
 
             # <ark> with attrs
             ark_el = msg_el.find("ark")
@@ -110,6 +112,18 @@ class QQReplyPostprocessNode:
             return [QQMessageBlock(text=text)]
 
         return blocks
+
+    @staticmethod
+    def _normalize_keyboard(raw: str | None) -> str:
+        """Trim, drop empties, and cap at what the platform renders (4).
+
+        Normalizing once at parse time keeps delivery and bookkeeping on
+        the same value — the Open Platform sender builds at most four
+        buttons, so a fifth option would be recorded but never shown."""
+        options = [
+            part.strip() for part in str(raw or "").split("|") if part.strip()
+        ]
+        return "|".join(options[:4])
 
     @classmethod
     def _parse_legacy_tags(cls, raw_text: str) -> list[QQMessageBlock]:
@@ -137,7 +151,11 @@ class QQReplyPostprocessNode:
         if m: voice_text = m.group(1).strip(); text = re.sub(r"<record>.*?</record>", "", text, count=1, flags=re.IGNORECASE)
 
         m = re.search(r"<keyboard>(.*?)</keyboard>", text, re.IGNORECASE)
-        if m: keyboard = m.group(1).strip(); text = re.sub(r"<keyboard>.*?</keyboard>", "", text, count=1, flags=re.IGNORECASE)
+        if m:
+            # 旧式标签走同一个归一化：否则老输入能留下第五个按钮或空选项，
+            # 而发送端只投前四个——投递与记忆记录又对不上了。
+            keyboard = cls._normalize_keyboard(m.group(1))
+            text = re.sub(r"<keyboard>.*?</keyboard>", "", text, count=1, flags=re.IGNORECASE)
 
         clean = text.strip()
         blocks: list[QQMessageBlock] = []
@@ -221,6 +239,7 @@ class QQReplyPostprocessNode:
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
+                used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
         if context.ephemeral_session:
             return QQReplyOutcome(
@@ -228,6 +247,7 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="empty",
+                used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
         strategy_mode = getattr(self.plugin, "_strategy_mode", "neko_dynamic")
         is_forced = getattr(context, "force_reply", False) or context.permission_level == "admin"
@@ -237,13 +257,17 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 postprocess_reason="llm_skip",
+                used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
+        # default/forced 回复同样没有本轮历史 ai 行：标记必须保留，
+        # 否则 buffer 会把上一条已投递回复误记成未投递草稿。
         return QQReplyOutcome(
             action="reply",
             reply_text=self.plugin.i18n.t("messages.default_no_reply", default="嗯嗯~"),
             used_default_message=True,
             raw_reply_text=raw_reply_text,
             postprocess_reason="default",
+            used_fallback=bool(getattr(model_result, "used_fallback", False)),
         )
 
     def build_delivery_plan(self, request: Any, outcome: QQReplyOutcome) -> QQDeliveryPlan | None:

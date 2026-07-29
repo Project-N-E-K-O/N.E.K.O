@@ -11,6 +11,7 @@ from config.prompts.prompts_avatar_interaction import (
     _build_avatar_interaction_instruction,
     _build_avatar_interaction_memory_meta,
 )
+from tests.fake_clock import patch_module_clock
 
 
 _RPS_CANONICAL_ROUNDS = (
@@ -180,7 +181,10 @@ async def test_rps_payload_reaches_the_runtime_delivered_result_without_action_f
             self.acks.append((interaction_id, accepted, reason, kwargs))
 
     monkeypatch.setattr(greeting, "OmniOfflineClient", FakeOfflineClient)
-    monkeypatch.setattr(greeting.time, "time", lambda: 123.456)
+    # 冷却判定和 ingress 时间戳都在 greeting 里读 time.time()
+    # （GreetingMixin._avatar_interaction_ingress_time / handle_avatar_interaction），
+    # 所以假时钟打在 main_logic.core.greeting 上。
+    patch_module_clock(monkeypatch, greeting, time=lambda: 123.456)
     runtime = RuntimeHarness()
     runtime.engagement_times = []
     runtime.note_user_engagement = lambda *, at=None: runtime.engagement_times.append(at)

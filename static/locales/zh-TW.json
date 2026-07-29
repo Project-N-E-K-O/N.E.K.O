@@ -1765,7 +1765,6 @@
         "close": "關閉",
         "catgirlMemory": "角色",
         "compactLibraryLabel": "角色列表",
-        "currentRole": "目前角色:",
         "autoReview": "自動記憶整理",
         "globalActionsAria": "記憶操作",
         "openTutorialManager": "新手引導",
@@ -1791,6 +1790,7 @@
         "autoReviewTooltipLabel": "瞭解自動記憶整理",
         "strongMemoryTooltipLabel": "瞭解強力記憶",
         "externalImportTooltipLabel": "關於匯入外部記憶",
+        "roleSourceTooltip": "來源：{{source}}",
         "loading": "加載中...",
         "externalImportTitle": "匯入外部記憶",
         "externalImportNote": "將 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日記憶或工作區 ZIP 匯入目前選取的角色。",
@@ -1827,7 +1827,6 @@
         "olderSection": "較久前",
         "me": "我：",
         "memoNone": "無。",
-        "delete": "刪除",
         "deleteEntryAria": "刪除 {{speaker}} 的第 {{position}} 條記憶",
         "pleaseSelectFile": "請先選擇文件",
         "saveFailed": "保存失敗：{{error}}",
@@ -2376,7 +2375,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
-            "notAvailable": "屏幕源選擇僅在桌面版可用",
+            "notAvailable": "目前環境無法選擇螢幕來源",
             "loading": "加載中...",
             "noSources": "沒有可用的屏幕源",
             "loadFailed": "獲取屏幕源失敗",
@@ -2384,7 +2383,8 @@
             "screenLabel": "螢幕 {{index}}",
             "windows": "窗口",
             "selected": "已選擇 {{source}}",
-            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享"
+            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享",
+            "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源"
         },
         "deviceSwitchFailed": "裝置切換失敗",
         "deviceSwitching": "裝置切換中...",
@@ -2687,9 +2687,11 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "掛邊模式 Beta 已開啟。",
-            "disabledNotice": "掛邊模式 Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
-            "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。"
+            "enabledNotice": "貼邊探身已開啟。",
+            "disabledNotice": "貼邊探身已關閉。Live2D 已恢復可見與可拖動狀態。",
+            "stealthEnabledNotice": "隱身模式已開啟。",
+            "stealthDisabledNotice": "隱身模式已關閉，Yui 將保持貼邊探身。",
+            "toggleFailed": "貼邊探身切換失敗，請稍後重試。"
         },
         "toggles": {
             "allowInterrupt": "允許打斷",
@@ -2697,8 +2699,6 @@
             "avatarReactionBubble": "表情氣泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
-            "widgetMode": "掛邊模式 Beta",
-            "widgetModeTooltip": "手動開啟掛邊模式後，Live2D 可從左右與四角共六個螢幕邊緣錨點探身。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
             "autoCat": "自動變貓",
