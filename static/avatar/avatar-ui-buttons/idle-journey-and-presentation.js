@@ -148,7 +148,7 @@ function _getNekoIdleReactChatCompactSurfaceRect() {
 
     for (let i = 0; i < candidates.length; i += 1) {
         const rect = _getNekoIdleVisibleElementRect(candidates[i]);
-        if (rect) return rect;
+        if (rect) return _getNekoDesktopVirtualRect(rect);
     }
     return null;
 }

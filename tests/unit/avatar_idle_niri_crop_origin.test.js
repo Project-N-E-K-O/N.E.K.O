@@ -124,6 +124,93 @@ test('CAT1 converts a cropped DOM rect back to virtual desktop coordinates befor
     );
 });
 
+test('CAT1 converts the React compact surface to virtual coordinates before top-edge targeting', () => {
+    const surface = {
+        hidden: false,
+        getBoundingClientRect() {
+            return { x: 20, y: 40, left: 20, top: 40, width: 320, height: 180 };
+        }
+    };
+    const root = {
+        querySelector(selector) {
+            return selector === '.compact-chat-surface-shell' ? surface : null;
+        },
+        querySelectorAll() {
+            return [];
+        }
+    };
+    const shell = {
+        classList: {
+            contains() {
+                return false;
+            }
+        },
+        getAttribute(name) {
+            return name === 'data-chat-surface-mode' ? 'compact' : null;
+        },
+        contains(candidate) {
+            return candidate === root;
+        }
+    };
+    const context = {
+        document: {
+            getElementById(id) {
+                if (id === 'react-chat-window-overlay') return null;
+                if (id === 'react-chat-window-shell') return shell;
+                if (id === 'react-chat-window-root') return root;
+                return null;
+            }
+        },
+        window: {
+            getComputedStyle() {
+                return { display: 'block', visibility: 'visible', opacity: '1' };
+            },
+            __nekoNiriPetPhysicalCrop: {
+                toVirtualRect(rect) {
+                    return {
+                        x: rect.x + 900,
+                        y: rect.y + 200,
+                        width: rect.width,
+                        height: rect.height
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualRect'),
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_normalizeNekoIdleScreenRect'
+        ),
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_getNekoIdleVisibleElementRect'
+        ),
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_getNekoIdleReactChatCompactSurfaceRect'
+        )
+    ].join('\n'), context);
+
+    const rect = vm.runInContext('_getNekoIdleReactChatCompactSurfaceRect()', context);
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(rect)),
+        {
+            x: 920,
+            y: 240,
+            left: 920,
+            top: 240,
+            width: 320,
+            height: 180,
+            right: 1240,
+            bottom: 420
+        }
+    );
+});
+
 test('CAT1 virtual rect fallback keeps the crop offset when conversion is unavailable', () => {
     const context = {
         window: {
