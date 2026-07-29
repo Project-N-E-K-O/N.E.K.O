@@ -337,6 +337,47 @@ async def test_qq_group_core_memory_closing_line_is_group_shaped():
     assert "群聊里用文字继续对话" in rendered
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "input_mode, banned, expected",
+    [("text", "语音", "用文字"), ("audio", "用文字", "语音")],
+)
+async def test_hot_swap_prime_closing_line_follows_the_session_mode(
+    input_mode, banned, expected,
+):
+    """The hot-swap prime is the second lifecycle call site.
+
+    It reads ``self.input_mode`` rather than a parameter, so the AST guard
+    that every call states its shape cannot tell whether the value is even
+    reachable — drive the real sequence and read the primed text.
+    """
+    from tests.unit.test_hot_swap_cancellation import (
+        _FakeSession,
+        _drain_task,
+        _make_swap_manager,
+    )
+
+    manager = _make_swap_manager()
+    manager.input_mode = input_mode
+    old_session = _FakeSession("old")
+    new_session = _FakeSession("pending")
+    manager.session = old_session
+    manager.pending_session = new_session
+    manager.is_hot_swap_imminent = True
+    manager.is_active = True
+    manager.message_handler_task = None
+
+    try:
+        await manager._perform_final_swap_sequence()
+        assert manager.session is new_session
+        primed_text, skipped = new_session.prime_calls[0]
+        assert skipped is True
+        assert expected in primed_text
+        assert banned not in primed_text
+    finally:
+        await _drain_task(manager.message_handler_task)
+
+
 def test_qq_instruction_service_asks_for_the_group_shaped_closing_line():
     """The call site itself: QQ always passes input_mode='text' and
     forwards is_group.
