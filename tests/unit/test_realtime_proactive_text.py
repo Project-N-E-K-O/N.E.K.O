@@ -611,6 +611,33 @@ async def test_gemini_delivery_timeout_uses_native_client_content_interrupt(monk
 
 
 @pytest.mark.unit
+async def test_gemini_delivery_timeout_observes_boundary_completion(monkeypatch):
+    """Do not interrupt Gemini after its proactive outcome has completed."""
+    client = _make_client(api_type="gemini", model="gemini-live")
+    client._gemini_session = AsyncMock()
+
+    async def timeout_after_completion(awaitable, *, timeout):
+        del timeout
+        awaitable.close()
+        client._settle_gemini_proactive_inject()
+        raise asyncio.TimeoutError
+
+    monkeypatch.setattr(
+        responses_module.asyncio,
+        "wait_for",
+        timeout_after_completion,
+    )
+
+    delivered = await client.prompt_ephemeral("complete at timeout boundary")
+
+    assert delivered is True
+    assert client._gemini_session.send_client_content.await_count == 1
+    assert client._gemini_proactive_outcome is None
+    assert client._proactive_inject_awaiting_outcome is False
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_gemini_cancelled_send_clears_pending_outcome():
     client = _make_client(api_type="gemini", model="gemini-live")
     client._gemini_session = AsyncMock()

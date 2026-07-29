@@ -1025,15 +1025,29 @@ class _ResponseMixin:
             _remove_visual_rejection_handler()
             raise
         except asyncio.TimeoutError:
+            # Gemini has no exact response ticket. Its turn_complete callback
+            # may settle this outcome at the timeout boundary after wait_for
+            # has already chosen the timeout branch. Observe that local gate
+            # before issuing an unscoped client-content interruption, which
+            # could otherwise cancel a newer turn.
+            outcome_settled = outcome_observed.is_set()
+            if outcome_settled:
+                logger.info(
+                    "prompt_ephemeral: proactive outcome settled at delivery timeout boundary"
+                )
+            ticket_completed = False
             # ``response.done`` can resolve the exact ticket at the timeout
             # boundary before its observer gets a turn to set
             # ``outcome_observed``. Treat that completed result as the
             # authoritative delivery outcome; otherwise we would preserve an
             # already-consumed visual snapshot and resend it on the next
             # scheduler attempt.
-            ticket_completed = False
             ticket_done = getattr(proactive_ticket, "done", None)
-            if ticket_done is not None and ticket_done.done():
+            if (
+                not outcome_settled
+                and ticket_done is not None
+                and ticket_done.done()
+            ):
                 try:
                     ticket_done.result()
                 except asyncio.CancelledError:
@@ -1042,11 +1056,11 @@ class _ResponseMixin:
                     pass
                 else:
                     ticket_completed = True
-            if ticket_completed:
+            if not outcome_settled and ticket_completed:
                 logger.info(
                     "prompt_ephemeral: proactive ticket completed at delivery timeout boundary"
                 )
-            else:
+            if not outcome_settled and not ticket_completed:
                 # Keep this request quarantined until its own terminal
                 # lifecycle arrives: clearing the shared maps here would let a
                 # late response.done sweep handlers registered by a retry.
