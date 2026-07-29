@@ -770,6 +770,21 @@ class TtsRuntimeMixin:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        # Configured preset ownership must be resolved before core-native voice
+        # routing; identical IDs still belong to the explicitly selected TTS API.
+        # 配置型音色与核心原生音色同名时，自定义 TTS 的显式归属优先，不能被原生路由抢走。
+        configured_provider = _core_facade.selected_configured_tts_preset_provider_key(
+            core_config_snapshot,
+            self._config_manager,
+            self.voice_id,
+        )
+        if configured_provider:
+            logger.info(
+                "%s🔊 语音模式：音色归属已配置 TTS provider=%s，将使用外部 TTS",
+                log_prefix,
+                configured_provider,
+            )
+            return True
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True

@@ -381,8 +381,6 @@ def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
         )
         is True
     )
-
-
 def test_non_livestream_free_preset_still_skips_tts_only_on_lanlan_tech(monkeypatch):
     """回归 PR #1369 原 gate 的窄路径：非 livestream 时，free preset 仅在
     base_url 指向 lanlan.tech 域时跳 TTS，其他域照旧 fallback 外部 TTS。"""
@@ -474,6 +472,38 @@ def test_explicit_vllm_tts_uses_external_tts_before_native_voice():
                 "ttsVoiceId": "Puck",
                 "GPTSOVITS_ENABLED": False,
             },
+        )
+        is False
+    )
+
+
+def test_explicit_custom_tts_owns_configured_voice_before_native_voice():
+    core_config = {
+        "ENABLE_CUSTOM_API": True,
+        "ttsModelProvider": "custom",
+        "ttsModelUrl": "https://speech.example.com/v1",
+        "ttsModelId": "vendor-model",
+        "ttsVoiceId": "Puck",
+        "GPTSOVITS_ENABLED": False,
+    }
+    mgr = _make_mgr("Puck", core_config=core_config)
+
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            {"base_url": "https://generativelanguage.googleapis.com"},
+            core_config,
+        )
+        is True
+    )
+    disabled_config = {**core_config, "ENABLE_CUSTOM_API": False}
+    assert (
+        LLMSessionManager._resolve_session_use_tts(
+            mgr,
+            "audio",
+            {"base_url": "https://generativelanguage.googleapis.com"},
+            disabled_config,
         )
         is False
     )

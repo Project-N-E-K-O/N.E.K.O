@@ -179,6 +179,7 @@ __all__ = [
     "_gptsovits_is_selected", "_gptsovits_resolve",
     "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
     "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
+    "selected_configured_tts_preset_provider_key",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -488,6 +489,21 @@ def tts_provider_falls_back_on_failure(provider_key):
 def tts_provider_uses_configured_preset_voice(provider_key):
     """Expose configured-preset ownership without importing utils in core mixins."""
     return _tts_providers.uses_configured_preset_voice(provider_key)
+
+
+def selected_configured_tts_preset_provider_key(core_config, cm, voice_id):
+    """Return the selected configured-preset owner for ``voice_id``, if any."""
+    # Reuse registry dispatch so core never hardcodes custom/vLLM ownership.
+    # 复用注册表判定，让 core 不需要识别 custom、vLLM 等具体 provider 名称。
+    provider_key = _tts_providers.selected_preset_provider_key(
+        core_config,
+        cm,
+        voice_id,
+    )
+    if not _tts_providers.uses_configured_preset_voice(provider_key):
+        return None
+    return provider_key
+
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
 # 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities

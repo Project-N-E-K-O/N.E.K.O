@@ -23,6 +23,7 @@ from utils.openai_tts import (
     build_openai_tts_payload,
     openai_tts_base_url,
     openai_tts_extra_body,
+    openai_tts_sdk_options,
     openai_tts_speech_url,
 )
 from utils.tts import provider_registry
@@ -68,6 +69,56 @@ def test_openai_tts_endpoint_preserves_query_after_path_normalization():
     assert openai_tts_speech_url("https://speech.example.com/v1?tenant=demo") == (
         "https://speech.example.com/v1/audio/speech?tenant=demo"
     )
+
+
+def test_openai_tts_sdk_options_preserve_endpoint_query_parameters():
+    assert openai_tts_sdk_options(
+        "https://speech.example.com/v1/audio/speech?tenant=demo&token=x%2By"
+    ) == (
+        "https://speech.example.com/v1",
+        {"tenant": "demo", "token": "x+y"},
+    )
+
+
+@pytest.mark.asyncio
+async def test_openai_sdk_options_reach_outgoing_speech_request():
+    from openai import AsyncOpenAI
+
+    requests = []
+
+    async def handle_request(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=b"\x00\x00",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    sdk_base_url, default_query = openai_tts_sdk_options(
+        "https://speech.example.com/v1/audio/speech?tenant=demo&token=x%2By"
+    )
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle_request))
+    client = AsyncOpenAI(
+        api_key="sk-test",
+        base_url=sdk_base_url,
+        default_query=default_query,
+        http_client=http_client,
+    )
+    try:
+        async with client.audio.speech.with_streaming_response.create(
+            model="tts-model",
+            voice="voice-a",
+            input="hello",
+            response_format="pcm",
+        ) as response:
+            async for _chunk in response.iter_bytes():
+                pass
+    finally:
+        await client.close()
+
+    assert len(requests) == 1
+    assert requests[0].url.path == "/v1/audio/speech"
+    assert dict(requests[0].url.params) == {"tenant": "demo", "token": "x+y"}
 
 
 def test_openai_tts_payload_is_strict_pcm():
@@ -833,6 +884,8 @@ def test_custom_worker_uses_openai_sdk_and_siliconflow_extensions(monkeypatch):
 
 
 def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_empty(monkeypatch):
+    from openai import omit as openai_omit
+
     clients, request_queue, response_queue, thread = _run_worker_once(
         monkeypatch,
         [b"\x00\x00"],
@@ -847,17 +900,77 @@ def test_custom_worker_keeps_auth_header_disabled_when_api_key_is_empty(monkeypa
         "api_key": "",
         "base_url": "http://127.0.0.1:8000/v1",
     }
+    assert clients[0].create_calls[0]["extra_headers"] == {
+        "Authorization": openai_omit,
+    }
+
+
+def test_custom_worker_forwards_endpoint_query_as_sdk_default_query(monkeypatch):
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00"],
+        base_url="https://speech.example.com/v1?tenant=demo&token=x%2By",
+    )
+    _wait_for_item(response_queue, lambda item: isinstance(item, bytes))
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+
+    assert clients[0].client_kwargs == {
+        "api_key": "sk-test",
+        "base_url": "https://speech.example.com/v1",
+        "default_query": {"tenant": "demo", "token": "x+y"},
+    }
 
 
 @pytest.mark.asyncio
-async def test_openai_sdk_omits_authorization_for_empty_api_key():
-    from openai import AsyncOpenAI
+async def test_openai_sdk_request_omits_authorization_for_empty_api_key():
+    from openai import AsyncOpenAI, omit as openai_omit
 
-    client = AsyncOpenAI(api_key="", base_url="http://127.0.0.1:8000/v1")
+    requests = []
+
+    async def handle_request(request):
+        requests.append(request)
+        return httpx.Response(
+            200,
+            content=b"\x00\x00",
+            headers={"content-type": "application/octet-stream"},
+        )
+
+    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle_request))
+    client = AsyncOpenAI(
+        **openai_worker_module._openai_auth_client_kwargs(AsyncOpenAI, ""),
+        base_url="http://127.0.0.1:8000/v1",
+        http_client=http_client,
+    )
     try:
-        assert "Authorization" not in client.auth_headers
+        async with client.audio.speech.with_streaming_response.create(
+            model="tts-model",
+            voice="voice-a",
+            input="hello",
+            response_format="pcm",
+            extra_headers={"Authorization": openai_omit},
+        ) as response:
+            async for _chunk in response.iter_bytes():
+                pass
     finally:
         await client.close()
+
+    assert len(requests) == 1
+    assert "Authorization" not in requests[0].headers
+
+
+def test_auth_free_client_kwargs_disable_new_sdk_credential_enforcement():
+    class _StrictAsyncOpenAI:
+        def __init__(self, *, api_key, _enforce_credentials=True):
+            del api_key, _enforce_credentials
+
+    assert openai_worker_module._openai_auth_client_kwargs(
+        _StrictAsyncOpenAI,
+        "",
+    ) == {
+        "api_key": "",
+        "_enforce_credentials": False,
+    }
 
 
 def test_builtin_openai_worker_keeps_sdk_default_endpoint_and_body(monkeypatch):

@@ -23,7 +23,7 @@ should receive the standard OpenAI body unless it is explicitly recognized by
 
 from __future__ import annotations
 
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import parse_qsl, urlparse, urlunparse
 
 
 OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -87,6 +87,24 @@ def openai_tts_speech_url(base_url: str) -> str:
     return urlunparse(
         (parsed.scheme, parsed.netloc, path, parsed.params, parsed.query, parsed.fragment)
     )
+
+
+def openai_tts_sdk_options(base_url: str) -> tuple[str, dict[str, str]]:
+    """Return an SDK base URL and query parameters with equivalent semantics.
+
+    The OpenAI SDK resolves ``audio/speech`` relative to ``base_url``. A query
+    embedded in that base URL is not reliably retained during path resolution,
+    so it must be supplied through ``default_query`` instead.
+    """
+
+    parsed = urlparse(openai_tts_base_url(base_url))
+    sdk_base_url = urlunparse(
+        (parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", "")
+    )
+    # SDK 追加 audio/speech 路径时可能丢弃 Base URL 自带的查询参数；将租户、
+    # 签名等参数拆到 default_query，保证运行请求与连通性探测访问同一端点。
+    default_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    return sdk_base_url, default_query
 
 
 def openai_tts_extra_body(base_url: str) -> dict[str, int | bool]:
