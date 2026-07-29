@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from main_logic.omni_realtime_client import OmniRealtimeClient
+import main_logic.omni_realtime_client._response_arbiter as arbiter_module
 from main_logic.omni_realtime_client._response_arbiter import (
     _DEFAULT_RESPONSE_DONE_TIMEOUT,
     _SERVER_RESPONSE_ID_LIMIT,
@@ -1136,21 +1137,23 @@ async def test_vad_pending_response_holds_lane_before_created_event():
 
 
 @pytest.mark.asyncio
-async def test_vad_pending_response_timeout_reopens_lane():
+async def test_vad_pending_response_timeout_reopens_lane(monkeypatch):
     sent = []
 
     async def send(event):
         sent.append(dict(event))
 
+    monkeypatch.setattr(
+        arbiter_module,
+        "_SERVER_VAD_RESPONSE_STARTED_TIMEOUT",
+        0.01,
+    )
     arbiter = RealtimeResponseArbiter(send)
     arbiter.notify_server_vad_response_pending()
     follow_up = await arbiter.enqueue(source="follow-up")
 
-    await asyncio.sleep(0.01)
     assert follow_up.sent.done() is False
     assert arbiter._server_vad_pending_handle is not None
-
-    arbiter._server_vad_pending_expired()
 
     await asyncio.wait_for(follow_up.sent, 0.2)
     arbiter.notify_response_created(

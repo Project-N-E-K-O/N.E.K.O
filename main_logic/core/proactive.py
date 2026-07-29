@@ -34,6 +34,9 @@ from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_s
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
 
 
+VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
+
+
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
@@ -853,6 +856,11 @@ class ProactiveMixin:
                             self.lanlan_name,
                             exc,
                         )
+                        # No response.create fired, so no response lifecycle
+                        # hook can re-drive this retained callback.
+                        self._schedule_proactive_retry(
+                            self.proactive_manager.min_gap_s
+                        )
                         return False
                 if (
                     voice_sess.is_active_response()
@@ -1527,7 +1535,7 @@ class ProactiveMixin:
         stale — coalescing stays strictly opt-in."""
         if not isinstance(entry, dict):
             return False
-        if entry.get("_voice_delivery_committed"):
+        if entry.get(VOICE_DELIVERY_COMMITTED_KEY):
             # Once provider media delivery has begun, the matching callback
             # text must complete the same turn. A newer same-key cue remains
             # queued for the following turn instead of orphaning media that
@@ -1544,13 +1552,13 @@ class ProactiveMixin:
     def _mark_voice_delivery_committed(callbacks: list) -> None:
         for callback in callbacks:
             if isinstance(callback, dict):
-                callback["_voice_delivery_committed"] = True
+                callback[VOICE_DELIVERY_COMMITTED_KEY] = True
 
     @staticmethod
     def _clear_voice_delivery_committed(callbacks: list) -> None:
         for callback in callbacks:
             if isinstance(callback, dict):
-                callback.pop("_voice_delivery_committed", None)
+                callback.pop(VOICE_DELIVERY_COMMITTED_KEY, None)
 
     def _retract_stale_coalesced(self, callbacks: list) -> bool:
         """Pull-model staleness sweep for a delivery-point snapshot.
@@ -2182,7 +2190,7 @@ class ProactiveMixin:
                             and str(_cb.get("coalesce_key") or "").strip() == new_key):
                         surviving.append(_cb)
                         continue
-                    if _cb.get("_voice_delivery_committed"):
+                    if _cb.get(VOICE_DELIVERY_COMMITTED_KEY):
                         # This cue has crossed the media-delivery commit
                         # boundary. Keep it; the new cue queues for the next
                         # turn instead of retracting already-persisted media.

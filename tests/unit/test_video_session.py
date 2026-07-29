@@ -188,14 +188,14 @@ async def test_step_response_done_preserves_unconsumed_frame_annotation():
     client._proactive_image_consumed = False
     client._image_description = annotation
     client._image_recognized_this_turn = True
-    client._current_response_id = "resp-unrelated"
+    client._current_response_id = "resp-current"
     client._is_responding = True
     client._close_failed_transport = AsyncMock()
     client.ws.__aiter__.return_value = [
         json.dumps(
             {
                 "type": "response.done",
-                "response": {"id": "resp-unrelated", "status": "completed"},
+                "response": {"id": "resp-other", "status": "completed"},
             }
         )
     ]

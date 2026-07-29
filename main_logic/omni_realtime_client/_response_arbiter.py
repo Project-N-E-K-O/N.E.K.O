@@ -138,7 +138,6 @@ class RealtimeResponseArbiter:
         self._current: _QueuedResponse | None = None
         self._response_owner: _QueuedResponse | None = None
         self._server_response_active = False
-        self._server_vad_speech_active = False
         # An ended server-VAD utterance identifies an automatic response that
         # may race an explicit owner's response.create.  speech_started alone
         # is not sufficient: an already-sent explicit create can still emit
@@ -522,14 +521,16 @@ class RealtimeResponseArbiter:
             self._remember_server_response_id(response_id)
 
     def notify_server_vad_started(self) -> None:
-        """Record speech activity without assigning response ownership."""
+        """Deliberately leave ownership unchanged until speech_stopped.
 
-        self._server_vad_speech_active = True
+        The transport keeps this explicit boundary so future callers do not
+        accidentally treat speech_started as evidence of an automatic
+        response; only the ended utterance below may arm that correlation.
+        """
 
     def notify_server_vad_response_pending(self) -> None:
         """Mark a VAD response pending unless an explicit create won the race."""
 
-        self._server_vad_speech_active = False
         owner = self._response_owner
         if owner is not None and owner.ticket.sent.done():
             # The explicit response.create finished sending before this
@@ -744,7 +745,6 @@ class RealtimeResponseArbiter:
         # the failed connection and complete its selected ticket.
         self._dispatch_allowed.set()
         self._server_response_active = False
-        self._server_vad_speech_active = False
         self._server_vad_response_pending = False
         self._server_response_ids.clear()
         self._cancel_server_vad_pending_timer()
@@ -773,7 +773,6 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
-        self._server_vad_speech_active = False
         self._server_vad_response_pending = False
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()

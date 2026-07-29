@@ -291,6 +291,34 @@ async def test_voice_mode_sid_rotation_rechecks_user_activity_before_media():
     assert cb.get("_voice_delivery_committed") is None
 
 
+async def test_voice_mode_sid_rotation_failure_arms_callback_retry():
+    sess = _make_voice_sess()
+    sess.on_sid_rotate = AsyncMock(side_effect=RuntimeError("rotate failed"))
+    sess.stream_image = AsyncMock()
+    mgr = _make_mgr(session=sess)
+    mgr._schedule_proactive_retry = MagicMock()
+    cb = {
+        "_callback_delivery_id": "id-rotation-failed",
+        "status": "completed",
+        "summary": "retry this callback",
+        "media_images": ["callback-image"],
+    }
+    mgr.pending_agent_callbacks = [cb]
+
+    delivered = await core_module.LLMSessionManager.trigger_agent_callbacks(
+        mgr
+    )
+
+    assert delivered is False
+    sess.on_sid_rotate.assert_awaited_once_with()
+    sess.stream_image.assert_not_awaited()
+    assert sess.inject_calls == 0
+    assert mgr.pending_agent_callbacks == [cb]
+    mgr._schedule_proactive_retry.assert_called_once_with(
+        mgr.proactive_manager.min_gap_s
+    )
+
+
 async def test_voice_mode_inject_preserves_passive_cb_without_extra():
     """Voice inject consumes only proactive callbacks; passive stays queued
     without a hot-swap extra mirror."""

@@ -336,8 +336,11 @@ def test_interrupt_preempts_finish_retry_after_backoff(monkeypatch):
         {"type": "tts.connection.done", "data": {"session_id": "unexpected"}},
     ])
     sockets = iter([initial, old_broken, unexpected_retry])
+    connect_attempts = 0
 
     async def connect(*_args, **_kwargs):
+        nonlocal connect_attempts
+        connect_attempts += 1
         return next(sockets)
 
     real_sleep = _step_protocol.asyncio.sleep
@@ -363,5 +366,6 @@ def test_interrupt_preempts_finish_retry_after_backoff(monkeypatch):
         provider_key="step",
     )
 
+    assert connect_attempts == 2
     assert unexpected_retry.sent == []
     assert old_broken._closed is True
