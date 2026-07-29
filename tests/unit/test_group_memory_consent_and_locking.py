@@ -1,0 +1,385 @@
+"""QQ 记忆管线的三处缺陷护栏：静默轮越权写入、成员排空持锁、httpx 单例。
+
+覆盖：
+- 静默轮（模型选择沉默）跑记忆管家时，非 admin 私聊的消息不得进主人的
+  legacy 语料；闸在被调方 ``cache_session_delta``，静默轮那条路径上没有
+  任何调用方判据。
+- 成员桶排空只在取/还快照时持会话锁，scoped POST 一律在锁外；冲刷期间
+  到达的发言既不丢也不重复入桶。
+- ``QQMemoryBridge`` 复用同一个 httpx client，且各端点的 timeout 仍按
+  自己的值 per-request 传（scoped history 30s，其余 5s）。
+"""
+
+from __future__ import annotations
+
+import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
+
+
+def _msg(msg_type: str, text: str):
+    return SimpleNamespace(type=msg_type, content=text)
+
+
+def _session_lock_runner():
+    """真的会串行化的会话锁（不是 passthrough 假锁）。"""
+    locks: dict[str, asyncio.Lock] = {}
+
+    async def _run_with_session_lock(session_key, coro_factory):
+        lock = locks.setdefault(session_key, asyncio.Lock())
+        async with lock:
+            return await coro_factory()
+
+    return _run_with_session_lock, locks
+
+
+# ── 静默轮越权写入 ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_silent_turn_never_caches_unauthorized_private_history():
+    """非 admin 私聊 + 模型沉默 = 好友的消息被写进主人的 legacy 语料。
+
+    静默轮无条件调 ``_run_memory_housekeeping`` → ``_cache_session_delta``，
+    成功路径那道 ``if user_data.get("memory_enabled")`` 完全绕过了。非
+    admin 私聊的 memory_enabled 恒为 False（prompt_builder 里 permission
+    != admin 就是 False），所以任何一次沉默都会越权写入。
+    """
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [_msg("human", "好友说的话"), _msg("ai", "回复")]
+    user_data = {
+        "is_group": False,
+        "memory_enabled": False,
+        "her_name": "Neko",
+        "session": SimpleNamespace(_conversation_history=history),
+        "last_synced_index": 0,
+    }
+    bridge = SimpleNamespace(
+        post_memory_history=AsyncMock(return_value={"status": "ok"}),
+    )
+    plugin = SimpleNamespace(
+        _user_sessions={"private:2046": user_data},
+        memory_bridge=bridge,
+        logger=MagicMock(),
+    )
+    memory_service = QQSessionMemoryService(plugin)
+    plugin.session_memory_service = memory_service
+    plugin._cache_session_delta = memory_service.cache_session_delta
+    generation = QQReplyGenerationService(plugin)
+
+    await generation._run_memory_housekeeping("private:2046", user_data)
+
+    bridge.post_memory_history.assert_not_awaited()
+    assert user_data["last_synced_index"] == 0
+    assert not user_data.get("has_cached_memory")
+    # _run_memory_housekeeping 把异常吞成一条 warning：如果这条测试是靠
+    # 崩掉才没发出请求，断言就毫无意义了。
+    assert not [
+        call for call in plugin.logger.warning.call_args_list
+        if "记忆管家调度失败" in str(call)
+    ]
+
+    # 对照组：已授权（admin）私聊照常入库——闸不是把整条路封死。
+    user_data["memory_enabled"] = True
+    await generation._run_memory_housekeeping("private:2046", user_data)
+    bridge.post_memory_history.assert_awaited_once()
+    assert bridge.post_memory_history.await_args.args[0] == "cache"
+    sent = bridge.post_memory_history.await_args.args[2]
+    assert [m["content"][0]["text"] for m in sent] == ["好友说的话"]
+
+
+# ── 成员桶排空的锁语义 ──────────────────────────────────────────────
+
+
+def _group_drain_harness(post_scoped):
+    """一个能真正跑 _drain_member_buckets 的最小群会话。"""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    user_data = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "Neko",
+        "group_member_memory_messages": {
+            "2046": [{"role": "user", "content": [{"type": "text", "text": "旧发言"}]}],
+        },
+        "group_member_memory_labels": {"2046": "阿离(2046)"},
+        "member_drain_in_flight": True,
+    }
+    run_with_session_lock, locks = _session_lock_runner()
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": user_data},
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        _run_with_session_lock=run_with_session_lock,
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
+        memory_bridge=SimpleNamespace(
+            post_scoped_memory_history=post_scoped,
+            group_participant_subject=(
+                lambda gid, sid: {
+                    "subject_kind": "group_participant",
+                    "subject_id": f"qq:{gid}:{sid}",
+                }
+            ),
+        ),
+    )
+    return QQSessionMemoryService(plugin), plugin, user_data, locks
+
+
+@pytest.mark.asyncio
+async def test_member_drain_frees_session_lock_while_posting():
+    """排空期间同群的消息处理必须还能拿到会话锁。
+
+    一次排空最坏 2 波 × 4 并发 × 30s；把这段时间关在会话锁里，整个群的
+    消息处理停摆，等锁的 handler 还各自占着全局 Semaphore(3)。
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    # 请求在飞 —— 此刻会话锁必须是空闲的。
+    handled = []
+
+    async def _competing_handler():
+        await plugin._run_with_session_lock(
+            "group:7788", lambda: _record_handled(handled),
+        )
+
+    await asyncio.wait_for(_competing_handler(), timeout=2.0)
+    assert handled == ["handled"]
+
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+    assert "member_drain_in_flight" not in user_data
+
+
+async def _record_handled(sink: list) -> None:
+    sink.append("handled")
+
+
+@pytest.mark.asyncio
+async def test_turns_arriving_during_drain_are_neither_lost_nor_resent():
+    """冲刷期间新到的发言写进新的一代：不混进在飞的 payload（会被成功后
+    的整桶 pop 带走 = 丢），也不在下一轮重发（= 重复入库）。"""
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+    sent_payloads: list[list] = []
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        sent_payloads.append(list(messages))
+        in_flight.set()
+        await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    context = SimpleNamespace(
+        is_group=True, sender_id="2046", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="冲刷期间的新发言",
+        user_nickname="阿离",
+    )
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    # 名额已经腾空，新发言进得来。
+    service.record_group_member_turn(user_data, context)
+
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    # 在飞的那一批只含快照时刻的旧发言。
+    assert len(sent_payloads) == 1
+    assert [
+        part["text"]
+        for message in sent_payloads[0]
+        for part in message["content"]
+    ] == ["旧发言"]
+    # 新发言留在队列里等下一轮，一条不多一条不少。
+    remaining = user_data["group_member_memory_messages"]["2046"]
+    assert [
+        part["text"] for message in remaining for part in message["content"]
+    ] == ["冲刷期间的新发言"]
+
+
+@pytest.mark.asyncio
+async def test_failed_drain_returns_buckets_ahead_of_newer_turns():
+    """冲失败的桶回到队列，并且排在冲刷期间新到的发言之前（时间顺序）。"""
+    in_flight = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    context = SimpleNamespace(
+        is_group=True, sender_id="2046", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="冲刷期间的新发言",
+        user_nickname="阿离",
+    )
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    service.record_group_member_turn(user_data, context)
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    remaining = user_data["group_member_memory_messages"]["2046"]
+    assert [
+        part["text"] for message in remaining for part in message["content"]
+    ] == ["旧发言", "冲刷期间的新发言"]
+    # 调度器已经把 due 标消费掉了，失败必须重新举起来。
+    assert user_data["member_flush_due"] is True
+    assert "member_drain_in_flight" not in user_data
+    # label 也要回到 live 映射，否则下一轮的 speaker_label 会退化成 QQ 号。
+    assert user_data["group_member_memory_labels"]["2046"] == "阿离(2046)"
+
+
+@pytest.mark.asyncio
+async def test_drain_drops_failed_buckets_when_consent_revoked_mid_flight():
+    """冲刷飞行期间关掉成员记忆：失败的桶按 fail-closed 丢弃，不放回队列
+    等下一轮再往服务端发。"""
+    in_flight = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        raise RuntimeError("boom")
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    assert not user_data.get("group_member_memory_messages")
+    assert not user_data.get("member_flush_due")
+    assert "member_drain_in_flight" not in user_data
+
+
+# ── httpx 单例 + per-request timeout ────────────────────────────────
+
+
+class _FakeResponse:
+    def __init__(self, payload):
+        self._payload = payload
+        self.text = "记忆正文"
+
+    def raise_for_status(self):
+        return None
+
+    def json(self):
+        return self._payload
+
+
+class _FakeClient:
+    """只记录调用的假 client；is_closed 让 _get_client 认它是活的。"""
+
+    instances = 0
+
+    def __init__(self, *args, **kwargs):
+        type(self).instances += 1
+        self.is_closed = False
+        self.calls: list[tuple[str, str, dict]] = []
+        self.closed_times = 0
+
+    async def get(self, url, **kwargs):
+        self.calls.append(("GET", url, kwargs))
+        return _FakeResponse({})
+
+    async def post(self, url, **kwargs):
+        self.calls.append(("POST", url, kwargs))
+        return _FakeResponse({"results": [], "elapsed_ms": 1.0})
+
+    async def aclose(self):
+        self.closed_times += 1
+        self.is_closed = True
+
+
+@pytest.mark.asyncio
+async def test_memory_bridge_keeps_per_endpoint_timeouts_on_one_client():
+    """timeout 从 client 构造挪到 per-request：scoped history 等的是一次
+    LLM 抽取（30s），其余都是本地读（5s）。共用一个 client 时如果把
+    timeout 留在构造上，所有端点会被拉平成同一个值。"""
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
+    fake = _FakeClient()
+    bridge._client = fake
+
+    await bridge.fetch_bootstrap_memory("Neko")
+    await bridge.fetch_scoped_bootstrap_memory(
+        "Neko", subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
+    )
+    await bridge.post_scoped_mentions(
+        "Neko", "回复正文",
+        subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
+    )
+    await bridge.query_relevant_memory("Neko", "查询")
+    await bridge.post_memory_history("cache", "Neko", [{"role": "user"}])
+    await bridge.post_scoped_memory_history(
+        "Neko", [{"role": "user"}],
+        subject={"subject_kind": "group_participant", "subject_id": "qq:7788:2046"},
+    )
+
+    timeouts = {
+        url.rsplit("/", 1)[-1] if "internal" not in url else url.rsplit("/", 1)[-1]: kwargs.get("timeout")
+        for _method, url, kwargs in fake.calls
+    }
+    assert timeouts["scoped_history"] == 30.0
+    assert timeouts["scoped_context"] == 5.0
+    assert timeouts["scoped_mentions"] == 5.0
+    assert timeouts["Neko"] == 5.0  # /new_dialog/{name}、/query_memory/{name}、/cache/{name}
+    assert all(kwargs.get("timeout") is not None for _m, _u, kwargs in fake.calls)
+    assert len(fake.calls) == 6
+
+
+@pytest.mark.asyncio
+async def test_memory_bridge_reuses_and_closes_one_client(monkeypatch):
+    from plugin.plugins.qq_auto_reply import memory_bridge as bridge_module
+
+    _FakeClient.instances = 0
+    monkeypatch.setattr(bridge_module.httpx, "AsyncClient", _FakeClient)
+    bridge = bridge_module.QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
+
+    first, second = await asyncio.gather(
+        bridge._get_client(), bridge._get_client(),
+    )
+    assert first is second
+    assert _FakeClient.instances == 1
+
+    await bridge.aclose()
+    assert first.closed_times == 1
+    assert bridge._client is None
+    # 关掉之后再用会重新建一个，而不是拿着已关闭的 client 继续发。
+    third = await bridge._get_client()
+    assert third is not first
+    assert _FakeClient.instances == 2

@@ -281,12 +281,15 @@ class ToolCallingMixin:
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
         # 渲染：首行 i18n 总览 + 每条 markdown bullet
-        # 格式: ``1. [tier/entity] text  (2026-05-01, 23 天前)``
-        # tier/entity 是英文 enum 不翻译；text 是原始记忆原文不翻译
-        # （按用户拍板）。时间锚点优先取事件真正发生时间 event_end_at →
-        # event_start_at → created_at（与 persona 过时 block / temporal
-        # _past_anchor 同口径），让模型看到的是"事件什么时候发生"而不是
-        # "记忆什么时候写下"；再附一个本地化相对标签（X 天/周/月前）。
+        # 格式: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``
+        # tier/entity 走本地化标签表（scoped 条目的 entity 恒等于
+        # subject.kind，裸回显会把 `[fact/group_chat]` 塞进中文 prompt）；
+        # 与插件侧 memory_bridge.render_relevant_memory 共用同一张表。
+        # text 是原始记忆原文不翻译（按用户拍板）。时间锚点优先取事件真正
+        # 发生时间 event_end_at → event_start_at → created_at（与 persona
+        # 过时 block / temporal _past_anchor 同口径），让模型看到的是"事件
+        # 什么时候发生"而不是"记忆什么时候写下"；再附一个本地化相对标签。
+        from config.prompts.prompts_memory import render_recall_entry_tag
         from memory.temporal import (
             time_since_label as _time_label,
             _parse_iso_safe,
@@ -294,8 +297,7 @@ class ToolCallingMixin:
         )
         lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
         for i, r in enumerate(results, start=1):
-            tier = r.get("tier") or "?"
-            entity = r.get("entity") or "-"
+            tag = render_recall_entry_tag(r.get("tier"), r.get("entity"), _lang)
             # str() coerce 防 malformed memory entry：facts/reflections.json
             # 走 JSON 序列化往返，理论上 text / 时间字段应是 str，但 manual
             # edit / 老格式残留 / 迁移 bug 都可能让它们变 list / int 等
@@ -326,7 +328,7 @@ class ToolCallingMixin:
                 time_suffix = f"  ({date_part})"
             else:
                 time_suffix = ""
-            lines.append(f"{i}. [{tier}/{entity}] {text}{time_suffix}")
+            lines.append(f"{i}. {tag} {text}{time_suffix}")
         return "\n".join(lines)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:

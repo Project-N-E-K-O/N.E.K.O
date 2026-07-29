@@ -377,6 +377,21 @@ class RenderingMixin:
             out.append(r)
         return out
 
+    @staticmethod
+    def _renders_scoped_only(subjects=None, include_legacy_private=None) -> bool:
+        """True when this render may only show scoped subjects.
+
+        Same derivation as `filter_entries_for_subjects` /
+        `_persona_view_for_subjects`, kept in one place so the rendered
+        prose can't disagree with what the filters actually let through:
+        subjects supplied and legacy-private rows excluded."""
+        from memory.scopes import normalize_subjects
+
+        allowed = normalize_subjects(subjects)
+        if include_legacy_private is None:
+            include_legacy_private = not allowed
+        return bool(allowed) and not include_legacy_private
+
     def _compose_markdown_from_trimmed(
         self, name: str, persona: dict, name_mapping: dict,
         protected_entries: list[tuple[str, dict]],
@@ -384,6 +399,8 @@ class RenderingMixin:
         non_protected_entity_index: dict[int, str],
         trimmed_pending_reflections: list[dict],
         trimmed_confirmed_reflections: list[dict],
+        *,
+        scoped_only: bool = False,
     ) -> str:
         """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
 
@@ -511,6 +528,9 @@ class RenderingMixin:
                     ai_name=ai_name,
                     master_name=master_name,
                     items_text="\n".join(past_lines),
+                    # 群/成员 subject 的渲染里点名私聊对象是双重错误：名字
+                    # 泄漏进群 prompt，指令对象也不是群里的人。
+                    scoped_only=scoped_only,
                 )
             )
 
@@ -596,6 +616,9 @@ class RenderingMixin:
             protected_entries, trimmed_non_protected,
             non_protected_entity_index,
             trimmed_pending, trimmed_confirmed,
+            scoped_only=self._renders_scoped_only(
+                subjects, include_legacy_private,
+            ),
         )
 
     @staticmethod
@@ -706,6 +729,9 @@ class RenderingMixin:
             protected_entries, trimmed_non_protected,
             non_protected_entity_index,
             trimmed_pending, trimmed_confirmed,
+            scoped_only=self._renders_scoped_only(
+                subjects, include_legacy_private,
+            ),
         )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:

@@ -32,7 +32,7 @@ from main_logic.proactive_delivery import (
     resolve_callback_delivery_ack,
 )
 from utils.gptsovits_config import is_gsv_disabled_voice_id
-from config.prompts.prompts_sys import _loc, CONTEXT_SUMMARY_READY
+from config.prompts.prompts_sys import get_context_summary_ready
 from utils.config_manager import _as_bool, ensure_default_yui_voice_for_free_api
 from utils.language_utils import normalize_language_code, get_global_language_full
 from queue import Empty
@@ -1286,7 +1286,12 @@ class LifecycleMixin:
             initial_prompt += (
                 _nd_text
                 + self._convert_cache_to_str(next_session_context_messages)
-                + _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                # 按本场的实际形态选措辞：text 模式此前也在念"即将开始用
+                # 语音继续对话"——input_mode 的分支要到下面创建 client 时
+                # 才出现，这段却是无条件拼的。
+                + get_context_summary_ready(_lang, input_mode=input_mode).format(
+                    name=self.lanlan_name, master=self.master_name,
+                )
             )
             logger.info(f"[语音会话诊断] 记忆上下文获取完成 (耗时: {time.time() - mem_start:.2f}秒)")
         except ConnectionError:
@@ -2175,7 +2180,11 @@ class LifecycleMixin:
                 _prime_selected_extras = _selected
             else:
                 _lang = normalize_language_code(self.user_language, format='short')
-                final_prime_text += _loc(CONTEXT_SUMMARY_READY, _lang).format(name=self.lanlan_name, master=self.master_name)
+                # 与主会话构造点同一口径：热切换同样跑在 text 模式下
+                # （见下方 self.input_mode == 'text' 的 pending 分支）。
+                final_prime_text += get_context_summary_ready(
+                    _lang, input_mode=self.input_mode,
+                ).format(name=self.lanlan_name, master=self.master_name)
                 # Passive（read）回调搭车：本分支没有 proactive extras，
                 # passive 吃满整个预算。非 Gemini 走 if/else 之后的统一
                 # skipped=True 注入；Gemini 特例在这里合并进本分支唯一的

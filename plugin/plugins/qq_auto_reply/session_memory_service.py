@@ -430,6 +430,13 @@ class QQSessionMemoryService:
                     self._drain_member_buckets(session_key)
                 )
             return 0
+        if not user_data.get("memory_enabled"):
+            # 私聊 legacy 语料是**主人**的：非 admin 好友的 memory_enabled
+            # 恒为 False，他们的消息一条都不得进 /cache。闸放在被调方而不是
+            # 调用方——_cache_session_delta 有多个入口（成功路径自己判过，
+            # 静默轮的记忆管家、旁路调度都没判），逐个补必漏。群分支在上面
+            # 就返回了，不受影响（那两个排空各有自己的闸）。
+            return 0
         session = user_data.get("session")
         her_name = user_data.get("her_name")
         if not session or not her_name:
@@ -513,41 +520,120 @@ class QQSessionMemoryService:
 
     async def _drain_member_buckets(self, session_key: str) -> None:
         """Flush member buckets that hit the cap, instead of dropping the
-        oldest authorized turns of a group that never goes idle."""
-        async def _drain() -> None:
+        oldest authorized turns of a group that never goes idle.
+
+        The session lock is held only to take the snapshot and to hand the
+        failures back — never across the scoped POSTs. One sweep is two
+        waves of four concurrent requests at up to 30s each; holding the
+        lock for that stalls every message in the group, and the handlers
+        queued behind it keep their share of the global message semaphore,
+        so a couple of always-busy groups could wedge the whole plugin
+        (private chats included)."""
+        snapshot: dict[str, list] = {}
+        snapshot_labels: dict[str, str] = {}
+        flush_target: dict[str, Any] = {}
+
+        async def _take_snapshot() -> bool:
             user_data = self.plugin._user_sessions.get(session_key)
             if not user_data:
+                return False
+            if not user_data.get("is_group") or not user_data.get(
+                "memory_enabled"
+            ):
+                return False
+            if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            ):
+                return False
+            group_id = str(user_data.get("group_id") or "").strip()
+            her_name = user_data.get("her_name")
+            if not group_id or not her_name:
+                return False
+            buckets = user_data.get("group_member_memory_messages") or {}
+            labels = user_data.get("group_member_memory_labels") or {}
+            for sender_id in [s for s, msgs in buckets.items() if s and msgs]:
+                snapshot[sender_id] = buckets.pop(sender_id)
+                label = labels.pop(sender_id, None)
+                if label:
+                    snapshot_labels[sender_id] = label
+            if not snapshot:
+                return False
+            # 整桶搬走：参与者名额当场腾空，冲刷期间新到的发言写进全新的
+            # 一代，和在飞的这一代互不覆盖。冲刷标记必须在锁内就位——设置侧
+            # 的 opt-out 快照靠它决定"另起一代"，锁一放它就可能跑起来。
+            user_data["member_flush_in_progress"] = True
+            flush_target["user_data"] = user_data
+            flush_target["group_id"] = group_id
+            flush_target["her_name"] = her_name
+            return True
+
+        async def _return_snapshot() -> None:
+            # _flush_member_buckets 成功即 pop，所以此刻 snapshot 里剩下的
+            # 正好是没冲出去的那些。
+            user_data = self.plugin._user_sessions.get(session_key)
+            if user_data is None:
+                if snapshot:
+                    self.plugin.logger.error(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间会话已结算并弹出，{len(snapshot)} 个未冲成功的"
+                        f"成员队列丢失"
+                    )
                 return
             try:
-                if not user_data.get("is_group") or not user_data.get(
-                    "memory_enabled"
-                ):
+                if not snapshot:
                     return
-                if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "group_member_memory_enabled", False,
-                ):
-                    return
-                group_id = str(user_data.get("group_id") or "").strip()
-                her_name = user_data.get("her_name")
-                if not group_id or not her_name:
-                    return
-                failed = await self._flush_member_buckets(
-                    user_data, group_id=group_id, her_name=her_name,
-                    reason="member_bucket_cap",
-                )
-                if failed:
-                    # 冲失败的桶留在原地等下一轮：due 标已经被调度器消费
-                    # 掉，不重新置起来的话要等这个成员再攒满一轮才会重试
-                    # （硬顶兜底防无界增长）。
-                    user_data["member_flush_due"] = True
+                if not user_data.get("memory_enabled") or not (
+                    getattr(self.plugin, "_qq_settings", {}) or {}
+                ).get("group_member_memory_enabled", False):
+                    # 冲刷飞行期间 opt-out：按 fail-closed 丢弃。放回队列
+                    # 等下一轮重发，等于让撤销授权之前收集的发言在 opt-out
+                    # 之后继续往服务端跑。
                     self.plugin.logger.warning(
-                        f"[member_bucket_cap] 群 {group_id} 有 {len(failed)} 个"
-                        f"成员队列冲刷失败，留待下轮"
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间成员记忆被关闭，丢弃 {len(snapshot)} 个未冲"
+                        f"成功的成员队列"
                     )
+                    return
+                buckets = user_data.setdefault("group_member_memory_messages", {})
+                labels = user_data.setdefault("group_member_memory_labels", {})
+                for sender_id, messages in snapshot.items():
+                    # 失败的旧发言排在冲刷期间新到的之前，保持时间顺序。
+                    buckets[sender_id] = messages + list(
+                        buckets.get(sender_id) or []
+                    )
+                    if sender_id in snapshot_labels:
+                        # 冲刷期间又发言的人可能带来更新的展示名，不覆盖。
+                        labels.setdefault(sender_id, snapshot_labels[sender_id])
+                # due 标已被调度器消费掉：不重新置起来的话，要等这些成员各自
+                # 再攒满一轮才会重试（硬顶兜底防无界增长）。
+                user_data["member_flush_due"] = True
+                self.plugin.logger.warning(
+                    f"[member_bucket_cap] 群 {flush_target.get('group_id')} 有 "
+                    f"{len(snapshot)} 个成员队列冲刷失败，留待下轮"
+                )
             finally:
                 user_data.pop("member_drain_in_flight", None)
 
-        await self.plugin._run_with_session_lock(session_key, _drain)
+        if not await self.plugin._run_with_session_lock(
+            session_key, _take_snapshot,
+        ):
+            stale = self.plugin._user_sessions.get(session_key)
+            if stale is not None:
+                stale.pop("member_drain_in_flight", None)
+            return
+        try:
+            await self._flush_member_buckets(
+                flush_target["user_data"],
+                group_id=flush_target["group_id"],
+                her_name=flush_target["her_name"],
+                reason="member_bucket_cap",
+                buckets=snapshot,
+                labels=snapshot_labels,
+            )
+        finally:
+            await self.plugin._run_with_session_lock(
+                session_key, _return_snapshot,
+            )
 
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
