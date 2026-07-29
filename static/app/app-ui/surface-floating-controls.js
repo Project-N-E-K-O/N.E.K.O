@@ -252,16 +252,21 @@
                 }
                 return navigated;
             };
-            const waitForBrowserOAuthCompletion = async (timeoutMs) => {
+            const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
-                while (popupRef && Date.now() < deadline) {
-                    try {
-                        if (popupRef.closed) {
-                            popupRef = null;
+                while (Date.now() < deadline) {
+                    if (requirePopup) {
+                        if (!popupRef) {
                             return false;
                         }
-                    } catch (_) { /* ignore */ }
+                        try {
+                            if (popupRef.closed) {
+                                popupRef = null;
+                                return false;
+                            }
+                        } catch (_) { /* ignore */ }
+                    }
                     const remainingMs = deadline - Date.now();
                     if (remainingMs <= 0) {
                         return false;
@@ -283,22 +288,109 @@
                 }
                 return false;
             };
+            const openElectronSocialWindow = (targetUrl) => {
+                const socialWin = window.open(String(targetUrl), 'neko-social');
+                if (!socialWin) {
+                    return false;
+                }
+                try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
+                return true;
+            };
+            const fetchNativeSyncTicket = async () => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                try {
+                    const response = await fetch('/api/card-drop/sync-ticket', {
+                        cache: 'no-store',
+                        signal: controller.signal,
+                    });
+                    if (!response.ok) {
+                        console.warn(`[social] native session sync ticket fetch failed: HTTP ${response.status}`);
+                        return '';
+                    }
+                    const payload = await response.json();
+                    return payload && payload.sync_ticket ? String(payload.sync_ticket) : '';
+                } catch (error) {
+                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', error);
+                    return '';
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+            };
+            const fetchNativeDelegate = async () => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
+                try {
+                    const response = await fetch('/api/card-drop/native-delegate', {
+                        cache: 'no-store',
+                        signal: controller.signal,
+                    });
+                    if (!response.ok) {
+                        const reason = response.status === 409
+                            ? 'desktop not logged in'
+                            : `HTTP ${response.status}`;
+                        console.warn(`[social] native delegate fetch failed (non-fatal): ${reason}`);
+                        return '';
+                    }
+                    const payload = await response.json();
+                    return payload && payload.native_delegate
+                        ? String(payload.native_delegate)
+                        : '';
+                } catch (error) {
+                    console.warn('[social] native delegate fetch failed (non-fatal):', error);
+                    return '';
+                } finally {
+                    clearTimeout(timeoutId);
+                }
+            };
             const attachNativeSyncTicket = async (targetUrl) => {
                 targetUrl.hash = '';
-                try {
-                    const ticketRes = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
-                    if (ticketRes.ok) {
-                        const ticketJson = await ticketRes.json();
-                        if (ticketJson && ticketJson.sync_ticket) {
-                            targetUrl.hash = new URLSearchParams({
-                                native_sync: String(ticketJson.sync_ticket)
-                            }).toString();
-                        }
-                    }
-                } catch (ticketErr) {
-                    console.warn('[social] native session sync ticket fetch failed (non-fatal):', ticketErr);
+                const hashParams = new URLSearchParams();
+                const syncTicket = await fetchNativeSyncTicket();
+                if (syncTicket) {
+                    hashParams.set('native_sync', syncTicket);
                 }
+                const hash = hashParams.toString();
+                if (hash) targetUrl.hash = hash;
                 return targetUrl;
+            };
+            const attachNativeDelegate = (targetUrl, nativeDelegate) => {
+                const hashParams = new URLSearchParams(targetUrl.hash.replace(/^#/, ''));
+                // Scoped credits/facts proof — never the platform OAuth bearer.
+                if (nativeDelegate) {
+                    hashParams.set('native_delegate', nativeDelegate);
+                }
+                const hash = hashParams.toString();
+                targetUrl.hash = hash;
+                return targetUrl;
+            };
+            const completeInitialCommunityHandoff = async (targetUrl) => {
+                if (!isElectron) {
+                    // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
+                    navigateBrowserPopup(targetUrl, { keepReference: true });
+                }
+                // auth-status 已完成且无需等待 OAuth 后才启动，避免可放弃的
+                // delegate 校验占住 OAuth 状态解析锁并阻塞登录态判断。
+                const nativeDelegate = await fetchNativeDelegate();
+                if (nativeDelegate) {
+                    // 二次导航使用新签发的 native_sync，并与 delegate 一次性交付。
+                    // 即使首次页面尚未读取 fragment 而被替换，也不会丢失同步能力；
+                    // 同时不会重放首次导航中的一次性票据。
+                    const delegateTargetUrl = await attachNativeSyncTicket(
+                        new URL(targetUrl, window.location.href)
+                    );
+                    attachNativeDelegate(delegateTargetUrl, nativeDelegate);
+                    if (isElectron) {
+                        if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
+                            console.warn('[social] failed to refresh Electron community window with native delegate');
+                        }
+                    } else if (popupRef) {
+                        navigateBrowserPopup(delegateTargetUrl.toString());
+                    }
+                } else if (!isElectron) {
+                    // 只释放本地引用，不关闭已打开的 Community 页面。
+                    popupRef = null;
+                }
             };
             try {
                 if (!isElectron) {
@@ -369,11 +461,9 @@
                 if (isElectron) {
                     // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
                     // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
-                    const socialWin = window.open(url, 'neko-social');
-                    if (!socialWin) {
+                    if (!openElectronSocialWindow(url)) {
                         throw new Error('popup blocked');
                     }
-                    try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 }
                 let communityLoggedIn = false;
                 try {
@@ -400,6 +490,13 @@
                                 ? String(oauthJson.auth_url)
                                 : '';
                             if (authUrl) {
+                                const expiresInSec = Number(oauthJson && oauthJson.expires_in);
+                                if (Number.isFinite(expiresInSec) && expiresInSec > 0) {
+                                    browserOAuthTimeoutMs = Math.min(
+                                        browserOAuthTimeoutMs,
+                                        expiresInSec * 1000
+                                    );
+                                }
                                 if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
                                     await window.electronShell.openExternal(authUrl);
                                     oauthLaunched = true;
@@ -415,13 +512,6 @@
                                 } else {
                                     oauthLaunched = true;
                                     browserOAuthStarted = true;
-                                    const expiresInSec = Number(oauthJson && oauthJson.expires_in);
-                                    if (Number.isFinite(expiresInSec) && expiresInSec > 0) {
-                                        browserOAuthTimeoutMs = Math.min(
-                                            browserOAuthTimeoutMs,
-                                            expiresInSec * 1000
-                                        );
-                                    }
                                 }
                                 if (oauthLaunched && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
@@ -440,24 +530,38 @@
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
-                        if (!isElectron && popupRef) {
-                            if (browserOAuthStarted) {
-                                releaseSocialOpenRequest();
-                                socialOpenRequestReleased = true;
-                                const oauthCompleted = await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs);
-                                if (oauthCompleted && popupRef) {
-                                    const refreshedTargetUrl = await attachNativeSyncTicket(
-                                        new URL(url, window.location.href)
-                                    );
+                        const shouldWaitForOAuth = (isElectron && oauthLaunched)
+                            || (!isElectron && browserOAuthStarted);
+                        if (shouldWaitForOAuth) {
+                            releaseSocialOpenRequest();
+                            socialOpenRequestReleased = true;
+                            const oauthCompleted = await waitForOAuthCompletion(
+                                browserOAuthTimeoutMs,
+                                !isElectron
+                            );
+                            if (oauthCompleted) {
+                                const refreshedDelegatePromise = fetchNativeDelegate();
+                                const refreshedTargetUrl = await attachNativeSyncTicket(
+                                    new URL(url, window.location.href)
+                                );
+                                attachNativeDelegate(
+                                    refreshedTargetUrl,
+                                    await refreshedDelegatePromise
+                                );
+                                if (isElectron) {
+                                    if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
+                                        console.warn('[social] failed to refresh Electron community window after OAuth');
+                                    }
+                                } else if (popupRef) {
                                     navigateBrowserPopup(refreshedTargetUrl.toString());
                                 }
-                            } else {
-                                navigateBrowserPopup(url);
                             }
+                        } else {
+                            await completeInitialCommunityHandoff(url);
                         }
                     }
-                } else if (!isElectron) {
-                    navigateBrowserPopup(url);
+                } else {
+                    await completeInitialCommunityHandoff(url);
                 }
                 return;
             } catch (err) {

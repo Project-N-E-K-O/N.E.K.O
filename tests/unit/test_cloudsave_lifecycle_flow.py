@@ -639,12 +639,22 @@ async def test_stop_integration_workers_cancels_both_background_tasks():
 
 
 @pytest.mark.unit
-@pytest.mark.parametrize("method", ["GET", "POST", "OPTIONS"])
-def test_card_forge_active_character_is_allowed_during_limited_mode(method):
+@pytest.mark.parametrize(
+    ("path", "method"),
+    [
+        (path, method)
+        for path in (
+            "/api/card-drop/active-character",
+            "/card-forge/active-character",
+        )
+        for method in ("GET", "POST", "OPTIONS")
+    ],
+)
+def test_card_forge_active_character_is_allowed_during_limited_mode(path, method):
     from app import main_server
 
     assert main_server._is_main_limited_mode_allowed_path(
-        "/card-forge/active-character",
+        path,
         method,
     )
 
@@ -662,6 +672,9 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
             health_response = client.get("/health")
             steam_language_response = client.get("/api/config/steam_language")
             active_character_response = client.get("/card-forge/active-character")
+            canonical_active_character_response = client.get(
+                "/api/card-drop/active-character"
+            )
 
     assert blocked_response.status_code == 409
     payload = blocked_response.json()
@@ -672,6 +685,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert steam_language_response.status_code == 200
     assert "uiLanguage" in steam_language_response.json()
     assert active_character_response.status_code == 200
+    assert canonical_active_character_response.status_code == 200
 
 
 @pytest.mark.unit

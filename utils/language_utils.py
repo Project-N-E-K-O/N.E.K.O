@@ -297,7 +297,7 @@ def _get_system_language() -> str:
     Get the language from system settings
 
     Returns:
-        Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
+        Language code ('zh', 'en', 'ja', 'ko', 'ru'), defaults to 'en'
     """
     def _parse_locale(s: str) -> Optional[str]:
         s = s.lower().replace('_', '-')
@@ -461,7 +461,7 @@ def get_global_language() -> str:
     Get the global language variable
     
     Returns:
-        Language code ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'), defaults to 'zh'
+        Language code ('zh', 'en', 'ja', 'ko', 'ru', 'es', 'pt'), defaults to 'en'
     """
     contextual = _language_context_short.get()
     if contextual:
@@ -484,7 +484,7 @@ def get_global_language_full() -> str:
     this function keeps the full code ('zh-TW') for scenarios distinguishing Simplified/Traditional.
     
     Returns:
-        Language code ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru'), defaults to 'zh'
+        Language code ('zh', 'zh-TW', 'en', 'ja', 'ko', 'ru'), defaults to 'en'
     """
     contextual = _language_context_full.get()
     if contextual:
@@ -693,7 +693,7 @@ def normalize_language_code(lang: str, format: str = 'short') -> str:
             - 'full': returns the full form ('zh-CN', 'zh-TW', 'en', 'ja', 'ko')
         
     Returns:
-        The normalized language code, or the default ('zh' or 'zh-CN') when unrecognizable
+        The normalized language code, or the default ('en') when unrecognizable
     """
     if not lang:
         return 'en'
