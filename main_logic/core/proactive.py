@@ -26,15 +26,16 @@ from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.llm_client import AIMessage
 from main_logic.session_state import SessionEvent, ProactivePhase
-from main_logic.proactive_delivery import DELIVERY_RETRACTED_KEY, resolve_callback_delivery_ack
+from main_logic.proactive_delivery import (
+    DELIVERY_RETRACTED_KEY,
+    VOICE_DELIVERY_COMMITTED_KEY,
+    resolve_callback_delivery_ack,
+)
 from config import ANTI_REPEAT_EXEMPT_SOURCE_TAGS
 from utils.language_utils import normalize_language_code, get_global_language
 from uuid import uuid4
 from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_sid
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
-
-
-VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
 
 
 class ProactiveMixin:

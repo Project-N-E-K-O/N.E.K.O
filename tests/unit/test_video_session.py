@@ -279,6 +279,7 @@ async def test_completed_non_native_annotation_pins_its_unconsumed_frame():
     client._image_recognized_this_turn = True
     client._image_description = "[实时屏幕截图或相机画面]: 一只猫"
     client._analyze_image_with_vision_model = AsyncMock()
+    client.send_event = AsyncMock()
 
     await client.stream_image(second_frame)
 
@@ -287,6 +288,9 @@ async def test_completed_non_native_annotation_pins_its_unconsumed_frame():
     assert client._proactive_image_consumed is False
     assert client._image_description == "[实时屏幕截图或相机画面]: 一只猫"
     client._analyze_image_with_vision_model.assert_not_awaited()
+    client.send_event.assert_awaited_once()
+    sent_event = client.send_event.await_args.args[0]
+    assert sent_event["item"]["content"][0]["text"] == client._image_description
     await client.close()
 
 
