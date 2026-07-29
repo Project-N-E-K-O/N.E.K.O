@@ -995,6 +995,42 @@ async def test_cancelled_wait_accounts_for_exact_ticket_already_completed():
 
 
 @pytest.mark.unit
+async def test_cancelled_wait_does_not_block_on_orphaned_ticket(monkeypatch):
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    ticket_done = asyncio.get_running_loop().create_future()
+    ticket = SimpleNamespace(done=ticket_done)
+    client.inject_text_and_request_response = AsyncMock(return_value=ticket)
+    client._response_arbiter.cancel_ticket = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        responses_module,
+        "_PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS",
+        0.01,
+    )
+    task = asyncio.create_task(
+        client.prompt_ephemeral("cancel orphaned proactive ticket")
+    )
+    for _ in range(20):
+        if client.inject_text_and_request_response.await_count:
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("proactive inject was not reached")
+
+    task.cancel()
+    await asyncio.sleep(0.05)
+
+    assert task.done()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert client._proactive_image_consumed is False
+    assert not ticket_done.done()
+    client._response_arbiter.cancel_ticket.assert_awaited_once_with(ticket)
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_cancelled_queued_inject_cleans_gate_and_never_dispatches():
     client = _make_client()
     earlier = await client._response_arbiter.enqueue(source="user-turn", priority=0)

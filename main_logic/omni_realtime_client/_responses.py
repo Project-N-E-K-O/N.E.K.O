@@ -39,6 +39,7 @@ from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
 # from leaving the scheduler request open forever.
 _PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS = 30.0
 _GEMINI_PROACTIVE_CANCEL_GRACE_SECONDS = 3.0
+_PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS = 0.5
 
 
 def _proactive_text_instruction(language: str, *, has_vision: bool) -> str:
@@ -1125,8 +1126,13 @@ class _ResponseMixin:
                 ticket_done = getattr(proactive_ticket, "done", None)
                 if ticket_done is not None:
                     try:
-                        await asyncio.shield(ticket_done)
-                    except asyncio.CancelledError:
+                        await asyncio.wait_for(
+                            asyncio.shield(ticket_done),
+                            timeout=(
+                                _PROACTIVE_TICKET_CANCEL_OBSERVE_TIMEOUT_SECONDS
+                            ),
+                        )
+                    except (asyncio.CancelledError, asyncio.TimeoutError):
                         pass
                     except Exception:
                         pass

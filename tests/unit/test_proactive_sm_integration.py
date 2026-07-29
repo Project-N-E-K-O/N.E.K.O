@@ -1308,6 +1308,66 @@ async def test_voice_mode_coalescing_queues_newer_cue_after_media_commit():
     assert mgr.pending_extra_replies[0]["summary"] == "new weather"
 
 
+async def test_voice_mode_build_failure_clears_media_commit_marker(monkeypatch):
+    import pytest
+    import main_logic.core.proactive as proactive_module
+
+    sess = _make_voice_sess()
+
+    async def _stream_image(
+        _image_b64,
+        *,
+        bypass_rate_limit=False,
+        cache_latest=True,
+        on_rejected=None,
+    ):
+        assert bypass_rate_limit is True
+        assert cache_latest is False
+        assert on_rejected is not None
+
+    sess.stream_image = _stream_image
+    mgr = _make_mgr(session=sess)
+    old_cb = {
+        "_callback_delivery_id": "id-old-weather",
+        "status": "completed",
+        "summary": "old weather",
+        "media_images": ["old-weather-image"],
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }
+    mgr.pending_agent_callbacks = [old_cb]
+    mgr.pending_extra_replies = [{
+        "_callback_delivery_id": "id-old-weather",
+        "summary": "old weather",
+        "coalesce_key": "weather",
+        "_coalesce_submit_seq": 1,
+    }]
+    mgr._coalesce_latest = {"weather": 1}
+    monkeypatch.setattr(
+        proactive_module,
+        "_build_callback_instruction",
+        MagicMock(side_effect=RuntimeError("instruction build failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="instruction build failed"):
+        await core_module.LLMSessionManager.trigger_agent_callbacks(mgr)
+
+    assert old_cb.get("_voice_delivery_committed") is None
+    core_module.LLMSessionManager.enqueue_agent_callback(
+        mgr,
+        {
+            "status": "completed",
+            "summary": "new weather",
+            "coalesce_key": "weather",
+            "_coalesce_submit_seq": 2,
+        },
+    )
+    assert old_cb[DELIVERY_RETRACTED_KEY] is True
+    assert [cb["summary"] for cb in mgr.pending_agent_callbacks] == [
+        "new weather"
+    ]
+
+
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
     """Prune unstamped callbacks through the object-ID fallback after delivery."""
     sess = _make_voice_sess()

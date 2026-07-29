@@ -877,51 +877,59 @@ class ProactiveMixin:
                 # Re-filter explicit retractions. Same-key callbacks submitted
                 # after the commit boundary remain queued for the next turn;
                 # they do not invalidate media already persisted for this one.
-                self._retract_stale_coalesced(voice_snapshot)
-                voice_snapshot[:] = [
-                    cb for cb in voice_snapshot
-                    if not cb.get(DELIVERY_RETRACTED_KEY)
-                ]
-                self._purge_retracted_agent_callbacks()
-                if not voice_snapshot:
-                    self._clear_voice_delivery_committed(voice_commit_snapshot)
-                    logger.info(
-                        "[%s] trigger_agent_callbacks: voice proactive callbacks retracted before inject",
-                        self.lanlan_name,
+                try:
+                    self._retract_stale_coalesced(voice_snapshot)
+                    voice_snapshot[:] = [
+                        cb for cb in voice_snapshot
+                        if not cb.get(DELIVERY_RETRACTED_KEY)
+                    ]
+                    self._purge_retracted_agent_callbacks()
+                    if not voice_snapshot:
+                        self._clear_voice_delivery_committed(
+                            voice_commit_snapshot
+                        )
+                        logger.info(
+                            "[%s] trigger_agent_callbacks: voice proactive callbacks retracted before inject",
+                            self.lanlan_name,
+                        )
+                        return False
+                    instruction = _build_callback_instruction(
+                        voice_snapshot,
+                        lang=_lang,
+                        lanlan_name=self.lanlan_name,
+                        master_name=self.master_name,
+                        passive=False,
                     )
-                    return False
-                instruction = _build_callback_instruction(
-                    voice_snapshot,
-                    lang=_lang,
-                    lanlan_name=self.lanlan_name,
-                    master_name=self.master_name,
-                    passive=False,
-                )
-                delivered_ids = {
-                    cb.get("_callback_delivery_id")
-                    for cb in voice_snapshot
-                    if cb.get("_callback_delivery_id")
-                }
-                voice_extra_snapshot[:] = [
-                    extra for extra in voice_extra_snapshot
-                    if extra.get("_callback_delivery_id") in delivered_ids
-                ]
-                delivered_obj_ids = {id(cb) for cb in voice_snapshot}
-                selected_media_events = []
-                for owner_cb, event in voice_media_events:
-                    if (
-                        id(owner_cb) in delivered_obj_ids
-                        and not owner_cb.get(DELIVERY_RETRACTED_KEY)
-                    ):
-                        selected_media_events.append(event)
-                        continue
-                    # This description was analyzed locally but will not be
-                    # sent after its callback was superseded/retracted.
-                    voice_sess._inject_rejection_handlers.pop(
-                        event.get("event_id"),
-                        None,
+                    delivered_ids = {
+                        cb.get("_callback_delivery_id")
+                        for cb in voice_snapshot
+                        if cb.get("_callback_delivery_id")
+                    }
+                    voice_extra_snapshot[:] = [
+                        extra for extra in voice_extra_snapshot
+                        if extra.get("_callback_delivery_id") in delivered_ids
+                    ]
+                    delivered_obj_ids = {id(cb) for cb in voice_snapshot}
+                    selected_media_events = []
+                    for owner_cb, event in voice_media_events:
+                        if (
+                            id(owner_cb) in delivered_obj_ids
+                            and not owner_cb.get(DELIVERY_RETRACTED_KEY)
+                        ):
+                            selected_media_events.append(event)
+                            continue
+                        # This description was analyzed locally but will not be
+                        # sent after its callback was superseded/retracted.
+                        voice_sess._inject_rejection_handlers.pop(
+                            event.get("event_id"),
+                            None,
+                        )
+                    events_before_text = tuple(selected_media_events)
+                except BaseException:
+                    self._clear_voice_delivery_committed(
+                        voice_commit_snapshot
                     )
-                events_before_text = tuple(selected_media_events)
+                    raise
                 try:
                     inject_kwargs = {
                         "on_rejected": _on_voice_inject_rejected,
