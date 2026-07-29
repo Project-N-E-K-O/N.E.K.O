@@ -502,10 +502,14 @@ async def test_session_settled_mid_drain_reports_what_it_lost():
     released.set()
     await asyncio.wait_for(drain, timeout=2.0)
 
-    logged = " ".join(str(call) for call in plugin.logger.error.call_args_list)
-    assert "会话已结算并弹出" in logged
-    assert "1 个未冲成功的成员队列" in logged
-    assert "1 个滞留队列" in logged
+    errors = " ".join(str(call) for call in plugin.logger.error.call_args_list)
+    warnings = " ".join(str(call) for call in plugin.logger.warning.call_args_list)
+    assert "会话已结算并弹出" in errors
+    assert "1 个滞留队列" in errors, "滞留的一代没救，按 error 记"
+    # 快照还有末次重试的机会，此刻不该按「丢失」报 error；重试也失败之后
+    # 才落 error。
+    assert "转末次重试" in warnings
+    assert "末次重试后仍有 1 个成员队列未能入库" in errors
     # 计数放掉了，孤儿 dict 不会永远看起来"冲刷中"。
     assert "member_flush_in_progress" not in user_data
 
@@ -622,8 +626,9 @@ async def test_failed_buckets_never_land_in_a_replacement_session():
         "旧会话的成员发言挂到了顶替者身上，下一轮会用它的 her_name 写库"
     )
     assert not replacement.get("member_flush_due")
-    logged = " ".join(str(call) for call in plugin.logger.error.call_args_list)
-    assert "并已被新会话顶替" in logged
+    # 授权还在（两个开关都开着），所以快照转末次重试而不是当场判丢。
+    warnings = " ".join(str(call) for call in plugin.logger.warning.call_args_list)
+    assert "并已被新会话顶替" in warnings
 
 
 @pytest.mark.asyncio

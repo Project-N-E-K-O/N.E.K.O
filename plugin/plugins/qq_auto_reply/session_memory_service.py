@@ -702,12 +702,30 @@ class QQSessionMemoryService:
                     # closed），不在这里复活。
                     orphan_retry["snapshot"] = dict(snapshot)
                     orphan_retry["labels"] = dict(snapshot_labels)
-                if snapshot or stranded:
-                    replaced = "并已被新会话顶替" if user_data is not None else ""
+                replaced = "并已被新会话顶替" if user_data is not None else ""
+                if stranded:
+                    # 滞留在孤儿映射上的那一代没有任何补救余地。
+                    self.plugin.logger.error(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间会话已结算并弹出{replaced}：{stranded} 个滞留"
+                        f"队列丢失"
+                    )
+                if not snapshot:
+                    return
+                if orphan_retry.get("snapshot"):
+                    # 还有救就别按 error 报「丢失」：末次重试成功时什么都
+                    # 没丢，留一条 error 在日志里只会把排查的人带偏。真丢
+                    # 了由下面重试之后那条 error 记。
+                    self.plugin.logger.warning(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
+                        f"未冲成功的成员队列转末次重试"
+                    )
+                else:
                     self.plugin.logger.error(
                         f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
                         f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
-                        f"未冲成功的成员队列 + {stranded} 个滞留队列丢失"
+                        f"未冲成功的成员队列丢失"
                     )
                 return
             try:
