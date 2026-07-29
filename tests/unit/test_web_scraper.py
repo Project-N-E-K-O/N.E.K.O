@@ -1087,6 +1087,7 @@ def test_bilibili_phase2_context_does_not_invent_missing_summary():
     assert "看起来在聊" in context
     assert "登录态确认：否" in context
     assert "链接：" not in context
+    assert "https://www.bilibili.com/video/BVempty" not in context
 
 
 def test_bilibili_phase2_context_uses_published_at_label_without_link():
@@ -1102,7 +1103,9 @@ def test_bilibili_phase2_context_uses_published_at_label_without_link():
 
     assert "发布时间：2026-07-29 13:20" in context
     assert "发布时间戳" not in context
+    assert "1785302400" not in context
     assert "链接：" not in context
+    assert "https://www.bilibili.com/video/BVpublished" not in context
 
 
 @pytest.mark.unit
