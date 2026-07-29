@@ -455,6 +455,14 @@ def test_cat1_desktop_pair_move_skips_linux_runtime_native_bounds_sync():
     assert "const rect = _getNekoDesktopVirtualRect(localRect);" in target_block
     assert "localRect: localRect" in target_block
 
+    minimized_rect_block = _between(
+        source,
+        "function _getNekoIdleChatMinimizedRect() {",
+        "function _clampNekoIdleCat1Position",
+    )
+    assert "const reactRect = _getNekoIdleReactChatMinimizedRect();" in minimized_rect_block
+    assert "reactRect ? _getNekoDesktopVirtualRect(reactRect) : null" in minimized_rect_block
+
     schedule_guard_block = _between(
         source,
         "function _canScheduleNekoIdleCat1PairMove(button, state) {",

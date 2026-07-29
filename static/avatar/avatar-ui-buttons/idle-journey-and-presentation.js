@@ -230,7 +230,8 @@ function _canNekoIdleCat1MoveSoloWithExpandedChat() {
 }
 
 function _getNekoIdleChatMinimizedRect() {
-    return _getNekoIdleReactChatMinimizedRect()
+    const reactRect = _getNekoIdleReactChatMinimizedRect();
+    return (reactRect ? _getNekoDesktopVirtualRect(reactRect) : null)
         || _getNekoIdleDesktopChatMinimizedRect();
 }
 

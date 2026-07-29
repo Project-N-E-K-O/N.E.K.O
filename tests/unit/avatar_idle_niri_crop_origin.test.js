@@ -292,6 +292,36 @@ test('CAT1 React pair movement compares both actors in virtual crop coordinates'
     assert.deepEqual(JSON.parse(JSON.stringify(target.localRect)), localRect);
 });
 
+test('CAT1 ordinary React follow compares the minimized chat in virtual crop coordinates', () => {
+    const localRect = { left: 18, top: 27, width: 56, height: 56, right: 74, bottom: 83 };
+    const context = {
+        _getNekoIdleReactChatMinimizedRect: () => localRect,
+        _getNekoDesktopVirtualRect: (rect) => ({
+            left: rect.left + 720,
+            top: rect.top + 310,
+            width: rect.width,
+            height: rect.height,
+            right: rect.right + 720,
+            bottom: rect.bottom + 310
+        }),
+        _getNekoIdleDesktopChatMinimizedRect: () => null
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction(
+            'static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js',
+            '_getNekoIdleChatMinimizedRect'
+        ),
+        context
+    );
+
+    const rect = context._getNekoIdleChatMinimizedRect();
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(rect)),
+        { left: 738, top: 337, width: 56, height: 56, right: 794, bottom: 393 }
+    );
+});
+
 test('model-to-cat anchor converts client managers once but keeps Live2D virtual bounds unchanged', () => {
     const context = {
         I: {
