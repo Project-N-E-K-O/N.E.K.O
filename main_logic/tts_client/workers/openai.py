@@ -29,7 +29,6 @@ from utils.openai_tts import (
     OPENAI_TTS_DEFAULT_MODEL,
     OPENAI_TTS_DEFAULT_VOICE,
     OPENAI_TTS_PCM_SAMPLE_RATE,
-    openai_tts_base_url,
     openai_tts_extra_body,
     openai_tts_sdk_options,
 )
