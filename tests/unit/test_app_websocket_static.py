@@ -3396,33 +3396,51 @@ def test_text_takeover_cancels_a_pending_microphone_start():
 
 
 def test_deferred_session_start_resolve_is_pinned_to_the_ack_it_belongs_to():
-    # Codex P2. A matching session_started clears the start timeout immediately
-    # but defers the resolve by 500ms to let the UI settle. The resolver lives
-    # in a SHARED slot, and on mobile the composer stays visible during an audio
-    # session (the `_shouldHide` guard excludes mobile), so the user can send
-    # text inside that window. app-buttons.js then installs a new resolver and
-    # mode for the text start -- and the old audio timer, which only checked
-    # that SOME resolver existed, resolved that text promise, cleared its
-    # timeout, and let the queued message go out before the backend had
-    # acknowledged the text session at all.
+    # Codex P2, twice. A matching session_started clears the start timeout
+    # immediately but defers the resolve by 500ms to let the UI settle. The
+    # resolver lives in a SHARED slot, and on mobile the composer stays visible
+    # during an audio session (the `_shouldHide` guard excludes mobile), so the
+    # user can send text inside that window and app-buttons.js then installs a
+    # new resolver + mode for the text start.
+    #
+    # Both halves are load-bearing, and they pull in opposite directions:
+    #   * the SLOT must only be cleared while it still holds this ack's start,
+    #     or the old audio timer resolves the newer text promise and lets a
+    #     queued message go out before the backend acknowledged it;
+    #   * the PROMISE must be settled regardless, because its timeout was
+    #     already cleared at ack time -- gating the settle on identity too left
+    #     the mic-button handler suspended at `await sessionStartPromise`
+    #     forever, isMicStarting true and the button stuck.
     source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
     capture = "var _ackedResolver = S.sessionStartedResolver;"
-    assert capture in source, (
-        "the ack must capture the pending start it belongs to"
-    )
+    assert capture in source, "the ack must capture the pending start it belongs to"
 
     # The capture has to happen at ack time, i.e. before the deferred callback
     # is scheduled -- capturing inside it would read the same shared slot again
     # and pin nothing.
-    deferred = source.index("}, 500);")
-    assert source.index(capture) < deferred
+    deferred_end = source.index("}, 500);")
+    assert source.index(capture) < deferred_end
 
-    guard_block = source[source.index(capture):deferred]
-    assert "S.sessionStartedResolver === _ackedResolver" in guard_block, (
-        "the deferred resolve must fire only for the start this ack matched"
+    block = source[source.index(capture):deferred_end]
+    assert "S.sessionStartedResolver === _ackedResolver" in block, (
+        "the shared slot must only be released for the start this ack matched"
     )
-    # ...and the resolve itself must sit behind that identity check, not beside it.
-    assert guard_block.index("S.sessionStartedResolver === _ackedResolver") < guard_block.index(
-        "S.sessionStartedResolver(response.input_mode);"
+
+    settle = "_ackedResolver(response.input_mode);"
+    assert settle in block, "the acknowledged promise must be settled"
+
+    # Structural, not textual: the slot clearing sits INSIDE the identity
+    # branch and the settle sits OUTSIDE it, so compare their nesting depth.
+    lines = block.splitlines()
+    clear_line = next(l for l in lines if "S._pendingSessionStartMode = null;" in l)
+    settle_line = next(l for l in lines if settle in l)
+    indent = lambda l: len(l) - len(l.lstrip())
+    assert indent(clear_line) > indent(settle_line), (
+        "clearing the shared slot must be gated on identity while settling the "
+        "acknowledged promise must not be"
+    )
+    assert block.index("S._pendingSessionStartMode = null;") < block.index(settle), (
+        "release the slot before settling, so the awaiter never observes a slot "
+        "that still points at an already-settled start"
     )

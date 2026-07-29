@@ -3458,16 +3458,38 @@
                     var _ackedResolver = S.sessionStartedResolver;
                     setTimeout(function () {
                         if (typeof window.hideVoicePreparingToast === 'function') window.hideVoicePreparingToast();
-                        if (S.sessionStartedResolver && S.sessionStartedResolver === _ackedResolver) {
+                        if (!_ackedResolver) return;
+                        if (S.sessionStartedResolver === _ackedResolver) {
+                            // Still ours: release the shared slot and its timer.
                             if (window.sessionTimeoutId) {
                                 clearTimeout(window.sessionTimeoutId);
                                 window.sessionTimeoutId = null;
                             }
-                            S.sessionStartedResolver(response.input_mode);
                             S.sessionStartedResolver = null;
                             S.sessionStartedRejecter = null;
                             S._pendingSessionStartMode = null;
                         }
+                        // Settle OUR promise either way, INCLUDING when the slot
+                        // has moved on (Codex P2). Its timeout was already
+                        // cleared when this ack arrived, so nothing else will
+                        // ever settle it -- the identity guard alone left the
+                        // mic-button handler suspended at `await
+                        // sessionStartPromise` forever, with isMicStarting true
+                        // and the button stuck active/disabled after the text
+                        // session succeeded.
+                        //
+                        // Resolve rather than reject: the backend really did
+                        // acknowledge this audio session, so resolving is the
+                        // truthful outcome, and the downstream guards
+                        // (ensureVoiceStartCurrent, then the
+                        // S.voiceInputRouteBlocked check before startMicCapture)
+                        // are what decide whether the mic should still open.
+                        // Rejecting would instead run the handler's catch, which
+                        // clears S.sessionStartedResolver / Rejecter /
+                        // _pendingSessionStartMode unconditionally and would
+                        // therefore tear down the NEWER start's slot -- the very
+                        // cross-start damage this guard exists to stop.
+                        _ackedResolver(response.input_mode);
                     }, 500);
 
                     // 语音模式：session 开始 5 秒内无 transcription，启动 proactive chat 计时器
