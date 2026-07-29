@@ -252,16 +252,21 @@
                 }
                 return navigated;
             };
-            const waitForBrowserOAuthCompletion = async (timeoutMs) => {
+            const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {
                 const deadline = Date.now() + timeoutMs;
                 let pollDelayMs = 1000;
-                while (popupRef && Date.now() < deadline) {
-                    try {
-                        if (popupRef.closed) {
-                            popupRef = null;
+                while (Date.now() < deadline) {
+                    if (requirePopup) {
+                        if (!popupRef) {
                             return false;
                         }
-                    } catch (_) { /* ignore */ }
+                        try {
+                            if (popupRef.closed) {
+                                popupRef = null;
+                                return false;
+                            }
+                        } catch (_) { /* ignore */ }
+                    }
                     const remainingMs = deadline - Date.now();
                     if (remainingMs <= 0) {
                         return false;
@@ -282,6 +287,14 @@
                     } catch (_) { /* retry until the OAuth window closes or expires */ }
                 }
                 return false;
+            };
+            const openElectronSocialWindow = (targetUrl) => {
+                const socialWin = window.open(String(targetUrl), 'neko-social');
+                if (!socialWin) {
+                    return false;
+                }
+                try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
+                return true;
             };
             const fetchNativeSyncTicket = async () => {
                 try {
@@ -410,11 +423,9 @@
                 if (isElectron) {
                     // 目标 URL 直接交给 setWindowOpenHandler，才能命中 isSocialFeedUrl → framed 内置窗。
                     // 复用 'neko-social' 名：已开则聚焦/导航同一窗口，避免叠多个社区窗。
-                    const socialWin = window.open(url, 'neko-social');
-                    if (!socialWin) {
+                    if (!openElectronSocialWindow(url)) {
                         throw new Error('popup blocked');
                     }
-                    try { socialWin.focus && socialWin.focus(); } catch (_) { /* ignore */ }
                 }
                 let communityLoggedIn = false;
                 try {
@@ -441,6 +452,13 @@
                                 ? String(oauthJson.auth_url)
                                 : '';
                             if (authUrl) {
+                                const expiresInSec = Number(oauthJson && oauthJson.expires_in);
+                                if (Number.isFinite(expiresInSec) && expiresInSec > 0) {
+                                    browserOAuthTimeoutMs = Math.min(
+                                        browserOAuthTimeoutMs,
+                                        expiresInSec * 1000
+                                    );
+                                }
                                 if (window.electronShell && typeof window.electronShell.openExternal === 'function') {
                                     await window.electronShell.openExternal(authUrl);
                                     oauthLaunched = true;
@@ -456,13 +474,6 @@
                                 } else {
                                     oauthLaunched = true;
                                     browserOAuthStarted = true;
-                                    const expiresInSec = Number(oauthJson && oauthJson.expires_in);
-                                    if (Number.isFinite(expiresInSec) && expiresInSec > 0) {
-                                        browserOAuthTimeoutMs = Math.min(
-                                            browserOAuthTimeoutMs,
-                                            expiresInSec * 1000
-                                        );
-                                    }
                                 }
                                 if (oauthLaunched && typeof window.showStatusToast === 'function') {
                                     const oauthPromptKey = 'app.socialOAuthPrompt';
@@ -481,20 +492,29 @@
                     } catch (oauthErr) {
                         console.warn('[social] oauth/start failed (non-fatal):', oauthErr);
                     } finally {
-                        if (!isElectron && popupRef) {
-                            if (browserOAuthStarted) {
-                                releaseSocialOpenRequest();
-                                socialOpenRequestReleased = true;
-                                const oauthCompleted = await waitForBrowserOAuthCompletion(browserOAuthTimeoutMs);
-                                if (oauthCompleted && popupRef) {
-                                    const refreshedTargetUrl = await attachNativeSyncTicket(
-                                        new URL(url, window.location.href)
-                                    );
+                        const shouldWaitForOAuth = (isElectron && oauthLaunched)
+                            || (!isElectron && browserOAuthStarted);
+                        if (shouldWaitForOAuth) {
+                            releaseSocialOpenRequest();
+                            socialOpenRequestReleased = true;
+                            const oauthCompleted = await waitForOAuthCompletion(
+                                browserOAuthTimeoutMs,
+                                !isElectron
+                            );
+                            if (oauthCompleted) {
+                                const refreshedTargetUrl = await attachNativeSyncTicket(
+                                    new URL(url, window.location.href)
+                                );
+                                if (isElectron) {
+                                    if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
+                                        console.warn('[social] failed to refresh Electron community window after OAuth');
+                                    }
+                                } else if (popupRef) {
                                     navigateBrowserPopup(refreshedTargetUrl.toString());
                                 }
-                            } else {
-                                navigateBrowserPopup(url);
                             }
+                        } else if (!isElectron && popupRef) {
+                            navigateBrowserPopup(url);
                         }
                     }
                 } else if (!isElectron) {
