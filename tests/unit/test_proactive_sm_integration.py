@@ -893,9 +893,7 @@ async def test_route_inject_rejection_id_match():
 
 
 async def test_route_inject_rejection_content_fallback_no_id():
-    """fallback 路径（Codex P1）：provider 拒绝 response.create 但 error 不带
-    client event_id。proactive inject 正等待 outcome（flag True）且内容像
-    response-conflict 时只 fire 当前 outcome token 对应的 handler。"""
+    """Fire only the current outcome handler for a no-ID response conflict."""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
@@ -911,9 +909,7 @@ async def test_route_inject_rejection_content_fallback_no_id():
 
 
 async def test_route_inject_rejection_no_id_excludes_old_image_handler():
-    """Codex P2：旧回调图片的精确 rejection handler 可在成功 text turn 后
-    留存 60 秒；下一轮 no-id response conflict 只能拒绝当前 text inject，
-    不能把旧回调重新入队造成重复播报。"""
+    """Do not fire an old image handler for a later no-ID response conflict."""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
@@ -933,10 +929,7 @@ async def test_route_inject_rejection_no_id_excludes_old_image_handler():
 
 
 async def test_route_inject_rejection_no_id_but_not_awaiting_does_not_fire():
-    """CodeRabbit Major：无 id 的 response-conflict，但当前没有 proactive inject
-    在等 outcome（flag False，例如 handler 是上一次成功 inject 的残留，或这条
-    冲突来自 create_response / tool-result / signal_user_activity_end 等别的
-    response.create 发送方）→ 绝不能 fire，否则把已接受的 cb 误回补造成重复。"""
+    """Ignore a no-ID response conflict when no proactive outcome is pending."""
     from main_logic.omni_realtime_client import OmniRealtimeClient
 
     fired = []
@@ -1091,10 +1084,7 @@ async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
 
 
 async def test_voice_mode_unstamped_cb_still_pruned_via_object_id_fallback():
-    """Defense in depth：production 路径都过 ``enqueue_agent_callback`` 标
-    ``_callback_delivery_id``，但 voice 成功 inject 的 pac 清理还有一条
-    object ``id()`` 兜底，确保任何未来直接 append 没标 id 的 cb 也不会被
-    后续 retry 重复投递。锁死 Codex r3249183511。"""
+    """Prune unstamped callbacks through the object-ID fallback after delivery."""
     sess = _make_voice_sess()
     mgr = _make_mgr(session=sess)
     # 故意构造没有 _callback_delivery_id 的 cb（模拟绕过 enqueue_agent_callback 的入口）
