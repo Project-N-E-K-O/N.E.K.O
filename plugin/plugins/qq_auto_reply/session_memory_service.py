@@ -813,6 +813,18 @@ class QQSessionMemoryService:
             await self.plugin._run_with_session_lock(
                 session_key, _return_snapshot,
             )
+            if orphan_retry.get("snapshot") and not self._member_memory_consent_live():
+                # 授权是在锁内采样的，这一步却在锁外——中间落下的 opt-out
+                # 必须在**发请求之前**再看一眼，否则这次重试会把撤销之后
+                # 本该 fail-closed 丢弃的发言推上去。判据放在本调用点而不是
+                # _flush_member_buckets 里：那个函数被 opt-out 结算复用，
+                # 而后者恰恰是在开关已经 False 之后调用的。
+                self.plugin.logger.warning(
+                    f"[member_bucket_orphan_retry] 群 "
+                    f"{flush_target.get('group_id')} 末次重试前授权已撤销，"
+                    f"按 fail-closed 丢弃 {len(orphan_retry['snapshot'])} 个队列"
+                )
+                orphan_retry.clear()
             if orphan_retry.get("snapshot"):
                 try:
                     await self._flush_member_buckets(

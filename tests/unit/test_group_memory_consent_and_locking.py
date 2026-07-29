@@ -1077,3 +1077,50 @@ async def test_opt_out_drops_are_warnings_not_errors():
         "orphan_retry" in str(c) or "末次重试" in str(c)
         for c in plugin.logger.warning.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_orphan_retry_rechecks_consent_before_posting():
+    """Consent is sampled under the lock; the retry runs outside it.
+
+    An opt-out landing in that window must still be honoured — otherwise
+    the last-chance retry becomes the one path that pushes member turns
+    to the server after the switch went off, which is exactly what the
+    fail-closed rule forbids.
+    """
+    attempts: list[str] = []
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    service, plugin, user_data, _locks = _group_drain_harness(None)
+    original_lock = plugin._run_with_session_lock
+
+    async def _revoke_after_snapshot(session_key, coro_factory):
+        result = await original_lock(session_key, coro_factory)
+        if in_flight.is_set():
+            # 锁一放（快照已采样、重试已排上）就撤销授权。
+            plugin._qq_settings["group_member_memory_enabled"] = False
+        return result
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        attempts.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        if len(attempts) == 1:
+            in_flight.set()
+            await released.wait()
+            return {"status": "error", "message": "memory server hiccup"}
+        return {"status": "ok"}
+
+    plugin.memory_bridge.post_scoped_memory_history = _post_scoped
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    plugin._user_sessions.pop("group:7788")
+    plugin._run_with_session_lock = _revoke_after_snapshot
+    released.set()
+    await asyncio.wait_for(drain, timeout=3.0)
+
+    assert attempts == ["qq:7788:2046"], "撤销授权之后不该再把这批发言推上去"
+    assert any(
+        "末次重试前授权已撤销" in str(c)
+        for c in plugin.logger.warning.call_args_list
+    )
