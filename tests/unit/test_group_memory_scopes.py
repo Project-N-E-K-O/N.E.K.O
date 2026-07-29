@@ -8395,7 +8395,10 @@ async def test_member_bucket_cap_flushes_instead_of_dropping():
             "group_memory_enabled": True, "group_member_memory_enabled": True,
         },
         _run_with_session_lock=_run_with_session_lock,
-        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        _spawn_memory_sync_task=(
+            # 真实签名带 session_key（排空要登记成该会话的结算工作）。
+            lambda coro, *, session_key=None: spawned.append(coro)
+        ),
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
     )
@@ -8482,7 +8485,10 @@ async def test_group_backlog_is_drained_before_it_can_be_lost():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_run_with_session_lock,
-        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        _spawn_memory_sync_task=(
+            # 真实签名带 session_key（排空要登记成该会话的结算工作）。
+            lambda coro, *, session_key=None: spawned.append(coro)
+        ),
         logger=MagicMock(),
     )
     service = QQSessionMemoryService(plugin)
@@ -8943,7 +8949,7 @@ async def test_draft_row_marks_are_pruned_when_rows_leave_history():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         logger=MagicMock(),
-        _spawn_memory_sync_task=lambda coro: coro.close(),
+        _spawn_memory_sync_task=lambda coro, *, session_key=None: coro.close(),
         _run_with_session_lock=None,
     ))
 

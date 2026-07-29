@@ -426,8 +426,13 @@ class QQSessionMemoryService:
                 # 协程。在飞时不清 due 标：下一轮再判，别把信号吞掉。
                 user_data.pop("member_flush_due", None)
                 user_data["member_drain_in_flight"] = True
+                # 登记成该会话的结算工作：排空的 POST 现在跑在锁外，会话锁
+                # 不再是天然屏障，discard_session 会在它还攥着快照时把会话
+                # 弹掉、把失败的桶留在一份没人消费的 user_data 上。带上
+                # session_key，discard 就会按既有约定推迟并下轮重试。
                 self.plugin._spawn_memory_sync_task(
-                    self._drain_member_buckets(session_key)
+                    self._drain_member_buckets(session_key),
+                    session_key=session_key,
                 )
             return 0
         if not user_data.get("memory_enabled"):
@@ -572,22 +577,27 @@ class QQSessionMemoryService:
         async def _return_snapshot() -> None:
             # _flush_member_buckets 成功即 pop，所以此刻 snapshot 里剩下的
             # 正好是没冲出去的那些。
+            held = flush_target.get("user_data")
             user_data = self.plugin._user_sessions.get(session_key)
-            if user_data is None:
-                # 会话在飞行期间被结算并弹出：这份 user_data 已经没有任何
-                # 消费者了，提升与否都不改变去向。仍然要放掉计数（重新绑定
-                # 同一份 dict 的路径否则会永远看到"冲刷中"），并且把真正丢掉
-                # 的量记下来——不持锁换来的代价必须看得见，不能悄悄消失。
-                held = flush_target.get("user_data")
+            if user_data is not held:
+                # 身份比对而不是判空：会话在飞行期间被结算弹出后，排队中的
+                # 群消息可能已经用同一个 key 建了**新**会话。这份快照属于旧
+                # 那一份 user_data——挂到顶替者身上，随后的冲刷会拿新会话的
+                # her_name 去写，等于把这些发言存进另一个角色的记忆库。
+                # 这份旧 dict 已经没有消费者了，提升与否都不改变去向；但计数
+                # 还是要放掉（重新绑定同一份 dict 的路径否则会永远看到"冲刷
+                # 中"），并且把真正丢掉的量记下来——不持锁换来的代价必须看得
+                # 见，不能悄悄消失。
                 stranded = 0
                 if isinstance(held, dict):
                     stranded = len(held.get("group_member_memory_messages") or {})
                     self._finish_member_flush_generation(held)
                 if snapshot or stranded:
+                    replaced = "并已被新会话顶替" if user_data is not None else ""
                     self.plugin.logger.error(
                         f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
-                        f"冲刷期间会话已结算并弹出：{len(snapshot)} 个未冲成功的"
-                        f"成员队列 + {stranded} 个滞留队列丢失"
+                        f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
+                        f"未冲成功的成员队列 + {stranded} 个滞留队列丢失"
                     )
                 return
             try:

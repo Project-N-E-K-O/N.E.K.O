@@ -503,3 +503,119 @@ async def test_session_settled_mid_drain_reports_what_it_lost():
     assert "1 个滞留队列" in logged
     # 计数放掉了，孤儿 dict 不会永远看起来"冲刷中"。
     assert "member_flush_in_progress" not in user_data
+
+
+@pytest.mark.asyncio
+async def test_drain_in_flight_blocks_session_teardown():
+    """The drain must be registered as this session's settlement work.
+
+    Its POSTs run with the session lock released, so the lock is no longer
+    the barrier that used to keep discard_session away. Without the
+    registration, teardown ejects the session while the drain still holds
+    the popped snapshot, and the buckets it failed to flush land in a
+    user_data nobody consumes any more.
+    """
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    user_data.pop("member_drain_in_flight", None)
+    user_data["member_flush_due"] = True
+    plugin.session_memory_service = service
+    plugin.reply_buffer_service = None
+    plugin._session_settle_tasks = {}
+    plugin._group_memory_sync_tasks = set()
+    plugin._spawn_memory_sync_task = (
+        lambda coro, *, session_key=None: _session_keyed_task(
+            plugin, coro, session_key,
+        )
+    )
+    plugin._has_pending_session_settlement = (
+        lambda key: any(
+            not task.done()
+            for task in (plugin._session_settle_tasks.get(key) or ())
+        )
+    )
+    runtime = QQSessionRuntimeService(plugin)
+
+    # 每轮的记忆管家钩子把排空排到后台。
+    await service.cache_session_delta("group:7788", user_data)
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    discarded = await runtime.discard_session("group:7788", reason="test")
+    assert discarded is False, "排空还攥着快照时不能把会话弹掉"
+    assert "group:7788" in plugin._user_sessions
+
+    released.set()
+    for task in list(plugin._group_memory_sync_tasks):
+        await asyncio.wait_for(task, timeout=2.0)
+    # 排空收尾后，会话才可以正常销毁。
+    assert not plugin._has_pending_session_settlement("group:7788")
+
+
+def _session_keyed_task(plugin, coro, session_key):
+    task = asyncio.ensure_future(coro)
+    plugin._group_memory_sync_tasks.add(task)
+    task.add_done_callback(plugin._group_memory_sync_tasks.discard)
+    if session_key:
+        bucket = plugin._session_settle_tasks.setdefault(session_key, set())
+        bucket.add(task)
+        task.add_done_callback(bucket.discard)
+    return task
+
+
+@pytest.mark.asyncio
+async def test_failed_buckets_never_land_in_a_replacement_session():
+    """A same-key replacement session must not inherit the old snapshot.
+
+    Teardown can eject the session mid-flight and a queued group turn can
+    rebuild one under the same key — possibly for a different character.
+    The snapshot belongs to the old user_data; merging it into the
+    replacement means the next flush writes those turns under the new
+    session's her_name, i.e. into someone else's memory store.
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    # 旧会话被结算弹出，排队中的群消息用同一个 key 建了新会话（换了角色）。
+    plugin._user_sessions.pop("group:7788")
+    replacement = {
+        "is_group": True,
+        "memory_enabled": True,
+        "group_id": "7788",
+        "her_name": "另一个角色",
+        "group_member_memory_messages": {},
+        "group_member_memory_labels": {},
+    }
+    plugin._user_sessions["group:7788"] = replacement
+
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    assert replacement["group_member_memory_messages"] == {}, (
+        "旧会话的成员发言挂到了顶替者身上，下一轮会用它的 her_name 写库"
+    )
+    assert not replacement.get("member_flush_due")
+    logged = " ".join(str(call) for call in plugin.logger.error.call_args_list)
+    assert "并已被新会话顶替" in logged
