@@ -835,6 +835,7 @@ class _TransportMixin:
                     append_event,
                     raise_on_oversize=bypass_rate_limit,
                 )
+            return None
         except asyncio.CancelledError:
             if rejection_event_id is not None:
                 self._inject_rejection_handlers.pop(rejection_event_id, None)
