@@ -66,12 +66,29 @@ def test_openai_tts_endpoint_preserves_query_after_path_normalization():
     )
 
 
+def test_openai_tts_endpoint_preserves_trailing_slash_in_query_value():
+    configured = "https://speech.example.com/v1?token=abc/"
+    assert openai_tts_base_url(configured) == configured
+    assert openai_tts_speech_url(configured) == (
+        "https://speech.example.com/v1/audio/speech?token=abc/"
+    )
+
+
 def test_openai_tts_sdk_options_separate_query_from_base_url():
     assert openai_tts_sdk_options(
         "https://speech.example.com/v1?tenant=demo&token=x%2By"
     ) == (
         "https://speech.example.com/v1",
-        {"tenant": "demo", "token": "x+y"},
+        "tenant=demo&token=x%2By",
+    )
+
+
+def test_openai_tts_sdk_options_preserve_repeated_query_parameters():
+    assert openai_tts_sdk_options(
+        "https://speech.example.com/v1?scope=a&scope=b&token=abc/"
+    ) == (
+        "https://speech.example.com/v1",
+        "scope=a&scope=b&token=abc/",
     )
 
 
@@ -251,7 +268,16 @@ def _install_fake_openai(monkeypatch, chunks):
         async def close(self):
             self.closed = True
 
+    class _FakeDefaultAsyncHttpxClient:
+        def __init__(self, **kwargs):
+            self.client_kwargs = kwargs
+
     monkeypatch.setattr(openai, "AsyncOpenAI", _FakeAsyncOpenAI)
+    monkeypatch.setattr(
+        openai,
+        "DefaultAsyncHttpxClient",
+        _FakeDefaultAsyncHttpxClient,
+    )
     return clients
 
 
@@ -346,7 +372,7 @@ def test_custom_worker_omits_authorization_for_blank_api_key(
     }
 
 
-def test_custom_worker_forwards_endpoint_query_as_sdk_default_query(monkeypatch):
+def test_custom_worker_installs_endpoint_query_request_hook(monkeypatch):
     clients, request_queue, response_queue, thread = _run_worker_once(
         monkeypatch,
         [b"\x00\x00"],
@@ -357,11 +383,25 @@ def test_custom_worker_forwards_endpoint_query_as_sdk_default_query(monkeypatch)
     thread.join(timeout=5)
 
     assert not thread.is_alive()
-    assert clients[0].client_kwargs == {
-        "api_key": "sk-test",
-        "base_url": "https://speech.example.com/v1",
-        "default_query": {"tenant": "demo", "token": "x+y"},
-    }
+    assert clients[0].client_kwargs["api_key"] == "sk-test"
+    assert clients[0].client_kwargs["base_url"] == "https://speech.example.com/v1"
+    query_client = clients[0].client_kwargs["http_client"]
+    assert len(query_client.client_kwargs["event_hooks"]["request"]) == 1
+
+
+def test_custom_worker_preserves_repeated_endpoint_query_values(monkeypatch):
+    clients, request_queue, response_queue, thread = _run_worker_once(
+        monkeypatch,
+        [b"\x00\x00"],
+        base_url="https://speech.example.com/v1?scope=a&scope=b&token=abc/",
+    )
+    _wait_for_item(response_queue, lambda item: isinstance(item, bytes))
+    request_queue.put((tts_client.TTS_SHUTDOWN_SENTINEL, None))
+    thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    query_client = clients[0].client_kwargs["http_client"]
+    assert len(query_client.client_kwargs["event_hooks"]["request"]) == 1
 
 
 @pytest.mark.asyncio
@@ -415,14 +455,21 @@ async def test_openai_sdk_request_preserves_endpoint_query():
             headers={"content-type": "application/octet-stream"},
         )
 
-    sdk_base_url, default_query = openai_tts_sdk_options(
-        "http://127.0.0.1:8000/v1?tenant=demo&token=x%2By"
+    from openai import DefaultAsyncHttpxClient
+
+    sdk_base_url, endpoint_query = openai_tts_sdk_options(
+        "http://127.0.0.1:8000/v1?scope=a&scope=b&token=abc/"
     )
-    http_client = httpx.AsyncClient(transport=httpx.MockTransport(handle_request))
+    http_client = openai_worker_module._openai_endpoint_query_http_client(
+        partial(
+            DefaultAsyncHttpxClient,
+            transport=httpx.MockTransport(handle_request),
+        ),
+        endpoint_query,
+    )
     client = AsyncOpenAI(
         api_key="sk-test",
         base_url=sdk_base_url,
-        default_query=default_query,
         http_client=http_client,
     )
     try:
@@ -439,7 +486,12 @@ async def test_openai_sdk_request_preserves_endpoint_query():
 
     assert len(requests) == 1
     assert requests[0].url.path == "/v1/audio/speech"
-    assert dict(requests[0].url.params) == {"tenant": "demo", "token": "x+y"}
+    assert requests[0].url.params.multi_items() == [
+        ("scope", "a"),
+        ("scope", "b"),
+        ("token", "abc/"),
+    ]
+    assert requests[0].url.query == b"scope=a&scope=b&token=abc/"
 
 
 def test_builtin_openai_worker_keeps_sdk_default_endpoint_and_body(monkeypatch):

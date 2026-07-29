@@ -23,7 +23,7 @@ should receive the standard OpenAI body unless it is explicitly recognized by
 
 from __future__ import annotations
 
-from urllib.parse import parse_qsl, urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse
 
 
 OPENAI_TTS_DEFAULT_BASE_URL = "https://api.openai.com/v1"
@@ -53,7 +53,7 @@ def openai_tts_base_url(base_url: str) -> str:
     protocol-specific workers.
     """
 
-    raw = str(base_url or "").strip().rstrip("/")
+    raw = str(base_url or "").strip()
     if not raw:
         raise OpenAITtsConfigError("缺少 OpenAI-compatible TTS URL")
 
@@ -89,7 +89,9 @@ def openai_tts_speech_url(base_url: str) -> str:
     )
 
 
-def openai_tts_sdk_options(base_url: str) -> tuple[str, dict[str, str]]:
+def openai_tts_sdk_options(
+    base_url: str,
+) -> tuple[str, str]:
     """Split the SDK base URL from query parameters sent with each request."""
 
     parsed = urlparse(openai_tts_base_url(base_url))
@@ -97,9 +99,9 @@ def openai_tts_sdk_options(base_url: str) -> tuple[str, dict[str, str]]:
         (parsed.scheme, parsed.netloc, parsed.path, parsed.params, "", "")
     )
     # SDK 追加 audio/speech 路径时不会可靠保留 Base URL 自带的 query；
-    # 将签名、租户等参数交给 default_query，保持运行请求与直连探测一致。
-    default_query = dict(parse_qsl(parsed.query, keep_blank_values=True))
-    return sdk_base_url, default_query
+    # 返回原始 query，运行时在请求 hook 中直接注入。不能先转成字典，否则重复
+    # key、参数顺序或签名值的原始编码可能丢失。
+    return sdk_base_url, parsed.query
 
 
 def openai_tts_extra_body(base_url: str) -> dict[str, int | bool]:

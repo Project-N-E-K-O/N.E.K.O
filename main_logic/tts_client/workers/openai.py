@@ -17,6 +17,7 @@
 from functools import partial
 from inspect import signature
 
+import httpx
 import numpy as np
 import soxr
 
@@ -53,6 +54,25 @@ def _openai_auth_client_kwargs(client_type, audio_api_key):
     return client_kwargs
 
 
+def _openai_endpoint_query_http_client(client_type, endpoint_query):
+    """Build an SDK HTTP client that preserves the configured endpoint query."""
+
+    # 让 httpx 只负责把可能存在的非 ASCII 字符规范化为合法 URL 字节；重复 key、
+    # 顺序和尾随斜杠仍按配置原样保留。
+    endpoint_query_bytes = httpx.URL(
+        f"https://openai-tts-query.invalid/?{endpoint_query}"
+    ).query
+
+    async def inject_endpoint_query(request):
+        request_query = request.url.query
+        combined_query = endpoint_query_bytes
+        if request_query:
+            combined_query += b"&" + request_query
+        request.url = request.url.copy_with(query=combined_query)
+
+    return client_type(event_hooks={"request": [inject_endpoint_query]})
+
+
 def openai_tts_worker(
     request_queue,
     response_queue,
@@ -69,7 +89,11 @@ def openai_tts_worker(
     audio_api_key = str(audio_api_key or "").strip()
 
     try:
-        from openai import AsyncOpenAI, omit as openai_omit
+        from openai import (
+            AsyncOpenAI,
+            DefaultAsyncHttpxClient,
+            omit as openai_omit,
+        )
     except ImportError:
         logger.error("❌ 无法导入 openai 库，OpenAI TTS 不可用")
         response_queue.put(("__ready__", False))
@@ -90,10 +114,13 @@ def openai_tts_worker(
         if base_url:
             # Validate/normalize inside setup so configuration failures travel
             # through the shared worker skeleton's normal __ready__ channel.
-            sdk_base_url, default_query = openai_tts_sdk_options(base_url)
+            sdk_base_url, endpoint_query = openai_tts_sdk_options(base_url)
             client_kwargs["base_url"] = sdk_base_url
-            if default_query:
-                client_kwargs["default_query"] = default_query
+            if endpoint_query:
+                client_kwargs["http_client"] = _openai_endpoint_query_http_client(
+                    DefaultAsyncHttpxClient,
+                    endpoint_query,
+                )
         client = AsyncOpenAI(**client_kwargs)
         extra_body = openai_tts_extra_body(base_url or OPENAI_TTS_DEFAULT_BASE_URL)
 
