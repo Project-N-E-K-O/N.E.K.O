@@ -136,5 +136,5 @@ def test_replay_create_failure_invalidates_replacement_socket(monkeypatch):
         "tts.text.delta",
         "tts.text.done",
     ]
-    assert recovered.sent[1]["data"]["text"] == second
+    assert recovered.sent[1]["data"]["text"] == first + second
     assert replacement._closed is True

@@ -338,7 +338,6 @@ def run_step_protocol_tts_worker(
                             logger.debug("关闭二次失败的 TTS socket 失败: %s", close_exc)
                     ws = None
                     session_id = None
-                    current_speech_id = None
                     return False
             pending_text_buffer = ""
             return True
@@ -536,12 +535,15 @@ def run_step_protocol_tts_worker(
                             logger.warning(f"发送TTS完成信号失败: {e}")
                     continue
 
-                # 新的语音ID，重新建立连接
-                if current_speech_id != sid:
+                # 新语音，或当前语音的 socket 已失效：重新建立连接。
+                # 同一语音的恢复重连必须保留尚未发送成功的文本前缀。
+                is_new_speech = current_speech_id != sid
+                if is_new_speech or not ws or not session_id:
                     current_speech_id = sid
                     text_done_sent = False
                     session_created = False
-                    pending_text_buffer = ""
+                    if is_new_speech:
+                        pending_text_buffer = ""
                     response_done.clear()
                     if ws:
                         try:
