@@ -16,9 +16,8 @@ docker compose up -d
 
 | 宿主 | 容器 | 用途 |
 | --- | --- | --- |
-| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | 配置、角色、记忆、功能数据 |
+| `./neko-home` | `/home/neko` | 配置、角色、记忆、功能数据、TLS 证书 |
 | `./logs` | `/app/logs` | 日志 |
-| `./ssl` | `/home/neko/ssl` | TLS 证书/私钥 |
 
 升级前备份数据，严禁公开数据或私钥目录。
 

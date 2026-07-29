@@ -125,9 +125,8 @@ services:
       - "48911:80"   # HTTP 访问端口
       - "48912:443"  # HTTPS 访问端口
     volumes:
-      - ./N.E.K.O:/root/Documents/N.E.K.O
+      - ./neko-home:/home/neko
       - ./logs:/app/logs
-      - ./ssl:/home/neko/ssl
     networks:
       - neko-network
 networks:
@@ -160,9 +159,8 @@ docker run -d \
   --restart unless-stopped \
   -p 48911:80 \
   -p 48912:443 \
-  -v "${NEKO_BASE_PATH}/N.E.K.O:/root/Documents/N.E.K.O" \
+  -v "${NEKO_BASE_PATH}/neko-home:/home/neko" \
   -v "${NEKO_BASE_PATH}/logs:/app/logs" \
-  -v "${NEKO_BASE_PATH}/ssl:/home/neko/ssl" \
   --network neko-network \
   docker.gh-proxy.org/ghcr.io/project-n-e-k-o/n.e.k.o:latest
 ```
@@ -171,9 +169,8 @@ docker run -d \
 启动后会自动生成以下目录结构：
 ```plaintext
 当前目录/
-├── N.E.K.O/      # 配置文件和数据
+├── neko-home/    # 用户主目录（配置、数据、SSL、OpenFang agent）
 ├── logs/         # 应用日志
-├── ssl/          # SSL证书
 └── docker-compose.yml
 ```
 

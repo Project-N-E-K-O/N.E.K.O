@@ -1180,9 +1180,8 @@ main() {
     setup_dependencies
     setup_nginx_proxy
     
-    # 确保数据目录对 neko 用户可写（Docker volume 可能以 root 创建）
-    mkdir -p /home/neko/.local/share/N.E.K.O
-    chown -R neko:neko /home/neko/.local/share/N.E.K.O
+    # 确保 home 目录对 neko 用户可写（Docker volume 可能以 root 创建）
+    chown -R neko:neko /home/neko
     
     # 启动 OpenFang A2A 守护进程（编译在镜像中的 Rust 二进制）
     start_openfang_daemon

@@ -22,9 +22,8 @@ The entrypoint generates `/app/config/core_config.json` only when absent or when
 
 | Host path | Container path | Purpose |
 | --- | --- | --- |
-| `./N.E.K.O` | `/home/neko/.local/share/N.E.K.O` | User configuration, characters, memories, feature data |
+| `./neko-home` | `/home/neko` | User configuration, characters, memories, feature data, TLS certificates |
 | `./logs` | `/app/logs` | Logs |
-| `./ssl` | `/home/neko/ssl` | TLS certificate/key |
 
 Back up the first mount before upgrades. Never expose the data or private-key directories through a web server.
 
