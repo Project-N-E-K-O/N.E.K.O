@@ -412,9 +412,6 @@ class TelemetryService:
                 self._dead_crew_depleted_seen = False
                 self._dead_source = None
                 self._last_deaths = 0
-            # 回放检测（仅战局内；锁定式，命中后保持到离开战局）
-            if state is ConnectionState.IN_BATTLE and not self._replay:
-                self._detect_replay_locked(ind, now)
             # 阵亡待命态检测（仅战局内）
             respawned = False
             if state is ConnectionState.IN_BATTLE:
@@ -425,6 +422,13 @@ class TelemetryService:
                 self.processor.reset()
                 self._life_entry_ts = now
                 processed = None
+            # 回放检测（仅战局内；锁定式，命中后保持到离开战局）。
+            # 娱乐模式重生会换载具，座舱时钟可能跳变；确认重生后必须先建立新生命
+            # 的时钟基线，不能把跨生命的倒退误认为回放拖动时间轴。
+            if state is ConnectionState.IN_BATTLE and not self._replay:
+                if respawned:
+                    self._last_game_time = None
+                self._detect_replay_locked(ind, now)
             # 开局抑制窗口：进局前 _SPAWN_SUPPRESS_SEC 秒清空告警（保留派生量/数值），
             # 压掉 air RB 空中生成的失速/低高度等瞬态假警。
             # 阵亡待命态同样抑制告警（死车残骸/观战冻结会刷失速/乘员损失等假警）。

@@ -756,6 +756,57 @@ def test_battle_identity_survives_respawn_and_changes_after_confirmed_exit() -> 
     assert next_battle["life_index"] == 1
 
 
+def test_respawn_resets_replay_clock_before_backwards_time_check() -> None:
+    class RespawnClient:
+        game_time_sec = 1 * 3600.0
+
+        def get_indicators_with_status(self):
+            return (
+                True,
+                ConnectionState.IN_BATTLE,
+                Indicators(
+                    valid=True,
+                    army="tank",
+                    speed=8.0,
+                    game_time_sec=self.game_time_sec,
+                ),
+                MapInfo(valid=True),
+            )
+
+        def get_state_with_status(self):
+            return True, VehicleState(valid=True)
+
+    client = RespawnClient()
+    service = TelemetryService(client)
+    service._state = ConnectionState.IN_BATTLE
+    service._battle_entry_ts = 1.0
+    service._battle_id = "arcade-battle"
+    service._life_index = 1
+    service._mission_status = "running"
+    service._mission_running_seen = True
+    service._last_game_time = 20 * 3600.0
+    service._dead = True
+    service._dead_inert_seen = True
+    service._last_deaths = 1
+    service._combat = {"my": {"deaths": 1}}
+
+    service._poll_fast()
+
+    assert service._replay is False
+    assert service._last_game_time == client.game_time_sec
+    assert service._life_index == 2
+
+    # A backwards jump within the new life is still treated as replay scrubbing.
+    service._last_game_time = 2 * 3600.0
+    client.game_time_sec = 1 * 3600.0
+    with service._lock:
+        service._detect_replay_locked(
+            Indicators(valid=True, game_time_sec=client.game_time_sec),
+            2.0,
+        )
+    assert service._replay is True
+
+
 def test_new_generation_drain_overwrites_late_old_cursor_side_effect() -> None:
     class BlockingClient(WarThunderClient):
         def __init__(self) -> None:
