@@ -352,6 +352,31 @@ async def test_prompt_rechecks_arbiter_after_visual_await_before_sid_rotation():
 
 
 @pytest.mark.unit
+async def test_prompt_rechecks_activity_after_sid_rotation_await():
+    client = _make_client()
+    sid_rotation_started = asyncio.Event()
+    release_sid_rotation = asyncio.Event()
+
+    async def delayed_sid_rotation():
+        sid_rotation_started.set()
+        await release_sid_rotation.wait()
+
+    client.on_sid_rotate = delayed_sid_rotation
+    client.inject_text_and_request_response = AsyncMock()
+    task = asyncio.create_task(
+        client.prompt_ephemeral("do not inject after user activity")
+    )
+    await sid_rotation_started.wait()
+    client._user_recent_activity_time = responses_module.time.time()
+    client._client_vad_active = True
+    release_sid_rotation.set()
+
+    assert await task is False
+    client.inject_text_and_request_response.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_delivery_timeout_cancels_and_quarantines_until_lifecycle(monkeypatch):
     client = _make_client()
     monkeypatch.setattr(
@@ -526,6 +551,53 @@ async def test_delivery_timeout_cancels_only_returned_proactive_ticket(monkeypat
         wait=False,
     )
     client.cancel_response.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_cancelled_completion_wait_cancels_exact_proactive_ticket():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    task = asyncio.create_task(
+        client.prompt_ephemeral("cancel while waiting for response.done")
+    )
+    for _ in range(20):
+        events = _sent_events(client)
+        _ack_pending_input_item(client, events)
+        if any(event.get("type") == "response.create" for event in events):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("proactive response.create was not sent")
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-cancel-wait"}}
+    )
+
+    task.cancel()
+    for _ in range(20):
+        if any(
+            event.get("type") == "response.cancel"
+            for event in _sent_events(client)
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("targeted proactive cancellation was not sent")
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-cancel-wait",
+                "status": "cancelled",
+            },
+        }
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        assert await task is None
+    assert client._proactive_inject_awaiting_outcome is False
+    assert client._proactive_image_consumed is False
     await client.close()
 
 

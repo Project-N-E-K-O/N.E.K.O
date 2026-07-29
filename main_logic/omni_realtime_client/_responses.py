@@ -876,6 +876,19 @@ class _ResponseMixin:
             # preceding turn's already-closed speech ID.
             if self._has_server_vad and self.on_sid_rotate is not None:
                 await self.on_sid_rotate()
+                # SID rotation may wait behind another speech transition. A
+                # user/AI turn or explicit response that started meanwhile
+                # must still preempt this lower-priority proactive inject.
+                if (
+                    self.is_active_response()
+                    or self._client_vad_active
+                    or self._user_recent_activity_time > _now
+                    or self._ai_recent_activity_time > _now
+                ):
+                    logger.info(
+                        "prompt_ephemeral: skipped — activity started during SID rotation"
+                    )
+                    return False
             proactive_ticket = await self.inject_text_and_request_response(
                 text,
                 on_rejected=_on_rejected,
@@ -892,6 +905,25 @@ class _ResponseMixin:
                 outcome_observed.wait(),
                 timeout=_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS,
             )
+        except asyncio.CancelledError:
+            # The inject itself has already returned, so cancellation here
+            # must target the retained ticket rather than leaving a response
+            # alive whose visual snapshot this coroutine can no longer consume.
+            try:
+                if proactive_ticket is not None:
+                    await asyncio.shield(
+                        self._ensure_response_arbiter().cancel_ticket(
+                            proactive_ticket
+                        )
+                    )
+                else:
+                    await asyncio.shield(self.cancel_response())
+            except Exception as cancel_exc:
+                logger.warning(
+                    "prompt_ephemeral: cancellation cleanup failed: %s",
+                    cancel_exc,
+                )
+            raise
         except asyncio.TimeoutError:
             # Keep this request quarantined until its own terminal lifecycle
             # arrives: clearing the shared maps here would let a late
