@@ -4,7 +4,22 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { readOptionalJson } from './cli.mjs'
+import { applyMonitoringDefaults, readOptionalJson } from './cli.mjs'
+
+test('monitoring defaults are shared while site overrides remain authoritative', () => {
+  const config = applyMonitoringDefaults({
+    defaults: { ga4: { aiReferralRegex: 'shared', ctaEvent: 'default-event' } },
+    sites: [
+      { id: 'cn', ga4: { propertyIdEnv: 'GA4_CN_PROPERTY_ID' } },
+      { id: 'online', ga4: { propertyIdEnv: 'GA4_PROPERTY_ID', ctaEvent: 'site-event' } },
+    ],
+  })
+
+  assert.equal(config.sites[0].ga4.aiReferralRegex, 'shared')
+  assert.equal(config.sites[0].ga4.ctaEvent, 'default-event')
+  assert.equal(config.sites[1].ga4.aiReferralRegex, 'shared')
+  assert.equal(config.sites[1].ga4.ctaEvent, 'site-event')
+})
 
 test('optional IndexNow evidence distinguishes missing files from unreadable JSON', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'neko-indexnow-'))

@@ -8,6 +8,11 @@
     "url": "https://store.steampowered.com/app/4099310/__NEKO/",
     "event": "steam_cta_click"
   },
+  "defaults": {
+    "ga4": {
+      "aiReferralRegex": ".*(chatgpt\\.com|openai\\.com|openai|perplexity\\.ai|perplexity|copilot\\.microsoft\\.com|copilot\\.com|(business\\.)?gemini\\.google|bard\\.google\\.com|chat\\.deepseek\\.com|deepseek\\.com|chat\\.qwen\\.ai|doubao\\.com|poe\\.com|anthropic\\.com|claude\\.ai|edgeservices\\.bing\\.com).*"
+    }
+  },
   "sites": [
     {
       "id": "cn",
@@ -29,8 +34,7 @@
       },
       "ga4": {
         "propertyIdEnv": "GA4_CN_PROPERTY_ID",
-        "ctaEvent": "steam_cta_click",
-        "aiReferralRegex": ".*(chatgpt\\.com|openai\\.com|openai|perplexity\\.ai|perplexity|copilot\\.microsoft\\.com|copilot\\.com|(business\\.)?gemini\\.google|bard\\.google\\.com|chat\\.deepseek\\.com|deepseek\\.com|chat\\.qwen\\.ai|doubao\\.com|poe\\.com|anthropic\\.com|claude\\.ai|edgeservices\\.bing\\.com).*"
+        "ctaEvent": "steam_cta_click"
       },
       "indexNow": {
         "statusPathEnv": "INDEXNOW_CN_STATUS_PATH"
@@ -58,8 +62,7 @@
       "ga4": {
         "propertyIdEnv": "GA4_PROPERTY_ID",
         "ctaEvent": "steam_cta_click",
-        "docsToHomeEvent": "docs_home_click",
-        "aiReferralRegex": ".*(chatgpt\\.com|openai\\.com|openai|perplexity\\.ai|perplexity|copilot\\.microsoft\\.com|copilot\\.com|(business\\.)?gemini\\.google|bard\\.google\\.com|chat\\.deepseek\\.com|deepseek\\.com|chat\\.qwen\\.ai|doubao\\.com|poe\\.com|anthropic\\.com|claude\\.ai|edgeservices\\.bing\\.com).*"
+        "docsToHomeEvent": "docs_home_click"
       },
       "indexNow": {
         "statusPathEnv": "INDEXNOW_ONLINE_STATUS_PATH"

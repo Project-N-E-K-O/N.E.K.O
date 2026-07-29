@@ -87,6 +87,17 @@ function configuredPath(assignments, definition, envName, fallback) {
   return assignments.get(definition.id) || process.env[envName] || fallback
 }
 
+export function applyMonitoringDefaults(config) {
+  const ga4Defaults = config.defaults?.ga4 ?? {}
+  return {
+    ...config,
+    sites: config.sites.map(site => ({
+      ...site,
+      ga4: { ...ga4Defaults, ...site.ga4 },
+    })),
+  }
+}
+
 function duplicatePropertyIds(config) {
   const byId = new Map()
   for (const site of config.sites) {
@@ -101,10 +112,11 @@ function duplicatePropertyIds(config) {
 
 async function main() {
   const options = parseArgs(process.argv.slice(2))
-  const config = await readJson(options.config)
-  if (config.schemaVersion !== 2 || !Array.isArray(config.sites) || !Array.isArray(config.dataForSeoSegments)) {
+  const rawConfig = await readJson(options.config)
+  if (rawConfig.schemaVersion !== 2 || !Array.isArray(rawConfig.sites) || !Array.isArray(rawConfig.dataForSeoSegments)) {
     throw new TypeError('monitoring config must use schemaVersion 2 with sites and dataForSeoSegments')
   }
+  const config = applyMonitoringDefaults(rawConfig)
   const window = reportingWindow(new Date(), config.timezone)
   const previousReport = options.previousReport
     ? await readOptionalJson(options.previousReport, 'Previous unified report is not available')

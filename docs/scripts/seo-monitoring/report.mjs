@@ -49,8 +49,8 @@ export function rankBuckets(items, { maxRank = Infinity } = {}) {
 function inferExecution(report, execution) {
   if (execution?.status === 'unavailable') {
     return {
-      runStatus: report?.status === 'unavailable' ? 'unknown' : 'unknown',
-      rankingStatus: report?.status === 'unavailable' ? 'unknown' : 'unknown',
+      runStatus: 'unknown',
+      rankingStatus: 'unknown',
       keywordMetricsStatus: 'unknown',
       aiOverviewStatus: 'unknown',
       reason: execution.reason,
@@ -1212,7 +1212,7 @@ export function renderMarkdown(report) {
     `- DataForSEO AIO 触发频率：${aiFrequency?.observedQueries > 0 ? `${aiFrequency.triggeredQueries}/${aiFrequency.observedQueries}（${percentage(aiFrequency.triggerRate)}）` : 'N/A（未运行或无可信 artifact）'}`,
     `- N.E.K.O AIO 引用频率（全部已观察查询）：${aiFrequency?.observedQueries > 0 ? `${aiFrequency.citedQueries}/${aiFrequency.observedQueries}（${percentage(aiFrequency.citationRate)}）` : 'N/A'}`,
     `- N.E.K.O AIO 触发后引用率：${aiFrequency?.triggeredQueries > 0 ? `${aiFrequency.citedQueries}/${aiFrequency.triggeredQueries}（${percentage(aiFrequency.citationRateWhenTriggered)}）` : 'N/A（本次没有 AIO 触发）'}`,
-    `- 与上次同口径比较：${aiComparison?.status === 'not_run'
+    `- 与上次同口径比较：${!aiComparison || aiComparison.status === 'not_run'
       ? 'NOT_RUN（没有可比历史日报）'
       : `${aiComparison.comparableQueries}/${aiComparison.trackedQueries} 个查询可比；触发率 ${percentagePointDelta(aiComparison.triggerRateDelta)}；全查询引用率 ${percentagePointDelta(aiComparison.citationRateDelta)}；触发后引用率 ${percentagePointDelta(aiComparison.citationRateWhenTriggeredDelta)}`}`,
     `- AIO 引用缺口：${report.actions.aioGaps.length || '0'}`,

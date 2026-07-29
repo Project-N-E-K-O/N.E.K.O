@@ -26,6 +26,7 @@ const REQUIRED_SEGMENTS = new Map([
 ])
 
 const REQUIRED_SITES = ['cn', 'online']
+const MAX_GSC_FINALIZED_LAG_DAYS = 4
 const SITE_ORIGINS = new Map([
   ['cn', 'https://project-neko.cn'],
   ['online', 'https://project-neko.online'],
@@ -421,7 +422,7 @@ function validateAiCitationFrequency(report, failures) {
   }
 }
 
-function validateGsc(site, failures) {
+function validateGsc(site, report, failures) {
   const label = `GSC ${site.id}`
   const gsc = site.gsc
   add(failures, gsc?.status === 'ok', `${label} is ${gsc?.status ?? 'missing'}`)
@@ -429,6 +430,14 @@ function validateGsc(site, failures) {
 
   add(failures, isIsoTimestamp(gsc.collectedAt), `${label} collectedAt is missing or invalid`)
   add(failures, isDate(gsc.dataThrough), `${label} dataThrough is invalid`)
+  if (isDate(report.reportDate) && isDate(gsc.dataThrough)) {
+    const finalizedLagDays = utcDay(report.reportDate) - utcDay(gsc.dataThrough)
+    add(
+      failures,
+      finalizedLagDays >= 1 && finalizedLagDays <= MAX_GSC_FINALIZED_LAG_DAYS,
+      `${label} latest finalized day is outside the supported 1-${MAX_GSC_FINALIZED_LAG_DAYS} day lag`,
+    )
+  }
   for (const key of ['latest', 'recent7', 'previous7']) {
     validateRange(gsc.windows?.[key], `${label}.windows.${key}`, failures)
   }
@@ -692,7 +701,7 @@ export function requiredFailures(report, level = 'core') {
     const site = sitesById.get(id)
     add(failures, isObject(site), `Site ${id} is missing`)
     if (!isObject(site)) continue
-    validateGsc(site, failures)
+    validateGsc(site, report, failures)
     validateGa4(site, report, failures)
     if (requireIndexNow) validateIndexNow(site, failures)
     if (level === 'daily' || level === 'all') validateTechnical(site, failures)

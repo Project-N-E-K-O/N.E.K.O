@@ -339,6 +339,9 @@ test('dual-site report renders the skill contract and evidence-driven action que
     previousReportEvidence: '.seo-reports/previous/seo-monitoring-1.json',
   })
   const markdown = renderMarkdown(built)
+  const legacyReport = structuredClone(built)
+  delete legacyReport.aiCitationFrequency.comparison
+  assert.match(renderMarkdown(legacyReport), /与上次同口径比较：NOT_RUN/)
 
   assert.equal(built.overallStatus, 'partial')
   assert.equal(built.reportDate, '2026-07-29')

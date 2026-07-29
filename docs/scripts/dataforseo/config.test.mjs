@@ -3,15 +3,20 @@ import { readFile } from 'node:fs/promises'
 import test from 'node:test'
 
 import { validateConfig } from './report.mjs'
+import { applyMonitoringDefaults } from '../seo-monitoring/cli.mjs'
 
 async function readConfig(name) {
   const source = await readFile(new URL(`../../seo/${name}`, import.meta.url), 'utf8')
   return validateConfig(JSON.parse(source))
 }
 
-async function readMonitoringConfig() {
+async function readRawMonitoringConfig() {
   const source = await readFile(new URL('../../seo/monitoring.config.json', import.meta.url), 'utf8')
   return JSON.parse(source)
+}
+
+async function readMonitoringConfig() {
+  return applyMonitoringDefaults(await readRawMonitoringConfig())
 }
 
 test('committed configs keep each location/language/domain segment fixed', async () => {
@@ -54,7 +59,7 @@ test('three feature queries track both the .cn homepage and their concrete docum
 })
 
 test('monitoring config binds both sites and all three DataForSEO segments', async () => {
-  const config = await readMonitoringConfig()
+  const [rawConfig, config] = await Promise.all([readRawMonitoringConfig(), readMonitoringConfig()])
   assert.equal(config.schemaVersion, 2)
   assert.deepEqual(config.sites.map(site => site.id), ['cn', 'online'])
   assert.deepEqual(config.dataForSeoSegments.map(segment => segment.id), [
@@ -66,6 +71,7 @@ test('monitoring config binds both sites and all three DataForSEO segments', asy
   assert.equal(config.sites.find(site => site.id === 'online').ga4.propertyIdEnv, 'GA4_PROPERTY_ID')
   assert.equal(config.sites.find(site => site.id === 'cn').ga4.docsToHomeEvent, undefined)
   assert.equal(config.sites.find(site => site.id === 'online').ga4.docsToHomeEvent, 'docs_home_click')
+  assert.ok(rawConfig.sites.every(site => !Object.hasOwn(site.ga4, 'aiReferralRegex')))
   for (const site of config.sites) {
     assert.match(site.ga4.aiReferralRegex, /chatgpt/u)
     assert.match(site.ga4.aiReferralRegex, /deepseek/u)

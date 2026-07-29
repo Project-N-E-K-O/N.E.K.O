@@ -10,7 +10,7 @@
 
 | 范围 | 验证 | 结果 |
 |---|---|---|
-| `Project-N-E-K-O/N.E.K.O` | 完整单元测试 | **99/99 PASS** |
+| `Project-N-E-K-O/N.E.K.O` | 完整单元测试 | **101/101 PASS** |
 | `Project-N-E-K-O/N.E.K.O` | VitePress 生产构建 + SEO 产物检查 | **PASS**：299 个 indexable、37 个 noindex、1140 条 hreflang |
 | `Project-N-E-K-O/N.E.K.O.OfficialWebsite` | 完整单元测试 | **19/19 PASS** |
 | 两仓 | GitHub Actions YAML 解析 | **PASS** |
@@ -63,7 +63,7 @@
 
 ## 3. 完整测试结果
 
-### 3.1 主仓：99/99
+### 3.1 主仓：101/101
 
 | 测试组 | 数量 | 结果 | 覆盖重点 |
 |---|---:|---|---|
@@ -71,8 +71,8 @@
 | GA4 consent / tracking | 11 | PASS | 同意前不加载、撤回、跨标签同步、Steam 与文档→主页事件 |
 | Steam CTA | 4 | PASS | 所有已发布 Steam 链接的 UTM 与归因 |
 | DataForSEO | 42 | PASS | 三段配置、Volume/KD、depth 100、AIO、成本、重试、workflow/artifact、空证据 fail-closed |
-| SEO monitoring | 32 | PASS | GSC/GA4 窗口、技术探针、IndexNow 证据分类、日报渲染、严格门禁、搜索/引用频率 |
-| **合计** | **99** | **PASS** | 0 fail / 0 skipped |
+| SEO monitoring | 34 | PASS | GSC/GA4 窗口、技术探针、IndexNow 证据分类、日报渲染、严格门禁、搜索/引用频率 |
+| **合计** | **101** | **PASS** | 0 fail / 0 skipped |
 
 执行命令：
 
@@ -96,7 +96,7 @@ SEO validation: PASS
 
 ### 3.2 审查修复回归
 
-本轮针对自动 reviewer 提出的四类可信度问题补充了代码与回归测试：
+本轮针对自动 reviewer 提出的多轮可信度问题补充了代码与回归测试：
 
 - 付费 schedule 与手动 paid dispatch 均强制 depth 100 + AIO，付费后不再因可选输入导致确定性门禁失败；
 - 所有运行继续上传 `seo-geo-daily-report` 诊断 artifact，但趋势比较只读取 `main` 上通过完整付费门禁后发布的 `seo-geo-daily-paid-baseline`；
@@ -105,8 +105,9 @@ SEO validation: PASS
 - 主仓与 `.cn` 源仓 artifact 均通过服务端精确 `name=` 查询，并只复用 `main` 证据，避免仓库 artifact 增长后静默漏掉历史数据；
 - keyword metrics 缺失/空数组、三段全部无数值 Volume 均 fail-closed；证据文件缺失与 JSON 损坏被分别标记为 `NOT_RUN` 与 `UNKNOWN/unavailable`；
 - 首页中的畸形 script/modulepreload URL 会被隔离丢弃，不再让已采集的 canonical、robots、sitemap 等整段证据一起丢失；历史样本已明确不定义当前字段契约。
+- 旧版 artifact 缺少 AI comparison 时安全显示 `NOT_RUN`；两站 AI referral 正则由 `defaults.ga4` 单点维护且仍允许站点覆盖；GSC finalized 完整日超过 1–4 天容差即判为陈旧证据。
 
-上述修复后重新执行 `npm test` 为 **99/99 PASS**，`npm run build:check`、workflow YAML 解析、Markdown 路径检查及 `git diff --check` 均通过。
+上述修复后重新执行 `npm test` 为 **101/101 PASS**，`npm run build:check`、workflow YAML 解析、Markdown 路径检查及 `git diff --check` 均通过。
 
 ### 3.3 `.cn` 源仓：19/19
 

@@ -456,6 +456,21 @@ test('daily contract rejects complete labels backed by empty Volume evidence', (
   assert.ok(failures.includes('Search demand cn has no reported queries'))
 })
 
+test('daily contract rejects stale GSC finalized data even when its windows are internally consistent', () => {
+  const report = validReport()
+  const stale = report.sites[0].gsc
+  stale.dataThrough = '2026-07-23'
+  stale.windows.latest = range('2026-07-23', '2026-07-23')
+  stale.windows.recent7 = range('2026-07-17', '2026-07-23')
+  stale.windows.previous7 = range('2026-07-10', '2026-07-16')
+  stale.availability.latestFinalDate = '2026-07-23'
+  stale.availability.firstIncompleteDate = '2026-07-24'
+
+  assert.ok(requiredFailures(report, 'daily').includes(
+    'GSC cn latest finalized day is outside the supported 1-4 day lag',
+  ))
+})
+
 test('action validation blocks mixed-priority queues and duplicate page work', () => {
   const duplicate = validReport()
   duplicate.actions.selected.push({ ...duplicate.actions.selected[0] })
