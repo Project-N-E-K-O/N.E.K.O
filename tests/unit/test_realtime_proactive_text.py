@@ -500,7 +500,7 @@ async def test_prompt_defers_sid_rotation_while_response_arbiter_is_busy():
 
 
 @pytest.mark.unit
-async def test_prompt_rechecks_arbiter_after_visual_await_before_sid_rotation():
+async def test_prompt_rechecks_arbiter_after_visual_await():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
     client._proactive_image_consumed = False
@@ -519,7 +519,7 @@ async def test_prompt_rechecks_arbiter_after_visual_await_before_sid_rotation():
     release_visual.set()
 
     assert await task is False
-    client.on_sid_rotate.assert_not_awaited()
+    client.on_sid_rotate.assert_awaited_once_with()
     client._response_arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-user"}}
     )
@@ -536,6 +536,8 @@ async def test_prompt_rechecks_arbiter_after_visual_await_before_sid_rotation():
 @pytest.mark.unit
 async def test_prompt_rechecks_activity_after_sid_rotation_await():
     client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
     sid_rotation_started = asyncio.Event()
     release_sid_rotation = asyncio.Event()
 
@@ -555,6 +557,11 @@ async def test_prompt_rechecks_activity_after_sid_rotation_await():
 
     assert await task is False
     client.inject_text_and_request_response.assert_not_awaited()
+    assert not any(
+        event.get("type") == "input_image_buffer.append"
+        for event in _sent_events(client)
+    )
+    assert client._proactive_image_consumed is False
     await client.close()
 
 

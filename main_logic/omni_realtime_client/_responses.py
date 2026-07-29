@@ -895,6 +895,33 @@ class _ResponseMixin:
         snapshot_image_generation = (
             getattr(self, "_latest_image_generation", 0) if has_vision else None
         )
+
+        # Text-triggered turns do not produce the server-VAD speech_stopped
+        # event that normally starts a fresh external-TTS turn. Rotate before
+        # persisting visual context so activity that wins while the callback
+        # is blocked cannot consume an image from an abandoned proactive turn.
+        if self._has_server_vad and self.on_sid_rotate is not None:
+            try:
+                await self.on_sid_rotate()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "prompt_ephemeral: SID rotation failed before visual inject: %s",
+                    exc,
+                )
+                return False
+            if (
+                self.is_active_response()
+                or self._client_vad_active
+                or self._user_recent_activity_time > _now
+                or self._ai_recent_activity_time > _now
+            ):
+                logger.info(
+                    "prompt_ephemeral: skipped — activity started during SID rotation"
+                )
+                return False
+
         if (
             has_vision
             and self._supports_native_image
@@ -975,27 +1002,6 @@ class _ResponseMixin:
 
         proactive_ticket = None
         try:
-            # Text-triggered turns do not produce the server-VAD
-            # speech_stopped event that normally starts a fresh TTS turn.
-            # Rotate through the lightweight callback before response.create
-            # so external TTS workers do not discard this response under the
-            # preceding turn's already-closed speech ID.
-            if self._has_server_vad and self.on_sid_rotate is not None:
-                await self.on_sid_rotate()
-                # SID rotation may wait behind another speech transition. A
-                # user/AI turn or explicit response that started meanwhile
-                # must still preempt this lower-priority proactive inject.
-                if (
-                    self.is_active_response()
-                    or self._client_vad_active
-                    or self._user_recent_activity_time > _now
-                    or self._ai_recent_activity_time > _now
-                ):
-                    _remove_visual_rejection_handler()
-                    logger.info(
-                        "prompt_ephemeral: skipped — activity started during SID rotation"
-                    )
-                    return False
             proactive_ticket = await self.inject_text_and_request_response(
                 text,
                 on_rejected=_on_rejected,

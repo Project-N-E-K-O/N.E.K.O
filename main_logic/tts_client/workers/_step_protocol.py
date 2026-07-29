@@ -314,10 +314,12 @@ def run_step_protocol_tts_worker(
                         retry_after_reconnect
                         and await _reconnect_after_buffered_delta_failure()
                     ):
-                        return await _flush_deferred_create(
+                        replayed = await _flush_deferred_create(
                             force=True,
                             retry_after_reconnect=False,
                         )
+                        if replayed:
+                            return True
                     # A second failure means the replacement connection is also
                     # unusable. Invalidate it so the next speech id reconnects;
                     # keep pending_text_buffer intact for diagnostics/retry.
