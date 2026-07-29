@@ -1218,3 +1218,32 @@ async def test_second_drain_wave_sees_an_opt_out_from_the_first():
     )
     # 撤销之后剩下的按 fail-closed 丢弃，没有回到队列。
     assert not (user_data.get("group_member_memory_messages") or {})
+
+
+@pytest.mark.asyncio
+async def test_one_request_cannot_outlive_the_wave_budget():
+    """The join bound is derived from waves x per-request timeout, so the
+    per-request part has to be a real wall clock.
+
+    httpx applies its ``timeout=`` to connect / read / write / pool
+    separately rather than to the whole call, and the client is now shared
+    process-wide — a saturated pool can burn one budget waiting for a
+    connection and another reading the response. An outer bound keeps the
+    derivation honest.
+    """
+    service, plugin, user_data, _locks = _group_drain_harness(None)
+    service.SCOPED_HISTORY_TIMEOUT_SECONDS = 0.05
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        await asyncio.Event().wait()  # 永远不返回（连接池饿死的极端形态）
+
+    plugin.memory_bridge.post_scoped_memory_history = _post_scoped
+
+    failed = await asyncio.wait_for(
+        service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko", reason="test",
+            buckets={"2046": [{"role": "user"}]}, labels={},
+        ),
+        timeout=2.0,
+    )
+    assert failed == ["2046"], "单发请求没有被墙钟封顶，波数推导就不成立"

@@ -892,14 +892,22 @@ class QQSessionMemoryService:
                     )
                     return sender_id
                 try:
-                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
-                        her_name,
-                        member_messages,
-                        subject=self.plugin.memory_bridge.group_participant_subject(
-                            group_id, sender_id,
-                        ),
-                        speaker_label=(
-                            str(member_labels.get(sender_id) or sender_id)[:64]
+                    # 外层再包一次墙钟上限：httpx 的 timeout= 是给 connect /
+                    # read / write / pool **各自**一份，不是整次请求的总时长
+                    # ——连接池被别的群排空占满时，光等池就能花掉一份，再花
+                    # 一份读响应。等待上限是按"波数 × 单发超时"推的，单发不
+                    # 真的封顶，那个推导就不成立。
+                    result = await asyncio.wait_for(
+                        self.plugin.memory_bridge.post_scoped_memory_history(
+                            her_name,
+                            member_messages,
+                            subject=self.plugin.memory_bridge.group_participant_subject(
+                                group_id, sender_id,
+                            ),
+                            speaker_label=(
+                                str(member_labels.get(sender_id) or sender_id)[:64]
+                            ),
+                            timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                         ),
                         timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                     )
