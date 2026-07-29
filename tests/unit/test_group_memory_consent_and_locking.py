@@ -1247,3 +1247,35 @@ async def test_one_request_cannot_outlive_the_wave_budget():
         timeout=2.0,
     )
     assert failed == ["2046"], "单发请求没有被墙钟封顶，波数推导就不成立"
+
+
+@pytest.mark.asyncio
+async def test_orphan_branch_releases_both_in_flight_marks():
+    """Both marks are set together, so both have to be released together.
+
+    The live path drops `member_drain_in_flight` in its finally; the
+    orphan branch returns early. Leaving it behind means that if the dict
+    is ever bound back into `_user_sessions`, the scheduler's
+    `not member_drain_in_flight` guard reads false forever and no member
+    drain is ever queued again — the queue only empties by hitting its
+    hard limit.
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    plugin._user_sessions.pop("group:7788")
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    assert "member_flush_in_progress" not in user_data
+    assert "member_drain_in_flight" not in user_data, (
+        "调度标记留在孤儿 dict 上，重新绑回去之后排空永远排不上"
+    )

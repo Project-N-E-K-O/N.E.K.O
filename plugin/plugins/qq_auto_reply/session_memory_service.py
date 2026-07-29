@@ -693,6 +693,11 @@ class QQSessionMemoryService:
                 stranded = 0
                 if isinstance(held, dict):
                     stranded = len(held.get("group_member_memory_messages") or {})
+                    # 两个在飞标记同源，就得同时放掉。只放计数、留着
+                    # member_drain_in_flight 的话，一旦这份 dict 被重新绑回
+                    # _user_sessions，cache_session_delta 的调度判据就永久为
+                    # 假——成员桶排空再也不会被排上，只能等硬顶丢弃收场。
+                    held.pop("member_drain_in_flight", None)
                     self._finish_member_flush_generation(held)
                 # 日志分级的判据统一成一句话：**error 是"本想留下却没留住"，
                 # warning 是"按策略本来就该丢"**。opt-out 撤掉之后的丢弃属于
