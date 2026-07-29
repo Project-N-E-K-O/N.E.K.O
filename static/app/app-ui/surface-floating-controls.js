@@ -364,12 +364,14 @@
                 targetUrl.hash = hash;
                 return targetUrl;
             };
-            const completeInitialCommunityHandoff = async (targetUrl, delegatePromise) => {
+            const completeInitialCommunityHandoff = async (targetUrl) => {
                 if (!isElectron) {
                     // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
                     navigateBrowserPopup(targetUrl, { keepReference: true });
                 }
-                const nativeDelegate = await delegatePromise;
+                // auth-status 已完成且无需等待 OAuth 后才启动，避免可放弃的
+                // delegate 校验占住 OAuth 状态解析锁并阻塞登录态判断。
+                const nativeDelegate = await fetchNativeDelegate();
                 if (nativeDelegate) {
                     // 二次导航使用新签发的 native_sync，并与 delegate 一次性交付。
                     // 即使首次页面尚未读取 fragment 而被替换，也不会丢失同步能力；
@@ -441,8 +443,6 @@
                 }
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
-                // delegate 较慢且有独立超时，先并发启动，但不阻塞首次社区导航。
-                const nativeDelegatePromise = fetchNativeDelegate();
                 await attachNativeSyncTicket(targetUrl);
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 try {
@@ -557,17 +557,11 @@
                                 }
                             }
                         } else {
-                            await completeInitialCommunityHandoff(
-                                url,
-                                nativeDelegatePromise
-                            );
+                            await completeInitialCommunityHandoff(url);
                         }
                     }
                 } else {
-                    await completeInitialCommunityHandoff(
-                        url,
-                        nativeDelegatePromise
-                    );
+                    await completeInitialCommunityHandoff(url);
                 }
                 return;
             } catch (err) {

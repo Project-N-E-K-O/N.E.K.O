@@ -40,7 +40,7 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "hashParams.set('native_sync', syncTicket)" in listener
     assert "fetch('/api/card-drop/native-delegate', {" in listener
     assert "hashParams.set('native_delegate', nativeDelegate)" in listener
-    assert "const nativeDelegatePromise = fetchNativeDelegate();" in listener
+    assert "const nativeDelegatePromise = fetchNativeDelegate();" not in listener
     assert "const syncTicket = await fetchNativeSyncTicket();" in listener
     assert "await Promise.all([" not in listener
     assert listener.count("setTimeout(() => controller.abort(), 4000)") == 2
@@ -68,16 +68,18 @@ def test_social_open_request_is_deduped_before_fetching_config():
         "await attachNativeSyncTicket(targetUrl)"
     )
     # A slow delegate must not delay the initial Electron or browser Community navigation.
-    assert listener.index("const nativeDelegatePromise = fetchNativeDelegate();") < listener.index(
-        "await attachNativeSyncTicket(targetUrl)"
-    )
     assert listener.index("openElectronSocialWindow(url)") < listener.index(
         "await completeInitialCommunityHandoff("
     )
-    assert listener.index("navigateBrowserPopup(targetUrl, { keepReference: true })") < listener.index(
-        "const nativeDelegate = await delegatePromise;"
+    helper_start = listener.index(
+        "const completeInitialCommunityHandoff = async (targetUrl) => {"
     )
-    assert listener.index("const nativeDelegate = await delegatePromise;") < listener.index(
+    helper_end = listener.index("\n            try {", helper_start)
+    helper = listener[helper_start:helper_end]
+    assert helper.index("navigateBrowserPopup(targetUrl, { keepReference: true })") < helper.index(
+        "const nativeDelegate = await fetchNativeDelegate();"
+    )
+    assert helper.index("const nativeDelegate = await fetchNativeDelegate();") < helper.index(
         "openElectronSocialWindow(delegateTargetUrl.toString())"
     )
     assert re.search(
@@ -86,13 +88,16 @@ def test_social_open_request_is_deduped_before_fetching_config():
         listener,
     )
     assert "attachNativeDelegate(delegateTargetUrl, nativeDelegate);" in listener
-    assert "const completeInitialCommunityHandoff = async (targetUrl, delegatePromise) => {" in listener
+    assert "const completeInitialCommunityHandoff = async (targetUrl) => {" in listener
     assert listener.count(
         "await completeInitialCommunityHandoff("
     ) == 2
+    main_flow = listener[helper_end:]
+    assert main_flow.index("fetch('/api/card-drop/auth-status'") < main_flow.index(
+        "await completeInitialCommunityHandoff("
+    )
     assert re.search(
-        r"else \{\s*await completeInitialCommunityHandoff\(\s*"
-        r"url,\s*nativeDelegatePromise\s*\);\s*\}",
+        r"else \{\s*await completeInitialCommunityHandoff\(url\);\s*\}",
         listener,
     )
 
