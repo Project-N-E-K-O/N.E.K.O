@@ -637,13 +637,27 @@ class QQSessionMemoryService:
                 return False
             buckets = user_data.get("group_member_memory_messages") or {}
             labels = user_data.get("group_member_memory_labels") or {}
-            for sender_id in [s for s, msgs in buckets.items() if s and msgs]:
+            ready = [s for s, msgs in buckets.items() if s and msgs]
+            # 一趟最多带走一个名额的量。归还失败快照时参与者数可以暂时到
+            # 名额的两倍（见 _return_snapshot：宁可超额也不丢掉整个已授权
+            # 发言人），不设这个上限的话，那种局面下的排空会变成四波，而
+            # 结算侧的等待上限是按两波算的——等待到点时后面几波还攥着快照。
+            # 限住工作量比拉长等待好：多出来的下一轮接着排。
+            deferred = ready[self.GROUP_MEMBER_MAX_PARTICIPANTS:]
+            for sender_id in ready[:self.GROUP_MEMBER_MAX_PARTICIPANTS]:
                 snapshot[sender_id] = buckets.pop(sender_id)
                 label = labels.pop(sender_id, None)
                 if label:
                     snapshot_labels[sender_id] = label
             if not snapshot:
                 return False
+            if deferred:
+                # 留下的那些要再排一轮，否则得等这些成员各自再攒满一次。
+                user_data["member_flush_due"] = True
+                self.plugin.logger.info(
+                    f"[member_bucket_cap] 群 {group_id} 参与者超额，本轮先带走 "
+                    f"{len(snapshot)} 个，剩 {len(deferred)} 个下轮再排"
+                )
             # 整桶搬走：参与者名额当场腾空，冲刷期间新到的发言写进全新的
             # 一代，和在飞的这一代互不覆盖。冲刷标记必须在锁内就位——设置侧
             # 的 opt-out 快照靠它决定"另起一代"，锁一放它就可能跑起来。
@@ -1301,6 +1315,19 @@ class QQSessionMemoryService:
                         current.pop("pending_settle_labels", None)
                         current.pop("pending_member_settle", None)
 
+            # 第四条要等在途排空的结算路径（前三条：idle / 关机 / opt-out
+            # 成员结算）。UI 把群记忆与成员记忆联动关闭时，_sync_memory_
+            # transitions 先跑成员结算、紧接着跑这里；成员结算等不到时会
+            # 跳过，但这里的 finalize 照样把会话弹掉——skip 就白做了，排空
+            # 攥着的快照一样孤儿化。
+            # 与 opt-out 成员结算不同，这里**等不到也必须继续**：这是隐私
+            # 转变，跳过等于 OFF 没落实，会话还挂着 memory_enabled。
+            if not await self._await_pending_session_settlement(
+                session_key, timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+            ):
+                self.plugin.logger.warning(
+                    f"排空在途但群记忆转变必须落实（{session_key}），继续结算"
+                )
             await self.plugin._run_with_session_lock(session_key, _sync_one)
 
     async def invalidate_private_session(self, qq_number: str) -> None:

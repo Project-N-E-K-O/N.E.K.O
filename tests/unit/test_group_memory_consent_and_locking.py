@@ -886,3 +886,86 @@ async def test_returning_a_failed_snapshot_reapplies_the_hard_limit():
     assert any(
         "超过硬顶" in str(call) for call in plugin.logger.warning.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_group_invalidate_also_waits_for_an_in_flight_drain():
+    """The linked group+member opt-out tears the session down right after.
+
+    `_sync_memory_transitions` runs the member settlement and then
+    `invalidate_group_sessions`, whose OFF branch finalizes and pops the
+    same session. Skipping only the settlement therefore protects nothing:
+    the drain's snapshot is orphaned by the very next step.
+    """
+    order: list[str] = []
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        order.append("drain-done")
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    plugin._session_settle_tasks = {}
+    user_data["session"] = SimpleNamespace(_conversation_history=[])
+    # OFF 分支只结算带转变标记的会话（没标 = opt-out 之后才建的）。
+    user_data["pending_disable_settle"] = True
+
+    async def _finalize(session_key, reason, retain_session=False):
+        order.append(f"finalize:{reason}")
+        plugin._user_sessions.pop(session_key, None)
+        return True
+
+    service.finalize_user_memory_session = _finalize
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    plugin._session_settle_tasks["group:7788"] = {drain}
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    invalidate = asyncio.create_task(
+        service.invalidate_group_sessions(enabled=False)
+    )
+    await asyncio.sleep(0)
+    assert order == [], "群记忆转变不能在排空还攥着快照时就把会话弹掉"
+
+    released.set()
+    await asyncio.wait_for(invalidate, timeout=3.0)
+    await asyncio.wait_for(drain, timeout=2.0)
+    assert order == ["drain-done", "finalize:group_memory_disabled"]
+
+
+@pytest.mark.asyncio
+async def test_a_single_drain_never_exceeds_one_participant_quota():
+    """One sweep carries at most a quota's worth of buckets.
+
+    Returning a failed snapshot may leave up to twice the quota on purpose
+    (dropping a whole authorized speaker is worse than briefly exceeding
+    it). Draining all of that in one go would take four waves while the
+    settlement-side wait is sized for two — the wait would expire with
+    later waves still holding the snapshot. Bounding the work beats
+    stretching the wait: the remainder goes out on the next round.
+    """
+    posted: list[str] = []
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        posted.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    quota = service.GROUP_MEMBER_MAX_PARTICIPANTS
+    user_data["group_member_memory_messages"] = {
+        str(6000 + i): [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+        for i in range(quota * 2)
+    }
+    user_data["group_member_memory_labels"] = {}
+
+    await asyncio.wait_for(
+        service._drain_member_buckets("group:7788"), timeout=3.0,
+    )
+
+    assert len(posted) == quota, "一趟排空带走的桶数超过了等待上限所依据的波数"
+    # 剩下的还在队列里，并且已经重新举起 due 标等下一轮。
+    assert len(user_data["group_member_memory_messages"]) == quota
+    assert user_data.get("member_flush_due") is True
