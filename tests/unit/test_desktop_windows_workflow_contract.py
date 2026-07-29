@@ -138,6 +138,22 @@ def test_stable_publication_skips_windows_only_and_prerelease_tags() -> None:
     assert "!contains(needs.version.outputs.version, '-')" in condition
 
 
+def test_portable_manifest_signing_is_required_for_nightly_and_stable_releases() -> None:
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+
+    for job_name in ("nightly", "publish-stable-portable"):
+        signing = _steps_by_name(workflow, job_name)["Sign Portable manifests"]
+        assert signing["env"]["PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY"] == (
+            "${{ secrets.PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY }}"
+        )
+        assert signing["env"]["PORTABLE_MANIFEST_SIGNING_KEY_ID"] == (
+            "portable-manifest-2026-07"
+        )
+        assert "is required to publish Portable updates" in signing["run"]
+        assert "openssl pkeyutl -sign -rawin" in signing["run"]
+        assert '"${manifest}.sig"' in signing["run"]
+
+
 def test_delta_baseline_selects_a_preceding_stable_release() -> None:
     workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
     steps = _steps_by_name(workflow, "build-electron")

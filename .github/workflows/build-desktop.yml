@@ -1038,6 +1038,34 @@ jobs:
           echo "=== Nightly release files ==="
           ls -lah release/
 
+      - name: Sign Portable manifests
+        env:
+          PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY: ${{ secrets.PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY }}
+          PORTABLE_MANIFEST_SIGNING_KEY_ID: portable-manifest-2026-07
+        run: |
+          set -euo pipefail
+          if [[ -z "${PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY:-}" ]]; then
+            echo "::error::PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY is required to publish Portable updates"
+            exit 1
+          fi
+          umask 077
+          key_path="$(mktemp "${RUNNER_TEMP}/portable-manifest-key.XXXXXX")"
+          trap 'rm -f "$key_path"' EXIT
+          printf '%s' "$PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY" > "$key_path"
+          manifests=(release/*_manifest.json)
+          if (( ${#manifests[@]} == 0 )); then
+            echo "::error::No Portable manifests found to sign"
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            raw_signature="${manifest}.rawsig"
+            openssl pkeyutl -sign -rawin -inkey "$key_path" -in "$manifest" -out "$raw_signature"
+            signature="$(base64 < "$raw_signature" | tr -d '\r\n')"
+            rm -f "$raw_signature"
+            jq -n --arg key_id "$PORTABLE_MANIFEST_SIGNING_KEY_ID" --arg signature "$signature" \
+              '{schemaVersion: 1, keyId: $key_id, signature: $signature}' > "${manifest}.sig"
+          done
+
       - name: Delete old nightly release
         if: ${{ !inputs.windows_only }}
         env:
@@ -1138,6 +1166,34 @@ jobs:
           test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_linux_x64_appimage.AppImage"
           test -f "release/N.E.K.O_${{ needs.version.outputs.version }}_linux_x64_appimage_manifest.json"
           ls -lah release/
+
+      - name: Sign Portable manifests
+        env:
+          PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY: ${{ secrets.PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY }}
+          PORTABLE_MANIFEST_SIGNING_KEY_ID: portable-manifest-2026-07
+        run: |
+          set -euo pipefail
+          if [[ -z "${PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY:-}" ]]; then
+            echo "::error::PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY is required to publish Portable updates"
+            exit 1
+          fi
+          umask 077
+          key_path="$(mktemp "${RUNNER_TEMP}/portable-manifest-key.XXXXXX")"
+          trap 'rm -f "$key_path"' EXIT
+          printf '%s' "$PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY" > "$key_path"
+          manifests=(release/*_manifest.json)
+          if (( ${#manifests[@]} == 0 )); then
+            echo "::error::No Portable manifests found to sign"
+            exit 1
+          fi
+          for manifest in "${manifests[@]}"; do
+            raw_signature="${manifest}.rawsig"
+            openssl pkeyutl -sign -rawin -inkey "$key_path" -in "$manifest" -out "$raw_signature"
+            signature="$(base64 < "$raw_signature" | tr -d '\r\n')"
+            rm -f "$raw_signature"
+            jq -n --arg key_id "$PORTABLE_MANIFEST_SIGNING_KEY_ID" --arg signature "$signature" \
+              '{schemaVersion: 1, keyId: $key_id, signature: $signature}' > "${manifest}.sig"
+          done
 
       - name: Create or update stable GitHub Release
         env:
