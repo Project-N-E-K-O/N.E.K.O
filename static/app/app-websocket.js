@@ -2719,6 +2719,26 @@
 
                                     await sessionStartPromise;
 
+                                    // Same takeover check as the mic-button flow
+                                    // (app-buttons.js): on mobile the composer stays
+                                    // visible during an audio session, so the user can
+                                    // send text inside the ack's 500ms settle window.
+                                    // The ack timer then leaves _pendingSessionStartMode
+                                    // owned by that newer text start and settles this
+                                    // promise anyway, and none of the guards below can
+                                    // see it -- the text ack changes neither
+                                    // voiceSessionStartEpoch nor isMicStarting, and never
+                                    // sets voiceInputRouteBlocked. This automatic restart
+                                    // would otherwise reclaim a lease onto the text
+                                    // session's blocked route (Codex P2).
+                                    if (S._pendingSessionStartMode
+                                            && S._pendingSessionStartMode !== 'audio') {
+                                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                                            window.abortVoiceStartForBlockedRoute();
+                                        }
+                                        return;
+                                    }
+
                                     if (typeof window.showCurrentModel === 'function') await window.showCurrentModel();
                                     if (S.voiceInputRouteBlocked === true) {
                                         // The rebuilt session came back fail-closed (independent

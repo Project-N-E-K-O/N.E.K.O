@@ -2886,6 +2886,62 @@ async def test_audio_start_ack_reaches_the_window_that_asked_for_it():
     ]
 
 
+async def test_audio_start_failure_reaches_the_window_that_asked_for_it():
+    # Codex P2, the failure twin of the start ack. self.websocket is reassigned
+    # to every newly accepted socket, so a second window opening during a start
+    # that then FAILS took this notice, while the window that asked -- still the
+    # lease holder, because the router claims the lease for the requesting
+    # socket before firing start_session -- sat on sessionStartPromise until its
+    # 15s deadline instead of failing fast. That timeout path then sends
+    # end_session, tearing down whatever did get built.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+
+    await LLMSessionManager.send_session_failed(mgr, "audio")
+
+    expected = {"type": "session_failed", "input_mode": "audio"}
+    assert [json.loads(x) for x in recorder.sent] == [expected], (
+        "the requesting window must learn its start failed"
+    )
+    assert [json.loads(x) for x in chat.sent] == [expected]
+
+
+async def test_session_failure_is_not_duplicated_for_a_single_window():
+    recorder, _chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = recorder
+
+    await LLMSessionManager.send_session_failed(mgr, "audio")
+
+    assert [json.loads(x) for x in recorder.sent] == [
+        {"type": "session_failed", "input_mode": "audio"}
+    ], "a single window must be told exactly once"
+
+
+async def test_session_failure_does_not_reach_the_game_microphone():
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr._voice_lease_owner = "game"
+
+    await LLMSessionManager.send_session_failed(mgr, "audio")
+
+    assert recorder.sent == []
+    assert [json.loads(x) for x in chat.sent] == [
+        {"type": "session_failed", "input_mode": "audio"}
+    ]
+
+
 async def test_audio_start_ack_carries_the_settled_blocked_route():
     # Codex P2. The route verdict otherwise travels only as an ASR_INDEPENDENT_*
     # status on the mic control plane, and there are paths where it reaches

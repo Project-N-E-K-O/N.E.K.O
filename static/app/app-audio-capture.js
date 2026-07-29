@@ -1344,23 +1344,40 @@
         const ownContext = new AudioContext({ sampleRate: 48000 });
         console.log("音频上下文采样率 (强制48kHz):", ownContext.sampleRate);
 
-        // 创建媒体流源
-        const source = ownContext.createMediaStreamSource(mediaStream);
+        let source = null;
+        let ownGainNode = null;
+        let ownAnalyser = null;
+        try {
+            // 创建媒体流源
+            source = ownContext.createMediaStreamSource(mediaStream);
 
-        // 创建增益节点用于麦克风音量放大
-        const ownGainNode = ownContext.createGain();
-        const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
-        ownGainNode.gain.value = linearGain;
-        console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
+            // 创建增益节点用于麦克风音量放大
+            ownGainNode = ownContext.createGain();
+            const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
+            ownGainNode.gain.value = linearGain;
+            console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
 
-        // 创建analyser节点用于监测输入音量
-        const ownAnalyser = ownContext.createAnalyser();
-        ownAnalyser.fftSize = 2048;
-        ownAnalyser.smoothingTimeConstant = 0.8;
+            // 创建analyser节点用于监测输入音量
+            ownAnalyser = ownContext.createAnalyser();
+            ownAnalyser.fftSize = 2048;
+            ownAnalyser.smoothingTimeConstant = 0.8;
 
-        // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
-        source.connect(ownGainNode);
-        ownGainNode.connect(ownAnalyser);
+            // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
+            source.connect(ownGainNode);
+            ownGainNode.connect(ownAnalyser);
+        } catch (graphError) {
+            // The context is already constructed but nothing is published and
+            // discardOwnPipeline is not defined yet, so a throw from any of
+            // these node constructors would strand a live AudioContext that no
+            // teardown path can reach -- and Blink caps them at about six per
+            // document, so a repeating failure eventually makes `new
+            // AudioContext()` itself throw (Codex P2). The caller's catch
+            // releases the microphone track; this releases the context.
+            if (ownContext.state !== 'closed') {
+                ownContext.close();
+            }
+            throw graphError;
+        }
 
         let ownWorkletNode = null;
 
@@ -1390,9 +1407,12 @@
                     ownWorkletNode.port.onmessage = null;
                     ownWorkletNode.disconnect();
                 }
-                ownGainNode.disconnect();
-                ownAnalyser.disconnect();
-                source.disconnect();
+                // Nullable since the graph construction above can throw
+                // partway; that path closes the context and rethrows without
+                // reaching here, but the guards keep this honest.
+                if (ownGainNode) ownGainNode.disconnect();
+                if (ownAnalyser) ownAnalyser.disconnect();
+                if (source) source.disconnect();
             } catch (_) {
                 // best-effort teardown
             }

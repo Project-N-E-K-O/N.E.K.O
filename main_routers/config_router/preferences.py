@@ -55,7 +55,19 @@ async def _apply_noise_reduction_to_active_sessions(enabled: bool):
                     )
             if not isinstance(mgr.session, OmniRealtimeClient):
                 continue
-            await mgr.session.set_audio_noise_reduction_enabled(enabled)
+            # Isolated per manager for the same reason as the Core pipeline
+            # above: this await reaches a live realtime transport, and with
+            # only the shared try below, one character's failure abandoned the
+            # toggle for every character after it in iteration order -- the
+            # user sees the setting saved while some sessions never got it
+            # (Codex P2).
+            try:
+                await mgr.session.set_audio_noise_reduction_enabled(enabled)
+            except Exception as omni_exc:  # noqa: BLE001
+                logger.warning(
+                    f"Failed to apply noise reduction to the Omni processor "
+                    f"for {_name}: {omni_exc}"
+                )
     except Exception as e:
         logger.warning(f"Failed to apply noise reduction to active sessions: {e}")
 

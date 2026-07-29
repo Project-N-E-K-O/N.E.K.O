@@ -181,3 +181,44 @@ async def test_noise_reduction_toggle_to_the_same_value_is_a_no_op() -> None:
     # Still usable: nothing was torn down.
     frame = await original.process(_PC_FRAME, sample_rate_hz=48_000)
     assert frame.sample_rate_hz == 16_000
+
+
+async def test_one_manager_failing_does_not_abandon_the_rest_of_the_toggle():
+    # Codex P2. The apply loop had a single try around the whole iteration, so
+    # the first manager whose live realtime transport rejected the update
+    # abandoned every character after it in iteration order -- the user sees the
+    # setting saved while some sessions never got it. Both the Core pipeline
+    # call and the Omni call are now isolated per manager.
+    from unittest.mock import AsyncMock, MagicMock
+
+    import main_routers.config_router.preferences as preferences
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    def _manager(*, core_raises: bool, omni_raises: bool):
+        mgr = MagicMock()
+        mgr.is_active = True
+        mgr.session = MagicMock(spec=OmniRealtimeClient)
+        mgr.session.set_audio_noise_reduction_enabled = AsyncMock(
+            side_effect=RuntimeError("omni down") if omni_raises else None
+        )
+        mgr.apply_voice_input_noise_reduction = AsyncMock(
+            side_effect=RuntimeError("core down") if core_raises else None
+        )
+        return mgr
+
+    first = _manager(core_raises=False, omni_raises=True)
+    second = _manager(core_raises=True, omni_raises=False)
+    third = _manager(core_raises=False, omni_raises=False)
+    managers = {"a": first, "b": second, "c": third}
+
+    original = preferences.get_session_manager
+    preferences.get_session_manager = lambda: managers
+    try:
+        await preferences._apply_noise_reduction_to_active_sessions(False)
+    finally:
+        preferences.get_session_manager = original
+
+    # Every manager was reached on both planes despite the earlier failures.
+    for name, mgr in managers.items():
+        mgr.apply_voice_input_noise_reduction.assert_awaited_once_with(False)
+        mgr.session.set_audio_noise_reduction_enabled.assert_awaited_once_with(False)

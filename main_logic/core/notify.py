@@ -560,10 +560,33 @@ class NotifyMixin:
     
     async def send_session_failed(self, input_mode: str): # 通知前端session启动失败
         """Notify the frontend that session start failed, so it hides the preparing banner and resets state"""
+        payload = {"type": "session_failed", "input_mode": input_mode}
         try:
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                data = json.dumps({"type": "session_failed", "input_mode": input_mode})
-                await self.websocket.send_text(data)
+                try:
+                    await self.websocket.send_text(json.dumps(payload))
+                except WebSocketDisconnect:
+                    # Isolated like the sibling senders: a display socket dying
+                    # between the CONNECTED check and the send must not skip the
+                    # lease-holder copy below.
+                    pass
+                except Exception as e:
+                    logger.error(f"💥 WS Send Session Failed Error: {e}")
+            if getattr(self, "_voice_lease_owner", "none") != "game":
+                # Same reasoning as send_session_started (Codex P2). The window
+                # that asked for an audio session is the LEASE holder -- the
+                # router claims the lease for the requesting socket before
+                # firing start_session -- while self.websocket is reassigned to
+                # every newly accepted socket. A second window opening during a
+                # start that then FAILS took this notice, and the window that
+                # asked sat on sessionStartPromise until its 15s deadline
+                # instead of failing fast; the timeout path then sends
+                # end_session, tearing down whatever did get built.
+                #
+                # No-op for a single window: _voice_owner_socket returns None
+                # when the lease holder IS the current socket. Game owner
+                # exempt, matching the other senders.
+                await self._send_to_voice_owner(dict(payload))
         except WebSocketDisconnect:
             # Client disconnected mid-send; this push is best-effort.
             pass
