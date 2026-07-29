@@ -1028,3 +1028,47 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
     assert attempts == ["qq:7788:2046", "qq:7788:2046"], (
         "会话没了但授权还在，失败的桶应当再试一次"
     )
+
+
+@pytest.mark.asyncio
+async def test_opt_out_drops_are_warnings_not_errors():
+    """One rule for the level: error means "meant to keep it and didn't".
+
+    A fail-closed discard after opt-out is the design, not a failure, and
+    the session-alive path already logged it as a warning. Logging the
+    session-ejected variant of the same policy discard as an error buries
+    the genuinely unintended losses in noise.
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    # 会话被结算弹出，同时用户关掉了成员记忆：这批按 opt-out 丢是设计。
+    user_data.setdefault("group_member_memory_messages", {})["3057"] = [
+        {"role": "user", "content": [{"type": "text", "text": "滞留"}]},
+    ]
+    plugin._user_sessions.pop("group:7788")
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    warnings = " ".join(str(c) for c in plugin.logger.warning.call_args_list)
+    assert "个滞留队列丢失" in warnings
+    assert "未冲成功的成员队列丢失" in warnings
+    assert not [
+        c for c in plugin.logger.error.call_args_list
+        if "丢失" in str(c)
+    ], "opt-out 的 fail-closed 丢弃是设计，不该按 error 报"
+    # 撤销授权之后不再重试。
+    assert not any(
+        "orphan_retry" in str(c) or "末次重试" in str(c)
+        for c in plugin.logger.warning.call_args_list
+    )

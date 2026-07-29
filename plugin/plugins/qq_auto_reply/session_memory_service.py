@@ -690,11 +690,16 @@ class QQSessionMemoryService:
                 if isinstance(held, dict):
                     stranded = len(held.get("group_member_memory_messages") or {})
                     self._finish_member_flush_generation(held)
-                if snapshot and (
-                    getattr(self.plugin, "_qq_settings", {}) or {}
-                ).get("group_member_memory_enabled", False) and (
-                    getattr(self.plugin, "_qq_settings", {}) or {}
-                ).get("group_memory_enabled", False):
+                # 日志分级的判据统一成一句话：**error 是"本想留下却没留住"，
+                # warning 是"按策略本来就该丢"**。opt-out 撤掉之后的丢弃属于
+                # 后者（fail-closed 是设计），把它记成 error 会让真正的意外
+                # 丢失淹没在噪音里。
+                consent_on = self._member_memory_consent_live()
+                lost = (
+                    self.plugin.logger.error if consent_on
+                    else self.plugin.logger.warning
+                )
+                if snapshot and consent_on:
                     # 开关都还开着 = 会话不是被 opt-out 撤掉的，这些桶仍是
                     # 已授权且唯一的副本。排在锁外再试一次：改前会话锁挡着
                     # 结算，紧随其后的 finalize 总会替它们重试一次，本 PR
@@ -705,7 +710,7 @@ class QQSessionMemoryService:
                 replaced = "并已被新会话顶替" if user_data is not None else ""
                 if stranded:
                     # 滞留在孤儿映射上的那一代没有任何补救余地。
-                    self.plugin.logger.error(
+                    lost(
                         f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
                         f"冲刷期间会话已结算并弹出{replaced}：{stranded} 个滞留"
                         f"队列丢失"
@@ -713,16 +718,15 @@ class QQSessionMemoryService:
                 if not snapshot:
                     return
                 if orphan_retry.get("snapshot"):
-                    # 还有救就别按 error 报「丢失」：末次重试成功时什么都
-                    # 没丢，留一条 error 在日志里只会把排查的人带偏。真丢
-                    # 了由下面重试之后那条 error 记。
+                    # 还有救就别报「丢失」：末次重试成功时什么都没丢，留一条
+                    # 判丢的日志只会把排查的人带偏。真丢了由重试之后那条记。
                     self.plugin.logger.warning(
                         f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
                         f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
                         f"未冲成功的成员队列转末次重试"
                     )
                 else:
-                    self.plugin.logger.error(
+                    lost(
                         f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
                         f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
                         f"未冲成功的成员队列丢失"
@@ -732,8 +736,8 @@ class QQSessionMemoryService:
                 if not snapshot:
                     return
                 if not user_data.get("memory_enabled") or not (
-                    getattr(self.plugin, "_qq_settings", {}) or {}
-                ).get("group_member_memory_enabled", False):
+                    self._member_memory_consent_live()
+                ):
                     # 冲刷飞行期间 opt-out：按 fail-closed 丢弃。放回队列
                     # 等下一轮重发，等于让撤销授权之前收集的发言在 opt-out
                     # 之后继续往服务端跑。
@@ -900,6 +904,17 @@ class QQSessionMemoryService:
             return [sid for sid in await asyncio.gather(*flush_jobs) if sid]
         finally:
             self._finish_member_flush_generation(user_data)
+
+    def _member_memory_consent_live(self) -> bool:
+        """Whether member memory is still authorized right now.
+
+        Both switches count: the member option is a child of the group one,
+        so the parent going off revokes it too."""
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return bool(
+            settings.get("group_member_memory_enabled", False)
+            and settings.get("group_memory_enabled", False)
+        )
 
     @staticmethod
     def _enter_member_flush(user_data: dict[str, Any]) -> None:
