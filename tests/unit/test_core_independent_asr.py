@@ -1200,6 +1200,40 @@ async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:
     )
 
 
+async def test_final_transcript_submits_to_the_session_it_was_validated_against() -> None:
+    # Codex P2. _dispatch_core_asr_transcript validates `self.session is
+    # session_ref`, then awaits _restore_core_asr_preview_after_final -- a
+    # websocket send. _submit_core_voice_turn used to re-read self.session after
+    # that await, discarding the validation: a hot swap promoting a replacement
+    # session inside the window made it inject this conversation's transcript
+    # into the next one, producing a reply in the wrong conversation.
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    timed_session = runtime.session
+
+    replacement = type("Omni", (), {})()
+    replacement.create_response = AsyncMock()
+    replacement.submit_external_voice_turn = AsyncMock()
+    replacement.abandon_external_voice_turn = MagicMock()
+
+    async def _hot_swap_mid_restore(*_args, **_kwargs) -> None:
+        runtime.session = replacement
+
+    runtime._restore_core_asr_preview_after_final = _hot_swap_mid_restore
+
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="qwen", text="hello"),
+    )
+
+    # The turn lands on the session that produced it...
+    timed_session.create_response.assert_awaited_once_with("hello")
+    # ...and never touches the one that replaced it.
+    replacement.create_response.assert_not_awaited()
+    replacement.submit_external_voice_turn.assert_not_awaited()
+
+
 async def test_transcript_dispatch_failure_releases_keyed_external_turn_pause() -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)

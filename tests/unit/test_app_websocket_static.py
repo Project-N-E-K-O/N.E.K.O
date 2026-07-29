@@ -3296,26 +3296,55 @@ def test_in_flight_microphone_start_is_cancellable():
     # getUserMedia half of the window too, not just addModule.
     start_fn = _block_after(capture_source, "async function startMicCapture() {")
     assert "micStartGeneration += 1;" in start_fn
-    assert "pendingMicStartToken = micStartGeneration;" in start_fn
+    # PER-ATTEMPT local, never a module field. A module-level "pending token" is
+    # re-armed by the NEXT startMicCapture -- attempt #1 gets invalidated, #2
+    # writes token and generation to the same new value, and #1's guard compares
+    # equal again and commits, re-claiming the very lease this counter protects.
+    assert "const micStartToken = micStartGeneration;" in start_fn
+    assert "pendingMicStartToken" not in capture_source
     # _code_only: the function's own comments mention "await", and an ordering
     # assertion that a comment can satisfy is not an ordering assertion.
     start_code = _code_only(start_fn)
-    assert start_code.index("pendingMicStartToken = micStartGeneration;") < start_code.index(
+    assert start_code.index("const micStartToken = micStartGeneration;") < start_code.index(
         "await"
     )
 
     # ...and the commit is gated on it.
-    worklet = _block_after(capture_source, "async function startAudioWorklet(mediaStream) {")
-    assert "pendingMicStartToken !== micStartGeneration" in worklet
+    worklet = _block_after(
+        capture_source, "async function startAudioWorklet(mediaStream, startToken) {"
+    )
+    assert "startToken !== micStartGeneration" in worklet
     assert "S.voiceInputRouteBlocked === true" in worklet
-    assert worklet.index("pendingMicStartToken !== micStartGeneration") < worklet.index(
+    assert worklet.index("startToken !== micStartGeneration") < worklet.index(
         "S.isRecording = true;"
     )
     # The unwind must NOT re-emit a lease snapshot -- that re-claim is the bug.
-    unwind = worklet.split("pendingMicStartToken !== micStartGeneration", 1)[1].split(
+    unwind = worklet.split("startToken !== micStartGeneration", 1)[1].split(
         "S.isRecording = true;", 1
     )[0]
     assert "refreshMicLease()" not in _code_only(unwind)
+
+    # A superseded attempt must REPORT that it unwound. A bare `return` left
+    # startMicCapture running its whole success path -- disabling the mic
+    # button, toasting "speaking", lighting the floating button and silencing
+    # proactive chat -- against hardware the unwind had just torn down.
+    assert "return false;" in _code_only(unwind)
+    assert "return true;" in _code_only(worklet)
+    start_code_only = _code_only(start_fn)
+    assert (
+        "const micStartCommitted = await startAudioWorklet(S.stream, micStartToken);"
+        in start_code_only
+    )
+    assert "if (!micStartCommitted) {" in start_code_only
+    # ...and the bail happens before every success-path side effect.
+    bail = start_code_only.index("if (!micStartCommitted) {")
+    for success_marker in (
+        "'app.speaking'",
+        "window.syncFloatingMicButtonState(true)",
+        "updateMicVolumeStatusNow(true)",
+        "window.stopProactiveChatSchedule()",
+    ):
+        assert bail < start_code_only.index(success_marker), success_marker
 
     # The fail-closed unwind cancels a pending start as well as a live one.
     abort_fn = _block_after(capture_source, "function abortVoiceStartForBlockedRoute() {")

@@ -26,8 +26,15 @@
     // recording true and re-claimed through refreshMicLease() the very lease the
     // backend had just revoked, uploading PCM into a blocked route. Bumping this
     // invalidates any start still inside that window.
+    //
+    // The token each attempt compares against is a LOCAL const in
+    // startMicCapture, deliberately not a module field. A module-level
+    // "pending token" is re-armed by the NEXT startMicCapture: attempt #1 is
+    // invalidated (generation moves past its token), attempt #2 then writes
+    // both the token and the generation to the same new value, and #1's guard
+    // compares equal again and commits -- re-claiming through refreshMicLease()
+    // the exact lease this counter exists to protect.
     let micStartGeneration = 0;
-    let pendingMicStartToken = 0;
 
     function invalidatePendingMicStart() {
         micStartGeneration += 1;
@@ -1231,7 +1238,20 @@
 
     // ======================== AudioWorklet ========================
 
-    async function startAudioWorklet(mediaStream) {
+    /**
+     * Open the capture pipeline for ONE microphone-start attempt.
+     *
+     * ``startToken`` is that attempt's identity, taken from micStartGeneration
+     * before its first await. Returns true when the pipeline was committed and
+     * false when the attempt was superseded and unwound -- the caller MUST
+     * check, because an unwound attempt has torn the hardware down and must not
+     * continue into its success path.
+     *
+     * A caller that passes no token cannot prove it is current, so it unwinds.
+     * That is deliberate: this whole subsystem is fail-closed, and the only
+     * consumer is startMicCapture below (the module export exists for tests).
+     */
+    async function startAudioWorklet(mediaStream, startToken) {
         // 先清理旧的音频上下文，防止多个 worklet 同时发送数据导致 QPS 超限
         if (S.audioContext) {
             if (S.audioContext.state !== 'closed') {
@@ -1354,7 +1374,7 @@
             // stopRecording() early-returned and could not prevent this. Unwind
             // instead of committing: without this the pending start re-claims a
             // lease the backend just revoked and feeds a blocked route.
-            if (pendingMicStartToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
                 console.log('[App] microphone start was superseded while opening; unwinding');
                 try {
                     if (mediaStream && typeof mediaStream.getTracks === 'function') {
@@ -1385,13 +1405,20 @@
                 // backend's now, and re-emitting a snapshot from a window that
                 // never started recording is exactly the re-claim being
                 // prevented. S.isRecording was never set, so nothing to reset.
-                return;
+                //
+                // false, not a bare return: the caller awaits this and would
+                // otherwise run its whole success path -- disabling the mic
+                // button, toasting "speaking", lighting the floating button and
+                // silencing proactive chat -- against hardware that no longer
+                // exists.
+                return false;
             }
 
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
             refreshMicLease();
+            return true;
 
         } catch (err) {
             console.error('加载AudioWorklet失败:', err);
@@ -1463,7 +1490,7 @@
         // startAudioWorklet a no-op, which is the only way to cover the
         // getUserMedia() half of the window as well.
         micStartGeneration += 1;
-        pendingMicStartToken = micStartGeneration;
+        const micStartToken = micStartGeneration;
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
@@ -1530,7 +1557,28 @@
                 throw new Error('没有可用的音频轨道');
             }
 
-            await startAudioWorklet(S.stream);
+            const micStartCommitted = await startAudioWorklet(S.stream, micStartToken);
+            if (!micStartCommitted) {
+                // Superseded or fail-closed while opening: the hardware is
+                // already torn down, so restore the pre-start UI and leave
+                // WITHOUT the success path below. Not an error -- no toast, and
+                // nothing to throw at a caller who did nothing wrong.
+                if (_mic) {
+                    _mic.classList.remove('recording');
+                    _mic.classList.remove('active');
+                }
+                const cancelledTextInputArea = document.getElementById('text-input-area');
+                if (cancelledTextInputArea) {
+                    cancelledTextInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
+                if (typeof window.syncFloatingMicButtonState === 'function') {
+                    window.syncFloatingMicButtonState(false);
+                }
+                return;
+            }
             if (S.gameVoiceSttGateActive) {
                 startGameVoiceSttGate();
             }

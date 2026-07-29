@@ -560,6 +560,34 @@ class AsrRuntimeMixin:
             # defaulting normally.
             settings = await _core_facade.aload_global_conversation_settings(strict=True)
         except Exception:
+            # Fail-closed is only the safe answer for a user who WANTS
+            # independent ASR: for them the persisted read is the authority and
+            # falling back to native would override their choice. A user whose
+            # frontend handshake says the feature is OFF has no such choice to
+            # protect, and this path runs for EVERY audio session -- so
+            # revoking here would kill the microphone of someone who never
+            # enabled the feature, over a settings file they may not even know
+            # exists. Before this PR that case simply used the native route;
+            # keep it that way. The handshake is read early because the
+            # unreadable settings cannot answer the question at all.
+            unreadable_handshake = (
+                self._independent_asr_handshake_override
+                if handshake_override is ...
+                else handshake_override
+            )
+            if unreadable_handshake is False:
+                if not core_start_is_current():
+                    return
+                # Same landing as the ordinary `not enabled` path below.
+                self._set_microphone_route("native")
+                await self._send_core_asr_status(
+                    AsrStatusEvent(
+                        code="ASR_INDEPENDENT_DISABLED",
+                        provider=core_type or "unknown",
+                        session_epoch=session_epoch,
+                    )
+                )
+                return
             await self._fail_closed_voice_route(
                 "asr_settings_unreadable",
                 operation_generation=operation_generation,
@@ -2059,8 +2087,20 @@ class AsrRuntimeMixin:
         text: str,
         *,
         turn_id: str,
+        session_ref: object | None = None,
     ) -> None:
-        session_ref = self.session
+        """Submit a completed ASR turn to the session that produced it.
+
+        ``session_ref`` is the session the caller already validated. Re-reading
+        ``self.session`` here instead would discard that validation: the caller
+        awaits a preview restore between its check and this call, and a hot swap
+        or a concurrent start landing in that window would make this inject one
+        conversation's transcript into another. Defaults to the current session
+        only for callers that have no captured reference of their own.
+        """
+
+        if session_ref is None:
+            session_ref = self.session
         submit = getattr(session_ref, "submit_external_voice_turn", None)
         if callable(submit):
             await submit(text, turn_id=turn_id)
@@ -2128,9 +2168,15 @@ class AsrRuntimeMixin:
                 external_turn_id,
                 session_epoch=token.session_epoch,
             )
+            # Submit through the session validated above, not whatever
+            # self.session happens to be now: the preview restore awaited a
+            # websocket send, and a hot swap promoting a new session inside that
+            # await would otherwise land this transcript in the wrong
+            # conversation.
             await self._submit_core_voice_turn(
                 event.text,
                 turn_id=external_turn_id,
+                session_ref=session_ref,
             )
         finally:
             self._abandon_core_voice_turn(

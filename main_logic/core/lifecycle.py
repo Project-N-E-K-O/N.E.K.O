@@ -152,10 +152,18 @@ class LifecycleMixin:
             )
             # Snapshot the lease this timeout is speaking to, BEFORE the sends
             # below await. Compared again just before the fan-out.
-            voice_lease_identity = (
-                getattr(self, "_voice_lease_connection_id", ""),
-                getattr(self, "_voice_lease_generation", -1),
-            )
+            #
+            # Connection id only, deliberately NOT the lease generation: the
+            # generation is bumped by the SAME holder on every hard_mute /
+            # hard_unmute / focus_suppress / focus_resume / lease_sync
+            # (asr_runtime.py _handle_voice_input_control). Including it makes a
+            # user muting during the display send look like a lease handover, so
+            # the teardown is skipped while end_session below still runs -- the
+            # backend closes the session and the recorder never hears about it,
+            # which is the exact zombie microphone this fan-out exists to
+            # prevent. Identity is what decides whether we are still talking to
+            # the same window; its mute state is not.
+            voice_lease_identity = getattr(self, "_voice_lease_connection_id", "")
             if is_free_timeout:
                 # Pure display toast; send_status guards its own socket.
                 await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
@@ -201,9 +209,8 @@ class LifecycleMixin:
                 expected_session is self.session
                 or expected_session is self.pending_session
             )
-            lease_still_current = voice_lease_identity == (
-                getattr(self, "_voice_lease_connection_id", ""),
-                getattr(self, "_voice_lease_generation", -1),
+            lease_still_current = voice_lease_identity == getattr(
+                self, "_voice_lease_connection_id", ""
             )
             if not session_still_current or not lease_still_current:
                 logger.info(

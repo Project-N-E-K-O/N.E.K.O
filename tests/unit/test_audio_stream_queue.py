@@ -3,6 +3,7 @@ import json
 import os
 import struct
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -2389,6 +2390,61 @@ async def test_start_uses_its_own_handshake_not_a_later_requests(
         assert mgr._asr_route_mode == "native"
 
 
+def test_start_session_snapshots_the_handshake_and_hands_it_down():
+    # The behavioural test above calls _start_independent_asr_if_enabled with an
+    # explicit override, so it pins only that the callee honours one. The actual
+    # fix is in start_session: read the shared field BEFORE the first await, and
+    # carry it down. Delete either half and the test above stays green, because
+    # the callee then falls back to the shared field it was already reading.
+    # This pins the wiring itself.
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[2] / "main_logic" / "core" / "lifecycle.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+    start_session = functions["start_session"]
+    snapshot_lines = [
+        node.lineno
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Name)
+        and node.id == "session_handshake_override"
+        and isinstance(node.ctx, ast.Store)
+    ]
+    assert snapshot_lines, "start_session no longer snapshots the handshake"
+    await_lines = [
+        node.lineno for node in ast.walk(start_session) if isinstance(node, ast.Await)
+    ]
+    assert await_lines, "start_session has no awaits -- this pin would be vacuous"
+    # The whole point: the read must beat every await, or a competing
+    # start_session can replace the shared field before it runs.
+    assert min(snapshot_lines) < min(await_lines)
+
+    # ...and the snapshot must actually reach the route decision, both hops.
+    def passes_handshake(fn, keyword_value):
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Call):
+                continue
+            for kw in node.keywords:
+                if kw.arg == "handshake_override" and isinstance(kw.value, ast.Name):
+                    if kw.value.id == keyword_value:
+                        return True
+        return False
+
+    assert passes_handshake(start_session, "session_handshake_override"), (
+        "start_session no longer passes its snapshot to _start_session_activate"
+    )
+    assert passes_handshake(functions["_start_session_activate"], "handshake_override"), (
+        "_start_session_activate no longer forwards the handshake to the route decision"
+    )
+
+
 async def test_start_without_a_snapshot_still_reads_the_shared_handshake():
     # Non-vacuity, and the contract for the internal re-entry paths (hot swap,
     # device change): with no snapshot supplied the shared field still decides.
@@ -2466,6 +2522,81 @@ async def test_silence_timeout_does_not_stop_a_replacement_recorder():
     mgr.end_session.assert_awaited_once()
 
 
+async def test_silence_timeout_skips_when_only_the_lease_moved():
+    # The test above moves session AND lease together, so session_still_current
+    # is already false and the lease half of the guard is never exercised.
+    # Move ONLY the lease: a different window took the microphone while the
+    # display send awaited, and the old timeout's teardown must not reach it.
+    old_recorder, chat = _fake_socket_pair()
+    new_recorder, _unused = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", old_recorder)
+    mgr.websocket = chat
+    mgr.pending_session = None
+    mgr.hot_swap_audio_cache = _InertHotSwapCache()
+    mgr.core_api_type = "paid"
+    mgr.end_session = AsyncMock()
+
+    async def _replace_lease_mid_send(_payload: dict) -> None:
+        # Session deliberately untouched.
+        mgr._begin_voice_input_connection("socket-b")
+        _authorize_core_lease(mgr)
+        mgr._set_voice_input_websocket("socket-b", new_recorder)
+
+    chat.send_json = _replace_lease_mid_send
+
+    await LLMSessionManager.handle_silence_timeout(
+        mgr,
+        expected_session=mgr.session,
+    )
+
+    assert new_recorder.sent == []
+    assert old_recorder.sent == []
+    mgr.end_session.assert_awaited_once()
+
+
+async def test_silence_timeout_still_delivers_when_only_the_mute_state_moved():
+    # The guard compares lease IDENTITY, not the lease generation: the SAME
+    # holder bumps the generation on every hard_mute / hard_unmute /
+    # focus_suppress / focus_resume / lease_sync. Comparing it made a user
+    # muting during the display send look like a handover, so auto_close_mic
+    # was skipped while end_session still ran -- backend session closed,
+    # recorder never told, hardware microphone still open.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr.pending_session = None
+    mgr.hot_swap_audio_cache = _InertHotSwapCache()
+    mgr.core_api_type = "paid"
+    mgr.end_session = AsyncMock()
+    generation_before = mgr._voice_lease_generation
+
+    async def _mute_mid_send(_payload: dict) -> None:
+        # Same window, same lease -- it just muted itself.
+        applied = await mgr._handle_voice_input_control(
+            "hard_mute",
+            generation_before + 1,
+        )
+        assert applied is True
+        assert mgr._voice_lease_generation != generation_before
+        assert mgr._voice_lease_connection_id == "socket-a"
+
+    chat.send_json = _mute_mid_send
+
+    await LLMSessionManager.handle_silence_timeout(
+        mgr,
+        expected_session=mgr.session,
+    )
+
+    assert [json.loads(x)["type"] for x in recorder.sent] == ["auto_close_mic"]
+    mgr.end_session.assert_awaited_once()
+
+
 async def test_silence_timeout_still_reaches_the_recorder_when_nothing_moved():
     # Non-vacuity for the guard above: with the lease and session unchanged the
     # teardown must still be delivered.
@@ -2528,6 +2659,49 @@ async def test_unreadable_settings_fail_closed_instead_of_selecting_native():
     assert mgr._asr_route_mode != "native"
     assert mgr._voice_lease_connection_id == ""
     assert mgr._voice_input_accepts_pcm() is False
+
+
+async def test_unreadable_settings_do_not_kill_the_mic_when_asr_is_disabled():
+    # Fail-closed is only the safe answer for a user who WANTS independent ASR:
+    # for them the persisted read is the authority. A user whose frontend
+    # handshake says the feature is OFF has no such choice to protect, and this
+    # path runs for EVERY audio session -- so revoking here killed the
+    # microphone of someone who never enabled the feature, over a settings file
+    # they may not know exists. Before this PR that case simply used native.
+    recorder, chat = _fake_socket_pair()
+    mgr = _make_routable_audio_manager(True)
+    mgr._begin_voice_input_connection("socket-a")
+    _authorize_core_lease(mgr)
+    mgr._set_voice_input_websocket("socket-a", recorder)
+    mgr.websocket = chat
+    mgr.core_api_type = "qwen"
+    mgr.user_language = None
+    mgr.send_status = AsyncMock()
+    mgr._asr_runtime.abort = AsyncMock()
+
+    async def _unreadable(*, strict: bool = False, **_kwargs):
+        if not strict:
+            return {}
+        raise json.JSONDecodeError("Expecting value", "", 0)
+
+    with patch.object(
+        core_asr_runtime_module._core_facade,
+        "aload_global_conversation_settings",
+        _unreadable,
+    ):
+        await LLMSessionManager._start_independent_asr_if_enabled(
+            mgr,
+            "audio",
+            handshake_override=False,
+        )
+
+    # Native route, lease intact, microphone still usable.
+    assert mgr._asr_route_mode == "native"
+    assert mgr._voice_lease_connection_id == "socket-a"
+    assert mgr._voice_input_accepts_pcm() is True
+    # ...and the client is told why, exactly as the ordinary disabled path does.
+    codes = [json.loads(json.loads(x)["message"])["code"] for x in recorder.sent]
+    assert "ASR_INDEPENDENT_DISABLED" in codes
 
 
 async def test_absent_settings_still_default_without_failing_closed():
