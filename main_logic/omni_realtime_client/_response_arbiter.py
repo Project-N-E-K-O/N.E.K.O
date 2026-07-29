@@ -295,12 +295,12 @@ class RealtimeResponseArbiter:
         timeout: float = 3.0,
         *,
         wait: bool = True,
-    ) -> None:
-        """Cancel one exact queued/in-flight request without touching its peers."""
+    ) -> bool:
+        """Cancel one exact request; return whether cancellation was requested."""
 
         queued = self._queued_by_ticket.get(id(ticket))
         if queued is None:
-            return
+            return False
         # The receive loop resolves ``terminal`` synchronously, while the
         # worker removes the ticket on its next turn.  Cancellation in that
         # narrow window must be a no-op: an unscoped response.cancel could
@@ -308,13 +308,13 @@ class RealtimeResponseArbiter:
         # completed ticket interrupted would turn its successful result into
         # a cancellation error.
         if queued.terminal is not None and queued.terminal.done():
-            return
+            return False
         queued.interrupted = True
         queued.interrupt_event.set()
         # A ticket still waiting in the priority queue will observe the
         # interrupt before dispatch. Do not cancel the unrelated current owner.
         if queued is not self._current:
-            return
+            return True
         if (
             ticket.sent.done()
             and not ticket.sent.cancelled()
@@ -322,13 +322,14 @@ class RealtimeResponseArbiter:
         ):
             await self._send_event({"type": "response.cancel"})
         if not wait:
-            return
+            return True
         assert queued.completed is not None
         try:
             await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
             await self._fail_closed("targeted response cancellation timed out")
             raise original_timeout
+        return True
 
     async def wait_until_idle(self, timeout: float | None = None) -> None:
         waiter = self._idle.wait()

@@ -797,6 +797,31 @@ class _ResponseMixin:
                 logger.debug("prompt_ephemeral: skipped — VAD grace period")
                 return False
 
+        outcome_observed = asyncio.Event()
+        delivery_rejected = False
+        visual_delivery_rejected = False
+        rejection_message = ""
+        visual_event_id: str | None = None
+
+        def _on_rejected(error_msg: str) -> None:
+            nonlocal delivery_rejected, rejection_message
+            delivery_rejected = True
+            rejection_message = error_msg
+            logger.warning("prompt_ephemeral: proactive text rejected: %s", error_msg)
+            outcome_observed.set()
+
+        def _on_visual_rejected(error_msg: str) -> None:
+            nonlocal visual_delivery_rejected
+            visual_delivery_rejected = True
+            _on_rejected(error_msg)
+
+        def _on_completed() -> None:
+            outcome_observed.set()
+
+        def _remove_visual_rejection_handler() -> None:
+            if visual_event_id is not None:
+                self._inject_rejection_handlers.pop(visual_event_id, None)
+
         # ── Resolve pending visual context ────────────────────────────
         # Native providers can consume an unconsumed raw frame immediately.
         # Standard StepFun cannot: stream_image() caches the frame before its
@@ -823,17 +848,42 @@ class _ResponseMixin:
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
         snapshot_image_b64 = self._latest_image_b64 if has_vision else None
+        if (
+            has_vision
+            and self._supports_native_image
+            and self._is_free_provider
+            and snapshot_image_b64
+        ):
+            # Lanlan's native image event can be rejected asynchronously after
+            # the WebSocket write succeeds. Correlate that exact error with
+            # this proactive delivery before deciding the frame was consumed.
+            visual_event_id = f"event_inject_image_{uuid.uuid4().hex}"
+            self._inject_rejection_handlers[visual_event_id] = _on_visual_rejected
 
         if has_vision and self._supports_native_image and snapshot_image_b64:
             # ``bypass_rate_limit`` identifies this as one deliberate cue image.
             # stream_image also owns the provider-specific wire event, including
             # the dedicated free-service input_image_buffer.append route.
             try:
-                await self.stream_image(snapshot_image_b64, bypass_rate_limit=True)
+                await self.stream_image(
+                    snapshot_image_b64,
+                    bypass_rate_limit=True,
+                    event_id=visual_event_id,
+                )
+            except asyncio.CancelledError:
+                _remove_visual_rejection_handler()
+                raise
             except Exception as exc:
+                _remove_visual_rejection_handler()
                 logger.warning(
                     "prompt_ephemeral: native image inject failed; keeping visual context for retry: %s",
                     exc,
+                )
+                return False
+            if delivery_rejected:
+                _remove_visual_rejection_handler()
+                logger.info(
+                    "prompt_ephemeral: native image rejected before proactive text inject"
                 )
                 return False
         elif (
@@ -861,6 +911,7 @@ class _ResponseMixin:
             or self._user_recent_activity_time > _now
             or self._ai_recent_activity_time > _now
         ):
+            _remove_visual_rejection_handler()
             logger.info("prompt_ephemeral: skipped — activity started during visual inject")
             return False
 
@@ -868,20 +919,6 @@ class _ResponseMixin:
             language,
             has_vision=has_vision,
         )
-
-        outcome_observed = asyncio.Event()
-        delivery_rejected = False
-        rejection_message = ""
-
-        def _on_rejected(error_msg: str) -> None:
-            nonlocal delivery_rejected, rejection_message
-            delivery_rejected = True
-            rejection_message = error_msg
-            logger.warning("prompt_ephemeral: proactive text rejected: %s", error_msg)
-            outcome_observed.set()
-
-        def _on_completed() -> None:
-            outcome_observed.set()
 
         proactive_ticket = None
         try:
@@ -901,6 +938,7 @@ class _ResponseMixin:
                     or self._user_recent_activity_time > _now
                     or self._ai_recent_activity_time > _now
                 ):
+                    _remove_visual_rejection_handler()
                     logger.info(
                         "prompt_ephemeral: skipped — activity started during SID rotation"
                     )
@@ -910,7 +948,11 @@ class _ResponseMixin:
                 on_rejected=_on_rejected,
                 on_completed=_on_completed,
             )
+        except asyncio.CancelledError:
+            _remove_visual_rejection_handler()
+            raise
         except Exception as exc:
+            _remove_visual_rejection_handler()
             logger.warning(
                 "prompt_ephemeral: proactive text inject failed; keeping visual context for retry: %s",
                 exc,
@@ -939,6 +981,7 @@ class _ResponseMixin:
                     "prompt_ephemeral: cancellation cleanup failed: %s",
                     cancel_exc,
                 )
+            _remove_visual_rejection_handler()
             raise
         except asyncio.TimeoutError:
             # ``response.done`` can resolve the exact ticket at the timeout
@@ -970,11 +1013,14 @@ class _ResponseMixin:
                 # normal response.done/error path releases the gate promptly.
                 # If even the cancel lifecycle never arrives, the existing 60s
                 # TTL remains the conservative final backstop.
+                cancellation_requested = True
                 try:
                     if proactive_ticket is not None:
-                        await self._ensure_response_arbiter().cancel_ticket(
-                            proactive_ticket,
-                            wait=False,
+                        cancellation_requested = (
+                            await self._ensure_response_arbiter().cancel_ticket(
+                                proactive_ticket,
+                                wait=False,
+                            )
                         )
                     else:
                         await self.cancel_response()
@@ -983,11 +1029,45 @@ class _ResponseMixin:
                         "prompt_ephemeral: timed-out response cancel failed; keeping inject quarantined: %s",
                         cancel_exc,
                     )
-                logger.warning(
-                    "prompt_ephemeral: proactive text delivery timed out; keeping visual context for retry"
-                )
-                return False
+                # cancel_ticket() atomically reports a terminal/missing exact
+                # request as a no-op. Its worker may still need one event-loop
+                # turn to publish ticket.done, so consume that authoritative
+                # result before classifying the timeout as failed.
+                if proactive_ticket is not None and not cancellation_requested:
+                    ticket_done = getattr(proactive_ticket, "done", None)
+                    if ticket_done is not None:
+                        try:
+                            await asyncio.shield(ticket_done)
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+                        else:
+                            ticket_completed = True
+                if ticket_completed:
+                    logger.info(
+                        "prompt_ephemeral: proactive ticket completed while timeout cancellation no-op'd"
+                    )
+                    # Fall through to the normal success path so the matching
+                    # visual snapshot is consumed exactly once.
+                else:
+                    logger.warning(
+                        "prompt_ephemeral: proactive text delivery timed out; keeping visual context for retry"
+                    )
+                    _remove_visual_rejection_handler()
+                    return False
         if delivery_rejected:
+            if visual_delivery_rejected and proactive_ticket is not None:
+                try:
+                    await self._ensure_response_arbiter().cancel_ticket(
+                        proactive_ticket
+                    )
+                except Exception as cancel_exc:
+                    logger.warning(
+                        "prompt_ephemeral: rejected visual response cleanup failed: %s",
+                        cancel_exc,
+                    )
+            _remove_visual_rejection_handler()
             logger.info(
                 "prompt_ephemeral: proactive text delivery failed; keeping visual context for retry: %s",
                 rejection_message,
@@ -995,6 +1075,7 @@ class _ResponseMixin:
             return False
         if has_vision and self._latest_image_b64 == snapshot_image_b64:
             self._proactive_image_consumed = True
+        _remove_visual_rejection_handler()
         logger.info(
             "prompt_ephemeral: proactive text injected (%s)",
             "vision" if has_vision else "general",

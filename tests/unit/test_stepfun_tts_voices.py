@@ -29,6 +29,7 @@ from main_logic.tts_client import (
     get_tts_worker,
     step_realtime_tts_worker,
 )
+from main_logic.tts_client.workers import free as free_worker_module
 
 
 def test_stepfun_and_free_catalogs_are_registered():
@@ -50,6 +51,31 @@ def test_stepfun_and_free_dispatch_to_dedicated_workers():
     assert free_worker is not step_worker
     assert (free_key, free_provider) == (None, "free")
     assert (step_key, step_provider) == (None, "step")
+
+
+def test_legacy_step_worker_free_mode_delegates_to_free_worker(monkeypatch):
+    calls = []
+
+    def fake_free_worker(*args):
+        calls.append(args)
+        return "free-worker-result"
+
+    monkeypatch.setattr(
+        free_worker_module,
+        "free_realtime_tts_worker",
+        fake_free_worker,
+    )
+
+    result = step_realtime_tts_worker(
+        "requests",
+        "responses",
+        "api-key",
+        "voice-id",
+        free_mode=True,
+    )
+
+    assert result == "free-worker-result"
+    assert calls == [("requests", "responses", "api-key", "voice-id")]
 
 
 def test_stepfun_native_voice_aliases_route_to_canonical_ids():

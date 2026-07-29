@@ -138,8 +138,9 @@ async def test_cancel_ticket_after_terminal_does_not_cancel_new_server_response(
     arbiter.notify_response_created(
         {"type": "response.created", "response": {"id": "resp-server"}}
     )
-    await arbiter.cancel_ticket(ticket, wait=False)
+    cancellation_requested = await arbiter.cancel_ticket(ticket, wait=False)
 
+    assert cancellation_requested is False
     assert [event["type"] for event in sent] == ["response.create"]
     await asyncio.wait_for(ticket.done, 0.2)
     arbiter.notify_response_terminal(

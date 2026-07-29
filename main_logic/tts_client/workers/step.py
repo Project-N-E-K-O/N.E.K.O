@@ -27,7 +27,21 @@ def step_realtime_tts_worker(
     response_queue,
     audio_api_key,
     voice_id,
+    free_mode=False,
 ):
+    # Compatibility for integrations that imported the historical combined
+    # worker and selected Lanlan with ``free_mode=True``. New registry routing
+    # uses the dedicated free worker directly, while this public call surface
+    # remains valid.
+    if free_mode:
+        from .free import free_realtime_tts_worker
+
+        return free_realtime_tts_worker(
+            request_queue,
+            response_queue,
+            audio_api_key,
+            voice_id,
+        )
     return run_step_protocol_tts_worker(
         request_queue,
         response_queue,

@@ -625,7 +625,13 @@ class _TransportMixin:
         finally:
             self._image_being_analyzed = False
 
-    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
+    async def stream_image(
+        self,
+        image_b64: str,
+        *,
+        bypass_rate_limit: bool = False,
+        event_id: str | None = None,
+    ) -> None:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -688,6 +694,8 @@ class _TransportMixin:
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
                 }
+                if event_id is not None:
+                    append_event["event_id"] = event_id
                 await self.send_event(
                     append_event,
                     raise_on_oversize=bypass_rate_limit,

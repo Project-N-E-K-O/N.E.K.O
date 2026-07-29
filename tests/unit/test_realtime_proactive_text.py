@@ -150,6 +150,68 @@ async def test_free_prompt_sends_native_image_before_text():
 
 
 @pytest.mark.unit
+async def test_free_image_async_rejection_preserves_snapshot_and_cancels_response():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    task = asyncio.create_task(
+        client.prompt_ephemeral("describe what you notice")
+    )
+    image_event = None
+    for _ in range(30):
+        events = _sent_events(client)
+        _ack_pending_input_item(client, events)
+        image_event = next(
+            (
+                event
+                for event in events
+                if event.get("type") == "input_image_buffer.append"
+            ),
+            None,
+        )
+        if image_event is not None and any(
+            event.get("type") == "response.create"
+            for event in events
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("native image and proactive response were not sent")
+
+    assert image_event.get("event_id")
+    client._response_arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-image-rejected"}}
+    )
+    client._route_inject_rejection(
+        image_event["event_id"],
+        "input image rejected",
+    )
+    for _ in range(30):
+        if any(
+            event.get("type") == "response.cancel"
+            for event in _sent_events(client)
+        ):
+            break
+        await asyncio.sleep(0)
+    else:
+        raise AssertionError("rejected visual response was not cancelled")
+    client._response_arbiter.notify_response_terminal(
+        {
+            "type": "response.done",
+            "response": {
+                "id": "resp-image-rejected",
+                "status": "cancelled",
+            },
+        }
+    )
+
+    assert await task is False
+    assert client._proactive_image_consumed is False
+    assert client._inject_rejection_handlers == {}
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_server_vad_prompt_rotates_tts_sid_before_text_response():
     client = _make_client()
     client.on_sid_rotate = AsyncMock()
@@ -576,6 +638,41 @@ async def test_delivery_timeout_acknowledges_exact_ticket_already_completed(monk
     assert delivered is True
     assert client._proactive_image_consumed is True
     client._response_arbiter.cancel_ticket.assert_not_awaited()
+    client.cancel_response.assert_not_awaited()
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_delivery_timeout_rechecks_ticket_after_cancel_noop(monkeypatch):
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+    ticket_done = asyncio.get_running_loop().create_future()
+    ticket = SimpleNamespace(done=ticket_done)
+    client.inject_text_and_request_response = AsyncMock(return_value=ticket)
+
+    async def terminal_cancel_noop(*_args, **_kwargs):
+        ticket_done.set_result(SimpleNamespace())
+        return False
+
+    client._response_arbiter.cancel_ticket = AsyncMock(
+        side_effect=terminal_cancel_noop
+    )
+    client.cancel_response = AsyncMock()
+    monkeypatch.setattr(
+        responses_module,
+        "_PROACTIVE_INJECT_DELIVERY_TIMEOUT_SECONDS",
+        0.01,
+    )
+
+    delivered = await client.prompt_ephemeral("finish during cancel decision")
+
+    assert delivered is True
+    assert client._proactive_image_consumed is True
+    client._response_arbiter.cancel_ticket.assert_awaited_once_with(
+        ticket,
+        wait=False,
+    )
     client.cancel_response.assert_not_awaited()
     await client.close()
 
