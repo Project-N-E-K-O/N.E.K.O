@@ -36,15 +36,15 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
-    # 结算前等待该会话在途排空的上限，两条路径不同价：
-    # · idle 等不到就跳过整轮、下次 sweep 重来，短一点零代价。
-    # · 关机等不到就只能带着损失继续，短一点直接换成丢数据。而 scoped
-    #   history 端点跑的是一次 LLM 抽取（单发 timeout 就是 30s），5 秒
-    #   没回来是常态而不是故障——按 5 秒判它"卡住"是误判。改前这里其实
-    #   是**无界**的（整趟排空持会话锁，关机的 flush 只能干等），所以放宽
-    #   到覆盖单发请求仍比 main 的现状更短。
+    # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
+    # · 短档（idle sweep）：放弃只是多等一个 sweep 周期，下轮自然重来。
+    # · 长档（关机 / opt-out 结算）：放弃就换成丢数据或让已提升的一代
+    #   失去消费者，没有便宜的下一轮。而 scoped history 端点跑的是一次
+    #   LLM 抽取（单发 timeout 就是 30s），5 秒没回来是**常态**不是故障，
+    #   拿短档去判它"卡住"属于误判。改前这里其实是无界的（整趟排空持会话
+    #   锁，这些路径只能干等），所以长档到 30s 仍比 main 的现状更短。
     SETTLE_JOIN_TIMEOUT_SECONDS = 5.0
-    SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS = 30.0
+    SETTLE_JOIN_TIMEOUT_LONG_SECONDS = 30.0
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
@@ -176,7 +176,7 @@ class QQSessionMemoryService:
             # 两种损失里选小的，排空自己会把丢掉的量记进 error 日志。
             if not await self._await_pending_session_settlement(
                 session_key,
-                timeout=self.SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS,
+                timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
             ):
                 self.plugin.logger.warning(
                     f"排空仍在途但已是最后一次结算机会（{session_key}, "
@@ -924,7 +924,18 @@ class QQSessionMemoryService:
             # 没做就收尾——随后排空提升出来的那一代就没有消费者了，会一直
             # 滞留到某次 idle/finalize（活跃群可能永远等不到）。等它落地，
             # 提升出来的一代正好被下面的 _settle_one 冲掉。
-            await self._await_pending_session_settlement(session_key)
+            if not await self._await_pending_session_settlement(
+                session_key, timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+            ):
+                # 等不到就整轮跳过，而且**不能**让 _settle_one 跑：它收尾时
+                # 会把 pending_member_settle 抹掉，而排空随后才提升出那一代
+                # ——标记没了就再没有消费者，opt-out 之后一直滞留。留着标记
+                # 与快照，交给后续的 finalize / 下一次转变消费。
+                self.plugin.logger.warning(
+                    f"排空在途，本轮跳过 opt-out 成员结算（{session_key}），"
+                    f"标记保留待后续结算"
+                )
+                continue
             await self.plugin._run_with_session_lock(session_key, _settle_one)
 
     async def finalize_user_memory_session(

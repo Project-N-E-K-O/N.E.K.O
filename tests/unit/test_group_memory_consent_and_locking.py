@@ -781,8 +781,56 @@ def test_shutdown_waits_longer_for_a_drain_than_the_idle_sweep():
         QQSessionMemoryService as Service,
     )
 
-    assert Service.SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS > (
+    assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS > (
         Service.SETTLE_JOIN_TIMEOUT_SECONDS
     )
     # 至少覆盖一次 scoped history 请求，否则健康但慢的排空会被误判成卡住。
-    assert Service.SHUTDOWN_SETTLE_JOIN_TIMEOUT_SECONDS >= 30.0
+    assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS >= 30.0
+
+
+@pytest.mark.asyncio
+async def test_opt_out_settlement_skips_rather_than_clearing_its_own_marker():
+    """Giving up on the wait must not consume the marker.
+
+    `_settle_one` clears `pending_member_settle` on its way out. If it runs
+    before the drain promotes its generation, that generation arrives to
+    find its consumer already gone and lingers past the opt-out — the very
+    thing this settlement exists to prevent. A scoped-history POST is an
+    LLM extraction, so timing out the wait is routine, not exceptional.
+    """
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS = 0.05
+    plugin._session_settle_tasks = {}
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    plugin._session_settle_tasks["group:7788"] = {drain}
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    user_data.setdefault("group_member_memory_messages", {})["3057"] = [
+        {"role": "user", "content": [{"type": "text", "text": "关开关前说的"}]},
+    ]
+    user_data["member_snapshot_due"] = True
+    user_data["pending_member_settle"] = True
+    plugin._qq_settings["group_member_memory_enabled"] = False
+
+    await asyncio.wait_for(
+        service.settle_member_buckets_on_disable(), timeout=3.0,
+    )
+    assert user_data.get("member_snapshot_due") is True, (
+        "等不到就跳过，不能把待提升的标记消费掉"
+    )
+    assert user_data.get("pending_member_settle") is True
+
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+    # 排空落地后那一代被提升出来，标记仍在，后续结算还能消费它。
+    assert user_data.get("pending_settle_buckets", {}).get("3057")
+    assert user_data.get("pending_member_settle") is True
