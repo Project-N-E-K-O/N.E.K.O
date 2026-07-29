@@ -30,7 +30,7 @@ from config.prompts.prompts_proactive import (
 )
 from config.prompts.prompts_sys import _loc
 
-from ._response_arbiter import RealtimeResponseArbiter
+from ._response_arbiter import RealtimeResponseArbiter, ResponseTicket
 
 
 # A missing response.done must fail conservatively instead of acknowledging a
@@ -354,7 +354,7 @@ class _ResponseMixin:
         *,
         on_rejected: Optional[Callable[[str], None]] = None,
         on_completed: Optional[Callable[[], None]] = None,
-    ) -> None:
+    ) -> Optional[ResponseTicket]:
         """Inject a user-role text item and explicitly trigger a response.
 
         Used by the voice-mode proactive path (agent task callbacks /
@@ -379,6 +379,10 @@ class _ResponseMixin:
         reaches ``response.done``. It is deliberately not tied to the next
         global terminal event: another queued or active response may finish
         before this request is even dispatched.
+
+        Returns the exact arbiter ticket for WebSocket providers so callers
+        can target cancellation to this request. Gemini and empty-text paths
+        return ``None``.
 
         Provider dispatch (all realtime providers supported — symmetric with
         ``create_response``):
@@ -512,8 +516,20 @@ class _ResponseMixin:
             # ``response.created``. Completion is therefore observed from the
             # exact arbiter ticket below, never by sweeping callbacks on an
             # unrelated global ``response.done``.
-            self._fire_task(self._expire_inject_rejection_handler(item_event_id, 60.0))
-            self._fire_task(self._expire_inject_rejection_handler(create_event_id, 60.0))
+            self._fire_task(
+                self._expire_inject_rejection_handler(
+                    item_event_id,
+                    60.0,
+                    outcome_token,
+                )
+            )
+            self._fire_task(
+                self._expire_inject_rejection_handler(
+                    create_event_id,
+                    60.0,
+                    outcome_token,
+                )
+            )
             # Open the no-id content-fallback window for THIS inject. Closed
             # when its own arbiter ticket completes or is rejected.
             self._proactive_inject_outcome_token = outcome_token
@@ -545,10 +561,11 @@ class _ResponseMixin:
         # for retry. On any synchronous send failure, drop both rejection
         # handlers so the caller's ``except`` path is the single source of
         # truth and a late error event can't double-fire the re-queue.
+        arbiter = self._ensure_response_arbiter()
+        ticket: Optional[ResponseTicket] = None
         try:
             create_event: Dict[str, Any] = {"type": "response.create"}
             create_event["event_id"] = create_event_id
-            arbiter = self._ensure_response_arbiter()
             ticket = await arbiter.enqueue(
                 source="proactive",
                 events_before_response=(item_event,),
@@ -578,13 +595,14 @@ class _ResponseMixin:
             self._inject_rejection_handlers.pop(item_event_id, None)
             self._inject_rejection_handlers.pop(create_event_id, None)
             _close_outcome_window()
-            try:
-                await asyncio.shield(arbiter.cancel_ticket(ticket))
-            except Exception as cancel_exc:
-                logger.warning(
-                    "proactive inject cancellation cleanup failed: %s",
-                    cancel_exc,
-                )
+            if ticket is not None:
+                try:
+                    await asyncio.shield(arbiter.cancel_ticket(ticket))
+                except Exception as cancel_exc:
+                    logger.warning(
+                        "proactive inject cancellation cleanup failed: %s",
+                        cancel_exc,
+                    )
             raise
         except Exception:
             self._inject_rejection_handlers.pop(item_event_id, None)
@@ -635,11 +653,23 @@ class _ResponseMixin:
                 error_msg="Gemini proactive response lifecycle timed out"
             )
 
-    async def _expire_inject_rejection_handler(self, event_id: str, ttl: float) -> None:
+    async def _expire_inject_rejection_handler(
+        self,
+        event_id: str,
+        ttl: float,
+        token: Optional[str] = None,
+    ) -> None:
         """TTL backstop for a ticket whose terminal lifecycle never arrives."""
         try:
             await asyncio.sleep(ttl)
         except asyncio.CancelledError:
+            return
+        if token is None:
+            # Standalone image rejection handlers share this TTL helper but
+            # do not own the proactive response-outcome gate.
+            self._inject_rejection_handlers.pop(event_id, None)
+            return
+        if self._proactive_inject_outcome_token != token:
             return
         self._inject_rejection_handlers.pop(event_id, None)
         if not self._inject_rejection_handlers:

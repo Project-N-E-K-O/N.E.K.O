@@ -822,6 +822,50 @@ async def test_cancelled_queued_inject_cleans_gate_and_never_dispatches():
 
 
 @pytest.mark.unit
+async def test_cancelled_enqueue_preserves_original_cancellation():
+    client = _make_client()
+    real_arbiter = client._response_arbiter
+    cancelled_arbiter = SimpleNamespace(
+        enqueue=AsyncMock(side_effect=asyncio.CancelledError),
+        cancel_ticket=AsyncMock(),
+    )
+    client._response_arbiter = cancelled_arbiter
+
+    with pytest.raises(asyncio.CancelledError):
+        await client.inject_text_and_request_response(
+            "cancel before ticket exists",
+            on_rejected=lambda _message: None,
+            on_completed=lambda: None,
+        )
+
+    cancelled_arbiter.cancel_ticket.assert_not_awaited()
+    assert client._proactive_inject_awaiting_outcome is False
+    assert client._proactive_inject_outcome_token is None
+    assert client._inject_rejection_handlers == {}
+
+    client._response_arbiter = real_arbiter
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_old_inject_ttl_does_not_clear_new_outcome_window():
+    client = _make_client()
+    client._proactive_inject_awaiting_outcome = True
+    client._proactive_inject_outcome_token = "new-token"
+    client._inject_rejection_handlers.clear()
+
+    await client._expire_inject_rejection_handler(
+        "old-event",
+        0,
+        "old-token",
+    )
+
+    assert client._proactive_inject_awaiting_outcome is True
+    assert client._proactive_inject_outcome_token == "new-token"
+    await client.close()
+
+
+@pytest.mark.unit
 async def test_sync_inject_failure_returns_false_and_preserves_image():
     client = _make_client()
     client._latest_image_b64 = DUMMY_IMAGE_B64
