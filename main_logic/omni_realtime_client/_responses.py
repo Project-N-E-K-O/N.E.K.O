@@ -852,7 +852,10 @@ class _ResponseMixin:
         def _on_visual_rejected(error_msg: str) -> None:
             nonlocal visual_delivery_rejected
             visual_delivery_rejected = True
-            if self._latest_image_b64 == snapshot_image_b64:
+            if (
+                getattr(self, "_latest_image_generation", 0)
+                == snapshot_image_generation
+            ):
                 self._proactive_image_consumed = False
             _on_rejected(error_msg)
 
@@ -889,6 +892,9 @@ class _ResponseMixin:
         # Snapshot the current image so concurrent stream_image() calls don't
         # cause us to mark a newer frame as consumed.
         snapshot_image_b64 = self._latest_image_b64 if has_vision else None
+        snapshot_image_generation = (
+            getattr(self, "_latest_image_generation", 0) if has_vision else None
+        )
         if (
             has_vision
             and self._supports_native_image
@@ -914,6 +920,7 @@ class _ResponseMixin:
                 await self.stream_image(
                     snapshot_image_b64,
                     bypass_rate_limit=True,
+                    cache_latest=False,
                     event_id=visual_event_id,
                 )
             except asyncio.CancelledError:
@@ -1133,7 +1140,11 @@ class _ResponseMixin:
                 rejection_message,
             )
             return False
-        if has_vision and self._latest_image_b64 == snapshot_image_b64:
+        if (
+            has_vision
+            and getattr(self, "_latest_image_generation", 0)
+            == snapshot_image_generation
+        ):
             self._proactive_image_consumed = True
         # Native image validation/filtering errors may arrive after the text
         # response has completed. Keep the exact image handler until rejection

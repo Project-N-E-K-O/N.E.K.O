@@ -487,6 +487,14 @@ class RealtimeResponseArbiter:
                 # (server-initiated) response. Keep waiting for the owner's
                 # own lifecycle instead of failing it.
                 self._server_response_ids.pop(response_id, None)
+                if not self._server_response_ids:
+                    # The separately tracked server turn has ended. The
+                    # pending owner still holds dispatch serialization, but a
+                    # later response.create rejection must be able to detach
+                    # it instead of mistaking this already-terminal turn for
+                    # a live id-less response.
+                    self._cancel_stale_release_timer()
+                    self._server_response_active = False
                 return
             if owner.response_id is not None:
                 if response_id != owner.response_id:

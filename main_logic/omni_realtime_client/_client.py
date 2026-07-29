@@ -171,6 +171,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._image_being_analyzed = False
         self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
+        self._latest_image_generation = 0  # Distinguishes identical consecutive frames
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
 
         # Silence detection for auto-closing inactive sessions

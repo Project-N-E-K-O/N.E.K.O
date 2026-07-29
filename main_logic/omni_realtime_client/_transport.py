@@ -632,6 +632,7 @@ class _TransportMixin:
         image_b64: str,
         *,
         bypass_rate_limit: bool = False,
+        cache_latest: bool = True,
         event_id: str | None = None,
         on_rejected: Optional[Callable[[str], None]] = None,
     ) -> None:
@@ -647,10 +648,18 @@ class _TransportMixin:
         a later provider ``error.event_id`` with the callback delivery that
         owns the image. The handler is registered before send so an immediate
         asynchronous rejection cannot outrun it.
+
+        ``cache_latest=False`` sends an already-cached proactive snapshot
+        without treating that resend as a newly captured frame generation.
         """
-        # Cache latest frame for proactive injection
-        self._latest_image_b64 = image_b64
-        self._proactive_image_consumed = False
+        if cache_latest:
+            # A monotonic generation distinguishes separately captured frames
+            # even when their JPEG payloads are byte-for-byte identical.
+            self._latest_image_generation = (
+                getattr(self, "_latest_image_generation", 0) + 1
+            )
+            self._latest_image_b64 = image_b64
+            self._proactive_image_consumed = False
 
         rejection_event_id: str | None = None
         try:

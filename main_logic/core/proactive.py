@@ -720,7 +720,9 @@ class ProactiveMixin:
                     _extra_snapshot=voice_extra_snapshot,
                     _lanlan=lanlan_name_snapshot,
                     _state=_reject_state,
-                ) -> None:
+                ) -> bool:
+                    if _state["rejected"]:
+                        return False
                     _state["rejected"] = True
                     logger.warning(
                         "[%s] voice proactive inject rejected by server: %s; re-enqueuing %d cb(s) for retry",
@@ -777,9 +779,11 @@ class ProactiveMixin:
                     # ``pending_agent_callbacks`` is non-empty). The cb is kept
                     # queued above, so the retry is not lost — just deferred to
                     # the loop-free turn-end hook.
+                    return True
 
                 def _on_voice_media_rejected(error_msg: str) -> None:
-                    _on_voice_inject_rejected(error_msg)
+                    if not _on_voice_inject_rejected(error_msg):
+                        return
                     # Unlike response_already_active, a rejected image may
                     # arrive after the following text response has already
                     # completed. Its response.done hook may also run before

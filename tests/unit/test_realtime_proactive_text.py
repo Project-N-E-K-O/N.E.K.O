@@ -179,6 +179,48 @@ async def test_native_image_rejection_after_text_completion_rearms_snapshot():
 
 
 @pytest.mark.unit
+async def test_old_identical_image_rejection_does_not_rearm_new_generation():
+    """An old event cannot rearm a separately captured identical frame."""
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    assert await _prompt_and_complete(client, "first snapshot") is True
+    first_event_id = next(
+        event["event_id"]
+        for event in _sent_events(client)
+        if event.get("type") == "input_image_buffer.append"
+    )
+
+    await client.stream_image(DUMMY_IMAGE_B64)
+    client.ws.send.reset_mock()
+    assert await _prompt_and_complete(client, "second snapshot") is True
+    visual_handler_ids = {
+        event_id
+        for event_id in client._inject_rejection_handlers
+        if event_id.startswith("event_inject_image_")
+    }
+    assert first_event_id in visual_handler_ids
+    assert len(visual_handler_ids) == 2
+
+    client._route_inject_rejection(
+        first_event_id,
+        "late rejection for first generation",
+    )
+
+    assert client._proactive_image_consumed is True
+    assert first_event_id not in client._inject_rejection_handlers
+    assert len(
+        {
+            event_id
+            for event_id in client._inject_rejection_handlers
+            if event_id.startswith("event_inject_image_")
+        }
+    ) == 1
+    await client.close()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     ("api_type", "model", "image_event_type"),
     [

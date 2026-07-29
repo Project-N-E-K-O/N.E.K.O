@@ -1057,7 +1057,7 @@ async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
         "_callback_delivery_id": "id-image-late-rejected",
         "status": "completed",
         "summary": "inspect this image",
-        "media_images": ["image-b64"],
+        "media_images": ["image-b64-1", "image-b64-2"],
     }
     extra = {
         "_callback_delivery_id": "id-image-late-rejected",
@@ -1072,9 +1072,10 @@ async def test_voice_mode_callback_image_rejection_after_inject_rearms_retry():
     assert delivered is True
     assert mgr.pending_agent_callbacks == []
     assert mgr.pending_extra_replies == []
-    assert len(image_rejections) == 1
+    assert len(image_rejections) == 2
 
     image_rejections[0]("callback image rejected")
+    image_rejections[1]("second callback image rejected")
 
     assert mgr.pending_agent_callbacks == [cb]
     assert mgr.pending_extra_replies == [extra]
