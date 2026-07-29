@@ -666,3 +666,51 @@ async def test_shutdown_flush_waits_for_an_in_flight_drain():
     await asyncio.wait_for(flush, timeout=3.0)
     await asyncio.wait_for(drain, timeout=2.0)
     assert order == ["drain-done", "finalize:shutdown"]
+
+
+@pytest.mark.asyncio
+async def test_idle_sweep_skips_instead_of_ejecting_a_draining_session():
+    """Idle settlement waits, and when the wait runs out it skips.
+
+    The process keeps running, so the next sweep retries: an idle session
+    costs nothing by waiting one more round, while ejecting it leaves the
+    drain with nowhere to hand its failed buckets back to. Shutdown is the
+    other way round (last chance, group digest would go too) and is
+    covered by test_shutdown_flush_waits_for_an_in_flight_drain.
+    """
+    finalized: list[str] = []
+    released = asyncio.Event()
+    in_flight = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    service.SETTLE_JOIN_TIMEOUT_SECONDS = 0.05
+    plugin._session_settle_tasks = {}
+    plugin.SESSION_IDLE_TIMEOUT_SECONDS = 0
+    user_data["last_activity_at"] = 0
+
+    async def _finalize(session_key, reason):
+        finalized.append(reason)
+        plugin._user_sessions.pop(session_key, None)
+        return True
+
+    service.finalize_user_memory_session = _finalize
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    plugin._session_settle_tasks["group:7788"] = {drain}
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+
+    await asyncio.wait_for(service.flush_idle_memory_sessions(), timeout=3.0)
+    assert finalized == [], "排空还在途时不该弹掉会话，等下一轮 sweep 就行"
+    assert "group:7788" in plugin._user_sessions
+
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    # 排空落地之后，下一轮 sweep 照常结算。
+    await asyncio.wait_for(service.flush_idle_memory_sessions(), timeout=3.0)
+    assert finalized == ["idle_timeout"]
