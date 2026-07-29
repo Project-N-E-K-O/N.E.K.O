@@ -193,6 +193,7 @@
             currentCursorEffectSuppressUntil = 0;
             currentPetal = null;
             currentSkipControl = null;
+            writeSharedSkipControl(null);
         }
 
         return {

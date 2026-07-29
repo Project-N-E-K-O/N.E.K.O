@@ -745,6 +745,14 @@ test('PC overlay complete state stores preserve shared skip control across rende
     });
     assert.deepEqual(scenePayload.skipControl, skipPayload.skipControl);
 
+    skipOwner.reset();
+    const resetPayload = homeRenderer.applyPatch({
+        petal: { id: 'next-scene' }
+    });
+    assert.equal(resetPayload.skipControl, null);
+    assert.equal(values.has('yuiGuidePcOverlaySkipControl'), false);
+
+    skipOwner.applyPatch({ skipControl: skipPayload.skipControl });
     skipOwner.applyPatch({ skipControl: null });
     const clearedPayload = homeRenderer.applyPatch({
         cursor: { visible: true, x: 10, y: 20 }
