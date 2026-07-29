@@ -119,8 +119,6 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
-        # 附件下载用的长寿 httpx client（懒建，shutdown 关闭）。
-        self._attachment_http_client = None
         self.relay_service = QQRelayService(self)
         self.reply_generation_service = QQReplyGenerationService(self)
         self.reply_decision_node = QQReplyDecisionNode(self)
@@ -394,15 +392,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             except asyncio.CancelledError:
                 pass
             self._session_housekeeping_task = None
-        # 长寿 http client 最后关：上面的 flush / 结算全都要用记忆桥。
-        try:
-            await self.memory_bridge.aclose()
-        except Exception as exc:
-            self.logger.warning(f"关闭记忆桥 http client 失败: {exc}")
-        try:
-            await self._close_attachment_http_client()
-        except Exception as exc:
-            self.logger.warning(f"关闭附件下载 http client 失败: {exc}")
+        # 这里不关 http client：记忆桥与附件下载用的是 utils/http 的进程级
+        # 单例，由 main_server 的 shutdown 钩子统一关。插件自己关会把上面
+        # 那批"只 join 1s、不取消"的结算任务的在途请求打断。
         return Ok({"status": "shutdown"})
 
     def _mask_token(self, token: str) -> str:

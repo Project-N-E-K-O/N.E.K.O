@@ -169,32 +169,18 @@ class QQAutoReplyPromptingMixin:
             return Path(candidate)
         return Path(text)
 
-    async def _get_attachment_http_client(self):
-        """Lazily created, plugin-lifetime client for attachment downloads.
+    @staticmethod
+    def _attachment_http_client():
+        """The process-wide external client (QQ CDN, not localhost).
 
-        Separate from the memory bridge's client on purpose: this one talks
-        to the QQ CDN, that one only to localhost. The timeout is per
-        request — it is derived from the turn timeout, which settings can
-        change while the plugin runs.
+        Building one AsyncClient per attachment eagerly initializes an
+        SSLContext each time — the cost utils/http/external_client.py
+        exists to avoid. Its lifetime is the process's (main_server's
+        shutdown hook closes it), so nothing here may close it: a handler
+        still finishing while the plugin shuts down keeps working."""
+        from utils.external_http_client import get_external_http_client
 
-        No lock: there is no await between the check and the assignment
-        below (the import and the constructor are both synchronous), so on
-        one event loop no other task can observe the half-built state and
-        two concurrent first downloads cannot each create a client."""
-        import httpx
-
-        client = getattr(self, "_attachment_http_client", None)
-        if client is not None and not getattr(client, "is_closed", False):
-            return client
-        client = httpx.AsyncClient(proxy=None, trust_env=False)
-        self._attachment_http_client = client
-        return client
-
-    async def _close_attachment_http_client(self) -> None:
-        client = getattr(self, "_attachment_http_client", None)
-        self._attachment_http_client = None
-        if client is not None and not getattr(client, "is_closed", False):
-            await client.aclose()
+        return get_external_http_client()
 
     async def _prepare_attachment_image_b64(self, attachment: dict[str, Any]) -> str | None:
         locator = str(attachment.get("url") or attachment.get("path") or attachment.get("file") or "").strip()
@@ -203,9 +189,11 @@ class QQAutoReplyPromptingMixin:
         try:
             image_bytes: bytes
             if locator.startswith(("http://", "https://")):
+                # 逐请求超时：它由回合超时推导，而设置可以在插件运行期间改。
                 timeout = max(3.0, min(float(self._ai_turn_timeout_seconds or 60.0) / 2.0, 15.0))
-                client = await self._get_attachment_http_client()
-                response = await client.get(locator, timeout=timeout)
+                response = await self._attachment_http_client().get(
+                    locator, timeout=timeout,
+                )
                 response.raise_for_status()
                 image_bytes = response.content
             else:

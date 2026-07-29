@@ -292,7 +292,7 @@ async def test_drain_drops_failed_buckets_when_consent_revoked_mid_flight():
     assert "member_drain_in_flight" not in user_data
 
 
-# ── httpx 单例 + per-request timeout ────────────────────────────────
+# ── 共享 http client + per-request timeout ──────────────────────────
 
 
 class _FakeResponse:
@@ -307,16 +307,12 @@ class _FakeResponse:
         return self._payload
 
 
-class _FakeClient:
-    """Records calls only; is_closed keeps _get_client treating it live."""
+class _RecordingClient:
+    """Records every request the bridge makes, with its kwargs."""
 
-    instances = 0
-
-    def __init__(self, *args, **kwargs):
-        type(self).instances += 1
+    def __init__(self):
         self.is_closed = False
         self.calls: list[tuple[str, str, dict]] = []
-        self.closed_times = 0
 
     async def get(self, url, **kwargs):
         self.calls.append(("GET", url, kwargs))
@@ -326,30 +322,12 @@ class _FakeClient:
         self.calls.append(("POST", url, kwargs))
         return _FakeResponse({"results": [], "elapsed_ms": 1.0})
 
-    async def aclose(self):
-        self.closed_times += 1
-        self.is_closed = True
 
-
-@pytest.mark.asyncio
-async def test_memory_bridge_keeps_per_endpoint_timeouts_on_one_client():
-    """The timeout moved from the client to each request: scoped history
-    waits on an LLM extraction (30s) while the rest are local reads (5s).
-    Leaving it on a now-shared client would level every endpoint."""
-    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
-
-    bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
-    fake = _FakeClient()
-    bridge._client = fake
-
+async def _drive_every_endpoint(bridge) -> None:
+    subject = {"subject_kind": "group_chat", "subject_id": "qq:7788"}
     await bridge.fetch_bootstrap_memory("Neko")
-    await bridge.fetch_scoped_bootstrap_memory(
-        "Neko", subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
-    )
-    await bridge.post_scoped_mentions(
-        "Neko", "回复正文",
-        subjects=[{"subject_kind": "group_chat", "subject_id": "qq:7788"}],
-    )
+    await bridge.fetch_scoped_bootstrap_memory("Neko", subjects=[subject])
+    await bridge.post_scoped_mentions("Neko", "回复正文", subjects=[subject])
     await bridge.query_relevant_memory("Neko", "查询")
     await bridge.post_memory_history("cache", "Neko", [{"role": "user"}])
     await bridge.post_scoped_memory_history(
@@ -357,36 +335,134 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_one_client():
         subject={"subject_kind": "group_participant", "subject_id": "qq:7788:2046"},
     )
 
-    timeouts = {
-        url.rsplit("/", 1)[-1] if "internal" not in url else url.rsplit("/", 1)[-1]: kwargs.get("timeout")
-        for _method, url, kwargs in fake.calls
+
+@pytest.mark.asyncio
+async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
+    monkeypatch,
+):
+    """The timeout moved from a per-call client to each request.
+
+    Scoped history waits on an LLM extraction (30s) while the rest are
+    local reads (5s); the shared client carries an unrelated default, so a
+    request that forgets to state its own would silently take that one.
+    """
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    recorder = _RecordingClient()
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
+    await _drive_every_endpoint(QQMemoryBridge(SimpleNamespace(logger=MagicMock())))
+
+    assert len(recorder.calls) == 6
+    assert all(kwargs.get("timeout") for _m, _u, kwargs in recorder.calls)
+    by_endpoint = {
+        url.rsplit("/", 1)[-1]: kwargs.get("timeout")
+        for _method, url, kwargs in recorder.calls
     }
-    assert timeouts["scoped_history"] == 30.0
-    assert timeouts["scoped_context"] == 5.0
-    assert timeouts["scoped_mentions"] == 5.0
-    assert timeouts["Neko"] == 5.0  # /new_dialog/{name}、/query_memory/{name}、/cache/{name}
-    assert all(kwargs.get("timeout") is not None for _m, _u, kwargs in fake.calls)
-    assert len(fake.calls) == 6
+    assert by_endpoint["scoped_history"] == 30.0
+    assert by_endpoint["scoped_context"] == 5.0
+    assert by_endpoint["scoped_mentions"] == 5.0
+    # /new_dialog/{name}、/query_memory/{name}、/cache/{name} 都以角色名结尾
+    assert by_endpoint["Neko"] == 5.0
 
 
 @pytest.mark.asyncio
-async def test_memory_bridge_reuses_and_closes_one_client(monkeypatch):
+async def test_memory_bridge_uses_the_shared_internal_client(monkeypatch):
+    """The bridge must not own an httpx client.
+
+    utils/http/internal_client.py is the sanctioned pool for 127.0.0.1
+    services and is closed once by main_server's shutdown hook. A plugin-
+    owned client would be torn down by plugin shutdown while the memory
+    settlement tasks it deliberately does not cancel are still posting.
+    """
     from plugin.plugins.qq_auto_reply import memory_bridge as bridge_module
+    from utils.http import internal_client
 
-    _FakeClient.instances = 0
-    monkeypatch.setattr(bridge_module.httpx, "AsyncClient", _FakeClient)
-    bridge = bridge_module.QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
+    recorder = _RecordingClient()
+    handed_out: list = []
 
-    first, second = await asyncio.gather(
-        bridge._get_client(), bridge._get_client(),
+    def _fake_get_internal_http_client():
+        handed_out.append(recorder)
+        return recorder
+
+    monkeypatch.setattr(
+        internal_client, "get_internal_http_client", _fake_get_internal_http_client,
     )
-    assert first is second
-    assert _FakeClient.instances == 1
+    bridge = bridge_module.QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
+    await _drive_every_endpoint(bridge)
 
-    await bridge.aclose()
-    assert first.closed_times == 1
-    assert bridge._client is None
-    # 关掉之后再用会重新建一个，而不是拿着已关闭的 client 继续发。
-    third = await bridge._get_client()
-    assert third is not first
-    assert _FakeClient.instances == 2
+    assert len(handed_out) == 6 and all(c is recorder for c in handed_out)
+    # 插件侧没有任何自有 client 生命周期可言。
+    assert not hasattr(bridge, "aclose")
+    assert not hasattr(bridge_module, "httpx")
+
+
+@pytest.mark.asyncio
+async def test_concurrent_flush_does_not_clear_the_other_flushs_in_flight_mark():
+    """Two member flushes can now overlap, so the mark has to be counted.
+
+    The cap drain runs its POSTs with the session lock released, so an
+    idle/shutdown finalize can start its own flush on the live mapping
+    meanwhile. With a boolean, whichever finished first cleared the mark
+    while the other still owned an in-flight mapping — and an opt-out
+    landing in that window copies that very mapping into the settlement
+    snapshot, submitting the same messages a second time.
+    """
+    drain_in_flight = asyncio.Event()
+    finalize_in_flight = asyncio.Event()
+    drain_released = asyncio.Event()
+    finalize_released = asyncio.Event()
+    posted: list[str] = []
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        subject_id = (kwargs.get("subject") or {}).get("subject_id", "")
+        posted.append(subject_id)
+        if subject_id.endswith(":2046"):
+            drain_in_flight.set()
+            await drain_released.wait()
+        else:
+            finalize_in_flight.set()
+            await finalize_released.wait()
+        return {"status": "ok"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(drain_in_flight.wait(), timeout=2.0)
+
+    # 冲刷期间又攒了一代，finalize 拿到锁后对**活映射**跑自己那趟冲刷。
+    live = user_data.setdefault("group_member_memory_messages", {})
+    live["3057"] = [{"role": "user", "content": [{"type": "text", "text": "另一代"}]}]
+    finalize = asyncio.create_task(service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="idle_timeout",
+    ))
+    await asyncio.wait_for(finalize_in_flight.wait(), timeout=2.0)
+
+    # 排空整趟收尾，但 finalize 那趟还在飞：标记必须还立着。
+    drain_released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+    assert user_data.get("member_flush_in_progress"), (
+        "先结束的那趟把标记清掉了，opt-out 会把另一趟的在途载荷复制走"
+    )
+
+    # 此刻 opt-out 落下（settings_service 关成员记忆那段的判据）。
+    if user_data.get("member_flush_in_progress"):
+        user_data["member_snapshot_due"] = True
+        user_data["pending_member_settle"] = True
+    else:
+        fresh = user_data.pop("group_member_memory_messages", None) or {}
+        pending = user_data.setdefault("pending_settle_buckets", {})
+        for sender, messages in fresh.items():
+            pending.setdefault(sender, []).extend(messages)
+        user_data["pending_member_settle"] = True
+
+    # 在途载荷没有被搬走 —— 搬走就等于排队第二次提交。
+    assert user_data.get("group_member_memory_messages") is live
+    assert not user_data.get("pending_settle_buckets")
+
+    finalize_released.set()
+    await asyncio.wait_for(finalize, timeout=2.0)
+
+    # 两批各发一次，一条不重。
+    assert sorted(posted) == ["qq:7788:2046", "qq:7788:3057"]
+    assert "member_flush_in_progress" not in user_data
+    assert "member_snapshot_due" not in user_data
+    assert not (user_data.get("pending_settle_buckets") or {})

@@ -688,9 +688,7 @@ async def test_qq_recall_with_empty_subjects_never_falls_back_to_private():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace())
-    with patch(
-        "plugin.plugins.qq_auto_reply.memory_bridge.httpx.AsyncClient",
-    ) as client:
+    with patch.object(QQMemoryBridge, "_client") as client:
         result = await bridge.query_relevant_memory(
             "Neko", "不应读取私聊记忆", subjects=[],
         )
@@ -9931,7 +9929,8 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
         # While the request is in flight, a second OFF asks for a snapshot.
         # It must NOT touch the live mapping: that mapping may BE this
         # request's payload, and copying it means submitting twice.
-        assert ud.get("member_flush_in_progress") is True
+        # 计数而非布尔（并发冲刷各持一层），这里只关心"有冲刷在飞"。
+        assert ud.get("member_flush_in_progress")
         ud["member_snapshot_due"] = True
         ud.setdefault("group_member_memory_messages", {}).setdefault(
             "2046", []

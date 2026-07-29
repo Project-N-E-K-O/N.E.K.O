@@ -561,7 +561,9 @@ class QQSessionMemoryService:
             # 整桶搬走：参与者名额当场腾空，冲刷期间新到的发言写进全新的
             # 一代，和在飞的这一代互不覆盖。冲刷标记必须在锁内就位——设置侧
             # 的 opt-out 快照靠它决定"另起一代"，锁一放它就可能跑起来。
-            user_data["member_flush_in_progress"] = True
+            # 这一层计数覆盖整趟排空（含把失败桶还回去），所以中途并发的
+            # finalize 冲刷结束时不会替我们把标记清掉。
+            self._enter_member_flush(user_data)
             flush_target["user_data"] = user_data
             flush_target["group_id"] = group_id
             flush_target["her_name"] = her_name
@@ -572,6 +574,11 @@ class QQSessionMemoryService:
             # 正好是没冲出去的那些。
             user_data = self.plugin._user_sessions.get(session_key)
             if user_data is None:
+                held = flush_target.get("user_data")
+                if isinstance(held, dict):
+                    # 会话已被弹出，但计数还挂在那份孤儿 user_data 上：不放
+                    # 掉的话，重新绑定同一份 dict 的路径会永远看到"冲刷中"。
+                    self._finish_member_flush_generation(held)
                 if snapshot:
                     self.plugin.logger.error(
                         f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
@@ -613,6 +620,9 @@ class QQSessionMemoryService:
                 )
             finally:
                 user_data.pop("member_drain_in_flight", None)
+                # 排空这一层的计数在锁内放掉：到这里失败桶已经归位，此刻
+                # 若是最后一个在飞的冲刷，快照提升拿到的才是完整的一代。
+                self._finish_member_flush_generation(user_data)
 
         if not await self.plugin._run_with_session_lock(
             session_key, _take_snapshot,
@@ -694,7 +704,7 @@ class QQSessionMemoryService:
 
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
-        user_data["member_flush_in_progress"] = True
+        self._enter_member_flush(user_data)
         flush_jobs = [
             _flush_one_member(sender_id, member_messages)
             for sender_id, member_messages in list(member_buckets.items())
@@ -709,15 +719,43 @@ class QQSessionMemoryService:
             self._finish_member_flush_generation(user_data)
 
     @staticmethod
-    def _finish_member_flush_generation(user_data: dict[str, Any]) -> None:
+    def _enter_member_flush(user_data: dict[str, Any]) -> None:
+        """Register one more flush as in flight.
+
+        A depth counter, not a boolean: the cap drain runs its POSTs with
+        the session lock released, so a finalize/idle/shutdown settlement
+        can start its own flush on the live mapping meanwhile. With a
+        boolean, whichever finished first cleared the mark while the other
+        still owned an in-flight mapping — and an opt-out landing in that
+        window would copy that mapping into the settlement snapshot and
+        submit the same messages twice."""
+        user_data["member_flush_in_progress"] = int(
+            user_data.get("member_flush_in_progress") or 0
+        ) + 1
+
+    @staticmethod
+    def _exit_member_flush(user_data: dict[str, Any]) -> bool:
+        """Drop one flush; True when it was the last one in flight."""
+        depth = int(user_data.get("member_flush_in_progress") or 0) - 1
+        if depth > 0:
+            user_data["member_flush_in_progress"] = depth
+            return False
+        user_data.pop("member_flush_in_progress", None)
+        return True
+
+    @classmethod
+    def _finish_member_flush_generation(cls, user_data: dict[str, Any]) -> None:
         """Snapshot what the finished flush left behind, if an opt-out asked.
 
         The settings path defers its snapshot while a flush is in flight —
         popping the live mapping there would hand the in-flight request's
         own payload to a second submission. Whatever remains here (entries
         it failed to commit, plus turns written during it) is what the
-        opt-out settlement should carry."""
-        user_data.pop("member_flush_in_progress", None)
+        opt-out settlement should carry. Only the last flush standing may
+        take that snapshot; an earlier one finishing says nothing about the
+        mapping another flush is still holding."""
+        if not cls._exit_member_flush(user_data):
+            return
         if not user_data.pop("member_snapshot_due", None):
             return
         fresh_buckets = user_data.pop("group_member_memory_messages", None) or {}
