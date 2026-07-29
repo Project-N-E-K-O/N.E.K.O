@@ -237,10 +237,12 @@ function technical(siteId) {
     },
     sitemap: { status: 'ok', httpStatus: 200, urlCount: 10 },
     bingSiteAuth: { status: 'ok', httpStatus: 200 },
-    indexNowKey: { status: 'ok', httpStatus: 200 },
+    indexNowKey: { status: 'ok', httpStatus: 200, contentPresent: true },
     html: {
+      lang: siteId === 'cn' ? 'zh-CN' : 'en-US',
       measurementIdPresent: true,
       canonical: `${origin}/`,
+      hreflang: [{ hreflang: 'x-default', href: `${origin}/` }],
     },
   }
 }
@@ -451,10 +453,22 @@ test('action validation blocks mixed-priority queues and duplicate page work', (
   assert.ok(requiredFailures(blocked, 'daily').includes('Selected action 1 is not a blocker action despite incomplete sources'))
 })
 
-test('technical probes remain an all-level gate', () => {
+test('technical probes are a strict daily and all-level gate', () => {
   const report = validReport()
   report.sites[0].technical.status = 'partial'
 
-  assert.deepEqual(requiredFailures(report, 'daily'), [])
+  assert.ok(requiredFailures(report, 'daily').includes('Technical SEO cn is partial'))
   assert.ok(requiredFailures(report, 'all').includes('Technical SEO cn is partial'))
+})
+
+test('technical gate independently validates content invariants', () => {
+  const report = validReport()
+  report.sites[0].technical.robots.declaresSitemap = false
+  report.sites[0].technical.sitemap.urlCount = 0
+  report.sites[0].technical.html.measurementIdPresent = false
+
+  const failures = requiredFailures(report, 'daily')
+  assert.ok(failures.includes('Technical SEO cn robots.txt does not declare the sitemap'))
+  assert.ok(failures.includes('Technical SEO cn sitemap contains no URLs'))
+  assert.ok(failures.includes('Technical SEO cn GA4 Measurement ID is not observable'))
 })

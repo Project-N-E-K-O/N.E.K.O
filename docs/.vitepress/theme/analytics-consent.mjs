@@ -184,7 +184,7 @@ export function isDocsHomeUrl(
       && destination.protocol === 'https:'
       && destination.hostname === DOCS_HOSTNAME
       && LOCALE_HOME_PATHS.has(destinationPath)
-      && currentPath !== destinationPath
+      && !LOCALE_HOME_PATHS.has(currentPath)
     )
   } catch {
     return false

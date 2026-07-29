@@ -660,8 +660,11 @@ function validateTechnical(site, failures) {
   add(failures, technical.sitemap?.urlCount > 0, `${label} sitemap contains no URLs`)
   add(failures, technical.bingSiteAuth?.status === 'ok', `${label} Bing verification file is unavailable`)
   add(failures, technical.indexNowKey?.status === 'ok', `${label} IndexNow key is unavailable`)
+  add(failures, technical.indexNowKey?.contentPresent === true, `${label} IndexNow key file is empty`)
+  add(failures, hasText(technical.html?.lang), `${label} html lang is missing`)
   add(failures, technical.html?.measurementIdPresent === true, `${label} GA4 Measurement ID is not observable`)
   add(failures, isHttpUrl(technical.html?.canonical), `${label} canonical is missing`)
+  add(failures, (technical.html?.hreflang?.length ?? 0) > 0, `${label} hreflang links are missing`)
 }
 
 export function requiredFailures(report, level = 'core') {
@@ -686,7 +689,7 @@ export function requiredFailures(report, level = 'core') {
     validateGsc(site, failures)
     validateGa4(site, report, failures)
     if (requireIndexNow) validateIndexNow(site, failures)
-    if (level === 'all') validateTechnical(site, failures)
+    if (level === 'daily' || level === 'all') validateTechnical(site, failures)
   }
 
   const propertyIds = REQUIRED_SITES

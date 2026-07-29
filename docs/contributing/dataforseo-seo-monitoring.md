@@ -120,9 +120,10 @@ Use `--output <path>` for a different report path and `--config <path>` for an a
 3. Remove the obsolete `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable if it still exists; the current workflow does not read it.
 4. Open **Actions → SEO GEO Daily Report → Run workflow**.
 5. Run `dry-run` first and inspect all three request plans.
-6. Run `paid` with depth 100 and AIO enabled for an acceptance baseline.
-7. Download the fixed-name `seo-geo-daily-report` artifact. It contains raw reports, all execution manifests, the unified JSON and the unified Markdown.
-8. The daily 08:15 schedule is automatic after merge. Missing credentials or a missing core report makes the run fail after the diagnostic artifact has been uploaded.
+6. Run `paid`; paid dispatches always force depth 100 and AIO on, even if the dry-run-only inputs were changed.
+7. Download the fixed-name `seo-geo-daily-report` diagnostic artifact. It always contains raw reports, all execution manifests, the unified JSON and the unified Markdown, including evidence from a failed gate.
+8. A successful paid run on `main` also uploads `seo-geo-daily-paid-baseline`. Only this gate-verified artifact is eligible for next-run rank/AIO comparisons; dry-runs, failed paid runs, and feature-branch runs cannot replace it.
+9. The daily 08:15 schedule is automatic after merge. Missing credentials, a missing core report, or a failed technical/content invariant makes the run fail after the diagnostic artifact has been uploaded.
 
 Pull requests run the unit tests and committed-config dry-run only. They never receive DataForSEO secrets and never execute a paid request.
 

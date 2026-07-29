@@ -25,12 +25,12 @@ on:
           - dry-run
           - paid
       serp_depth:
-        description: 'Organic results per keyword (1-100)'
+        description: 'Dry-run only: organic results per keyword (paid is always 100)'
         required: true
         type: string
         default: '100'
       include_ai_overview:
-        description: 'Load asynchronous AI Overview results'
+        description: 'Dry-run only: load AI Overview results (paid is always enabled)'
         required: true
         type: boolean
         default: true
@@ -81,8 +81,8 @@ jobs:
     timeout-minutes: 45
     env:
       COLLECTION_KIND: ${{ github.event_name == 'schedule' && 'paid' || inputs.run_mode }}
-      SERP_DEPTH: ${{ github.event_name == 'schedule' && '100' || inputs.serp_depth }}
-      INCLUDE_AI_OVERVIEW: ${{ github.event_name == 'schedule' && 'true' || inputs.include_ai_overview }}
+      SERP_DEPTH: ${{ (github.event_name == 'schedule' || inputs.run_mode == 'paid') && '100' || inputs.serp_depth }}
+      INCLUDE_AI_OVERVIEW: ${{ (github.event_name == 'schedule' || inputs.run_mode == 'paid') && 'true' || inputs.include_ai_overview }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -138,7 +138,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          record="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?per_page=100" --jq '.artifacts | map(select(.expired == false and (.name | startswith("seo-geo-daily-")))) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
+          record="$(gh api "repos/${GITHUB_REPOSITORY}/actions/artifacts?name=seo-geo-daily-paid-baseline&per_page=100" --jq '.artifacts | map(select(.expired == false and .name == "seo-geo-daily-paid-baseline" and .workflow_run.head_branch == "main")) | sort_by(.created_at) | last | select(. != null) | [.workflow_run.id, .name] | @tsv')"
           if [[ -z "$record" ]]; then
             echo "No previous unified report artifact exists yet."
             exit 0
@@ -357,6 +357,17 @@ jobs:
             exit 1
           fi
           node scripts/seo-monitoring/assert-report.mjs --input "$report" --level daily
+
+      - name: Publish verified paid comparison baseline
+        if: success() && env.COLLECTION_KIND == 'paid' && github.ref == 'refs/heads/main'
+        uses: actions/upload-artifact@v4
+        with:
+          name: seo-geo-daily-paid-baseline
+          path: |
+            docs/.seo-reports/seo-monitoring-${{ github.run_id }}.json
+            docs/.seo-reports/seo-monitoring-${{ github.run_id }}.md
+          if-no-files-found: error
+          retention-days: 90
 
       - name: Enforce the zero-cost planning contract
         if: always() && env.COLLECTION_KIND == 'dry-run'

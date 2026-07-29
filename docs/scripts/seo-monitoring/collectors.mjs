@@ -692,15 +692,35 @@ export async function collectTechnicalSeo(site, {
   ].find(item => item.source.includes(site.measurementId))
   const checks = [home, robots, sitemap, bingAuth, indexNowKey]
   const crawlerPolicy = aiCrawlerPolicy(robots.source)
-  const status = checks.every(item => item.status === 'ok') && crawlerPolicy.status === 'allowed'
-    ? 'ok'
-    : 'partial'
+  const canonicalUrl = canonical ? tagAttribute(canonical, 'href') : null
+  let canonicalMatchesOrigin = false
+  try {
+    const parsedCanonical = new URL(canonicalUrl)
+    canonicalMatchesOrigin = (
+      parsedCanonical.origin === site.origin
+      && parsedCanonical.pathname === '/'
+      && parsedCanonical.search === ''
+      && parsedCanonical.hash === ''
+    )
+  } catch {
+    canonicalMatchesOrigin = false
+  }
+  const failedChecks = []
+  if (!checks.every(item => item.status === 'ok')) failedChecks.push('required discovery endpoint is unavailable')
+  if (!robots.source.includes(site.sitemapUrl)) failedChecks.push('robots.txt does not declare the expected sitemap')
+  if (crawlerPolicy.status !== 'allowed') failedChecks.push(`robots.txt blocks AI crawler(s): ${crawlerPolicy.blocked.join(', ')}`)
+  if (sitemapUrlCount < 1) failedChecks.push('sitemap.xml contains no URLs')
+  if (indexNowKey.source.trim().length < 1) failedChecks.push('IndexNow key file is empty')
+  if (!tagAttribute(htmlTag, 'lang')) failedChecks.push('homepage html lang is missing')
+  if (!canonicalMatchesOrigin) failedChecks.push('homepage canonical does not match the site origin')
+  if (hreflang.length < 1) failedChecks.push('homepage hreflang links are missing')
+  if (!measurementEvidence) failedChecks.push('expected GA4 Measurement ID is not observable')
+  const status = failedChecks.length === 0 ? 'ok' : 'partial'
 
   return {
     status,
-    reason: crawlerPolicy.status === 'blocked'
-      ? `robots.txt blocks AI crawler(s): ${crawlerPolicy.blocked.join(', ')}`
-      : null,
+    reason: failedChecks.length > 0 ? failedChecks.join('; ') : null,
+    failedChecks,
     collectedAt: new Date().toISOString(),
     home: { status: home.status, httpStatus: home.httpStatus, finalUrl: home.finalUrl },
     robots: {
@@ -718,7 +738,7 @@ export async function collectTechnicalSeo(site, {
     },
     html: {
       lang: tagAttribute(htmlTag, 'lang'),
-      canonical: canonical ? tagAttribute(canonical, 'href') : null,
+      canonical: canonicalUrl,
       hreflang,
       schemaTypes: schemaTypes(home.source),
       measurementIdExpected: site.measurementId,

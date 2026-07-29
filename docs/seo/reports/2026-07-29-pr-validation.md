@@ -1,6 +1,6 @@
 # N.E.K.O SEO / GEO 双 PR 合并前验证报告 — 2026-07-29
 
-> 状态：`READY TO PUBLISH`（已同步最新 `upstream/main` 并完成全量回归；尚未 push 或创建本轮 PR）  
+> 状态：`PR REVIEW FIXES VERIFIED`（主仓 [`#2541`](https://github.com/Project-N-E-K-O/N.E.K.O/pull/2541) 与源仓 [`#5`](https://github.com/Project-N-E-K-O/N.E.K.O.OfficialWebsite/pull/5) 已发布；本文已纳入审查修复后的全量回归）
 > 范围：主仓统一日报改造 + `.cn` 源仓 DataForSEO / IndexNow 证据改造  
 > 说明：本文是合并前测试证据，不是生产日报，也不证明搜索曝光或 AI 引用已经增长。
 
@@ -10,7 +10,7 @@
 
 | 范围 | 验证 | 结果 |
 |---|---|---|
-| `Project-N-E-K-O/N.E.K.O` | 完整单元测试 | **92/92 PASS** |
+| `Project-N-E-K-O/N.E.K.O` | 完整单元测试 | **94/94 PASS** |
 | `Project-N-E-K-O/N.E.K.O` | VitePress 生产构建 + SEO 产物检查 | **PASS**：299 个 indexable、37 个 noindex、1140 条 hreflang |
 | `Project-N-E-K-O/N.E.K.O.OfficialWebsite` | 完整单元测试 | **19/19 PASS** |
 | 两仓 | GitHub Actions YAML 解析 | **PASS** |
@@ -63,7 +63,7 @@
 
 ## 3. 完整测试结果
 
-### 3.1 主仓：92/92
+### 3.1 主仓：94/94
 
 | 测试组 | 数量 | 结果 | 覆盖重点 |
 |---|---:|---|---|
@@ -71,8 +71,8 @@
 | GA4 consent / tracking | 11 | PASS | 同意前不加载、撤回、跨标签同步、Steam 与文档→主页事件 |
 | Steam CTA | 4 | PASS | 所有已发布 Steam 链接的 UTM 与归因 |
 | DataForSEO | 41 | PASS | 三段配置、Volume/KD、depth 100、AIO、成本、重试、workflow/artifact |
-| SEO monitoring | 26 | PASS | GSC/GA4 窗口、技术探针、日报渲染、严格门禁、搜索/引用频率 |
-| **合计** | **92** | **PASS** | 0 fail / 0 skipped |
+| SEO monitoring | 28 | PASS | GSC/GA4 窗口、技术探针、日报渲染、严格门禁、搜索/引用频率 |
+| **合计** | **94** | **PASS** | 0 fail / 0 skipped |
 
 执行命令：
 
@@ -94,7 +94,18 @@ SEO validation: PASS
 
 构建仍输出一个非阻断警告：部分前端 chunk 超过 500 kB。它不影响本次 SEO 日报、索引产物或测试结论，后续可以独立做代码分块优化。
 
-### 3.2 `.cn` 源仓：19/19
+### 3.2 审查修复回归
+
+本轮针对自动 reviewer 提出的四类可信度问题补充了代码与回归测试：
+
+- 付费 schedule 与手动 paid dispatch 均强制 depth 100 + AIO，付费后不再因可选输入导致确定性门禁失败；
+- 所有运行继续上传 `seo-geo-daily-report` 诊断 artifact，但趋势比较只读取 `main` 上通过完整付费门禁后发布的 `seo-geo-daily-paid-baseline`；
+- `docs_home_click` 只计算具体文档页到任一语言首页的导航，语言首页互跳不再误报；
+- 技术探针的 HTTP 与内容不变量共同决定顶层状态，`daily` 门禁还会独立复核 robots sitemap 声明、sitemap URL、验证/key 文件、`lang`、canonical、hreflang、GA4 Measurement ID 和 AI crawler 策略。
+
+上述修复后重新执行 `npm test` 为 **94/94 PASS**，`npm run build:check`、workflow YAML 解析、Markdown 路径检查及 `git diff --check` 均通过。
+
+### 3.3 `.cn` 源仓：19/19
 
 | 测试范围 | 结果 |
 |---|---|
@@ -111,7 +122,7 @@ SEO validation: PASS
 node --test scripts/*.test.mjs scripts/dataforseo/*.test.mjs
 ```
 
-### 3.3 工作流与差异完整性
+### 3.4 工作流与差异完整性
 
 两仓均通过：
 
@@ -207,7 +218,9 @@ AIO 触发率 = 触发 AIO 的查询数 ÷ 已观察查询数
 - [ ] `.cn` / `.online` GSC 有最新 finalized 日和连续两个 7 日窗口；
 - [ ] `.cn` / `.online` GA4 使用两个不同数字 Property ID，并有昨日与两个 7 日窗口；
 - [ ] 两站 IndexNow 有本次执行 artifact；无变更可为 `COMPLETE + 0`，未执行不得写 0；
+- [ ] 两站技术探针及内容不变量全部为 `ok`，不能仅凭 HTTP 200 放行；
 - [ ] Markdown 与 JSON 在同一个固定名 artifact；
+- [ ] 只有 `main` 上通过完整付费门禁的运行发布下一次可读取的比较基线；
 - [ ] 严格门禁通过，并只选择 1–2 个真实动作。
 
 主仓仍需要可读取私有 `.cn` 源仓 Actions artifact 的 `SEO_REPORTS_TOKEN`。若它未配置，生产日报会保留诊断 artifact 后失败，并把原因列为 P1，而不是伪造完整结果。

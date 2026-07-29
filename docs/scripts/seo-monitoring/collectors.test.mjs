@@ -298,8 +298,37 @@ test('technical collector checks HTTP, discovery files, canonical, hreflang, sch
   assert.equal(result.html.hreflang[0].hreflang, 'en')
   assert.deepEqual(result.html.schemaTypes, ['SoftwareApplication'])
   assert.equal(result.html.measurementIdPresent, true)
+  assert.deepEqual(result.failedChecks, [])
   assert.equal(result.robots.aiCrawlers.status, 'allowed')
   assert.equal(result.robots.aiCrawlers.checked, 5)
+})
+
+test('technical collector makes failed content invariants block growth reporting', async () => {
+  const origin = 'https://project-neko.cn'
+  const result = await collectTechnicalSeo({
+    origin,
+    robotsUrl: `${origin}/robots.txt`,
+    sitemapUrl: `${origin}/sitemap.xml`,
+    bingSiteAuthUrl: `${origin}/BingSiteAuth.xml`,
+    indexNowKeyUrl: `${origin}/indexnow-key.txt`,
+    measurementId: 'G-2D1RSKSR72',
+  }, {
+    fetchImpl: async url => {
+      if (url.endsWith('/robots.txt')) return new Response('User-agent: *\nAllow: /', { status: 200 })
+      if (url.endsWith('/sitemap.xml')) return new Response('<urlset></urlset>', { status: 200 })
+      if (url === `${origin}/`) return new Response('<html><head></head></html>', { status: 200 })
+      return new Response('', { status: 200 })
+    },
+  })
+
+  assert.equal(result.status, 'partial')
+  assert.ok(result.failedChecks.includes('robots.txt does not declare the expected sitemap'))
+  assert.ok(result.failedChecks.includes('sitemap.xml contains no URLs'))
+  assert.ok(result.failedChecks.includes('IndexNow key file is empty'))
+  assert.ok(result.failedChecks.includes('homepage html lang is missing'))
+  assert.ok(result.failedChecks.includes('homepage canonical does not match the site origin'))
+  assert.ok(result.failedChecks.includes('homepage hreflang links are missing'))
+  assert.ok(result.failedChecks.includes('expected GA4 Measurement ID is not observable'))
 })
 
 test('technical collector marks robots rules that block an AI crawler as partial', async () => {

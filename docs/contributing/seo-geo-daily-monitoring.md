@@ -13,7 +13,7 @@
 - GSC sitemap 读取 `contents[].submitted/indexed` 并计算覆盖率；DataForSEO 每个关键词保留真实命中 URL，日报在首页直接列出所有 Top 10 词名；
 - `.cn` 当天已有完整源仓库 artifact 时直接复用；artifact 缺失、过期、不是当天或排名状态非 `COMPLETE` 时，统一工作流自动执行同配置的付费 fallback，不产生空白日报；
 - 输出原始 DataForSEO 响应、每段执行状态、统一 JSON、统一 Markdown；
-- artifact 保留 30 天，并把 Markdown 写进 GitHub Actions Summary。
+- 诊断 artifact `seo-geo-daily-report` 保留 30 天，并把 Markdown 写进 GitHub Actions Summary；只有 `main` 上通过完整付费门禁的运行才额外发布保留 90 天的 `seo-geo-daily-paid-baseline`，下一次排名/AIO 差值只读取该可信基线。
 
 中国区不在 DataForSEO Labs 的 KD 地区列表中，因此两个 China 段的 KD 必须显示 `UNSUPPORTED`；Google Ads Volume 仍按 China `2156` 采集，这也不妨碍 SERP 排名、AIO、落地页匹配或 CTA 分析。
 
@@ -32,7 +32,7 @@
 | `UNKNOWN` | 没有凭证、artifact 或可验证证据 |
 | `UNSUPPORTED` | 供应商不支持该口径，例如 China KD |
 
-每天的生产门禁要求 **DataForSEO 排名/Volume + 两站 GSC + 两站 GA4 + 两站 IndexNow 执行证据** 都不是缺失、失败或部分状态；同时逐字段校验固定 `8 + 19 + 3` 个 observed depth-100 排名、每段/每词采集时间确属上海时区当日日报、Volume 状态、AIO 布尔结果、搜索频率/引用频率汇总、费用、GSC 动态 finalized 最新日/两个 7 日窗口/sitemap 覆盖、两个不同的 GA4 数字 Property/昨日与两个 7 日窗口，以及 IndexNow 的时间、URL 数、响应和 artifact。否则 workflow 会先保留完整报告 artifact，再明确失败，而不是产生“顶层 complete、正文为空”的绿色日报。技术 SEO 在报告中独立显式呈现，暂不作为日报失败条件。
+每天的生产门禁要求 **DataForSEO 排名/Volume + 两站 GSC + 两站 GA4 + 两站 IndexNow 执行证据 + 两站技术 SEO** 都不是缺失、失败或部分状态；同时逐字段校验固定 `8 + 19 + 3` 个 observed depth-100 排名、每段/每词采集时间确属上海时区当日日报、Volume 状态、AIO 布尔结果、搜索频率/引用频率汇总、费用、GSC 动态 finalized 最新日/两个 7 日窗口/sitemap 覆盖、两个不同的 GA4 数字 Property/昨日与两个 7 日窗口、IndexNow 的时间/URL 数/响应/artifact，以及首页、robots sitemap 声明、sitemap URL 数、Bing/IndexNow 文件、`lang`、canonical、hreflang、GA4 Measurement ID 和 AI crawler 策略。否则 workflow 会先保留完整诊断 artifact，再明确失败，而不是产生“顶层 complete、正文为空”的绿色日报。
 
 ## Repository 配置
 
@@ -70,7 +70,7 @@ CLI 会拒绝两个站点使用同一个数字 GA4 Property ID，以避免把 `.
 
 - GSC 最新完整日：先按 Google Search Console 的 `America/Los_Angeles` 日期查询 `dataState=all + dimensions=date`，读取 API `metadata.first_incomplete_date`，再把其前一天作为真实最新完整日；如果所查范围没有未完整日期，则使用探测范围末日。随后比较以该日结尾的连续两个 7 日窗口。sitemap 覆盖率为 GSC API 返回的 `indexed / submitted`，不是公网 sitemap 的 URL 数；API 未返回内容时保持 `N/A`。生产门禁同时检查这份完整性元数据，不能再用固定“往前 3 天”冒充最新完整日。
 - GA4 最新完整日：昨日；另比较连续两个 7 日窗口。Steam CTA 同时报全站总数、Organic Search 子集和 AI referral 子集，不能把任一子集标成总数。`.online` 在用户同意 Analytics 后，以 `docs_home_click` 记录从具体内容页点击 `/`、`/zh-CN/` 或 `/ja/` 主页，并同样拆成总数、Organic 与 AI；`.cn` 没有“文档→主页”这一步，因此该格为 `N/A`，不能写成 0。AI 来源会话除以同域名全部会话得到 `AI/全站会话`，不能把 AI referral 除以 Organic 后称为“自然流量占比”。
-- 排名：本次 depth-100 artifact；工作流会下载最新未过期的上一份统一日报。只有 segment、地区、语言、设备、depth 与关键词相同时才计算 `Δ上次 = 上次排名 - 本次排名`，正数代表提升；没有同口径证据时保持 `N/A`。
+- 排名：本次 depth-100 artifact；工作流只下载 `main` 上最新、未过期且已通过完整付费门禁的 `seo-geo-daily-paid-baseline`。只有 segment、地区、语言、设备、depth 与关键词相同时才计算 `Δ上次 = 上次排名 - 本次排名`，正数代表提升；dry-run、失败运行、分支运行或没有同口径证据时保持 `N/A`。
 - 技术 SEO：运行时直接检查首页、robots、sitemap、Bing 验证文件、IndexNow key、canonical、hreflang、Schema 与 GA4 Measurement ID；robots 另验证 GPTBot、OAI-SearchBot、ChatGPT-User、ClaudeBot、PerplexityBot 没有被根路径规则阻断。
 
 ## 本地验证

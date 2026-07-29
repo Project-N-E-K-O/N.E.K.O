@@ -23,13 +23,13 @@ async function readMaintainerGuide() {
   )
 }
 
-test('daily schedule always runs a paid depth-100 AIO baseline', async () => {
+test('scheduled and manually dispatched paid runs force a depth-100 AIO baseline', async () => {
   const workflow = await readWorkflow()
 
   assert.match(workflow, /cron: '15 0 \* \* \*'/)
   assert.match(workflow, /github\.event_name == 'schedule' && 'paid'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && '100'/)
-  assert.match(workflow, /github\.event_name == 'schedule' && 'true'/)
+  assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && '100'/)
+  assert.match(workflow, /\(github\.event_name == 'schedule' \|\| inputs\.run_mode == 'paid'\) && 'true'/)
   assert.doesNotMatch(workflow, /ENABLE_PAID_DATAFORSEO_SCHEDULE/)
 })
 
@@ -37,7 +37,8 @@ test('maintainer documentation cannot revive the obsolete paid-schedule kill swi
   const guide = await readMaintainerGuide()
 
   assert.match(guide, /08:15 Asia\/Shanghai schedule always runs the paid baseline/)
-  assert.match(guide, /fixed-name `seo-geo-daily-report` artifact/)
+  assert.match(guide, /fixed-name `seo-geo-daily-report` diagnostic artifact/)
+  assert.match(guide, /`seo-geo-daily-paid-baseline`/)
   assert.match(guide, /obsolete `ENABLE_PAID_DATAFORSEO_SCHEDULE` variable/)
   assert.doesNotMatch(guide, /set `ENABLE_PAID_DATAFORSEO_SCHEDULE=true`/)
   assert.doesNotMatch(guide, /schedule is skipped unless/)
@@ -75,7 +76,9 @@ test('the unified artifact contains source statuses, raw reports, Markdown, and 
   assert.equal((workflow.match(/sort_by\(\.created_at\) \| last/gu) ?? []).length, 4)
   assert.match(workflow, /--indexnow "cn=/)
   assert.match(workflow, /--indexnow "online=/)
-  assert.match(workflow, /startswith\("seo-geo-daily-"\)/)
+  assert.match(workflow, /actions\/artifacts\?name=seo-geo-daily-paid-baseline/)
+  assert.match(workflow, /\.name == "seo-geo-daily-paid-baseline"/)
+  assert.match(workflow, /\.workflow_run\.head_branch == "main"/)
   assert.match(workflow, /--previous-report "\$PREVIOUS_REPORT"/)
   assert.match(workflow, /PREVIOUS_REPORT_EVIDENCE=https:\/\/github\.com/)
   assert.match(workflow, /npm run seo:report/)
@@ -89,6 +92,9 @@ test('the unified artifact contains source statuses, raw reports, Markdown, and 
   assert.match(workflow, /docs\/\.seo-reports\/\*\*/)
   assert.match(workflow, /!docs\/\.seo-reports\/previous\/\*\*/)
   assert.match(workflow, /name: seo-geo-daily-report/)
+  assert.match(workflow, /name: Publish verified paid comparison baseline/)
+  assert.match(workflow, /name: seo-geo-daily-paid-baseline/)
+  assert.match(workflow, /github\.ref == 'refs\/heads\/main'/)
 })
 
 test('documentation deployment retains a fixed-name .online IndexNow status artifact', async () => {

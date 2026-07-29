@@ -224,6 +224,14 @@ test('recognizes locale home navigation only when leaving a concrete docs page',
     false,
   )
   assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/ja/'),
+    false,
+  )
+  assert.equal(
     analytics.isDocsHomeUrl('/api/', 'https://project-neko.online/guide/'),
     false,
   )
