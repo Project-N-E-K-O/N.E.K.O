@@ -356,6 +356,52 @@ def test_personal_links_interleave_non_empty_groups_until_exhausted():
     ]
 
 
+def test_bilibili_candidate_metadata_survives_link_extraction():
+    raw = {
+        "region": "china",
+        "video": {
+            "videos": [
+                {
+                    "platform": "bilibili",
+                    "lane": "home",
+                    "kind": "video",
+                    "resource_id": "BVmeta",
+                    "bvid": "BVmeta",
+                    "title": "推荐视频",
+                    "author": "某UP",
+                    "url": "https://www.bilibili.com/video/BVmeta",
+                    "reason": "B站首页推荐",
+                    "description_hint": "可靠的视频简介",
+                    "published_at": 123,
+                    "native_rank": 2,
+                    "authenticated": True,
+                }
+            ]
+        },
+    }
+
+    links = _extract_links_from_raw("video", raw)
+
+    assert links == [
+        {
+            "title": "推荐视频",
+            "url": "https://www.bilibili.com/video/BVmeta",
+            "source": "B站",
+            "platform": "bilibili",
+            "lane": "home",
+            "kind": "video",
+            "resource_id": "BVmeta",
+            "bvid": "BVmeta",
+            "author": "某UP",
+            "reason": "B站首页推荐",
+            "description_hint": "可靠的视频简介",
+            "published_at": 123,
+            "native_rank": 2,
+            "authenticated": True,
+        }
+    ]
+
+
 def test_xhh_is_hidden_as_a_standalone_menu_mode():
     root = Path(__file__).resolve().parents[2]
     menu_source = (root / "static/avatar/avatar-ui-drag.js").read_text(encoding="utf-8")

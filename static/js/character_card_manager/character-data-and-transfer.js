@@ -628,14 +628,25 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
     if (!window._openSettingsWindows) window._openSettingsWindows = {};
     const existingWindow = window._openSettingsWindows[url];
     if (existingWindow && !existingWindow.closed) {
+        if (form && form._autoCreatedDetachedName) {
+            await rollbackAutoCreatedCatgirl(form, form._autoCreatedDetachedName);
+        }
         if (form && form._autoCreated) form._autoCreatedDependentPopup = existingWindow;
-        existingWindow.focus();
+        if (typeof window.requestOpenedWindowRestoreIfMinimized === 'function') {
+            window.requestOpenedWindowRestoreIfMinimized(existingWindow);
+        }
         return;
     }
     delete window._openSettingsWindows[url];
 
-    const popup = window.open(url, '_blank',
-        'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0');
+    const modelManagerFeatures =
+        'toolbar=no,location=no,status=no,menubar=no,scrollbars=yes,resizable=yes,width=' + screen.availWidth + ',height=' + screen.availHeight + ',top=0,left=0';
+    let reusedModelManagerWindow = false;
+    const popup = typeof window.openOrFocusWindow === 'function'
+        ? window.openOrFocusWindow(url, 'neko_model_manager_singleton', modelManagerFeatures, {
+            onReuse: () => { reusedModelManagerWindow = true; }
+        })
+        : window.open(url, 'neko_model_manager_singleton', modelManagerFeatures);
     if (!popup) {
         if (typeof showAlert === 'function') await showAlert(window.t ? window.t('character.allowPopups') : '请允许弹窗！');
         // 弹窗被拦截：回滚本次及此前重命名遗留的 detached 临时角色，避免用户直接刷新/关页时残留空记录
@@ -644,11 +655,15 @@ async function openModelManagerForCharacterForm(form, fallbackName) {
         }
         return;
     }
+    if (reusedModelManagerWindow) {
+        if (form && (form._autoCreated || form._autoCreatedDetachedName)) {
+            await rollbackAutoCreatedCatgirl(form);
+        }
+        return;
+    }
 
     window._openSettingsWindows[url] = popup;
     if (form && form._autoCreated) form._autoCreatedDependentPopup = popup;
-    popup.moveTo(0, 0);
-    popup.resizeTo(screen.availWidth, screen.availHeight);
     const timer = setInterval(() => {
         if (!popup.closed) {
             if (form && popup._modelManagerHasSaved) form._autoCreatedDependentPopupSaved = true;

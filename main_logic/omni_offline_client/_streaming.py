@@ -127,11 +127,11 @@ class _StreamingMixin:
             if use_vision_config:
                 base_url = self.vision_base_url
                 api_key = self.vision_api_key if self.vision_api_key and self.vision_api_key != '' else None
-                provider_type = self.vision_provider_type
+                provider_type = getattr(self, "vision_provider_type", None)
             else:
                 base_url = self.base_url
                 api_key = self.api_key
-                provider_type = self.provider_type
+                provider_type = getattr(self, "provider_type", None)
 
             # 先创建新 client，成功后再原子替换，避免半切换状态。
             # max_completion_tokens 跟随当前 max_response_length 同步设置
@@ -212,14 +212,25 @@ class _StreamingMixin:
 
         return False
 
-    async def _notify_response_discarded(self, reason: str, attempt: int, max_attempts: int, will_retry: bool,
-                                         message: Optional[str] = None) -> None:
+    async def _notify_response_discarded(
+        self,
+        reason: str,
+        attempt: int,
+        max_attempts: int,
+        will_retry: bool,
+        message: Optional[str] = None,
+        *,
+        callback: Optional[
+            Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]
+        ] = None,
+    ) -> None:
         """
         Notify the upper layer that the current reply was discarded, so the frontend bubble can be cleared / the user informed
         """
-        if self.on_response_discarded:
+        discard_callback = callback or self.on_response_discarded
+        if discard_callback:
             try:
-                await self.on_response_discarded(reason, attempt, max_attempts, will_retry, message)
+                await discard_callback(reason, attempt, max_attempts, will_retry, message)
             except Exception as e:
                 logger.warning(f"通知 response_discarded 失败: {e}")
 
@@ -412,6 +423,9 @@ class _StreamingMixin:
         thinking_on: bool = False,
         input_transcript_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         history_replacement_text: str | None = None,
+        response_discarded_callback: Optional[
+            Callable[[str, int, int, bool, Optional[str]], Awaitable[None]]
+        ] = None,
     ) -> None:
         """
         Send a text message to the API and stream the response.
@@ -449,6 +463,10 @@ class _StreamingMixin:
         ``history_replacement_text`` keeps the full prompt available for the current
         LLM turn, then replaces the just-appended user history entry before the next
         turn reuses ``_conversation_history``.
+
+        ``response_discarded_callback`` binds discard ownership to this invocation.
+        It avoids re-reading mutable session-level request state after a later text
+        request has already started.
         """  # noqa: DOCSTRING_CJK
         if not text or not text.strip():
             # If only images without text, use a default prompt
@@ -462,6 +480,7 @@ class _StreamingMixin:
         # does not clear via _notify_reasoning_done — core's inline finally clears
         # unconditionally — so it only needs the bump, not an owner token.
         self._begin_reasoning_stream()
+        discard_callback = response_discarded_callback or self.on_response_discarded
 
         # Check if we need to switch to vision model. A staged proactive-vision
         # screenshot (the screen she just commented on) counts as an image too,
@@ -474,7 +493,11 @@ class _StreamingMixin:
         #    answering the screen-based talk anymore. History only grows by
         #    appends between staging and this read (the user hasn't been appended
         #    yet), so a length change means an intervening AI turn (Codex P2).
-        proactive_image = self._proactive_image_to_inject
+        # A few lightweight callers/tests intentionally construct the client via
+        # ``__new__`` and wire only the fields needed for one streaming turn.
+        # Treat an absent staging slot exactly like an empty slot so the optional
+        # proactive-vision feature does not break those legacy construction paths.
+        proactive_image = getattr(self, "_proactive_image_to_inject", None)
         if proactive_image:
             _expired = (
                 time.monotonic() - self._proactive_image_staged_at
@@ -724,7 +747,9 @@ class _StreamingMixin:
                         # uncapped.
                         _focus_overrides = self._focus_stream_overrides(
                             thinking_on, self.model,
-                            base_max_tokens=self.llm.max_completion_tokens if self.llm else None,
+                            base_max_tokens=(
+                                getattr(getattr(self, "llm", None), "max_completion_tokens", None)
+                            ),
                         )
                         # Focus 凝神: leak-prone models (qwen3.5/3.6/3.7 hybrids)
                         # stream their chain-of-thought into ``content`` ending in
@@ -1226,6 +1251,7 @@ class _StreamingMixin:
                                     total_attempts,
                                     True,
                                     None,
+                                    callback=discard_callback,
                                 )
                                 logger.info(
                                     "OmniOfflineClient: 响应被丢弃（%s），第 %d/%d 次重试",
@@ -1284,6 +1310,7 @@ class _StreamingMixin:
                                     total_attempts,
                                     False,
                                     truncate_msg,
+                                    callback=discard_callback,
                                 )
                                 status_reported = True
                                 # _conversation_history 由 core.handle_response_discarded
@@ -1307,6 +1334,7 @@ class _StreamingMixin:
                                 total_attempts,
                                 False,
                                 final_message,
+                                callback=discard_callback,
                             )
                             status_reported = True
                             # gibberish 或截不出句末 / 非 length 类 guard 失败 —
@@ -1482,13 +1510,14 @@ class _StreamingMixin:
                         # 整轮判定：本轮是否吐过任何文本到前端 —— 用 _total 才能
                         # 覆盖 tool_round_persisted 已重置 final-segment 的场景。
                         # 否则 pre-tool 文本残留在前端但 notify_discarded 漏触发。
-                        if assistant_message_total and self.on_response_discarded:
+                        if assistant_message_total and discard_callback:
                             await self._notify_response_discarded(
                                 f"api_error:{error_type}",
                                 attempt + 1,
                                 max_retries,
                                 will_retry=True,
                                 message=None,
+                                callback=discard_callback,
                             )
                         assistant_message = ""
                         assistant_message_total = ""
@@ -1555,7 +1584,7 @@ class _StreamingMixin:
                     # ``will_retry=False``，并附带可读的错误码到前端。
                     # 整轮判定：用 _total，覆盖 tool_round_persisted 已重置
                     # final-segment 但 pre-tool 文本仍在前端的场景。
-                    if assistant_message_total and self.on_response_discarded:
+                    if assistant_message_total and discard_callback:
                         try:
                             await self._notify_response_discarded(
                                 f"text_gen_error:{type(e).__name__}",
@@ -1563,6 +1592,7 @@ class _StreamingMixin:
                                 max_retries,
                                 will_retry=False,
                                 message=json.dumps(discard_error_payload),
+                                callback=discard_callback,
                             )
                             status_reported = True
                         except Exception as _notify_err:

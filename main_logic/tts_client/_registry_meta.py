@@ -23,7 +23,7 @@
 # ├─────────────┼──────────────┼──────────────┼──────────────────────────────┤
 # │ ws_bistream │ WS 流式推送   │ WS 流式回传   │ step, qwen, cosyvoice       │
 # │ http_sentence│ HTTP 按句请求 │ SSE/JSON 流式 │ cogtts, gemini, openai,     │
-# │             │              │ 或一次性返回   │ minimax                      │
+# │             │              │ 或一次性返回   │ custom, minimax             │
 # │ local       │ 各自实现      │ 各自实现      │ gptsovits, local_cosyvoice  │
 # └─────────────┴──────────────┴──────────────┴──────────────────────────────┘
 #
@@ -126,6 +126,16 @@ TTS_PROVIDER_REGISTRY: dict[str, TTSProviderMeta] = {
         client_sentence_split=True,
         audio_format="PCM 24kHz → resample 48kHz",
         notes="gpt-4o-mini-tts；按句切分后流式接收音频",
+    ),
+    "custom": TTSProviderMeta(
+        name="custom",
+        category="http_sentence",
+        protocol="HTTP(S) POST /v1/audio/speech (streaming PCM response)",
+        input_streaming=False,
+        output_streaming=True,
+        client_sentence_split=True,
+        audio_format="PCM 24kHz → resample 48kHz",
+        notes="用户配置的 OpenAI-compatible TTS endpoint",
     ),
     "mimo": TTSProviderMeta(
         name="mimo",

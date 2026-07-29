@@ -89,6 +89,7 @@ from wt_telemetry import (
 _CONTENT_TYPE_BY_EXT = {"jpg": "image/jpeg", "png": "image/png"}
 DEFAULT_BIND_HOST = "127.0.0.1"
 
+
 _HUD_BUFFER = 200   # HUD 事件累积上限
 _CHAT_BUFFER = 200  # 聊天累积上限
 _PROXIMITY_BUFFER = 100  # 接近告警累积上限
@@ -895,7 +896,8 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _cors(self) -> None:
         origin = str(self.headers.get("Origin") or "").strip()
-        allowed_origins = getattr(self.server, "cors_origins", frozenset())
+        server = getattr(self, "server", None)
+        allowed_origins = getattr(server, "cors_origins", frozenset()) if server else frozenset()
         if origin and origin in allowed_origins:
             self.send_header("Access-Control-Allow-Origin", origin)
             self.send_header("Access-Control-Allow-Methods", "GET, OPTIONS")

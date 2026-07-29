@@ -72,7 +72,10 @@ class MentionsMixin:
             changed = True
         return changed
 
-    def record_mentions(self, name: str, response_text: str) -> None:
+    def record_mentions(
+        self, name: str, response_text: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> None:
         """After a proactive delivery, scan which persona entries the response mentioned.
 
         Core logic: mentioned > SUPPRESS_MENTION_LIMIT times within 5 hours → suppress.
@@ -80,15 +83,28 @@ class MentionsMixin:
         called once per turn doesn't mark every unrelated fact as mentioned.
         """
         persona = self.ensure_persona(name)
+        persona_view = self._persona_view_for_subjects(
+            persona,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
         stop_names = self._get_entity_stop_names(name)
-        if self._apply_record_mentions(persona, response_text, stop_names=stop_names):
+        if self._apply_record_mentions(persona_view, response_text, stop_names=stop_names):
             self.save_persona(name, persona)
 
-    async def arecord_mentions(self, name: str, response_text: str) -> None:
+    async def arecord_mentions(
+        self, name: str, response_text: str, *, subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> None:
         stop_names = await self._aget_entity_stop_names(name)
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
-            if self._apply_record_mentions(persona, response_text, stop_names=stop_names):
+            persona_view = self._persona_view_for_subjects(
+                persona,
+                subjects,
+                include_legacy_private=include_legacy_private,
+            )
+            if self._apply_record_mentions(persona_view, response_text, stop_names=stop_names):
                 await self.asave_persona(name, persona)
 
     def _apply_update_suppressions(self, persona: dict) -> bool:

@@ -7,6 +7,8 @@ from tests.static_app_parts import read_path_or_parts
 
 import pytest
 
+from tests.node_harness import run_node_stdin
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE_PATH = PROJECT_ROOT / "static" / "app" / "app-audio-capture.js"
 APP_BUTTONS_PATH = PROJECT_ROOT / "static" / "app" / "app-buttons.js"
@@ -118,13 +120,28 @@ def _balanced_js_block_end(source: str, brace: int) -> int:
     raise AssertionError("unterminated JS block")
 
 
-def _catch_block_after(source: str, marker: str) -> str:
+def _catch_block_after(source: str, marker: str, binding: str | None = None) -> str:
+    """The first ``catch`` block after ``marker``, optionally by its binding.
+
+    Without ``binding`` this returns whatever catch comes first, which silently
+    retargets the moment a best-effort ``catch (_)`` teardown is added in
+    between -- the assertions then run against three lines of cleanup and fail
+    for a reason that has nothing to do with what they check. Name the binding
+    when the intent is a specific handler.
+    """
     start = source.find(marker)
     if start < 0:
         raise AssertionError(f"missing marker {marker!r}")
-    match = re.search(r"\bcatch\s*\([^)]*\)\s*\{", source[start:])
+    pattern = (
+        rf"\bcatch\s*\(\s*{re.escape(binding)}\s*\)\s*\{{"
+        if binding
+        else r"\bcatch\s*\([^)]*\)\s*\{"
+    )
+    match = re.search(pattern, source[start:])
     if not match:
-        raise AssertionError(f"missing catch block after {marker!r}")
+        raise AssertionError(
+            f"missing catch block{f' (binding {binding!r})' if binding else ''} after {marker!r}"
+        )
     catch_start = start + match.start()
     brace = source.find("{", catch_start)
     return source[catch_start : _balanced_js_block_end(source, brace) + 1]
@@ -190,13 +207,22 @@ class FakeButton {{
 }}
 
 const micButton = new FakeButton();
+const screenButton = new FakeButton();
 const stopCalls = [];
+const startScreenCalls = [];
+const stopScreenCalls = [];
+
+global.localStorage = {{
+  value: null,
+  getItem() {{ return this.value; }},
+  setItem(_key, value) {{ this.value = String(value); }},
+}};
 
 global.window = {{
   appState: {{
     dom: {{
       micButton,
-      screenButton: new FakeButton(),
+      screenButton,
       resetSessionButton: new FakeButton(),
       muteButton: new FakeButton(),
       stopButton: new FakeButton(),
@@ -220,11 +246,25 @@ global.window = {{
       await handler({{ detail: {{ active }} }});
     }}
   }},
+  async dispatchScreenToggle(active) {{
+    const handlers = this._listeners.get('live2d-screen-toggle') || [];
+    for (const handler of handlers) {{
+      await handler({{ detail: {{ active }} }});
+    }}
+  }},
   stopMicCapture: async function () {{
     stopCalls.push('stop');
   }},
   startMicCapture: async function () {{
     throw new Error('floating mic toggle must not call startMicCapture directly');
+  }},
+  startScreenSharing: async function () {{
+    startScreenCalls.push('start');
+    screenButton.classList.add('active');
+  }},
+  stopScreenSharing: async function () {{
+    stopScreenCalls.push('stop');
+    screenButton.classList.remove('active');
   }},
 }};
 
@@ -246,6 +286,9 @@ runScenario()
         classes: micButton.classList.toArray(),
       }},
       stopCalls,
+      startScreenCalls,
+      stopScreenCalls,
+      screenClasses: screenButton.classList.toArray(),
     }}));
   }})
   .catch((error) => {{
@@ -254,10 +297,9 @@ runScenario()
   }});
 """
 
-    result = subprocess.run(
-        [node_executable, "-"],
-        input=node_harness,
-        text=True,
+    result = run_node_stdin(
+        node_executable,
+        node_harness,
         capture_output=True,
         check=False,
         timeout=10,
@@ -273,7 +315,11 @@ runScenario()
 def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecycle():
     source = _read(APP_AUDIO_CAPTURE_PATH)
     start_mic = _js_function_block(source, "startMicCapture")
-    failure = _catch_block_after(start_mic, "S.stream = await navigator.mediaDevices.getUserMedia(constraints);")
+    failure = _catch_block_after(
+        start_mic,
+        "ownStream = await navigator.mediaDevices.getUserMedia(constraints);",
+        binding="err",
+    )
 
     assert "S.voiceStartPending = false;" not in failure
     assert "window.isMicStarting = false;" not in failure
@@ -297,16 +343,126 @@ def test_floating_mic_popup_keeps_speaker_volume_without_microphone_devices():
     render = source[render_start:render_end]
 
     assert "var hasMicrophoneDevices = audioInputs.length > 0;" in render
+    permission_refresh = "audioInputs = await ensureMicrophonePermission();"
+    assert "if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted)" in render
+    assert permission_refresh in render
+    assert render.index(permission_refresh) < render.index(
+        "var hasMicrophoneDevices = audioInputs.length > 0;"
+    )
     assert "micPopup.appendChild(noMicItem);\n                return true;" not in render
 
     layout_index = render.index("// ===== 双栏布局 =====")
     speaker_index = render.index("speakerContainer.className = 'speaker-volume-container';")
-    devices_guard_index = render.index("if (hasMicrophoneDevices) {")
+    gain_guard_index = render.index("if (!hasMicrophoneDevices) {")
     no_devices_index = render.index("noMicItem.textContent = window.t ? window.t('microphone.noDevices')")
 
-    assert layout_index < speaker_index < devices_guard_index < no_devices_index
+    assert layout_index < speaker_index < gain_guard_index < no_devices_index
+    assert "leftColumn.appendChild(speakerContainer);" in render
     assert "gainSlider.disabled = true;" in render
-    assert "rightColumn.appendChild(noMicItem);" in render
+    assert "listBody.appendChild(noMicItem);" in render
+
+
+def test_floating_mic_popup_exposes_screen_share_start_and_stop_action():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    toggle_factory = _js_function_block(source, "createScreenShareToggleButton")
+
+    assert "button.dataset.nekoScreenShareAction = 'toggle';" in toggle_factory
+    assert "window.startScreenSharing" in toggle_factory
+    assert "window.stopScreenSharing" in toggle_factory
+    assert "window.t('voiceControl.stopShare')" in toggle_factory
+    voice_guard = "if (!window.isRecording) {"
+    start_call = "await window.startScreenSharing();"
+    assert voice_guard in toggle_factory
+    assert "window.t('app.screenShareRequiresVoice')" in toggle_factory
+    assert toggle_factory.index(voice_guard) < toggle_factory.index(start_call)
+
+    # 启用动画：像素扫过填充（参考视频按钮的像素动画）
+    assert "neko-share-toggle-fill" in toggle_factory
+    assert "isScreenShareActive()" in toggle_factory
+    cleanup = "shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });"
+    register = "shareToggleButtonRegistry.push(button);"
+    assert cleanup in toggle_factory
+    assert toggle_factory.index(cleanup) < toggle_factory.index(register)
+
+    # 合并为一行：迷你胶囊开关嵌在「屏幕共享」设置行右侧（替换 chevron）
+    render_start = source.index("window.renderFloatingMicList = async function")
+    render_end = source.index("function updateMicListSelection()", render_start)
+    render = source[render_start:render_end]
+    screen_row = "leftColumn.insertBefore(screenActionButton, firstContent);"
+    mic_row = "leftColumn.insertBefore(micActionButton, firstContent);"
+    assert screen_row in render and mic_row in render
+    assert render.index(screen_row) < render.index(mic_row)
+    assert "createScreenShareToggleButton({ mini: true })" in render
+    assert "screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);" in render
+    assert "leftColumn.insertBefore(shareToggleButton, firstContent);" not in render
+
+
+def test_screen_share_toggle_has_pixel_sweep_animation():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    styles = _js_function_block(source, "injectShareToggleStyles")
+
+    # 画布像素层：低分辨率画布 + pixelated 放大呈现马赛克块
+    assert "canvas.neko-share-toggle-fill" in styles
+    assert "image-rendering:pixelated;" in styles
+    assert ".neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill" in styles
+
+    # 像素溶解引擎：随机马赛克从右向左扫过 + 填满后闪烁
+    fx = _js_function_block(source, "createSharePixelFx")
+    assert "SHARE_PIXEL_PALETTE" in fx
+    assert "SHARE_PIXEL_JITTER" in fx
+    assert "requestAnimationFrame" in fx
+    assert "activate" in fx and "deactivate" in fx
+    assert "startShimmer" in fx
+
+    # 按钮使用画布填充层 + 滑块/紫色目标点（复刻参考视频，灰点按需求不实现）
+    toggle_factory = _js_function_block(source, "createScreenShareToggleButton")
+    assert "document.createElement('canvas')" in toggle_factory
+    assert "neko-share-toggle-knob" in toggle_factory
+    assert "neko-share-toggle-dots" not in toggle_factory
+    assert "neko-share-toggle-goal" in toggle_factory
+    assert "pixelFx.activate" in toggle_factory
+    assert "pixelFx.deactivate" in toggle_factory
+
+    # 滑块默认在左端，启用后滑到右端；像素前沿带软过渡与左端渐变尾；含迷你行内变体
+    styles = _js_function_block(source, "injectShareToggleStyles")
+    assert ".neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}" in styles
+    assert ".neko-share-toggle-btn.neko-share-toggle-mini" in styles
+    assert ".neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}" in styles
+    fx = _js_function_block(source, "createSharePixelFx")
+    assert "SHARE_PIXEL_FADE" in fx
+    assert "SHARE_PIXEL_MIN_ALPHA" in fx
+
+    # 状态与隐藏 #screenButton 的 .active class 同步
+    assert "isScreenShareActive" in source
+    assert "MutationObserver" in source
+    assert "syncShareToggleButtons" in source
+
+
+def test_mic_main_action_matches_settings_chevron_and_hover_expands():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    action_button = _js_function_block(source, "createMainActionButton")
+
+    assert "arrow.textContent = '\\u203A';" in action_button or 'arrow.textContent = "\u203A";' in action_button or "arrow.textContent = '\u203A';" in action_button
+    assert "fontSize: '16px'" in action_button
+    assert "button.dataset.nekoMicMainAction = actionKey;" in action_button
+    assert "openMicActionPanel(actionKey, onClick)" in action_button
+    assert "button.addEventListener('mouseenter'" in action_button
+    assert "scheduleMicActionHoverCollapse()" in action_button
+    assert "createMainActionButton(" in source
+    assert "'screen'" in source
+    assert "openScreenSourceSubwindow" in source
+    assert "MIC_ACTION_HOVER_COLLAPSE_MS = 260" in source
+    assert "wireMicSubwindowHoverBridge" in source
+
+
+def test_mic_device_subwindow_retries_permission_when_device_cache_is_empty():
+    source = _read(APP_AUDIO_CAPTURE_PATH)
+    permission = _js_function_block(source, "ensureMicrophonePermission")
+    device_panel = _js_function_block(source, "openMicDeviceSubwindow")
+
+    assert "micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0" in permission
+    assert "if (!devices || devices.length === 0 || !micPermissionGranted)" in device_panel
+    assert "devices = await ensureMicrophonePermission();" in device_panel
 
 
 def test_outer_voice_start_failure_clears_pending_flags_before_composer_restore():
@@ -463,3 +619,114 @@ def test_floating_mic_toggle_actual_state_matrix(name, script_body, expected):
     assert result["mic"]["disabled"] is expected["disabled"], name
     assert result["mic"]["classes"] == expected["classes"], name
     assert result["stopCalls"] == expected["stopCalls"], name
+
+
+def test_voice_auto_screen_stops_owned_share_even_after_setting_is_disabled():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    localStorage.value = '0';
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == ["stop"]
+    assert result["screenClasses"] == []
+
+
+def test_voice_auto_screen_does_not_own_cancelled_start():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    window.startScreenSharing = async function () {
+      startScreenCalls.push('start');
+    };
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == []
+    assert result["screenClasses"] == []
+
+
+def test_voice_auto_screen_never_stops_user_owned_share():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    await window.dispatchScreenToggle(true);
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == []
+    assert result["screenClasses"] == ["active"]
+
+
+def test_manual_screen_stop_clears_voice_share_ownership():
+    result = _run_floating_mic_toggle_scenario(
+        """
+    localStorage.value = '1';
+    S.isRecording = true;
+    await window.dispatchMicToggle(true);
+    await window.dispatchScreenToggle(false);
+    await window.dispatchMicToggle(false);
+    return {};
+        """
+    )
+
+    assert result["startScreenCalls"] == ["start"]
+    assert result["stopScreenCalls"] == ["stop"]
+    assert result["screenClasses"] == []
+
+
+def test_voice_start_bails_when_another_start_took_over_the_pending_slot():
+    # Codex P2. On mobile the composer stays visible during an audio session, so
+    # the user can send text inside the 500ms settle window after an audio ack.
+    # app-websocket.js leaves _pendingSessionStartMode owned by that newer text
+    # start but settles the audio promise anyway (its timeout is already gone,
+    # so nothing else ever would). The audio flow then resumes -- and none of
+    # the guards after the await can see what happened: the text ack changes
+    # neither voiceSessionStartEpoch nor isMicStarting, so ensureVoiceStartCurrent
+    # passes, and it never sets voiceInputRouteBlocked either. The microphone
+    # opens and reclaims a lease onto the text session's blocked route.
+    source = _read(APP_BUTTONS_PATH)
+    start_flow = _mic_button_start_flow(source)
+
+    await_index = start_flow.index("await sessionStartPromise;")
+    guard = "S._pendingSessionStartMode !== 'audio'"
+    assert guard in start_flow, (
+        "the resumed voice start must notice that another start owns the slot"
+    )
+    guard_index = start_flow.index(guard)
+    assert await_index < guard_index, "the check belongs after the await, not before"
+
+    # It has to come before BOTH downstream guards, because neither can see a
+    # takeover -- that is the whole finding.
+    assert guard_index < start_flow.index("ensureVoiceStartCurrent();", await_index)
+    assert guard_index < start_flow.index("S.voiceInputRouteBlocked === true")
+    assert guard_index < start_flow.index("await window.startMicCapture();")
+
+    # And it must unwind via the non-throwing helper: the generic catch clears
+    # S.sessionStartedResolver / Rejecter / _pendingSessionStartMode
+    # unconditionally, which would tear down the start that superseded us.
+    bail = start_flow[guard_index:start_flow.index("ensureVoiceStartCurrent();", await_index)]
+    bail_code = " ".join(
+        line for line in bail.splitlines() if not line.strip().startswith("//")
+    )
+    assert "abortVoiceStartForBlockedRoute" in bail_code
+    assert "throw" not in bail_code
+    # The newer start owns the shared timeout now; cancelling it is the same
+    # cross-start damage this guard exists to prevent.
+    assert "clearTimeout" not in bail_code

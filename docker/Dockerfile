@@ -172,6 +172,21 @@ RUN cd /app && \
     unset http_proxy && \
     unset https_proxy
 
+# 6c. Verify (and, only for non-CI builds, download) the pinned voice-turn ONNX
+# assets (Silero VAD + Smart Turn). Same scheme as 6b: CI pre-fetches the
+# weights on the native runner (cached by manifest hash, mirroring
+# build-desktop*.yml) and ships them in the build context, so this step only
+# SHA-256 verifies them offline. A plain `docker build` without pre-fetched
+# weights downloads them here (honoring the proxy ARGs). OnnxModelRuntime never
+# downloads at runtime, so without these files independent ASR endpointing
+# (Smart Turn) fails on GLM/Gemini routes.
+RUN cd /app && \
+    if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
+    if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
+    python3 tools/voice_eval/prepare_voice_turn_assets.py && \
+    unset http_proxy && \
+    unset https_proxy
+
 # 7. Copy frontend build artifacts
 # Note: react-neko-chat's vite.config.ts writes to outDir `../../static/react/neko-chat`
 # (relative to its package root), so the actual build output lives at

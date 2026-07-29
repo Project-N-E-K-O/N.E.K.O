@@ -61,8 +61,13 @@
         return entry && entry.shape ? entry.shape : 'rounded-rect';
     }
 
-    function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant) {
-        return kind === 'input' && variant === 'plain-capsule';
+    function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics) {
+        if (kind === 'input' && variant === 'plain-capsule') {
+            return true;
+        }
+        return kind === 'capsule-input'
+            && !!metrics
+            && metrics.waylandWorkAreaCarrier === true;
     }
 
     var YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO = 0.6;
@@ -122,14 +127,14 @@
         };
     }
 
-    function getYuiGuideChatSpotlightSourceRect(kind, variant, rect) {
+    function getYuiGuideChatSpotlightSourceRect(kind, variant, rect, metrics) {
         var sourceRect = {
             left: rect.left,
             top: rect.top,
             width: rect.width,
             height: rect.height
         };
-        if (shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant)) {
+        if (shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics)) {
             var anchor = getYuiGuideChatCapsuleTextAnchor();
             var anchorRect = anchor && anchor.rect;
             if (
@@ -631,6 +636,9 @@
 
     function updateYuiGuideChatSpotlight(kind, pcOverlayRunId) {
         var pcOverlayAvailable = I.isYuiGuidePcOverlayAvailable();
+        var pcWindowMetrics = pcOverlayAvailable && typeof I.getYuiGuideWindowMetrics === 'function'
+            ? I.getYuiGuideWindowMetrics()
+            : null;
         var spotlight = I.getYuiGuideChatSpotlightElement(!pcOverlayAvailable);
         var patchOptions = {
             tutorialRunId: pcOverlayRunId || I.yuiGuideChatSpotlightPcOverlayRunId
@@ -640,7 +648,9 @@
         var rect = target && typeof target.getBoundingClientRect === 'function'
             ? target.getBoundingClientRect()
             : null;
-        var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, I.yuiGuideChatSpotlightVariant, rect) : null;
+        var sourceRectInfo = rect
+            ? getYuiGuideChatSpotlightSourceRect(kind, I.yuiGuideChatSpotlightVariant, rect, pcWindowMetrics)
+            : null;
         var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;
 
         if (!sourceRect || sourceRect.width <= 0 || sourceRect.height <= 0) {
@@ -673,7 +683,7 @@
                 top: sourceRect.top - padding,
                 width: sourceRect.width + padding * 2,
                 height: sourceRect.height + padding * 2
-            }, kind, I.yuiGuideChatSpotlightVariant)].filter(Boolean);
+            }, kind, I.yuiGuideChatSpotlightVariant, pcWindowMetrics)].filter(Boolean);
             rememberYuiGuideChatPcSpotlightRects(kind, pcRects, I.yuiGuideChatSpotlightVariant);
             I.sendYuiGuidePcOverlayPatch({ spotlights: pcRects }, false, patchOptions);
             if (spotlight) {
@@ -812,6 +822,7 @@
         I.yuiGuidePcOverlayRunIdOverride = '';
         I.yuiGuidePcOverlaySpotlights = [];
         I.yuiGuidePcOverlayCursor = null;
+        I.yuiGuidePcOverlaySkipControl = null;
         clearYuiGuideChatPcSpotlightRects();
         try {
             window.localStorage.removeItem('yuiGuidePcOverlayRunId');

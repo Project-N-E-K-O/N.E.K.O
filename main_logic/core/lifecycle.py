@@ -24,7 +24,7 @@ import json
 import time
 from datetime import datetime
 from websockets import exceptions as web_exceptions
-from fastapi import WebSocket
+from fastapi import WebSocket, WebSocketDisconnect
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.omni_offline_client import OmniOfflineClient, _is_safety_violation_signal
 from main_logic.proactive_delivery import (
@@ -112,66 +112,117 @@ class LifecycleMixin:
                     return
             logger.warning(f"[{self.lanlan_name}] 检测到长时间无语音输入，自动关闭session")
             
-            # 清空热切换音频缓存的最后4秒数据（静默期间的音频主要是噪音）
+            # 静默关闭是权威抑制边界；不能保留一段残缺候选音频。
             async with self.hot_swap_cache_lock:
                 # Re-check: a hot-swap could have completed while we waited for the lock.
                 if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
                     logger.info("⏭️ handle_silence_timeout: expected_session stale after acquiring cache lock, skipping")
                     return
                 if self.hot_swap_audio_cache:
-                    SILENCE_DURATION_BYTES = 120000
-                    total_bytes = sum(len(chunk) for chunk in self.hot_swap_audio_cache)
-                    
-                    if total_bytes > SILENCE_DURATION_BYTES:
-                        bytes_to_remove = SILENCE_DURATION_BYTES
-                        removed_bytes = 0
-                        
-                        while bytes_to_remove > 0 and self.hot_swap_audio_cache:
-                            last_chunk = self.hot_swap_audio_cache[-1]
-                            chunk_size = len(last_chunk)
-                            
-                            if chunk_size <= bytes_to_remove:
-                                self.hot_swap_audio_cache.pop()
-                                bytes_to_remove -= chunk_size
-                                removed_bytes += chunk_size
-                            else:
-                                keep_size = chunk_size - bytes_to_remove
-                                self.hot_swap_audio_cache[-1] = last_chunk[:keep_size]
-                                removed_bytes += bytes_to_remove
-                                bytes_to_remove = 0
-                        
-                        logger.info(f"🗑️ 静默超时：已清空音频缓存的最后 {removed_bytes} 字节（约{removed_bytes/32000:.1f}秒）")
-                    else:
-                        logger.info(f"🗑️ 静默超时：缓存总量不足4秒，全部清空（{total_bytes} 字节）")
-                        self.hot_swap_audio_cache.clear()
+                    cached_duration_ms = self.hot_swap_audio_cache.duration_ms
+                    self.hot_swap_audio_cache.clear()
+                    logger.info(
+                        "🗑️ 静默超时：已清空 %s ms 热切换音频缓存",
+                        cached_duration_ms,
+                    )
             
             # Re-check before websocket side-effects
             if expected_session is not None and expected_session is not self.session and expected_session is not self.pending_session:
                 logger.info("⏭️ handle_silence_timeout: expected_session stale before WS send, skipping")
                 return
             
+            # Deriving the payload needs no socket, so it is hoisted out of the
+            # display-socket guard: the lease holder must hear the microphone
+            # teardown even when the display socket is already gone. Closing a
+            # chat window leaves mgr.websocket pointing at the dead socket until
+            # that disconnect's voice handover repoints it, and the silence
+            # timeout can fire inside exactly that window.
+            session_for_reason = expected_session or self.session or self.pending_session
+            timeout_api_type = str(
+                getattr(session_for_reason, "_api_type", "") or getattr(self, "core_api_type", "") or ""
+            ).lower()
+            timeout_model = str(
+                getattr(session_for_reason, "_model_lower", "")
+                or getattr(session_for_reason, "model", "")
+                or ""
+            ).lower()
+            is_free_timeout = timeout_api_type == "free" or "free" in timeout_model
+            timeout_reason_code = (
+                "free_api_silence_timeout" if is_free_timeout else "silence_timeout"
+            )
+            # Snapshot the lease this timeout is speaking to, BEFORE the sends
+            # below await. Compared again just before the fan-out.
+            #
+            # Connection id only, deliberately NOT the lease generation: the
+            # generation is bumped by the SAME holder on every hard_mute /
+            # hard_unmute / focus_suppress / focus_resume / lease_sync
+            # (asr_runtime.py _handle_voice_input_control). Including it makes a
+            # user muting during the display send look like a lease handover, so
+            # the teardown is skipped while end_session below still runs -- the
+            # backend closes the session and the recorder never hears about it,
+            # which is the exact zombie microphone this fan-out exists to
+            # prevent. Identity is what decides whether we are still talking to
+            # the same window; its mute state is not.
+            voice_lease_identity = getattr(self, "_voice_lease_connection_id", "")
+            if is_free_timeout:
+                # Pure display toast; send_status guards its own socket.
+                await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
+            auto_close_payload = {
+                "type": "auto_close_mic",
+                "reason_code": timeout_reason_code,
+                "api_type": timeout_api_type,
+                "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
+            }
             if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
-                session_for_reason = expected_session or self.session or self.pending_session
-                timeout_api_type = str(
-                    getattr(session_for_reason, "_api_type", "") or getattr(self, "core_api_type", "") or ""
-                ).lower()
-                timeout_model = str(
-                    getattr(session_for_reason, "_model_lower", "")
-                    or getattr(session_for_reason, "model", "")
-                    or ""
-                ).lower()
-                is_free_timeout = timeout_api_type == "free" or "free" in timeout_model
-                timeout_reason_code = (
-                    "free_api_silence_timeout" if is_free_timeout else "silence_timeout"
+                try:
+                    await self.websocket.send_json(auto_close_payload)
+                except WebSocketDisconnect:
+                    # Isolated: a display socket that dies between the CONNECTED
+                    # check and the send must not skip the fan-out below, nor
+                    # the end_session that follows it.
+                    pass
+                except Exception as e:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] auto_close_mic display push failed: %s",
+                        self.lanlan_name,
+                        e,
+                    )
+            # Re-validate before targeting the LEASE holder. Codex P2: the sends
+            # above await and nothing here holds ``self.lock``, so a replacement
+            # session can be installed during them -- and _send_to_voice_owner
+            # resolves the owner socket at CALL time, so this old timeout's
+            # auto_close_mic would land on the NEW recorder and stop a
+            # microphone the user just opened. Reproduced: with the lease moved
+            # mid-send, the fresh recorder received the stale teardown.
+            #
+            # end_session below is guarded by expected_session and refuses on
+            # its own, which is precisely why the damage was frontend-only and
+            # invisible from the backend. It still runs: a stale timeout has
+            # nothing to close, and the guard is what decides that.
+            #
+            # The lease holder is the window with the live hardware; the
+            # current socket may be a newer chat window with no microphone.
+            # Game owner exempt, mirroring _revoke_lease_for_blocked_route.
+            # (The FREE_API_AUTO_CLOSE_VOICE send_status above stays
+            # current-socket-only on purpose: it is a pure toast.)
+            session_still_current = expected_session is None or (
+                expected_session is self.session
+                or expected_session is self.pending_session
+            )
+            lease_still_current = voice_lease_identity == getattr(
+                self, "_voice_lease_connection_id", ""
+            )
+            if not session_still_current or not lease_still_current:
+                logger.info(
+                    "⏭️ handle_silence_timeout: session/lease moved during the display send, "
+                    "skipping the recorder teardown (session_current=%s lease_current=%s)",
+                    session_still_current,
+                    lease_still_current,
                 )
-                if is_free_timeout:
-                    await self.send_status(json.dumps({"code": "FREE_API_AUTO_CLOSE_VOICE"}))
-                await self.websocket.send_json({
-                    "type": "auto_close_mic",
-                    "reason_code": timeout_reason_code,
-                    "api_type": timeout_api_type,
-                    "message": f"{self.lanlan_name}检测到长时间无语音输入，已自动关闭麦克风"
-                })
+            elif getattr(self, "_voice_lease_owner", "none") != "game":
+                send_to_voice_owner = getattr(self, "_send_to_voice_owner", None)
+                if callable(send_to_voice_owner):
+                    await send_to_voice_owner(auto_close_payload)
             
             await self.end_session(by_server=True, expected_session=expected_session)
             
@@ -640,6 +691,19 @@ class LifecycleMixin:
         # 仍走静默 return（保持原行为，避免后台 text 启动反过来顶掉用户的语音会话）。
         # _allow_cross_mode_restart：跨模式重启重入时置 False，把递归深度封到 1，
         # 二次并发撞车回落静默 return 而非无界递归。
+        # Codex P2. Snapshot the start_session handshake for THIS dispatched
+        # operation, before the first await. websocket_router writes the
+        # frontend's authoritative independent-ASR toggle into one manager-level
+        # field and then fires start_session as a background task; the route
+        # decision only reads that field much later, inside
+        # _start_independent_asr_if_enabled, after many awaits. A second
+        # start_session arriving in between -- including a text one, or an older
+        # frontend whose field is absent and therefore CLEARS the override --
+        # replaced the first request's value, so that audio session selected the
+        # persisted or opposite route. Read once here, then carry it down.
+        session_handshake_override = getattr(
+            self, "_independent_asr_handshake_override", None
+        )
         self._start_session_seed_turn_language()
         # 重置防刷屏标志
         self.session_closed_by_server = False
@@ -715,7 +779,8 @@ class LifecycleMixin:
             tts_result, llm_result = await asyncio.gather(
                 self._start_session_start_tts_if_needed(),
                 self._start_session_start_llm(
-                    input_mode, core_config_snapshot, _new_dialog_task, _mem_start
+                    input_mode, core_config_snapshot, realtime_config,
+                    _new_dialog_task, _mem_start
                 ),
                 return_exceptions=True
             )
@@ -740,7 +805,12 @@ class LifecycleMixin:
             
             # 标记 session 激活
             if self.session:
-                await self._start_session_activate(input_mode, llm_result, _diag_start)
+                await self._start_session_activate(
+                    input_mode,
+                    llm_result,
+                    _diag_start,
+                    handshake_override=session_handshake_override,
+                )
             else:
                 raise Exception("Session not initialized")
         
@@ -1179,6 +1249,7 @@ class LifecycleMixin:
         return resp.text
 
     async def _start_session_start_llm(self, input_mode, core_config_snapshot,
+                                       prepared_realtime_config,
                                        new_dialog_task, mem_start):
         """Asynchronously create and connect the LLM Session.
 
@@ -1318,7 +1389,7 @@ class LifecycleMixin:
             new_session.on_thinking_active = self._make_thinking_active_callback(new_session)
         else:
             # 同上：await 记忆拉取之后必须重读，不复用 prepare_runtime 的快照
-            _prev_realtime_base = str(realtime_config.get('base_url') or '')
+            _prev_realtime_base = str((prepared_realtime_config or {}).get('base_url') or '')
             realtime_config = await self._config_manager.aget_model_api_config('realtime')
             # 区域翻转诊断，与 text 分支对偶；realtime 的音色下发按本快照的
             # base_url 走配对闸门，错配不下发、落服务端默认（fail-safe）。
@@ -1425,7 +1496,14 @@ class LifecycleMixin:
             self.pending_input_data.clear()
             self._clear_pending_context_appends(release_durable_cached=True)
 
-    async def _start_session_activate(self, input_mode, next_context_count, diag_start):
+    async def _start_session_activate(
+        self,
+        input_mode,
+        next_context_count,
+        diag_start,
+        *,
+        handshake_override=...,
+    ):
         """Post-connect activation: flip the active flags, start the message
         handler, reset the failure circuit, ack the frontend, and open the
         input gate after queued context is drained."""
@@ -1442,6 +1520,14 @@ class LifecycleMixin:
 
         # 启动消息处理任务
         self.message_handler_task = asyncio.create_task(self.session.handle_messages())
+
+        # Resolve the microphone route before session_started opens the frontend
+        # input path. When independent ASR is required, failure is non-fatal to
+        # the Core session but keeps microphone input blocked instead of using Omni.
+        await self._start_independent_asr_if_enabled(
+            input_mode,
+            handshake_override=handshake_override,
+        )
 
         # 启动成功，重置失败计数器和熔断
         self.session_start_failure_count = 0
@@ -2276,6 +2362,10 @@ class LifecycleMixin:
             self._require_context_append_current_delivery = True
             next_context_count_at_promote = len(self._snapshot_next_session_context_messages())
             await self._apply_pending_tts_route_after_swap()
+            # The pending Omni session is now the active session. If its Core
+            # provider changed, replace the independent ASR before replaying
+            # cached microphone audio so one frame can never cross providers.
+            await self._reconcile_independent_asr_after_core_change()
             self.current_speech_id = str(uuid4())
             self._tts_done_queued_for_turn = False
             self._tts_done_pending_until_ready = False
@@ -2475,6 +2565,10 @@ class LifecycleMixin:
         # duplicate end_session callback can't reset the CURRENT live session's
         # gate or drop its queued cues (Codex P1).
         self._reset_proactive_gate()
+
+        # Stale expected_session callbacks have already returned above. Invalidate
+        # ASR callbacks before any remaining teardown awaits can yield.
+        await self._close_independent_asr(next_route_mode="blocked")
 
         if _inactive_early:
             if reset_starting_count:

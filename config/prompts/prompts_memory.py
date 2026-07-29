@@ -1166,6 +1166,21 @@ def _normalize_memory_prompt_lang(lang: str | None) -> str:
     return "en"
 
 
+def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | None) -> str:
+    """Resolve a fact prompt for the given language.
+
+    The generated ``text`` field is deliberately **not** pinned to the
+    app-configured language: a fact surfacing in another language is normally
+    just the user code-switching mid-conversation, and forcing a translation
+    risked mangling proper nouns / titles / quoted wording.
+    """
+    lang_key = _normalize_memory_prompt_lang(lang)
+    # Fact extraction predates a full Traditional-Chinese template. Reuse the
+    # Chinese instructions for zh-TW.
+    template_key = "zh" if lang_key == "zh-TW" else lang_key
+    return _loc(templates, template_key)
+
+
 def render_profile_rename_event_context(
     lang: str | None,
     old_name: str,
@@ -1442,7 +1457,7 @@ Retorne um array JSON (se não houver fatos a extrair, retorne []):
 
 
 def get_fact_extraction_prompt(lang: str = "zh") -> str:
-    return _loc(FACT_EXTRACTION_PROMPT, lang)
+    return _localized_fact_extraction_prompt(FACT_EXTRACTION_PROMPT, lang)
 
 
 # ---------- fact_extraction_ai_aware_prompt → i18n dict ----------
@@ -1681,7 +1696,7 @@ Retorne um array JSON (se não houver fatos adicionais a extrair, retorne []):
 
 
 def get_fact_extraction_ai_aware_prompt(lang: str = "zh") -> str:
-    return _loc(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
+    return _localized_fact_extraction_prompt(FACT_EXTRACTION_AI_AWARE_PROMPT, lang)
 
 
 # backward compat
@@ -2869,6 +2884,63 @@ PERSONA_FUSION_ENTITY_LABEL = {
 def get_persona_fusion_entity_label(entity: str, lang: str = "zh") -> str:
     table = PERSONA_FUSION_ENTITY_LABEL.get(entity, PERSONA_FUSION_ENTITY_LABEL["master"])
     return _loc(table, lang)
+
+
+# 群聊 scope 化 persona 渲染的 section 标题（memory/persona/rendering.py）。
+# {subject_id} 注入平台前缀的会话/成员标识（如 "qq:12345"）。
+SCOPED_PERSONA_SECTION_HEADER = {
+    "group_chat": {
+        "zh": "群聊记忆（{subject_id}）",
+        "en": "Group chat memory ({subject_id})",
+        "ja": "グループチャットの記憶（{subject_id}）",
+        "ko": "그룹 채팅 기억 ({subject_id})",
+        "ru": "Память группового чата ({subject_id})",
+        "es": "Memoria del chat grupal ({subject_id})",
+        "pt": "Memória do chat em grupo ({subject_id})",
+    },
+    "participant": {
+        "zh": "成员记忆（{subject_id}）",
+        "en": "Participant memory ({subject_id})",
+        "ja": "メンバーの記憶（{subject_id}）",
+        "ko": "멤버 기억 ({subject_id})",
+        "ru": "Память об участнике ({subject_id})",
+        "es": "Memoria del participante ({subject_id})",
+        "pt": "Memória do participante ({subject_id})",
+    },
+    "group_participant": {
+        "zh": "群内成员记忆（{subject_id}）",
+        "en": "Group member memory ({subject_id})",
+        "ja": "グループメンバーの記憶（{subject_id}）",
+        "ko": "그룹 멤버 기억 ({subject_id})",
+        "ru": "Память об участнике группы ({subject_id})",
+        "es": "Memoria del miembro del grupo ({subject_id})",
+        "pt": "Memória do membro do grupo ({subject_id})",
+    },
+}
+
+
+def get_scoped_persona_section_header(
+    subject_kind: str, subject_id: str, lang: str = "zh",
+) -> str:
+    table = SCOPED_PERSONA_SECTION_HEADER.get(subject_kind)
+    if table is None:
+        return subject_id
+    return _loc(table, lang).format(subject_id=subject_id)
+
+GROUP_DIGEST_SPEAKER_LABEL = {
+    "zh": "群聊成员们（每条消息开头标注了实际发言人）",
+    "en": "the group members (the actual speaker is named at the start of each message)",
+    "ja": "グループのメンバーたち（各メッセージの冒頭に実際の発言者が記載）",
+    "ko": "그룹 멤버들 (각 메시지 시작 부분에 실제 발언자가 표기됨)",
+    "ru": "участники группы (в начале каждого сообщения указан реальный автор)",
+    "es": "los miembros del grupo (el hablante real se indica al inicio de cada mensaje)",
+    "pt": "os membros do grupo (o falante real é indicado no início de cada mensagem)",
+}
+
+
+def get_group_digest_speaker_label(lang: str = "zh") -> str:
+    return _loc(GROUP_DIGEST_SPEAKER_LABEL, lang)
+
 
 # ---------- persona_correction_prompt → i18n dict ----------
 

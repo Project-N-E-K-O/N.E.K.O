@@ -70,7 +70,10 @@ from .yui_handoff import (  # noqa: F401
     consume_yui_guide_handoff,
 )
 from .status import (  # noqa: F401
+    _DEFAULT_NEKO_SOCIAL_BASE_URL,
     _derive_system_lifecycle_state,
+    get_system_client_id,
+    get_system_social_config,
     get_system_status,
     get_token_usage,
     get_pending_notices,

@@ -23,6 +23,7 @@ from plugin.plugins.galgame_plugin.ocr_capture_backends import printwindow as ga
 from plugin.plugins.galgame_plugin.ocr_capture_backends import dxcam as galgame_dxcam_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import pyautogui as galgame_pyautogui_backend
 from plugin.plugins.galgame_plugin.ocr_capture_backends import _helpers as galgame_ocr_capture_helpers
+from plugin.plugins.galgame_plugin import ocr_manager_text as galgame_ocr_manager_text
 from plugin.plugins.galgame_plugin import ocr_rapidocr_backend as galgame_ocr_rapidocr_backend
 from plugin.plugins.galgame_plugin import ocr_reader as galgame_ocr_reader
 from plugin.plugins._shared.rapidocr import rapidocr_support as galgame_rapidocr_support
@@ -75,6 +76,7 @@ from plugin.plugins.galgame_plugin.screen_classifier import (
     _normalized_bounds,
 )
 from plugin.plugins.galgame_plugin.service import build_config
+from tests.fake_clock import patch_module_clock
 
 
 pytestmark = pytest.mark.plugin_unit
@@ -239,7 +241,8 @@ def test_dxcam_create_none_after_retries_records_failure(
         "_create_dxcam_camera_with_timeout",
         _create_with_timeout,
     )
-    monkeypatch.setattr(galgame_dxcam_backend.time, "sleep", lambda _seconds: None)
+    # 重试之间的 time.sleep() 是 dxcam 后端自己调的（dxcam.py::_camera_instance）。
+    patch_module_clock(monkeypatch, galgame_dxcam_backend, sleep=lambda _seconds: None)
 
     backend = galgame_dxcam_backend.DxcamCaptureBackend(logger=_Logger())
     with pytest.raises(RuntimeError, match="returned None after retries"):
@@ -5405,7 +5408,13 @@ def test_rapidocr_runtime_cache_reloads_after_idle_timeout(
 
     monkeypatch.setattr(galgame_ocr_reader, "load_rapidocr_runtime", fake_load_runtime)
     monkeypatch.setattr(galgame_ocr_rapidocr_backend, "load_rapidocr_runtime", fake_load_runtime)
-    monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: now["value"])
+    # 读时钟的是 RapidOcrBackend._ensure_runtime（定义在 ocr_rapidocr_backend），
+    # ocr_reader 只是把这个类 re-export 出来，patch 它没用。
+    patch_module_clock(
+        monkeypatch,
+        galgame_ocr_rapidocr_backend,
+        monotonic=lambda: now["value"],
+    )
     cache_key = (
         install_target_dir,
         "onnxruntime",
@@ -5781,7 +5790,9 @@ def test_rapidocr_auto_lang_first_switch_not_blocked_by_startup_cooldown(
         rapidocr_lang_changed_callback=persisted.append,
     )
     manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
-    monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: 1.0)
+    # 切换冷却读的时钟在 _maybe_auto_switch_rapidocr_lang 里，该方法属于
+    # ocr_manager_text 这个 mixin 模块，不是聚合门面 ocr_reader。
+    patch_module_clock(monkeypatch, galgame_ocr_manager_text, monotonic=lambda: 1.0)
     monkeypatch.setattr(
         galgame_ocr_reader,
         "inspect_rapidocr_installation",
@@ -5822,7 +5833,12 @@ async def test_rapidocr_auto_lang_session_end_clears_switch_cooldown(
     )
     manager._writer.start_session(_window()[0])
     manager._ocr_lang_detector = _OcrLangDetector(window_size=1, confirm_streak=1)
-    monkeypatch.setattr(galgame_ocr_reader.time, "monotonic", lambda: clock["now"])
+    # 同上：冷却时间戳由 ocr_manager_text 里的 _maybe_auto_switch_rapidocr_lang 读写。
+    patch_module_clock(
+        monkeypatch,
+        galgame_ocr_manager_text,
+        monotonic=lambda: clock["now"],
+    )
     monkeypatch.setattr(
         galgame_ocr_reader,
         "inspect_rapidocr_installation",

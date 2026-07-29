@@ -543,7 +543,7 @@ def test_externalized_chat_spotlight_keeps_variant_pipeline_but_day1_uses_capsul
     assert "yuiGuideChatSpotlightVariant = '';" in interpage_source
     assert "yuiGuideChatSpotlightLastPcVariant = '';" in interpage_source
     assert "toYuiGuideScreenRect({" in interpage_source
-    assert "}, kind, yuiGuideChatSpotlightVariant)" in interpage_source
+    assert "}, kind, yuiGuideChatSpotlightVariant, pcWindowMetrics)" in interpage_source
     assert "rememberYuiGuideChatPcSpotlightRects(kind, pcRects, yuiGuideChatSpotlightVariant);" in interpage_source
     assert "yuiGuideChatSpotlightLastPcVariant === yuiGuideChatSpotlightVariant" in interpage_source
     assert "const sceneSpotlightVariant = scene && typeof scene.spotlightVariant === 'string'" in scene_source
@@ -993,8 +993,12 @@ def test_day1_chat_input_round_rect_highlight_excludes_mid_flow_cursor_scenes():
     assert "persistent: 'chat-input'" not in history_block
     assert "cursorAction: 'move'" in screen_entry_block
     assert "cursorAction: 'wobble'" not in screen_entry_block
+    assert "target: '#${p}-btn-mic'" in screen_entry_block
+    assert "target: '#${p}-btn-screen'" not in screen_entry_block
     assert "cursorAction: 'move'" in screen_invite_block
     assert "cursorAction: 'wobble'" not in screen_invite_block
+    assert "target: '#${p}-btn-mic'" in screen_invite_block
+    assert "target: '#${p}-btn-screen'" not in screen_invite_block
 
     return_control_scene = round_block.split("id: 'day1_takeover_return_control'", 1)[1]
     assert "cursorAction: 'move'" in return_control_scene
@@ -1275,6 +1279,18 @@ def test_avatar_floating_intro_motion_reveals_prepared_tutorial_model():
     assert "this.operationRegistry.run(scene, primaryTarget, narrationStartedAt, narrationPromise, operationContext)" in director_source
 
 
+def test_day1_externalized_intro_greeting_uses_scene_orchestrator_without_cursor_wobble():
+    source = SCENE_ORCHESTRATOR_PATH.read_text(encoding="utf-8")
+    externalized_block = source.split("if (introExternalizedChatSpotlightKind) {", 1)[1].split(
+        "} else if (introChatSpotlightTarget)",
+        1,
+    )[0]
+
+    assert "director.interactionTakeover.setExternalizedChatSpotlight(" in externalized_block
+    assert "introExternalizedChatSpotlightKind" in externalized_block
+    assert "effect: 'wobble'" not in externalized_block
+
+
 def test_day1_legacy_externalized_intro_greeting_does_not_send_cursor_wobble():
     source = read_director_source(ROOT)
     externalized_block = source.split("async playDay1IntroGreetingRoundScene(sceneRunId)", 1)[1].split(
@@ -1325,15 +1341,17 @@ def test_day1_intro_externalized_chat_suppresses_home_pc_cursor_before_hiding_it
     )
 
 
-def test_day1_return_control_preserves_externalized_cursor_from_capture_scene():
-    source = read_director_source(ROOT)
-    preserve_block = source.split("shouldPreserveExternalizedChatCursor(previousSceneId, scene)", 1)[1].split(
-        "shouldPreserveIntroExternalizedChatCursor(scene)",
-        1,
-    )[0]
+def test_day1_return_control_declares_externalized_cursor_preservation():
+    source = DAY1_GUIDE_PATH.read_text(encoding="utf-8")
+    round_block = extract_day1_round_block(source)
+    scene_id_index = round_block.index("id: 'day1_takeover_return_control'")
+    scene_start = round_block.rfind("\n                {", 0, scene_id_index)
+    scene_end = round_block.find("\n                }", scene_id_index)
+    assert scene_start != -1
+    assert scene_end != -1
+    return_control_scene = round_block[scene_start:scene_end]
 
-    assert "previousSceneId === 'day1_takeover_capture_cursor'" in preserve_block
-    assert "nextSceneId === 'day1_takeover_return_control'" in preserve_block
+    assert "preserveExternalizedChatGuideTarget: true" in return_control_scene
 
 
 def test_only_day1_tutorial_configs_use_cursor_wobble():

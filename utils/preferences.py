@@ -328,14 +328,25 @@ _ALLOWED_CONVERSATION_SETTINGS = {
     'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
     'avatarReactionBubbleEnabled', 'slopFilterEnabled',
     'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage',
-    'textGuardMaxLength', 'noiseReductionEnabled'
+    'textGuardMaxLength', 'noiseReductionEnabled', 'independentAsrEnabled',
+    'voiceInputResourceOptimizationEnabled'
 }
 
 
-def load_global_conversation_settings() -> Dict[str, Any]:
+def load_global_conversation_settings(*, strict: bool = False) -> Dict[str, Any]:
     """
     Load global conversation settings (from the global entry of user_preferences.json)
     Reads the file directly, not via load_user_preferences() (which filters out the sentinel)
+
+    Args:
+        strict (bool): re-raise a genuine read/parse failure instead of
+            reporting it as "no settings". Callers whose default is *weaker*
+            than the persisted choice need this: swallowing an unreadable or
+            malformed file returns the same ``{}`` as a file that legitimately
+            has no settings yet, so the caller silently picks the default and
+            overrides the user's stored preference. An ABSENT file (or one with
+            no global entry) is not a failure and still returns ``{}`` under
+            strict, so a first run keeps defaulting normally.
 
     Returns:
         Dict[str, Any]: conversation settings dict; empty dict when absent
@@ -352,13 +363,15 @@ def load_global_conversation_settings() -> Dict[str, Any]:
                             # 提取对话设置：仅返回白名单字段，防止泄露无关数据
                             return {k: v for k, v in pref.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
     except Exception as e:
+        if strict:
+            raise
         print(f"加载全局对话设置失败: {e}")
     return {}
 
 
-async def aload_global_conversation_settings() -> Dict[str, Any]:
+async def aload_global_conversation_settings(*, strict: bool = False) -> Dict[str, Any]:
     """Async version of load_global_conversation_settings: for async paths, offloading sync IO."""
-    return await asyncio.to_thread(load_global_conversation_settings)
+    return await asyncio.to_thread(load_global_conversation_settings, strict=strict)
 
 
 def load_ui_language_override() -> Optional[str]:
@@ -460,7 +473,8 @@ def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
             'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
             'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
             'avatarReactionBubbleEnabled', 'slopFilterEnabled', 'subtitleEnabled',
-            'noiseReductionEnabled'
+            'noiseReductionEnabled', 'independentAsrEnabled',
+            'voiceInputResourceOptimizationEnabled'
         }
         _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
         _STRING_FIELDS = {'userLanguage'}

@@ -126,7 +126,8 @@ DispatchResolver = Callable[
 # How the settings page probes this provider's endpoint for liveness.
 #   'ws_handshake' — open the WebSocket and watch the handshake for auth errors
 #                    (vLLM-Omni). 'local_http' — hit the local service over HTTP
-#                    (GPT-SoVITS). 'none' — no preflight probe.
+#                    (GPT-SoVITS). 'http_tts' — issue a protocol-specific HTTP
+#                    synthesis request. 'none' — no preflight probe.
 ProbeKind = Literal["ws_handshake", "local_http", "http_tts", "none"]
 
 

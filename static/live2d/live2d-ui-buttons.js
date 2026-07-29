@@ -371,6 +371,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
     // 响应式布局处理
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isMobileWidth()) {
             buttonsContainer.style.flexDirection = 'column';
             buttonsContainer.style.top = '16px';
@@ -438,6 +439,16 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
             }
 
             if (config.popupToggle) {
+                return;
+            }
+
+            // 点击型按钮（非 toggle）：社区入口 / 请她离开
+            if (config.id === 'social') {
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
+                return;
+            }
+            if (config.id === 'goodbye') {
+                window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
                 return;
             }
 
@@ -653,7 +664,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
                     }
                 }, 50);
             });
-        } else {
+        } else if (config.id !== 'social' && config.id !== 'goodbye') {
             btn.addEventListener('click', (e) => {
                 console.log(`[Live2D] 按钮被点击: ${config.id}`);
                 e.stopPropagation();
@@ -674,6 +685,7 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         };
         console.log(`[Live2D] 按钮已创建: ${config.id}, hasPopup: ${config.hasPopup}, toggle: ${config.toggle}`);
     });
+    applyResponsiveFloatingLayout();
 
     console.log('[Live2D] 所有浮动按钮已创建完成');
 

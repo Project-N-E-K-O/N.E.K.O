@@ -1533,6 +1533,7 @@
     const SHARED_NAMED_WINDOW_PREFIX = 'neko:named-window:';
     const SHARED_NAMED_WINDOW_FOCUS_PREFIX = 'neko:named-window-focus:';
     const SHARED_NAMED_WINDOW_TTL_MS = 5000;
+    const MODEL_MANAGER_SINGLETON_WINDOW_NAME = 'neko_model_manager_singleton';
     
     /**
      * 打开或聚焦窗口
@@ -1542,7 +1543,7 @@
      * @param {string} url - 要打开的 URL
      * @param {string} windowName - 窗口名称（用于标识和重用）
      * @param {string} [features] - 窗口特性（可选，默认为标准设置窗口）
-     * @param {{navigateOnReuse?: boolean}} [options] - 复用同名窗口时是否强制导航
+     * @param {{navigateOnReuse?: boolean, onReuse?: Function}} [options] - 复用同名窗口时的行为
      * @returns {Window|null} - 返回窗口对象
      */
     window.openOrFocusWindow = function(url, windowName, features, options) {
@@ -1551,10 +1552,21 @@
         features = features || defaultFeatures;
         const targetUrl = resolveOpenedWindowUrl(url);
         const normalizedOptions = options && typeof options === 'object' ? options : {};
+        const isModelManager = isModelManagerWindowUrl(targetUrl);
+        const effectiveWindowName = isModelManager
+            ? MODEL_MANAGER_SINGLETON_WINDOW_NAME
+            : windowName;
 
         // 检查窗口是否已打开且未关闭
-        const existingWindow = window._openedWindows[windowName];
+        const existingWindow = window._openedWindows[effectiveWindowName];
         if (existingWindow && !existingWindow.closed) {
+            if (isModelManager) {
+                if (typeof normalizedOptions.onReuse === 'function') {
+                    normalizedOptions.onReuse();
+                }
+                requestOpenedWindowRestoreIfMinimized(existingWindow);
+                return existingWindow;
+            }
             if (normalizedOptions.navigateOnReuse) {
                 navigateOpenedWindow(existingWindow, targetUrl, !!normalizedOptions.navigateOnReuse);
             }
@@ -1564,21 +1576,35 @@
             return existingWindow;
         }
 
-        if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(windowName)) {
-            requestSharedNamedWindowFocus(windowName);
-            return createSharedNamedWindowProxy(windowName);
+        if (!normalizedOptions.navigateOnReuse && isSharedNamedWindowActive(effectiveWindowName)) {
+            if (typeof normalizedOptions.onReuse === 'function') {
+                normalizedOptions.onReuse();
+            }
+            requestSharedNamedWindowFocus(effectiveWindowName);
+            return createSharedNamedWindowProxy(effectiveWindowName);
         }
 
         // 没有本地 handle 且目标页未登记为活跃时，直接按 URL 打开。
         // 避免先打开 about:blank；部分 Electron/window.open handler 会因此卡住。
-        const newWindow = window.open(targetUrl, windowName, features);
+        const newWindow = window.open(targetUrl, effectiveWindowName, features);
         if (newWindow) {
-            cacheOpenedWindow(windowName, newWindow);
+            cacheOpenedWindow(effectiveWindowName, newWindow);
             applyOpenedWindowFeatures(newWindow, features);
-            requestOpenedWindowRestore(newWindow);
+            if (!isModelManager) requestOpenedWindowRestore(newWindow);
         }
         return newWindow;
     };
+
+    function isModelManagerWindowUrl(url) {
+        try {
+            const pathname = new URL(url, window.location.href).pathname;
+            return pathname === '/model_manager' || pathname === '/l2d';
+        } catch (_) {
+            return false;
+        }
+    }
+
+    window.isModelManagerWindowUrl = isModelManagerWindowUrl;
 
     function isReusableNamedWindowName(windowName) {
         if (!windowName) return false;
@@ -1725,6 +1751,30 @@
 
     window.requestOpenedWindowRestore = requestOpenedWindowRestore;
 
+    function requestOpenedWindowRestoreIfMinimized(targetWindow) {
+        if (!targetWindow || targetWindow.closed) return;
+        var hasNativeRestoreBridge = false;
+        try {
+            var targetWindowControl = targetWindow.nekoWindowControl;
+            hasNativeRestoreBridge = !!(
+                targetWindowControl &&
+                typeof targetWindowControl.restoreIfMinimized === 'function'
+            );
+        } catch (_) {}
+        try {
+            targetWindow.postMessage({ type: 'neko:restore-window-if-minimized' }, window.location.origin);
+        } catch (_) {}
+        if (!hasNativeRestoreBridge) {
+            try {
+                if (targetWindow.document && targetWindow.document.hidden === true) {
+                    targetWindow.focus();
+                }
+            } catch (_) {}
+        }
+    }
+
+    window.requestOpenedWindowRestoreIfMinimized = requestOpenedWindowRestoreIfMinimized;
+
     /**
      * 计算「在当前所在显示器可用区域内居中」的 window.open features 字符串。
      * 多显示器下 window.open 的 left/top 是相对整个虚拟桌面原点的坐标，必须叠加当前屏幕
@@ -1767,12 +1817,19 @@
 
     window.addEventListener('message', function(event) {
         if (event.origin !== window.location.origin) return;
-        if (!event.data || event.data.type !== 'neko:restore-window') return;
+        if (!event.data) return;
         const api = window.nekoWindowControl;
-        if (!api || typeof api.restore !== 'function') return;
-        Promise.resolve(api.restore()).catch(function() {
-            // 非 Electron 环境下忽略
-        });
+        if (!api) return;
+        if (event.data.type === 'neko:restore-window-if-minimized') {
+            if (typeof api.restoreIfMinimized !== 'function') return;
+            Promise.resolve(api.restoreIfMinimized()).catch(function() {});
+            return;
+        }
+        if (event.data.type === 'neko:restore-window' && typeof api.restore === 'function') {
+            Promise.resolve(api.restore()).catch(function() {
+                // 非 Electron 环境下忽略
+            });
+        }
     });
     
     /**

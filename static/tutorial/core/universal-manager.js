@@ -3846,10 +3846,31 @@ class UniversalTutorialManager {
             return;
         }
 
+        const label = this.t('tutorial.buttons.skip', '跳过');
         controller.show({
-            label: this.t('tutorial.buttons.skip', '跳过'),
+            label: label,
             onSkip: () => this.handleTutorialSkipRequest()
         });
+        let overlayOwnsSkipInput = false;
+        try {
+            const capabilities = window.nekoTutorialOverlay
+                && typeof window.nekoTutorialOverlay.getCapabilities === 'function'
+                ? window.nekoTutorialOverlay.getCapabilities()
+                : null;
+            overlayOwnsSkipInput = !!(capabilities && capabilities.waylandOverlaySkipInput === true);
+        } catch (_) {}
+        const skipButton = document.getElementById('neko-tutorial-skip-btn');
+        if (skipButton) {
+            skipButton.style.visibility = overlayOwnsSkipInput ? 'hidden' : '';
+            skipButton.style.pointerEvents = overlayOwnsSkipInput ? 'none' : '';
+            skipButton.setAttribute('aria-hidden', overlayOwnsSkipInput ? 'true' : 'false');
+        }
+        if (
+            window.appInterpage
+            && typeof window.appInterpage.setYuiGuidePcOverlaySkipControl === 'function'
+        ) {
+            window.appInterpage.setYuiGuidePcOverlaySkipControl(true, label);
+        }
     }
 
     handleTutorialSkipRequest() {
@@ -3863,6 +3884,12 @@ class UniversalTutorialManager {
         const controller = this.ensureTutorialSkipController();
         if (controller && typeof controller.hide === 'function') {
             controller.hide();
+        }
+        if (
+            window.appInterpage
+            && typeof window.appInterpage.setYuiGuidePcOverlaySkipControl === 'function'
+        ) {
+            window.appInterpage.setYuiGuidePcOverlaySkipControl(false, '');
         }
     }
 

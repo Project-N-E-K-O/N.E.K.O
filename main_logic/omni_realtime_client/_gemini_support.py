@@ -295,11 +295,25 @@ class _GeminiMixin:
                 if "closed" in str(e).lower():
                     self._fatal_error_occurred = True
             return
-        await self.send_event({"type": "input_audio_buffer.commit"})
         # The committed buffer excludes the ~21ms tail soxr still holds in the
         # uplink resampler; drop it so it isn't prepended to the next turn.
         self._clear_uplink_resampler()
-        await self.send_event({"type": "response.create"})
+        suffix = str(time.time_ns())
+        ticket = await self._response_arbiter.enqueue(
+            source="manual_audio_commit",
+            events_before_response=(
+                {
+                    "type": "input_audio_buffer.commit",
+                    "event_id": f"event_audio_commit_{suffix}",
+                },
+            ),
+            response_event={
+                "type": "response.create",
+                "event_id": f"event_audio_response_{suffix}",
+            },
+            priority=0,
+        )
+        await ticket.sent
 
     async def _gemini_send_user_turn(self, text: str) -> None:
         """Inject ``text`` as a Gemini user turn and trigger a response via

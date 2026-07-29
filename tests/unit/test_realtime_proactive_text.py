@@ -53,12 +53,24 @@ def _input_texts(events):
     return texts
 
 
+def _ack_pending_input_item(client, events):
+    for event in events:
+        if event.get("type") != "conversation.item.create":
+            continue
+        client._response_arbiter.notify_item_created({
+            "type": "conversation.item.created",
+            "item": event["item"],
+        })
+
+
 async def _prompt_and_complete(client, *args, **kwargs):
     task = asyncio.create_task(client.prompt_ephemeral(*args, **kwargs))
     for _ in range(20):
+        events = _sent_events(client)
+        _ack_pending_input_item(client, events)
         if any(
             event.get("type") == "response.create"
-            for event in _sent_events(client)
+            for event in events
         ):
             break
         await asyncio.sleep(0)
@@ -75,13 +87,37 @@ async def test_prompt_ephemeral_injects_text_and_never_audio():
     delivered = await _prompt_and_complete(client, language="zh")
 
     events = _sent_events(client)
+    input_texts = _input_texts(events)
     assert delivered is True
-    assert any("主动搭话触发" in text for text in _input_texts(events))
+    assert any("主动搭话触发" in text for text in input_texts)
+    assert any("不要假设刚刚看到了新的画面或事件" in text for text in input_texts)
+    assert not any("屏幕主动搭话触发" in text for text in input_texts)
     assert any(event.get("type") == "response.create" for event in events)
     assert not any(
         event.get("type") == "input_audio_buffer.append"
         for event in events
     )
+    await client.close()
+
+
+@pytest.mark.unit
+async def test_prompt_ephemeral_selects_screen_prompt_when_visual_context_exists():
+    client = _make_client()
+    client._latest_image_b64 = DUMMY_IMAGE_B64
+    client._proactive_image_consumed = False
+
+    delivered = await _prompt_and_complete(client, language="zh")
+
+    events = _sent_events(client)
+    event_types = [event.get("type") for event in events]
+    input_texts = _input_texts(events)
+    assert delivered is True
+    assert event_types.index("input_image_buffer.append") < event_types.index(
+        "conversation.item.create"
+    )
+    assert any("屏幕主动搭话触发" in text for text in input_texts)
+    assert any("画面中的具体内容" in text for text in input_texts)
+    assert not any("不要假设刚刚看到了新的画面或事件" in text for text in input_texts)
     await client.close()
 
 
@@ -150,9 +186,11 @@ async def test_failed_response_done_returns_false_and_preserves_image():
         client.prompt_ephemeral("describe what you notice")
     )
     for _ in range(20):
+        events = _sent_events(client)
+        _ack_pending_input_item(client, events)
         if any(
             event.get("type") == "response.create"
-            for event in _sent_events(client)
+            for event in events
         ):
             break
         await asyncio.sleep(0)

@@ -139,6 +139,13 @@
         }
     }
 
+    function restoreCompactSubtitleState(previousActive) {
+        if (!previousActive || state.active) return;
+        if (typeof I.setCompactChatState === 'function') {
+            I.setCompactChatState('default');
+        }
+    }
+
     function syncHostPresentation(previousActive, previousAttachmentsVisible) {
         if (previousActive === state.active) return;
         if (typeof I.applyGalgameBodyClass === 'function') {
@@ -188,6 +195,7 @@
             });
             keepCompactInputAvailable();
         }
+        restoreCompactSubtitleState(previousActive);
         syncHostPresentation(previousActive, previousAttachmentsVisible);
         renderHost();
         return true;
@@ -221,6 +229,7 @@
         state.enteredAt = nextEnteredAt;
         if (!nextActive) state.items = [];
         keepCompactInputAvailable();
+        restoreCompactSubtitleState(previousActive);
         syncHostPresentation(previousActive, previousAttachmentsVisible);
         renderHost();
         return getSnapshot();

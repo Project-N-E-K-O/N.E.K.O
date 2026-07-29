@@ -23,6 +23,10 @@ CRITICAL_RISK = "CRITICAL_RISK"
 DEAD = "DEAD"
 BATTLE_ENDED = "BATTLE_ENDED"
 
+END_MISSION_STATUSES = frozenset(
+    {"win", "won", "victory", "success", "fail", "failed", "lost", "defeat", "left", "ended", "finished"}
+)
+
 ALL_SCENARIOS = (
     OUT_OF_BATTLE,
     SPAWNING,

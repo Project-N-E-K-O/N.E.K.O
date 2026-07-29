@@ -39,6 +39,9 @@ from ._shared import (
 )
 
 
+_ATTACHED_TRANSPORT = object()
+
+
 
 class _TransportMixin:
     _WS_FRAME_LIMIT = OMNI_WS_FRAME_LIMIT_BYTES  # safe threshold below 256KB server cap
@@ -65,6 +68,7 @@ class _TransportMixin:
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
+            self._response_arbiter.reset_connection_state()
             return
 
         # 确保开始新连接时状态完全重置
@@ -92,6 +96,9 @@ class _TransportMixin:
         # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
         # 超时后 websockets 内部会 transport.abort() 强制关闭。
         self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        # Do not reopen the arbiter until the replacement transport exists.
+        # A failed reconnect must leave the prior shutdown state intact.
+        self._response_arbiter.reset_connection_state()
         # Clear fatal flag so send_event/update_session work on this new
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
@@ -810,7 +817,9 @@ class _TransportMixin:
             await self.cancel_response()
 
         self._is_responding = False
-        self._current_response_id = None
+        # Keep the cancelled response identity until its terminal event arrives.
+        # Clearing it here makes the stale-event filter drop that response.done,
+        # leaving the arbiter busy until a later response happens to complete.
         self._current_item_id = None
         # 清空转录buffer和重置标志，防止打断后的错位
         self._output_transcript_buffer = ""
@@ -850,6 +859,7 @@ class _TransportMixin:
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
                     self._route_inject_rejection(err_event_id, error_msg)
+                    self._response_arbiter.notify_error(err_event_id, error_msg)
 
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
@@ -879,6 +889,40 @@ class _TransportMixin:
                             await self.on_connection_error(error_msg)
                         await self.close()
                     continue
+
+                # A cancelled response can still emit buffered events after a
+                # replacement response has become current.  Providers that
+                # include response identity let us reject those late events
+                # without changing the legacy behaviour of id-less proxies.
+                if event_type != "response.created":
+                    event_response_id = event.get("response_id")
+                    if event_type == "response.done" and not event_response_id:
+                        response = event.get("response")
+                        if isinstance(response, dict):
+                            event_response_id = response.get("id")
+                    if (
+                        event_response_id
+                        and event_response_id != self._current_response_id
+                    ):
+                        if event_type == "response.done":
+                            # A terminal event must reach the arbiter even when
+                            # a newer response has become current (crossed
+                            # response.created events): the arbiter tracks every
+                            # live server response id, and an undelivered
+                            # terminal would hold the lane closed until its
+                            # staleness timer. The arbiter attributes terminals
+                            # by response id, so a mismatched id releases only
+                            # that response and never completes the current
+                            # owner. Content of the stale response stays
+                            # filtered below.
+                            self._response_arbiter.notify_response_terminal(event)
+                        logger.info(
+                            "Dropping stale response event type=%s response_id=%s current_response_id=%s",
+                            event_type,
+                            event_response_id,
+                            self._current_response_id,
+                        )
+                        continue
                 # ── Tool calling events ────────────────────────────
                 # Three providers, three flavours of the same idea:
                 #   - OpenAI Realtime (gpt): the canonical event is the
@@ -895,7 +939,7 @@ class _TransportMixin:
                 # All three return results via conversation.item.create
                 # of type function_call_output + response.create, handled
                 # by ``_send_tool_result_openai_realtime``.
-                elif event_type == "response.function_call_arguments.delta":
+                if event_type == "response.function_call_arguments.delta":
                     call_id = event.get("call_id") or ""
                     if call_id:
                         slot = self._inflight_tool_args.setdefault(call_id, {
@@ -953,7 +997,10 @@ class _TransportMixin:
                             result = await self._execute_tool_call(call)
                             await self._send_tool_result_openai_realtime(result)
                         self._fire_task(_run_tool())
+                elif event_type == "conversation.item.created":
+                    self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    self._response_arbiter.notify_response_terminal(event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
                     resp_data = event.get("response", {})
@@ -1053,6 +1100,7 @@ class _TransportMixin:
                     if not self._has_server_vad and self.on_sid_rotate:
                         await self.on_sid_rotate()
                 elif event_type == "response.created":
+                    self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
                     # A response started — our proactive inject's response.create
@@ -1179,28 +1227,64 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
+            await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
+            await self._close_failed_transport("realtime connection closed")
             logger.info("Connection closed as expected")
-            self._fatal_error_occurred = True
-            self.ws = None
         except websockets.exceptions.ConnectionClosedError as e:
             error_msg = str(e)
+            await self._close_failed_transport(error_msg)
             logger.error(f"Connection closed with error: {error_msg}")
-            self._fatal_error_occurred = True
-            self.ws = None
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
-            if self.ws:
-                await self.ws.close()
+            await self._close_failed_transport("realtime connection timeout")
             if self.on_connection_error:
                 await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
         except Exception as e:
+            await self._close_failed_transport(
+                f"realtime message handling failed: {type(e).__name__}"
+            )
             logger.error(f"Error in message handling: {str(e)}")
-            raise e
+            raise
+
+    async def _close_failed_transport(self, reason: str) -> None:
+        """Fail response tickets and atomically detach the failed socket."""
+
+        self._fatal_error_occurred = True
+        ws, self.ws = self.ws, None
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None:
+            await response_arbiter.shutdown(reason)
+        await self._abort_failed_transport(reason, ws)
+
+    async def _abort_failed_transport(
+        self,
+        reason: str,
+        ws=_ATTACHED_TRANSPORT,
+    ) -> None:
+        """Detach, when needed, and physically close a failed raw WebSocket."""
+
+        self._fatal_error_occurred = True
+        if ws is _ATTACHED_TRANSPORT:
+            ws, self.ws = self.ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception as exc:
+                logger.debug(
+                    "failed transport close also failed (%s): %s",
+                    reason,
+                    type(exc).__name__,
+                )
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        ws, self.ws = self.ws, None
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None:
+            await response_arbiter.shutdown("realtime client closed")
+
         # 取消静默检测任务
         if self._silence_check_task:
             self._silence_check_task.cancel()
@@ -1235,16 +1319,15 @@ class _TransportMixin:
             await self._close_gemini()
             return
 
-        if self.ws:
+        if ws:
             try:
                 # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
                 # 保证 end_session 快速返回、主事件循环心跳不受影响。
-                await self.ws.close()
+                await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
             finally:
-                self.ws = None  # 清空引用，防止后续误用
                 logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")

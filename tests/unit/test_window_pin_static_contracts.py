@@ -227,7 +227,17 @@ def test_plugin_manager_pin_control_and_bridge_contract():
 
 def test_pin_labels_exist_in_all_main_and_plugin_locales():
     i18n_bootstrap = read_text("static/i18n-i18next.js")
-    assert "LOCALE_VERSION = '2026-07-22-window-pin-controls-i18n'" in i18n_bootstrap
+    # 只要求存在一个非空的 LOCALE_VERSION（locale 文件靠它做 cache-bust），
+    # 不再钉死具体取值：钉死等于让每一次无关的版本串变更都打红这条用例。
+    # #2465「Refactor memory browser UI」把它从 2026-07-22-window-pin-controls-i18n
+    # 改成 2026-07-24-memory-browser-ui-refactor，这条就一直红着——当时
+    # tests/unit 还没进 CI，没人看见。
+    locale_version = re.search(
+        r"const\s+LOCALE_VERSION\s*=\s*'([^']+)'", i18n_bootstrap
+    )
+    assert locale_version and locale_version.group(1).strip(), (
+        "i18n-i18next.js 必须带一个非空的 LOCALE_VERSION 常量做 locale cache-bust"
+    )
 
     locale_names = (
         "en",

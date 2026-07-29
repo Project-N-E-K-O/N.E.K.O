@@ -2582,7 +2582,9 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
     + var(--compact-chat-minimize-ball-gap)
   );
   --compact-chat-surface-bg:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.34), rgba(242, 249, 255, 0.19) 46%, rgba(219, 238, 253, 0.24));
+    linear-gradient(180deg, rgba(255, 255, 255, 0.58), rgba(242, 249, 255, 0.42) 46%, rgba(219, 238, 253, 0.48));
+  --compact-chat-capsule-surface-bg:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.78), rgba(242, 249, 255, 0.68) 46%, rgba(219, 238, 253, 0.72));
   --compact-chat-surface-edge-top: rgba(255, 255, 255, 0.7);
   --compact-chat-surface-edge-right: rgba(255, 255, 255, 0.15);
   --compact-chat-surface-edge-bottom: rgba(255, 255, 255, 0.06);
@@ -2716,6 +2718,12 @@ body.electron-chat-window.subtitle-web-host .compact-chat-surface-shell {
   border-radius: inherit;
   background: var(--compact-chat-surface-bg);
   pointer-events: none;
+}
+
+.compact-chat-surface-frame[data-compact-chat-state="default"]::before,
+.compact-chat-surface-frame[data-compact-chat-state="options"]::before,
+.compact-chat-surface-frame[data-compact-chat-state="input"]::before {
+  background: var(--compact-chat-capsule-surface-bg);
 }
 
 .compact-chat-surface-frame::after {
@@ -6293,7 +6301,9 @@ body.electron-chat-window.subtitle-web-host .compact-export-history-anchor {
 
 [data-theme="dark"] .compact-chat-surface-frame {
   --compact-chat-surface-bg:
-    linear-gradient(180deg, rgba(31, 48, 66, 0.72), rgba(15, 29, 46, 0.68) 58%, rgba(8, 17, 30, 0.62));
+    linear-gradient(180deg, rgba(31, 48, 66, 0.80), rgba(15, 29, 46, 0.76) 58%, rgba(8, 17, 30, 0.72));
+  --compact-chat-capsule-surface-bg:
+    linear-gradient(180deg, rgba(31, 48, 66, 0.86), rgba(15, 29, 46, 0.82) 58%, rgba(8, 17, 30, 0.78));
   --compact-chat-surface-edge-top: rgba(196, 228, 255, 0.44);
   --compact-chat-surface-edge-right: rgba(156, 207, 249, 0.13);
   --compact-chat-surface-edge-bottom: rgba(132, 189, 232, 0.07);

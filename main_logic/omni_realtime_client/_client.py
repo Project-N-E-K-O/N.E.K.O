@@ -36,6 +36,7 @@ from ._tools import _ToolingMixin
 from ._audio import _AudioMixin
 from ._transport import _TransportMixin
 from ._responses import _ResponseMixin
+from ._response_arbiter import RealtimeResponseArbiter
 from ._gemini_support import _GeminiMixin
 
 
@@ -127,6 +128,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._current_response_id = None
         self._current_item_id = None
         self._is_responding = False
+        self._response_arbiter = RealtimeResponseArbiter(
+            self.send_event,
+            abort_transport=self._abort_failed_transport,
+        )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
         self._is_first_transcript_chunk = False

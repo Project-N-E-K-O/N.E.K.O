@@ -994,6 +994,10 @@
             const nextSceneId = scene && typeof scene.id === 'string' ? scene.id : '';
             return !!(
                 (
+                    previousSceneId === 'day1_takeover_capture_cursor'
+                    && nextSceneId === 'day1_takeover_return_control'
+                )
+                || (
                     previousSceneId === 'day2_intro_context'
                     && nextSceneId === 'day2_screen_entry'
                 )
