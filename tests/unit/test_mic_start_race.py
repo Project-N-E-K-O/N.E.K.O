@@ -80,6 +80,7 @@ function loadModule() {
   const streams = [];
   const contexts = [];
   const workletNodes = [];
+  const nodes = [];
   // Gates for the two real await points inside the open window, so an attempt
   // can be parked at either one: audioWorklet.addModule() (a network fetch)
   // and getUserMedia() (device open / permission).
@@ -100,15 +101,34 @@ function loadModule() {
     return stream;
   }
 
-  // Nodes remember the context they were built on and what they were wired
-  // into, so a test can ask "whose graph is this node in?" -- the question the
-  // duplicate-worklet defect turns on.
-  function makeNode(context, extra) {
-    const node = Object.assign(
-      { context, connected: [], connect(target) { this.connected.push(target); }, disconnect() {} },
-      extra || {},
-    );
+  // Nodes remember the context they were built on and what they are CURRENTLY
+  // wired into, so a test can ask "whose graph is this node in right now?" --
+  // the question the duplicate-worklet defect turns on.
+  //
+  // disconnect() really removes, per CodeRabbit: a no-op stub makes `connected`
+  // grow-only, which both flags a connect-then-correctly-disconnect
+  // implementation as a duplicate AND leaves the assertions unable to tell
+  // "never connected" from "connected then torn down" -- so the loser's
+  // teardown could be deleted outright and stay green.
+  function trackNode(node) {
+    nodes.push(node);
     return node;
+  }
+
+  function makeNode(context, extra) {
+    return trackNode(Object.assign(
+      {
+        context,
+        connected: [],
+        connect(target) { this.connected.push(target); },
+        disconnect(target) {
+          if (target === undefined) { this.connected.length = 0; return; }
+          const at = this.connected.indexOf(target);
+          if (at >= 0) this.connected.splice(at, 1);
+        },
+      },
+      extra || {},
+    ));
   }
 
   class FakeAudioContext {
@@ -167,9 +187,14 @@ function loadModule() {
         this.connected = [];
         this.port = { onmessage: null, postMessage() {} };
         workletNodes.push(this);
+        nodes.push(this);
       }
       connect(target) { this.connected.push(target); }
-      disconnect() {}
+      disconnect(target) {
+        if (target === undefined) { this.connected.length = 0; return; }
+        const at = this.connected.indexOf(target);
+        if (at >= 0) this.connected.splice(at, 1);
+      }
     },
     MediaStream: class {},
     WebSocket: { OPEN: 1 },
@@ -220,6 +245,7 @@ function loadModule() {
     streams,
     contexts,
     workletNodes,
+    nodes,
     micButtonStates,
     // `addModule: () => addModuleGate` reads the gate at CALL time, so an
     // attempt already parked keeps awaiting the promise it captured even
@@ -341,6 +367,16 @@ async function raceCase() {
          "the superseded worklet's port handler must be cleared, not left armed");
   assert(env.contexts.some((c) => c !== env.S.audioContext && c.state === 'closed'),
          "the superseded attempt must close its own context");
+  // Now that disconnect() really removes, "torn down" is distinguishable from
+  // "never wired up": every gain node except the winner's must have been
+  // unwired by discardOwnPipeline, so deleting that teardown reddens here
+  // rather than passing because the loser happened to stay out of S.*.
+  env.nodes
+    .filter((n) => n.__kind === 'gain' && n !== env.S.micGainNode)
+    .forEach((gain) => {
+      assert(gain.connected.length === 0,
+             "a superseded attempt's gain node must be disconnected, not left wired");
+    });
 }
 
 async function streamPublishOrderCase() {
