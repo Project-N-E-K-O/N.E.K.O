@@ -49,10 +49,14 @@ class QQSessionMemoryService:
     #   算（波数 × 单发超时），而不是一次请求——只覆盖一次请求的话，第二
     #   波还攥着快照时等待就到点了。这正好是改前的实际行为（整趟排空持
     #   会话锁，这些路径只能干等到它结束），因此不构成关机变慢的回归。
+    # 波数 × 单发超时只是排空的**理论**用时；信号量交接、超时清理、gather
+    # 收尾、任务调度都还要时间。等待上限必须严格大于它，恰好相等会在排空
+    # 正要返回的那一刻判它"还在途"——白等了整整一趟，然后照样按超时处理。
+    SETTLE_JOIN_SLACK_SECONDS = 5.0
     SETTLE_JOIN_TIMEOUT_SECONDS = 5.0
     SETTLE_JOIN_TIMEOUT_LONG_SECONDS = SCOPED_HISTORY_TIMEOUT_SECONDS * (
         -(-GROUP_MEMBER_MAX_PARTICIPANTS // MEMBER_FLUSH_CONCURRENCY)
-    )
+    ) + SETTLE_JOIN_SLACK_SECONDS
 
     def __init__(self, plugin: Any):
         self.plugin = plugin

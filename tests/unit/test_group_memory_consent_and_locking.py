@@ -799,8 +799,13 @@ def test_shutdown_waits_longer_for_a_drain_than_the_idle_sweep():
         -Service.GROUP_MEMBER_MAX_PARTICIPANTS // Service.MEMBER_FLUSH_CONCURRENCY
     )
     assert waves >= 2
+    # 严格大于理论用时：恰好相等会在排空正要返回的那一刻判它还在途。
+    assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS > (
+        Service.SCOPED_HISTORY_TIMEOUT_SECONDS * waves
+    )
     assert Service.SETTLE_JOIN_TIMEOUT_LONG_SECONDS == (
         Service.SCOPED_HISTORY_TIMEOUT_SECONDS * waves
+        + Service.SETTLE_JOIN_SLACK_SECONDS
     )
 
 
