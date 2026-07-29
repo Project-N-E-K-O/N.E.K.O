@@ -155,6 +155,7 @@ def run_step_protocol_tts_worker(
         # 所以必须在首批文本到达后才能发），和 CosyVoice worker 对偶。
         session_created = False
         pending_text_buffer = ""
+        pending_finish_retry_speech_id = None
         # 流式重采样器（24kHz→48kHz）- 维护 chunk 边界状态
         resampler = soxr.ResampleStream(24000, 48000, 1, dtype='float32')
         # StepFun/免费上游首包后第一个 inter-chunk gap 偏大，会让开头几个字 jitter。
@@ -294,10 +295,14 @@ def run_step_protocol_tts_worker(
 
         async def _queue_finish_retry(speech_id) -> None:
             """Retry a failed terminal send without busy-spinning."""
+            nonlocal pending_finish_retry_speech_id
             if speech_id is None:
                 return
+            # Keep retry work outside the producer queue. While this backoff
+            # yields, later speech can be enqueued; the consumer must still
+            # finish the retained current-speech prefix before dequeuing it.
+            pending_finish_retry_speech_id = speech_id
             await asyncio.sleep(1.0)
-            request_queue.put((_FINISH_RETRY_SENTINEL, speech_id))
 
         async def _flush_deferred_create(
             force: bool = False,
@@ -511,10 +516,15 @@ def run_step_protocol_tts_worker(
             # 主循环：处理请求队列
             loop = asyncio.get_running_loop()
             while True:
-                try:
-                    sid, tts_text = await loop.run_in_executor(None, request_queue.get)
-                except Exception:
-                    break
+                if pending_finish_retry_speech_id is not None:
+                    sid = _FINISH_RETRY_SENTINEL
+                    tts_text = pending_finish_retry_speech_id
+                    pending_finish_retry_speech_id = None
+                else:
+                    try:
+                        sid, tts_text = await loop.run_in_executor(None, request_queue.get)
+                    except Exception:
+                        break
                 finish_requested = False
 
                 if sid == TTS_SHUTDOWN_SENTINEL:

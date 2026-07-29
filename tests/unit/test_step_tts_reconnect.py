@@ -258,7 +258,7 @@ def test_turn_end_create_failure_retries_on_fresh_socket_with_backoff(monkeypatc
     assert recovered.sent[1]["data"]["text"] == text
 
 
-def test_stale_finish_retry_does_not_end_new_speech(monkeypatch):
+def test_finish_retry_precedes_queued_new_speech(monkeypatch):
     initial = _FakeTtsSocket([
         {"type": "tts.connection.done", "data": {"session_id": "warmup"}},
         {"type": "tts.response.created"},
@@ -267,10 +267,13 @@ def test_stale_finish_retry_does_not_end_new_speech(monkeypatch):
         [{"type": "tts.connection.done", "data": {"session_id": "old-broken"}}],
         fail_send_from=1,
     )
+    old_recovered = _FakeTtsSocket([
+        {"type": "tts.connection.done", "data": {"session_id": "old-recovered"}},
+    ])
     new_socket = _FakeTtsSocket([
         {"type": "tts.connection.done", "data": {"session_id": "new"}},
     ])
-    sockets = iter([initial, old_broken, new_socket])
+    sockets = iter([initial, old_broken, old_recovered, new_socket])
 
     async def connect(*_args, **_kwargs):
         return next(sockets)
@@ -297,6 +300,12 @@ def test_stale_finish_retry_does_not_end_new_speech(monkeypatch):
         provider_key="step",
     )
 
+    assert [event["type"] for event in old_recovered.sent] == [
+        "tts.create",
+        "tts.text.delta",
+        "tts.text.done",
+    ]
+    assert old_recovered.sent[1]["data"]["text"] == "old"
     assert [event["type"] for event in new_socket.sent] == [
         "tts.create",
         "tts.text.delta",
