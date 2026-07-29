@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 from plugin.plugins.neko_warthunder.adapters.data_layer_process import (
     DataLayerProcessManager,
 )
@@ -80,6 +82,38 @@ def test_large_replay_scrub_is_not_mistaken_for_midnight_wrap() -> None:
     service._detect_replay_locked(SimpleNamespace(game_time_sec=1 * 3600.0), 1001.0)
 
     assert service._replay is True
+
+
+@pytest.mark.parametrize(
+    ("previous_game_time", "current_game_time", "expected_replay"),
+    [
+        (23 * 3600.0 + 59 * 60.0 + 59.0, 0.0, False),
+        (23 * 3600.0, 1 * 3600.0 + 1.0, True),
+    ],
+)
+def test_midnight_wrap_boundaries(
+    previous_game_time: float,
+    current_game_time: float,
+    expected_replay: bool,
+) -> None:
+    module = _load_wt_server()
+    service = object.__new__(module.TelemetryService)
+    service._replay = False
+    service._last_game_time = None
+    service._mission_status = "running"
+    service._mission_running_seen = True
+    service._battle_entry_ts = 0.0
+
+    service._detect_replay_locked(
+        SimpleNamespace(game_time_sec=previous_game_time),
+        1000.0,
+    )
+    service._detect_replay_locked(
+        SimpleNamespace(game_time_sec=current_game_time),
+        1001.0,
+    )
+
+    assert service._replay is expected_replay
 
 
 def test_nonfatal_owned_feed_entry_enters_combat_stress() -> None:
