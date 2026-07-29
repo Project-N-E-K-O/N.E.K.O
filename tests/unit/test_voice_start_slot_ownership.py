@@ -168,13 +168,16 @@ W.claimSessionStart('audio', () => {}, () => {});
 assert(W.supersededByAudioStart(ownerC) === true,
        'an audio takeover must suppress the global voice-start unwind');
 
+// A TEXT takeover with no audio start after us: nobody is driving the voice UI,
+// so the unwind must run and hand the mic button back.
+const ownerT = W.claimSessionStart('audio', () => {}, () => {});
 W.claimSessionStart('text', () => {}, () => {});
-assert(W.supersededByAudioStart(ownerC) === false,
+assert(W.supersededByAudioStart(ownerT) === false,
        'a TEXT takeover leaves the voice-start UI to us -- the unwind must still run');
 
 const ownerD = S.sessionStartedResolver;
 W.releaseSessionStart(ownerD);
-assert(W.supersededByAudioStart(ownerC) === false,
+assert(W.supersededByAudioStart(ownerT) === false,
        'a text takeover that has completed is still a text takeover -- unwind');
 
 // The mirror case, and the one the pending mode gets wrong: an AUDIO takeover
@@ -184,8 +187,21 @@ assert(W.supersededByAudioStart(ownerC) === false,
 W.claimSessionStart('audio', () => {}, () => {});
 W.releaseSessionStart(S.sessionStartedResolver);
 assert(S._pendingSessionStartMode === null, 'the pending mode is gone once released');
-assert(W.supersededByAudioStart(ownerC) === true,
+assert(W.supersededByAudioStart(ownerT) === true,
        'a completed AUDIO takeover must still suppress the global unwind');
+
+// And the one the LAST claim's mode gets wrong: an audio start still acquiring
+// its microphone, followed by a text send. The last claim is text, but the
+// audio start is alive and holding exactly the state the unwind destroys, so
+// the question is "did an audio start claim after me", not "what claimed last".
+const ownerE = W.claimSessionStart('audio', () => {}, () => {});
+const ownerF = W.claimSessionStart('audio', () => {}, () => {});
+W.claimSessionStart('text', () => {}, () => {});
+assert(S._lastSessionStartMode === 'text', 'the newest claim is the text one');
+assert(W.supersededByAudioStart(ownerE) === true,
+       'an audio start claimed after E and is still live -- E must not unwind');
+assert(W.supersededByAudioStart(ownerF) === false,
+       'only a text start came after F, which drives none of that state -- F unwinds');
 
 // --- the two signals abandon-detect different things -----------------------
 // A cancellation claims nothing, so the claim sequence never moves for it: a
@@ -224,6 +240,12 @@ assert(W.sessionStartSuperseded(null) === false,
        'with no owner token, "who holds it now" sees nothing at all');
 assert(W.sessionStartsSince(scheduledAt) === true,
        'the scheduling snapshot must still see the start that came and went');
+assert(W.audioStartsSince(scheduledAt) === false,
+       'and must not mistake that text start for a voice one');
+
+W.claimSessionStart('audio', () => {}, () => {});
+assert(W.audioStartsSince(scheduledAt) === true,
+       'an audio start after the snapshot must suppress the global unwind too');
 
 console.log('HARNESS_OK');
 """
@@ -384,7 +406,12 @@ def test_the_automatic_restart_stands_down_at_every_resumption_point():
     helper_body = _region(
         source, "function restartMustStandDown()", "try {", "app-websocket.js"
     )
-    for signal in ("sessionStartSuperseded", "voiceStartEpochIsCurrent", "sessionStartsSince"):
+    for signal in (
+        "sessionStartSuperseded",
+        "voiceStartEpochIsCurrent",
+        "sessionStartsSince",
+        "audioStartsSince",
+    ):
         assert signal in helper_body, (
             f"app-websocket.js: the restart's stand-down check ignores {signal}, so a "
             f"takeover it cannot see reaches the microphone.\n{helper_body}"

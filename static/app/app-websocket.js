@@ -2718,7 +2718,8 @@
                                 // behind. After the claim the owner's own sequence carries
                                 // the same fact.
                                 function restartMustStandDown() {
-                                    var takenOver = restartStartOwner
+                                    var owned = !!restartStartOwner;
+                                    var takenOver = owned
                                         ? window.sessionStartSuperseded(restartStartOwner)
                                         : window.sessionStartsSince(restartClaimSeq);
                                     if (takenOver
@@ -2733,7 +2734,10 @@
                                         // backend-accepted session with the mic closed
                                         // (greptile P1). That start is already driving this
                                         // UI; a text start is not, so there it still runs.
-                                        if (!window.supersededByAudioStart(restartStartOwner)
+                                        var byAudio = owned
+                                            ? window.supersededByAudioStart(restartStartOwner)
+                                            : window.audioStartsSince(restartClaimSeq);
+                                        if (!byAudio
                                                 && typeof window.abortVoiceStartForBlockedRoute === 'function') {
                                             window.abortVoiceStartForBlockedRoute();
                                         }

@@ -280,6 +280,13 @@
     // WeakMap keeps it off the tokens themselves and out of GC's way.
     var startClaimSeq = 0;
     var startClaimSeqByOwner = new WeakMap();
+    // The sequence of the last AUDIO claim, tracked separately because "was the
+    // takeover a voice start" is not the same question as "what claimed last":
+    // a text send can claim after a newer audio start that is still acquiring
+    // its microphone, and the mode of the last claim then says 'text' while an
+    // audio start is very much alive and holding the state the global unwind
+    // destroys.
+    var lastAudioClaimSeq = 0;
 
     window.claimSessionStart = function (mode, resolve, reject) {
         S.sessionStartedResolver = resolve;
@@ -287,6 +294,7 @@
         S._pendingSessionStartMode = mode;
         startClaimSeq += 1;
         startClaimSeqByOwner.set(resolve, startClaimSeq);
+        if (mode === 'audio') lastAudioClaimSeq = startClaimSeq;
         // Sticky twin of _pendingSessionStartMode: which KIND of start claimed
         // last, still readable after it has released. supersededByAudioStart
         // needs it to decide whether the global voice-start unwind would land
@@ -318,6 +326,11 @@
     /** True when any start has claimed since ``seq`` was taken. */
     window.sessionStartsSince = function (seq) {
         return startClaimSeq > seq;
+    };
+
+    /** True when an AUDIO start has claimed since ``seq`` was taken. */
+    window.audioStartsSince = function (seq) {
+        return lastAudioClaimSeq > seq;
     };
 
     /** True while ``owner`` is still the pending start. */
@@ -364,11 +377,21 @@
      * instead, so there the unwind must still run.
      */
     window.supersededByAudioStart = function (owner) {
-        // The STICKY mode, not the pending one: the start that took over may
-        // already have been acknowledged and released the slot, and it is just
-        // as alive -- more so -- than one still pending.
-        return window.sessionStartSuperseded(owner)
-            && S._lastSessionStartMode === 'audio';
+        var seq = owner ? startClaimSeqByOwner.get(owner) : undefined;
+        // "Did an audio start claim after me", not "was the last claim audio".
+        // With A superseded by an audio B that is still acquiring and then by a
+        // text C, the last claim is C -- and unwinding on that verdict bumps the
+        // mic generation out from under B, whose session the backend has already
+        // accepted. Asking about audio claims after our own sequence keeps B
+        // visible however many text starts follow it.
+        if (seq === undefined) {
+            // No token we minted: the sticky mode is all that is left. Callers
+            // that must decide before they own anything pass their scheduling
+            // snapshot to audioStartsSince instead.
+            return window.sessionStartSuperseded(owner)
+                && S._lastSessionStartMode === 'audio';
+        }
+        return lastAudioClaimSeq > seq;
     };
 
     /**
