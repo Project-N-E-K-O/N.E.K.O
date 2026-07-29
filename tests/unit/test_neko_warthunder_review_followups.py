@@ -2,16 +2,19 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
+from plugin.plugins.neko_warthunder import NekoWarthunderPlugin
 from plugin.plugins.neko_warthunder.adapters.data_layer_process import (
     DataLayerProcessManager,
 )
 from plugin.plugins.neko_warthunder.core.contracts import (
     COMBAT_STRESS,
+    BattleEvent,
     BattleState,
     WtConfig,
 )
@@ -65,6 +68,27 @@ def test_invalid_url_does_not_retry_stale_python_runner(tmp_path: Path) -> None:
 
     assert status["mode"] == "failed"
     assert "managed_data_layer_requires_loopback_url" in status["last_error"]
+    assert manager._failed_python_prefixes == set()
+    assert status["python_cmd"] == ""
+
+
+def test_invalid_port_does_not_blacklist_python_runners(tmp_path: Path) -> None:
+    data_dir = tmp_path / "data_layer" / "data process"
+    data_dir.mkdir(parents=True)
+    (data_dir / "wt_server.py").write_text("", encoding="utf-8")
+    manager = DataLayerProcessManager(
+        WtConfig(
+            data_layer_auto_start=True,
+            data_layer_url="http://127.0.0.1:not-a-port",
+        ),
+        plugin_root=tmp_path,
+        health_check=lambda _url, _timeout: False,
+    )
+
+    status = manager.start_if_needed()
+
+    assert status["mode"] == "failed"
+    assert "port" in status["last_error"].lower()
     assert manager._failed_python_prefixes == set()
     assert status["python_cmd"] == ""
 
@@ -170,3 +194,54 @@ def test_once_per_battle_detector_spends_only_after_committed_delivery() -> None
     assert engine.feed(low, clear) == []
     assert engine.feed(clear, clear) == []
     assert engine.feed(clear, low) == []
+
+
+def test_dry_run_does_not_mark_once_per_battle_event_delivered() -> None:
+    event = BattleEvent("low_fuel", ts=time.time())
+    marked: list[str] = []
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.cfg = WtConfig(dry_run=True, global_rate_limit_seconds=0)
+    plugin.engine = SimpleNamespace(
+        feed=lambda _prev, _cur: [event],
+        reset=lambda: None,
+        mark_delivered=marked.append,
+    )
+    plugin.resolver = SimpleNamespace(
+        resolve=lambda _cur, _now, _grace: "IN_FLIGHT",
+        reset=lambda: None,
+        current_stress_reasons=lambda _now: frozenset(),
+    )
+    plugin.arbiter = SimpleNamespace(
+        checkpoint=lambda: None,
+        decide=lambda _candidates, _scenario, _now: (event, []),
+        restore=lambda _checkpoint: None,
+        reset=lambda: None,
+    )
+    plugin.safety = SimpleNamespace(
+        output_clock_checkpoint=lambda: None,
+        restore_output_clock=lambda _checkpoint: None,
+        status=lambda: {},
+        record_failure=lambda _now: None,
+    )
+    plugin.timeline = SimpleNamespace(
+        record_stage=lambda **_kwargs: None,
+        record_decision=lambda **_kwargs: None,
+    )
+    plugin.dispatcher = SimpleNamespace(
+        push_event=lambda _event, *, dry_run: (
+            "dry_run(event=low_fuel/enter/warning)" if dry_run else "pushed()"
+        )
+    )
+    plugin.logger = SimpleNamespace(
+        info=lambda *_args, **_kwargs: None,
+        warning=lambda *_args, **_kwargs: None,
+    )
+    plugin._pending_dispatch_event = None
+    plugin._record_blocked_free_text_sources = lambda _cur: None
+    plugin._record_deferred_hud_notices = lambda _cur: None
+    plugin._suppress_takeoff_grace = lambda candidates, _cur, _now: candidates
+    plugin._annotate_runtime_context = lambda candidates, _cur, _now: candidates
+
+    plugin._evaluate(BattleState(), BattleState(connected=True, in_battle=True))
+
+    assert marked == []

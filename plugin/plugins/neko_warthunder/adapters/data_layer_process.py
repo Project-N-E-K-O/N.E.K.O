@@ -383,6 +383,7 @@ class DataLayerProcessManager:
             raise FileNotFoundError(str(script))
 
         bind_host = _bind_host_from_url(self.config.data_layer_url)
+        bind_port = _port_from_url(self.config.data_layer_url)
         python_prefixes = [
             prefix
             for prefix in _python_command_prefixes()
@@ -393,7 +394,7 @@ class DataLayerProcessManager:
             return _spawn_embedded_data_layer(
                 data_process_dir,
                 host=bind_host,
-                port=int(_port_from_url(self.config.data_layer_url)),
+                port=int(bind_port),
             )
 
         self._python_cmd = python_prefixes[0]
@@ -406,7 +407,7 @@ class DataLayerProcessManager:
             "--host",
             bind_host,
             "--port",
-            _port_from_url(self.config.data_layer_url),
+            bind_port,
         ]
         kwargs: dict[str, Any] = {
             "cwd": str(data_process_dir),

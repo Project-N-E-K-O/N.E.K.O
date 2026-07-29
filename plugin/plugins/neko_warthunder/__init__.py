@@ -592,7 +592,7 @@ class NekoWarthunderPlugin(NekoPluginBase):
                 if not result.startswith(COMMITTED_RESULT_PREFIXES):
                     self.arbiter.restore(arbiter_checkpoint)
                     self.safety.restore_output_clock(output_clock_checkpoint)
-                else:
+                elif result.startswith("pushed("):
                     mark_delivered = getattr(self.engine, "mark_delivered", None)
                     if callable(mark_delivered):
                         mark_delivered(chosen.event_id)
