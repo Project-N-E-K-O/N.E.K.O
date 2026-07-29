@@ -479,8 +479,12 @@ def test_only_provisional_language_is_reprobed_after_cooldown(monkeypatch):
 
 
 def test_retry_cooldown_starts_after_slow_probe_finishes(monkeypatch):
-    stamps = iter((100.0, 104.0))
-    patch_module_clock(monkeypatch, language_utils, monotonic=lambda: next(stamps))
+    stamps = [100.0, 104.0]
+
+    def monotonic():
+        return stamps.pop(0) if len(stamps) > 1 else stamps[0]
+
+    patch_module_clock(monkeypatch, language_utils, monotonic=monotonic)
     monkeypatch.setattr(language_utils, "_get_steam_language", lambda: None)
     monkeypatch.setattr(
         language_utils,

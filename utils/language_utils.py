@@ -172,19 +172,15 @@ _LEGACY_NON_MAINLAND_CHINESE_TERRITORIES = frozenset({
     'sg',
     'sgp',
 })
-_LEGACY_TRADITIONAL_CHINESE_TERRITORIES = frozenset({
-    'taiwan',
-    'tw',
-    'twn',
-    'hong kong',
-    'hong-kong',
-    'hk',
-    'hkg',
-    'macao',
-    'macau',
-    'mo',
-    'mac',
+_LEGACY_SINGAPORE_TERRITORIES = frozenset({
+    'singapore',
+    'sg',
+    'sgp',
 })
+_LEGACY_TRADITIONAL_CHINESE_TERRITORIES = (
+    _LEGACY_NON_MAINLAND_CHINESE_TERRITORIES
+    - _LEGACY_SINGAPORE_TERRITORIES
+)
 _LEGACY_MAINLAND_LANGUAGE_ALIASES = frozenset({
     'chinese-simplified',
 })
@@ -378,13 +374,7 @@ def _probe_china_region() -> _LocaleProbeResult:
             lambda: locale.getlocale()[0],
         )
         if system_locale:
-            system_locale_lower = system_locale.lower()
-            if _locale_is_mainland_china(system_locale_lower):
-                return _LocaleProbeResult(
-                    True,
-                    not authoritative_probe_unresolved,
-                )
-            verdict = _locale_region_signal(system_locale_lower)
+            verdict = _locale_region_signal(system_locale.lower())
             if verdict is not None:
                 return _LocaleProbeResult(
                     verdict,
@@ -951,7 +941,8 @@ def set_global_language(language: str) -> None:
         _global_language_initialized = True
         # 手动真值到达后，若区域仍是 provisional，允许下一次 region getter
         # 立即重试，而不是继承旧失败留下的退避窗口。
-        _reset_global_probe_backoff_locked()
+        if not _global_region_initialized:
+            _reset_global_probe_backoff_locked()
         logger.info(f"全局语言已手动设置为: {_global_language} (full: {_global_language_full})")
 
 
@@ -999,10 +990,9 @@ def refresh_global_language(language: str) -> bool:
         return False
 
     with _global_language_lock:
-        # ``_global_region is not None`` 也要 hold，否则 ``set_global_language`` 这条
-        # pre-existing 路径（只置 ``_global_language_initialized=True``、不碰 region）
-        # 留下的 ``language=short, region=None`` 状态会让本次 refresh 走早 return，
-        # 漏掉 region 自愈，``get_global_region`` 永久卡 ``'non-china'`` fallback。
+        # ``_global_region_initialized`` 也要 hold，否则 ``set_global_language`` 这条
+        # pre-existing 路径可能留下 language 已确定、region 仍 provisional 的状态，
+        # 让本次 refresh 过早返回并漏掉 region 自愈。
         if (_global_language_initialized
                 and _global_language == short
                 and _global_language_full == full

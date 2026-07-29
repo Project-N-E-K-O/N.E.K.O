@@ -29,6 +29,11 @@ def test_language_env_overrides_steam_and_system(
         "_probe_system_language",
         lambda: language_utils._LocaleProbeResult("zh", True),
     )
+    monkeypatch.setattr(
+        language_utils,
+        "_probe_china_region",
+        lambda: language_utils._LocaleProbeResult(False, True),
+    )
 
     assert language_utils.initialize_global_language() == expected_short
     assert language_utils.get_global_language_full() == expected_full
@@ -58,6 +63,11 @@ def test_invalid_language_env_falls_back_to_detected_language(monkeypatch):
         language_utils,
         "_probe_system_language",
         lambda: language_utils._LocaleProbeResult("zh", True),
+    )
+    monkeypatch.setattr(
+        language_utils,
+        "_probe_china_region",
+        lambda: language_utils._LocaleProbeResult(False, True),
     )
 
     assert language_utils.initialize_global_language() == "zh"
