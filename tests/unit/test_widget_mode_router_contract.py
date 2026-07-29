@@ -29,24 +29,37 @@ def test_widget_mode_state_and_enable_contract(monkeypatch) -> None:
     with _client() as client:
         assert client.get("/api/widget-mode/state").json() == {
             "success": True,
-            "state": {"enabled": False},
+            "state": {"enabled": False, "stealthEnabled": False},
         }
         assert client.post("/api/widget-mode/enabled", json={"enabled": "on"}).json() == {
             "success": True,
-            "state": {"enabled": True},
+            "state": {"enabled": True, "stealthEnabled": False},
+        }
+        assert client.post(
+            "/api/widget-mode/stealth-enabled",
+            json={"enabled": True},
+        ).json() == {
+            "success": True,
+            "state": {"enabled": True, "stealthEnabled": True},
         }
         assert client.post("/api/widget-mode/enabled", json={"enabled": 0}).json() == {
             "success": True,
-            "state": {"enabled": False},
+            "state": {"enabled": False, "stealthEnabled": True},
         }
 
 
 def test_widget_mode_mutation_requires_local_csrf() -> None:
     with _client(secure=False) as client:
         response = client.post("/api/widget-mode/enabled", json={"enabled": True})
+        stealth_response = client.post(
+            "/api/widget-mode/stealth-enabled",
+            json={"enabled": True},
+        )
 
     assert response.status_code == 403
     assert response.json()["error_code"] == "csrf_validation_failed"
+    assert stealth_response.status_code == 403
+    assert stealth_response.json()["error_code"] == "csrf_validation_failed"
 
 
 @pytest.mark.parametrize(

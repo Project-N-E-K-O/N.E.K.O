@@ -518,6 +518,7 @@ try {
 // 保留原有的简单发送函数（用于不需要确认的场景）
 function sendMessageToMainPage(action, payload = {}) {
     try {
+        const quiet = action === 'model_manager_window_state';
         const message = {
             ...payload,
             action: action,
@@ -527,15 +528,18 @@ function sendMessageToMainPage(action, payload = {}) {
         // 优先使用 BroadcastChannel
         if (broadcastChannel) {
             broadcastChannel.postMessage(message);
+            if (quiet) return;
         }
 
         // 同时使用 localStorage
         localStorage.setItem('nekopage_message', JSON.stringify(message));
         localStorage.removeItem('nekopage_message');
-        window.dispatchEvent(new StorageEvent('storage', {
-            key: 'nekopage_message',
-            newValue: JSON.stringify(message)
-        }));
+        if (!quiet) {
+            window.dispatchEvent(new StorageEvent('storage', {
+                key: 'nekopage_message',
+                newValue: JSON.stringify(message)
+            }));
+        }
     } catch (e) {
         console.error('Cross-page communication failed in sendMessageToMainPage:', e);
     }

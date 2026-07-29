@@ -87,7 +87,8 @@ def test_launcher_disables_cloudsave_when_local_state_directory_fails(monkeypatc
 
     monkeypatch.setattr(launcher, "freeze_support", lambda: None)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(launcher, "acquire_startup_lock", lambda: True)
+    monkeypatch.setattr(launcher, "install_parent_death_guard", lambda: None)
+    monkeypatch.setattr(launcher, "_acquire_single_instance_ownership", lambda: True)
     monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
     monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: None)
     monkeypatch.setattr(launcher, "setup_job_object", lambda: None)
@@ -709,7 +710,7 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
         "emit_frontend_event",
         lambda event_type, payload=None: emitted_events.append((event_type, payload)),
     )
-    monkeypatch.setattr(launcher, "release_startup_lock", lambda: released.__setitem__("called", True))
+    monkeypatch.setattr(launcher, "release_single_instance_ownership", lambda: released.__setitem__("called", True))
     monkeypatch.setattr(launcher, "_spawn_restarted_launcher", lambda: spawned.__setitem__("called", True))
 
     result = launcher._maybe_schedule_storage_restart()
@@ -730,6 +731,7 @@ def test_launcher_schedules_restart_for_rebind_only_shutdown_without_pending_mig
                     "cloudsave_root": "/tmp/anchor-root/N.E.K.O/cloudsave",
                 },
                 "restart_reason": "rebind_only",
+                "relaunch": "self",
             },
         )
     ]
@@ -770,7 +772,7 @@ def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovere
     )
     monkeypatch.setattr(launcher, "get_config_manager", lambda _app_name, **_kwargs: config_manager)
     monkeypatch.setattr(launcher, "emit_frontend_event", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(launcher, "release_startup_lock", lambda: released.__setitem__("called", True))
+    monkeypatch.setattr(launcher, "release_single_instance_ownership", lambda: released.__setitem__("called", True))
     monkeypatch.setattr(launcher, "_spawn_restarted_launcher", lambda: spawned.__setitem__("called", True))
 
     result = launcher._maybe_schedule_storage_restart()
@@ -781,7 +783,16 @@ def test_launcher_schedules_restart_for_rebind_only_when_root_state_was_recovere
 
 
 @pytest.mark.unit
-def test_spawn_restarted_launcher_detaches_stdio_when_current_session_is_tty(monkeypatch):
+def test_spawn_restarted_launcher_keeps_stdio_even_in_a_tty_session(monkeypatch):
+    """A tty session is still an owner, so the replacement stays in the foreground.
+
+    This used to send the replacement's stdio to ``/dev/null`` whenever any
+    standard stream was a tty. Combined with the ``start_new_session`` that used
+    to accompany it, that produced a runtime nobody could see and nobody owned.
+    Foreground residency means the replacement keeps the owner's stdio: its
+    ``NEKO_EVENT`` stream stays readable and, on POSIX, an inherited stdin pipe
+    is itself the parent-death signal.
+    """
     from launcher_core import runtime as launcher
 
     popen_calls = []
@@ -794,6 +805,7 @@ def test_spawn_restarted_launcher_detaches_stdio_when_current_session_is_tty(mon
     monkeypatch.setattr(launcher.sys, "stdout", _TTYStream())
     monkeypatch.setattr(launcher.sys, "stderr", _TTYStream())
     monkeypatch.setattr(launcher, "_build_launcher_relaunch_command", lambda: ["python", "launcher.py"])
+    monkeypatch.setattr(launcher, "_relax_job_kill_on_close", lambda: None)
     monkeypatch.setattr(
         launcher.subprocess,
         "Popen",
@@ -804,9 +816,9 @@ def test_spawn_restarted_launcher_detaches_stdio_when_current_session_is_tty(mon
 
     assert len(popen_calls) == 1
     _, kwargs = popen_calls[0]
-    assert kwargs["stdin"] is launcher.subprocess.DEVNULL
-    assert kwargs["stdout"] is launcher.subprocess.DEVNULL
-    assert kwargs["stderr"] is launcher.subprocess.DEVNULL
+    assert "stdin" not in kwargs
+    assert "stdout" not in kwargs
+    assert "stderr" not in kwargs
 
 
 @pytest.mark.unit
@@ -1205,8 +1217,9 @@ def test_launcher_main_schedules_restart_for_storage_restart_requested_during_st
     monkeypatch.setattr(launcher, "_cleanup_done", False)
     monkeypatch.setattr(launcher, "_expected_launcher_shutdown", False)
     monkeypatch.setattr(launcher, "freeze_support", lambda: None)
-    monkeypatch.setattr(launcher, "acquire_startup_lock", lambda: True)
-    monkeypatch.setattr(launcher, "release_startup_lock", lambda: release_calls.append("released"))
+    monkeypatch.setattr(launcher, "install_parent_death_guard", lambda: None)
+    monkeypatch.setattr(launcher, "_acquire_single_instance_ownership", lambda: True)
+    monkeypatch.setattr(launcher, "release_single_instance_ownership", lambda: release_calls.append("released"))
     monkeypatch.setattr(launcher, "apply_port_strategy", lambda: True)
     monkeypatch.setattr(launcher, "register_shutdown_hooks", lambda: None)
     monkeypatch.setattr(launcher, "setup_job_object", lambda: None)

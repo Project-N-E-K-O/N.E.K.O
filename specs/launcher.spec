@@ -314,7 +314,9 @@ hiddenimports += [
     'utils.config_manager',
     'utils.frontend_utils',
     'utils.logger_config',
+    'utils.parent_guard',
     'utils.preferences',
+    'utils.single_instance',
     'utils.web_scraper',
     
     # Steam 相关模块

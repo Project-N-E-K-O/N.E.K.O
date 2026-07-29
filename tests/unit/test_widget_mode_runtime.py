@@ -13,22 +13,41 @@ def test_defaults_are_disabled_and_legacy_file_is_not_read(tmp_path: Path) -> No
 
     coordinator = WidgetModeCoordinator()
 
-    assert coordinator.snapshot() == {"enabled": False}
+    assert coordinator.snapshot() == {"enabled": False, "stealthEnabled": False}
 
 
 @pytest.mark.asyncio
 async def test_enabled_state_switches_with_an_exact_minimal_snapshot() -> None:
     coordinator = WidgetModeCoordinator()
 
-    assert await coordinator.set_enabled(True) == {"enabled": True}
-    assert coordinator.snapshot() == {"enabled": True}
-    assert await coordinator.set_enabled(False) == {"enabled": False}
-    assert coordinator.snapshot() == {"enabled": False}
+    assert await coordinator.set_enabled(True) == {
+        "enabled": True,
+        "stealthEnabled": False,
+    }
+    assert await coordinator.set_stealth_enabled(True) == {
+        "enabled": True,
+        "stealthEnabled": True,
+    }
+    assert await coordinator.set_enabled(False) == {
+        "enabled": False,
+        "stealthEnabled": True,
+    }
+    assert coordinator.snapshot() == {"enabled": False, "stealthEnabled": True}
 
 
 @pytest.mark.asyncio
 async def test_only_literal_true_enables_the_runtime() -> None:
     coordinator = WidgetModeCoordinator()
 
-    assert await coordinator.set_enabled(1) == {"enabled": False}
-    assert await coordinator.set_enabled("true") == {"enabled": False}
+    assert await coordinator.set_enabled(1) == {
+        "enabled": False,
+        "stealthEnabled": False,
+    }
+    assert await coordinator.set_enabled("true") == {
+        "enabled": False,
+        "stealthEnabled": False,
+    }
+    assert await coordinator.set_stealth_enabled(1) == {
+        "enabled": False,
+        "stealthEnabled": False,
+    }
