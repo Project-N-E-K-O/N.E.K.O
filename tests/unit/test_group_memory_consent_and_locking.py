@@ -1124,3 +1124,54 @@ async def test_orphan_retry_rechecks_consent_before_posting():
         "末次重试前授权已撤销" in str(c)
         for c in plugin.logger.warning.call_args_list
     )
+
+
+@pytest.mark.asyncio
+async def test_per_request_consent_check_is_opt_in():
+    """The call-site check is not the last suspension point.
+
+    Between it and the actual POST sit the gather's task scheduling and the
+    semaphore handoff, so a settings flip can still land in between —
+    hence a check immediately before each request. It has to be opt-in:
+    the opt-out settlement reuses this same function *after* the switch is
+    already off, and checking there would gut it.
+    """
+    attempts: list[str] = []
+
+    service, plugin, user_data, _locks = _group_drain_harness(None)
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        attempts.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        return {"status": "ok"}
+
+    plugin.memory_bridge.post_scoped_memory_history = _post_scoped
+    plugin._qq_settings["group_member_memory_enabled"] = False
+
+    # 孤儿末次重试：授权已撤销，一个请求都不该发出去。
+    failed = await asyncio.wait_for(
+        service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko",
+            reason="member_bucket_orphan_retry",
+            buckets={"2046": [{"role": "user"}]}, labels={},
+            require_consent=True,
+        ),
+        timeout=2.0,
+    )
+    assert attempts == [], "发出前授权已撤销，这一批不该再推上去"
+    assert failed == ["2046"]
+    assert any(
+        "发出前授权已撤销" in str(c)
+        for c in plugin.logger.warning.call_args_list
+    )
+
+    # 而 opt-out 结算走的是默认（不复检）：它的职责正是在开关关掉之后把
+    # 已授权期间收集的结算掉，加复检等于把这条路径整个废掉。
+    await asyncio.wait_for(
+        service._flush_member_buckets(
+            user_data, group_id="7788", her_name="Neko",
+            reason="member_memory_disabled",
+            buckets={"2046": [{"role": "user"}]}, labels={},
+        ),
+        timeout=2.0,
+    )
+    assert attempts == ["qq:7788:2046"]

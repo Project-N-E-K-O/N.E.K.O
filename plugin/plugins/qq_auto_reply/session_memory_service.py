@@ -834,6 +834,7 @@ class QQSessionMemoryService:
                         reason="member_bucket_orphan_retry",
                         buckets=orphan_retry["snapshot"],
                         labels=orphan_retry["labels"],
+                        require_consent=True,
                     )
                 except Exception as exc:
                     self.plugin.logger.error(
@@ -851,6 +852,7 @@ class QQSessionMemoryService:
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
         reason: str, buckets: dict | None = None, labels: dict | None = None,
+        require_consent: bool = False,
     ) -> list[str]:
         """Concurrently flush member buckets (semaphore 4).
 
@@ -872,6 +874,16 @@ class QQSessionMemoryService:
             sender_id: str, member_messages: list,
         ) -> str | None:
             async with member_flush_sem:
+                if require_consent and not self._member_memory_consent_live():
+                    # 逐请求复检，因为信号量排队与 gather 的任务调度都是挂起
+                    # 点：调用点检查过之后、真正发出之前，设置侧完全可能把
+                    # 开关翻掉。默认关着——opt-out 结算复用本函数，而它恰恰
+                    # 是在开关已 False 之后调用的，那条路径必须放行。
+                    self.plugin.logger.warning(
+                        f"[{reason}] 群 {group_id} 成员 {sender_id} 发出前"
+                        f"授权已撤销，按 fail-closed 丢弃"
+                    )
+                    return sender_id
                 try:
                     result = await self.plugin.memory_bridge.post_scoped_memory_history(
                         her_name,
