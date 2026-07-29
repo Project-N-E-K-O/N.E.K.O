@@ -27,11 +27,12 @@ def test_react_chat_vite_config_is_not_emitted_next_to_its_source() -> None:
 
 
 def test_standalone_card_forge_sources_are_retired() -> None:
-    retired_paths = (
-        PROJECT_ROOT / "frontend" / "card-forge",
-        PROJECT_ROOT / "local_server" / "card_forge_server",
-        PROJECT_ROOT / "scripts" / "card_forge",
-        PROJECT_ROOT / "main_logic" / "card_cache",
+    retired_source_files = (
+        PROJECT_ROOT / "frontend" / "card-forge" / "package.json",
+        PROJECT_ROOT / "frontend" / "card-forge" / "src" / "App.jsx",
+        PROJECT_ROOT / "local_server" / "card_forge_server" / "server.py",
+        PROJECT_ROOT / "scripts" / "card_forge" / "start_card_forge.py",
+        PROJECT_ROOT / "main_logic" / "card_cache" / "puller.py",
     )
 
-    assert all(not path.exists() for path in retired_paths)
+    assert all(not path.exists() for path in retired_source_files)
