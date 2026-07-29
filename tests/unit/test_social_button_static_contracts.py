@@ -36,16 +36,16 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "window.open(String(targetUrl), 'neko-social')" in listener
     assert "openElectronSocialWindow(url)" in listener
     assert listener.index("releaseSocialOpenRequest();") > listener.index("openElectronSocialWindow(url)")
-    assert "fetch('/api/card-drop/sync-ticket', { cache: 'no-store' })" in listener
+    assert "fetch('/api/card-drop/sync-ticket', {" in listener
     assert "hashParams.set('native_sync', syncTicket)" in listener
     assert "fetch('/api/card-drop/native-delegate', {" in listener
     assert "hashParams.set('native_delegate', nativeDelegate)" in listener
     assert "const nativeDelegatePromise = fetchNativeDelegate();" in listener
     assert "const syncTicket = await fetchNativeSyncTicket();" in listener
     assert "await Promise.all([" not in listener
-    assert "setTimeout(() => controller.abort(), 4000)" in listener
-    assert "signal: controller.signal" in listener
-    assert "clearTimeout(timeoutId)" in listener
+    assert listener.count("setTimeout(() => controller.abort(), 4000)") == 2
+    assert listener.count("signal: controller.signal") == 2
+    assert listener.count("clearTimeout(timeoutId)") == 2
     assert "native session sync ticket fetch failed: HTTP" in listener
     assert "native delegate fetch failed (non-fatal):" in listener
     assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
@@ -72,16 +72,25 @@ def test_social_open_request_is_deduped_before_fetching_config():
         "await attachNativeSyncTicket(targetUrl)"
     )
     assert listener.index("openElectronSocialWindow(url)") < listener.index(
-        "const nativeDelegate = await nativeDelegatePromise;"
+        "await completeInitialCommunityHandoff("
     )
-    assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
-        "const nativeDelegate = await nativeDelegatePromise;"
+    assert listener.index("navigateBrowserPopup(targetUrl, { keepReference: true })") < listener.index(
+        "const nativeDelegate = await delegatePromise;"
     )
-    assert listener.index("const nativeDelegate = await nativeDelegatePromise;") < listener.index(
+    assert listener.index("const nativeDelegate = await delegatePromise;") < listener.index(
         "openElectronSocialWindow(delegateTargetUrl.toString())"
     )
     assert "delegateTargetUrl.hash = '';" in listener
     assert "attachNativeDelegate(delegateTargetUrl, nativeDelegate);" in listener
+    assert "const completeInitialCommunityHandoff = async (targetUrl, delegatePromise) => {" in listener
+    assert listener.count(
+        "await completeInitialCommunityHandoff("
+    ) == 2
+    assert re.search(
+        r"else \{\s*await completeInitialCommunityHandoff\(\s*"
+        r"url,\s*nativeDelegatePromise\s*\);\s*\}",
+        listener,
+    )
 
 
 @pytest.mark.unit
@@ -124,7 +133,7 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
         r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*!isElectron\s*\)",
         listener,
     )
-    assert "navigateBrowserPopup(url)" in listener
+    assert "navigateBrowserPopup(targetUrl, { keepReference: true })" in listener
     assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
         "navigateBrowserPopup(authUrl, { keepReference: true })"
     )

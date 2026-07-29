@@ -297,8 +297,13 @@
                 return true;
             };
             const fetchNativeSyncTicket = async () => {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 4000);
                 try {
-                    const response = await fetch('/api/card-drop/sync-ticket', { cache: 'no-store' });
+                    const response = await fetch('/api/card-drop/sync-ticket', {
+                        cache: 'no-store',
+                        signal: controller.signal,
+                    });
                     if (!response.ok) {
                         console.warn(`[social] native session sync ticket fetch failed: HTTP ${response.status}`);
                         return '';
@@ -308,6 +313,8 @@
                 } catch (error) {
                     console.warn('[social] native session sync ticket fetch failed (non-fatal):', error);
                     return '';
+                } finally {
+                    clearTimeout(timeoutId);
                 }
             };
             const fetchNativeDelegate = async () => {
@@ -356,6 +363,29 @@
                 const hash = hashParams.toString();
                 targetUrl.hash = hash;
                 return targetUrl;
+            };
+            const completeInitialCommunityHandoff = async (targetUrl, delegatePromise) => {
+                if (!isElectron) {
+                    // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
+                    navigateBrowserPopup(targetUrl, { keepReference: true });
+                }
+                const nativeDelegate = await delegatePromise;
+                if (nativeDelegate) {
+                    const delegateTargetUrl = new URL(targetUrl, window.location.href);
+                    // 首次页面已接收 native_sync；二次导航只交付 delegate，避免重放一次性票据。
+                    delegateTargetUrl.hash = '';
+                    attachNativeDelegate(delegateTargetUrl, nativeDelegate);
+                    if (isElectron) {
+                        if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
+                            console.warn('[social] failed to refresh Electron community window with native delegate');
+                        }
+                    } else if (popupRef) {
+                        navigateBrowserPopup(delegateTargetUrl.toString());
+                    }
+                } else if (!isElectron) {
+                    // 只释放本地引用，不关闭已打开的 Community 页面。
+                    popupRef = null;
+                }
             };
             try {
                 if (!isElectron) {
@@ -523,32 +553,18 @@
                                     navigateBrowserPopup(refreshedTargetUrl.toString());
                                 }
                             }
-                        } else if (!isElectron && popupRef) {
-                            navigateBrowserPopup(url);
+                        } else {
+                            await completeInitialCommunityHandoff(
+                                url,
+                                nativeDelegatePromise
+                            );
                         }
                     }
                 } else {
-                    if (!isElectron) {
-                        // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
-                        navigateBrowserPopup(url, { keepReference: true });
-                    }
-                    const nativeDelegate = await nativeDelegatePromise;
-                    if (nativeDelegate) {
-                        const delegateTargetUrl = new URL(url, window.location.href);
-                        // 首次页面已接收 native_sync；二次导航只交付 delegate，避免重放一次性票据。
-                        delegateTargetUrl.hash = '';
-                        attachNativeDelegate(delegateTargetUrl, nativeDelegate);
-                        if (isElectron) {
-                            if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
-                                console.warn('[social] failed to refresh Electron community window with native delegate');
-                            }
-                        } else if (popupRef) {
-                            navigateBrowserPopup(delegateTargetUrl.toString());
-                        }
-                    } else if (!isElectron) {
-                        // 只释放本地引用，不关闭已打开的 Community 页面。
-                        popupRef = null;
-                    }
+                    await completeInitialCommunityHandoff(
+                        url,
+                        nativeDelegatePromise
+                    );
                 }
                 return;
             } catch (err) {
