@@ -235,4 +235,4 @@ AIO 触发率 = 触发 AIO 的查询数 ÷ 已观察查询数
 - 最终日报模板：[`TEMPLATE.md`](./TEMPLATE.md)
 - SEO/GEO skill 项目化说明：[`SKILL-INTEGRATION.md`](./SKILL-INTEGRATION.md)
 - 当前真实但不完整的样本：[`2026-07-28-integrated-skill-report.md`](./2026-07-28-integrated-skill-report.md)
-- 生产运维教程：[`../../contributing/seo-geo-daily-monitoring.md`](../../contributing/seo-geo-daily-monitoring.md)
+- 生产运维教程：[`docs/contributing/seo-geo-daily-monitoring.md`](/contributing/seo-geo-daily-monitoring)

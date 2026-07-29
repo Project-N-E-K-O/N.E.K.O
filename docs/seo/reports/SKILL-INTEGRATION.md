@@ -202,9 +202,9 @@ GA4 使用昨日完整数据：
 
 - 日报模板：[`TEMPLATE.md`](./TEMPLATE.md)
 - 当前真实验收样本：[`2026-07-28-integrated-skill-report.md`](./2026-07-28-integrated-skill-report.md)
-- 部署与故障教程：[`../../contributing/seo-geo-daily-monitoring.md`](../../contributing/seo-geo-daily-monitoring.md)
-- 双站配置：[`../monitoring.config.json`](../monitoring.config.json)
-- 生产 workflow：[`../../../.github/workflows/dataforseo.yml`](../../../.github/workflows/dataforseo.yml)
+- 部署与故障教程：[`docs/contributing/seo-geo-daily-monitoring.md`](/contributing/seo-geo-daily-monitoring)
+- 双站配置：`docs/seo/monitoring.config.json`
+- 生产 workflow：`.github/workflows/dataforseo.yml`
 
 ## 10. 完成定义
 

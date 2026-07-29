@@ -9,7 +9,7 @@
 - [`2026-07-29-pr-validation.md`](./2026-07-29-pr-validation.md)：两个拟提交 PR 的完整测试证据、零费用请求计划，以及搜索频率/AIO 引用频率如何进入最终日报的验收说明。
 - [`2026-07-28-integrated-skill-report.md`](./2026-07-28-integrated-skill-report.md)：按 SEO/GEO skill 四阶段模型生成的当前验收样本；它保留真实 DataForSEO 与技术探针结果，并把未在本机提供的 Google/IndexNow 凭证明确标成 `UNKNOWN` 或 `NOT_RUN`。
 - [`2026-07-28-preflight.md`](./2026-07-28-preflight.md)：用真实 DataForSEO artifact 和线上技术探针生成的历史预检样本；文件头会注明当时缺少哪些凭证或数据源。
-- [`../monitoring.config.json`](../monitoring.config.json)：双站点、30 个排名查询、GSC、GA4、IndexNow、CTA 与负责人配置。
+- `docs/seo/monitoring.config.json`：双站点、30 个排名查询、GSC、GA4、IndexNow、CTA 与负责人配置。
 
 GA4 Data API 使用两个独立数字 Property ID：`.online` 为 `546216550`，`.cn` 为 `546978126`。`G-N4QZK4PHE3` 与 `G-2D1RSKSR72` 是前端 Measurement ID，不能代替数字 Property ID。
 
@@ -28,4 +28,4 @@ GA4 Data API 使用两个独立数字 Property ID：`.online` 为 `546216550`，
 11. 每个数据源的 `COMPLETE / PARTIAL / FAILED / NOT_RUN / UNKNOWN / UNSUPPORTED` 状态和证据链接；未知数据绝不写成 0。
 12. 生产门禁逐字段验证 8 + 19 + 3 个上海当日 depth-100 排名、Volume、AIO、频率汇总、GSC API 动态解析出的最新 finalized 日期与连续窗口、GA4 时间窗口、sitemap 覆盖、两个不同 GA4 Property、IndexNow 响应与 1–2 个真实动作；不是只看顶层 `status`。
 
-详细部署、权限和故障处理见 [`../../contributing/seo-geo-daily-monitoring.md`](../../contributing/seo-geo-daily-monitoring.md)。
+详细部署、权限和故障处理见 [`docs/contributing/seo-geo-daily-monitoring.md`](/contributing/seo-geo-daily-monitoring)。

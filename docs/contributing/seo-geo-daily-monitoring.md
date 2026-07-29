@@ -1,6 +1,6 @@
 # SEO/GEO 日报与自动监控
 
-`SEO GEO Daily Report` 工作流每天北京时间 08:15 生成同一份 Markdown + JSON artifact；它排在 `.cn` 源仓库 07:45 的排名基线之后。日报遵循 `gingiris-seo-geo-agent` 的四阶段顺序：技术健康 → GSC/GA4 → 排名与 AI 引用 → P0/P1/P2 动作。模板见 [`seo/reports/TEMPLATE.md`](../seo/reports/TEMPLATE.md)，N.E.K.O 双站适配和完成定义见 [`seo/reports/SKILL-INTEGRATION.md`](../seo/reports/SKILL-INTEGRATION.md)。
+`SEO GEO Daily Report` 工作流每天北京时间 08:15 生成同一份 Markdown + JSON artifact；它排在 `.cn` 源仓库 07:45 的排名基线之后。日报遵循 `gingiris-seo-geo-agent` 的四阶段顺序：技术健康 → GSC/GA4 → 排名与 AI 引用 → P0/P1/P2 动作。模板见 [`seo/reports/TEMPLATE.md`](/seo/reports/TEMPLATE)，N.E.K.O 双站适配和完成定义见 [`seo/reports/SKILL-INTEGRATION.md`](/seo/reports/SKILL-INTEGRATION)。
 
 ## 每天实际执行什么
 
