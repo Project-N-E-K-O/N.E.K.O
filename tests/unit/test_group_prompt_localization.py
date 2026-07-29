@@ -1,15 +1,18 @@
-"""群聊 prompt 的四处措辞缺陷护栏 + 一处死分支删除。
+"""Guards for four group-prompt wording defects and one dead branch.
 
-覆盖：
-- scoped 渲染（/scoped_context）的"较久前的记忆"段不得点名私聊对象。
-- 前情概要收尾句按会话形态选（语音一对一 / 文字一对一 / 群聊），桌面
-  文本模式和 QQ 群都不再念"即将开始用语音对话"。
-- 召回条目的 ``[层级/归属]`` 标签本地化，不再把 ``[fact/group_chat]``
-  这种内部枚举塞进中文 prompt（插件侧与本体侧同一张表）。
-- ``prompts.group.kira_unified`` 的必需占位符清单要以模板实际内容为准，
-  否则每个非中文用户的这一段都被护栏换回中文常量。
-- ``_build_group_turn_message`` 的 group_collective 分支不可达，删除后
-  collective 场景的 prompt_message 与改前逐字相同。
+- The stale-memory block of a scoped render (/scoped_context) must not
+  name the private-chat counterpart.
+- The context-summary closing line follows the session's actual shape
+  (voice one-to-one / text one-to-one / group chat), so neither the
+  desktop text mode nor a QQ group announces a voice conversation.
+- Recalled entries carry a localized ``[tier/entity]`` tag instead of
+  pushing internal enums such as ``[fact/group_chat]`` into a Chinese
+  prompt; the plugin and the main program share one table.
+- The required-placeholder list of ``prompts.group.kira_unified`` has to
+  match what the template actually contains, or the guard swaps every
+  non-Chinese user's section back to the Chinese constant.
+- The group_collective branch of ``_build_group_turn_message`` is
+  unreachable; dropping it leaves the collective prompt_message identical.
 """
 
 from __future__ import annotations
@@ -40,7 +43,7 @@ _LANGS = ("zh", "en", "ja", "ko", "ru", "es", "pt")
 
 
 class _ScopedRenderHarness:
-    """跑真正的 RenderingMixin，只补它依赖的几个外部件。"""
+    """Runs the real RenderingMixin, stubbing only what it depends on."""
 
     def __init__(self, persona: dict, name_mapping: dict):
         from memory.persona.mentions import MentionsMixin
@@ -77,7 +80,8 @@ class _ScopedRenderHarness:
 
 
 def _stale_reflection(text: str, **subject_fields) -> dict:
-    """一条超 TTL 的 confirmed 反思 —— past block 只在有它时才渲染。"""
+    """A confirmed reflection past its TTL — the block only renders
+    when at least one exists."""
     old_iso = (datetime.now() - timedelta(days=120)).isoformat()
     return {
         "id": f"r-{text[:8]}",
@@ -93,10 +97,12 @@ def _stale_reflection(text: str, **subject_fields) -> dict:
 
 @pytest.mark.asyncio
 async def test_scoped_past_memory_block_never_names_the_private_counterpart():
-    """群 bootstrap 里出现"除非{私聊对象}先主动提起"是双重错误：名字泄漏
-    进群 prompt，指令对象也根本不是群里的人。
+    """Naming the private-chat counterpart in a group bootstrap is wrong
+    twice over: the name leaks into the group prompt, and the instruction
+    addresses someone who is not in the group at all.
 
-    条件触发 —— 只有存在超 TTL 的 confirmed 反思时才渲染这一段。
+    Conditional — the section only renders when a confirmed reflection has
+    outlived its TTL.
     """
     from memory.scopes import MemorySubject
 
@@ -137,8 +143,9 @@ async def test_scoped_past_memory_block_never_names_the_private_counterpart():
 
 
 def test_scoped_past_block_signal_matches_the_scope_filter():
-    """"这次渲染只允许出现 scoped 内容"必须和过滤器同一个判据，否则渲染
-    出来的散文会和真正放行的内容对不上。"""
+    """"This render may only show scoped content" has to use the same
+    derivation as the filters, or the rendered prose disagrees with what
+    was actually let through."""
     from memory.persona.rendering import RenderingMixin
     from memory.scopes import MemorySubject
 
@@ -232,11 +239,13 @@ def _python_sources_outside_prompts_and_tests():
 
 
 def test_no_module_picks_the_voice_template_directly():
-    """收尾句的形态判断必须走 get_context_summary_ready。
+    """Choosing the closing line has to go through
+    get_context_summary_ready.
 
-    自动发现而不是维护清单：任何新调用点（新插件、新会话形态）只要直接
-    抓 CONTEXT_SUMMARY_READY，就会在这里现形——桌面文本模式当年正是这样
-    一路念着"即将用语音对话"的。
+    Discovered rather than listed: any new call site (a new plugin, a new
+    session shape) that grabs CONTEXT_SUMMARY_READY directly shows up
+    here — which is exactly how the desktop text mode kept announcing a
+    voice conversation.
     """
     offenders = []
     call_sites = []
@@ -292,7 +301,8 @@ def test_no_module_picks_the_voice_template_directly():
 
 @pytest.mark.asyncio
 async def test_qq_group_core_memory_closing_line_is_group_shaped():
-    """QQ 群的 core memory 段结尾不能出现"用语音与{私聊对象}对话"。"""
+    """The QQ group core-memory section must not end by announcing a
+    voice conversation with the private-chat counterpart."""
     from plugin.plugins.qq_auto_reply.session_instruction_service import (
         QQSessionInstructionService,
     )
@@ -328,10 +338,12 @@ async def test_qq_group_core_memory_closing_line_is_group_shaped():
 
 
 def test_qq_instruction_service_asks_for_the_group_shaped_closing_line():
-    """调用点本身：QQ 永远传 input_mode='text'，并把 is_group 传下去。
+    """The call site itself: QQ always passes input_mode='text' and
+    forwards is_group.
 
-    只测 get_context_summary_ready 的选择逻辑挡不住"调用点忘了传形态"，
-    而那正是这个 bug 的原样。
+    Testing only the selection logic of get_context_summary_ready cannot
+    catch a call site that forgets to state the shape — which is precisely
+    what this bug was.
     """
     source = (
         _REPO_ROOT / "plugin" / "plugins" / "qq_auto_reply"
@@ -404,7 +416,8 @@ def test_qq_recall_render_has_no_internal_enum_left():
 
 @pytest.mark.asyncio
 async def test_recall_memory_tool_render_matches_the_plugin_twin():
-    """本体侧 recall_memory 工具结果与插件侧共用同一张标签表。"""
+    """The main program's recall_memory tool result shares one label
+    table with the plugin."""
     from main_logic.core.tool_calling import ToolCallingMixin
 
     class _Harness(ToolCallingMixin):
@@ -456,10 +469,12 @@ def _bundle_text(locale: str, key: str) -> str:
 
 
 def test_english_user_actually_gets_the_english_group_reply_guidelines():
-    """必需占位符清单必须以模板实际内容为准。
+    """The required-placeholder list has to match the template.
 
-    kira_unified 一个占位符都没有，却被声明成需要三个 —— 护栏于是每轮都
-    判"覆盖缺必需占位符"，把每个非中文用户的这一段换回中文默认常量。
+    kira_unified carries no placeholder at all yet declared three, so the
+    guard ruled "override is missing required placeholders" on every turn
+    and swapped each non-Chinese user's section back to the Chinese
+    default.
     """
     from plugin.plugins.qq_auto_reply.scene_prompt_templates import (
         SCENE_KIRA_UNIFIED_GROUP,
@@ -497,9 +512,11 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
 
 
 def test_declared_required_placeholders_exist_in_their_own_templates():
-    """自动发现：每一层声明的必需占位符都得真的出现在默认模板里。
+    """Discovered: every declared placeholder must exist in its own
+    default template.
 
-    列清单会漏；这里直接把 _PROMPT_LAYERS 和它对应的默认模板对起来。
+    A hand-kept list would miss entries; this pairs _PROMPT_LAYERS with
+    the templates themselves.
     """
     from plugin.plugins.qq_auto_reply import prompt_fragment_templates as frag
     from plugin.plugins.qq_auto_reply import scene_prompt_templates as scenes
@@ -543,9 +560,9 @@ def test_declared_required_placeholders_exist_in_their_own_templates():
 
 
 def test_collective_prompt_message_is_unchanged_after_dropping_dead_branch():
-    """collective 场景下 group_facing 恒为真 → build_prompt_message 原样
-    返回消息，从来走不到 _build_group_turn_message。删掉那条分支是零行为
-    变更。"""
+    """In the collective scene group_facing is always true, so
+    build_prompt_message returns the message verbatim and never reaches
+    _build_group_turn_message. Dropping that branch changes nothing."""
     from plugin.plugins.qq_auto_reply.prompt_builder import QQPromptBuilder
 
     builder = QQPromptBuilder(SimpleNamespace())
@@ -563,10 +580,11 @@ def test_collective_prompt_message_is_unchanged_after_dropping_dead_branch():
 
 
 def test_pipeline_still_forces_group_facing_for_collective_scene():
-    """删除那条分支的前提：pipeline 保证 collective ⇒ group_facing。
+    """Dropping the branch rests on the pipeline forcing group_facing
+    for a collective scene.
 
-    这个推导一旦被改掉，死分支就复活了（而且是以"少了群体面向指令"的
-    形式），所以把它钉在这里。
+    Change that derivation and the dead branch comes back to life — as a
+    turn message missing its group-facing instruction — so pin it here.
     """
     source = (
         _REPO_ROOT / "plugin" / "plugins" / "qq_auto_reply"

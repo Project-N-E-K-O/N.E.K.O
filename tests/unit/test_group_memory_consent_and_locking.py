@@ -1,13 +1,14 @@
-"""QQ 记忆管线的三处缺陷护栏：静默轮越权写入、成员排空持锁、httpx 单例。
+"""Guards for three QQ memory-pipeline defects.
 
-覆盖：
-- 静默轮（模型选择沉默）跑记忆管家时，非 admin 私聊的消息不得进主人的
-  legacy 语料；闸在被调方 ``cache_session_delta``，静默轮那条路径上没有
-  任何调用方判据。
-- 成员桶排空只在取/还快照时持会话锁，scoped POST 一律在锁外；冲刷期间
-  到达的发言既不丢也不重复入桶。
-- ``QQMemoryBridge`` 复用同一个 httpx client，且各端点的 timeout 仍按
-  自己的值 per-request 传（scoped history 30s，其余 5s）。
+- A silent turn (the model chose not to reply) still runs memory
+  housekeeping; a non-admin private chat must never reach the owner's
+  legacy corpus. The gate lives in the callee, ``cache_session_delta`` —
+  the silent path carries no caller-side check at all.
+- The member-bucket drain holds the session lock only to take and return
+  its snapshot; the scoped POSTs always run outside it, and turns that
+  arrive mid-drain are neither lost nor queued twice.
+- ``QQMemoryBridge`` reuses one httpx client while each endpoint still
+  passes its own timeout per request (scoped history 30s, the rest 5s).
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ def _msg(msg_type: str, text: str):
 
 
 def _session_lock_runner():
-    """真的会串行化的会话锁（不是 passthrough 假锁）。"""
+    """A session lock that really serializes (not a passthrough double)."""
     locks: dict[str, asyncio.Lock] = {}
 
     async def _run_with_session_lock(session_key, coro_factory):
@@ -40,12 +41,15 @@ def _session_lock_runner():
 
 @pytest.mark.asyncio
 async def test_silent_turn_never_caches_unauthorized_private_history():
-    """非 admin 私聊 + 模型沉默 = 好友的消息被写进主人的 legacy 语料。
+    """A non-admin private chat plus a silent model wrote a friend's
+    messages into the owner's legacy corpus.
 
-    静默轮无条件调 ``_run_memory_housekeeping`` → ``_cache_session_delta``，
-    成功路径那道 ``if user_data.get("memory_enabled")`` 完全绕过了。非
-    admin 私聊的 memory_enabled 恒为 False（prompt_builder 里 permission
-    != admin 就是 False），所以任何一次沉默都会越权写入。
+    The silent turn calls ``_run_memory_housekeeping`` ->
+    ``_cache_session_delta`` unconditionally, bypassing the success path's
+    ``if user_data.get("memory_enabled")``. A non-admin private chat has
+    memory_enabled permanently False (prompt_builder returns False for any
+    permission level other than admin), so every silent turn wrote data it
+    had no authorization for.
     """
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
@@ -100,7 +104,7 @@ async def test_silent_turn_never_caches_unauthorized_private_history():
 
 
 def _group_drain_harness(post_scoped):
-    """一个能真正跑 _drain_member_buckets 的最小群会话。"""
+    """The smallest group session that can really run the drain."""
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -141,10 +145,11 @@ def _group_drain_harness(post_scoped):
 
 @pytest.mark.asyncio
 async def test_member_drain_frees_session_lock_while_posting():
-    """排空期间同群的消息处理必须还能拿到会话锁。
+    """Message handling for the same group must still get the lock.
 
-    一次排空最坏 2 波 × 4 并发 × 30s；把这段时间关在会话锁里，整个群的
-    消息处理停摆，等锁的 handler 还各自占着全局 Semaphore(3)。
+    One sweep is at worst two waves of four concurrent requests at 30s
+    each. Keeping that inside the session lock stalls the whole group, and
+    the handlers waiting on it each hold a slot of the global semaphore.
     """
     released = asyncio.Event()
     in_flight = asyncio.Event()
@@ -181,8 +186,9 @@ async def _record_handled(sink: list) -> None:
 
 @pytest.mark.asyncio
 async def test_turns_arriving_during_drain_are_neither_lost_nor_resent():
-    """冲刷期间新到的发言写进新的一代：不混进在飞的 payload（会被成功后
-    的整桶 pop 带走 = 丢），也不在下一轮重发（= 重复入库）。"""
+    """Turns arriving mid-drain belong to a fresh generation: they must
+    not join the in-flight payload (the whole bucket is popped on success,
+    so they would vanish) nor be resubmitted on the next sweep."""
     released = asyncio.Event()
     in_flight = asyncio.Event()
     sent_payloads: list[list] = []
@@ -226,7 +232,8 @@ async def test_turns_arriving_during_drain_are_neither_lost_nor_resent():
 
 @pytest.mark.asyncio
 async def test_failed_drain_returns_buckets_ahead_of_newer_turns():
-    """冲失败的桶回到队列，并且排在冲刷期间新到的发言之前（时间顺序）。"""
+    """A failed bucket returns to the queue, ahead of the turns that
+    arrived while it was in flight, so the order stays chronological."""
     in_flight = asyncio.Event()
     released = asyncio.Event()
 
@@ -262,8 +269,8 @@ async def test_failed_drain_returns_buckets_ahead_of_newer_turns():
 
 @pytest.mark.asyncio
 async def test_drain_drops_failed_buckets_when_consent_revoked_mid_flight():
-    """冲刷飞行期间关掉成员记忆：失败的桶按 fail-closed 丢弃，不放回队列
-    等下一轮再往服务端发。"""
+    """Member memory switched off mid-flight: failed buckets are dropped
+    fail-closed rather than queued for another attempt at the server."""
     in_flight = asyncio.Event()
     released = asyncio.Event()
 
@@ -301,7 +308,7 @@ class _FakeResponse:
 
 
 class _FakeClient:
-    """只记录调用的假 client；is_closed 让 _get_client 认它是活的。"""
+    """Records calls only; is_closed keeps _get_client treating it live."""
 
     instances = 0
 
@@ -326,9 +333,9 @@ class _FakeClient:
 
 @pytest.mark.asyncio
 async def test_memory_bridge_keeps_per_endpoint_timeouts_on_one_client():
-    """timeout 从 client 构造挪到 per-request：scoped history 等的是一次
-    LLM 抽取（30s），其余都是本地读（5s）。共用一个 client 时如果把
-    timeout 留在构造上，所有端点会被拉平成同一个值。"""
+    """The timeout moved from the client to each request: scoped history
+    waits on an LLM extraction (30s) while the rest are local reads (5s).
+    Leaving it on a now-shared client would level every endpoint."""
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))

@@ -175,7 +175,12 @@ class QQAutoReplyPromptingMixin:
         Separate from the memory bridge's client on purpose: this one talks
         to the QQ CDN, that one only to localhost. The timeout is per
         request — it is derived from the turn timeout, which settings can
-        change while the plugin runs."""
+        change while the plugin runs.
+
+        No lock: there is no await between the check and the assignment
+        below (the import and the constructor are both synchronous), so on
+        one event loop no other task can observe the half-built state and
+        two concurrent first downloads cannot each create a client."""
         import httpx
 
         client = getattr(self, "_attachment_http_client", None)

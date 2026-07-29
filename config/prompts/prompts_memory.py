@@ -3058,7 +3058,7 @@ RECALL_ENTRY_ENTITY_LABEL = {
 def render_recall_entry_tag(
     tier: object, entity: object, lang: str = "zh",
 ) -> str:
-    """``[层级/归属]`` prefix for one recalled memory line.
+    """Localized ``[tier/entity]`` prefix for one recalled memory line.
 
     Unknown values pass through verbatim: a tier or entity this table does
     not know is still better shown than swallowed, and a new enum value
