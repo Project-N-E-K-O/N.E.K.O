@@ -339,19 +339,22 @@
             const attachNativeSyncTicket = async (targetUrl) => {
                 targetUrl.hash = '';
                 const hashParams = new URLSearchParams();
-                const [syncTicket, nativeDelegate] = await Promise.all([
-                    fetchNativeSyncTicket(),
-                    fetchNativeDelegate(),
-                ]);
+                const syncTicket = await fetchNativeSyncTicket();
                 if (syncTicket) {
                     hashParams.set('native_sync', syncTicket);
                 }
+                const hash = hashParams.toString();
+                if (hash) targetUrl.hash = hash;
+                return targetUrl;
+            };
+            const attachNativeDelegate = (targetUrl, nativeDelegate) => {
+                const hashParams = new URLSearchParams(targetUrl.hash.replace(/^#/, ''));
                 // Scoped credits/facts proof — never the platform OAuth bearer.
                 if (nativeDelegate) {
                     hashParams.set('native_delegate', nativeDelegate);
                 }
                 const hash = hashParams.toString();
-                if (hash) targetUrl.hash = hash;
+                targetUrl.hash = hash;
                 return targetUrl;
             };
             try {
@@ -405,6 +408,8 @@
                 }
                 // 只有从本体按钮打开的页面才能拿到一次性同步票据。票据放 fragment，
                 // 不进入社区服务器 access log / Referer；社区页读取后会立即从地址栏移除。
+                // delegate 较慢且有独立超时，先并发启动，但不阻塞首次社区导航。
+                const nativeDelegatePromise = fetchNativeDelegate();
                 await attachNativeSyncTicket(targetUrl);
                 // 顺手把 client_id 拼进 URL（仅关联游客身份，不构成登录态同步授权）。
                 try {
@@ -502,8 +507,13 @@
                                 !isElectron
                             );
                             if (oauthCompleted) {
+                                const refreshedDelegatePromise = fetchNativeDelegate();
                                 const refreshedTargetUrl = await attachNativeSyncTicket(
                                     new URL(url, window.location.href)
+                                );
+                                attachNativeDelegate(
+                                    refreshedTargetUrl,
+                                    await refreshedDelegatePromise
                                 );
                                 if (isElectron) {
                                     if (!openElectronSocialWindow(refreshedTargetUrl.toString())) {
@@ -517,8 +527,28 @@
                             navigateBrowserPopup(url);
                         }
                     }
-                } else if (!isElectron) {
-                    navigateBrowserPopup(url);
+                } else {
+                    if (!isElectron) {
+                        // 先让用户看到 Community；保留 WindowProxy 仅用于随后补发 delegate。
+                        navigateBrowserPopup(url, { keepReference: true });
+                    }
+                    const nativeDelegate = await nativeDelegatePromise;
+                    if (nativeDelegate) {
+                        const delegateTargetUrl = new URL(url, window.location.href);
+                        // 首次页面已接收 native_sync；二次导航只交付 delegate，避免重放一次性票据。
+                        delegateTargetUrl.hash = '';
+                        attachNativeDelegate(delegateTargetUrl, nativeDelegate);
+                        if (isElectron) {
+                            if (!openElectronSocialWindow(delegateTargetUrl.toString())) {
+                                console.warn('[social] failed to refresh Electron community window with native delegate');
+                            }
+                        } else if (popupRef) {
+                            navigateBrowserPopup(delegateTargetUrl.toString());
+                        }
+                    } else if (!isElectron) {
+                        // 只释放本地引用，不关闭已打开的 Community 页面。
+                        popupRef = null;
+                    }
                 }
                 return;
             } catch (err) {

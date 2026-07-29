@@ -40,9 +40,9 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert "hashParams.set('native_sync', syncTicket)" in listener
     assert "fetch('/api/card-drop/native-delegate', {" in listener
     assert "hashParams.set('native_delegate', nativeDelegate)" in listener
-    assert "await Promise.all([" in listener
-    assert "fetchNativeSyncTicket()," in listener
-    assert "fetchNativeDelegate()," in listener
+    assert "const nativeDelegatePromise = fetchNativeDelegate();" in listener
+    assert "const syncTicket = await fetchNativeSyncTicket();" in listener
+    assert "await Promise.all([" not in listener
     assert "setTimeout(() => controller.abort(), 4000)" in listener
     assert "signal: controller.signal" in listener
     assert "clearTimeout(timeoutId)" in listener
@@ -67,6 +67,21 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.index(protocol_guard) < listener.index(
         "await attachNativeSyncTicket(targetUrl)"
     )
+    # A slow delegate must not delay the initial Electron or browser Community navigation.
+    assert listener.index("const nativeDelegatePromise = fetchNativeDelegate();") < listener.index(
+        "await attachNativeSyncTicket(targetUrl)"
+    )
+    assert listener.index("openElectronSocialWindow(url)") < listener.index(
+        "const nativeDelegate = await nativeDelegatePromise;"
+    )
+    assert listener.index("navigateBrowserPopup(url, { keepReference: true })") < listener.index(
+        "const nativeDelegate = await nativeDelegatePromise;"
+    )
+    assert listener.index("const nativeDelegate = await nativeDelegatePromise;") < listener.index(
+        "openElectronSocialWindow(delegateTargetUrl.toString())"
+    )
+    assert "delegateTargetUrl.hash = '';" in listener
+    assert "attachNativeDelegate(delegateTargetUrl, nativeDelegate);" in listener
 
 
 @pytest.mark.unit
@@ -96,6 +111,11 @@ def test_social_browser_fallback_preopens_popup_before_async_fetches():
     assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
     assert "await waitForOAuthCompletion(" in listener
     assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
+    assert "const refreshedDelegatePromise = fetchNativeDelegate();" in listener
+    assert re.search(
+        r"attachNativeDelegate\(\s*refreshedTargetUrl,\s*await refreshedDelegatePromise\s*\)",
+        listener,
+    )
     assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
     assert "openElectronSocialWindow(refreshedTargetUrl.toString())" in listener
     assert "const shouldWaitForOAuth = (isElectron && oauthLaunched)" in listener
