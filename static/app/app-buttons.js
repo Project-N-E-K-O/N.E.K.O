@@ -25,6 +25,12 @@
     // 720p 下若仍超出运输预算再逐步降质兜底。
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
+    function getDesktopProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
     let compactHistoryDropPayloadQueue = Promise.resolve();
 
     function rejectPendingTextSessionStart(reason) {
@@ -3164,8 +3170,8 @@
         }
 
         function getDesktopRegionCaptureMethod() {
-            if (!window.electronDesktopCapturer) return null;
-            var bridge = window.electronDesktopCapturer;
+            var bridge = getDesktopProvider();
+            if (!bridge) return null;
             var names = [
                 'beginDesktopRegionSelection',
                 'captureDesktopRegion',
@@ -3351,11 +3357,16 @@
             // 一起 hide 掉再抓屏，是唯一能真正抹掉立绘的途径；下面的 renderer fallback 只能
             // 对 Pet 的 DOM 做 visibility:hidden，盖不住 WebGL 合成层 —— 那正是"隐藏NEKO
             // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自行选择合适屏幕。
-            if (window.electronDesktopCapturer
-                && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
+            var desktopProvider = getDesktopProvider();
+            if (desktopProvider
+                && typeof desktopProvider.captureSourceWithoutNeko === 'function') {
                 var atomicFailed = false;
                 try {
-                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId || null);
+                    var atomic = await window.captureDesktopSourceWithTimeout(
+                        desktopProvider,
+                        'captureSourceWithoutNeko',
+                        selectedSourceId || null
+                    );
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
@@ -3388,10 +3399,10 @@
             // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();
             var fallbackHiddenIds = null;
-            if (window.electronDesktopCapturer
-                && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+            if (desktopProvider
+                && typeof desktopProvider.hideNekoWindows === 'function') {
                 try {
-                    var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                    var hideRes = await desktopProvider.hideNekoWindows();
                     if (hideRes && Array.isArray(hideRes.hiddenIds)) {
                         fallbackHiddenIds = hideRes.hiddenIds;
                     }
@@ -3407,10 +3418,14 @@
                 // 快照已是僵尸 ID；继续用它只会让主进程再原样报一次 'Source not found'，
                 // 多一次 IPC 往返。重读 S 直接跳到 Priority 2 流路径。
                 var currentSourceId = S.selectedScreenSourceId;
-                if (currentSourceId && window.electronDesktopCapturer
-                    && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                if (currentSourceId && desktopProvider
+                    && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            currentSourceId
+                        );
                         if (direct && direct.success && direct.dataUrl) {
                             return direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -3466,10 +3481,10 @@
                 // 先恢复卫星窗口，再恢复 Pet 的 DOM visibility —— 反过来用户会看到
                 // 孤零零的 Pet 一帧。
                 if (fallbackHiddenIds && fallbackHiddenIds.length > 0
-                    && window.electronDesktopCapturer
-                    && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                    && desktopProvider
+                    && typeof desktopProvider.restoreNekoWindows === 'function') {
                     try {
-                        await window.electronDesktopCapturer.restoreNekoWindows(fallbackHiddenIds);
+                        await desktopProvider.restoreNekoWindows(fallbackHiddenIds);
                     } catch (e) {
                         console.warn('[隐藏NEKO][fallback] 恢复卫星窗口失败:', e);
                     }
@@ -3569,10 +3584,15 @@
                     }
 
                     var selectedSourceId = S.selectedScreenSourceId;
-                    if (selectedSourceId && window.electronDesktopCapturer
-                        && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                    var desktopProvider = getDesktopProvider();
+                    if (selectedSourceId && desktopProvider
+                        && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                         try {
-                            var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                            var direct = await window.captureDesktopSourceWithTimeout(
+                                desktopProvider,
+                                'captureSourceAsDataUrl',
+                                selectedSourceId
+                            );
                             if (direct && direct.success && direct.dataUrl) {
                                 dataUrl = direct.dataUrl;
                                 width = direct.width || 0;
@@ -3659,10 +3679,11 @@
                 // 在显示裁剪 overlay 前隐藏其他 NEKO 窗口（如 Chat 窗口），
                 // 避免它们的 z-order 遮挡 Pet 窗口中的全屏裁剪界面。
                 var hiddenIds = null;
-                if (window.electronDesktopCapturer
-                    && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+                var desktopProvider = getDesktopProvider();
+                if (desktopProvider
+                    && typeof desktopProvider.hideNekoWindows === 'function') {
                     try {
-                        var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                        var hideRes = await desktopProvider.hideNekoWindows();
                         if (hideRes && Array.isArray(hideRes.hiddenIds)) {
                             hiddenIds = hideRes.hiddenIds;
                         }
@@ -3685,10 +3706,10 @@
                     }
                 } finally {
                     if (hiddenIds && hiddenIds.length > 0
-                        && window.electronDesktopCapturer
-                        && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                        && desktopProvider
+                        && typeof desktopProvider.restoreNekoWindows === 'function') {
                         try {
-                            await window.electronDesktopCapturer.restoreNekoWindows(hiddenIds);
+                            await desktopProvider.restoreNekoWindows(hiddenIds);
                         } catch (restoreErr) {
                             console.warn('[截图] 恢复其他窗口失败:', restoreErr);
                         }
