@@ -381,6 +381,8 @@ def test_livestream_skips_external_tts_regardless_of_voice_preset(monkeypatch):
         )
         is True
     )
+
+
 def test_non_livestream_free_preset_still_skips_tts_only_on_lanlan_tech(monkeypatch):
     """回归 PR #1369 原 gate 的窄路径：非 livestream 时，free preset 仅在
     base_url 指向 lanlan.tech 域时跳 TTS，其他域照旧 fallback 外部 TTS。"""
