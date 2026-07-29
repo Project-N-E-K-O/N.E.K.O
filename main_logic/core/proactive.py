@@ -34,9 +34,6 @@ from ._shared import _VOICE_PROACTIVE_ACK_GRACE_S, logger, _proactive_expected_s
 from .callback_render import _build_callback_instruction, _select_callbacks_within_token_budget
 
 
-_VOICE_DELIVERY_COMMITTED_KEY = "_voice_delivery_committed"
-
-
 class ProactiveMixin:
     """Proactive delivery methods (see module docstring)."""
 
@@ -1479,7 +1476,7 @@ class ProactiveMixin:
         stale — coalescing stays strictly opt-in."""
         if not isinstance(entry, dict):
             return False
-        if entry.get(_VOICE_DELIVERY_COMMITTED_KEY):
+        if entry.get("_voice_delivery_committed"):
             # Once provider media delivery has begun, the matching callback
             # text must complete the same turn. A newer same-key cue remains
             # queued for the following turn instead of orphaning media that
@@ -1496,13 +1493,13 @@ class ProactiveMixin:
     def _mark_voice_delivery_committed(callbacks: list) -> None:
         for callback in callbacks:
             if isinstance(callback, dict):
-                callback[_VOICE_DELIVERY_COMMITTED_KEY] = True
+                callback["_voice_delivery_committed"] = True
 
     @staticmethod
     def _clear_voice_delivery_committed(callbacks: list) -> None:
         for callback in callbacks:
             if isinstance(callback, dict):
-                callback.pop(_VOICE_DELIVERY_COMMITTED_KEY, None)
+                callback.pop("_voice_delivery_committed", None)
 
     def _retract_stale_coalesced(self, callbacks: list) -> bool:
         """Pull-model staleness sweep for a delivery-point snapshot.
@@ -2134,7 +2131,7 @@ class ProactiveMixin:
                             and str(_cb.get("coalesce_key") or "").strip() == new_key):
                         surviving.append(_cb)
                         continue
-                    if _cb.get(_VOICE_DELIVERY_COMMITTED_KEY):
+                    if _cb.get("_voice_delivery_committed"):
                         # This cue has crossed the media-delivery commit
                         # boundary. Keep it; the new cue queues for the next
                         # turn instead of retracting already-persisted media.
