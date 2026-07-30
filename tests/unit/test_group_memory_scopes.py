@@ -2215,6 +2215,9 @@ async def test_batch_extraction_drops_unattributable_facts(tmp_path):
             {"text": "零段号", "importance": 5, "segment": 0},
             {"text": "缺段号", "importance": 5},
             {"text": "非数字段号", "importance": 5, "segment": "x"},
+            # isdigit() 为 True 但 int() 抛 ValueError 的字符：必须丢这
+            # 一条而不是让 ValueError 把整批弄崩（review 抓的）。
+            {"text": "上标段号", "importance": 5, "segment": "²"},
             {"text": "布尔段号", "importance": 5, "segment": True},
             {"text": "空文本", "importance": 5, "segment": 1},
             {"text": "有效条目", "importance": 5, "segment": 2},
@@ -2230,7 +2233,7 @@ async def test_batch_extraction_drops_unattributable_facts(tmp_path):
 
     async def _llm_blank(prompt, lanlan_name, **kwargs):
         payload = await fs_llm(prompt, lanlan_name, **kwargs)
-        payload[5]["text"] = "   "
+        payload[6]["text"] = "   "
         return payload
 
     fs._allm_call_with_retries = _llm_blank

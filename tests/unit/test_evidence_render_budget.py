@@ -290,6 +290,12 @@ def test_split_drops_whitespace_only_string_facts(tmp_path):
         'master': {'facts': [
             '   ',
             '  \t ',
+            # 非 str 假值：裸 str() 判空会把它们变成 "None"/"False"/"0"
+            # 文本渲染出来（review 抓的）——legacy 形态只有裸字符串，
+            # 其余一律丢弃。
+            None,
+            False,
+            0,
             _entry('m1', 'normal dict entry', rein=1.0),
             'legacy string fact about master',
         ]},
@@ -297,10 +303,8 @@ def test_split_drops_whitespace_only_string_facts(tmp_path):
     protected, by_entity = pm._split_persona_for_render(persona)
     assert protected == []
     texts = [e.get('text', '') for e in by_entity.get('master', [])]
-    assert 'normal dict entry' in texts
-    assert 'legacy string fact about master' in texts
-    assert all(str(t).strip() for t in texts), (
-        "纯空格裸字符串不得被 promote 成可渲染条目"
+    assert texts == ['normal dict entry', 'legacy string fact about master'], (
+        f"纯空格裸字符串 / 非 str 假值不得被 promote 成可渲染条目: {texts!r}"
     )
 
 

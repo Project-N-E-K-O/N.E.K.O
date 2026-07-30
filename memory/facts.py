@@ -705,8 +705,14 @@ class FactStore:
             return None
         if isinstance(raw, int):
             seg = raw
-        elif isinstance(raw, str) and raw.strip().isdigit():
-            seg = int(raw.strip())
+        elif isinstance(raw, str):
+            # try/except 而非 isdigit() 预检：isdigit() 对上标数字（"²"）等
+            # int() 消化不了的字符也返回 True，预检放行后 int() 抛
+            # ValueError 会把整批弄崩——按契约这类畸形只该丢这一条。
+            try:
+                seg = int(raw.strip())
+            except ValueError:
+                return None
         elif isinstance(raw, float) and raw.is_integer():
             seg = int(raw)
         else:

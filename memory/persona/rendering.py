@@ -435,8 +435,11 @@ class RenderingMixin:
                     # the blank gate below and render an empty bullet.
                     # _renderable_text itself returns "" for every
                     # non-dict, so the string must be judged before the
-                    # promotion, not through that helper.
-                    if str(entry).strip():
+                    # promotion, not through that helper. isinstance 限定
+                    # str：裸 str() 会把 None/False/0 变成非空文本
+                    # "None"/"False"/"0" 渲染出来，而 legacy 数据形态
+                    # 只有裸字符串这一种。
+                    if isinstance(entry, str) and entry.strip():
                         entry = {
                             'text': str(entry),
                             'protected': False,
