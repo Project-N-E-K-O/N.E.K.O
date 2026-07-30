@@ -131,6 +131,11 @@
         if (candidate.writeId < current.writeId) return false;
         return (candidate.writerId || '') > (current.writerId || '');
     }
+    function _sharedWriteTokensEqual(left, right) {
+        return !!left && !!right
+            && left.writeId === right.writeId
+            && (left.writerId || '') === (right.writerId || '');
+    }
     function _rememberSharedKeyWrites(keys, token, acceptedSettings) {
         if (!Array.isArray(keys) || !token) return;
         for (const key of keys) {
@@ -142,8 +147,22 @@
                 writeId: token.writeId,
                 writerId: token.writerId || ''
             };
+            if (Number.isInteger(token.confirmedRevision)
+                && token.confirmedRevision >= 0) {
+                candidate.confirmedRevision = token.confirmedRevision;
+            }
             if (_sharedWriteTokenOutranks(candidate, _knownSharedKeyWrites[key])) {
                 _knownSharedKeyWrites[key] = candidate;
+            } else if (_sharedWriteTokensEqual(
+                candidate,
+                _knownSharedKeyWrites[key]
+            ) && Number.isInteger(candidate.confirmedRevision)
+                && (!Number.isInteger(
+                    _knownSharedKeyWrites[key].confirmedRevision
+                ) || candidate.confirmedRevision
+                    > _knownSharedKeyWrites[key].confirmedRevision)) {
+                _knownSharedKeyWrites[key].confirmedRevision =
+                    candidate.confirmedRevision;
             }
         }
     }
@@ -160,8 +179,36 @@
                 writeId: _knownSharedKeyWrites[key].writeId,
                 writerId: _knownSharedKeyWrites[key].writerId
             };
+            if (Number.isInteger(
+                _knownSharedKeyWrites[key].confirmedRevision
+            )) {
+                snapshot[key].confirmedRevision =
+                    _knownSharedKeyWrites[key].confirmedRevision;
+            }
         }
         return snapshot;
+    }
+    function _confirmSharedKeyWrites(
+        payload,
+        serverSettings,
+        revision
+    ) {
+        if (!Number.isInteger(revision) || !serverSettings
+            || typeof serverSettings !== 'object') return;
+        const currentSettings = getConversationSettings();
+        for (const key of Object.keys(payload || {})) {
+            if (key === 'independentAsrEnabled') continue;
+            if (payload[key] !== serverSettings[key]) continue;
+            if (currentSettings[key] !== serverSettings[key]) continue;
+            const currentToken = _knownSharedKeyWrites[key];
+            if (!currentToken) continue;
+            currentToken.confirmedRevision = Math.max(
+                Number.isInteger(currentToken.confirmedRevision)
+                    ? currentToken.confirmedRevision
+                    : 0,
+                revision
+            );
+        }
     }
     function _serverAsrDecision(data) {
         const decisions = data && data.decisions;
@@ -516,11 +563,17 @@
         };
         const ownMeta = payload[_SHARED_WRITE_META_KEY];
         _rememberSharedKeyWrites(ownMeta.changedKeys, ownMeta);
-        // Server winners need provenance too. Otherwise a sibling with any
-        // older explicit token can mistake an accepted GET/412 value for an
-        // incidental stale copy and discard it. Stamp only fields actually
-        // accepted from the response; pending/local winners stay untouched.
-        _rememberSharedKeyWrites(serverAuthoritativeKeys || [], ownMeta);
+        // Server authority and browser write tokens are separate clocks. A
+        // server winner must carry its real revision instead of borrowing this
+        // broadcast envelope's fresh writeId, which could make an old GET look
+        // newer than an explicit edit the sender never observed.
+        if (Array.isArray(serverAuthoritativeKeys)
+            && serverAuthoritativeKeys.length > 0
+            && Number.isInteger(_conversationSettingsRevision)) {
+            ownMeta.serverRevision = _conversationSettingsRevision;
+            ownMeta.serverAuthoritativeKeys =
+                serverAuthoritativeKeys.slice();
+        }
         ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
             _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
@@ -541,6 +594,12 @@
             };
         }
         localStorage.setItem('project_neko_settings', JSON.stringify(payload));
+        // The server snapshot is now the local source of truth for these keys.
+        // Keep the old token in the transmitted metadata long enough for peers
+        // to learn any confirmation revision, then discard it locally.
+        for (const key of serverAuthoritativeKeys || []) {
+            delete _knownSharedKeyWrites[key];
+        }
     }
 
     /**
@@ -567,6 +626,11 @@
                         ? token.writerId
                         : ''
                 };
+                if (Number.isInteger(token.confirmedRevision)
+                    && token.confirmedRevision >= 0) {
+                    knownKeyWrites[key].confirmedRevision =
+                        token.confirmedRevision;
+                }
             }
         }
         return {
@@ -584,6 +648,16 @@
             // changedKeys and keeps flowing through asrChangedByOtherWindow.
             asrAuthoritative: meta.asrAuthoritative === true,
             pendingRecovery: meta.pendingRecovery === true,
+            serverRevision: Number.isInteger(meta.serverRevision)
+                && meta.serverRevision >= 0
+                ? meta.serverRevision
+                : null,
+            serverAuthoritativeKeys:
+                Array.isArray(meta.serverAuthoritativeKeys)
+                    ? meta.serverAuthoritativeKeys.filter(
+                        (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                    )
+                    : [],
             knownKeyWrites,
             knownKeyWritesPresent,
             // Absent on previous-build snapshots and on writers with no
@@ -957,6 +1031,11 @@
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
                     }
+                    _confirmSharedKeyWrites(
+                        payload,
+                        data.settings,
+                        data.revision
+                    );
                     if (nextEtag) {
                         _markEtagConfirmedSharedSettings(
                             settings,
@@ -1280,6 +1359,15 @@
                 if (bootMeta) {
                     _rememberKnownSharedKeyWrites(bootMeta.knownKeyWrites, settings);
                     _rememberSharedKeyWrites(bootMeta.changedKeys, bootMeta, settings);
+                    if (Number.isInteger(bootMeta.serverRevision)) {
+                        _conversationSettingsRevision =
+                            bootMeta.serverRevision;
+                        _conversationSettingsEtag =
+                            `"conversation-settings-${bootMeta.serverRevision}"`;
+                        for (const key of bootMeta.serverAuthoritativeKeys) {
+                            delete _knownSharedKeyWrites[key];
+                        }
+                    }
                 }
                 if (bootMeta && bootMeta.asrDecision
                     && settings.independentAsrEnabled === bootMeta.asrDecision.value) {
@@ -1802,6 +1890,42 @@
                     if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
                     const localToken = _knownSharedKeyWrites[key];
                     const mergeToken = meta.knownKeyWrites[key];
+                    const serverAuthoritative =
+                        Number.isInteger(meta.serverRevision)
+                        && meta.serverAuthoritativeKeys.indexOf(key) !== -1;
+                    if (serverAuthoritative) {
+                        let confirmedRevision = localToken
+                            && Number.isInteger(localToken.confirmedRevision)
+                            ? localToken.confirmedRevision
+                            : null;
+                        if (_sharedWriteTokensEqual(localToken, mergeToken)
+                            && Number.isInteger(
+                                mergeToken.confirmedRevision
+                            )) {
+                            confirmedRevision = Math.max(
+                                Number.isInteger(confirmedRevision)
+                                    ? confirmedRevision
+                                    : 0,
+                                mergeToken.confirmedRevision
+                            );
+                        }
+                        const serverSnapshotIsOlder =
+                            (Number.isInteger(_conversationSettingsRevision)
+                                && meta.serverRevision
+                                    < _conversationSettingsRevision)
+                            || (localToken
+                                && !Number.isInteger(confirmedRevision))
+                            || (Number.isInteger(confirmedRevision)
+                                && meta.serverRevision
+                                    < confirmedRevision);
+                        if (serverSnapshotIsOlder) {
+                            if (incoming === settings) {
+                                incoming = Object.assign({}, settings);
+                            }
+                            delete incoming[key];
+                        }
+                        continue;
+                    }
                     // The merge envelope may be newer while this particular
                     // field still predates an explicit write already accepted
                     // here. Apply only when the sender's per-key provenance is
@@ -1844,6 +1968,27 @@
             if (meta) {
                 _rememberKnownSharedKeyWrites(meta.knownKeyWrites, incoming);
                 _rememberSharedKeyWrites(meta.changedKeys, meta, incoming);
+                for (const key of meta.serverAuthoritativeKeys) {
+                    if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+                        delete _knownSharedKeyWrites[key];
+                    }
+                }
+                if (Number.isInteger(meta.serverRevision)
+                    && (!Number.isInteger(_conversationSettingsRevision)
+                        || meta.serverRevision
+                            > _conversationSettingsRevision)) {
+                    _conversationSettingsRevision = meta.serverRevision;
+                    _conversationSettingsEtag =
+                        `"conversation-settings-${meta.serverRevision}"`;
+                    for (const key of meta.serverAuthoritativeKeys) {
+                        if (!Object.prototype.hasOwnProperty.call(
+                            incoming,
+                            key
+                        )) continue;
+                        _conversationSettingsEtagKeyMutationVersions[key] =
+                            _crossWindowKeyMutationVersions[key] || 0;
+                    }
+                }
             }
             if (meta && meta.asrDecision
                 && Object.prototype.hasOwnProperty.call(

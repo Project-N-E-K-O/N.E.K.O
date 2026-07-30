@@ -1411,6 +1411,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           const tupleOnly = makeContext(false, {
             success: true,
             settings: { independentAsrEnabled: false },
+            revision: 1,
             telemetryBranch: null,
             decisions: { independentAsrEnabled: tuple },
           });
@@ -1430,6 +1431,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               independentAsrEnabled: false,
               noiseReductionEnabled: true,
             },
+            revision: 1,
             telemetryBranch: null,
             decisions: {},
           });
@@ -1446,6 +1448,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               independentAsrEnabled: false,
               proactiveVisionEnabled: false,
             },
+            revision: 2,
             telemetryBranch: null,
             decisions: {},
           });
@@ -1455,8 +1458,10 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             serverBroadcaster.store.get('project_neko_settings')
           );
           assert(
-            serverSnapshot._sharedWriteMeta.knownKeyWrites.proactiveVisionEnabled,
-            'a server winner must receive per-key broadcast provenance'
+            serverSnapshot._sharedWriteMeta.serverRevision === 2
+              && serverSnapshot._sharedWriteMeta.serverAuthoritativeKeys
+                .includes('proactiveVisionEnabled'),
+            'a server winner must carry its real revision and authoritative fields'
           );
 
           const receiver = makeContext(true);
@@ -1474,6 +1479,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 proactiveVisionEnabled: {
                   writeId: 1,
                   writerId: 'window-old',
+                  confirmedRevision: 1,
                 },
               },
             },
@@ -1488,6 +1494,54 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               && receiver.runtime.stoppedScreening === 1
               && receiver.runtime.stoppedTracks === 1,
             'the authoritative privacy disable must stop active vision runtime'
+          );
+
+          const staleReceiver = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              focusModeEnabled: false,
+            },
+            revision: 2,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          staleReceiver.fireStorage(JSON.stringify({
+            focusModeEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 50,
+              writerId: 'window-editor',
+              changedKeys: ['focusModeEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 50,
+                  writerId: 'window-editor',
+                },
+              },
+            },
+          }));
+          const staleServerSnapshot = {
+            focusModeEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 500,
+              writerId: 'window-stale-server-reader',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              serverRevision: 2,
+              serverAuthoritativeKeys: ['focusModeEnabled'],
+              knownKeyWrites: {},
+            },
+          };
+          staleReceiver.fireStorage(JSON.stringify(staleServerSnapshot));
+          assert(
+            staleReceiver.S.focusModeEnabled === true,
+            'a same-revision server snapshot must not launder its envelope '
+              + 'over an unconfirmed explicit edit'
           );
         }
 
@@ -1977,6 +2031,11 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             reconciledLocal.mouseTrackingEnabled === false,
             'success reconciliation preserves local-only settings'
           );
+          assert(
+            reconciledLocal._sharedWriteMeta.knownKeyWrites.focusModeEnabled
+              .confirmedRevision === 1,
+            'the acknowledged explicit token must carry its confirmed revision'
+          );
           ctx.postCalls[1].resolve(response(
             true,
             200,
@@ -2285,6 +2344,12 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "hydrated: S.settingsHydrated === true" in write_fn
     assert "pendingRecovery: pendingRecovery === true" in write_fn
     assert "ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();" in write_fn
+    assert "ownMeta.serverRevision = _conversationSettingsRevision;" in write_fn
+    assert "serverAuthoritativeKeys.slice()" in write_fn
+    assert (
+        "_rememberSharedKeyWrites(serverAuthoritativeKeys || [], ownMeta)"
+        not in write_fn
+    )
     assert "localStorage.setItem('project_neko_settings', JSON.stringify(payload));" in write_fn
 
     # The write id must be strictly increasing within a window and comparable
