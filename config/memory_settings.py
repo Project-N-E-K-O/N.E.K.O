@@ -142,6 +142,13 @@ SCOPED_RENDER_GROUP_RESERVED_TOKENS = 4000
 # （"这个人只有一条偏好"），而缺席至少是诚实的空白。
 SCOPED_RENDER_SUBJECT_MIN_TOKENS = 200
 
+# 每条 kept 条目在**总闸**上额外记的渲染开销。per-subject 的两个池一直是
+# 按条目 text 计的（改它会连带动私聊基线），保持不变；但总闸承诺的是"整块
+# L10 不超过 N"，而 compose 会给每条加 "- " 前缀和换行。短条目下这点 markup
+# 占比很大，text 刚好填满总闸时实际渲染出来会明显超。段落标题不摊到单条上
+# （它按 subject 数有界），不计入。
+SCOPED_RENDER_ENTRY_MARKUP_TOKENS = 4
+
 # ── 特权段的条数上限（protected / suppressed） ───────────────────────────
 # 这两段刻意不吃 token 预算：protected 是角色卡来源（evidence_score 返回
 # inf），被裁掉等于人格破裂；suppressed 是"记得但别主动提"，整段的意义就在

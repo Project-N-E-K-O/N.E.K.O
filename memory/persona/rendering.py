@@ -34,6 +34,7 @@ from config import (
     PERSONA_RENDER_PROTECTED_MAX_ENTRIES,
     PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES,
     REFLECTION_RENDER_MAX_TOKENS,
+    SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
     SCOPED_RENDER_GROUP_RESERVED_TOKENS,
     SCOPED_RENDER_SUBJECT_MIN_TOKENS,
     SCOPED_RENDER_TOTAL_MAX_TOKENS,
@@ -456,6 +457,7 @@ class RenderingMixin:
         trimmed_confirmed_reflections: list[dict],
         *,
         scoped_only: bool = False,
+        skipped: set | None = None,
     ) -> str:
         """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
 
@@ -483,6 +485,9 @@ class RenderingMixin:
         suppressed_total = 0
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
+                if self._entry_is_skipped(entry, skipped):
+                    # 该 subject 整段被跳过了，它的免预算段也不能单独露出来。
+                    continue
                 text = entry.get('text', '')
                 if text:
                     suppressed_total += 1
@@ -686,8 +691,11 @@ class RenderingMixin:
             buckets[marker].append(entry)
         return buckets
 
-    @staticmethod
-    def _subject_available_budget(slots: tuple, index: int, remaining: int) -> int:
+    @classmethod
+    def _subject_available_budget(
+        cls, slots: tuple, index: int, remaining: int,
+        *bucket_maps,
+    ) -> int:
         """What slot `index` may spend out of the overall `remaining` gate.
 
         Every group subject still queued behind this one keeps a reserved
@@ -709,6 +717,13 @@ class RenderingMixin:
         thing it protects: with five groups in one render the first one
         would owe four reserves, come out with nothing, and the request
         would render its LAST four subjects instead of its first four.
+
+        Only groups that have something to render are counted. A brand-new
+        group with an empty corpus would otherwise hold 4000 tokens that
+        nobody can ever spend: the member ahead of it gets skipped for
+        nothing, and — worse — a member listed AFTER the empty group sees
+        the slice released and renders in its place, which is the caller
+        order inverted again.
         """
         from memory.scopes import SUBJECT_GROUP_CHAT
 
@@ -717,10 +732,39 @@ class RenderingMixin:
             return max(0, remaining)
         groups_ahead = sum(
             1 for later in slots[index + 1:]
-            if later is not None and later.kind == SUBJECT_GROUP_CHAT
+            if later is not None
+            and later.kind == SUBJECT_GROUP_CHAT
+            and cls._slot_has_entries(later, bucket_maps)
         )
         reserved = groups_ahead * SCOPED_RENDER_GROUP_RESERVED_TOKENS
         return max(0, remaining - reserved)
+
+    @classmethod
+    def _slot_has_entries(cls, subject, bucket_maps) -> bool:
+        """Whether any bucket holds an entry for this slot.
+
+        A proxy for "will render something": entries could still all be
+        individually over budget. Erring toward reserving is the safe
+        direction — the failure it guards against is the group getting
+        nothing, not a member getting slightly less.
+        """
+        marker = cls._subject_bucket_marker(subject)
+        return any(buckets.get(marker) for buckets in bucket_maps)
+
+    @staticmethod
+    def _charge_gate(text_tokens: int, kept: list) -> int:
+        """What a subject's kept entries really cost the overall gate.
+
+        The per-subject pools have always been measured in entry ``text``
+        alone, and that stays — changing them would move the private-chat
+        baseline too. But the gate advertises a bound on the RENDERED
+        block, and composition adds a ``- `` bullet and a newline to every
+        entry. With short facts that markup is a large fraction of the
+        line, so a workload whose text exactly fills the gate emits a
+        block well past it. Section headers are not attributed to any one
+        entry; they are bounded by the subject count and left out.
+        """
+        return text_tokens + len(kept) * SCOPED_RENDER_ENTRY_MARKUP_TOKENS
 
     @classmethod
     def _log_skipped_subject(cls, subject, remaining: int, available: int) -> None:
@@ -771,33 +815,36 @@ class RenderingMixin:
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
         kept_persona: list = []
         kept_reflections: list = []
+        skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
         for index, subject in enumerate(prep.subject_slots):
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
+                persona_buckets, reflection_buckets,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 cls._log_skipped_subject(subject, remaining, available)
+                skipped.add(marker)
                 continue
             persona_kept, persona_used = cls._score_trim_entries(
                 persona_buckets.get(marker, ()),
                 min(PERSONA_RENDER_MAX_TOKENS, available), now,
             )
-            remaining -= persona_used
+            remaining -= cls._charge_gate(persona_used, persona_kept)
             available -= persona_used
             reflection_kept, reflection_used = cls._score_trim_entries(
                 reflection_buckets.get(marker, ()),
                 min(REFLECTION_RENDER_MAX_TOKENS, available), now,
                 cache_writeback=False,
             )
-            remaining -= reflection_used
+            remaining -= cls._charge_gate(reflection_used, reflection_kept)
             kept_persona.extend(persona_kept)
             kept_reflections.extend(reflection_kept)
         cls._log_unslotted_buckets(
             prep.subject_slots, persona_buckets, reflection_buckets,
         )
-        return kept_persona, kept_reflections
+        return kept_persona, kept_reflections, skipped
 
     @classmethod
     async def _atrim_scoped_by_subject(
@@ -809,33 +856,36 @@ class RenderingMixin:
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
         kept_persona: list = []
         kept_reflections: list = []
+        skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
         for index, subject in enumerate(prep.subject_slots):
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
+                persona_buckets, reflection_buckets,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 cls._log_skipped_subject(subject, remaining, available)
+                skipped.add(marker)
                 continue
             persona_kept, persona_used = await cls._ascore_trim_entries(
                 persona_buckets.get(marker, ()),
                 min(PERSONA_RENDER_MAX_TOKENS, available), now,
             )
-            remaining -= persona_used
+            remaining -= cls._charge_gate(persona_used, persona_kept)
             available -= persona_used
             reflection_kept, reflection_used = await cls._ascore_trim_entries(
                 reflection_buckets.get(marker, ()),
                 min(REFLECTION_RENDER_MAX_TOKENS, available), now,
                 cache_writeback=False,
             )
-            remaining -= reflection_used
+            remaining -= cls._charge_gate(reflection_used, reflection_kept)
             kept_persona.extend(persona_kept)
             kept_reflections.extend(reflection_kept)
         cls._log_unslotted_buckets(
             prep.subject_slots, persona_buckets, reflection_buckets,
         )
-        return kept_persona, kept_reflections
+        return kept_persona, kept_reflections, skipped
 
     def _prepare_render(
         self, persona: dict,
@@ -886,8 +936,16 @@ class RenderingMixin:
         pending_reflections: list[dict] | None,
         subjects=None,
         include_legacy_private: bool | None = None,
+        skipped: set | None = None,
     ) -> str:
-        """Phase 3 shared by both render paths."""
+        """Phase 3 shared by both render paths.
+
+        `skipped` holds the subjects the allocator dropped whole. Their
+        budget-exempt sections have to go too: protected and suppressed
+        entries never pass through the trim, so without this they would
+        still render and the subject would come out as the two-line
+        fragment that `SCOPED_RENDER_SUBJECT_MIN_TOKENS` exists to avoid.
+        """
         # Preserve the score-DESC order produced by the trim. The original
         # implementation filtered the SOURCE lists by id-membership, which
         # lost the sort order and emitted reflections in caller-supplied
@@ -895,15 +953,29 @@ class RenderingMixin:
         trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
             trimmed_reflections, pending_reflections, prep.suppressed_text_set,
         )
+        protected_entries = [
+            (entity_key, entry) for entity_key, entry in prep.protected_entries
+            if not self._entry_is_skipped(entry, skipped)
+        ]
         return self._compose_markdown_from_trimmed(
             name, prep.persona_view, name_mapping,
-            prep.protected_entries, trimmed_non_protected,
+            protected_entries, trimmed_non_protected,
             prep.non_protected_entity_index,
             trimmed_pending, trimmed_confirmed,
             scoped_only=self._renders_scoped_only(
                 subjects, include_legacy_private,
             ),
+            skipped=skipped,
         )
+
+    @classmethod
+    def _entry_is_skipped(cls, entry, skipped: set | None) -> bool:
+        """True when `entry` belongs to a subject the allocator dropped."""
+        if not skipped:
+            return False
+        from memory.scopes import subject_from_entry
+
+        return cls._subject_bucket_marker(subject_from_entry(entry)) in skipped
 
     def _compose_persona_markdown(
         self, name: str, persona: dict, name_mapping: dict,
@@ -919,8 +991,9 @@ class RenderingMixin:
             persona, pending_reflections, confirmed_reflections,
             subjects, include_legacy_private,
         )
+        skipped: set = set()
         if prep.subject_slots:
-            trimmed_non_protected, trimmed_reflections = (
+            trimmed_non_protected, trimmed_reflections, skipped = (
                 self._trim_scoped_by_subject(prep, now)
             )
         else:
@@ -940,6 +1013,7 @@ class RenderingMixin:
             name, prep, name_mapping,
             trimmed_non_protected, trimmed_reflections,
             pending_reflections, subjects, include_legacy_private,
+            skipped=skipped,
         )
 
     @staticmethod
@@ -1012,8 +1086,9 @@ class RenderingMixin:
             persona, pending_reflections, confirmed_reflections,
             subjects, include_legacy_private,
         )
+        skipped: set = set()
         if prep.subject_slots:
-            trimmed_non_protected, trimmed_reflections = (
+            trimmed_non_protected, trimmed_reflections, skipped = (
                 await self._atrim_scoped_by_subject(prep, now)
             )
         else:
@@ -1031,6 +1106,7 @@ class RenderingMixin:
             name, prep, name_mapping,
             trimmed_non_protected, trimmed_reflections,
             pending_reflections, subjects, include_legacy_private,
+            skipped=skipped,
         )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:

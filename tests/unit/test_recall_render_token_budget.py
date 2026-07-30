@@ -480,6 +480,31 @@ async def test_tool_recall_render_runs_off_the_event_loop():
     )
 
 
+def test_qq_section_wrapper_stays_fixed_size():
+    """The wrapper around the QQ recall block is prompt boilerplate, not
+    recalled content, so it is NOT charged to
+    ``RECALL_RENDER_TOTAL_MAX_TOKENS`` — that budget bounds the memories.
+    Charging fixed template text to it would shrink the memory allowance
+    to pay for a heading that is present regardless.
+
+    That reasoning only holds while the wrapper is genuinely fixed. Pin
+    it: the day someone interpolates variable content into it, it stops
+    being boilerplate and the budget question has to be reopened.
+    """
+    from plugin.plugins.qq_auto_reply.prompt_fragment_templates import (
+        LONG_TERM_MEMORY_SECTION,
+    )
+
+    empty = LONG_TERM_MEMORY_SECTION.format(memory_context="")
+    assert "{" not in empty and "}" not in empty, (
+        "包裹模板里出现了 memory_context 之外的占位符——它不再是定长样板，"
+        "得重新考虑要不要计进召回预算"
+    )
+    assert count_tokens(empty) <= 120, (
+        f"包裹模板涨到 {count_tokens(empty)} tok；不计进召回预算的前提是它小且定长"
+    )
+
+
 # ── discovery guard: no un-budgeted third renderer ───────────────────
 
 
