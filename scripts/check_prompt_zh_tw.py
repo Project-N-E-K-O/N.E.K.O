@@ -635,7 +635,9 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     preceding binding is right in either nesting direction.
     """
     assignments: dict[str, list[tuple[tuple[int, int], ast.AST]]] = {}
-    loop_alternatives: list[set[int]] = []
+    # (body span, alternatives) — the span is what tells a backfill inside the
+    # loop from one that runs after it, where only the last binding survives.
+    loop_alternatives: list[tuple[tuple[tuple[int, int], tuple[int, int]], set[int]]] = []
     for node in ast.walk(tree):
         name: str | None = None
         if isinstance(node, ast.Assign):
@@ -669,7 +671,13 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             # alternatives rather than a sequence: a backfill in the body
             # completes every one of them, not just the last. A single-element
             # group is kept rather than filtered — closing over it is a no-op.
-            loop_alternatives.extend(groups.values())
+            last = node.body[-1]
+            span = (
+                _source_position(node.body[0]),
+                (getattr(last, "end_lineno", last.lineno) or last.lineno,
+                 getattr(last, "end_col_offset", 0) or 0),
+            )
+            loop_alternatives.extend((span, group) for group in groups.values())
             continue
         if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
             # `if (T := {...}): T["zh-TW"] = t` binds T as much as a statement does.
@@ -736,7 +744,11 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
         ):
-            if node.func.attr == "clear" and not node.args:
+            if node.func.attr == "popitem":
+                # Removes a key without naming one, so nothing this gate could
+                # still claim survives: recorded the same way as `clear()`.
+                _record(node.func.value.id, at, set(), None)
+            elif node.func.attr == "clear" and not node.args:
                 # `TW.clear()` empties it, so anything recorded before is gone.
                 # `None` rather than a key set: there is no list of keys to name.
                 _record(node.func.value.id, at, set(), None)
@@ -854,6 +866,11 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 continue
             walked.add(id(value))
             exempt.add(id(value))
+            for (lo, hi), group in loop_alternatives:
+                # Only a backfill written *inside* the loop reaches every element.
+                # One placed after it sees only whatever the last iteration left.
+                if id(value) in group and lo <= at <= hi:
+                    exempt.update(group)
             for part in _fragment_parts(value):
                 if isinstance(part, ast.Name):
                     pending.append((part.id, bound_at, True))
@@ -885,6 +902,9 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         """
         if node is None:
             return set()
+        if isinstance(node, ast.NamedExpr):
+            # `T.update(P := {...})` evaluates to the mapping it binds.
+            return _mapping_keys(node.value, at, strict)
         if isinstance(node, ast.Name):
             return _name_keys(node.id, at, strict)
         if (
@@ -892,10 +912,9 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             and not node.args
             and isinstance(node.func, ast.Attribute)
             and node.func.attr in ("items", "copy")
-            and isinstance(node.func.value, ast.Name)
         ):
             # `T.update(TW.items())` / `dict(TW.copy())` — both hand over exactly
-            # the keys TW has, and passing a view is ordinary Python.
+            # the keys the receiver has, whatever the receiver is spelled as.
             return _mapping_keys(node.func.value, at, strict)
         if isinstance(node, ast.IfExp):
             # `T |= TW if flag else {"zh-TW": t}` — either branch may carry it, and
@@ -1063,10 +1082,6 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 _exempt_binding_before(operand.id, origin, inside_binding)
             else:
                 pending.extend(_merge_operands(operand))
-
-    for group in loop_alternatives:
-        if group & exempt:
-            exempt |= group
 
     return exempt
 

@@ -2375,3 +2375,53 @@ def test_loop_alternatives_are_grouped_per_target():
     )
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [2, 3]
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = {"en": "e", "zh": "s"}\nT.update({"zh-TW": "t"}.items())', []),
+    ('A = {"zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT.update(dict(A).items())', []),
+    ('T = {"en": "e", "zh": "s"}\nT.update({"ja": "j"}.items())', [1]),
+])
+def test_a_mapping_view_may_sit_on_any_expression(src, expected):
+    """The view hands over the receiver's keys whatever the receiver is spelled as.
+
+    Requiring a bare name covered only the shape the report happened to use.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_popitem_invalidates_the_backfill():
+    """It removes a key without naming one, so nothing is left to claim.
+
+    Recorded like `clear()` — the fourth spelling of "this table lost keys" that
+    this gate had to be told about one at a time.
+    """
+    src = 'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\nT.popitem()'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src,expected", [
+    # inside the body: every iteration completes its own element
+    ('for T in (\n    {"en": "e", "zh": "s"},\n    {"en": "e2", "zh": "s2"},\n):\n'
+     + '    T["zh-TW"] = "t"', []),
+    # after the loop: only whatever the last iteration left is completed
+    ('for T in (\n    {"en": "e", "zh": "s"},\n    {"en": "e2", "zh": "s2"},\n):\n'
+     + '    pass\nT["zh-TW"] = "t"', [2]),
+])
+def test_loop_closure_needs_the_backfill_inside_the_body(src, expected):
+    """Closing over the alternatives unconditionally excused the earlier elements."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = {"en": "e", "zh": "s"}\nT.update(TW := {"zh-TW": "t"})', []),
+    ('T = {"en": "e", "zh": "s"}\nT |= (P := {"zh-TW": "t"})', []),
+    ('T = {"en": "e", "zh": "s"}\nT.update(P := {"ja": "j"})', [1]),
+])
+def test_a_payload_may_be_an_assignment_expression(src, expected):
+    """A walrus evaluates to the mapping it binds."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
