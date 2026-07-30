@@ -580,7 +580,7 @@ def _discovered_recall_renderers() -> dict[str, str]:
     shipped recall renderers go through — so a third one written the same
     way shows up here the moment it exists.
 
-    ⚠️ KNOWN BLIND SPOT (issue below). The marker is a proxy for "renders
+    ⚠️ KNOWN BLIND SPOT — see issue #2588. The marker is a proxy for "renders
     the localized tier/entity prefix", not for "renders recall results into
     a prompt", and the two come apart for any surface that reasonably
     chooses NOT to label its entries — a 1:1 chat, where every entity is
@@ -659,7 +659,9 @@ def _called_function_names(node: ast.AST) -> set[str]:
     functions are CALLED, never that their results are USED: discard the
     return value of ``take_lines_within_token_budget`` and join the
     original list, or append un-budgeted text after the budget runs, and
-    every check here stays green while the prompt is unbounded.
+    every check here stays green while the prompt is unbounded. Both were
+    measured (45x and 1.01x-and-climbing over budget); issue #2588 has the
+    full list.
 
     So: a green run here means "no recall renderer has an obviously
     decorative budget call". It does not mean the budget runs, and it does
@@ -904,7 +906,8 @@ def test_the_known_recall_renderers_are_exactly_these_two():
     it inherits that scan's blind spot exactly: a new renderer that never
     calls the shared tag helper is not in `found`, `found` therefore still
     equals the known set, and this passes. It catches a new renderer
-    written like the existing two — not one written differently.
+    written like the existing two — not one written differently. Issue
+    #2588 tracks that, with a measured case at 95x over budget.
     """
     found = set(_discovered_recall_renderers())
     assert found == _KNOWN_RECALL_RENDERERS, (
