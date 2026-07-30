@@ -240,8 +240,8 @@ jobs:
       - name: Cache voice-turn model weights
         uses: actions/cache@v4
         with:
-          path: data/vad_models/*.onnx
-          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
+          path: main_logic/asr_client/endpointing/models/*.onnx
+          key: voice-turn-models-v2-${{ runner.os }}-${{ hashFiles('main_logic/asr_client/endpointing/models/manifest.json') }}
 
       - name: Prepare verified voice-turn assets
         shell: bash
@@ -341,7 +341,7 @@ jobs:
           if [ -d "data/embedding_models" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
-          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/vad_models=data/vad_models"
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=main_logic/asr_client/endpointing/models=main_logic/asr_client/endpointing/models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
           # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
@@ -483,7 +483,7 @@ jobs:
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=playwright_browsers=playwright_browsers
           if exist "data\tiktoken_cache" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/tiktoken_cache=data/tiktoken_cache
           if exist "data\embedding_models" set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/embedding_models=data/embedding_models
-          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=data/vad_models=data/vad_models
+          set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=main_logic/asr_client/endpointing/models=main_logic/asr_client/endpointing/models
           set NUITKA_OPTS=%NUITKA_OPTS% --include-data-dir=static=static
           rem 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           rem 纯数据目录，漏了引导页内容/图片打包后 404。
@@ -627,8 +627,24 @@ jobs:
             echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
             missing=1
           fi
+          endpointing_assets="$NEKO_NUITKA_RUNTIME_DIR/main_logic/asr_client/endpointing/models"
+          for rel in manifest.json THIRD_PARTY_NOTICES.md silero_vad.onnx smart_turn_v3.onnx; do
+            if [ ! -s "$endpointing_assets/$rel" ]; then
+              echo "::error::missing or empty bundled endpointing asset: $rel"
+              missing=1
+            fi
+          done
+          if [ -e "$NEKO_NUITKA_RUNTIME_DIR/data/vad_models" ]; then
+            echo "::error::obsolete data/vad_models must not be packaged"
+            missing=1
+          fi
+          endpointing_weight_count="$(find "$NEKO_NUITKA_RUNTIME_DIR" -type f \( -name silero_vad.onnx -o -name smart_turn_v3.onnx \) | wc -l | tr -d ' ')"
+          if [ "$endpointing_weight_count" -ne 2 ]; then
+            echo "::error::endpointing weights must be packaged exactly once"
+            missing=1
+          fi
           uv run --no-sync python scripts/prepare_voice_turn_assets.py \
-            --asset-dir "$NEKO_NUITKA_RUNTIME_DIR"/data/vad_models --offline || missing=1
+            --asset-dir "$endpointing_assets" --offline || missing=1
           [ "$missing" -eq 0 ]
 
       # --- Generic dist invariant check ---

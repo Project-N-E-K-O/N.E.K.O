@@ -2,12 +2,12 @@ from pathlib import Path
 import re
 
 
-ROOT = Path(__file__).resolve().parents[3]
+ROOT = Path(__file__).resolve().parents[4]
 
 
 def test_pyinstaller_bundles_voice_turn_assets():
     spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
-    assert "add_data('data/vad_models', 'data/vad_models')" in spec
+    assert spec.count("'main_logic/asr_client/endpointing/models'") == 2
     assert "voice_turn_assets_present" in spec
     assert re.search(
         r"pkg == ['\"]onnxruntime['\"] and voice_turn_assets_present",
@@ -25,14 +25,28 @@ def test_nuitka_workflows_prepare_bundle_and_verify_voice_turn_assets():
 
     for workflow in (desktop_workflow, linux_workflow):
         assert "scripts/prepare_voice_turn_assets.py" in workflow
-        assert "--include-data-dir=data/vad_models=data/vad_models" in workflow
-        assert "hashFiles('data/vad_models/manifest.json')" in workflow
+        assert (
+            "--include-data-dir=main_logic/asr_client/endpointing/models="
+            "main_logic/asr_client/endpointing/models"
+        ) in workflow
+        assert (
+            "hashFiles('main_logic/asr_client/endpointing/models/manifest.json')"
+            in workflow
+        )
 
     assert (
-        '--asset-dir "$NEKO_NUITKA_RUNTIME_DIR"/data/vad_models --offline'
+        'endpointing_assets="$NEKO_NUITKA_RUNTIME_DIR/main_logic/asr_client/'
+        'endpointing/models"'
         in desktop_workflow
     )
-    assert "--asset-dir dist/Xiao8/data/vad_models --offline" in linux_workflow
+    assert (
+        'endpointing_assets="dist/Xiao8/main_logic/asr_client/endpointing/models"'
+        in linux_workflow
+    )
+    for workflow in (desktop_workflow, linux_workflow):
+        assert '--asset-dir "$endpointing_assets" --offline' in workflow
+        assert "THIRD_PARTY_NOTICES.md" in workflow
+        assert "endpointing weights must be packaged exactly once" in workflow
 
 
 def test_docker_workflow_prepares_and_caches_voice_turn_assets():
@@ -46,11 +60,16 @@ def test_docker_workflow_prepares_and_caches_voice_turn_assets():
         workflow.count("run: python3 scripts/prepare_voice_turn_assets.py")
         == 2
     )
-    assert workflow.count("path: data/vad_models/*.onnx") == 2
     assert (
         workflow.count(
-            "key: voice-turn-models-${{ runner.os }}"
-            "-${{ hashFiles('data/vad_models/manifest.json') }}"
+            "path: main_logic/asr_client/endpointing/models/*.onnx"
+        )
+        == 2
+    )
+    assert (
+        workflow.count(
+            "key: voice-turn-models-v2-${{ runner.os }}"
+            "-${{ hashFiles('main_logic/asr_client/endpointing/models/manifest.json') }}"
         )
         == 2
     )
@@ -60,6 +79,11 @@ def test_dockerfiles_verify_voice_turn_assets_in_image():
     for name in ("Dockerfile", "Dockerfile.full"):
         dockerfile = (ROOT / "docker" / name).read_text(encoding="utf-8")
         assert "python3 scripts/prepare_voice_turn_assets.py" in dockerfile, name
+        assert (
+            "test -s /app/main_logic/asr_client/endpointing/models/"
+            "THIRD_PARTY_NOTICES.md"
+        ) in dockerfile, name
+        assert "test ! -e /app/data/vad_models" in dockerfile, name
         # The verify step must run after the project lands in the image but
         # before ownership is fixed up for the runtime user.
         copy_index = dockerfile.index("COPY --chown=neko:neko . /app")
@@ -79,14 +103,22 @@ def test_build_context_does_not_exclude_voice_turn_assets():
         for line in dockerignore.splitlines()
         if line.strip() and not line.strip().startswith("#")
     ]
-    # Comments may (and do) mention vad_models to document this contract;
-    # only actual ignore patterns are forbidden from touching it.
-    assert not any("vad_models" in pattern for pattern in patterns)
+    assert "/data/vad_models" in patterns
+    assert not any(
+        "main_logic/asr_client/endpointing/models" in pattern
+        for pattern in patterns
+    )
     assert "data" not in patterns
     assert "data/*" not in patterns
 
     # The runtime never downloads: .gitignore must keep the manifest (and the
     # notices file) reviewable in git while the weights stay untracked.
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
-    assert "!/data/vad_models/manifest.json" in gitignore
-    assert "!/data/vad_models/THIRD_PARTY_NOTICES.md" in gitignore
+    assert (
+        "!/main_logic/asr_client/endpointing/models/manifest.json"
+        in gitignore
+    )
+    assert (
+        "!/main_logic/asr_client/endpointing/models/THIRD_PARTY_NOTICES.md"
+        in gitignore
+    )

@@ -63,7 +63,13 @@ embedding_assets_present = os.path.isdir(
     os.path.join(PROJECT_ROOT, 'data', 'embedding_models')
 )
 voice_turn_assets_present = os.path.isdir(
-    os.path.join(PROJECT_ROOT, 'data', 'vad_models')
+    os.path.join(
+        PROJECT_ROOT,
+        'main_logic',
+        'asr_client',
+        'endpointing',
+        'models',
+    )
 )
 
 # galgame OCR deps: bundling is the ONLY path post-refactor (in-app install
@@ -177,7 +183,10 @@ add_data('data/browser_use_prompts', 'data/browser_use_prompts')
 # packaging; for local source builds add_data warns and skips silently.
 add_data('data/tiktoken_cache', 'data/tiktoken_cache')
 add_data('data/embedding_models', 'data/embedding_models')
-add_data('data/vad_models', 'data/vad_models')
+add_data(
+    'main_logic/asr_client/endpointing/models',
+    'main_logic/asr_client/endpointing/models',
+)
 add_data('steam_appid.txt', '.')
 
 # 添加 Steam 相关的 DLL 和库文件（源文件位于 steamworks/，打包后放在根目录）

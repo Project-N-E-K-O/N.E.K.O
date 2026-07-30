@@ -4,9 +4,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
-from main_logic.voice_turn import onnx_runtime
-from main_logic.voice_turn.asset_manifest import AssetManifestError
-from main_logic.voice_turn.onnx_runtime import (
+from main_logic.asr_client.endpointing import onnx_runtime
+from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError
+from main_logic.asr_client.endpointing.onnx_runtime import (
     OnnxModelRuntime,
     RuntimeInferenceError,
     RuntimeState,

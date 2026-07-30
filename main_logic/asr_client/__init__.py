@@ -35,7 +35,7 @@ from ._registry_meta import (
     AsrEndpointingMode as _AsrEndpointingMode,
     AsrProviderAvailability as _AsrProviderAvailability,
 )
-from .detector_runtime import _create_voice_turn_adapter
+from .endpointing.detector_runtime import _create_voice_turn_adapter
 from .provider_policy import resolve_provider_policy
 from .workers.dummy import dummy_asr_worker as _dummy_asr_worker
 from .workers.gemini import gemini_asr_worker as _gemini_asr_worker

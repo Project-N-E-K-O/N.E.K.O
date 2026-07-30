@@ -1,4 +1,4 @@
-"""Bounded buffering for already-normalized 16 kHz mono PCM16 audio."""
+"""Bounded buffering for already-normalized 16 kHz mono PCM16 endpointing audio."""
 
 from __future__ import annotations
 

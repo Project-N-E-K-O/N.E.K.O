@@ -9,7 +9,6 @@ from main_logic.voice_turn.contracts import (
     AsrSubmitResult,
     AsrSubmitStatus,
     EvaluationStatus,
-    SmartTurnConfig,
     TurnDecision,
     TurnEvaluation,
     VoiceIngressToken,
@@ -67,11 +66,6 @@ def test_ok_evaluation_requires_probability_and_decision():
 def test_non_ok_evaluation_rejects_probability():
     with pytest.raises(ValueError):
         TurnEvaluation(EvaluationStatus.ERROR, None, 0.4, 0, 0)
-
-
-def test_config_rejects_missing_vad_hysteresis():
-    with pytest.raises(ValueError):
-        SmartTurnConfig(onset_probability=0.4, offset_probability=0.4)
 
 
 @pytest.mark.parametrize(

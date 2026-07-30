@@ -7,7 +7,7 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from main_logic.asr_client.detector_runtime import (
+from main_logic.asr_client.endpointing.detector_runtime import (
     DetectorFeedResult,
     DetectorRuntime,
     SmartTurnLease,
@@ -15,7 +15,7 @@ from main_logic.asr_client.detector_runtime import (
     _ResetItem,
     _VoiceTurnAdapter,
 )
-from main_logic.asr_client.detector import (
+from main_logic.asr_client.endpointing.detector import (
     DetectorActivityEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
@@ -27,7 +27,7 @@ from main_logic.voice_turn.contracts import (
     SpeechActivityEvent,
     TurnDecision,
 )
-from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState
 
 
 class _Vad:

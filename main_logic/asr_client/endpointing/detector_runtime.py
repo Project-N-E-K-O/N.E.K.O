@@ -12,14 +12,12 @@ from typing import Literal, TypeAlias
 
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
-    SmartTurnConfig,
     SpeechActivityEvent,
     TurnDecision,
 )
-from main_logic.voice_turn.coordinator import CoordinatorState, TurnCoordinator
-from main_logic.voice_turn.silero_vad import SileroActivityGate, SileroVad
-from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
 
+from .config import SmartTurnConfig
+from .coordinator import CoordinatorState, TurnCoordinator
 from .detector import (
     BoundDetectorTurn,
     DetectorActivityEvent,
@@ -31,8 +29,10 @@ from .detector import (
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
-from .lifecycle import VoiceIngressToken, VoiceTurnToken
-from .provider_policy import AsrProviderPolicy
+from .silero_vad import SileroActivityGate, SileroVad
+from .smart_turn_v3 import SmartTurnV3
+from ..lifecycle import VoiceIngressToken, VoiceTurnToken
+from ..provider_policy import AsrProviderPolicy
 
 
 logger = logging.getLogger(__name__)

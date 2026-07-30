@@ -8,6 +8,12 @@ providers that need a complete audio segment before transcription. Streaming
 providers with a native endpoint do not load Smart Turn. Direct use of the
 lower-level `RealtimeAsrSession` is not a supported product voice-input path.
 
+Provider-neutral voice facts and interfaces remain in `main_logic/voice_turn`.
+The local Silero/Smart Turn implementation, detector coordination, ONNX
+runtime, and pinned model assets are owned by
+`main_logic/asr_client/endpointing`. Provider workers do not import those
+implementation modules directly.
+
 ## Endpoint authority
 
 - Streaming ASR uses the provider's native endpoint as the logical-turn
@@ -113,8 +119,8 @@ continues to own the turn boundary.
 
 ## Assets and lifecycle
 
-`data/vad_models/manifest.json` pins model revisions, authoritative URLs,
-licenses, and SHA-256 digests. Run:
+`main_logic/asr_client/endpointing/models/manifest.json` pins model revisions,
+authoritative URLs, licenses, and SHA-256 digests. Run:
 
 ```text
 uv run python scripts/prepare_voice_turn_assets.py

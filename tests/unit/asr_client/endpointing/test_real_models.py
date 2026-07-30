@@ -5,9 +5,9 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from main_logic.voice_turn.asset_manifest import AssetManifestError, resolve_verified_assets
-from main_logic.voice_turn.silero_vad import SileroVad
-from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
+from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError, resolve_verified_assets
+from main_logic.asr_client.endpointing.silero_vad import SileroVad
+from main_logic.asr_client.endpointing.smart_turn_v3 import SmartTurnV3
 
 
 try:

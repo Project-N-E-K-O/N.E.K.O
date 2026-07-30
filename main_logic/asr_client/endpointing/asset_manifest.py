@@ -1,4 +1,4 @@
-"""Auditable resolution and SHA-256 verification for voice-turn assets."""
+"""Auditable resolution and SHA-256 verification for endpointing assets."""
 
 from __future__ import annotations
 
@@ -12,7 +12,9 @@ from urllib.parse import urlsplit
 
 
 MANIFEST_FILENAME = "manifest.json"
-DEFAULT_ASSET_DIR_NAME = "vad_models"
+ASSET_RELATIVE_PATH = (
+    Path("main_logic") / "asr_client" / "endpointing" / "models"
+)
 # Transports the asset preparer is allowed to fetch over. Enforced at the
 # download call site, NOT at manifest load: verification of an already-present
 # file never reads ``source``, so a bad scheme must not make a valid on-disk
@@ -124,10 +126,12 @@ def candidate_asset_dirs(override: Path | None = None) -> tuple[Path, ...]:
         candidates.append(override)
     meipass = getattr(sys, "_MEIPASS", None)
     if meipass:
-        candidates.append(Path(meipass) / "data" / DEFAULT_ASSET_DIR_NAME)
+        candidates.append(Path(meipass) / ASSET_RELATIVE_PATH)
     if getattr(sys, "frozen", False) or "__compiled__" in globals():
-        candidates.append(Path(sys.executable).resolve().parent / "data" / DEFAULT_ASSET_DIR_NAME)
-    candidates.append(Path(__file__).resolve().parents[2] / "data" / DEFAULT_ASSET_DIR_NAME)
+        candidates.append(
+            Path(sys.executable).resolve().parent / ASSET_RELATIVE_PATH
+        )
+    candidates.append(Path(__file__).resolve().parent / "models")
     unique: list[Path] = []
     for path in candidates:
         normalized = path.resolve()

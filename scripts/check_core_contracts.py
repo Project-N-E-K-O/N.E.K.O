@@ -82,7 +82,11 @@ CORE_FACADE_LAYOUT
 ASR_LAYERING
     The Core ASR bridge owns microphone ingress and Core callbacks, while the
     independent runtime owns provider state. TTS cannot import ASR, ASR cannot
-    import Core, provider literals cannot leak into the bridge, and streaming
+    import Core, and provider literals cannot leak into the bridge. Voice-turn
+    contracts cannot import ASR; Core cannot bypass the ASR runtime to import
+    endpointing; endpointing cannot import Core, workers, or scripts; workers
+    cannot import endpointing implementations; lifecycle/provider policy
+    cannot depend back on endpointing; ONNX Runtime remains lazy. Streaming
     can only enqueue audio into the bridge.
 
 VOICE_INPUT_LAYERING
@@ -1067,8 +1071,10 @@ def run(root: Path) -> list[Violation]:
     asr_component_path = asr_client_dir / "runtime.py"
     asr_audio_path = asr_client_dir / "audio.py"
     asr_registry_path = asr_client_dir / "_registry_meta.py"
-    voice_input_path = root / "main_logic" / "voice_turn" / "audio_input.py"
+    voice_turn_dir = root / "main_logic" / "voice_turn"
+    voice_input_path = voice_turn_dir / "audio_input.py"
     transcript_registry_dir = root / "main_logic" / "voice_input"
+    endpointing_dir = asr_client_dir / "endpointing"
     for required, violation_code in (
         (asr_bridge_path, "ASR_LAYERING"),
         (tts_path, "ASR_LAYERING"),
@@ -1232,6 +1238,213 @@ def run(root: Path) -> list[Violation]:
                         "dynamic imports are not allowed in voice_input "
                         f"(found {detail})",
                     ))
+
+    if voice_turn_dir.exists():
+        for path in sorted(voice_turn_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            for node in ast.walk(tree):
+                if any(
+                    module == "main_logic.asr_client"
+                    or module.startswith("main_logic.asr_client.")
+                    for module in _imported_paths(node, pkg, alias_paths)
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "voice_turn must not import main_logic.asr_client",
+                    ))
+            violations.extend(_dynamic_import_violations(
+                path,
+                tree,
+                alias_paths,
+                "main_logic.asr_client",
+                "voice_turn",
+            ))
+
+    if core_dir.exists():
+        for path in sorted(core_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            for node in ast.walk(tree):
+                if any(
+                    module == "main_logic.asr_client.endpointing"
+                    or module.startswith("main_logic.asr_client.endpointing.")
+                    for module in _imported_paths(node, pkg, alias_paths)
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "Core must not import main_logic.asr_client.endpointing",
+                    ))
+            violations.extend(_dynamic_import_violations(
+                path,
+                tree,
+                alias_paths,
+                "main_logic.asr_client.endpointing",
+                "Core",
+            ))
+
+    if endpointing_dir.exists():
+        endpointing_init = endpointing_dir / "__init__.py"
+        if endpointing_init.exists():
+            endpointing_init_tree = parse(endpointing_init)
+            doc_only = (
+                len(endpointing_init_tree.body) == 1
+                and isinstance(endpointing_init_tree.body[0], ast.Expr)
+                and isinstance(endpointing_init_tree.body[0].value, ast.Constant)
+                and isinstance(endpointing_init_tree.body[0].value.value, str)
+            )
+            if not doc_only:
+                node = (
+                    endpointing_init_tree.body[1]
+                    if len(endpointing_init_tree.body) > 1
+                    else endpointing_init_tree.body[0]
+                )
+                violations.append(Violation(
+                    endpointing_init,
+                    getattr(node, "lineno", 1),
+                    getattr(node, "col_offset", 0),
+                    "ASR_LAYERING",
+                    "endpointing/__init__.py may contain only a package docstring",
+                ))
+
+        for path in sorted(endpointing_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            for node in ast.walk(tree):
+                imported_paths = _imported_paths(node, pkg, alias_paths)
+                if any(
+                    module == "main_logic.core"
+                    or module.startswith("main_logic.core.")
+                    for module in imported_paths
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "endpointing must not import main_logic.core",
+                    ))
+                if any(
+                    module == "main_logic.asr_client.workers"
+                    or module.startswith("main_logic.asr_client.workers.")
+                    for module in imported_paths
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "endpointing must not import provider workers",
+                    ))
+                if any(
+                    module == "scripts" or module.startswith("scripts.")
+                    for module in imported_paths
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "endpointing must not import scripts",
+                    ))
+            for forbidden, owner in (
+                ("main_logic.core", "endpointing"),
+                ("main_logic.asr_client.workers", "endpointing"),
+                ("scripts", "endpointing"),
+            ):
+                violations.extend(_dynamic_import_violations(
+                    path,
+                    tree,
+                    alias_paths,
+                    forbidden,
+                    owner,
+                ))
+
+        onnx_runtime_path = endpointing_dir / "onnx_runtime.py"
+        if onnx_runtime_path.exists():
+            onnx_tree = parse(onnx_runtime_path)
+            for node in onnx_tree.body:
+                imports_onnxruntime = (
+                    isinstance(node, ast.Import)
+                    and any(alias.name == "onnxruntime" for alias in node.names)
+                ) or (
+                    isinstance(node, ast.ImportFrom)
+                    and node.module == "onnxruntime"
+                )
+                if imports_onnxruntime:
+                    violations.append(Violation(
+                        onnx_runtime_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "onnxruntime must remain a lazy function-local import",
+                    ))
+
+    workers_dir = asr_client_dir / "workers"
+    if workers_dir.exists():
+        for path in sorted(workers_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            for node in ast.walk(tree):
+                if any(
+                    module == "main_logic.asr_client.endpointing"
+                    or module.startswith("main_logic.asr_client.endpointing.")
+                    for module in _imported_paths(node, pkg, alias_paths)
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "provider workers must not import endpointing implementations",
+                    ))
+            violations.extend(_dynamic_import_violations(
+                path,
+                tree,
+                alias_paths,
+                "main_logic.asr_client.endpointing",
+                "provider workers",
+            ))
+
+    for path in (
+        asr_client_dir / "lifecycle.py",
+        asr_client_dir / "provider_policy.py",
+    ):
+        if not path.exists():
+            continue
+        tree = parse(path)
+        pkg = ".".join(path.relative_to(root).parts[:-1])
+        alias_paths = module_alias_paths(tree, pkg)
+        for node in ast.walk(tree):
+            if any(
+                module == "main_logic.asr_client.endpointing"
+                or module.startswith("main_logic.asr_client.endpointing.")
+                for module in _imported_paths(node, pkg, alias_paths)
+            ):
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"{path.name} must not import endpointing",
+                ))
+        violations.extend(_dynamic_import_violations(
+            path,
+            tree,
+            alias_paths,
+            "main_logic.asr_client.endpointing",
+            path.name,
+        ))
 
     if asr_bridge_path.exists():
         bridge_tree = parse(asr_bridge_path)

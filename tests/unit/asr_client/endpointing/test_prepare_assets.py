@@ -7,15 +7,16 @@ from pathlib import Path
 
 import pytest
 
-import main_logic.voice_turn.asset_manifest as asset_manifest
-from main_logic.voice_turn.asset_manifest import AssetManifestError
+import main_logic.asr_client.endpointing.asset_manifest as asset_manifest
+import scripts.prepare_voice_turn_assets as preparer
+from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError
 from scripts.prepare_voice_turn_assets import (
     AssetManifestError as PreparerAssetManifestError,
     prepare_assets,
 )
 
 
-SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "prepare_voice_turn_assets.py"
+SCRIPT_PATH = Path(__file__).resolve().parents[4] / "scripts" / "prepare_voice_turn_assets.py"
 
 # Runs the preparer on a bare interpreter (-I -S: no site-packages, no env
 # influence) with NumPy imports force-blocked, mirroring the Docker build
@@ -115,12 +116,49 @@ def test_download_sha_mismatch_removes_partial_file(tmp_path, monkeypatch):
     assert not (output / "model.onnx.part").exists()
 
 
+def test_valid_cached_asset_is_only_verified(monkeypatch, tmp_path):
+    payload = b"reviewed model"
+    (tmp_path / "model.onnx").write_bytes(payload)
+    _manifest(
+        tmp_path,
+        "https://example.invalid/model",
+        hashlib.sha256(payload).hexdigest(),
+    )
+    monkeypatch.setattr(
+        preparer,
+        "_download_verified",
+        lambda *_args, **_kwargs: pytest.fail("valid cache must not download"),
+    )
+
+    assert prepare_assets(tmp_path) == [tmp_path / "model.onnx"]
+
+
+def test_corrupt_cached_asset_is_reprepared_online(tmp_path, monkeypatch):
+    source = tmp_path / "source.bin"
+    source.write_bytes(b"reviewed model")
+    (tmp_path / "model.onnx").write_bytes(b"corrupt cache")
+    _manifest(
+        tmp_path,
+        source.as_uri(),
+        hashlib.sha256(source.read_bytes()).hexdigest(),
+    )
+    monkeypatch.setattr(
+        asset_manifest,
+        "DOWNLOADABLE_SOURCE_SCHEMES",
+        frozenset({"https", "file"}),
+    )
+
+    paths = prepare_assets(tmp_path)
+
+    assert paths[0].read_bytes() == b"reviewed model"
+
+
 def test_preparer_exception_identity_matches_package_module():
     # The script loads asset_manifest by file path; the sys.modules
     # registration must keep a single class identity so AssetManifestError
     # raised by the script is catchable via the package import.
     assert PreparerAssetManifestError is asset_manifest.AssetManifestError
-    assert sys.modules["main_logic.voice_turn.asset_manifest"] is asset_manifest
+    assert sys.modules["main_logic.asr_client.endpointing.asset_manifest"] is asset_manifest
 
 
 def test_preparer_dynamic_load_first_shares_exception_identity():
@@ -134,13 +172,13 @@ def test_preparer_dynamic_load_first_shares_exception_identity():
 
         import scripts.prepare_voice_turn_assets as preparer
 
-        assert "main_logic.voice_turn.asset_manifest" in sys.modules, (
+        assert "main_logic.asr_client.endpointing.asset_manifest" in sys.modules, (
             "preparer import must register the path-loaded manifest module"
         )
-        import main_logic.voice_turn.asset_manifest as asset_manifest
+        import main_logic.asr_client.endpointing.asset_manifest as asset_manifest
 
         assert preparer.AssetManifestError is asset_manifest.AssetManifestError
-        assert sys.modules["main_logic.voice_turn.asset_manifest"] is asset_manifest
+        assert sys.modules["main_logic.asr_client.endpointing.asset_manifest"] is asset_manifest
         print("identity-ok")
         """
     )

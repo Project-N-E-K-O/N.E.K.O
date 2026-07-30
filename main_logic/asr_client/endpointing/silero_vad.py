@@ -9,7 +9,9 @@ from typing import Any, Iterable
 
 import numpy as np
 
-from .contracts import SmartTurnConfig, SpeechActivityEvent
+from main_logic.voice_turn.contracts import SpeechActivityEvent
+
+from .config import SmartTurnConfig
 from .onnx_runtime import OnnxModelRuntime
 
 

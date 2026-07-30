@@ -495,6 +495,114 @@ def test_run_flags_asr_client_importing_core_owned_registry(
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    ("relative_path", "source", "expected"),
+    [
+        (
+            "main_logic/voice_turn/probe.py",
+            "from main_logic.asr_client import runtime\n",
+            "voice_turn must not import main_logic.asr_client",
+        ),
+        (
+            "main_logic/core/probe.py",
+            "from main_logic.asr_client.endpointing import detector\n",
+            "Core must not import main_logic.asr_client.endpointing",
+        ),
+        (
+            "main_logic/asr_client/endpointing/probe.py",
+            "from main_logic.core import manager\n",
+            "endpointing must not import main_logic.core",
+        ),
+        (
+            "main_logic/asr_client/endpointing/probe.py",
+            "from main_logic.asr_client.workers import glm\n",
+            "endpointing must not import provider workers",
+        ),
+        (
+            "main_logic/asr_client/endpointing/probe.py",
+            "from scripts import prepare_voice_turn_assets\n",
+            "endpointing must not import scripts",
+        ),
+        (
+            "main_logic/asr_client/workers/probe.py",
+            "from main_logic.asr_client.endpointing import silero_vad\n",
+            "provider workers must not import endpointing implementations",
+        ),
+        (
+            "main_logic/asr_client/lifecycle.py",
+            "from main_logic.asr_client.endpointing import detector\n",
+            "lifecycle.py must not import endpointing",
+        ),
+        (
+            "main_logic/asr_client/provider_policy.py",
+            "from main_logic.asr_client.endpointing import detector\n",
+            "provider_policy.py must not import endpointing",
+        ),
+    ],
+)
+def test_run_flags_endpointing_layer_violations(
+    contract_checker,
+    tmp_path,
+    relative_path: str,
+    source: str,
+    expected: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / relative_path
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert expected in messages
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("relative_path", "source", "expected"),
+    [
+        (
+            "main_logic/asr_client/endpointing/__init__.py",
+            '"""package."""\nfrom .smart_turn_v3 import SmartTurnV3\n',
+            "endpointing/__init__.py may contain only a package docstring",
+        ),
+        (
+            "main_logic/asr_client/endpointing/onnx_runtime.py",
+            "import onnxruntime\n",
+            "onnxruntime must remain a lazy function-local import",
+        ),
+    ],
+)
+def test_run_flags_endpointing_import_time_regressions(
+    contract_checker,
+    tmp_path,
+    relative_path: str,
+    source: str,
+    expected: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / relative_path
+    probe.parent.mkdir(parents=True, exist_ok=True)
+    probe.write_text(source, encoding="utf-8")
+
+    violations = contract_checker.run(tmp_path)
+    messages = [
+        violation.message
+        for violation in violations
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert expected in messages
+    assert not any(
+        violation.code == "CORE_FACADE_LAYOUT" for violation in violations
+    )
+
+
+@pytest.mark.unit
 def test_run_flags_forbidden_runtime_reads_through_local_alias(
     contract_checker,
     tmp_path,

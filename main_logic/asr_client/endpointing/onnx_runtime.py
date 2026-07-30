@@ -1,4 +1,4 @@
-"""Shared lifecycle for small, CPU-only ONNX voice-turn models."""
+"""Shared lifecycle for small, CPU-only ONNX endpointing models."""
 
 from __future__ import annotations
 

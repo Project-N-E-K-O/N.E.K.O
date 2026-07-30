@@ -12,7 +12,7 @@ from typing import Generic, Literal, TypeAlias, TypeVar
 
 from main_logic.voice_turn.contracts import SpeechActivityEvent, TurnEvaluation
 
-from .lifecycle import VoiceIngressToken, VoiceTurnToken
+from ..lifecycle import VoiceIngressToken, VoiceTurnToken
 
 
 logger = logging.getLogger(__name__)

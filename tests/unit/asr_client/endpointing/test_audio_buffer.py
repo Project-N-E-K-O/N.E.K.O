@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from main_logic.voice_turn.audio_buffer import Pcm16RingBuffer
+from main_logic.asr_client.endpointing.audio_buffer import Pcm16RingBuffer
 
 
 def _pcm(values):

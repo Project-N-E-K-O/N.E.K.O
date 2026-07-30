@@ -19,7 +19,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3  # noqa: E402
+from main_logic.asr_client.endpointing.smart_turn_v3 import SmartTurnV3  # noqa: E402
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,7 +141,11 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fixture-dir", required=True, type=Path)
     parser.add_argument("--labels", required=True, type=Path)
-    parser.add_argument("--asset-dir", type=Path, default=PROJECT_ROOT / "data" / "vad_models")
+    parser.add_argument(
+        "--asset-dir",
+        type=Path,
+        default=PROJECT_ROOT / "main_logic" / "asr_client" / "endpointing" / "models",
+    )
     parser.add_argument("--threshold", type=float, default=0.5)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)

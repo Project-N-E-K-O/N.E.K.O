@@ -31,7 +31,7 @@ from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from ._infra import logger, _READY_TIMEOUT_SECONDS
 from .audio import AsrAudioDispatcher
 from ._registry_meta import AsrProviderAvailability
-from .detector import (
+from .endpointing.detector import (
     AsrDetectorDispatcher,
     CoreDetectorEventEnvelope,
     DetectorActivityEvent,
@@ -39,7 +39,7 @@ from .detector import (
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
-from .detector_runtime import DetectorRuntime, SmartTurnLease
+from .endpointing.detector_runtime import DetectorRuntime, SmartTurnLease
 from .lifecycle import (
     AudioDisposition,
     FinalKey,

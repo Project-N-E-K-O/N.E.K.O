@@ -13,7 +13,7 @@ import pytest
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
 from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
-from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
+from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
@@ -36,8 +36,8 @@ from main_logic.voice_turn.contracts import (
     VoiceTranscriptEvent,
 )
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
-from main_logic.voice_turn.coordinator import CoordinatorState
-from main_logic.asr_client.detector import (
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState
+from main_logic.asr_client.endpointing.detector import (
     BoundDetectorTurn,
     CoreDetectorEventEnvelope,
     DetectorCandidateKey,

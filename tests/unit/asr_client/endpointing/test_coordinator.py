@@ -6,11 +6,11 @@ import pytest
 
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
-    SmartTurnConfig,
     SpeechActivityEvent,
     TurnDecision,
 )
-from main_logic.voice_turn.coordinator import CoordinatorState, TurnCoordinator
+from main_logic.asr_client.endpointing.config import SmartTurnConfig
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState, TurnCoordinator
 
 
 def _pcm(sample_count=512):

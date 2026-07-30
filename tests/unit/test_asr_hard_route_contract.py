@@ -7,7 +7,7 @@ import pytest
 import main_logic.core as core_module
 
 from main_logic.core.asr_runtime import AsrRuntimeMixin
-from main_logic.asr_client.detector_runtime import DetectorFeedResult
+from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult
 from main_logic.asr_client.lifecycle import VoiceLifecycleState
 
 

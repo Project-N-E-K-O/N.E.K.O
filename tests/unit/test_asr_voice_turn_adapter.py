@@ -9,8 +9,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from main_logic.asr_client.detector_runtime import _VoiceTurnAdapter
-from main_logic.asr_client.detector import DetectorIngressIdentity
+from main_logic.asr_client.endpointing.detector_runtime import _VoiceTurnAdapter
+from main_logic.asr_client.endpointing.detector import DetectorIngressIdentity
 from main_logic.asr_client.lifecycle import VoiceIngressToken
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
@@ -18,7 +18,7 @@ from main_logic.voice_turn.contracts import (
     TurnDecision,
     TurnEvaluation,
 )
-from main_logic.voice_turn.coordinator import CoordinatorState
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState
 
 
 async def _eventually(predicate, *, timeout: float = 1.0) -> None:

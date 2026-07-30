@@ -198,8 +198,8 @@ jobs:
       - name: Cache voice-turn model weights
         uses: actions/cache@v4
         with:
-          path: data/vad_models/*.onnx
-          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
+          path: main_logic/asr_client/endpointing/models/*.onnx
+          key: voice-turn-models-v2-${{ runner.os }}-${{ hashFiles('main_logic/asr_client/endpointing/models/manifest.json') }}
 
       - name: Prepare verified voice-turn assets
         run: python3 scripts/prepare_voice_turn_assets.py
@@ -355,8 +355,8 @@ jobs:
       - name: Cache voice-turn model weights
         uses: actions/cache@v4
         with:
-          path: data/vad_models/*.onnx
-          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
+          path: main_logic/asr_client/endpointing/models/*.onnx
+          key: voice-turn-models-v2-${{ runner.os }}-${{ hashFiles('main_logic/asr_client/endpointing/models/manifest.json') }}
 
       - name: Prepare verified voice-turn assets
         run: python3 scripts/prepare_voice_turn_assets.py

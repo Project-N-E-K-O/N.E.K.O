@@ -1,6 +1,6 @@
 import numpy as np
 
-from main_logic.voice_turn.whisper_features import (
+from main_logic.asr_client.endpointing.whisper_features import (
     WhisperFeatureExtractor,
     whisper_mel_filter_bank,
 )

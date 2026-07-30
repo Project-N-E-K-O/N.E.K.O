@@ -18,28 +18,33 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _load_asset_manifest_module():
-    """Load asset_manifest without importing main_logic.voice_turn.__init__.
+    """Load asset_manifest without importing the heavy ASR client facade.
 
     Docker builds run this script before ``uv sync`` installs project
-    dependencies, and the package ``__init__`` pulls in NumPy through
-    ``audio_buffer``.  ``asset_manifest`` itself is stdlib-only, so load it
-    directly by file path to keep the preparer runnable on a bare Python.
+    dependencies. ``asset_manifest`` itself is stdlib-only, so load it
+    directly by file path when the canonical package import is unavailable.
     """
-    module_name = "main_logic.voice_turn.asset_manifest"
+    module_name = "main_logic.asr_client.endpointing.asset_manifest"
     existing = sys.modules.get(module_name)
     if existing is not None:
         return existing
     try:
         # Prefer the ordinary package import: whenever project dependencies
         # exist it yields the canonical module with proper parent linkage, so
-        # a later ``import main_logic.voice_turn.asset_manifest as X`` cannot
+        # a later canonical package import cannot
         # trip over a child registered without its parent package.
         return importlib.import_module(module_name)
     except ImportError:
         pass
     # Bare interpreter (Docker asset step runs before ``uv sync``): the
-    # package __init__ needs NumPy, so load the stdlib-only module by path.
-    module_path = PROJECT_ROOT / "main_logic" / "voice_turn" / "asset_manifest.py"
+    # package imports are unavailable, so load the stdlib-only module by path.
+    module_path = (
+        PROJECT_ROOT
+        / "main_logic"
+        / "asr_client"
+        / "endpointing"
+        / "asset_manifest.py"
+    )
     spec = importlib.util.spec_from_file_location(module_name, module_path)
     if spec is None or spec.loader is None:
         raise ImportError(f"cannot load asset manifest module from {module_path}")
@@ -140,7 +145,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--asset-dir",
         type=Path,
-        default=PROJECT_ROOT / "data" / "vad_models",
+        default=PROJECT_ROOT / "main_logic" / "asr_client" / "endpointing" / "models",
         help="directory containing manifest.json and prepared assets",
     )
     parser.add_argument(

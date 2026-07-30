@@ -1,8 +1,8 @@
 import numpy as np
 import pytest
 
-from main_logic.voice_turn.onnx_runtime import RuntimeInferenceError, RuntimeState
-from main_logic.voice_turn.smart_turn_v3 import SmartTurnV3
+from main_logic.asr_client.endpointing.onnx_runtime import RuntimeInferenceError, RuntimeState
+from main_logic.asr_client.endpointing.smart_turn_v3 import SmartTurnV3
 
 
 class _Session:

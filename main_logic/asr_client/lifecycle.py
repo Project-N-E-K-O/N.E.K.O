@@ -6,14 +6,42 @@ from dataclasses import asdict, dataclass
 from enum import Enum
 
 from main_logic.voice_turn.contracts import (
-    FinalKey,
     VoiceIngressToken,
-    VoiceTransportToken,
     VoiceTurnToken,
 )
 
 from .audio import AudioRingBuffer
 from .provider_policy import AsrProviderPolicy
+
+
+@dataclass(frozen=True, slots=True)
+class VoiceTransportToken:
+    """Bind Provider I/O and callbacks to one transport attempt."""
+
+    turn: VoiceTurnToken
+    transport_generation: int
+
+
+@dataclass(frozen=True, slots=True)
+class FinalKey:
+    """Logical final identity; transport retries do not create a new turn."""
+
+    session_epoch: int
+    connection_id: str
+    lease_generation: int
+    route_generation: int
+    turn_id: int
+
+    @classmethod
+    def from_turn(cls, token: VoiceTurnToken) -> "FinalKey":
+        ingress = token.ingress
+        return cls(
+            session_epoch=ingress.session_epoch,
+            connection_id=ingress.connection_id,
+            lease_generation=ingress.lease_generation,
+            route_generation=ingress.route_generation,
+            turn_id=token.turn_id,
+        )
 
 
 class VoiceRouteMode(Enum):

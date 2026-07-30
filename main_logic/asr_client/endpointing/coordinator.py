@@ -9,13 +9,14 @@ from typing import Protocol
 import numpy as np
 
 from .audio_buffer import Pcm16RingBuffer
-from .contracts import (
+from main_logic.voice_turn.contracts import (
     EvaluationStatus,
-    SmartTurnConfig,
     SpeechActivityEvent,
     TurnDecision,
     TurnEvaluation,
 )
+
+from .config import SmartTurnConfig
 from .onnx_runtime import RuntimeInferenceError, RuntimeUnavailableError
 
 
