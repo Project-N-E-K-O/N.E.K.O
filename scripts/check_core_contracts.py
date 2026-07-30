@@ -1086,7 +1086,7 @@ def run(root: Path) -> list[Violation]:
                 1,
                 0,
                 violation_code,
-                "required ASR layering path is missing",
+                f"required layering path is missing ({violation_code})",
             ))
 
     if tts_path.exists():

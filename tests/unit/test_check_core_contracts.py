@@ -428,6 +428,10 @@ def test_missing_voice_input_registry_uses_voice_input_violation_code(
 
     assert len(violations) == 1
     assert violations[0].code == "VOICE_INPUT_LAYERING"
+    assert (
+        violations[0].message
+        == "required layering path is missing (VOICE_INPUT_LAYERING)"
+    )
 
 
 @pytest.mark.unit
