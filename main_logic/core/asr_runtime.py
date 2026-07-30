@@ -2097,6 +2097,7 @@ class AsrRuntimeMixin:
         # the owner here is what lets a previous turn's delayed clear be
         # recognized as stale by the frontend instead of erasing this bubble.
         self._core_asr_preview_turn_id = external_turn_id
+        self._core_asr_preview_turn_token = token
         self._core_asr_preview_text = ""
 
         def operation_is_current() -> bool:
@@ -2342,9 +2343,15 @@ class AsrRuntimeMixin:
         turn has stopped producing them.
         """
         preview_owner_turn_id = self._core_asr_preview_turn_id
+        preview_owner_turn_token = getattr(
+            self,
+            "_core_asr_preview_turn_token",
+            None,
+        )
         preview_owner_text = self._core_asr_preview_text
         if (
             not preview_owner_turn_id
+            or preview_owner_turn_token is None
             or not preview_owner_text
             or preview_owner_turn_id == finalized_turn_id
         ):
@@ -2352,8 +2359,8 @@ class AsrRuntimeMixin:
         try:
             await self._send_core_asr_preview(
                 VoicePartialEvent(
+                    turn_token=preview_owner_turn_token,
                     text=preview_owner_text,
-                    session_epoch=session_epoch,
                 ),
                 remember=False,
             )
@@ -2383,6 +2390,7 @@ class AsrRuntimeMixin:
             return
         if self._core_asr_preview_turn_id == turn_id:
             self._core_asr_preview_text = ""
+            self._core_asr_preview_turn_token = None
         try:
             await send_json(
                 {

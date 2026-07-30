@@ -1492,10 +1492,16 @@ async def _prepare_preview_turn(mgr: LLMSessionManager, turn_id: int) -> str:
 
 
 async def _send_preview_partial(mgr: LLMSessionManager, text: str) -> dict:
+    turn_token = getattr(mgr, "_core_asr_preview_turn_token", None)
+    if turn_token is None:
+        turn_token = VoiceTurnToken(
+            ingress=mgr._capture_ingress_token(),
+            turn_id=0,
+        )
     await mgr._send_core_asr_preview(
         VoicePartialEvent(
+            turn_token=turn_token,
             text=text,
-            session_epoch=mgr._capture_ingress_token().session_epoch,
         )
     )
     return mgr.websocket.send_json.await_args.args[0]
@@ -2716,7 +2722,7 @@ async def test_unreadable_settings_do_not_kill_the_mic_when_asr_is_disabled():
 
 async def test_absent_settings_still_default_without_failing_closed():
     # The other half of the strict read: an ABSENT file is not a failure. A
-    # first run has no settings yet and must keep defaulting normally rather
+    # first run has no settings yet and must use the enabled default rather
     # than blocking the route.
     mgr = _make_routable_audio_manager(True)
     mgr._begin_voice_input_connection("socket-a")
@@ -2736,7 +2742,7 @@ async def test_absent_settings_still_default_without_failing_closed():
     ):
         await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
 
-    assert mgr._asr_route_mode == "native"
+    assert mgr._asr_route_mode == "independent"
 
 
 async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():

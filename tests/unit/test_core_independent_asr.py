@@ -4064,7 +4064,11 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
     runtime.websocket = websocket
     runtime.current_speech_id = "speech-current"
     runtime._set_microphone_route("independent")
+    await _install_active_smart_turn(runtime)
     epoch = runtime._asr_session_epoch
+    token = runtime._asr_runtime._asr_partial_turn_token
+    assert token is not None
+    assert runtime._activate_asr_audio_dispatcher(runtime._asr_lifecycle, token)
 
     await runtime._send_independent_asr_preview(" draft ", epoch)
     await runtime._send_independent_asr_preview("stale", epoch + 1)
@@ -4074,9 +4078,40 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
             "type": "user_transcript_preview",
             "text": "draft",
             "turn_id": "speech-current",
+            "asr_turn_id": f"asr-{epoch}-1",
         }
     )
     runtime.handle_input_transcript.assert_not_awaited()
+
+
+async def test_partial_preview_keeps_prepared_token_and_rejects_after_abort() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    on_partial = AsyncMock()
+    runtime._asr_runtime._callbacks = replace(
+        runtime._asr_runtime._callbacks,
+        on_partial=on_partial,
+    )
+    await _install_active_smart_turn(runtime)
+    epoch = runtime._asr_session_epoch
+    captured_token = runtime._asr_runtime._asr_partial_turn_token
+    assert captured_token is not None
+    assert runtime._activate_asr_audio_dispatcher(
+        runtime._asr_lifecycle,
+        captured_token,
+    )
+
+    await runtime._send_independent_asr_preview("current", epoch)
+
+    event = on_partial.await_args.args[0]
+    assert event.turn_token is captured_token
+    assert event.session_epoch == epoch
+    on_partial.reset_mock()
+
+    runtime._asr_audio_dispatcher.abort(captured_token)
+    await runtime._send_independent_asr_preview("late", epoch)
+
+    on_partial.assert_not_awaited()
 
 
 async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> None:
@@ -5566,27 +5601,35 @@ async def test_partial_preview_requires_current_core_lease() -> None:
     runtime.websocket = websocket
     runtime._set_microphone_route("independent")
     epoch = runtime._asr_session_epoch
+    token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(),
+        turn_id=1,
+    )
+    stale_token = VoiceTurnToken(
+        ingress=replace(token.ingress, session_epoch=epoch + 1),
+        turn_id=token.turn_id,
+    )
 
     runtime._voice_lease_owner = "game"
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="game", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="game")
     )
     runtime._voice_lease_owner = "core"
     runtime._voice_lease_hard_muted = True
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="muted", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="muted")
     )
     runtime._voice_lease_hard_muted = False
     runtime._voice_lease_focus_suppressed = True
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="focused", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="focused")
     )
     runtime._voice_lease_focus_suppressed = False
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="stale", session_epoch=epoch + 1)
+        VoicePartialEvent(turn_token=stale_token, text="stale")
     )
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="current", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="current")
     )
 
     websocket.send_json.assert_awaited_once_with(
