@@ -797,3 +797,16 @@ def test_postposed_negation_after_descriptive_text(label, confidence):
     form, so any sentence-style answer came back as the emotion itself.
     """
     assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # the marker appears twice; the one that matters is the later
+    ("我笑不起來，其實真的開心不起來", "neutral"),
+    ("我笑不起来，其实真的开心不起来", "neutral"),
+    # ...and an earlier marker must not swallow a later, un-negated emotion
+    ("我笑不起來，其實很開心", "happy"),
+])
+def test_every_suffix_occurrence_is_examined(label, expected, confidence):
+    """Stopping at the first marker read the label as the emotion it denies."""
+    assert _label(label, confidence) == expected

@@ -206,17 +206,21 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
             return True
 
     for negation in _EMOTION_NEGATION_COMPACT_SUFFIXES:
+        # Every occurrence, not just the first: `我笑不起來，其實真的開心不起來`
+        # negates its *last* emotion word, and stopping at the first marker read
+        # the label as the emotion it actually denies.
         marker_index = compact_text.find(negation)
-        if marker_index <= 0:
-            continue
-        head = compact_text[:marker_index]
-        if _looks_like_emotion_compact_candidate(head, fuzzy_compact_cutoff):
-            return True
-        # The marker negates the emotion word it follows, not the whole label:
-        # a sentence-style answer puts something in front of that word, and
-        # requiring the entire head to look like an alias missed all of them.
-        if any(head.endswith(alias) for alias in _EMOTION_COMPACT_ALIAS_LOOKUP):
-            return True
+        while marker_index > 0:
+            head = compact_text[:marker_index]
+            if _looks_like_emotion_compact_candidate(head, fuzzy_compact_cutoff):
+                return True
+            # The marker negates the emotion word it follows, not the whole
+            # label: a sentence-style answer puts something in front of that
+            # word, and requiring the entire head to look like an alias missed
+            # all of them.
+            if any(head.endswith(alias) for alias in _EMOTION_COMPACT_ALIAS_LOOKUP):
+                return True
+            marker_index = compact_text.find(negation, marker_index + 1)
 
     return False
 
