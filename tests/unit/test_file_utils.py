@@ -16,8 +16,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import threading
 import time
+from contextlib import suppress
 from pathlib import Path
 
 import pytest
@@ -347,8 +349,6 @@ def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
     # 年龄门槛本身不能证明 tmp 没有主人（写者理论上可以在 mkstemp 之后被冻结很久）。
     # Windows 上还有一道 OS 级兜底：活写者的句柄一直开着，unlink 会被拒（WinError
     # 32），清扫器物理上抢不走。这条把那道兜底钉住。
-    import tempfile
-
     target = tmp_path / "state.json"
     fd, inflight = tempfile.mkstemp(
         prefix=f".{target.name}.", suffix=".tmp", dir=str(tmp_path)
@@ -359,7 +359,7 @@ def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
         assert Path(inflight).exists(), "an open temp file must survive the sweep"
     finally:
         os.close(fd)
-        with __import__("contextlib").suppress(OSError):
+        with suppress(OSError):
             os.unlink(inflight)
 
 
@@ -461,7 +461,7 @@ def test_concurrent_writers_never_leave_a_partial_target(tmp_path):
     target = tmp_path / "state.json"
     payloads = [{"writer": i, "pad": "x" * 4096} for i in range(6)]
     start = threading.Barrier(len(payloads))
-    failures: list[BaseException] = []
+    failures: list[Exception] = []
 
     def writer(payload):
         start.wait(timeout=5)
@@ -490,13 +490,13 @@ def test_sweeper_is_thread_safe_for_the_same_target(tmp_path):
     # 不许重复扫、也不许抛。
     target = tmp_path / "state.json"
     start = threading.Barrier(8)
-    errors: list[BaseException] = []
+    errors: list[Exception] = []
 
     def writer():
         try:
             start.wait(timeout=5)
             file_utils._sweep_stale_tmp_once(target)
-        except BaseException as exc:  # noqa: BLE001
+        except Exception as exc:  # noqa: BLE001 - 线程体里任何异常都要交回主线程
             errors.append(exc)
 
     threads = [threading.Thread(target=writer) for _ in range(8)]
