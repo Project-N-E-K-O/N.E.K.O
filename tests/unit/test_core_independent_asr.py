@@ -1235,6 +1235,16 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
         runtime._asr_session_epoch,
         "qwen",
     )
+    # Teardown racing the queued empty final may win or lose, but both paths
+    # terminate the same pinned route. Repeated invalidation and a duplicate
+    # provider final must not produce a second cancellation/abandonment.
+    runtime._invalidate_voice_pcm_sync("duplicate_after_empty_final")
+    runtime._invalidate_voice_pcm_sync("duplicate_after_empty_final")
+    await runtime._handle_independent_asr_final(
+        "",
+        runtime._asr_session_epoch,
+        "qwen",
+    )
     await runtime._wait_asr_transcript_dispatch_idle()
 
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
@@ -1243,6 +1253,36 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
     runtime.session.create_response.assert_not_awaited()
     runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_blocked_consumer_callback_does_not_block_next_turn_lifecycle() -> (
+    None
+):
+    runtime = _Runtime()
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def block_first_final(*_args, **_kwargs) -> bool:
+        callback_started.set()
+        await release_callback.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = block_first_final
+    await _start_and_seal_turn(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_final("first", epoch, "qwen")
+    await asyncio.wait_for(callback_started.wait(), 1)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_turn_prepared is True
+    release_callback.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+    runtime.session.create_response.assert_awaited_once_with("first")
 
 
 async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:
@@ -5991,7 +6031,7 @@ async def test_runtime_failure_still_fences_a_competing_newer_operation() -> Non
 
 
 async def test_runtime_failure_leaves_the_game_lease_alone() -> None:
-    # The galgame route holds the mic through its own consumer binding and tears
+    # The galgame route holds the mic through its built-in consumer route and tears
     # down via GAME_ROUTE_ENDED; re-basing the identity must not start
     # collaterally revoking it.
     runtime = _Runtime()

@@ -28,29 +28,31 @@ also suitable for barge-in and connection lifecycle gating, but it never emits
 
 ## Consumer-neutral voice input
 
-`LLMSessionManager.bind_voice_input_consumer()` exposes the high-level final
-text boundary needed by later game/plugin integration. A binding is inert:
-MicLease remains the sole microphone-ownership authority, and the caller must
-bind before changing the lease owner to `game`.
+`VoiceInputRegistry` owns the high-level transcript boundary used by ordinary
+Core chat, the active game route, and a future trusted plugin bridge. MicLease
+remains the sole microphone-ownership authority; the Registry never receives
+PCM and cannot select a provider or endpoint.
 
-- `owner=core` keeps the existing Core transcript path.
-- `owner=game` accepts PCM only while the exact captured consumer binding is
-  still registered; otherwise the route remains fail-closed and suspended.
-- The binding receives only a route-authorized `VoiceTranscriptEvent`: a
-  provider-native logical final for streaming ASR, or a Smart Turn-sealed and
-  aggregated final for segmented ASR. It never receives PCM or partials.
-- Consumer replacement or removal is forbidden while that owner holds
-  MicLease. Lease changes invalidate queued PCM, the active turn, transcript
-  reservations, and delayed callbacks before another target can become active.
-- Consumer callback failure discards that delivery. It never falls back to
-  Core, Omni, another ASR provider, or a browser speech recognizer.
-- Provider selection remains centralized and follows the active Core/ASR route
-  policy. A game or plugin cannot select Qwen, Soniox, or another provider.
+- `owner=core` activates the built-in `core_chat` consumer, which accepts
+  identified partials and non-empty finals.
+- `owner=game` activates the built-in `game` consumer, which accepts only
+  non-empty finals while `is_game_route_active(lanlan_name)` is true. An
+  unavailable game route stays fail-closed and never falls back to chat.
+- Every route is pinned by its full `VoiceTurnToken`. Consumer switches,
+  unregistration, lease changes, PCM holes, aborts, and session teardown
+  terminate the old route instead of transferring it to the new consumer.
+- Final delivery consumes the route before calling business code. A duplicate,
+  late event, callback failure, or empty final cannot restore or redirect it.
+- Empty finals are terminal cleanup events, not transcripts. They reach neither
+  Core injection nor the game route.
+- `core_chat` captures the prepared session and external turn id, so
+  cancellation after a hot swap abandons the precise original session turn.
+- Plugin registration is namespace-bound and exposes no Registry, MicLease,
+  provider, PCM, process-management, or routing authority.
 
-Phase 3 supplies only this common binding contract and a fake-consumer
-integration test. Registering concrete games, changing game UI, and removing
-legacy browser `SpeechRecognition` are responsibilities of their own follow-up
-integration changes.
+Provider-native and Smart Turn-sealed finals therefore share one controlled
+Core-side routing contract while provider selection remains centralized below
+the independent-ASR runtime boundary.
 
 ## Audio contract
 

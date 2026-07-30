@@ -2112,7 +2112,7 @@ async def test_startup_failure_revokes_the_lease_except_for_the_game_owner(
     # Codex P2. A startup failure (provider connect, credentials, config) pins
     # the route blocked but can never emit a BLOCKED lifecycle event, so the
     # backstop is the only server-side stop. The galgame route holds the lease
-    # through its own consumer binding and must not be collaterally revoked.
+    # through its built-in Registry consumer and must not be collaterally revoked.
     mgr = _make_routable_audio_manager(True)
     _authorize_core_lease(mgr)
     mgr._begin_voice_input_connection("socket-a")
@@ -2804,7 +2804,7 @@ async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
 
 
 async def test_fail_closed_chokepoint_exempts_the_game_owner():
-    # The galgame gate owns the mic through its own consumer binding and tears
+    # The galgame gate owns the mic through its built-in consumer route and tears
     # down via GAME_ROUTE_ENDED, so it must be neither notified nor revoked.
     mgr, recorder = _blocked_route_manager_with_recorder()
     mgr._voice_lease_owner = "game"
@@ -3074,7 +3074,7 @@ async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
 
 async def test_audio_start_ack_does_not_reach_the_game_microphone():
     # Same exemption the text path carries: the galgame gate owns the mic
-    # through its own consumer binding, and a session_started handler that
+    # through its built-in consumer route, and a session_started handler that
     # calls stopRecording would release a lease this ack never meant to touch.
     recorder, chat = _fake_socket_pair()
     mgr = _make_routable_audio_manager(True)

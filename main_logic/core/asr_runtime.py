@@ -1957,8 +1957,8 @@ class AsrRuntimeMixin:
         Clients that never receive or never honour the teardown notice (older
         builds, third-party clients, throttled background tabs) keep uploading
         PCM into a route that discards it. Stop accepting it at ingress too.
-        The game owner is exempt: the galgame route holds the lease through its
-        own consumer binding and must not be collaterally revoked.
+        The game owner is exempt: its built-in Registry consumer holds the
+        active transcript route and must not be collaterally revoked.
 
         NEVER hoist this above the stale/competing-start exits.
         ``_revoke_voice_input_connection`` calls ``_invalidate_asr_start()``
@@ -2513,7 +2513,8 @@ class AsrRuntimeMixin:
             # throttled background tab). The route is fail-closed for the rest
             # of the session, so stop accepting the PCM at ingress too. The
             # game owner is exempt: the galgame route holds the lease through
-            # its own consumer binding and must not be collaterally revoked.
+            # its built-in Registry consumer and must not be collaterally
+            # revoked.
             # No notice of its own -- the BLOCKED lifecycle event that produced
             # this failure already reached the client.
             #
