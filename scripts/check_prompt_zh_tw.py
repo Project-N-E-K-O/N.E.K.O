@@ -559,6 +559,20 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     for bindings in assignments.values():
         bindings.sort(key=lambda item: item[0])
 
+    # Every node back to the bound expression it sits inside, so a self-rebinding
+    # merge can be recognized through any wrapper. Identity against the merge node
+    # alone missed `T = (T | {"zh-TW": t}) if flag else ...`, where the registered
+    # binding is the IfExp and each `T` then resolved to the assignment being
+    # evaluated rather than the table it actually reads.
+    # A node belongs to exactly one bound expression, so plain assignment is
+    # enough — a chained `T = U = {...}` registers the same value node twice and
+    # writes the same answer both times.
+    bound_expression: dict[int, ast.AST] = {}
+    for bindings in assignments.values():
+        for _, value in bindings:
+            for inner in ast.walk(value):
+                bound_expression[id(inner)] = value
+
     exempt: set[int] = set()
 
     def _binding_before(
@@ -586,9 +600,38 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     def _exempt_binding_before(
         name: str, lineno: int, exclude: ast.AST | None = None
     ) -> None:
-        found = _binding_before(name, lineno, exclude)
-        if found is not None:
-            exempt.add(id(found[1]))
+        """Exempt what `name` holds, down through aliases and nested merges.
+
+        Stopping at the binding's own value node exempted the wrong thing whenever
+        a fragment reached the merge indirectly: for ``F2 = F`` that value is a
+        bare ``Name``, so ``F``'s literal — the node actually judged — stayed
+        subject to the rule and a compliant table still grew the count.
+        """
+        pending, walked = [(name, lineno, exclude)], set()
+        while pending:
+            current, at, skip = pending.pop()
+            found = _binding_before(current, at, skip)
+            if found is None:
+                continue
+            bound_at, value = found
+            if id(value) in walked:
+                continue
+            walked.add(id(value))
+            exempt.add(id(value))
+            for part in _fragment_parts(value):
+                if isinstance(part, ast.Name):
+                    pending.append((part.id, bound_at, None))
+
+    def _fragment_parts(node: ast.AST) -> list[ast.AST]:
+        """The sub-expressions that stand in for `node` — aliases and operands.
+
+        A bare name is an alias for whatever it holds; a merge is made of its
+        operands. Either way the fragment being exempted may be one level further
+        down, and each level is the same fragment of the same compliant table.
+        """
+        if isinstance(node, ast.Name):
+            return [node]
+        return _merge_operands(node)
 
     def _mapping_keys(
         node: ast.AST | None, at: int, _seen: frozenset[str] = frozenset()
@@ -724,10 +767,16 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if not operands:
             continue
 
+        # The whole bound expression, not this merge node: `T = (T | {"zh-TW": t})
+        # if flag else ...` registers the IfExp as T's new binding, so excluding
+        # the merge by identity left each `T` resolving to the assignment being
+        # evaluated instead of the table it reads.
+        enclosing = bound_expression.get(id(node), node)
+
         # `_TW = {"zh-TW": t}` / `T = {**_F, **_TW}` supplies zh-TW as plainly as an
         # inline literal. Following the name only ever *adds* visible keys, so
         # `U = dict(T)` still sees {en, zh} and leaves T subject to the rule.
-        def _named_keys(name: str, _at: int = node.lineno, _self: ast.AST = node) -> set[str]:
+        def _named_keys(name: str, _at: int = node.lineno, _self: ast.AST = enclosing) -> set[str]:
             return _name_keys(name, _at, exclude=_self)
 
         if TRADITIONAL_KEY not in _directly_visible_keys(node, _named_keys):
@@ -743,7 +792,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 continue
             walked.add(id(operand))
             if isinstance(operand, ast.Name):
-                _exempt_binding_before(operand.id, node.lineno, exclude=node)
+                _exempt_binding_before(operand.id, node.lineno, exclude=enclosing)
             else:
                 pending.extend(_merge_operands(operand))
 

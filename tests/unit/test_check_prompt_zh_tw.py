@@ -1928,3 +1928,46 @@ def test_generator_of_non_pairs_is_not_treated_as_a_mapping():
     """
     src = 'T = dict((loc, x, y) for loc, x, y in (("en", 1, 2), ("zh", 3, 4)))'
     assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'F = {"en": "e", "zh": "s"}\nF2 = F\nT = {**F2, "zh-TW": "t"}',
+    'F = {"en": "e", "zh": "s"}\nF2 = F\nF3 = F2\nT = {**F3, "zh-TW": "t"}',
+    'F = {"en": "e", "zh": "s"}\nF2 = dict(F)\nT = {**F2, "zh-TW": "t"}',
+])
+def test_exemption_follows_aliases_to_the_table_it_lands_on(src):
+    """Exempting the binding's own value node exempts the wrong thing.
+
+    For `F2 = F` that value is a bare Name; the literal bound to F is the node
+    actually judged, so it stayed subject to the rule and a compliant table still
+    grew the count.
+    """
+    assert _violations(src) == []
+
+
+def test_alias_chain_is_not_a_back_door_for_exemption():
+    """Following names must still only exempt what the merge demonstrably completes."""
+    src = 'X = {"ja": "j"}\nX2 = X\nF = {"en": "e", "zh": "s"}\nT = {**F, **X2}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [3]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT = T | {"zh-TW": "t"}',
+    'T = {"en": "e", "zh": "s"}\nT = (T | {"zh-TW": "t"}) if flag else (T | {"zh-TW": "u"})',
+    'T = {"en": "e", "zh": "s"}\nT = dict(T | {"zh-TW": "t"})',
+])
+def test_self_rebinding_is_recognized_through_any_wrapper(src):
+    """The registered binding is the whole right-hand side, not the merge inside it.
+
+    Excluding the merge node by identity worked only when it *was* the right-hand
+    side; wrap it in anything and each `T` resolved to the assignment being
+    evaluated instead of the table it reads.
+    """
+    assert _violations(src) == []
+
+
+def test_rebinding_that_does_not_supply_zh_tw_still_reports():
+    src = 'T = {"en": "e", "zh": "s"}\nT = T | {"ja": "j"}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
