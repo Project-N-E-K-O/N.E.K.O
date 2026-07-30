@@ -59,11 +59,17 @@ function isLive2DHostModelDragActive() {
     // authoritative while the crop carrier is transitioning. api.isActive()
     // can briefly change during prepare/commit without ending that session.
     const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
-    if (!api || typeof api.isHostModelDragActive !== 'function') return false;
+    // No bridge object means the ordinary web/non-Niri path owns coordinates.
+    // Once the physical-crop bridge exists, however, an incompatible or
+    // failing ownership method must not re-enable the legacy writer: that
+    // would let renderer-local and host screen-coordinate paths move the same
+    // model concurrently.
+    if (!api) return false;
+    if (typeof api.isHostModelDragActive !== 'function') return true;
     try {
-        return api.isHostModelDragActive() === true;
+        return api.isHostModelDragActive() !== false;
     } catch (_) {
-        return false;
+        return true;
     }
 }
 

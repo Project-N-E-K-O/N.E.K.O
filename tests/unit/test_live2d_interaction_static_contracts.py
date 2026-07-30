@@ -91,8 +91,11 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
     source = _live2d_source()
     assert "function isLive2DHostModelDragActive()" in source
     assert "window.__nekoNiriPetPhysicalCrop" in source
-    assert "typeof api.isHostModelDragActive !== 'function'" in source
-    assert "return api.isHostModelDragActive() === true;" in source
+    host_state = _js_block(source, "function isLive2DHostModelDragActive")
+    assert "if (!api) return false;" in host_state
+    assert "if (typeof api.isHostModelDragActive !== 'function') return true;" in host_state
+    assert "return api.isHostModelDragActive() !== false;" in host_state
+    assert "catch (_) {\n        return true;" in host_state
 
     drag_source = source.split(
         "Live2DManager.prototype.setupDragAndDrop = function",
@@ -123,10 +126,13 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
         "await this._tryApplyLive2DPeek(model);",
     ):
         assert drag_end.index(host_guard) < drag_end.index(settlement)
-    assert "if (isLive2DHostModelDragActive()) return;" in drag_move
-    assert drag_move.index("if (isLive2DHostModelDragActive()) return;") < drag_move.index(
-        "model.x = x - dragStartPos.x;"
-    )
+    assert host_guard in drag_move
+    host_guard_index = drag_move.index(host_guard)
+    for coordinate_assignment in (
+        "model.x = x - dragStartPos.x;",
+        "model.y = y - dragStartPos.y;",
+    ):
+        assert host_guard_index < drag_move.index(coordinate_assignment)
 
 
 def test_live2d_click_touch_set_logs_trigger_summary():
