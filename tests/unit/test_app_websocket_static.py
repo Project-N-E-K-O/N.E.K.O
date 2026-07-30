@@ -305,42 +305,42 @@ def test_independent_asr_failure_copy_matches_hard_route_in_all_locales():
         "en.json": (
             "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
             "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
-            "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
+            "{{providerKey}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
         ),
         "es.json": (
             "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
             "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
-            "{{provider}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
+            "{{providerKey}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
         ),
         "ja.json": (
             "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
             "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
-            "{{provider}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
+            "{{providerKey}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
         ),
         "ko.json": (
             "독립 ASR을 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 독립 ASR 설정을 확인한 다음 새 음성 세션을 시작하세요.",
             "다음 음성 세션부터 활성화되며, 사용할 수 없어도 Omni로 자동 전환되지 않습니다.",
-            "{{provider}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
+            "{{providerKey}}을(를) 일시적으로 사용할 수 없어 이번 음성 세션의 입력을 중지했습니다. 다른 음성 인식 서비스로 전환하지 않았습니다. 나중에 새 음성 세션을 시작하세요.",
         ),
         "pt.json": (
             "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Verifique a configuração do ASR independente e depois inicie uma nova sessão de voz.",
             "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
-            "{{provider}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
+            "{{providerKey}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
         ),
         "ru.json": (
             "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
             "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
-            "{{provider}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
+            "{{providerKey}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
         ),
         "zh-CN.json": (
             "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
             "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
-            "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
+            "{{providerKey}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
         ),
         "zh-TW.json": (
             "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
             "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
-            "{{provider}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
+            "{{providerKey}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
         ),
     }
 
@@ -3064,7 +3064,7 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           if (!cond) throw new Error('ASSERT: ' + msg);
         }
 
-        function makeContext(initialSettings) {
+        function makeContext(initialSettings = null) {
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
@@ -3531,6 +3531,94 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             optimizationReceiver.S.voiceInputResourceOptimizationEnabled === false,
             'a real optimization toggle must apply across windows'
+          );
+
+          // ---- Scenario 7: concurrent optimization toggles converge ----
+          // Each window writes before observing the other. Freshness against
+          // received writes cannot order either window's own pending choice;
+          // the per-key decision tuple must select the same winner on both.
+          const optimizationA = makeContext();
+          await hydrateFromServer(optimizationA, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationA.S.voiceInputResourceOptimizationEnabled = false;
+          optimizationA.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayloadA = optimizationA.lastSharedWrite();
+
+          const optimizationB = makeContext();
+          await hydrateFromServer(optimizationB, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: false,
+          });
+          optimizationB.S.voiceInputResourceOptimizationEnabled = true;
+          optimizationB.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayloadB = optimizationB.lastSharedWrite();
+
+          const parsedA = JSON.parse(optimizationPayloadA);
+          const parsedB = JSON.parse(optimizationPayloadB);
+          const decisionA = parsedA._sharedWriteMeta.optimizationDecision;
+          const decisionB = parsedB._sharedWriteMeta.optimizationDecision;
+          assert(decisionA && decisionB, 'each explicit optimization write must carry its decision tuple');
+          const aWins = decisionA.writeId > decisionB.writeId
+            || (
+              decisionA.writeId === decisionB.writeId
+              && decisionA.writerId > decisionB.writerId
+            );
+          const winningValue = aWins
+            ? parsedA.voiceInputResourceOptimizationEnabled
+            : parsedB.voiceInputResourceOptimizationEnabled;
+
+          optimizationA.fireStorage(optimizationPayloadB);
+          optimizationB.fireStorage(optimizationPayloadA);
+          assert(
+            optimizationA.S.voiceInputResourceOptimizationEnabled === winningValue,
+            'window A must converge on the winning optimization choice'
+          );
+          assert(
+            optimizationB.S.voiceInputResourceOptimizationEnabled === winningValue,
+            'window B must converge on the winning optimization choice'
+          );
+
+          // ---- Scenario 8: a real return to the restored value is fresh ----
+          const restoredDecision = {
+            writeId: 1,
+            writerId: 'restored-writer',
+            value: false,
+          };
+          const rebound = makeContext(JSON.stringify({
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'restored-writer',
+              changedKeys: [
+                'independentAsrEnabled',
+                'voiceInputResourceOptimizationEnabled',
+              ],
+              asrDecision: restoredDecision,
+              optimizationDecision: restoredDecision,
+            },
+          }));
+          await hydrateFromServer(rebound, {
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          rebound.S.independentAsrEnabled = false;
+          rebound.S.voiceInputResourceOptimizationEnabled = false;
+          rebound.mod.saveSettings({ skipServerSync: true });
+          const reboundMeta = JSON.parse(
+            rebound.lastSharedWrite()
+          )._sharedWriteMeta;
+          assert(
+            reboundMeta.asrDecision.writeId === reboundMeta.writeId
+              && reboundMeta.asrDecision.writerId === reboundMeta.writerId,
+            'returning to a restored ASR value is a fresh user decision'
+          );
+          assert(
+            reboundMeta.optimizationDecision.writeId === reboundMeta.writeId
+              && reboundMeta.optimizationDecision.writerId === reboundMeta.writerId,
+            'returning to a restored optimization value is a fresh user decision'
           );
 
           console.log('HARNESS_OK');
@@ -5216,21 +5304,21 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     assert "typeof meta.writerId === 'string' ? meta.writerId : ''" in read_fn
 
     # The comparison is (writeId, writerId) against the local decision.
-    outranks = settings_source.split("function _asrWriteOutranksLocalChoice(", 1)[
+    outranks = settings_source.split("function _settingWriteOutranksLocalChoice(", 1)[
         1
     ].split("\n    }", 1)[0]
     # Ordering is on the DECISION that produced the value, not on the id of the
     # write carrying it: a monotone dirty key makes every later unrelated save
     # re-declare the ASR key explicit with a fresh id, which would outrank a
     # genuinely newer toggle elsewhere (no race required).
-    assert "decision.writeId > _lastAsrDecision.writeId" in outranks
-    assert "(decision.writerId || '') > _lastAsrDecision.writerId" in outranks
+    assert "decision.writeId > localDecision.writeId" in outranks
+    assert "(decision.writerId || '') > localDecision.writerId" in outranks
     # A write with neither a decision tuple nor an explicit declaration is an
     # incidental copy and must never outrank a local choice.
     assert "if (!decision) return false;" in outranks
     # The decision must be DERIVED (tuple, else an explicit declaration), never
     # taken as the incoming write itself -- that is the bug being fixed.
-    assert "const decision = meta.asrDecision" in outranks
+    assert "const decision = meta[decisionKey]" in outranks
     assert "const decision = meta;" not in outranks
 
     # A window's OWN explicit write must be recorded, or it has nothing to
@@ -5238,8 +5326,10 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     write_fn = settings_source.split("function _writeSharedSettings(", 1)[1].split(
         "\n    }", 1
     )[0]
-    assert "_nextAsrDecisionWriteId(ownMeta.writeId)" in write_fn
-    assert "_noteAsrDecision(" in write_fn
+    asr_note = write_fn.split("_noteAsrDecision(", 1)[1].split(");", 1)[0]
+    assert "_nextAsrDecisionWriteId(ownMeta.writeId)" in asr_note
+    assert "ownMeta.writerId" in asr_note
+    assert "snapshot.independentAsrEnabled" in asr_note
 
     # Refusing authority alone is not enough: applySharedRuntimeSettings copies
     # independentAsrEnabled unconditionally, so the losing write must also be

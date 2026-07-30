@@ -2386,6 +2386,8 @@
 
     var micPermissionGranted = false;
     var cachedMicDevices = null;
+    var disposeVoiceRecognitionPopover = null;
+    var voiceRecognitionPopoverRenderGeneration = 0;
 
     function ensureMicPopupScrollbarStyle() {
         if (document.getElementById('neko-mic-popup-scrollbar-style')) return;
@@ -2503,6 +2505,12 @@
     window.renderFloatingMicList = async function (popupArg) {
         var micPopup = popupArg || document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
         if (!micPopup) return false;
+        var renderGeneration = ++voiceRecognitionPopoverRenderGeneration;
+        if (disposeVoiceRecognitionPopover) {
+            var previousDispose = disposeVoiceRecognitionPopover;
+            disposeVoiceRecognitionPopover = null;
+            previousDispose();
+        }
         var popupId = micPopup.id;
         var isPopupAvailable = function () {
             if (!micPopup || !micPopup.isConnected) return false;
@@ -2523,7 +2531,10 @@
             if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
                 audioInputs = await ensureMicrophonePermission();
             }
-            if (!isPopupAvailable()) return false;
+            if (
+                renderGeneration !== voiceRecognitionPopoverRenderGeneration
+                || !isPopupAvailable()
+            ) return false;
 if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 micPopup.__nekoMicScrollbarCleanup();
                 micPopup.__nekoMicScrollbarCleanup = null;
@@ -2738,145 +2749,682 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             Object.assign(sep1.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1);
 
-            // ===== 左栏 1.5. 降噪开关 =====
-            var nrContainer = document.createElement('div');
-            nrContainer.style.padding = '8px 12px';
-
-            var nrRow = document.createElement('div');
-            Object.assign(nrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
-
-            var nrLabel = document.createElement('span');
-            nrLabel.textContent = window.t ? window.t('microphone.noiseReduction') : '降噪';
-            nrLabel.setAttribute('data-i18n', 'microphone.noiseReduction');
-            Object.assign(nrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
-
-            var nrToggle = document.createElement('label');
-            Object.assign(nrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
-            var nrInput = document.createElement('input');
-            nrInput.type = 'checkbox';
-            nrInput.checked = S.noiseReductionEnabled;
-            Object.assign(nrInput.style, { opacity: '0', width: '0', height: '0' });
-            var nrSlider = document.createElement('span');
-            Object.assign(nrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: S.noiseReductionEnabled ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var nrKnob = document.createElement('span');
-            Object.assign(nrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: S.noiseReductionEnabled ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            nrSlider.appendChild(nrKnob);
-            nrToggle.appendChild(nrInput);
-            nrToggle.appendChild(nrSlider);
-
-            nrInput.addEventListener('change', function () {
-                S.noiseReductionEnabled = nrInput.checked;
-                nrSlider.style.backgroundColor = nrInput.checked ? '#4f8cff' : '#ccc';
-                nrKnob.style.left = nrInput.checked ? '18px' : '2px';
-                saveNoiseReductionSetting();
-            });
-
-            nrRow.appendChild(nrLabel);
-            nrRow.appendChild(nrToggle);
-            nrContainer.appendChild(nrRow);
-
-            var nrHint = document.createElement('div');
-            nrHint.textContent = window.t ? window.t('microphone.noiseReductionHint') : 'RNNoise AI 降噪';
-            nrHint.setAttribute('data-i18n', 'microphone.noiseReductionHint');
-            Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            nrContainer.appendChild(nrHint);
-            leftColumn.appendChild(nrContainer);
-
-            // ===== 独立 ASR 开关（下次语音 session 生效） =====
+            // ===== 语音识别设置入口 + body portal popover =====
             var asrContainer = document.createElement('div');
-            asrContainer.style.padding = '8px 12px';
+            asrContainer.tabIndex = 0;
+            asrContainer.setAttribute('role', 'button');
+            Object.assign(asrContainer.style, {
+                padding: '8px 12px',
+                cursor: 'pointer',
+                outline: 'none'
+            });
 
             var asrRow = document.createElement('div');
-            Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
-
+            Object.assign(asrRow.style, {
+                display: 'flex',
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                gap: '12px'
+            });
+            var asrCopy = document.createElement('div');
+            Object.assign(asrCopy.style, { minWidth: '0', flex: '1' });
             var asrLabel = document.createElement('span');
-            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
+            asrLabel.textContent = window.t
+                ? window.t('microphone.independentAsr')
+                : '语音识别';
             asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
-            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+            Object.assign(asrLabel.style, {
+                fontSize: '13px',
+                color: 'var(--neko-popup-text)',
+                fontWeight: '600'
+            });
+            var asrSummary = document.createElement('div');
+            Object.assign(asrSummary.style, {
+                fontSize: '11px',
+                color: 'var(--neko-popup-text-sub)',
+                marginTop: '4px',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap'
+            });
+            asrCopy.appendChild(asrLabel);
+            asrCopy.appendChild(asrSummary);
 
-            var asrToggle = document.createElement('label');
-            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
-            var asrInput = document.createElement('input');
-            asrInput.type = 'checkbox';
-            asrInput.checked = S.independentAsrEnabled === true;
-            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
-            var asrSlider = document.createElement('span');
-            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
-            var asrKnob = document.createElement('span');
-            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
-            asrSlider.appendChild(asrKnob);
-            asrToggle.appendChild(asrInput);
-            asrToggle.appendChild(asrSlider);
-
-            function renderAsrHint() {
-                if (!asrHint) return;
-                var hintKey = S.independentAsrActive
-                    ? 'microphone.independentAsrActive'
-                    : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
-                var hintParams = { providerKey: S.independentAsrProvider || 'unknown' };
-                asrHint.setAttribute('data-i18n', hintKey);
-                asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));
-                asrHint.textContent = window.t
-                    ? window.t(hintKey, hintParams)
-                    : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            function createVoiceSettingToggle(checked, onChange) {
+                var focusStyle = document.getElementById(
+                    'neko-voice-setting-toggle-focus-style'
+                );
+                if (!focusStyle) {
+                    focusStyle = document.createElement('style');
+                    focusStyle.id = 'neko-voice-setting-toggle-focus-style';
+                    focusStyle.textContent = [
+                        '.neko-voice-setting-toggle-input:focus-visible',
+                        '+ .neko-voice-setting-toggle-slider{',
+                        'box-shadow:0 0 0 2px #4f8cff;',
+                        '}'
+                    ].join('');
+                    document.head.appendChild(focusStyle);
+                }
+                var toggle = document.createElement('label');
+                Object.assign(toggle.style, {
+                    position: 'relative',
+                    display: 'inline-block',
+                    width: '36px',
+                    height: '20px',
+                    flexShrink: '0',
+                    cursor: 'pointer'
+                });
+                var input = document.createElement('input');
+                input.className = 'neko-voice-setting-toggle-input';
+                input.type = 'checkbox';
+                input.checked = checked;
+                Object.assign(input.style, {
+                    position: 'absolute',
+                    inset: '0',
+                    width: '100%',
+                    height: '100%',
+                    margin: '0',
+                    opacity: '0',
+                    cursor: 'pointer',
+                    zIndex: '2'
+                });
+                var slider = document.createElement('span');
+                slider.className = 'neko-voice-setting-toggle-slider';
+                Object.assign(slider.style, {
+                    position: 'absolute',
+                    inset: '0',
+                    backgroundColor: checked ? '#4f8cff' : '#9aa0a6',
+                    borderRadius: '10px',
+                    transition: 'background-color 0.2s'
+                });
+                var knob = document.createElement('span');
+                Object.assign(knob.style, {
+                    position: 'absolute',
+                    height: '16px',
+                    width: '16px',
+                    left: checked ? '18px' : '2px',
+                    bottom: '2px',
+                    backgroundColor: 'white',
+                    borderRadius: '50%',
+                    transition: 'left 0.2s'
+                });
+                slider.appendChild(knob);
+                toggle.appendChild(input);
+                toggle.appendChild(slider);
+                toggle.addEventListener('click', function (event) {
+                    event.stopPropagation();
+                });
+                toggle.addEventListener('pointerup', function (event) {
+                    event.stopPropagation();
+                });
+                input.addEventListener('change', function () {
+                    slider.style.backgroundColor = input.checked
+                        ? '#4f8cff'
+                        : '#9aa0a6';
+                    knob.style.left = input.checked ? '18px' : '2px';
+                    onChange(input.checked);
+                });
+                return {
+                    element: toggle,
+                    input: input,
+                    setDisabled: function (disabled) {
+                        input.disabled = disabled;
+                        toggle.style.cursor = disabled ? 'not-allowed' : 'pointer';
+                        input.style.cursor = disabled ? 'not-allowed' : 'pointer';
+                        toggle.style.opacity = disabled ? '0.5' : '1';
+                    },
+                    setChecked: function (value) {
+                        input.checked = value;
+                        slider.style.backgroundColor = value
+                            ? '#4f8cff'
+                            : '#9aa0a6';
+                        knob.style.left = value ? '18px' : '2px';
+                    }
+                };
             }
 
-            asrInput.addEventListener('change', function () {
-                S.independentAsrEnabled = asrInput.checked;
-                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
-                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
-                // The confirmation text has to follow the switch it confirms.
-                renderAsrHint();
-                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
-                    if (typeof window.appSettings.syncSettingsToServer === 'function') {
-                        // Session start reads the SERVER-persisted value (asr_runtime.py
-                        // _start_independent_asr_if_enabled -> aload_global_conversation_settings),
-                        // so the fire-and-forget POST inside saveSettings() can race a
-                        // mic start and silently keep the previous route. Persist
-                        // locally first, then run the POST ourselves and publish it as
-                        // S.pendingSettingsSyncPromise; ensureWebSocketOpen()
-                        // (app-websocket.js) awaits it before any start_session send.
-                        // userInitiated: true marks settings hydrated so the
-                        // start_session handshake stamps this explicit choice
-                        // even while the settings GET is failing.
-                        // syncSettingsToServer serializes its POSTs internally
-                        // and snapshots settings at send time, so flipping the
-                        // toggle twice quickly cannot let the older request
-                        // finish last and persist the stale value; the newer
-                        // promise published below also resolves only after any
-                        // predecessor POST completed.
-                        window.appSettings.saveSettings({ skipServerSync: true });
-                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer({ userInitiated: true }))
-                            .catch(function () { /* syncSettingsToServer already logs failures */ })
-                            .then(function () {
-                                if (S.pendingSettingsSyncPromise === syncPromise) {
-                                    S.pendingSettingsSyncPromise = null;
-                                }
-                            });
-                        S.pendingSettingsSyncPromise = syncPromise;
-                    } else {
-                        window.appSettings.saveSettings();
+            function persistVoiceSettingChange() {
+                if (
+                    !window.appSettings
+                    || typeof window.appSettings.saveSettings !== 'function'
+                ) return;
+                if (typeof window.appSettings.syncSettingsToServer !== 'function') {
+                    window.appSettings.saveSettings();
+                    return;
+                }
+                // Preserve the existing session-start ownership fence: persist
+                // locally now, then expose the serialized server sync promise
+                // for ensureWebSocketOpen() to await before start_session.
+                window.appSettings.saveSettings({ skipServerSync: true });
+                var syncPromise = Promise.resolve(
+                    window.appSettings.syncSettingsToServer({ userInitiated: true })
+                )
+                    .catch(function () {
+                        // syncSettingsToServer owns failure reporting.
+                    })
+                    .then(function () {
+                        if (S.pendingSettingsSyncPromise === syncPromise) {
+                            S.pendingSettingsSyncPromise = null;
+                        }
+                    });
+                S.pendingSettingsSyncPromise = syncPromise;
+            }
+
+            var voiceSettingsPendingUntilEpoch = null;
+            var pendingVoiceRouteIndependentAsr = null;
+            function markVoiceSettingsPending() {
+                voiceSettingsPendingUntilEpoch = (
+                    Number(S.voiceSessionStartEpoch) || 0
+                ) + 1;
+            }
+            var asrToggle = createVoiceSettingToggle(
+                S.independentAsrEnabled === true,
+                function (enabled) {
+                    pendingVoiceRouteIndependentAsr = S.voiceChatActive === true
+                        ? (
+                            S.independentAsrActive === true
+                            || (
+                                S.voiceInputLifecycleState === 'blocked'
+                                && S.independentAsrEnabled === true
+                            )
+                        )
+                        : null;
+                    S.independentAsrEnabled = enabled;
+                    markVoiceSettingsPending();
+                    updateVoiceRecognitionUi();
+                    persistVoiceSettingChange();
+                }
+            );
+            asrRow.appendChild(asrCopy);
+            asrRow.appendChild(asrToggle.element);
+            asrContainer.appendChild(asrRow);
+            leftColumn.appendChild(asrContainer);
+
+            var voicePanelId = (popupId || 'neko-mic')
+                + '-voice-recognition-settings';
+            asrContainer.setAttribute('aria-controls', voicePanelId);
+            asrContainer.setAttribute('aria-expanded', 'false');
+            var voicePanel = null;
+            var voiceBridge = null;
+            var voicePanelOpen = false;
+            var voicePanelPinned = false;
+            var voiceOpenTimer = null;
+            var voiceCloseTimer = null;
+            var voicePopupObserver = null;
+            var noiseToggle = null;
+            var optimizationToggle = null;
+            var optimizationHint = null;
+            var voiceStatus = null;
+
+            function providerDisplayName(provider) {
+                var value = String(provider || '').trim();
+                if (!value) return '';
+                var known = {
+                    qwen: 'Qwen',
+                    soniox: 'Soniox',
+                    glm: 'GLM',
+                    gemini: 'Gemini',
+                    openai: 'OpenAI',
+                    step: 'Step',
+                    grok: 'Grok'
+                };
+                return known[value.toLowerCase()] || value;
+            }
+
+            function clearVoiceTimers() {
+                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
+                if (voiceCloseTimer !== null) clearTimeout(voiceCloseTimer);
+                voiceOpenTimer = null;
+                voiceCloseTimer = null;
+            }
+
+            function appendVoicePanelSetting(
+                labelKey,
+                fallbackLabel,
+                hintKey,
+                fallbackHint,
+                toggle
+            ) {
+                var block = document.createElement('div');
+                block.style.marginBottom = '14px';
+                var row = document.createElement('div');
+                Object.assign(row.style, {
+                    display: 'flex',
+                    justifyContent: 'space-between',
+                    alignItems: 'center',
+                    gap: '12px'
+                });
+                var label = document.createElement('span');
+                var settingId = (
+                    voicePanelId + '-' + labelKey
+                ).replace(/[^a-z0-9_-]+/gi, '-');
+                label.id = settingId + '-label';
+                label.textContent = window.t ? window.t(labelKey) : fallbackLabel;
+                label.setAttribute('data-i18n', labelKey);
+                Object.assign(label.style, {
+                    fontSize: '13px',
+                    fontWeight: '500'
+                });
+                row.appendChild(label);
+                row.appendChild(toggle.element);
+                var hint = document.createElement('div');
+                hint.id = settingId + '-hint';
+                hint.textContent = window.t ? window.t(hintKey) : fallbackHint;
+                hint.setAttribute('data-i18n', hintKey);
+                Object.assign(hint.style, {
+                    fontSize: '11px',
+                    color: 'var(--neko-popup-text-sub)',
+                    marginTop: '5px',
+                    lineHeight: '1.45'
+                });
+                block.appendChild(row);
+                block.appendChild(hint);
+                toggle.input.setAttribute('aria-labelledby', label.id);
+                toggle.input.setAttribute('aria-describedby', hint.id);
+                voicePanel.appendChild(block);
+                return hint;
+            }
+
+            function createVoicePanel() {
+                if (voicePanel) return voicePanel;
+                voicePanel = document.createElement('div');
+                voicePanel.id = voicePanelId;
+                voicePanel.setAttribute('role', 'dialog');
+                voicePanel.setAttribute(
+                    'aria-label',
+                    window.t
+                        ? window.t('microphone.voiceRecognitionSettings')
+                        : '语音识别设置'
+                );
+                Object.assign(voicePanel.style, {
+                    display: 'none',
+                    position: 'fixed',
+                    zIndex: '2147483000',
+                    width: '280px',
+                    boxSizing: 'border-box',
+                    padding: '14px',
+                    borderRadius: '10px',
+                    color: 'var(--neko-popup-text)',
+                    background: 'var(--neko-popup-bg, rgba(30, 30, 34, 0.98))',
+                    border: '1px solid var(--neko-popup-separator)',
+                    boxShadow: '0 10px 32px rgba(0, 0, 0, 0.28)'
+                });
+                document.body.appendChild(voicePanel);
+
+                var voicePanelTitle = document.createElement('div');
+                voicePanelTitle.textContent = window.t
+                    ? window.t('microphone.voiceRecognitionSettings')
+                    : '语音识别设置';
+                voicePanelTitle.setAttribute(
+                    'data-i18n',
+                    'microphone.voiceRecognitionSettings'
+                );
+                Object.assign(voicePanelTitle.style, {
+                    fontSize: '14px',
+                    fontWeight: '650',
+                    marginBottom: '14px'
+                });
+                voicePanel.appendChild(voicePanelTitle);
+
+                noiseToggle = createVoiceSettingToggle(
+                    S.noiseReductionEnabled === true,
+                    function (enabled) {
+                        S.noiseReductionEnabled = enabled;
+                        saveNoiseReductionSetting();
+                    }
+                );
+                appendVoicePanelSetting(
+                    'microphone.noiseReduction',
+                    '降噪',
+                    'microphone.noiseReductionHint',
+                    '让输入语音更加清晰',
+                    noiseToggle
+                );
+
+                optimizationToggle = createVoiceSettingToggle(
+                    S.voiceInputResourceOptimizationEnabled !== false,
+                    function (enabled) {
+                        S.voiceInputResourceOptimizationEnabled = enabled;
+                        markVoiceSettingsPending();
+                        updateVoiceRecognitionUi();
+                        persistVoiceSettingChange();
+                    }
+                );
+                optimizationHint = appendVoicePanelSetting(
+                    'microphone.voiceResourceOptimization',
+                    '智能资源优化',
+                    'microphone.voiceResourceOptimizationHintOn',
+                    '空闲时减少连接和音频上传',
+                    optimizationToggle
+                );
+
+                voiceStatus = document.createElement('div');
+                Object.assign(voiceStatus.style, {
+                    borderTop: '1px solid var(--neko-popup-separator)',
+                    paddingTop: '11px',
+                    fontSize: '11px',
+                    lineHeight: '1.45',
+                    color: 'var(--neko-popup-text-sub)'
+                });
+                voicePanel.appendChild(voiceStatus);
+
+                voiceBridge = document.createElement('div');
+                Object.assign(voiceBridge.style, {
+                    display: 'none',
+                    position: 'fixed',
+                    zIndex: '2147482999'
+                });
+                document.body.appendChild(voiceBridge);
+
+                voicePanel.addEventListener('mouseenter', clearVoiceTimers);
+                voicePanel.addEventListener('mouseleave', scheduleVoiceClose);
+                voicePanel.addEventListener('focusin', clearVoiceTimers);
+                voicePanel.addEventListener('focusout', scheduleVoiceClose);
+                voiceBridge.addEventListener('mouseenter', clearVoiceTimers);
+                voiceBridge.addEventListener('mouseleave', scheduleVoiceClose);
+
+                document.addEventListener('pointerdown', onVoiceDocumentPointerDown, true);
+                document.addEventListener(
+                    'keydown',
+                    onVoiceDocumentKeyDown,
+                    true
+                );
+                window.addEventListener('resize', positionVoicePanel);
+                window.addEventListener('scroll', positionVoicePanel, true);
+                window.addEventListener(
+                    'voice-input-lifecycle-changed',
+                    onVoiceLifecycleChanged
+                );
+                window.addEventListener(
+                    'neko:voice-session-started',
+                    onVoiceSessionStarted
+                );
+                voicePopupObserver = new MutationObserver(function () {
+                    if (!isPopupAvailable()) destroyVoicePanel();
+                });
+                var popupAncestor = micPopup.parentNode;
+                while (popupAncestor) {
+                    voicePopupObserver.observe(popupAncestor, {
+                        childList: true
+                    });
+                    popupAncestor = popupAncestor.parentNode;
+                }
+                voicePopupObserver.observe(micPopup, {
+                    attributes: true,
+                    attributeFilter: ['style', 'class']
+                });
+                updateVoiceRecognitionUi();
+                return voicePanel;
+            }
+
+            function updateVoiceRecognitionUi() {
+                var enabled = S.independentAsrEnabled === true;
+                var summaryUsesIndependentAsr =
+                    voiceSettingsPendingUntilEpoch !== null
+                    && pendingVoiceRouteIndependentAsr !== null
+                        ? pendingVoiceRouteIndependentAsr
+                        : enabled;
+                var provider = providerDisplayName(S.independentAsrProvider);
+                var blocked = S.voiceInputLifecycleState === 'blocked';
+                asrToggle.setChecked(enabled);
+                asrSummary.textContent = summaryUsesIndependentAsr
+                    ? (
+                        window.t
+                            ? window.t(
+                                provider
+                                    ? 'microphone.independentAsrSummary'
+                                    : 'microphone.independentAsrSummaryGeneric',
+                                { provider: provider }
+                            )
+                            : ('独立 ASR' + (provider ? ' · ' + provider : ''))
+                    )
+                    : (
+                        window.t
+                            ? window.t('microphone.voiceRecognitionDisabled')
+                            : '当前使用 Omni 原生语音识别'
+                    );
+                if (!voicePanel) return;
+                // RNNoise is local PCM preprocessing shared by both the
+                // independent-ASR and Omni-native routes.
+                noiseToggle.setDisabled(false);
+                optimizationToggle.setDisabled(!enabled);
+                if (voiceSettingsPendingUntilEpoch !== null) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionSettingsPending')
+                        : '◐ 设置将在下次语音会话生效';
+                } else if (!enabled) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionDisabledHint')
+                        : '独立 ASR 已关闭；语音输入使用 Omni 原生语音识别';
+                } else if (blocked) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionUnavailable')
+                        : '本次独立语音识别已停止，不会切换到其他 Provider 或 Omni';
+                } else if (S.independentAsrActive) {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionStatusReady')
+                        : '● 当前运行正常';
+                } else {
+                    voiceStatus.textContent = window.t
+                        ? window.t('microphone.voiceRecognitionSettingsPending')
+                        : '◐ 设置将在下次语音会话生效';
+                }
+                var optimizationEnabled =
+                    S.voiceInputResourceOptimizationEnabled !== false;
+                optimizationToggle.setChecked(optimizationEnabled);
+                optimizationHint.textContent = window.t
+                    ? window.t(
+                        optimizationEnabled
+                            ? 'microphone.voiceResourceOptimizationHintOn'
+                            : 'microphone.voiceResourceOptimizationHintOff'
+                    )
+                    : (
+                        optimizationEnabled
+                            ? '空闲时减少连接和音频上传'
+                            : '持续保持语音识别，可能增加网络和资源占用'
+                    );
+            }
+
+            function positionVoicePanel() {
+                if (!voicePanelOpen || !voicePanel || !asrContainer.isConnected) {
+                    return;
+                }
+                var rect = asrContainer.getBoundingClientRect();
+                var gap = 10;
+                var viewportWidth =
+                    window.innerWidth || document.documentElement.clientWidth;
+                var viewportHeight =
+                    window.innerHeight || document.documentElement.clientHeight;
+                var panelRect = voicePanel.getBoundingClientRect();
+                var panelWidth = panelRect.width || 280;
+                var panelHeight = panelRect.height || 240;
+                var placeRight =
+                    rect.right + gap + panelWidth <= viewportWidth - 12;
+                var placeLeft = rect.left - gap - panelWidth >= 12;
+                var placeBelow =
+                    rect.bottom + gap + panelHeight <= viewportHeight - 12;
+                var left;
+                var top;
+                var bridgeLeft;
+                var bridgeTop;
+                var bridgeWidth;
+                var bridgeHeight;
+                if (placeRight || placeLeft) {
+                    left = placeRight
+                        ? rect.right + gap
+                        : rect.left - panelWidth - gap;
+                    top = Math.max(
+                        12,
+                        Math.min(rect.top, viewportHeight - panelHeight - 12)
+                    );
+                    bridgeLeft = placeRight ? rect.right : left + panelWidth;
+                    bridgeTop = Math.min(rect.top, top);
+                    bridgeWidth = gap;
+                    bridgeHeight =
+                        Math.max(rect.bottom, top + panelHeight) - bridgeTop;
+                } else {
+                    left = Math.max(
+                        12,
+                        Math.min(rect.left, viewportWidth - panelWidth - 12)
+                    );
+                    top = placeBelow
+                        ? rect.bottom + gap
+                        : rect.top - panelHeight - gap;
+                    top = Math.max(
+                        12,
+                        Math.min(top, viewportHeight - panelHeight - 12)
+                    );
+                    bridgeLeft = Math.min(rect.left, left);
+                    bridgeTop = placeBelow ? rect.bottom : top + panelHeight;
+                    bridgeWidth =
+                        Math.max(rect.right, left + panelWidth) - bridgeLeft;
+                    bridgeHeight = gap;
+                }
+                voicePanel.style.left = Math.round(left) + 'px';
+                voicePanel.style.top = Math.round(top) + 'px';
+                voiceBridge.style.display = 'block';
+                voiceBridge.style.left = Math.round(bridgeLeft) + 'px';
+                voiceBridge.style.top = Math.round(bridgeTop) + 'px';
+                voiceBridge.style.width = Math.round(bridgeWidth) + 'px';
+                voiceBridge.style.height = Math.round(bridgeHeight) + 'px';
+            }
+
+            function openVoicePanel(pinned) {
+                clearVoiceTimers();
+                createVoicePanel();
+                if (pinned === true) voicePanelPinned = true;
+                voicePanelOpen = true;
+                voicePanel.style.display = 'block';
+                asrContainer.setAttribute('aria-expanded', 'true');
+                updateVoiceRecognitionUi();
+                positionVoicePanel();
+            }
+
+            function closeVoicePanel(force) {
+                if (voicePanelPinned && force !== true) return;
+                clearVoiceTimers();
+                voicePanelPinned = false;
+                voicePanelOpen = false;
+                if (voicePanel) voicePanel.style.display = 'none';
+                if (voiceBridge) voiceBridge.style.display = 'none';
+                asrContainer.setAttribute('aria-expanded', 'false');
+            }
+
+            function destroyVoicePanel() {
+                clearVoiceTimers();
+                closeVoicePanel(true);
+                if (voicePopupObserver) {
+                    voicePopupObserver.disconnect();
+                    voicePopupObserver = null;
+                }
+                document.removeEventListener('pointerdown', onVoiceDocumentPointerDown, true);
+                document.removeEventListener(
+                    'keydown',
+                    onVoiceDocumentKeyDown,
+                    true
+                );
+                window.removeEventListener('resize', positionVoicePanel);
+                window.removeEventListener('scroll', positionVoicePanel, true);
+                window.removeEventListener(
+                    'voice-input-lifecycle-changed',
+                    onVoiceLifecycleChanged
+                );
+                window.removeEventListener(
+                    'neko:voice-session-started',
+                    onVoiceSessionStarted
+                );
+                if (voicePanel) voicePanel.remove();
+                if (voiceBridge) voiceBridge.remove();
+                voicePanel = null;
+                voiceBridge = null;
+                noiseToggle = null;
+                optimizationToggle = null;
+                optimizationHint = null;
+                voiceStatus = null;
+                if (disposeVoiceRecognitionPopover === destroyVoicePanel) {
+                    disposeVoiceRecognitionPopover = null;
+                }
+            }
+
+            function scheduleVoiceOpen() {
+                if (voicePanelOpen) return;
+                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
+                voiceOpenTimer = setTimeout(function () {
+                    openVoicePanel(false);
+                }, 150);
+            }
+
+            function scheduleVoiceClose() {
+                if (voicePanelPinned) return;
+                if (voiceOpenTimer !== null) clearTimeout(voiceOpenTimer);
+                if (voiceCloseTimer !== null) clearTimeout(voiceCloseTimer);
+                voiceCloseTimer = setTimeout(function () {
+                    closeVoicePanel(false);
+                }, 300);
+            }
+
+            function togglePinnedVoicePanel(focusPanel) {
+                if (voicePanelOpen && voicePanelPinned) closeVoicePanel(true);
+                else {
+                    openVoicePanel(true);
+                    if (focusPanel === true && voicePanel) {
+                        var firstControl = voicePanel.querySelector(
+                            'input:not([disabled])'
+                        );
+                        if (firstControl) firstControl.focus();
                     }
                 }
+            }
+
+            function onVoiceDocumentPointerDown(event) {
+                if (!voicePanelOpen || !voicePanel) return;
+                if (
+                    !asrContainer.contains(event.target)
+                    && !voicePanel.contains(event.target)
+                ) closeVoicePanel(true);
+            }
+
+            function onVoiceDocumentKeyDown(event) {
+                if (event.key === 'Escape' && voicePanelOpen) {
+                    closeVoicePanel(true);
+                    asrContainer.focus();
+                }
+            }
+
+            function onVoiceLifecycleChanged() {
+                updateVoiceRecognitionUi();
+            }
+
+            function onVoiceSessionStarted() {
+                if (
+                    voiceSettingsPendingUntilEpoch === null
+                    || (Number(S.voiceSessionStartEpoch) || 0)
+                        < voiceSettingsPendingUntilEpoch
+                ) return;
+                voiceSettingsPendingUntilEpoch = null;
+                pendingVoiceRouteIndependentAsr = null;
+                updateVoiceRecognitionUi();
+            }
+
+            asrContainer.addEventListener('mouseenter', scheduleVoiceOpen);
+            asrContainer.addEventListener('mouseleave', scheduleVoiceClose);
+            asrContainer.addEventListener('focusin', function () {
+                openVoicePanel(false);
             });
-
-            asrRow.appendChild(asrLabel);
-            asrRow.appendChild(asrToggle);
-            asrContainer.appendChild(asrRow);
-
-            var asrHint = document.createElement('div');
-            // Single renderer, called at build time AND from the toggle's change
-            // handler above (function declarations hoist, so it is reachable
-            // there). The hint used to be computed once here, so flipping the
-            // switch with the popup open left "Using Omni native speech
-            // recognition" on screen after enabling -- and the inverse stale
-            // text after disabling -- until the popup was rebuilt: the
-            // confirmation contradicted the choice the user had just made
-            // (Codex P2).
-            renderAsrHint();
-            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
-            asrContainer.appendChild(asrHint);
-            leftColumn.appendChild(asrContainer);
+            asrContainer.addEventListener('focusout', scheduleVoiceClose);
+            asrContainer.addEventListener('pointerup', function (event) {
+                if (event.button !== undefined && event.button !== 0) return;
+                togglePinnedVoicePanel();
+            });
+            asrContainer.addEventListener('keydown', function (event) {
+                if (event.target !== asrContainer) return;
+                if (event.key === 'Enter' || event.key === ' ') {
+                    event.preventDefault();
+                    togglePinnedVoicePanel(true);
+                }
+            });
+            createVoicePanel();
+            disposeVoiceRecognitionPopover = destroyVoicePanel;
 
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
@@ -3402,7 +3950,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             startMicVolumeVisualization();
             return true;
         } catch (error) {
-            if (!isPopupAvailable()) return false;
+            if (
+                renderGeneration !== voiceRecognitionPopoverRenderGeneration
+                || !isPopupAvailable()
+            ) return false;
             console.error('渲染麦克风列表失败:', error);
             micPopup.innerHTML = '';
             var errorItem = document.createElement('div');

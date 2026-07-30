@@ -83,42 +83,105 @@
         );
         return value <= maxAccepted;
     }
-    function _noteAsrDecision(writeId, writerId, value) {
+    function _noteSettingDecision(
+        current,
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
         // A write that merely re-asserts the value already decided is not a new
         // choice: _dirtySettingsKeys is monotone, so every later save from a
         // window that once toggled declares the key explicit, and treating those
         // as fresh intent would shield this window from a genuinely newer toggle.
-        if (_lastAsrDecision && _lastAsrDecision.value === value) return;
-        if (_lastAsrDecision
-            && !(writeId > _lastAsrDecision.writeId
-                || (writeId === _lastAsrDecision.writeId && writerId > _lastAsrDecision.writerId))) {
-            return;
+        if (
+            current
+            && current.value === value
+            && isFreshChoice !== true
+        ) return current;
+        if (current
+            && !(writeId > current.writeId
+                || (writeId === current.writeId && writerId > current.writerId))) {
+            return current;
         }
-        _lastAsrDecision = { writeId: writeId, writerId: writerId || '', value: value };
-        _asrDecisionWriteIdFloor = Math.max(_asrDecisionWriteIdFloor, writeId);
+        return { writeId: writeId, writerId: writerId || '', value: value };
     }
-    function _asrWriteOutranksLocalChoice(meta) {
-        if (!_lastAsrDecision) return true;
+    let _lastOptimizationDecision = null;
+    function _noteAsrDecision(
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
+        const nextDecision = _noteSettingDecision(
+            _lastAsrDecision,
+            writeId,
+            writerId,
+            value,
+            isFreshChoice
+        );
+        _lastAsrDecision = nextDecision;
+        if (nextDecision) {
+            _asrDecisionWriteIdFloor = Math.max(
+                _asrDecisionWriteIdFloor,
+                nextDecision.writeId
+            );
+        }
+    }
+    function _noteOptimizationDecision(
+        writeId,
+        writerId,
+        value,
+        isFreshChoice
+    ) {
+        _lastOptimizationDecision = _noteSettingDecision(
+            _lastOptimizationDecision,
+            writeId,
+            writerId,
+            value,
+            isFreshChoice
+        );
+    }
+    function _settingWriteOutranksLocalChoice(
+        meta,
+        settingKey,
+        decisionKey,
+        localDecision
+    ) {
+        if (!localDecision) return true;
         // Order on the DECISION that produced this value, not on the id of the
         // write that happens to carry it. _dirtySettingsKeys is monotone and
-        // every save copies independentAsrEnabled, so once a window has toggled
-        // once, each later UNRELATED save re-declares the key explicit with a
-        // fresh id -- and would outrank a genuinely newer toggle in another
-        // window. That needs no race at all, which makes it strictly more
-        // reachable than the same-millisecond tie this ordering was added for.
-        const decision = meta.asrDecision
-            || (meta.changedKeys.indexOf('independentAsrEnabled') !== -1 ? meta : null);
+        // every save copies shared settings, so once a window has toggled once,
+        // each later unrelated save re-declares the dirty key with a fresh id.
+        const decision = meta[decisionKey]
+            || (meta.changedKeys.indexOf(settingKey) !== -1 ? meta : null);
         // No tuple AND not declared explicit: an incidental copy of whatever
         // this writer happened to hold. It must never outrank an explicit local
         // choice. Previous-build snapshots that DO declare the key keep today's
         // writeId ordering through the fallback above.
         if (!decision) return false;
-        if (decision.writeId > _lastAsrDecision.writeId) return true;
-        if (decision.writeId < _lastAsrDecision.writeId) return false;
+        if (decision.writeId > localDecision.writeId) return true;
+        if (decision.writeId < localDecision.writeId) return false;
         // Equal ids are unordered in time; break on the window-unique key so
         // both windows pick the SAME winner. An absent writerId (previous
         // build) reads as '' and loses, keeping this window's own choice.
-        return (decision.writerId || '') > _lastAsrDecision.writerId;
+        return (decision.writerId || '') > localDecision.writerId;
+    }
+    function _asrWriteOutranksLocalChoice(meta) {
+        return _settingWriteOutranksLocalChoice(
+            meta,
+            'independentAsrEnabled',
+            'asrDecision',
+            _lastAsrDecision
+        );
+    }
+    function _optimizationWriteOutranksLocalChoice(meta) {
+        return _settingWriteOutranksLocalChoice(
+            meta,
+            'voiceInputResourceOptimizationEnabled',
+            'optimizationDecision',
+            _lastOptimizationDecision
+        );
     }
     function _normalizeServerAsrDecision(value, serverAuthoritative) {
         if (!value || typeof value !== 'object') return null;
@@ -680,6 +743,12 @@
         return keys;
     }
 
+    function _settingDivergedFromBaseline(snapshot, key) {
+        return !!_settingsBaseline
+            && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+            && _settingsBaseline[key] !== snapshot[key];
+    }
+
     /**
      * Persist the shared settings snapshot with its write metadata.
      * `hydrated` records whether this window held ANY authoritative settings
@@ -743,7 +812,22 @@
             _noteAsrDecision(
                 _nextAsrDecisionWriteId(ownMeta.writeId),
                 ownMeta.writerId,
-                snapshot.independentAsrEnabled
+                snapshot.independentAsrEnabled,
+                _settingDivergedFromBaseline(
+                    snapshot,
+                    'independentAsrEnabled'
+                )
+            );
+        }
+        if (ownMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') !== -1) {
+            _noteOptimizationDecision(
+                ownMeta.writeId,
+                ownMeta.writerId,
+                snapshot.voiceInputResourceOptimizationEnabled,
+                _settingDivergedFromBaseline(
+                    snapshot,
+                    'voiceInputResourceOptimizationEnabled'
+                )
             );
         }
         // Stamp the ASR key with the id of the decision that PRODUCED this
@@ -759,6 +843,15 @@
                 writeId: _lastAsrDecision.writeId,
                 writerId: _lastAsrDecision.writerId,
                 value: _lastAsrDecision.value
+            };
+        }
+        if (_lastOptimizationDecision
+            && _lastOptimizationDecision.value
+                === snapshot.voiceInputResourceOptimizationEnabled) {
+            ownMeta.optimizationDecision = {
+                writeId: _lastOptimizationDecision.writeId,
+                writerId: _lastOptimizationDecision.writerId,
+                value: _lastOptimizationDecision.value
             };
         }
         try {
@@ -880,6 +973,17 @@
                         ? meta.asrDecision.writerId
                         : '',
                     value: meta.asrDecision.value
+                }
+                : null,
+            optimizationDecision: (meta.optimizationDecision
+                && typeof meta.optimizationDecision.writeId === 'number'
+                && isFinite(meta.optimizationDecision.writeId))
+                ? {
+                    writeId: meta.optimizationDecision.writeId,
+                    writerId: typeof meta.optimizationDecision.writerId === 'string'
+                        ? meta.optimizationDecision.writerId
+                        : '',
+                    value: meta.optimizationDecision.value
                 }
                 : null
         };
@@ -1657,6 +1761,23 @@
                     const bootDecision = bootMeta.asrDecision || bootMeta;
                     _noteAsrDecision(bootDecision.writeId, bootDecision.writerId, settings.independentAsrEnabled);
                 }
+                if (
+                    bootMeta
+                    && (
+                        bootMeta.optimizationDecision
+                        || bootMeta.changedKeys.indexOf(
+                            'voiceInputResourceOptimizationEnabled'
+                        ) !== -1
+                    )
+                ) {
+                    const optimizationDecision =
+                        bootMeta.optimizationDecision || bootMeta;
+                    _noteOptimizationDecision(
+                        optimizationDecision.writeId,
+                        optimizationDecision.writerId,
+                        settings.voiceInputResourceOptimizationEnabled
+                    );
+                }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
                 // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
@@ -2172,6 +2293,8 @@
                     meta.writeId === _lastAppliedSharedWriteId
                     && optimizationMarkedExplicit
                 );
+            const optimizationOutranksLocalChoice =
+                !meta || _optimizationWriteOutranksLocalChoice(meta);
             // Like independentAsrEnabled, this key is copied into every shared
             // snapshot. With metadata, only an explicit user change may alter
             // another window; otherwise an unhydrated writer's boot default
@@ -2181,6 +2304,7 @@
                     optimizationValueDiffers
                     && optimizationMarkedExplicit
                     && optimizationWriteIsNewer
+                    && optimizationOutranksLocalChoice
                 )
                 : optimizationValueDiffers;
             // Drop the key from the apply set when the snapshot's ASR value
@@ -2196,7 +2320,10 @@
                     || (!meta.asrAuthoritative && S.settingsHydrated === true));
             const optimizationValueIsStale = !!meta
                 && optimizationValueDiffers
-                && !optimizationChangedByOtherWindow;
+                && (
+                    !optimizationChangedByOtherWindow
+                    || !optimizationOutranksLocalChoice
+                );
             if (meta && meta.writeId > _lastAppliedSharedWriteId) {
                 _lastAppliedSharedWriteId = meta.writeId;
             }
@@ -2439,6 +2566,14 @@
                 // still-pending server merge without granting unrelated fields
                 // handshake authority or emitting a duplicate POST.
                 _dirtySettingsKeys.add(optimizationKey);
+                if (meta) {
+                    const adopted = meta.optimizationDecision || meta;
+                    _noteOptimizationDecision(
+                        adopted.writeId,
+                        adopted.writerId,
+                        settings[optimizationKey]
+                    );
+                }
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
