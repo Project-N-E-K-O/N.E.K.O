@@ -1347,7 +1347,11 @@ async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
     runtime._asr_detector = _ReadyDetector()
 
     await _start_and_seal_turn(runtime)
-    await asyncio.sleep(0.03)
+    # 10ms 超时跟 Windows 的 15.6ms 定时器分辨率同量级，固定 sleep 到底睡多久
+    # 完全看运气；守护任务跑完才是「已开火」的权威信号，直接等它。
+    watchdog = runtime._asr_final_watchdog_task
+    assert watchdog is not None
+    await asyncio.wait_for(watchdog, 5)
 
     assert runtime._asr_route_mode == "blocked"
     runtime.handle_input_transcript.assert_not_awaited()
@@ -1365,7 +1369,9 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     # default; scale both down so the watchdog must track the policy value.
     policy = replace(
         resolve_provider_policy("glm", "manual"),
-        provider_final_timeout_ms=80,
+        # 500ms 而不是 80ms：下面「还没到点」那半只能靠时间证明，被测窗口必须
+        # 远大于 Windows 的 15.6ms 定时器分辨率，否则余量不到一个 tick。
+        provider_final_timeout_ms=500,
     )
     assert resolve_provider_policy("glm", "manual").provider_final_timeout_ms == 40_000
     runtime._asr_lifecycle = VoiceInputLifecycleController(
@@ -1376,15 +1382,35 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     runtime._asr_detector = _ReadyDetector()
 
     await _start_and_seal_turn(runtime, "glm")
-    await asyncio.sleep(0.03)
+    armed_at = time.monotonic()
+    watchdog = runtime._asr_final_watchdog_task
+    assert watchdog is not None
 
+    # 单个 sleep 睡了多久在 Windows 上不可信（15.6ms 分辨率，既会提前弹出也会
+    # 超发），所以只信真实时钟：轮询到确实过了 150ms —— 远超一个 tick，也远小于
+    # 上面的 500ms 窗口。醒来后必须先复查挂钟再断言：这一觉可能被别的任务拖长而
+    # 睡过了观察窗口（甚至睡过 500ms 守护窗口），那时守护任务改成 blocked 是合法的，
+    # 先断言就会把「事后才发生」误报成「窗口内提前开火」。
     # A watchdog stuck on the shared default (10 ms in the scaled test above)
     # would have fired by now; the per-provider override keeps it armed.
-    assert runtime._asr_route_mode == "independent"
+    deadline = armed_at + 0.15
+    while True:
+        await asyncio.sleep(0.005)
+        if time.monotonic() >= deadline:
+            break
+        assert runtime._asr_route_mode == "independent"
 
-    await asyncio.sleep(0.09)
+    # 正向那半不猜时间：守护任务自己跑完（内部 await 完错误处理才结束）即同步点。
+    await asyncio.wait_for(watchdog, 5)
+    elapsed = time.monotonic() - armed_at
 
     assert runtime._asr_route_mode == "blocked"
+    # 上界也必须钉住，否则这条用例只主张「五秒内会开火」：把 per-provider 超时写成
+    # 常量 2s、或者把 ms 当成 s 换算错的回归，在 150ms 观察窗口里同样还是
+    # independent，然后在 5s 内跑完，照样通过。配置是 500ms，给 3 倍余量。
+    assert elapsed < 1.5, (
+        f"守护任务没有按 per-provider 的 500ms 超时开火，实际 {elapsed:.3f}s"
+    )
 
 
 async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> None:
@@ -2175,7 +2201,11 @@ async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
 
     runtime._schedule_transport_warm_expiry(runtime._asr_session_epoch)
-    await asyncio.sleep(0.03)
+    # 同上：10ms TTL 落在 Windows 定时器分辨率的量级里，固定 sleep 赌不起；
+    # 到期任务本身就是「已过期并关闭」的同步点。
+    expiry = runtime._asr_warm_expiry_task
+    assert expiry is not None
+    await asyncio.wait_for(expiry, 5)
 
     assert runtime._asr_session is None
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DEEP_SLEEP

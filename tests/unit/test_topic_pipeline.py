@@ -716,11 +716,28 @@ async def test_topic_pool_preserves_post_candidate_signals_after_delivery():
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段")
+    # 候选的 signal cutoff 就是这条 turn 的时间戳，新 turn 只有严格晚于它才该被保留。
+    # Windows 上 time.time() 粒度可达 15ms，固定 sleep 要么不够（新 turn 撞上 cutoff
+    # 被一起清掉）要么白等，所以直接等挂钟走过 cutoff 再记这条新 turn。
+    cutoff = pool._signal_store.last_turn_at("妮可")
 
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    while time.time() <= cutoff:
+        await asyncio.sleep(0.005)
     pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡")
-    await asyncio.sleep(0.18)
+
+    # 投递后的 signal 清理挂在 to_thread flush 之后，固定 sleep 只是在赌它做完了；
+    # 轮询这条链的终点，超时后照旧交给下面的断言报错。
+    # 内存里的 signal 被摘掉只是链条的中段——_discard_delivered_signals_async 先同步
+    # 摘除、之后才 await flush，所以还要等 trigger task 本身收尾，否则用例会在它仍在
+    # 飞的时候返回，落到 pytest teardown 去取消它。
+    deadline = time.monotonic() + 5.0
+    while (
+        not delivered
+        or "旧话题" in pool._signal_store.format_global_signals("妮可", lang="zh-CN")
+        or pool._trigger_tasks.get("妮可")
+    ) and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
 
     signals = pool._signal_store.format_global_signals("妮可", lang="zh-CN")
     assert delivered == ["旧话题"]
@@ -801,7 +818,11 @@ async def test_topic_pool_release_predicate_ignores_new_turns_during_delivery():
     )
     pool.note_user_message("妮可", "一个已经成熟、准备排队投递的话题", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    # 两次 release 检查都在 trigger 内部完成，固定 sleep 在 Windows 上可能等于零等待；
+    # 等这两条真的出现再断言（retry delay 60s，不会冒出第三条）。
+    deadline = time.monotonic() + 5.0
+    while len(release_checks) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
 
     assert release_checks == [True, True]
 
@@ -1067,8 +1088,20 @@ async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_p
     pool.note_user_message("妮可", "这段候选证据投递完成后不该继续留在磁盘", lang="zh-CN")
     await pool.process_now("妮可")
     await asyncio.wait_for(delivered.wait(), timeout=1.0)
-    for _ in range(20):
-        if not pool._trigger_tasks.get("妮可"):
+
+    def _persisted_turns() -> list:
+        if not path.exists():
+            return []
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return payload.get("characters", {}).get("妮可", [])
+
+    # 原来是 `for _ in range(20): await asyncio.sleep(0.01)`——计次而没有挂钟
+    # deadline。Windows 上忙循环里的 sleep(0.01) 会立刻返回，20 次迭代能在不到 1ms
+    # 内跑完，这个"等 200ms"实际等于没等（CI run 30479947756 就是这么红的）。
+    # 而且 _trigger_tasks 空掉离"盘上真的清了"还隔着一次落盘，只能盯真实产物。
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not pool._trigger_tasks.get("妮可") and not _persisted_turns():
             break
         await asyncio.sleep(0.01)
 
@@ -2062,21 +2095,56 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
         trigger_delay_seconds=0.01,
-        min_trigger_gap_seconds=0.2,
+        # 0.2s 的间隔只比一个 Windows 定时器 tick（约 15.6ms，且 sleep 会超发 20%+）
+        # 大一个量级；抬到 1.0s 既让「窗口还没过」有余量，也给下面那条改期延迟的
+        # 断言留出「从首投到第二次 gap 检查之间过去了多久」的不可控开销。
+        min_trigger_gap_seconds=1.0,
         min_user_turns_for_topic=1,
     )
 
     pool.note_user_message("妮可", "第一轮认真聊一个深话题，里面有足够多的具体背景、现实纠结、近期计划和反复提到的细节", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    # 首投在后台 trigger task 里落地，固定 sleep 是抛硬币；等它真的投出来。
+    # 光等 delivered 不够：fake_trigger 在 _run_trigger_when_available 走到
+    # to_thread 落盘、清掉当前 pending material 之前就已经 append 了，此时第二次
+    # process_now 会撞上「已有 pending material」的提前返回，第二个话题根本不会被
+    # 分析，下面等 deferred_delays 就只能超时。所以要等 trigger task 自己收尾。
+    deadline = time.monotonic() + 5.0
+    while (
+        not delivered or pool._trigger_tasks.get("妮可")
+    ) and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
     assert delivered == ["凯迪拉克预算压力"]
+
+    # 「第二个话题被 min gap 挡住」这条负向断言不能靠 sleep 猜窗口：sleep 超发就会
+    # 越过窗口变假红，改短又会让 trigger 根本没机会跑、断言恒真。这里盯住
+    # 「trigger 跑了一遍并主动改期」这个确定性事件，再断言它没有投递。
+    deferred_delays = []
+    original_reschedule = pool._reschedule_trigger_after_delay
+
+    def spy_reschedule(name, material, lang, delay):
+        deferred_delays.append(delay)
+        original_reschedule(name, material, lang, delay)
+
+    pool._reschedule_trigger_after_delay = spy_reschedule
 
     pool.note_user_message("妮可", "第二轮又聊出另一个深话题，依然有明确场景、具体选择、近期困扰和可以继续展开的细节", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.05)
+    deadline = time.monotonic() + 5.0
+    while not deferred_delays and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert deferred_delays, "第二个话题的 trigger 没有被 min trigger gap 改期"
+    # 改期这件事本身还不够：min gap 被误缩短时 trigger 照样会改期一小段，断言就成了
+    # 恒真。但也不能拿延迟去跟整个 gap 比——延迟是「gap 减去已经过去的时间」，而从
+    # 首投到第二次 gap 检查之间过去多久不受控（中间夹着轮询、又一次 process_now、
+    # to_thread 交接）。取一个既远大于「gap 被误缩十倍」后的上限（0.1s）、又给挂钟
+    # 留出 0.85s 余量的门槛。
+    assert deferred_delays[0] > 0.15, f"min trigger gap 没有生效: {deferred_delays}"
     assert delivered == ["凯迪拉克预算压力"]
 
-    await asyncio.sleep(0.2)
+    deadline = time.monotonic() + 5.0
+    while len(delivered) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
     assert delivered == ["凯迪拉克预算压力", "海边旅行计划"]
 
 

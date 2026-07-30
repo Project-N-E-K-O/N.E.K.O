@@ -917,7 +917,41 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
-    """Render only explicitly authorized persona/reflection subjects."""
+    """Render only explicitly authorized persona/reflection subjects.
+
+    ⚠️ `subjects` ORDER IS THE BUDGET PRIORITY. The renderer allocates the
+    overall scoped gate (`SCOPED_RENDER_TOTAL_MAX_TOKENS`) strictly first-
+    come-first-served down this list, and a subject that arrives after the
+    gate has dropped below `SCOPED_RENDER_SUBJECT_MIN_TOKENS` loses its
+    whole section — not a shortened version, the whole thing, because half
+    a persona reads to the model as a complete one. No subject kind is
+    special-cased; an earlier attempt to reserve a slice for a group
+    subject queued behind its members was deleted because every one of its
+    interactions was a way to invert the order it was meant to protect.
+
+    One exception, and it is deliberate: a subject whose only content is
+    budget-EXEMPT (`protected` character-card lines, `suppress`ed
+    do-not-mention entries) still renders when the gate is spent. Those
+    sections never cost the gate anything, so there is no fragment to
+    avoid — and dropping them would take a do-not-mention list with it,
+    after which the character volunteers exactly what it was told to sit
+    on. Only subjects with budgeted content they cannot afford are dropped
+    whole. See `test_a_group_holding_only_suppressed_facts_still_renders_them`.
+
+    So the caller owns the ranking. The one shipped caller
+    (`session_instruction_service._build_core_memory_section`, via
+    `memory_bridge.fetch_scoped_bootstrap_memory`) sends the group subject
+    FIRST and then at most one `group_participant` for the current
+    speaker. If a later PR widens that to several recent speakers, the
+    group still has to lead. That is a contract, not a coincidence — send
+    members first and the group's own persona is what falls off the end.
+
+    Deliberately not validated here: rejecting an order would turn a
+    ranking choice into a 422 for callers with a legitimately different one
+    (a private-DM-style render with no group subject at all is already
+    valid input). The endpoint accepts 1..8 subjects in any order; what it
+    does NOT do is second-guess the order it was given.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     if runtime.persona_manager is None or runtime.reflection_engine is None:
         raise HTTPException(

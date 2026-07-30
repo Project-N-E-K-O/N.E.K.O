@@ -38,6 +38,18 @@ def _enabled_sender() -> tuple[VmcSender, _RecordingOscClient]:
     return sender, client
 
 
+def _poll_until(predicate, *, timeout: float = 1.0, interval: float = 0.005):
+    """Poll until predicate is truthy; on timeout hand the last value back to the caller."""
+    # Windows 的事件循环时钟精度只有 ~15ms，固定 sleep 既可能等于零等待也可能超发
+    # 一倍，等不出「后台已经做完」这个确定性，只能轮询 + deadline。
+    deadline = time.monotonic() + timeout
+    while True:
+        value = predicate()
+        if value or time.monotonic() >= deadline:
+            return value
+        time.sleep(interval)
+
+
 @pytest.mark.unit
 def test_frame_is_encoded_with_vmc_names_coordinates_and_zero_blends():
     sender, client = _enabled_sender()
@@ -594,10 +606,12 @@ def test_disconnected_publisher_sends_terminal_state_after_grace(
 @pytest.mark.unit
 def test_reconnect_during_grace_cancels_terminal_state(vmc_client, monkeypatch):
     client, sender = vmc_client
+    # 宽限期给 1.0s 而不是 0.1s：successor 的握手+认证耗时不受本测试控制，
+    # 一旦它比宽限期还慢，终态就先发出去了，红的原因跟被测逻辑无关。
     monkeypatch.setattr(
         vmc_router,
         "_PUBLISHER_DISCONNECT_GRACE_SECONDS",
-        0.1,
+        1.0,
     )
     headers = {"Origin": "http://testserver"}
     auth = {"type": "auth", "csrf_token": "vmc-test-token"}
@@ -606,10 +620,19 @@ def test_reconnect_during_grace_cancels_terminal_state(vmc_client, monkeypatch):
         primary.send_json(auth)
         assert primary.receive_json() == {"type": "ready"}
 
+    # 断开由事件循环异步收尾，任务不是立刻挂上的；拿到句柄才能证明它后来被取消。
+    pending_terminal = _poll_until(lambda: vmc_router._pending_terminal_task)
+    assert pending_terminal is not None
+
     with client.websocket_connect("/api/vmc/ws", headers=headers) as successor:
         successor.send_json(auth)
         assert successor.receive_json() == {"type": "ready"}
-        time.sleep(0.2)
+        # 路由在回 ready 之前就调了 _cancel_pending_terminal_task，所以这里不必靠固定
+        # sleep 去赌「宽限期是否已过」（Windows 定时器精度 ~15ms，赌不出确定性）：
+        # 任务在远小于宽限期的时间里结束，只能是被取消掉的。
+        assert _poll_until(pending_terminal.done, timeout=0.4), (
+            "宽限期内的重连没有取消掉待发终态任务"
+        )
         assert sender.terminal_generations == []
 
 
