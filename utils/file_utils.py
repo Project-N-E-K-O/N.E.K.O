@@ -585,6 +585,38 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_tmp_sweep_state_after_fork)
 
 
+# Windows 上 os.replace 会因为「目标此刻正被别的句柄打开」而失败，抛 PermissionError，
+# winerror 是 5（ACCESS_DENIED）或 32（SHARING_VIOLATION）。制造这个窗口的不只是杀软扫描
+# 和资源管理器预览 —— 本进程自己就够了：落盘常跑在 to_thread 的工作线程里，同一时刻另一
+# 个线程（或测试）正 open() 读同一个文件，replace 就被拒。POSIX 的 rename 不受读者影响，
+# 这段窗口是 Windows 独有的，而且几乎总是毫秒级：对方句柄一关就没了。
+#
+# 所以这里退避重试。它不会掩盖真实错误，四条理由：
+#   * 判据是 OS 给的错误码，不是消息文本猜测。POSIX 的 OSError 根本没有 winerror 属性，
+#     getattr 取到 None，整段在非 Windows 上恒等于「直接抛」。
+#   * 别的错误码一次都不重试：磁盘满、路径过长、跨卷、目标是目录，第一次就原样抛出。
+#   * 最后一次尝试写在循环外，所以重试用尽后抛出的就是那次真实的 os.replace 异常，带着
+#     完整的 filename/filename2，不是一个被包装过的「重试失败」。
+#   * 上界是固定的（5 次退避，累计 155ms）。目标要是被永久占着（只读、被别的进程长期
+#     持有），行为和改动前完全一样是抛错，只是晚 155ms —— 拿这点延迟换掉绝大多数
+#     毫秒级窗口造成的偶发写失败。
+_REPLACE_BUSY_WINERRORS = frozenset({5, 32})
+_REPLACE_RETRY_BACKOFF_S = (0.005, 0.01, 0.02, 0.04, 0.08)
+
+
+def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
+    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            os.replace(temp_path, target_path)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+        time.sleep(delay)
+    os.replace(temp_path, target_path)
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)
@@ -603,7 +635,7 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
             temp_file.write(content)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, target_path)
+        _replace_with_busy_retry(temp_path, target_path)
     except BaseException:
         # BaseException 而不是 Exception：Ctrl-C / SystemExit 落在 write/fsync 上很常见，
         # 只收 Exception 的话 tmp 直接留盘（要等到下一个清扫窗口 + 24h 才清）。

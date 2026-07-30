@@ -44,6 +44,32 @@ from ._shared import (
 _ATTACHED_TRANSPORT = object()
 
 
+# `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
+# 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
+# 生成的客户端相关性 id（`event_user_item_<uuid4().hex>` 之类）。hex 的字符集是
+# 0-9a-f，'429' 这三个字符全在里面：32 位 hex 串里随机出现 '429' 的概率约 0.7%，
+# '1008' 约 0.04%，'503' 约 0.7%。撞上一次，一次普通的「这条事件被拒」就被误判成配额 /
+# 策略致命错误，直接 close() 掉整条 realtime 连接 —— 用户话说到一半，连接没了，而且
+# 无法复现。id 只是相关性标识，不携带任何分类信息，所以分类前先把它们剔干净。
+#
+# 只剔 id 字段，不动 message / code / type / param：`code: 1008`、`"HTTP 429"` 这些
+# 真信号一个不少。剔掉的字段照样进日志和 on_connection_error，诊断信息没有损失。
+def _is_correlation_key(key: str) -> bool:
+    lowered = key.lower()
+    return lowered == "id" or lowered.endswith("_id")
+
+
+def _error_classification_text(error: Any) -> str:
+    """Build the keyword-matching text for an ``error`` event, minus correlation ids."""
+    if isinstance(error, dict):
+        return " ".join(
+            str(value)
+            for key, value in error.items()
+            if value is not None and not _is_correlation_key(str(key))
+        )
+    return str(error or "")
+
+
 class RealtimeImagePayloadTooLargeError(RuntimeError):
     """A callback image cannot fit the provider's WebSocket frame limit."""
 
@@ -959,8 +985,14 @@ class _TransportMixin:
                     self._route_inject_rejection(err_event_id, error_msg)
                     self._response_arbiter.notify_error(err_event_id, error_msg)
 
+                    # 致命性判定只看语义字段，绝不看回显的 event_id（见
+                    # _error_classification_text 的注释）。日志、路由和
+                    # on_connection_error 继续用完整的 error_msg。
+                    classify_text = _error_classification_text(event.get('error'))
+                    classify_lower = classify_text.lower()
+
                     # 检测503过载错误，触发backpressure节流
-                    if '503' in error_msg or 'overloaded' in error_msg.lower():
+                    if '503' in classify_text or 'overloaded' in classify_lower:
                         self._is_throttled = True
                         self._throttle_until = time.time() + self._throttle_duration
                         self._server_busy_count += 1
@@ -970,19 +1002,17 @@ class _TransportMixin:
                             await self.on_status_message(json.dumps({"code": "SERVER_BUSY_THROTTLE"}))
                         continue
 
-                    error_msg_lower = error_msg.lower()
-
                     # Idle timeout — Qwen 约 25s 无操作断连
-                    if 'too long without operation' in error_msg_lower or 'idle' in error_msg_lower:
+                    if 'too long without operation' in classify_lower or 'idle' in classify_lower:
                         logger.warning("⏰ Idle timeout from API: %s", error_msg)
                         if self.on_connection_error:
                             await self.on_connection_error(json.dumps({"code": "API_IDLE_TIMEOUT", "details": {"msg": error_msg}}))
                         await self.close()
                         continue
 
-                    if ('欠费' in error_msg or 'standing' in error_msg_lower or 'time limit' in error_msg_lower or
-                        'policy violation' in error_msg_lower or '1008' in error_msg_lower or
-                        '429' in error_msg_lower or 'quota' in error_msg_lower or 'too many' in error_msg_lower):
+                    if ('欠费' in classify_text or 'standing' in classify_lower or 'time limit' in classify_lower or
+                        'policy violation' in classify_lower or '1008' in classify_lower or
+                        '429' in classify_lower or 'quota' in classify_lower or 'too many' in classify_lower):
                         if self.on_connection_error:
                             await self.on_connection_error(error_msg)
                         await self.close()
