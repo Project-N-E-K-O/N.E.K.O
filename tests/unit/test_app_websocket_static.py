@@ -1673,6 +1673,23 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           ctx.fireStorage(JSON.stringify({
             slopFilterEnabled: false,
             _sharedWriteMeta: {
+              writeId: Math.max(
+                0,
+                acknowledgedLocal._sharedWriteMeta.writeId - 1
+              ),
+              writerId: 'window-delayed',
+              changedKeys: ['slopFilterEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.slopFilterEnabled === true,
+            'an older explicit event must not roll back an acknowledged edit'
+          );
+          ctx.fireStorage(JSON.stringify({
+            slopFilterEnabled: false,
+            _sharedWriteMeta: {
               writeId: acknowledgedLocal._sharedWriteMeta.writeId,
               writerId: 'zzzzzzzzzzzzzzzz',
               changedKeys: [],
@@ -1788,19 +1805,19 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           // Cross-window ABA edits do not enter this window's pending set and
           // leave the final value equal to the request snapshot. The mutation
           // itself must still protect the latest choice from the 412 snapshot.
-          ctx.fireStorage(JSON.stringify({
-            mergeMessagesEnabled: true,
-            _sharedWriteMeta: {
-              writeId: 100,
+              ctx.fireStorage(JSON.stringify({
+                mergeMessagesEnabled: true,
+                _sharedWriteMeta: {
+                  writeId: externalWriteId + 2,
               writerId: 'window-b',
               changedKeys: ['mergeMessagesEnabled'],
               hydrated: true,
             },
           }));
-          ctx.fireStorage(JSON.stringify({
-            mergeMessagesEnabled: false,
-            _sharedWriteMeta: {
-              writeId: 101,
+              ctx.fireStorage(JSON.stringify({
+                mergeMessagesEnabled: false,
+                _sharedWriteMeta: {
+                  writeId: externalWriteId + 3,
               writerId: 'window-b',
               changedKeys: ['mergeMessagesEnabled'],
               hydrated: true,

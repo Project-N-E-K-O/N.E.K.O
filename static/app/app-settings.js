@@ -109,7 +109,8 @@
     function _normalizeServerAsrDecision(value) {
         if (!value || typeof value !== 'object') return null;
         if (!_isValidAsrWriteId(value.writeId)) return null;
-        if (typeof value.writerId !== 'string' || !value.writerId) return null;
+        if (typeof value.writerId !== 'string'
+            || !/^[\x20-\x7E]{1,128}$/.test(value.writerId)) return null;
         if (typeof value.value !== 'boolean') return null;
         return {
             writeId: value.writeId,
@@ -1866,6 +1867,24 @@
             if (asrValueIsStale) {
                 incoming = Object.assign({}, settings);
                 delete incoming.independentAsrEnabled;
+            }
+            if (meta) {
+                for (const key of meta.changedKeys) {
+                    if (key === 'independentAsrEnabled') continue;
+                    if (!Object.prototype.hasOwnProperty.call(
+                        incoming,
+                        key
+                    )) continue;
+                    const localToken = _knownSharedKeyWrites[key];
+                    if (localToken
+                        && !_sharedWriteTokenOutranks(meta, localToken)
+                        && !_sharedWriteTokensEqual(meta, localToken)) {
+                        if (incoming === settings) {
+                            incoming = Object.assign({}, settings);
+                        }
+                        delete incoming[key];
+                    }
+                }
             }
             const serverMergePredatesLocalWrite = !!meta
                 && meta.changedKeys.length === 0

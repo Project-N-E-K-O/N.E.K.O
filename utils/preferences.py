@@ -396,6 +396,7 @@ _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _LEGACY_ASR_DECISION_WRITER_ID = "server-legacy"
 MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
+MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
 ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
 
 
@@ -414,7 +415,11 @@ class ConversationSettingsWriteResult:
 
 
 def _normalize_conversation_settings_revision(value: Any) -> int:
-    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+    if (
+        isinstance(value, int)
+        and not isinstance(value, bool)
+        and 0 <= value <= MAX_SAFE_CONVERSATION_SETTINGS_REVISION
+    ):
         return value
     return 0
 
@@ -437,6 +442,8 @@ def _normalize_asr_decision(value: Any) -> Optional[Dict[str, Any]]:
         or not isinstance(writer_id, str)
         or not writer_id
         or len(writer_id) > 128
+        or not writer_id.isascii()
+        or not writer_id.isprintable()
         or not isinstance(decision_value, bool)
     ):
         return None
@@ -738,6 +745,12 @@ def save_global_conversation_settings_versioned(
 
             global_pref["model_path"] = GLOBAL_CONVERSATION_KEY
             if changed:
+                if current.revision >= MAX_SAFE_CONVERSATION_SETTINGS_REVISION:
+                    return ConversationSettingsWriteResult(
+                        success=False,
+                        conflict=True,
+                        snapshot=current,
+                    )
                 global_pref[_CONVERSATION_SETTINGS_REVISION_KEY] = current.revision + 1
                 if global_index >= 0:
                     data[global_index] = global_pref

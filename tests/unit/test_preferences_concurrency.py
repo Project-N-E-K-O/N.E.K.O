@@ -452,6 +452,18 @@ async def test_conversation_settings_route_validates_contract_and_keeps_legacy_w
     )
     assert unsafe_decision.status_code == 400
 
+    non_ascii_writer = await preferences_router.save_conversation_settings(
+        _Request(
+            {"independentAsrEnabled": True},
+            asr_decision={
+                "writeId": 1,
+                "writerId": "\U00010000-client",
+                "value": True,
+            },
+        )
+    )
+    assert non_ascii_writer.status_code == 400
+
     ceiling_decision = await preferences_router.save_conversation_settings(
         _Request(
             {"independentAsrEnabled": True},
@@ -614,6 +626,24 @@ def test_cloud_restore_empty_settings_still_advances_revision(tmp_path):
         "model_path": preferences.GLOBAL_CONVERSATION_KEY,
         "_conversation_settings_revision": 10,
     }
+
+
+def test_cloud_restore_rejects_unsafe_conversation_settings_revision(tmp_path):
+    path = tmp_path / "user_preferences.json"
+    path.write_text("[]", encoding="utf-8")
+
+    with pytest.raises(
+        ValueError,
+        match="conversation settings revision cannot advance safely",
+    ):
+        cloudsave_bindings._build_runtime_preferences_payload(
+            _FakeConfigManager(path),
+            {
+                "focusModeEnabled": True,
+                "_conversation_settings_revision":
+                    preferences.MAX_SAFE_CONVERSATION_SETTINGS_REVISION + 1,
+            },
+        )
 
 
 def test_cloud_restore_ignores_out_of_range_asr_decision_floor(

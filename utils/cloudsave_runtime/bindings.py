@@ -42,6 +42,7 @@ _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _CLOUD_RESTORE_ASR_WRITER_ID = "server-cloud-restore"
 _MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
+_MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
 _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
 
 
@@ -95,6 +96,15 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
     }
     current_revision = current_global.get(_CONVERSATION_SETTINGS_REVISION_KEY)
     imported_revision = filtered_settings.get(_CONVERSATION_SETTINGS_REVISION_KEY)
+    for revision in (current_revision, imported_revision):
+        if (
+            isinstance(revision, int)
+            and not isinstance(revision, bool)
+            and revision >= _MAX_SAFE_CONVERSATION_SETTINGS_REVISION
+        ):
+            raise ValueError(
+                "cloud restore conversation settings revision cannot advance safely"
+            )
     filtered_settings[_CONVERSATION_SETTINGS_REVISION_KEY] = max(
         current_revision
         if isinstance(current_revision, int) and not isinstance(current_revision, bool)
@@ -125,6 +135,8 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
                 and 0 <= write_id <= max_accepted_write_id
                 and isinstance(writer_id, str)
                 and 0 < len(writer_id) <= 128
+                and writer_id.isascii()
+                and writer_id.isprintable()
                 and isinstance(decision_value, bool)
                 and entry.get("independentAsrEnabled") is decision_value
             ):
