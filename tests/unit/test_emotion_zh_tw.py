@@ -574,8 +574,9 @@ def test_negation_may_follow_descriptive_text(label, expected, confidence):
     """A model that answers in a sentence still put the negation in it.
 
     Requiring the negation to open the label was too strict; requiring instead
-    that it be at least two characters is what keeps `分别很开心` out, since there
-    the coincidence is a single character.
+    that it be at least two characters is what keeps the ordinary-word case out,
+    since there the coincidence is a single character. See
+    test_peeling_does_not_reach_into_ordinary_words.
     """
     assert _label(label, confidence) == expected
 
