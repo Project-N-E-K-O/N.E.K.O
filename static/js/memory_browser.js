@@ -3367,6 +3367,7 @@
                 }
             }
         });
+        var reqId = ++_saveRequestId;
         try {
             const resp = await fetch('/api/memory/recent_file/save', {
                 method: 'POST',
@@ -3374,6 +3375,7 @@
                 body: JSON.stringify({ filename: currentMemoryFile, chat: chatData })
             });
             const data = await resp.json();
+            if (reqId !== _saveRequestId) return false;
             if (data.success) {
                 setMemoryDirty(false);
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
@@ -3973,6 +3975,7 @@
     let _activeMemoryTab = 'recent';
     let _componentDataCache = {};
     let _componentRequestId = 0;
+    let _saveRequestId = 0;
 
     function _renderMemoryCards(container, data, metaBuilder) {
         container.innerHTML = '';
@@ -4107,6 +4110,9 @@
     // Override selectMemoryFile to always land on recent tab
     var _selectMemoryFileOrig = selectMemoryFile;
     selectMemoryFile = function (filename, li, catName, options) {
+        if (window._memoryImportInProgress && !(options && options.allowDuringImport)) {
+            return _selectMemoryFileOrig(filename, li, catName, options);
+        }
         if (_activeMemoryTab !== 'recent') {
             _componentRequestId++;
             _activeMemoryTab = 'recent';
