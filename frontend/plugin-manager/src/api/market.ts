@@ -244,11 +244,13 @@ async function getMarketWebBaseUrl(): Promise<string | null> {
 async function getClient(): Promise<AxiosInstance | null> {
   if (_marketClient) return _marketClient
 
-  const baseUrl = await getMarketBaseUrl()
-  if (!baseUrl) return null
+  const configuredMarketUrl = await getMarketBaseUrl()
+  if (!configuredMarketUrl) return null
 
   _marketClient = axios.create({
-    baseURL: `${baseUrl}/api/v1`,
+    // Keep catalog traffic same-origin. The local bridge forwards only the
+    // public, read-only catalog routes and avoids browser CORS failures.
+    baseURL: '/market/catalog/api/v1',
     timeout: 10000,
     headers: { 'Content-Type': 'application/json' },
   })

@@ -51,8 +51,17 @@
                   <component :is="marketPanelVisible ? ArrowLeft : ArrowRight" />
                 </el-icon>
               </button>
+              <el-button
+                v-if="marketUrl && marketAuth.auth_state === 'pending'"
+                class="market-auth-trigger"
+                :loading="true"
+                plain
+              >
+                <el-icon><User /></el-icon>
+                {{ $t('market.authVerificationPendingLabel') }}
+              </el-button>
               <el-popover
-                v-if="marketUrl && marketAuth.authenticated"
+                v-else-if="marketUrl && marketAuth.authenticated"
                 placement="bottom-start"
                 :width="300"
                 trigger="click"
@@ -83,6 +92,12 @@
                   </div>
                   <p v-if="marketAccountSummaryBusy" class="market-account-card__hint">
                     {{ $t('market.accountSummaryLoading') }}
+                  </p>
+                  <p
+                    v-else-if="marketAuthStateMessageKey"
+                    class="market-account-card__hint"
+                  >
+                    {{ $t(marketAuthStateMessageKey) }}
                   </p>
                   <div v-else-if="marketAccountSummary?.market" class="market-account-card__stats">
                     <span v-if="marketAccountSummary.market.member_days !== null">
@@ -443,6 +458,7 @@ const {
   marketAuth,
   marketAuthBusy,
   marketAuthDisplayName,
+  marketAuthStateMessageKey,
   marketAccountSummary,
   marketAccountSummaryBusy,
   loadMarketAuthStatus,

@@ -3,8 +3,28 @@ import { useI18n } from 'vue-i18n'
 import { ElMessage } from 'element-plus'
 import { openExternalUrl } from '@/utils/openExternal'
 
+type MarketOAuthState =
+  | 'ready'
+  | 'token_rejected'
+  | 'forbidden'
+  | 'identity_conflict'
+  | 'unavailable'
+  | 'invalid_response'
+type AuthOAuthState = 'ready' | 'pending'
+
+const marketAuthStateMessageKeys: Record<Exclude<MarketOAuthState, 'ready'>, string> = {
+  token_rejected: 'market.marketTokenRejected',
+  forbidden: 'market.marketForbidden',
+  identity_conflict: 'market.marketIdentityConflict',
+  unavailable: 'market.marketUnavailable',
+  invalid_response: 'market.marketInvalidResponse',
+}
+
 interface MarketAuthStatus {
   authenticated: boolean
+  auth_state?: AuthOAuthState | null
+  market_state?: MarketOAuthState | null
+  retryable?: boolean
   user?: {
     username?: string
     display_name?: string
@@ -40,6 +60,8 @@ export function useMarketAuth() {
   const marketAuthBusy = ref(false)
   const bridgeToken = ref(localStorage.getItem('neko_bridge_token') || '')
   let marketAuthPollTimer: number | null = null
+  let marketReadinessRetryTimer: number | null = null
+  let marketAuthStatusGeneration = 0
   let accountSummaryGeneration = 0
   // Sticky stop flag for the recursive setTimeout poll loop. Read by
   // ``tick`` and ``schedule`` inside ``startMarketAuthPolling`` so a
@@ -49,6 +71,13 @@ export function useMarketAuth() {
   const marketAuthDisplayName = computed(() => {
     const user = marketAuth.value.user
     return user?.display_name || user?.username || user?.email || t('market.account')
+  })
+  const marketAuthStateMessageKey = computed(() => {
+    if (marketAuth.value.auth_state === 'pending') {
+      return 'market.authVerificationPending'
+    }
+    const state = marketAuth.value.market_state
+    return state && state !== 'ready' ? marketAuthStateMessageKeys[state] : ''
   })
 
   async function ensureBridgeToken(options: { forceRefresh?: boolean } = {}): Promise<string> {
@@ -110,15 +139,31 @@ export function useMarketAuth() {
     return fetch(input, { ...init, headers })
   }
 
-  async function loadMarketAuthStatus(): Promise<void> {
+  async function loadMarketAuthStatus(): Promise<boolean> {
+    const generation = ++marketAuthStatusGeneration
     const token = await ensureBridgeToken({ forceRefresh: true })
-    if (!token) return
+    if (!token || generation !== marketAuthStatusGeneration) return false
     try {
       const res = await authedFetch('/market/oauth/status')
-      if (!res.ok) return
-      marketAuth.value = await res.json()
+      if (!res.ok || generation !== marketAuthStatusGeneration) {
+        if (res.status >= 500 && generation === marketAuthStatusGeneration) {
+          scheduleMarketReadinessRetry()
+        }
+        return false
+      }
+      const status = await res.json()
+      if (generation !== marketAuthStatusGeneration) return false
+      marketAuth.value = status
+      if (status.retryable) {
+        scheduleMarketReadinessRetry()
+      }
+      return true
     } catch {
       // 登录态只是增强能力，失败不影响 Market 浏览和安装。
+      if (generation === marketAuthStatusGeneration) {
+        scheduleMarketReadinessRetry()
+      }
+      return false
     }
   }
 
@@ -157,6 +202,19 @@ export function useMarketAuth() {
     }
   }
 
+  function notifyMarketAuthState(status: MarketAuthStatus): void {
+    if (status.auth_state === 'pending') {
+      ElMessage.warning(t('market.authVerificationPending'))
+      return
+    }
+    const state = status.market_state
+    if (!state || state === 'ready') {
+      ElMessage.success(t('market.loginSuccess'))
+      return
+    }
+    ElMessage.warning(t(marketAuthStateMessageKeys[state]))
+  }
+
   function invalidateAccountSummaryRequests(): void {
     accountSummaryGeneration += 1
     marketAccountSummaryBusy.value = false
@@ -168,6 +226,39 @@ export function useMarketAuth() {
       clearTimeout(marketAuthPollTimer)
       marketAuthPollTimer = null
     }
+  }
+
+  function stopMarketReadinessRetry(): void {
+    marketAuthStatusGeneration += 1
+    if (marketReadinessRetryTimer !== null) {
+      clearTimeout(marketReadinessRetryTimer)
+      marketReadinessRetryTimer = null
+    }
+  }
+
+  function scheduleMarketReadinessRetry(): void {
+    stopMarketReadinessRetry()
+    marketReadinessRetryTimer = window.setTimeout(async () => {
+      marketReadinessRetryTimer = null
+      const applied = await loadMarketAuthStatus()
+      if (!applied) return
+      if (marketAuth.value.auth_state === 'pending') {
+        marketAuthBusy.value = true
+        return
+      }
+      marketAuthBusy.value = false
+      if (!marketAuth.value.authenticated) return
+      if (marketAuth.value.market_state === 'ready') {
+        const appliedGeneration = marketAuthStatusGeneration
+        await loadMarketAccountSummary()
+        if (
+          appliedGeneration !== marketAuthStatusGeneration
+          || !marketAuth.value.authenticated
+        ) return
+        ElMessage.success(t('market.loginSuccess'))
+        return
+      }
+    }, 5000)
   }
 
   /**
@@ -217,6 +308,7 @@ export function useMarketAuth() {
       }
 
       const token = await ensureBridgeToken()
+      if (pollingStopped) return
       if (!token) {
         schedule()
         return
@@ -229,18 +321,35 @@ export function useMarketAuth() {
         })
         if (!res.ok) {
           const err = await res.json().catch(() => ({}))
-          throw new Error(err.detail || t('market.loginFailed'))
+          throw new Error(
+            err.detail === 'auth_token_rejected'
+              ? t('market.authTokenRejected')
+              : err.detail || t('market.loginFailed')
+          )
         }
         const data = await res.json()
+        if (pollingStopped) return
         if (data.completed) {
           stopMarketAuthPolling()
           marketAuthBusy.value = false
-          await loadMarketAuthStatus()
-          await loadMarketAccountSummary()
-          ElMessage.success(t('market.loginSuccess'))
+          marketAuth.value = data
+          const statusApplied = await loadMarketAuthStatus()
+          if (!statusApplied) return
+          if (marketAuth.value.auth_state === 'pending') {
+            marketAuthBusy.value = true
+          } else if (marketAuth.value.market_state === 'ready') {
+            const appliedGeneration = marketAuthStatusGeneration
+            await loadMarketAccountSummary()
+            if (
+              appliedGeneration !== marketAuthStatusGeneration
+              || !marketAuth.value.authenticated
+            ) return
+          }
+          notifyMarketAuthState(marketAuth.value)
           return
         }
       } catch (error) {
+        if (pollingStopped) return
         stopMarketAuthPolling()
         marketAuthBusy.value = false
         ElMessage.error(error instanceof Error ? error.message : t('market.loginFailed'))
@@ -264,6 +373,7 @@ export function useMarketAuth() {
   }
 
   async function startMarketLogin(retried = false): Promise<void> {
+    stopMarketReadinessRetry()
     const token = await ensureBridgeToken({ forceRefresh: true })
     if (!token) {
       ElMessage.warning(t('market.pairRequired'))
@@ -299,6 +409,8 @@ export function useMarketAuth() {
   }
 
   async function logoutMarketAccount(): Promise<void> {
+    stopMarketAuthPolling()
+    stopMarketReadinessRetry()
     invalidateAccountSummaryRequests()
     marketAuthBusy.value = true
     try {
@@ -328,6 +440,7 @@ export function useMarketAuth() {
 
   onBeforeUnmount(() => {
     stopMarketAuthPolling()
+    stopMarketReadinessRetry()
     invalidateAccountSummaryRequests()
   })
 
@@ -337,6 +450,7 @@ export function useMarketAuth() {
     marketAccountSummaryBusy,
     marketAuthBusy,
     marketAuthDisplayName,
+    marketAuthStateMessageKey,
     loadMarketAuthStatus,
     loadMarketAccountSummary,
     logoutMarketAccount,
