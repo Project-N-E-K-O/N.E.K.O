@@ -150,10 +150,11 @@
         }
         return true;
     }
-    function _mergeConversationSettingsConflict(data) {
+    function _mergeConversationSettingsSnapshot(data, preservedKeys) {
         const adoptedAsr = _adoptServerAsrDecision(data);
         const serverSettings = data && data.settings;
         if (!serverSettings || typeof serverSettings !== 'object') return;
+        const protectedKeys = preservedKeys || _pendingSettingsKeys;
         const serverAsrDecision = _serverAsrDecision(data);
         const preserveLocalAsrDecision = !!(_lastAsrDecision
             && (!serverAsrDecision
@@ -162,28 +163,43 @@
         for (const key of Object.keys(serverSettings)) {
             if (key === 'independentAsrEnabled'
                 && (adoptedAsr || preserveLocalAsrDecision)) continue;
-            if (_pendingSettingsKeys.has(key)) continue;
+            if (protectedKeys.has(key)) continue;
             if (serverSettings[key] !== undefined) {
                 acceptedSettings[key] = serverSettings[key];
             }
         }
-        applySharedRuntimeSettings(acceptedSettings);
+        let changed = applySharedRuntimeSettings(acceptedSettings);
         // Preserve server-only conversation keys that are intentionally not in
         // the cross-window shared-settings list.
         for (const key of Object.keys(acceptedSettings)) {
             if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1 || key === 'userLanguage') continue;
+            if (S[key] !== acceptedSettings[key]) changed = true;
             S[key] = acceptedSettings[key];
             if (Object.prototype.hasOwnProperty.call(window, key)) {
                 window[key] = S[key];
             }
         }
         _settingsMergedFromServer = true;
+        S.settingsHydrated = true;
+        S.independentAsrAuthoritative = true;
         if (_settingsBaseline) {
             for (const key of Object.keys(serverSettings)) {
-                if (_pendingSettingsKeys.has(key)) continue;
+                if (protectedKeys.has(key)) continue;
                 if (serverSettings[key] !== undefined) {
                     _settingsBaseline[key] = S[key];
                 }
+            }
+        }
+        // Persist the reconciled runtime snapshot for offline restarts and
+        // notify sibling windows, but do not advertise server winners as fresh
+        // user intent or enqueue another POST.
+        saveSettings({ skipServerSync: true, serverMerged: true });
+        if (changed) {
+            if (typeof window.appProactive !== 'undefined'
+                && window.appProactive.scheduleProactiveChat) {
+                window.appProactive.scheduleProactiveChat();
+            } else if (typeof window.scheduleProactiveChat === 'function') {
+                window.scheduleProactiveChat();
             }
         }
     }
@@ -511,6 +527,22 @@
         }
     }
 
+    function _settingsChangedSince(snapshot) {
+        const changedKeys = new Set();
+        const current = getConversationSettings();
+        const keys = new Set(Object.keys(snapshot).concat(Object.keys(current)));
+        keys.forEach((key) => {
+            const before = Object.prototype.hasOwnProperty.call(snapshot, key)
+                ? snapshot[key]
+                : undefined;
+            const now = Object.prototype.hasOwnProperty.call(current, key)
+                ? current[key]
+                : undefined;
+            if (before !== now) changedKeys.add(key);
+        });
+        return changedKeys;
+    }
+
     function applySharedRuntimeSettings(settings) {
         if (!settings || typeof settings !== 'object') return false;
         let changed = false;
@@ -683,6 +715,7 @@
             }
             for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
                 const settings = getConversationSettings();
+                const mergedAtSend = _settingsMergedFromServer;
                 // Full snapshot only once server values were actually merged. If
                 // the gate opened on its timeout instead — or the GET resolved to
                 // null and merged nothing — a full body would clobber every
@@ -720,7 +753,7 @@
                     const nextEtag = _responseEtag(response);
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (response.status === 412) {
-                        _mergeConversationSettingsConflict(data);
+                        _mergeConversationSettingsSnapshot(data);
                         if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
                             continue;
                         }
@@ -733,7 +766,15 @@
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
                     }
+                    const changedWhileInFlight = _settingsChangedSince(settings);
                     _clearAcknowledgedPendingSettings(payload);
+                    // A successful dirty-only write returns the complete
+                    // authoritative snapshot. If the boot GET failed or lost
+                    // the gate race, hydrate untouched fields from this response
+                    // while preserving edits made after the request was sent.
+                    if (!mergedAtSend) {
+                        _mergeConversationSettingsSnapshot(data, changedWhileInFlight);
+                    }
                     return;
                 } catch (err) {
                     console.error('[app-settings] 同步设置到服务器失败:', err);
@@ -814,12 +855,15 @@
      * 将当前设置保存到 localStorage
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
      *
-     * @param {{ skipServerSync?: boolean }} [options] 传 skipServerSync 跳过 POST，
+     * @param {{ skipServerSync?: boolean, serverMerged?: boolean }} [options]
+     *   传 skipServerSync 跳过 POST；
+     *   serverMerged 表示共享快照来自服务端合并，不得标记成新的用户修改。
      *   首启用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前就把首启本地
      *   默认值写到服务器、回头被自己的 GET 当成「云端已有偏好」，干扰首启决议时序
      */
     function saveSettings(options) {
         const skipServerSync = !!(options && options.skipServerSync);
+        const serverMerged = !!(options && options.serverMerged);
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -936,7 +980,10 @@
         // into the shared snapshot: every save copies independentAsrEnabled
         // along, so the receiving window needs this metadata to tell a real
         // cross-window toggle from an unrelated save's incidental copy.
-        _writeSharedSettings(settings, _collectExplicitSharedKeys(settings));
+        _writeSharedSettings(
+            settings,
+            serverMerged ? [] : _collectExplicitSharedKeys(settings)
+        );
 
         // 同步回共享状态，保持一致性
         S.proactiveChatEnabled = currentProactive;

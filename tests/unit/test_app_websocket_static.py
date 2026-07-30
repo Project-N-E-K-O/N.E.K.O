@@ -948,7 +948,7 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     assert "let _conversationSettingsEtag = null;" in settings_source
     assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
     assert "response.status === 412" in sync_fn
-    assert "_mergeConversationSettingsConflict(data);" in sync_fn
+    assert "_mergeConversationSettingsSnapshot(data);" in sync_fn
     assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
     assert "headers['X-Conversation-Settings-ASR-Decision']" in sync_fn
     assert "JSON.stringify(requestDecision)" in sync_fn
@@ -1273,9 +1273,20 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
         }
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-        function makeContext() {
+        function makeContext(bootFails) {
+          const runtime = {
+            stoppedSpeech: 0,
+            stoppedScreening: 0,
+            stoppedTracks: 0,
+            scheduled: 0,
+          };
           const store = new Map([
-            ['project_neko_settings', JSON.stringify({ independentAsrEnabled: false })],
+            ['project_neko_settings', JSON.stringify({
+              independentAsrEnabled: false,
+              proactiveVisionEnabled: true,
+              slopFilterEnabled: false,
+              mouseTrackingEnabled: false,
+            })],
           ]);
           const postCalls = [];
           const sandbox = {
@@ -1300,6 +1311,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                   postCalls.push({ url, opts, resolve });
                 });
               }
+              if (bootFails) return Promise.resolve({ ok: false, status: 500 });
               return Promise.resolve(response(
                 true,
                 200,
@@ -1314,9 +1326,26 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             },
           };
           sandbox.window = {
-            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appState: {
+              independentAsrEnabled: false,
+              proactiveVisionEnabled: true,
+              slopFilterEnabled: false,
+              focusModeEnabled: false,
+              settingsHydrated: false,
+              screenCaptureStream: {
+                getTracks() {
+                  return [{ stop() { runtime.stoppedTracks += 1; } }];
+                },
+              },
+            },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            proactiveVisionEnabled: true,
+            slopFilterEnabled: false,
+            focusModeEnabled: false,
+            stopProactiveVisionDuringSpeech() { runtime.stoppedSpeech += 1; },
+            stopScreening() { runtime.stoppedScreening += 1; },
+            scheduleProactiveChat() { runtime.scheduled += 1; },
             addEventListener() {},
             removeEventListener() {},
           };
@@ -1328,6 +1357,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             mod: sandbox.window.appSettings,
             postCalls,
             store,
+            runtime,
           };
         }
 
@@ -1435,6 +1465,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
 
           ctx.win.slopFilterEnabled = true;
           ctx.mod.saveSettings();
+          assert(ctx.S.slopFilterEnabled === true, 'the first edit updates shared state immediately');
           await tick();
           assert(ctx.postCalls.length === 1, 'the first user edit must POST');
           const acknowledged = JSON.parse(ctx.postCalls[0].opts.body);
@@ -1467,6 +1498,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               success: false,
               settings: {
                 independentAsrEnabled: false,
+                proactiveVisionEnabled: false,
                 slopFilterEnabled: false,
                 focusModeEnabled: false,
               },
@@ -1486,6 +1518,31 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             retryBody.focusModeEnabled === true,
             'the still-pending local edit must survive the conflict merge'
           );
+          assert(
+            retryBody.proactiveVisionEnabled === false,
+            'the retry must retain the server privacy winner'
+          );
+          assert(
+            ctx.runtime.stoppedSpeech === 1
+              && ctx.runtime.stoppedScreening === 1
+              && ctx.runtime.stoppedTracks === 1,
+            'the privacy winner must stop every active vision runtime path'
+          );
+          const reconciledLocal = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            reconciledLocal.slopFilterEnabled === false
+              && reconciledLocal.focusModeEnabled === true
+              && reconciledLocal.proactiveVisionEnabled === false,
+            'the conflict winners and pending local edit must persist to shared localStorage'
+          );
+          assert(
+            reconciledLocal.mouseTrackingEnabled === false,
+            'server reconciliation must preserve local-only settings'
+          );
+          assert(
+            reconciledLocal._sharedWriteMeta.changedKeys.length === 0,
+            'server winners must not be advertised as new user intent'
+          );
           ctx.postCalls[2].resolve(response(
             true,
             200,
@@ -1500,10 +1557,104 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
         }
 
+        async function runSuccessfulPartialSnapshotScenario() {
+          const ctx = makeContext(true);
+          await tick();
+          await tick();
+          assert(ctx.S.settingsHydrated === false, 'failed boot GET stays unhydrated');
+
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the first pending edit must POST');
+          const firstBody = JSON.parse(ctx.postCalls[0].opts.body);
+          assert(
+            Object.keys(firstBody).length === 1 && firstBody.focusModeEnabled === true,
+            'an unmerged view must send only its pending key, got: '
+              + JSON.stringify(firstBody)
+          );
+
+          // A later edit happens while the partial write is in flight. The
+          // successful response snapshot is authoritative for untouched keys,
+          // but must not overwrite this still-pending local value.
+          ctx.win.slopFilterEnabled = true;
+          ctx.mod.saveSettings();
+          assert(ctx.S.slopFilterEnabled === true, 'the in-flight edit updates shared state');
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the later edit queues behind the first POST');
+
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: {
+                independentAsrEnabled: true,
+                proactiveVisionEnabled: false,
+                slopFilterEnabled: false,
+                focusModeEnabled: true,
+              },
+              revision: 1,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          assert(ctx.S.settingsHydrated === true, 'the complete success snapshot hydrates the view');
+          assert(
+            ctx.S.independentAsrEnabled === true,
+            'an untouched field hydrates from the successful partial-write response'
+          );
+          assert(
+            ctx.S.slopFilterEnabled === true,
+            'an edit made while the request was in flight remains pending'
+          );
+          assert(
+            ctx.runtime.stoppedSpeech === 1
+              && ctx.runtime.stoppedScreening === 1
+              && ctx.runtime.stoppedTracks === 1,
+            'hydrating the privacy winner stops active vision runtime'
+          );
+          assert(ctx.postCalls.length === 2, 'the queued edit runs after hydration');
+          const secondBody = JSON.parse(ctx.postCalls[1].opts.body);
+          assert(
+            secondBody.independentAsrEnabled === true
+              && secondBody.proactiveVisionEnabled === false
+              && secondBody.slopFilterEnabled === true,
+            'the queued retry uses the reconciled full snapshot plus the pending edit'
+          );
+          const reconciledLocal = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            reconciledLocal.independentAsrEnabled === true
+              && reconciledLocal.proactiveVisionEnabled === false
+              && reconciledLocal.slopFilterEnabled === true,
+            'the reconciled success snapshot persists for offline restart'
+          );
+          assert(
+            reconciledLocal.mouseTrackingEnabled === false,
+            'success reconciliation preserves local-only settings'
+          );
+          ctx.postCalls[1].resolve(response(
+            true,
+            200,
+            '"conversation-settings-2"',
+            {
+              success: true,
+              settings: secondBody,
+              revision: 2,
+              decisions: {},
+            }
+          ));
+          await tick();
+        }
+
         async function main() {
           await runScenario(false);
           await runScenario(true);
           await runAcknowledgedDirtyScenario();
+          await runSuccessfulPartialSnapshotScenario();
           console.log('CAS_HARNESS_OK');
           process.exitCode = 0;
         }
@@ -1676,10 +1827,9 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         not in settings_source
     )
     assert settings_source.count("_writeSharedSettings(") == 3  # 1 def + 2 writes
-    assert (
-        "_writeSharedSettings(settings, _collectExplicitSharedKeys(settings));"
-        in settings_source
-    )
+    save_fn = _block_after(settings_source, "function saveSettings(options) {")
+    assert "serverMerged ? [] : _collectExplicitSharedKeys(settings)" in save_fn
+    assert "const serverMerged = !!(options && options.serverMerged);" in save_fn
     # The pre-hydration migration write is explicitly non-authoritative.
     assert "_writeSharedSettings(settings, []);" in settings_source
 
@@ -3192,7 +3342,8 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
     # S.independentAsrEnabled is still the boot default false at that moment, so
     # a global-only gate would let the next start_session stamp false over the
     # backend's persisted true. Authority for that one key must therefore be
-    # tracked separately and granted by exactly three events.
+    # tracked separately and granted only by explicit ASR edits/cross-window
+    # choices or an authoritative server snapshot.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
     user_gate = _block_after(settings_source, "if (userInitiated) {")
@@ -3213,14 +3364,22 @@ def test_asr_authority_is_per_key_not_granted_by_unrelated_setting_change():
         "startPeriodicSync();", 1
     )[0]
 
-    # (2) A cross-window ASR flip grants authority, next to the dirty-key add.
+    # (2) A full snapshot from a successful partial POST or 412 grants the same
+    # server authority when the boot GET was unavailable.
+    snapshot_merge = _block_after(
+        settings_source, "function _mergeConversationSettingsSnapshot(data, preservedKeys) {"
+    )
+    assert "S.independentAsrAuthoritative = true;" in snapshot_merge
+
+    # (3) A cross-window ASR flip grants authority, next to the dirty-key add.
     cross_window = _block_after(
         settings_source, "_dirtySettingsKeys.add('independentAsrEnabled');"
     )
     assert "S.independentAsrAuthoritative = true;" in cross_window
 
-    # (3) Nothing else in the file grants it: exactly three assignment sites.
-    assert settings_source.count("S.independentAsrAuthoritative = true;") == 3
+    # No unrelated path grants it: exactly these four assignment sites (the
+    # conditional local-user gate plus the three authoritative sources above).
+    assert settings_source.count("S.independentAsrAuthoritative = true;") == 4
 
 
 def test_text_session_start_stops_an_active_microphone():
