@@ -502,8 +502,10 @@ class RenderingMixin:
         (existing semantic — see `_is_suppressed_text` callers below).
 
         Blank-rejection goes through `_renderable_text`, the same single
-        definition the persona split, the protected cap and the suppressed
-        section use. This branch used to run its own `if not text:`, which
+        definition the persona split and the suppressed section use (those
+        two plus this one are its only callers — the protected cap used to
+        be a fourth, until this PR deleted that repeat as unreachable).
+        This branch used to run its own `if not text:`, which
         accepts a whitespace-only string: the reflection then entered the
         bucket, was charged text + markup against the overall gate, and
         composed into an empty `- ` bullet. Paying the gate for a line that

@@ -565,17 +565,31 @@ def test_qq_section_wrapper_stays_fixed_size():
 
 # ── discovery guard: no un-budgeted third renderer ───────────────────
 
+# ONE literal, used by both the module scan and the function scan. They
+# each held their own copy until the two were noticed drifting apart in
+# review — and a docstring below claimed they were already unified.
+_RECALL_RENDER_MARKER = "render_recall_entry_tag"
+
 
 def _discovered_recall_renderers() -> dict[str, str]:
     """Every module that renders a recall block, found by scanning.
 
     A hand-kept list only covers the sites whoever wrote it knew about,
     and this repo's recall block has already grown from one to two. The
-    marker is ``render_recall_entry_tag`` — the shared label table every
-    recall renderer goes through — so a third one shows up here the moment
-    it is written.
+    marker is ``render_recall_entry_tag`` — the shared label table both
+    shipped recall renderers go through — so a third one written the same
+    way shows up here the moment it exists.
+
+    ⚠️ KNOWN BLIND SPOT (issue below). The marker is a proxy for "renders
+    the localized tier/entity prefix", not for "renders recall results into
+    a prompt", and the two come apart for any surface that reasonably
+    chooses NOT to label its entries — a 1:1 chat, where every entity is
+    the same, is the obvious case. Such a renderer contains no marker, is
+    never parsed, and every guard below silently skips it. Nothing here
+    detects that; do not read a green run as "no un-budgeted renderer
+    exists".
     """
-    marker = "render_recall_entry_tag"
+    marker = _RECALL_RENDER_MARKER
     skip_parts = {
         ".venv", "venv", "node_modules", "__pycache__", ".git", "build",
         "dist", ".claude", "tests",
@@ -599,9 +613,6 @@ def _discovered_recall_renderers() -> dict[str, str]:
             continue
         renderers[rel.as_posix()] = source
     return renderers
-
-
-_RECALL_RENDER_MARKER = "render_recall_entry_tag"
 
 
 _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
@@ -639,16 +650,25 @@ def _called_function_names(node: ast.AST) -> set[str]:
     Comprehensions are NOT skipped: they carry their own scope at runtime
     but a call inside one is genuinely on this function's execution path.
 
-    ⚠️ This is constant-folding, NOT reachability analysis, and the
-    difference is worth stating because this docstring has already been
-    wrong once. A branch on a module-level flag, a call after
-    ``sys.exit()``, an ``except`` clause that cannot fire — all still
-    count. The backstop for what static inference cannot see is
-    ``test_the_known_recall_renderers_are_exactly_these_two``: a renderer
-    this file has never seen trips a loud failure demanding behavioural
-    budget tests, rather than being waved through on the shape of its
-    source. Adversarial fixtures for every shape above live in
-    ``test_call_scan_ignores_names_that_never_run``.
+    ⚠️ WHAT THIS DOES NOT DO, stated because this docstring has already
+    been wrong twice. It is constant folding, not reachability analysis:
+    a branch on a module-level or env flag, a call after ``sys.exit()``,
+    an ``except`` clause that cannot fire, a loop that never iterates —
+    all still count as "called". And even perfect reachability would not
+    settle the real question, because the guard checks that the budget
+    functions are CALLED, never that their results are USED: discard the
+    return value of ``take_lines_within_token_budget`` and join the
+    original list, or append un-budgeted text after the budget runs, and
+    every check here stays green while the prompt is unbounded.
+
+    So: a green run here means "no recall renderer has an obviously
+    decorative budget call". It does not mean the budget runs, and it does
+    not mean the block is bounded. What actually bounds the two shipped
+    renderers is the behavioural tests in this file, which render
+    oversized input and measure the result. Adversarial fixtures for every
+    shape this function DOES catch live in
+    ``test_call_scan_ignores_names_that_never_run``, with the strict dual
+    in ``test_call_scan_still_sees_budget_calls_that_do_run``.
     """
     names: set[str] = set()
     _collect_calls_in_block(getattr(node, 'body', []) or [], names)
@@ -656,6 +676,9 @@ def _called_function_names(node: ast.AST) -> set[str]:
 
 
 _TERMINATORS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+
+# `match_case` only exists on 3.10+; the tuple stays valid either way.
+_MATCH_CASE = getattr(ast, "match_case", ())
 
 
 def _constant_truth(test: ast.AST) -> bool | None:
@@ -695,11 +718,23 @@ def _collect_calls_in_block(body: list, names: set[str]) -> None:
         if isinstance(stmt, ast.While) and _constant_truth(stmt.test) is False:
             _collect_calls_in_block(stmt.orelse, names)
             continue
-        for value in ast.iter_child_nodes(stmt):
-            if isinstance(value, ast.stmt):
+        # Hand nested statement LISTS over whole, not one statement at a
+        # time. `iter_child_nodes` flattens them, and a one-element list
+        # makes the terminator rule below a no-op inside every compound
+        # statement — `for ...: return; truncate_to_tokens(...)` would
+        # still count. That made the docstring's "anything after an
+        # unconditional return" true only of the outermost block.
+        for field, value in ast.iter_fields(stmt):
+            if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                _collect_calls_in_block(value, names)
+            elif isinstance(value, ast.stmt):
                 _collect_calls_in_block([value], names)
-            else:
+            elif isinstance(value, ast.AST):
                 _collect_calls_in_expr(value, names)
+            elif isinstance(value, list):
+                for item in value:
+                    if isinstance(item, ast.AST):
+                        _collect_calls_in_expr(item, names)
         if isinstance(stmt, _TERMINATORS):
             return
 
@@ -708,9 +743,11 @@ def _collect_calls_in_expr(node: ast.AST, names: set[str]) -> None:
     """Collect call names from an expression subtree.
 
     Recurses back into `_collect_calls_in_block` for any statement it meets
-    (a statement can hang off an expression field only via constructs the
-    caller already unpacked, but going through the same door keeps the two
-    halves from drifting).
+    so the two halves cannot drift. ``except`` clauses and ``match`` cases
+    are neither statements nor expressions in the grammar (`excepthandler`
+    / `match_case`), so they get an explicit hand-off — otherwise their
+    bodies arrive here one statement at a time and the terminator rule
+    stops applying inside them.
     """
     stack = [node]
     while stack:
@@ -719,6 +756,13 @@ def _collect_calls_in_expr(node: ast.AST, names: set[str]) -> None:
             continue
         if isinstance(child, ast.stmt):
             _collect_calls_in_block([child], names)
+            continue
+        if isinstance(child, (ast.ExceptHandler, _MATCH_CASE)):
+            for _field, value in ast.iter_fields(child):
+                if isinstance(value, list) and value and isinstance(value[0], ast.stmt):
+                    _collect_calls_in_block(value, names)
+                elif isinstance(value, ast.AST):
+                    _collect_calls_in_expr(value, names)
             continue
         if isinstance(child, ast.Call):
             func = child.func
@@ -743,13 +787,18 @@ def _recall_render_functions(source: str) -> list[ast.AST]:
     function-including-its-nested-defs was the third — same trick, one
     indent level in.
 
-    A renderer is identified by the same marker the module discovery uses —
-    the shared label-table call every recall renderer goes through — so
-    "is this a recall renderer" has one definition here, not two that
-    drift. Matching is on the function's own body, so an enclosing scope
-    is not credited with a nested renderer's marker call either: whichever
-    function directly renders the block is the one that has to carry the
-    budget.
+    A renderer is identified by `_RECALL_RENDER_MARKER`, the same literal
+    the module scan uses — one constant, so the two steps cannot come to
+    disagree about what a recall renderer is. (They held separate copies
+    of the string until review noticed, while this paragraph already
+    claimed they were unified.) Matching is on the function's own body, so
+    an enclosing scope is not credited with a nested renderer's marker
+    call either: whichever function directly renders the block is the one
+    that has to carry the budget.
+
+    Inherits the module scan's blind spot — see
+    `_discovered_recall_renderers`: a renderer that does not label its
+    entries never reaches this function at all.
     """
     tree = ast.parse(source)
     return [
@@ -835,26 +884,27 @@ _KNOWN_RECALL_RENDERERS = {
 
 
 def test_the_known_recall_renderers_are_exactly_these_two():
-    """The backstop for everything static inference cannot see.
+    """Pin the renderer set, so a new one is not waved through on an AST guess.
 
     The two guards above infer "this is budgeted" from the SHAPE of the
-    source, and that inference has now been defeated five times running —
+    source, and that inference has been defeated five times running —
     substring match, module-wide AST walk, a dead helper nested in the
     renderer, a budget call in a return annotation, a budget call in an
-    ``if False:`` branch. Each fix was correct and each one was followed by
-    a new way in, because "does this call run" is undecidable in general
-    and every approximation of it has an edge.
+    ``if False:`` branch. Each fix was correct and each was followed by a
+    new way in, because "does this call run, and is its result used"
+    is undecidable in general.
 
-    The two renderers this repo actually ships do not depend on that
-    inference: they have behavioural budget tests in this file that render
-    oversized input and measure the result. What has no behavioural test is
-    a renderer nobody has written yet — which is exactly the case the
-    discovery scan exists for, and exactly where a source-shape guess is
-    weakest.
+    The two renderers this repo ships do not rest on that inference —
+    they have behavioural budget tests here that render oversized input
+    and measure the result. A renderer nobody has written yet has none, so
+    this makes its arrival a loud failure rather than a silent AST pass.
 
-    So this pins the set. A third renderer does not get waved through on
-    the strength of an AST guess; it turns this red and the message says
-    what to do about it.
+    ⚠️ IT IS NOT A BACKSTOP FOR EVERYTHING (an earlier version of this
+    docstring said it was). It reuses `_discovered_recall_renderers`, so
+    it inherits that scan's blind spot exactly: a new renderer that never
+    calls the shared tag helper is not in `found`, `found` therefore still
+    equals the known set, and this passes. It catches a new renderer
+    written like the existing two — not one written differently.
     """
     found = set(_discovered_recall_renderers())
     assert found == _KNOWN_RECALL_RENDERERS, (
@@ -953,6 +1003,55 @@ def render(results):
         y = take_lines_within_token_budget([], 1)
     return "".join(results)
 '''),
+    # The terminator rule used to apply only to the function's own
+    # statement list: every compound statement handed its children over one
+    # at a time, so a one-element list made the rule a no-op inside them.
+    ("after-return-inside-for", '''
+def render(results):
+    for r in results:
+        return r
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("after-return-inside-live-if", '''
+def render(results, flag):
+    if flag:
+        return "".join(results)
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return ""
+'''),
+    ("after-raise-inside-try", '''
+def render(results):
+    try:
+        raise ValueError("x")
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    except ValueError:
+        pass
+    return "".join(results)
+'''),
+    ("after-continue-inside-except", '''
+def render(results):
+    out = []
+    for r in results:
+        try:
+            out.append(r)
+        except ValueError:
+            continue
+            truncate_to_tokens("", 1)
+            take_lines_within_token_budget([], 1)
+    return "".join(out)
+'''),
+    ("if-False-inside-with", '''
+def render(results, lock):
+    with lock:
+        if False:
+            truncate_to_tokens("", 1)
+            take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
 ]
 
 _LIVE_SHAPES = [
@@ -994,6 +1093,31 @@ def render(results):
     for r in results:
         out.append(truncate_to_tokens(r, 400))
     kept, _ = take_lines_within_token_budget(out, 2204)
+    return "\\n".join(kept)
+'''),
+    ("inside-an-except-handler", '''
+def render(results):
+    try:
+        raise ValueError("x")
+    except ValueError:
+        lines = [truncate_to_tokens(r, 400) for r in results]
+        kept, _ = take_lines_within_token_budget(lines, 2204)
+        return "\\n".join(kept)
+    return ""
+'''),
+    ("inside-a-with-block", '''
+def render(results, lock):
+    with lock:
+        lines = [truncate_to_tokens(r, 400) for r in results]
+        kept, _ = take_lines_within_token_budget(lines, 2204)
+    return "\\n".join(kept)
+'''),
+    ("after-an-early-return-in-a-branch", '''
+def render(results, flag):
+    if not flag:
+        return ""
+    lines = [truncate_to_tokens(r, 400) for r in results]
+    kept, _ = take_lines_within_token_budget(lines, 2204)
     return "\\n".join(kept)
 '''),
 ]

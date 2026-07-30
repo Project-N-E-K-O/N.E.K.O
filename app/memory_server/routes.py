@@ -938,10 +938,13 @@ async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     on. Only subjects with budgeted content they cannot afford are dropped
     whole. See `test_a_group_holding_only_suppressed_facts_still_renders_them`.
 
-    So the caller owns the ranking, and every shipped caller puts the group
-    subject FIRST, then the current speaker, then other recent speakers.
-    That is a contract, not a coincidence — send members first and the
-    group's own persona is what falls off the end.
+    So the caller owns the ranking. The one shipped caller
+    (`session_instruction_service._build_core_memory_section`, via
+    `memory_bridge.fetch_scoped_bootstrap_memory`) sends the group subject
+    FIRST and then at most one `group_participant` for the current
+    speaker. If a later PR widens that to several recent speakers, the
+    group still has to lead. That is a contract, not a coincidence — send
+    members first and the group's own persona is what falls off the end.
 
     Deliberately not validated here: rejecting an order would turn a
     ranking choice into a 422 for callers with a legitimately different one

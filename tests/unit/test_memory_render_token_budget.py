@@ -288,7 +288,15 @@ async def _render_either(harness, twin: str, *args, **kwargs) -> str:
     free to drift: `test_sync_and_async_scoped_renders_agree` catches a
     divergence only on the knobs its scenarios actually bind, and a
     one-sided edit to an accounting line it does not exercise sails
-    through. Guards over the shared allocator run on both.
+    through — which is how the reflection charge on the overall gate came
+    to be uncovered on the sync side.
+
+    Used by the three guards whose invariant is easiest to break one-sided
+    (the gate's running total, cross-subject reflection order, caller
+    order). The other allocator guards in this file still drive the async
+    path only and lean on the parity test; widening them is worthwhile but
+    not done here, so do not read this helper's existence as "every
+    allocator guard covers both twins".
     """
     if twin == 'sync':
         return harness.render_persona_markdown(*args, **kwargs)
@@ -301,9 +309,15 @@ _TWINS = ('sync', 'async')
 @pytest.mark.parametrize('twin', _TWINS)
 @pytest.mark.asyncio
 async def test_total_gate_drops_a_trailing_subject_whole(twin):
-    """When the overall gate runs out, the remaining subject renders
-    nothing — a two-line persona reads to the model as that person's
-    complete profile, which is worse than an honest absence.
+    """When the overall gate runs out, the remaining subject loses its
+    whole budgeted section — a two-line persona reads to the model as that
+    person's complete profile, which is worse than an honest absence.
+
+    "Whole section", not "nothing": a subject whose only content is
+    budget-exempt (protected / suppressed) costs the gate nothing and
+    still renders, which is what
+    `test_a_group_holding_only_suppressed_facts_still_renders_them` pins.
+    The subject here has budgeted facts it cannot afford, so it goes.
 
     The earlier subjects carry reflections as well as facts, so the gate
     has to account for BOTH. Fact-only fixtures leave the reflection half
