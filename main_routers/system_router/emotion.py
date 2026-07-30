@@ -137,15 +137,17 @@ def _strip_degree_adverbs(text):
 
     The compact negation test compares a punctuation-free window against the
     negation table, so a degree adverb sitting between the negation and the
-    emotion word breaks the comparison: `不怎麼開心` reads as `happy`, the
-    opposite of what the model said. English needs no such thing — its match runs
-    over the last three *tokens*, and a compact CJK window has no token
-    boundaries to count.
+    emotion word breaks the comparison and the label comes back as the emotion
+    itself -- the opposite of what the model said. English needs no such thing:
+    its match runs over the last three *tokens*, and a compact CJK window has no
+    token boundaries to count.
 
-    Longest first, and repeatedly, because adverbs stack (`不是很特別開心`) and
-    because a shorter entry can be the tail of a longer one — strip the short one
-    and the remainder no longer matches anything.
+    Longest first, and repeatedly, because adverbs stack and because a shorter
+    entry can be the tail of a longer one -- strip the short one and the
+    remainder no longer matches anything.
     """
+    # 具体例子：`不怎麼開心` 的窗口是 `不怎麼`，剥掉 `怎麼` 才 endswith `不`；
+    # `不是很特別開心` 要连剥 `特別` 和 `很` 两次。
     previous = None
     while text and text != previous:
         previous = text

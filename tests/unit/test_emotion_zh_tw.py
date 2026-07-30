@@ -387,11 +387,11 @@ def test_degree_adverb_table_pairs_across_scripts():
     "不是很難過", "並不特別開心",
 ])
 def test_negation_survives_a_degree_adverb(label):
-    """`不怎麼開心` means "not very happy"; reporting `happy` inverts it.
+    """A negated label with a degree adverb in it must not report the emotion.
 
-    English never had this problem — its scan runs over the last three *tokens*, and
-    a compact CJK window has no token boundaries to count, so the adverb sat between
-    the negation and the alias and the endswith test simply failed.
+    English never had this problem -- its scan runs over the last three *tokens*,
+    and a compact CJK window has no token boundaries to count, so the adverb sat
+    between the negation and the alias and the endswith test simply failed.
     """
     from main_routers.system_router.emotion import _normalize_emotion_label
 
@@ -422,8 +422,8 @@ def test_intensifiers_are_not_read_as_negations(label, expected):
 def test_adverb_stripping_is_confined_to_the_label_parser():
     """The keyword heuristic has its own, separate negation machinery.
 
-    Its tables already carry the compound forms (`不怎么` / `沒那麼`), so it must not
-    be pulled into this change — the two paths answer different questions.
+    Its tables already carry the compound negation forms, so it must not be pulled
+    into this change -- the two paths answer different questions.
     """
     from main_routers.system_router import emotion as R
 
@@ -436,7 +436,7 @@ def test_adverb_stripping_is_confined_to_the_label_parser():
 def test_stacked_degree_adverbs_are_all_peeled():
     """Adverbs stack, so one pass is not enough.
 
-    `不是很特別開心` needs both to come off before the window ends in a negation.
+    Both have to come off before the window ends in a negation.
     """
     from main_routers.system_router.emotion import _normalize_emotion_label
 
