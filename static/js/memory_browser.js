@@ -4048,12 +4048,12 @@
     async function switchMemoryTab(tab) {
         if (tab === _activeMemoryTab) return;
 
-        _componentRequestId++;
+        var myId = ++_componentRequestId;
 
         // Preserve unsaved edits when switching away from recent tab
         if (_activeMemoryTab === 'recent' && memoryHasUnsavedChanges) {
             var saved = await saveCurrentMemory();
-            if (!saved) return;
+            if (!saved || myId !== _componentRequestId) return;
         }
 
         _activeMemoryTab = tab;
