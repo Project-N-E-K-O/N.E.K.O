@@ -416,8 +416,32 @@ class AntiRepeatCorpus:
           user_directives sink / injection path); otherwise BM25 / soft hints would
           break entirely under an empty lanlan_name config (codex P2)
         """  # noqa: DOCSTRING_CJK
-        if not text or not text.strip():
+        staged = self._record_in_memory(name, text, is_proactive=is_proactive, now=now)
+        if staged is None:
             return
+        resolved, payload, seq = staged
+        # 落盘在数据锁**之外**——见 _flush_snapshot。
+        self._flush_snapshot(resolved, payload, seq)
+
+    def _record_in_memory(
+        self,
+        name: str,
+        text: str,
+        *,
+        is_proactive: bool,
+        now: Optional[float],
+    ) -> Optional[Tuple[str, Dict[str, Any], int]]:
+        """Apply one record to the in-memory window and stage it for the disk.
+
+        Returns the resolved name plus the staged snapshot, or None when the
+        text is skipped. Split out of ``record_output`` so the async twin can
+        run this part inline and off-load only the write: the scoring paths
+        read ``_cache``, so deferring the in-memory update to a worker would
+        let the very next turn score against a corpus that is missing the
+        reply just committed.
+        """
+        if not text or not text.strip():
+            return None
         name = _resolve_name(name)
         ngrams = _ngrams(text)
         min_tokens = (
@@ -426,7 +450,7 @@ class AntiRepeatCorpus:
             else ANTI_REPEAT_MIN_DRAFT_TOKENS
         )
         if len(ngrams) < min_tokens:
-            return
+            return None
         ts = float(now if now is not None else _now())
         entry = {
             "ts": ts,
@@ -437,17 +461,14 @@ class AntiRepeatCorpus:
             window = self._load_unlocked(name)
             window.append(entry)
             # 每次都按 ts 排序，不再只在超窗时排。原来「append 时序天然单调」的假设
-            # 靠的是调用方串行；arecord_output 把整次记录交给 worker 之后，两次记录
-            # 拿到锁的先后不再等于调用先后，而打分侧是拿尾部切片当「最近几条」的
-            # （_split_fg_bg），错序会让旧回复被当成更新的。窗口只有 ~100 条，
-            # 每次排一遍的代价可以忽略。
+            # 靠的是调用方串行；打分侧是拿尾部切片当「最近几条」的（_split_fg_bg），
+            # 错序会让旧回复被当成更新的。窗口只有 ~100 条，每次排一遍可以忽略。
             window.sort(key=lambda e: float(e.get("ts", 0)))
             if len(window) > ANTI_REPEAT_BG_WINDOW:
                 del window[: len(window) - ANTI_REPEAT_BG_WINDOW]
             self._cache[name] = window
             payload, seq = self._stage_snapshot_unlocked(name)
-        # 落盘在数据锁**之外**——见 _flush_snapshot。
-        self._flush_snapshot(name, payload, seq)
+        return name, payload, seq
 
     async def arecord_output(
         self,
@@ -472,16 +493,19 @@ class AntiRepeatCorpus:
         critical section across the thread boundary would be the only way to
         break that.
         """
-        # now 在这里定好而不是留给 worker：两次 arecord_output 之间的线程调度
-        # 顺序不保证，时间戳必须钉在调用发生的那一刻。
+        # 内存更新留在调用线程上，只有落盘去 worker。整次记录都丢进 worker 的话，
+        # 在那个 job 排队 / 算 ngram 的这段时间里，事件循环上的 score_draft /
+        # top_recent_topics 会读到还没加进这条回复的旧 _cache —— 紧接着的下一轮
+        # 就可能把刚说过的话又说一遍。数据锁此刻只覆盖几微秒的内存操作（落盘已经
+        # 挪出去了，见 _flush_snapshot），所以在循环上取它是安全的。
         stamped = float(now if now is not None else _now())
-        await asyncio.to_thread(
-            self.record_output,
-            name,
-            text,
-            is_proactive=is_proactive,
-            now=stamped,
+        staged = self._record_in_memory(
+            name, text, is_proactive=is_proactive, now=stamped,
         )
+        if staged is None:
+            return
+        resolved, payload, seq = staged
+        await asyncio.to_thread(self._flush_snapshot, resolved, payload, seq)
 
     @staticmethod
     def _split_fg_bg(

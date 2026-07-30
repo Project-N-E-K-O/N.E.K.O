@@ -61,17 +61,21 @@ async def save_workshop_config_api(config_data: dict):
         if 'user_mod_folder' in config_data:
             workshop_config_data['user_mod_folder'] = config_data['user_mod_folder']
         
-        # 保存配置到文件，传递完整的配置数据作为参数
-        # 整份配置由 atomic_write_json 整体替换；加载配置那步（上面）本来就是 await，
-        # 「读—改—写」之间早已存在让出点，这里挪到线程里不会新增竞态窗口。
-        await asyncio.to_thread(save_workshop_config, workshop_config_data)
-        
-        # 如果启用了自动创建文件夹且提供了路径，则确保文件夹存在
+        # 落盘 + 建目录一起交给同一个 worker。ensure_workshop_folder_exists 自己
+        # 还要再读一次配置文件、exists 一把、可能 os.makedirs —— 目标是网络盘或可
+        # 移动盘时这几下同样能把事件循环卡住，而且它必须排在保存之后（读的是刚写
+        # 进去的配置）。收成一个单元既保住次序，也不留半截在环上。
+        folder_path = ''
         if workshop_config_data.get('auto_create_folder', True):
             # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
-            folder_path = workshop_config_data.get('user_mod_folder') or workshop_config_data.get('default_workshop_folder')
+            folder_path = workshop_config_data.get('user_mod_folder') or workshop_config_data.get('default_workshop_folder') or ''
+
+        def _save_and_ensure() -> None:
+            save_workshop_config(workshop_config_data)
             if folder_path:
                 ensure_workshop_folder_exists(folder_path)
+
+        await asyncio.to_thread(_save_and_ensure)
         
         return {"success": True, "config": workshop_config_data}
     except Exception as e:

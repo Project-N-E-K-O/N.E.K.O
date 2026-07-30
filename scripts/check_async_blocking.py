@@ -130,6 +130,12 @@ SOCKET_SUFFIX = ("_sock", "_socket")
 # collapses to ``y.save``, which disambiguates ``fernet.encrypt`` vs.
 # ``self.encrypt``. Overly generic pairs are deliberately omitted.
 RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
+    # utils/file_utils 的原子落盘，模块限定写法。`from utils import file_utils`
+    # 之后 `file_utils.atomic_write_json(...)` 是 attribute 调用，走不到下面
+    # RISKY_BARE_CALLS 那条（那条只看 ast.Name），不补这两条就等于给一种完全
+    # 正常的 import 风格开了后门。
+    ("file_utils", "atomic_write_text"): "utils.file_utils.atomic_write_text",
+    ("file_utils", "atomic_write_json"): "utils.file_utils.atomic_write_json",
     # PIL
     ("Image", "open"): "PIL.Image.open",
     ("_PILImage", "open"): "PIL.Image.open",

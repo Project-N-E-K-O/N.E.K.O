@@ -24,6 +24,7 @@ from .config_files import _assert_under_base
 
 import os
 import json
+import threading
 
 
 WORKSHOP_VOICE_MANIFEST_NAME = 'voice_manifest.json'
@@ -97,6 +98,40 @@ def _normalize_workshop_voice_manifest(raw_manifest: dict, *, default_prefix: st
         'display_name': display_name,
         'provider_hint': provider_hint,
     }
+
+
+# 按内容目录串行化「整对替换」与「读取整对」。写侧两次上传的 swap 跑在不同 worker
+# 上，OS 层面会真交错（A 写音频、B 写音频、A 写 manifest → 盘上是 B 的音频配 A 的
+# manifest）；读侧同理，发布流程可能正好读在「旧的已删、新的还没写」的中间。改动前
+# 这些步骤都在事件循环线程上、彼此之间没有 await，物理上碰不到一起；挪进线程之后
+# 就得自己补上这个序列化。
+#
+# 锁只在 worker 线程里被持有：写侧走 asyncio.to_thread，读侧的 publish 调用点本来
+# 就是 await asyncio.to_thread(...)。事件循环从不去抢它，所以不会有「worker 持锁、
+# 循环等锁」那类传导。
+_VOICE_REFERENCE_LOCKS: dict[str, threading.Lock] = {}
+_VOICE_REFERENCE_LOCKS_GUARD = threading.Lock()
+
+
+def voice_reference_lock(content_folder: str) -> threading.Lock:
+    key = os.path.normcase(os.path.abspath(content_folder))
+    with _VOICE_REFERENCE_LOCKS_GUARD:
+        lock = _VOICE_REFERENCE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _VOICE_REFERENCE_LOCKS[key] = lock
+    return lock
+
+
+def resolve_voice_reference_serialized(item_dir: str) -> dict | None:
+    """``_resolve_workshop_voice_reference`` that cannot observe a half-swap.
+
+    For readers running OUTSIDE the swap. Callers already inside the lock
+    (``_cleanup_workshop_voice_reference``) must keep using the unlocked form —
+    ``threading.Lock`` is not reentrant.
+    """
+    with voice_reference_lock(item_dir):
+        return _resolve_workshop_voice_reference(item_dir)
 
 
 def _resolve_workshop_voice_reference(item_dir: str) -> dict | None:

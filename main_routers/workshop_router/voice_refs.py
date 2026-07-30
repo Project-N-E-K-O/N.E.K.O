@@ -31,11 +31,11 @@ from .voice_manifest import (
     _normalize_workshop_voice_manifest,
     _resolve_workshop_voice_reference,
     _sanitize_voice_prefix,
+    voice_reference_lock,
 )
 
 import os
 import asyncio
-import threading
 import mimetypes
 from urllib.parse import unquote
 from fastapi import Request
@@ -44,25 +44,6 @@ from utils.file_utils import atomic_write_json
 from utils.workshop_utils import (
     get_workshop_path,
 )
-
-
-# 按内容目录串行化整次替换。两次上传打到同一个目录时，它们各自的 swap 跑在不同的
-# worker 线程上，OS 层面会真交错：A 写音频、B 写音频、A 写 manifest —— 最终盘上是
-# B 的音频配 A 的 manifest（prefix / 语言 / display_name 全是另一次请求的）。改动前
-# 这两步都跑在事件循环线程上、中间没有 await，物理上交错不了；挪进线程就必须自己
-# 补上这个序列化。锁只在 worker 里被持有，事件循环从不去抢它。
-_VOICE_REFERENCE_LOCKS: dict[str, threading.Lock] = {}
-_VOICE_REFERENCE_LOCKS_GUARD = threading.Lock()
-
-
-def _voice_reference_lock(content_folder: str) -> threading.Lock:
-    key = os.path.normcase(os.path.abspath(content_folder))
-    with _VOICE_REFERENCE_LOCKS_GUARD:
-        lock = _VOICE_REFERENCE_LOCKS.get(key)
-        if lock is None:
-            lock = threading.Lock()
-            _VOICE_REFERENCE_LOCKS[key] = lock
-    return lock
 
 
 def _replace_voice_reference(
@@ -79,7 +60,7 @@ def _replace_voice_reference(
     cancelled request can never observe a half-replaced pair. The per-folder
     lock covers the other direction — two workers racing the same folder.
     """
-    with _voice_reference_lock(content_folder):
+    with voice_reference_lock(content_folder):
         _cleanup_workshop_voice_reference(content_folder)
         with open(audio_path, 'wb') as f:
             f.write(audio_bytes)
@@ -88,7 +69,7 @@ def _replace_voice_reference(
 
 def _remove_voice_reference(content_folder: str) -> None:
     """Drop the reference pair under the same per-folder lock as the swap."""
-    with _voice_reference_lock(content_folder):
+    with voice_reference_lock(content_folder):
         _cleanup_workshop_voice_reference(content_folder)
 
 

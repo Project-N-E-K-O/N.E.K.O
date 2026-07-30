@@ -16,6 +16,7 @@ scorer + soft-hint prompt 注入。
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -729,3 +730,52 @@ def test_entries_stay_ordered_by_timestamp(tmp_path):
 
     window = store._load_unlocked("妮可")
     assert [entry["ts"] for entry in window] == [100.0, 200.0]
+
+
+class _GatedAsyncio:
+    """Stands in for ``anti_repeat.asyncio``: parks at the to_thread boundary."""
+
+    def __init__(self, reached: "asyncio.Event", release: "asyncio.Event") -> None:
+        self._reached = reached
+        self._release = release
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+    async def to_thread(self, fn, *args, **kwargs):
+        self._reached.set()
+        await self._release.wait()
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_the_corpus_is_updated_before_arecord_output_yields(tmp_path, monkeypatch):
+    """Scoring must never miss the reply that was just committed.
+
+    Only the disk write is off-loaded; the in-memory update runs on the
+    caller's thread, before the coroutine yields at all. Deferring the whole
+    record to a worker leaves a window in which the loop runs the next turn's
+    score_draft / top_recent_topics against a corpus that is still missing
+    this reply — and repeats it.
+
+    Observed exactly at the to_thread boundary: that is the first instant the
+    loop can run anything else, and it is where the two designs differ.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(
+        anti_repeat_module, "asyncio", _GatedAsyncio(reached, release),
+    )
+
+    task = asyncio.create_task(store.arecord_output("妮可", LONG_TIGER, now=1.0))
+    await asyncio.wait_for(reached.wait(), timeout=5)
+
+    # 协程刚让出，落盘还没开始 —— 但 corpus 必须已经含有这条。
+    total, _terms = store.score_draft("妮可", LONG_TIGER, now=1.0)
+    assert total > 0, "协程让出时 corpus 还没更新，下一轮打分会漏掉刚说过的这句"
+
+    release.set()
+    await asyncio.wait_for(task, timeout=5)

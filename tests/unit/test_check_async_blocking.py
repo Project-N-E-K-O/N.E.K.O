@@ -98,6 +98,39 @@ def test_a_named_sync_helper_that_writes_is_flagged_through_one_hop():
     assert "save_storage_policy" in out[0][2]
 
 
+def test_the_module_qualified_form_is_flagged():
+    # `from utils import file_utils` 之后 `file_utils.atomic_write_json(...)` 是
+    # attribute 调用，走不到 RISKY_BARE_CALLS（那条只看 ast.Name）。不认这种写法
+    # 等于给一种完全正常的 import 风格开了后门。
+    out = _violations("""
+    async def handler(payload):
+        file_utils.atomic_write_json(path, payload)
+    """)
+    assert len(out) == 1
+    assert "atomic_write_json" in out[0][2]
+
+
+def test_the_module_qualified_form_is_flagged_through_one_hop():
+    out = _violations("""
+    def save_storage_policy(policy):
+        file_utils.atomic_write_text(path, dumps(policy))
+
+    async def handler(policy):
+        save_storage_policy(policy)
+    """)
+    assert len(out) == 1
+    assert "save_storage_policy" in out[0][2]
+
+
+def test_an_unrelated_receiver_with_the_same_attr_is_not_flagged():
+    # 反证：认的是 (file_utils, atomic_write_*) 这一对，不是光看方法名。
+    out = _violations("""
+    async def handler(payload):
+        my_own_writer.atomic_write_json(path, payload)
+    """)
+    assert out == []
+
+
 def test_the_offloaded_form_is_not_flagged():
     out = _violations('''
     def save_storage_policy(policy):

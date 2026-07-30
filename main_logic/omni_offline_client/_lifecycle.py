@@ -432,15 +432,24 @@ class _LifecycleMixin:
                     logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
+            if completion_mode == "response":
+                if self.on_response_done:
+                    await self.on_response_done()
                 # 防复读 corpus：只录常规 reply（completion_mode == "response"）。
                 # proactive 路径已经在 ``core.finish_proactive_delivery`` 上录，
                 # 这里再录会双写——这两条路径都接得到同一段 assistant 文本。
-                if completion_mode == "response":
+                #
+                # ⚠️ 必须排在 on_response_done **之后**。落盘走 async 孪生（同步版
+                # 尾部是 atomic_write_json，含无上界的 fsync，而这条路径每条回复都
+                # 走一次，压在会话循环上就是掐音频），但那个 await 也就成了一个取消
+                # 点：文本已经提交、历史已经写上，此时被取消的话 CancelledError 是
+                # BaseException，下面的 except Exception 接不住，on_response_done
+                # 里的 TTS 收尾 / turn 结束 / request-id 清理就全被跳过 —— 一次
+                # 已提交的回复没有终止信号，比漏录一条防复读语料严重得多。
+                # 排在后面，收尾信号先落地，corpus 只是尽力而为。
+                if content_committed and persist_response:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
-                        # 落盘走 async 孪生：同步版尾部是 atomic_write_json
-                        # （含无上界的 fsync），而这条路径每条 assistant 回复都
-                        # 走一次，压在会话循环上就是掐音频。
                         await get_anti_repeat_corpus().arecord_output(
                             self.lanlan_name, committed_text, is_proactive=False,
                         )
@@ -448,9 +457,6 @@ class _LifecycleMixin:
                         logger.debug(
                             "[AntiRepeat] record reply skipped: %s", _exc,
                         )
-            if completion_mode == "response":
-                if self.on_response_done:
-                    await self.on_response_done()
             else:
                 proactive_done_cb = getattr(self, "on_proactive_done", None)
                 if proactive_done_cb:

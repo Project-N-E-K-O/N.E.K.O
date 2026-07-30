@@ -28,12 +28,16 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import threading
 
 import pytest
 
-from main_routers.workshop_router.voice_manifest import WORKSHOP_VOICE_MANIFEST_NAME
+from tests.atomic_read import read_text_tolerating_replace
+
+from main_routers.workshop_router.voice_manifest import (
+    WORKSHOP_VOICE_MANIFEST_NAME,
+    resolve_voice_reference_serialized,
+)
 from main_routers.workshop_router.voice_refs import _replace_voice_reference
 
 pytestmark = pytest.mark.unit
@@ -48,7 +52,9 @@ def _seed_existing_reference(folder, audio_name: str = "voice_sample.mp3") -> No
 
 
 def _manifest(folder) -> dict:
-    return json.loads((folder / WORKSHOP_VOICE_MANIFEST_NAME).read_text(encoding="utf-8"))
+    # 走容忍 replace 的读法：Windows 上 atomic_write_json 的 os.replace 与并发
+    # open() 互斥，裸 read_text 会偶发 PermissionError（见 tests/atomic_read.py）。
+    return json.loads(read_text_tolerating_replace(folder / WORKSHOP_VOICE_MANIFEST_NAME))
 
 
 def test_the_swap_replaces_both_halves(tmp_path):
@@ -108,12 +114,25 @@ async def test_cancelling_the_upload_cannot_leave_a_half_replaced_pair(tmp_path)
         await task
 
     # 等 worker 自己跑完——取消的是等待方，不是线程。
+    #
+    # ⚠️ 完成信号必须盯 manifest，不能盯音频：manifest 是 swap 的**最后**一步，
+    # 音频出现时它可能还没写。盯错产物这条用例会在 CI 上间歇红（实测 run
+    # 30570157903 就是这么挂的）——和 PR #2596 修的是同一类错误。
     deadline = loop.time() + 5.0
-    while loop.time() < deadline and not (tmp_path / "voice_sample.wav").exists():
+    swapped = None
+    while loop.time() < deadline:
+        try:
+            candidate = _manifest(tmp_path)
+        except (FileNotFoundError, PermissionError, json.JSONDecodeError):
+            candidate = None
+        if candidate and candidate.get("prefix") == "new":
+            swapped = candidate
+            break
         await asyncio.sleep(0.01)
 
+    assert swapped is not None, "worker 在 5s 内没有把 swap 跑完"
     assert (tmp_path / "voice_sample.wav").read_bytes() == b"new-audio"
-    assert _manifest(tmp_path)["reference_audio"] == "voice_sample.wav", (
+    assert swapped["reference_audio"] == "voice_sample.wav", (
         "manifest 必须跟音频一起换掉——半套状态意味着用户拿到一个指不到文件的引用"
     )
     assert not (tmp_path / "voice_sample.mp3").exists()
@@ -223,3 +242,52 @@ async def test_two_uploads_to_one_folder_never_mix_halves(tmp_path, monkeypatch)
     assert audio == f"audio-{prefix}", (
         f"音频来自 {audio}、manifest 来自 {prefix} —— 两半来自不同请求"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_reader_never_observes_a_half_swapped_pair(tmp_path, monkeypatch):
+    """Publishing resolves the reference while an upload may be mid-swap.
+
+    A bare read can land between "old pair deleted" and "new manifest
+    committed" and fail the publish with "参考语音清单无效", even though the
+    replacement completes right after. The serialized reader takes the same
+    per-folder lock — and it already runs in a worker thread, so no event-loop
+    code ever waits on it.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    _seed_existing_reference(tmp_path)
+    mid_swap = threading.Event()
+    release = threading.Event()
+    real_write = voice_refs.atomic_write_json
+
+    def _park_before_manifest(*args, **kwargs):
+        mid_swap.set()
+        release.wait(timeout=5)
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(voice_refs, "atomic_write_json", _park_before_manifest)
+
+    swap = asyncio.create_task(
+        asyncio.to_thread(
+            voice_refs._replace_voice_reference,
+            str(tmp_path),
+            str(tmp_path / "voice_sample.wav"),
+            b"new-audio",
+            str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+        )
+    )
+    await asyncio.to_thread(mid_swap.wait, 5)   # 旧的已删、新 manifest 还没写
+
+    reader = asyncio.create_task(
+        asyncio.to_thread(resolve_voice_reference_serialized, str(tmp_path))
+    )
+    await asyncio.sleep(0.05)
+    assert not reader.done(), "读者没被锁挡住，正读在半套状态上"
+
+    release.set()
+    await asyncio.gather(swap, reader)
+    voice_ref = reader.result()
+    assert voice_ref is not None
+    assert voice_ref["manifest"]["prefix"] == "new"

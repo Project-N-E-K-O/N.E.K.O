@@ -24,7 +24,7 @@ from .config_files import _assert_under_base
 from .meta import calculate_content_hash, read_workshop_meta, write_workshop_meta
 from .preview_cards import find_preview_image_in_folder
 from .ugc import get_subscribed_workshop_items
-from .voice_manifest import _resolve_workshop_voice_reference
+from .voice_manifest import resolve_voice_reference_serialized
 
 import os
 import sys
@@ -603,7 +603,10 @@ async def publish_to_workshop(request: Request):
                             logger.warning(f'继续使用原始预览图片路径: {preview_image}')
 
         try:
-            voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, content_folder)
+            # 走串行化版本：上传的 swap 现在跑在 worker 上，裸读可能正好落在
+            # 「旧的已删、新的还没写」的中间，发布就会以「参考语音清单无效」失败，
+            # 而其实替换随后就完成了。这个调用点本来就在 to_thread 里，拿锁不碰循环。
+            voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, content_folder)
             if voice_ref:
                 logger.info(f"检测到参考语音清单: {voice_ref['manifest']['reference_audio']}")
         except (ValueError, FileNotFoundError) as e:
