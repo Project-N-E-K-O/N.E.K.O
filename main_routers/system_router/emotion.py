@@ -195,9 +195,11 @@ def _strip_negation_blocklist(text):
     """Drop the words that merely *contain* a negation character.
 
     Removed rather than blanked: both callers compare against the end of a
-    fixed-width window, so leaving spaces behind pushes a real negation out of
-    it -- `別特別開心` would become `別  ` and read as un-negated.
+    fixed-width window, so leaving spaces behind would push a real negation out
+    of that window and the phrase would read as un-negated.
     """
+    # e.g. `別特別開心` -- blanking would leave `別  `, which ends in whitespace
+    # rather than in the negation that is actually there.
     for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
         if phrase and phrase in text:
             text = text.replace(phrase, '')
@@ -219,12 +221,14 @@ def _alias_after(compact_text, position):
 def _marker_attaches_to_head(head):
     """Whether a postposed negation is denying the emotion word right before it.
 
-    `難過哭不出來` is sad: the marker denies the crying, and the sadness is the
-    reason. The fuzzy test alone read the whole of `難過哭` as one misspelt
-    emotion word and answered the opposite. So when the head does contain an
-    emotion word, that word has to be the thing the marker sits against; a head
-    with none is still handed to the fuzzy test, which is what it was for.
+    "so sad I can't even cry" is sad: the marker denies the crying, and the
+    sadness is the reason it is being mentioned. The fuzzy test alone read the
+    whole run before the marker as one misspelt emotion word and answered the
+    opposite. So when the head does contain an emotion word, that word has to be
+    the thing the marker sits against; a head with none is still handed to the
+    fuzzy test, which is what it was for.
     """
+    # 上面那句对应的是 `難過哭不出來`，`不出來` 否定的是 `哭` 不是 `難過`。
     present = [alias for alias in _EMOTION_COMPACT_ALIAS_LOOKUP if alias and alias in head]
     return any(head.endswith(alias) for alias in present) if present else True
 
