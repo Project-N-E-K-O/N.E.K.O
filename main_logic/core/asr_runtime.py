@@ -204,8 +204,6 @@ class _HotSwapAudioBuffer:
 class AsrRuntimeMixin:
     """Core manager facade for microphone input and independent ASR."""
 
-    _CORE_VOICE_SESSION_SWAP_BARRIER_TIMEOUT_S: ClassVar[float] = 5.0
-
     def _init_asr_runtime_state(self) -> None:
         self._voice_lease_generation = -1
         self._voice_lease_connection_id = ""
@@ -249,6 +247,7 @@ class AsrRuntimeMixin:
         # against the still-open old session, or waits until close+promotion
         # has atomically exposed the replacement.
         self._core_voice_session_swap_lock = asyncio.Lock()
+        self._core_voice_session_swap_barrier_timeout_s = 5.0
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
@@ -334,6 +333,8 @@ class AsrRuntimeMixin:
             self._asr_notification_lock = asyncio.Lock()
         if not hasattr(self, "_core_voice_session_swap_lock"):
             self._core_voice_session_swap_lock = asyncio.Lock()
+        if not hasattr(self, "_core_voice_session_swap_barrier_timeout_s"):
+            self._core_voice_session_swap_barrier_timeout_s = 5.0
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -2444,7 +2445,7 @@ class AsrRuntimeMixin:
             try:
                 await asyncio.wait_for(
                     session_swap_lock.acquire(),
-                    timeout=self._CORE_VOICE_SESSION_SWAP_BARRIER_TIMEOUT_S,
+                    timeout=self._core_voice_session_swap_barrier_timeout_s,
                 )
             except asyncio.TimeoutError:
                 logger.warning(

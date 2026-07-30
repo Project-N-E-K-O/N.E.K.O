@@ -1609,7 +1609,7 @@ async def test_final_swap_barrier_timeout_drops_without_blocking_dispatcher() ->
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)
     runtime.session.abandon_external_voice_turn = MagicMock()
-    runtime._CORE_VOICE_SESSION_SWAP_BARRIER_TIMEOUT_S = 0.01
+    runtime._core_voice_session_swap_barrier_timeout_s = 0.01
     token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
 
     await runtime._core_voice_session_swap_lock.acquire()
