@@ -8,8 +8,20 @@ const successfulReport = {
   costs: { totalUsd: 0.072 },
   keywordMetrics: [{ keyword: 'AI 桌面助手', searchVolume: 10 }],
   serp: [
-    { organicRank: 4, aiOverviewCitedTarget: false },
-    { organicRank: null, aiOverviewCitedTarget: true },
+    {
+      organicRank: 4,
+      aiOverviewCitedTarget: false,
+      checkUrl: 'https://www.google.com/search?q=ai+desktop+pet',
+      capturedAt: '2026-07-28 00:00:00 +00:00',
+      error: null,
+    },
+    {
+      organicRank: null,
+      aiOverviewCitedTarget: true,
+      checkUrl: 'https://www.google.com/search?q=ai+desktop+companion',
+      capturedAt: '2026-07-28 00:00:01 +00:00',
+      error: null,
+    },
   ],
 }
 
@@ -110,4 +122,31 @@ test('missing or empty paid evidence fails closed instead of becoming complete',
   assert.equal(missingRanks.runStatus, 'failed')
   assert.equal(missingRanks.rankingStatus, 'failed')
   assert.match(missingRanks.failureReason, /no ranking rows/u)
+})
+
+test('placeholder SERP rows cannot become a complete paid baseline', () => {
+  const status = buildRunStatus({
+    mode: 'serp',
+    credentialsOutcome: 'success',
+    paidOutcome: 'success',
+    includeAiOverview: true,
+    report: {
+      ...successfulReport,
+      serp: [{
+        keyword: 'ai desktop pet',
+        organicRank: null,
+        aiOverviewTriggered: false,
+        aiOverviewCitedTarget: false,
+        checkUrl: null,
+        capturedAt: null,
+        error: null,
+      }],
+    },
+  })
+
+  assert.equal(status.runStatus, 'failed')
+  assert.equal(status.rankingStatus, 'failed')
+  assert.equal(status.aiOverviewStatus, 'failed')
+  assert.equal(status.summary.trackedKeywordCount, 0)
+  assert.match(status.failureReason, /without captured SERP evidence/u)
 })

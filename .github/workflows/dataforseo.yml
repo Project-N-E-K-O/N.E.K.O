@@ -179,12 +179,27 @@ jobs:
             echo "The .cn artifact is incomplete; this run will collect the fallback locally."
             exit 0
           fi
+          mode="$(jq -r '.mode // empty' "$cn_status")"
+          run_status="$(jq -r '.runStatus // empty' "$cn_status")"
           ranking_status="$(jq -r '.rankingStatus // empty' "$cn_status")"
+          keyword_metrics_status="$(jq -r '.keywordMetricsStatus // empty' "$cn_status")"
+          ai_overview_status="$(jq -r '.aiOverviewStatus // empty' "$cn_status")"
+          report_status="$(jq -r '.status // empty' "$cn_report")"
+          serp_depth="$(jq -r '.plan.serpDepth // empty' "$cn_report")"
+          include_ai_overview="$(jq -r '.plan.includeAiOverview // false' "$cn_report")"
           generated_at="$(jq -r '.generatedAt // empty' "$cn_status")"
           artifact_date="$(node -e 'console.log(new Intl.DateTimeFormat("en-CA", {timeZone:"Asia/Shanghai",year:"numeric",month:"2-digit",day:"2-digit"}).format(new Date(process.argv[1])))' "$generated_at")"
           today="$(TZ=Asia/Shanghai date +%F)"
-          if [[ "$ranking_status" != "complete" || "$artifact_date" != "$today" ]]; then
-            echo "The latest .cn artifact is not today's complete baseline; this run will collect the fallback locally."
+          if [[ "$mode" != "all" \
+            || "$run_status" != "complete" \
+            || "$ranking_status" != "complete" \
+            || "$keyword_metrics_status" != "complete" \
+            || "$ai_overview_status" != "complete" \
+            || "$report_status" != "complete" \
+            || "$serp_depth" != "100" \
+            || "$include_ai_overview" != "true" \
+            || "$artifact_date" != "$today" ]]; then
+            echo "The latest .cn artifact is not today's complete depth-100 all-mode baseline; this run will collect the fallback locally."
             exit 0
           fi
           echo "CN_EXTERNAL_REPORT=$cn_report" >> "$GITHUB_ENV"

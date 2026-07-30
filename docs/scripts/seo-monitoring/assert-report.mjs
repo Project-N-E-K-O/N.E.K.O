@@ -676,6 +676,7 @@ function validateTechnical(site, failures) {
   add(failures, technical.bingSiteAuth?.status === 'ok', `${label} Bing verification file is unavailable`)
   add(failures, technical.indexNowKey?.status === 'ok', `${label} IndexNow key is unavailable`)
   add(failures, technical.indexNowKey?.contentPresent === true, `${label} IndexNow key file is empty`)
+  add(failures, technical.indexNowKey?.contentMatchesFilename === true, `${label} IndexNow key does not match its filename`)
   add(failures, hasText(technical.html?.lang), `${label} html lang is missing`)
   add(failures, technical.html?.measurementIdPresent === true, `${label} GA4 Measurement ID is not observable`)
   add(failures, isHttpUrl(technical.html?.canonical), `${label} canonical is missing`)

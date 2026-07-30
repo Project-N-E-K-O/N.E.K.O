@@ -615,6 +615,32 @@ function robotsGroups(source) {
   return groups
 }
 
+function robotsPatternMatchesPath(pattern, path) {
+  const value = String(pattern ?? '').trim()
+  if (!value) return false
+  const anchored = value.endsWith('$')
+  const withoutAnchor = anchored ? value.slice(0, -1) : value
+  const expression = withoutAnchor
+    .replace(/[.+?^${}()|[\]\\]/gu, '\\$&')
+    .replace(/\*/gu, '.*')
+  return new RegExp(`^${expression}${anchored ? '$' : ''}`, 'u').test(path)
+}
+
+function robotsAllowsPath(rules, path) {
+  const matchingRules = rules
+    .filter(rule => robotsPatternMatchesPath(rule.value, path))
+    .map(rule => ({
+      ...rule,
+      specificity: rule.value.replace(/[\*$]/gu, '').length,
+    }))
+  if (matchingRules.length === 0) return true
+
+  const maximumSpecificity = Math.max(...matchingRules.map(rule => rule.specificity))
+  return matchingRules
+    .filter(rule => rule.specificity === maximumSpecificity)
+    .some(rule => rule.field === 'allow')
+}
+
 function aiCrawlerPolicy(source) {
   const groups = robotsGroups(source)
   const results = AI_CRAWLERS.map(name => {
@@ -623,12 +649,10 @@ function aiCrawlerPolicy(source) {
       ? exact
       : groups.filter(group => group.agents.includes('*'))
     const rules = applicable.flatMap(group => group.rules)
-    const blocksRoot = rules.some(rule => rule.field === 'disallow' && rule.value === '/')
-    const allowsRoot = rules.some(rule => rule.field === 'allow' && rule.value === '/')
     return {
       name,
       explicitlyNamed: exact.length > 0,
-      allowed: !blocksRoot || allowsRoot,
+      allowed: robotsAllowsPath(rules, '/'),
     }
   })
   const blocked = results.filter(item => !item.allowed).map(item => item.name)
@@ -660,6 +684,15 @@ async function fetchProbe(url, { fetchImpl, timeoutMs }) {
 function safeUrl(value, base) {
   try {
     return new URL(value, base).href
+  } catch {
+    return null
+  }
+}
+
+function expectedIndexNowKey(url) {
+  try {
+    const filename = decodeURIComponent(new URL(url).pathname.split('/').filter(Boolean).at(-1) ?? '')
+    return filename.replace(/\.txt$/iu, '') || null
   } catch {
     return null
   }
@@ -701,6 +734,12 @@ export async function collectTechnicalSeo(site, {
   ].find(item => item.source.includes(site.measurementId))
   const checks = [home, robots, sitemap, bingAuth, indexNowKey]
   const crawlerPolicy = aiCrawlerPolicy(robots.source)
+  const indexNowKeyContent = indexNowKey.source.trim()
+  const indexNowKeyExpected = expectedIndexNowKey(site.indexNowKeyUrl)
+  const indexNowKeyMatchesFilename = (
+    indexNowKeyExpected !== null
+    && indexNowKeyContent === indexNowKeyExpected
+  )
   const canonicalUrl = canonical ? tagAttribute(canonical, 'href') : null
   let canonicalMatchesOrigin = false
   try {
@@ -719,7 +758,8 @@ export async function collectTechnicalSeo(site, {
   if (!robots.source.includes(site.sitemapUrl)) failedChecks.push('robots.txt does not declare the expected sitemap')
   if (crawlerPolicy.status !== 'allowed') failedChecks.push(`robots.txt blocks AI crawler(s): ${crawlerPolicy.blocked.join(', ')}`)
   if (sitemapUrlCount < 1) failedChecks.push('sitemap.xml contains no URLs')
-  if (indexNowKey.source.trim().length < 1) failedChecks.push('IndexNow key file is empty')
+  if (indexNowKeyContent.length < 1) failedChecks.push('IndexNow key file is empty')
+  else if (!indexNowKeyMatchesFilename) failedChecks.push('IndexNow key file contents do not match its filename')
   if (!tagAttribute(htmlTag, 'lang')) failedChecks.push('homepage html lang is missing')
   if (!canonicalMatchesOrigin) failedChecks.push('homepage canonical does not match the site origin')
   if (hreflang.length < 1) failedChecks.push('homepage hreflang links are missing')
@@ -743,7 +783,8 @@ export async function collectTechnicalSeo(site, {
     indexNowKey: {
       status: indexNowKey.status,
       httpStatus: indexNowKey.httpStatus,
-      contentPresent: indexNowKey.source.trim().length > 0,
+      contentPresent: indexNowKeyContent.length > 0,
+      contentMatchesFilename: indexNowKeyMatchesFilename,
     },
     html: {
       lang: tagAttribute(htmlTag, 'lang'),

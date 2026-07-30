@@ -286,6 +286,7 @@ test('technical collector checks HTTP, discovery files, canonical, hreflang, sch
       if (url.endsWith('/sitemap.xml')) {
         return new Response(`<urlset><url><loc>${origin}/</loc></url></urlset>`, { status: 200 })
       }
+      if (url.endsWith('/indexnow-key.txt')) return new Response('indexnow-key\n', { status: 200 })
       return new Response('verification', { status: 200 })
     },
   })
@@ -302,6 +303,7 @@ test('technical collector checks HTTP, discovery files, canonical, hreflang, sch
   assert.deepEqual(result.failedChecks, [])
   assert.equal(result.robots.aiCrawlers.status, 'allowed')
   assert.equal(result.robots.aiCrawlers.checked, 5)
+  assert.equal(result.indexNowKey.contentMatchesFilename, true)
 })
 
 test('technical collector makes failed content invariants block growth reporting', async () => {
@@ -332,7 +334,7 @@ test('technical collector makes failed content invariants block growth reporting
   assert.ok(result.failedChecks.includes('expected GA4 Measurement ID is not observable'))
 })
 
-test('technical collector marks robots rules that block an AI crawler as partial', async () => {
+test('technical collector treats a wildcard root robots rule as an AI crawler block', async () => {
   const origin = 'https://project-neko.cn'
   const result = await collectTechnicalSeo({
     origin,
@@ -344,7 +346,7 @@ test('technical collector marks robots rules that block an AI crawler as partial
   }, {
     fetchImpl: async url => {
       if (url.endsWith('/robots.txt')) {
-        return new Response(`User-agent: GPTBot\nDisallow: /\n\nUser-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml`, { status: 200 })
+        return new Response(`User-agent: GPTBot\nDisallow: /*\n\nUser-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml`, { status: 200 })
       }
       if (url.endsWith('/sitemap.xml')) {
         return new Response(`<urlset><url><loc>${origin}/</loc></url></urlset>`, { status: 200 })
@@ -352,6 +354,7 @@ test('technical collector marks robots rules that block an AI crawler as partial
       if (url === `${origin}/`) {
         return new Response(`<html lang="zh-CN"><head><link rel="canonical" href="${origin}/"><script>G-2D1RSKSR72</script></head></html>`, { status: 200 })
       }
+      if (url.endsWith('/indexnow-key.txt')) return new Response('indexnow-key', { status: 200 })
       return new Response('ok', { status: 200 })
     },
   })
@@ -359,4 +362,35 @@ test('technical collector marks robots rules that block an AI crawler as partial
   assert.equal(result.status, 'partial')
   assert.deepEqual(result.robots.aiCrawlers.blocked, ['GPTBot'])
   assert.match(result.reason, /GPTBot/u)
+})
+
+test('technical collector rejects a nonempty IndexNow key that does not match its filename', async () => {
+  const origin = 'https://project-neko.cn'
+  const result = await collectTechnicalSeo({
+    origin,
+    robotsUrl: `${origin}/robots.txt`,
+    sitemapUrl: `${origin}/sitemap.xml`,
+    bingSiteAuthUrl: `${origin}/BingSiteAuth.xml`,
+    indexNowKeyUrl: `${origin}/expected-key.txt`,
+    measurementId: 'G-2D1RSKSR72',
+  }, {
+    fetchImpl: async url => {
+      if (url.endsWith('/robots.txt')) {
+        return new Response(`User-agent: *\nAllow: /\nSitemap: ${origin}/sitemap.xml`, { status: 200 })
+      }
+      if (url.endsWith('/sitemap.xml')) {
+        return new Response(`<urlset><url><loc>${origin}/</loc></url></urlset>`, { status: 200 })
+      }
+      if (url === `${origin}/`) {
+        return new Response(`<html lang="zh-CN"><head><link rel="canonical" href="${origin}/"><link rel="alternate" hreflang="x-default" href="${origin}/"><script>G-2D1RSKSR72</script></head></html>`, { status: 200 })
+      }
+      if (url.endsWith('/expected-key.txt')) return new Response('wrong-key', { status: 200 })
+      return new Response('verification', { status: 200 })
+    },
+  })
+
+  assert.equal(result.status, 'partial')
+  assert.equal(result.indexNowKey.contentPresent, true)
+  assert.equal(result.indexNowKey.contentMatchesFilename, false)
+  assert.deepEqual(result.failedChecks, ['IndexNow key file contents do not match its filename'])
 })

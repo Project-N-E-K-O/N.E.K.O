@@ -21,15 +21,22 @@ function booleanValue(value) {
   throw new TypeError(`Expected a boolean value, received: ${value}`)
 }
 
+function hasCapturedSerpEvidence(item) {
+  if (!item || item.error != null) return false
+  return [item.checkUrl, item.capturedAt]
+    .some(value => typeof value === 'string' && value.trim().length > 0)
+}
+
 function reportSummary(report, aiOverviewRequested) {
   const serp = Array.isArray(report?.serp) ? report.serp : null
+  const observedSerp = serp?.filter(hasCapturedSerpEvidence) ?? null
   return {
     apiRequestCount: numericOrNull(report?.plan?.requests?.total),
-    trackedKeywordCount: serp?.length ?? null,
-    topTenCount: serp?.filter(item => item?.organicRank != null && item.organicRank <= 10).length ?? null,
+    trackedKeywordCount: observedSerp?.length ?? null,
+    topTenCount: observedSerp?.filter(item => item?.organicRank != null && item.organicRank <= 10).length ?? null,
     aiOverviewCitationCount:
-      aiOverviewRequested && serp
-        ? serp.filter(item => item?.aiOverviewCitedTarget === true).length
+      aiOverviewRequested && observedSerp
+        ? observedSerp.filter(item => item?.aiOverviewCitedTarget === true).length
         : null,
     reportedCostUsd: numericOrNull(report?.costs?.totalUsd),
   }
@@ -74,6 +81,12 @@ export function buildRunStatus({
     failureReason = 'The generated DataForSEO report has failed status.'
   } else if (expectsRanking && (!Array.isArray(report?.serp) || report.serp.length === 0)) {
     failureReason = 'The generated DataForSEO report has no ranking rows.'
+  } else if (
+    expectsRanking
+    && report?.status !== 'partial'
+    && report.serp.some(item => !hasCapturedSerpEvidence(item))
+  ) {
+    failureReason = 'The generated DataForSEO report contains ranking rows without captured SERP evidence.'
   } else if (expectsKeywordMetrics && (!Array.isArray(report?.keywordMetrics) || report.keywordMetrics.length === 0)) {
     failureReason = 'The generated DataForSEO report has no keyword metric rows.'
   }

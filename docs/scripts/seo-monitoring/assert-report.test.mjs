@@ -237,7 +237,12 @@ function technical(siteId) {
     },
     sitemap: { status: 'ok', httpStatus: 200, urlCount: 10 },
     bingSiteAuth: { status: 'ok', httpStatus: 200 },
-    indexNowKey: { status: 'ok', httpStatus: 200, contentPresent: true },
+    indexNowKey: {
+      status: 'ok',
+      httpStatus: 200,
+      contentPresent: true,
+      contentMatchesFilename: true,
+    },
     html: {
       lang: siteId === 'cn' ? 'zh-CN' : 'en-US',
       measurementIdPresent: true,
