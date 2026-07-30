@@ -203,6 +203,7 @@ __all__ = [
     "_OCR_PREPARE_TARGET_LONG_EDGE",
     "_OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE",
     "_OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE",
+    "_OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS",
     "_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS",
     "_OCR_STABILITY_IGNORED_CHARS_RE",
     "_OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE",
@@ -303,6 +304,7 @@ __all__ = [
     "_rapidocr_runtime_cache_key",
     "_rapidocr_text_from_output",
     "_rapidocr_tokens_from_output",
+    "_resolve_ocr_shutdown_drain_timeout",
     "_resolve_stage_capture_profile",
     "_score_ocr_text",
     "_should_insert_ascii_space",
@@ -352,9 +354,31 @@ _OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
 # 内存晚一会儿吐出来外加一条 warning。而且 Python 杀不掉跑飞的线程，真卡死的
 # worker 等多久都等不到，只能记 warning 放它去。
 _OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE = 0.2
-_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS = min(
-    0.3,
-    max(0.05, float(_PLUGIN_SHUTDOWN_TIMEOUT) * _OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE),
+_OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS = 0.3
+
+
+def _resolve_ocr_shutdown_drain_timeout(host_shutdown_budget: float) -> float:
+    """Drain bound for a given host graceful-shutdown budget; never exceeds its share.
+
+    No lower floor on purpose: a floor independent of the budget can outgrow a
+    small `NEKO_PLUGIN_SHUTDOWN_TIMEOUT` and put us back to spending the whole
+    thing. A zero or negative budget yields 0.0, which skips the wait entirely.
+    """
+    try:
+        budget = float(host_shutdown_budget)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(
+        0.0,
+        min(
+            _OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS,
+            budget * _OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE,
+        ),
+    )
+
+
+_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS = _resolve_ocr_shutdown_drain_timeout(
+    _PLUGIN_SHUTDOWN_TIMEOUT
 )
 class _CaptureStillRunning(TimeoutError):
     """Backpressure: previous capture worker has not finished yet."""

@@ -676,9 +676,9 @@ def test_async_shutdown_releases_every_resource_despite_one_failure(
 
 
 def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
-    """Cancelling the unload during the drain must not strand the heavy deps."""
+    """Cancelling the unload must neither strand the heavy deps nor skip the drain."""
     manager, observed = _async_shutdown_manager()
-    released: list[str] = []
+    order: list[str] = []
     drain_entered = threading.Event()
     still_running: Future[OcrExtractionResult] = Future()
 
@@ -694,12 +694,14 @@ def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
     def _slow_drain(self, _futures, **_kwargs) -> list:
         del self
         drain_entered.set()
+        # 取消不会停掉这个线程，它照样跑满 —— 收尾必须等它落地再释放 backend。
         time.sleep(0.3)
+        order.append("drain-finished")
         return []
 
     manager._drain_inflight_capture_workers = types.MethodType(_slow_drain, manager)
     manager._release_rapidocr_backend = types.MethodType(
-        lambda self: released.append("backend"),
+        lambda self: order.append("backend-released"),
         manager,
     )
 
@@ -712,7 +714,9 @@ def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
 
     asyncio.run(_cancel_during_drain())
 
-    assert released == ["backend"], "取消发生在 drain 期间，重依赖仍然必须被释放"
+    assert order == ["drain-finished", "backend-released"], (
+        "取消绕过了 drain —— backend 在 worker 还没跑完时就被释放了"
+    )
     assert observed["closed_classifier"] == [True]
     assert manager.vision_classifier is None
     assert len(observed["ended_sessions"]) == 1
@@ -727,12 +731,24 @@ def test_drain_timeout_leaves_room_for_the_rest_of_plugin_shutdown() -> None:
 
     drain_timeout = runtime_types._OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS
     host_budget = runtime_types._PLUGIN_SHUTDOWN_TIMEOUT
+    share = runtime_types._OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE
 
     assert drain_timeout > 0.0
     assert drain_timeout <= host_budget * 0.5, (
         f"drain 上限 {drain_timeout}s 吃掉了宿主优雅关闭预算 {host_budget}s 的一半以上，"
         "backend / classifier / writer 的收尾会来不及跑就被 terminate"
     )
+
+    # 派生公式在任何预算下都不能越过它那一份 —— 独立于预算的下限会在预算被调小时
+    # 反过来吃满它（NEKO_PLUGIN_SHUTDOWN_TIMEOUT 是可配的）。
+    for budget in (0.0, 0.01, 0.05, 0.2, 1.5, 30.0):
+        derived = runtime_types._resolve_ocr_shutdown_drain_timeout(budget)
+        assert 0.0 <= derived <= budget * share + 1e-9, (
+            f"预算 {budget}s 下派生出的 drain 上限 {derived}s 超过了它的份额"
+        )
+        assert derived <= runtime_types._OCR_SHUTDOWN_CAPTURE_DRAIN_MAX_SECONDS
+
+    assert runtime_types._resolve_ocr_shutdown_drain_timeout(-1.0) == 0.0
 
 
 def test_drain_inflight_capture_workers_skips_wait_when_nothing_is_running() -> None:

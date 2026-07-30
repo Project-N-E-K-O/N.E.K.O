@@ -226,12 +226,29 @@ class PollMixin:
             self._log_warning("ocr_reader capture worker shutdown failed: {}", exc)
         # 这是本函数唯一的 await 点，也就是唯一能被取消打断的地方。被打断同样
         # 不能让下面的释放落空：先把取消记下来，收尾跑完再原样抛出去。
+        #
+        # 取消不会停掉 to_thread 那个线程 —— 它照样在 _futures_wait 里等满上限。
+        # 所以这里用 shield 把取消挡在外层，仍旧等 drain 落地再往下拆；否则取消
+        # 路径会整个绕过 drain，退回到「在还在跑的 worker 脚下关 backend」，正是
+        # 本次要修的那件事。代价是取消后最多多等一个 drain 上限（默认 0.3s），
+        # 这个数就是照着宿主关闭预算挑的。
         cancelled: asyncio.CancelledError | None = None
         if inflight:
+            drain = asyncio.ensure_future(
+                asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
+            )
             try:
-                await asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
+                await asyncio.shield(drain)
             except asyncio.CancelledError as exc:
                 cancelled = exc
+                try:
+                    await drain
+                except asyncio.CancelledError:
+                    pass
+                except Exception as drain_exc:
+                    self._log_warning(
+                        "ocr_reader in-flight capture drain failed: {}", drain_exc
+                    )
             except Exception as exc:
                 self._log_warning("ocr_reader in-flight capture drain failed: {}", exc)
         try:
