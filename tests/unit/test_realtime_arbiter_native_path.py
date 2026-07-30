@@ -396,6 +396,41 @@ async def test_a_native_create_response_runs_through_the_arbiter_end_to_end():
     await asyncio.wait_for(receive_loop, timeout=1)
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_resets_the_per_turn_output_state():
+    # PR #2592 extracted this reset so the abandoned-turn path could share it,
+    # and a mutation showed the terminal side had no coverage at all — deleting
+    # its call turned nothing red. That makes the extraction unverifiable from
+    # the terminal side, which is the side every user is on. Drive a real turn
+    # to response.done through the receive loop and assert the fields it owns.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    client._audio_delta_count = 5
+    client._output_transcript_buffer = "leftover"
+    client._print_input_transcript = True
+    client._image_sent_this_turn = True
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._audio_delta_count == 0
+    assert client._output_transcript_buffer == ""
+    assert client._print_input_transcript is False
+    assert client._image_sent_this_turn is False, (
+        "a stale image flag makes stream_image withhold the next turn's "
+        "visual context for its whole duration"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
 def _wired_client(api_type: str = "qwen", model: str = "qwen-omni-turbo-realtime"):
     """A native client attached to a recording socket, ready for its real
     receive loop. The caller owns creating/joining the ``handle_messages``
