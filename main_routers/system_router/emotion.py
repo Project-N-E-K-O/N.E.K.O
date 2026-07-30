@@ -50,6 +50,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_negation_words_flat,
     get_emotion_negation_suffixes_flat,
     get_emotion_negation_degree_adverbs_flat,
+    get_emotion_degree_adverb_blocklist_flat,
 )
 from utils.language_utils import detect_prompt_language
 
@@ -132,6 +133,13 @@ _EMOTION_DEGREE_ADVERBS = tuple(sorted(
 ))
 
 
+_EMOTION_DEGREE_ADVERB_BLOCKLIST = tuple(
+    re.sub(r"[\W_]+", "", str(phrase).strip().lower(), flags=re.UNICODE)
+    for phrase in get_emotion_degree_adverb_blocklist_flat()
+    if str(phrase).strip()
+)
+
+
 def _strip_degree_adverbs(text):
     """Peel degree adverbs off the end of `text`, longest first, repeatedly.
 
@@ -150,6 +158,10 @@ def _strip_degree_adverbs(text):
     # `不是很特別開心` 要连剥 `特別` 和 `很` 两次。
     previous = None
     while text and text != previous:
+        # Stop at a fixed phrase that merely contains an adverb: peeling into one
+        # exposes a negation that was never there.
+        if any(text.endswith(phrase) for phrase in _EMOTION_DEGREE_ADVERB_BLOCKLIST):
+            break
         previous = text
         for adverb in _EMOTION_DEGREE_ADVERBS:
             if text.endswith(adverb):

@@ -469,3 +469,60 @@ def test_module_builds_the_adverb_list_longest_first():
 
     lengths = [len(adverb) for adverb in R._EMOTION_DEGREE_ADVERBS]
     assert lengths == sorted(lengths, reverse=True), R._EMOTION_DEGREE_ADVERBS
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("差不多開心", "happy"), ("差不多开心", "happy"),
+    ("差不多難過", "sad"), ("差不多生氣", "angry"),
+])
+def test_a_fixed_phrase_is_not_peeled_into(label, expected):
+    """Peeling into a word that merely contains an adverb exposes a false negation.
+
+    The blocklist is the same mechanism the keyword heuristic already uses for
+    the same reason, so this stays one concept rather than two.
+    """
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label(label) == expected
+
+
+@pytest.mark.parametrize("label,expected", [
+    # the words the blocklist must NOT swallow: peeling these is correct
+    ("不多開心", "neutral"), ("沒多開心", "neutral"),
+    ("許多開心", "happy"), ("好多開心", "happy"),
+])
+def test_blocklist_does_not_disable_ordinary_peeling(label, expected):
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label(label) == expected
+
+
+def test_degree_adverb_blocklist_pairs_across_scripts():
+    """Kept per-language because it tracks the adverb table, which does differ."""
+    table = P.EMOTION_DEGREE_ADVERB_BLOCKLIST_BY_LANG
+    assert set(table) == {"zh", "zh-TW"}
+    assert len(table["zh"]) == len(table["zh-TW"])
+
+
+def test_blocklist_matches_at_the_end_of_the_window():
+    """The phrase has to be the part adjacent to the emotion word.
+
+    Anchoring at the START of the window instead misses it as soon as anything
+    precedes the phrase. (Anchoring anywhere in the window is not distinguishable
+    on any input worth writing down, so this only pins the end-anchor.)
+    """
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label("真差不多開心") == "happy"
+
+
+def test_blocked_window_is_returned_unpeeled_not_emptied(monkeypatch):
+    """Stopping means "leave it alone", not "there was no window".
+
+    Nothing in today's blocklist ends in a negation, so only this separates the
+    two; a future entry that does would otherwise silently lose its negation.
+    """
+    from main_routers.system_router import emotion as R
+
+    monkeypatch.setattr(R, "_EMOTION_DEGREE_ADVERB_BLOCKLIST", ("好不",))
+    assert R._strip_degree_adverbs("好不") == "好不"

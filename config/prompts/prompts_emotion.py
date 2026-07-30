@@ -692,6 +692,18 @@ EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG = {
               '比較', '有點', '有些', '很', '太', '超', '挺', '蠻', '多', '更', '最'),
 }
 
+# 不该被当成程度副词剥掉的固定搭配：整词里恰好含一个副词，剥掉之后**露出**一个
+# 假否定。`差不多開心` 是实测到的那个 —— 剥掉 `多` 剩 `差不`，`endswith('不')`
+# 为真，于是「差不多开心」被判成否定。与启发式那侧的
+# HEURISTIC_NEGATION_BLOCKLIST_BY_LANG 是同一个机制、同一个理由。
+#
+# 两种写法这里恰好同形，仍按语种分块：这张表是跟着上面那张副词表走的，副词表
+# 有繁简差异，将来往里加词时两侧要一起看。
+EMOTION_DEGREE_ADVERB_BLOCKLIST_BY_LANG = {
+    'zh': ('差不多',),
+    'zh-TW': ('差不多',),
+}
+
 # 后缀否定：韩语特有——否定绑定在词尾（`슬프지 않아`），其余语种没有对应形态
 EMOTION_NEGATION_SUFFIXES_BY_LANG = {
     'ko': ('지 않', '지않', '지 않아', '지않아', '지 않다', '지않다', '지 않음', '지않음',
@@ -714,6 +726,10 @@ def get_emotion_negation_suffixes_flat() -> tuple:
 
 def get_emotion_negation_degree_adverbs_flat() -> tuple:
     return _flatten_lang_tuples(EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG)
+
+
+def get_emotion_degree_adverb_blocklist_flat() -> tuple:
+    return _flatten_lang_tuples(EMOTION_DEGREE_ADVERB_BLOCKLIST_BY_LANG)
 
 
 def get_emotion_label_aliases_flat() -> dict:
