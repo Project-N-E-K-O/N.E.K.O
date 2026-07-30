@@ -1049,6 +1049,7 @@ jobs:
           key_path="$(mktemp "${RUNNER_TEMP}/portable-manifest-key.XXXXXX")"
           trap 'rm -f "$key_path"' EXIT
           printf '%s' "$PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY" > "$key_path"
+          shopt -s nullglob
           manifests=(release/*_manifest.json)
           if (( ${#manifests[@]} == 0 )); then
             echo "::error::No Portable manifests found to sign"

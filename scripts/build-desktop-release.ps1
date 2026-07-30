@@ -195,6 +195,16 @@ try {
     if (Test-Path -LiteralPath $portableUpdateDirectory) {
         throw "Portable output already exists: $portableUpdateDirectory. Remove it after preserving any prior build, then retry."
     }
+    $distDirectory = Join-Path $ElectronPath 'dist'
+    if (Test-Path -LiteralPath $distDirectory) {
+        if (-not (Test-Path -LiteralPath $distDirectory -PathType Container)) {
+            throw "Expected Electron output path to be a directory: $distDirectory"
+        }
+        # electron-builder does not reliably remove versioned artifacts from an
+        # earlier build. Clear its dedicated output directory only after the
+        # portable-update guard above has protected any unarchived output.
+        Remove-Item -LiteralPath $distDirectory -Recurse -Force
+    }
 
     $previousDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("neko-previous-portable-" + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $previousDirectory | Out-Null

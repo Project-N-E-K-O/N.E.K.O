@@ -6,6 +6,8 @@ import yaml
 ROOT = Path(__file__).resolve().parents[2]
 CROSS_PLATFORM_WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop.yml"
 WINDOWS_WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop-windows.yml"
+SYNC_UPDATE_WORKFLOW = ROOT / ".github" / "workflows" / "sync-update-release.yml"
+LOCAL_RELEASE_SCRIPT = ROOT / "scripts" / "build-desktop-release.ps1"
 
 
 def _load_workflow(path: Path) -> dict:
@@ -130,28 +132,47 @@ def test_windows_only_nightly_preserves_other_platform_assets() -> None:
     assert "gh release upload nightly release/* --clobber" in windows_nightly["run"]
 
 
-def test_stable_publication_skips_windows_only_and_prerelease_tags() -> None:
+def test_published_stable_release_is_the_only_update_service_sync_trigger() -> None:
+    workflow = _load_workflow(SYNC_UPDATE_WORKFLOW)
+    condition = workflow["jobs"]["sync"]["if"]
+
+    assert "github.event.release.draft" in condition
+    assert "github.event.release.prerelease" in condition
+    assert "startsWith(github.event.release.tag_name, 'v')" in condition
+    validate = _steps_by_name(workflow, "sync")["Validate stable release assets"]
+    assert '"N.E.K.O_${VERSION}_win_manifest.json.sig"' in validate["run"]
+    assert '"N.E.K.O_${VERSION}_linux_x64_appimage_manifest.json.sig"' in validate["run"]
+
+
+def test_portable_manifest_signing_is_required_for_nightly_and_local_stable_builds() -> None:
     workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
-    condition = workflow["jobs"]["publish-stable-portable"]["if"]
 
-    assert "!inputs.windows_only" in condition
-    assert "!contains(needs.version.outputs.version, '-')" in condition
+    signing = _steps_by_name(workflow, "nightly")["Sign Portable manifests"]
+    assert signing["env"]["PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY"] == (
+        "${{ secrets.PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY }}"
+    )
+    assert signing["env"]["PORTABLE_MANIFEST_SIGNING_KEY_ID"] == (
+        "portable-manifest-2026-07"
+    )
+    assert "is required to publish Portable updates" in signing["run"]
+    assert "openssl pkeyutl -sign -rawin" in signing["run"]
+    assert '"${manifest}.sig"' in signing["run"]
+    assert "shopt -s nullglob" in signing["run"]
+
+    local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+    assert "function Sign-PortableManifests" in local_script
+    assert "openssl 'pkeyutl' '-sign' '-rawin'" in local_script
+    assert "ManifestSigningKeyPath" in local_script
 
 
-def test_portable_manifest_signing_is_required_for_nightly_and_stable_releases() -> None:
-    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+def test_local_release_build_clears_stale_electron_dist_output() -> None:
+    local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 
-    for job_name in ("nightly", "publish-stable-portable"):
-        signing = _steps_by_name(workflow, job_name)["Sign Portable manifests"]
-        assert signing["env"]["PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY"] == (
-            "${{ secrets.PORTABLE_UPDATE_MANIFEST_ED25519_PRIVATE_KEY }}"
-        )
-        assert signing["env"]["PORTABLE_MANIFEST_SIGNING_KEY_ID"] == (
-            "portable-manifest-2026-07"
-        )
-        assert "is required to publish Portable updates" in signing["run"]
-        assert "openssl pkeyutl -sign -rawin" in signing["run"]
-        assert '"${manifest}.sig"' in signing["run"]
+    assert "$distDirectory = Join-Path $ElectronPath 'dist'" in local_script
+    assert "Remove-Item -LiteralPath $distDirectory -Recurse -Force" in local_script
+    assert local_script.index("Portable output already exists") < local_script.index(
+        "Remove-Item -LiteralPath $distDirectory -Recurse -Force"
+    )
 
 
 def test_delta_baseline_selects_a_preceding_stable_release() -> None:
