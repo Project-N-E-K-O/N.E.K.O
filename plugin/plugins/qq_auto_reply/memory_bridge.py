@@ -109,9 +109,14 @@ class QQMemoryBridge:
         timeout: float = 5.0,
         limit: int = 5,
         subjects: list[dict[str, str]] | None = None,
+        time_spec: str = "",
     ) -> QQMemoryQueryResult:
+        # ``time_spec`` mirrors the endpoint's optional ``time`` field: alone
+        # it recalls by event-time proximity; combined with a query it runs
+        # the joint semantic + time search. Empty keeps the legacy shape.
         normalized_query = str(query or "").strip()
-        if not normalized_query:
+        normalized_time = str(time_spec or "").strip()
+        if not normalized_query and not normalized_time:
             return QQMemoryQueryResult()
         # ``None`` means the legacy private caller omitted an authorization
         # boundary. An explicit empty list means the caller has no authorized
@@ -119,6 +124,8 @@ class QQMemoryBridge:
         if subjects == []:
             return QQMemoryQueryResult()
         request_payload: dict[str, Any] = {"query": normalized_query}
+        if normalized_time:
+            request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
         client = self._client()

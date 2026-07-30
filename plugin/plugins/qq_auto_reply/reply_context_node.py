@@ -2,8 +2,10 @@ from __future__ import annotations
 
 from typing import Any, Optional
 
+from main_logic.omni_offline_client import route_supports_tool_calls
 from utils.config_manager import get_config_manager
 
+from .memory_tool_service import resolve_group_recall_subjects
 from .pipeline_models import is_synthetic_source, QQInstructionBundle, QQPipelineStageTrace, QQReplyContext
 from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 
@@ -50,23 +52,14 @@ class QQReplyContextNode:
             return ""
         try:
             subjects = None
+            used_member_subject = False
             if is_group and group_id:
-                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
-                member_sender = str(sender_id or "").strip()
-                if member_sender and bool(
-                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                        "group_member_memory_enabled", False,
-                    )
-                ):
-                    # 实时复检（对偶群开关的读点复检）：构建期间关掉成员
-                    # 记忆后不得再召回 participant 域。sender 规范化与写侧
-                    # 一致，避免读写落进不同桶。
-                    subjects.append(
-                        self.plugin.memory_bridge.group_participant_subject(
-                            group_id, member_sender,
-                        )
-                    )
-            used_member_subject = bool(subjects and len(subjects) > 1)
+                # subject 组装与 recall_memory 工具 handler 共用一处（含
+                # member 开关的读点实时复检、sender 规范化）：两条召回通道
+                # 授权的域必须一致，线路切换不得悄悄改变群轮能读什么。
+                subjects, used_member_subject = resolve_group_recall_subjects(
+                    self.plugin, group_id=group_id, memory_sender_id=sender_id,
+                )
             if used_member_subject and used_member_subject_out is not None:
                 # 回传给调用方：召回是否真的带上了 participant 域。绑定
                 # bootstrap 段是否非空是错的——bootstrap 为空、召回命中
@@ -378,24 +371,47 @@ class QQReplyContextNode:
         core_memory_text = instruction_bundle.core_memory_text
         memory_context_used = instruction_bundle.memory_context_used
         recall_used_member: list = []
-        recalled_memory_text = await self._build_recalled_memory_text(
-            used_member_subject_out=recall_used_member,
-            her_name=her_name,
-            message=message,
-            should_use_memory_context=should_use_memory_context,
-            attachments=attachments,
-            is_group=is_group,
-            group_id=group_id,
-            sender_id=memory_sender_id,
-        )
+        recall_via_tool = False
+        if should_use_memory_context:
+            # 召回通道决策：线路支持 tool call 就把召回交给模型自主决定
+            # （reply_generation_service 按轮挂载 recall_memory 工具，构建
+            # 期不再同步召回）；免费代理只暴露 OpenAI-compat 且会静默丢
+            # tools，那批用户回落到构建期同步召回，否则群记忆会静默归零。
+            # 判定出错按回落处理——回落路径至少确定生效。
+            try:
+                conversation_config = config_manager.get_model_api_config(
+                    "conversation",
+                )
+                recall_via_tool = route_supports_tool_calls(
+                    str(conversation_config.get("model") or ""),
+                    str(conversation_config.get("base_url") or ""),
+                )
+            except Exception:
+                recall_via_tool = False
+        recalled_memory_text = ""
+        if not recall_via_tool:
+            recalled_memory_text = await self._build_recalled_memory_text(
+                used_member_subject_out=recall_used_member,
+                her_name=her_name,
+                message=message,
+                should_use_memory_context=should_use_memory_context,
+                attachments=attachments,
+                is_group=is_group,
+                group_id=group_id,
+                sender_id=memory_sender_id,
+            )
         recalled_memory_used = bool(recalled_memory_text)
         traces.append(
             QQPipelineStageTrace(
                 stage="context_memory_recall",
-                status="used" if recalled_memory_used else "skipped",
+                status=(
+                    "tool_deferred" if recall_via_tool
+                    else ("used" if recalled_memory_used else "skipped")
+                ),
                 metadata={
                     "recalled_memory_used": recalled_memory_used,
                     "recalled_memory_length": len(recalled_memory_text),
+                    "recall_via_tool": recall_via_tool,
                 },
             )
         )
@@ -486,6 +502,7 @@ class QQReplyContextNode:
             force_reply=force_reply,
             source_kind=source_kind,
             member_memory_enabled=member_memory_snapshot,
+            recall_via_tool=recall_via_tool,
             cross_group_section=(
                 getattr(instruction_bundle, "cross_group_section", "")
                 if cross_group_alive else ""

@@ -4,9 +4,12 @@ import asyncio
 from types import SimpleNamespace
 from typing import Any, Optional
 
+from main_logic.omni_offline_client import route_supports_tool_calls
+from main_logic.tool_calling import ToolResult
 from utils.llm_client import SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
+from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS
 from .pipeline_models import (
     QQInstructionBundle,
     QQModelResult,
@@ -264,10 +267,31 @@ class QQReplyGenerationService:
                     )
                 ),
             )
+            # recall_memory 工具按轮挂载：群会话是全群共享一个 client，而
+            # participant subject 随发言人变——handler 闭包必须在会话锁内按
+            # 本轮 context 重建，绝不能在建会话时冻结（那会让所有人都用首
+            # 个发言者的 subject）。consent_before 传给闭包：工具读发生在
+            # 生成中途，运行时记录要能被生成结束的撤销比对看到。
+            armed_recall_tool = self._arm_recall_tool(
+                context=context,
+                user_session=user_session,
+                reply_chunks=reply_chunks,
+                consent_before=consent_before,
+            )
             try:
+                turn_timeout = self.plugin._ai_turn_timeout_seconds
+                if armed_recall_tool:
+                    # 工具轮的最坏路径是 2 次完整 LLM 流（初始流 + 封顶后的
+                    # forced-finalize；插件会话 max_tool_iterations=1）加一次
+                    # 召回 HTTP。沿用单流预算会把"慢但会成功"的工具轮变成
+                    # 超时——而这条路径超时的代价不是丢一轮，是丢弃整个共享
+                    # 群会话再打粘性标记。
+                    turn_timeout = (
+                        turn_timeout * 2 + RECALL_TOOL_HTTP_TIMEOUT_SECONDS
+                    )
                 await asyncio.wait_for(
                     user_session.stream_text(context.prompt_message),
-                    timeout=self.plugin._ai_turn_timeout_seconds,
+                    timeout=turn_timeout,
                 )
 
                 completed = await self.plugin._wait_session_response_complete(user_session)
@@ -275,8 +299,10 @@ class QQReplyGenerationService:
                     # 生成期间授权被撤销：这条回复的 prompt 里带着已撤销的
                     # 内容，不能送出——清空出站文本只挡住了发送，stream_text
                     # 早已把 ai 行写进共享历史，留着它等于让被撤销的内容既
-                    # 进 digest 又进后续轮次的上下文。本轮追加的 ai 行直接
-                    # 从历史里摘掉（human 行是用户自己的发言，保留）。
+                    # 进 digest 又进后续轮次的上下文。本轮追加的 ai 行与
+                    # tool 轮的裸 dict 行（assistant tool_calls / role=tool，
+                    # content 里是召回原文）一并摘掉（human 行是用户自己的
+                    # 发言，保留）。
                     self.plugin.logger.warning(
                         f"生成期间记忆授权被撤销，丢弃本轮回复 ({session_key})"
                     )
@@ -285,7 +311,10 @@ class QQReplyGenerationService:
                     if isinstance(history, list):
                         while (
                             len(history) > history_before
-                            and getattr(history[-1], "type", "") == "ai"
+                            and (
+                                getattr(history[-1], "type", "") == "ai"
+                                or self._is_tool_round_row(history[-1])
+                            )
                         ):
                             history.pop()
                 if not completed:
@@ -295,8 +324,25 @@ class QQReplyGenerationService:
                     self.plugin.logger.warning(f"会话 {session_key} 响应超时，关闭并丢弃该会话")
                     raise asyncio.TimeoutError
             finally:
+                if armed_recall_tool:
+                    # 按轮挂载的对偶收尾：工具与 handler 不得越轮存活——
+                    # 同一 client 上的其他生成路径（proactive 的
+                    # prompt_ephemeral 等）绝不能带着本轮的 subject 闭包
+                    # 发起召回。
+                    try:
+                        user_session.set_tools(None)
+                        user_session.set_tool_call_handler(None)
+                    except Exception:
+                        pass
                 restore_session_prompt()
                 history_now = getattr(user_session, "_conversation_history", []) or []
+                if isinstance(history_now, list):
+                    # tool 轮写进共享历史的裸 dict 行随轮清理：召回原文是按
+                    # consent 域临时授权给本轮的，语义与旧管线的"prompt 注入
+                    # + restore"一致——留在共享历史里会进 digest、进后续每轮
+                    # 的上下文，member 撤销后也无法再摘除。模型的最终回答行
+                    # （引用了召回结论的那条 ai 行）照常保留。
+                    self._strip_tool_round_rows(history_now, history_before)
                 appended = list(history_now)[history_before:]
                 user_data["human_row_accepted"] = any(
                     getattr(row, "type", "") == "human" for row in appended
@@ -319,6 +365,135 @@ class QQReplyGenerationService:
                     )
 
             return "".join(reply_chunks)
+
+    def _arm_recall_tool(
+        self,
+        *,
+        context: Any,
+        user_session: Any,
+        reply_chunks: list[str],
+        consent_before: dict,
+    ) -> bool:
+        """Install this turn's recall_memory tool + handler on the client.
+
+        Returns whether the tool is actually armed. The capability check
+        runs against the SESSION CLIENT's frozen route, not the current
+        config: a cached session can outlive a provider switch, and a
+        route that silently drops ``tools`` must not count as armed (the
+        turn would think it has a recall channel it does not have).
+        """
+        if not getattr(context, "recall_via_tool", False):
+            return False
+        if not getattr(context, "use_memory_context", False):
+            return False
+        set_tools = getattr(user_session, "set_tools", None)
+        set_handler = getattr(user_session, "set_tool_call_handler", None)
+        if not callable(set_tools) or not callable(set_handler):
+            return False
+        if not route_supports_tool_calls(
+            str(getattr(user_session, "model", "") or ""),
+            str(getattr(user_session, "base_url", "") or ""),
+        ):
+            self.plugin.logger.warning(
+                "缓存会话的线路不支持 tool call，本轮无召回（会话重建后恢复）"
+            )
+            return False
+        try:
+            set_tools([
+                self.plugin.memory_tool_service.build_recall_tool_definition()
+            ])
+            set_handler(self._build_recall_tool_handler(
+                context=context,
+                reply_chunks=reply_chunks,
+                consent_before=consent_before,
+            ))
+            return True
+        except Exception as exc:
+            self.plugin.logger.warning(
+                f"recall_memory 工具挂载失败（本轮无召回）: {exc}"
+            )
+            try:
+                set_tools(None)
+                set_handler(None)
+            except Exception:
+                pass
+            return False
+
+    def _build_recall_tool_handler(
+        self, *, context: Any, reply_chunks: list[str], consent_before: dict,
+    ):
+        """This turn's recall_memory execution closure.
+
+        Subjects never come from the model: ``execute_recall`` derives
+        them from the turn context (the server reads an omitted subjects
+        field as the legacy PRIVATE corpus). The closure also owns two
+        pieces of turn plumbing — outbound-text hygiene and the runtime
+        consent record.
+        """
+
+        async def _handle_recall_tool(tool_call: Any) -> ToolResult:
+            # pre-tool 文本（"我查一下"之类）不得外发：走到这里说明本轮
+            # 进入了 tool 轮，之前流出的增量已由客户端写进 history 的
+            # assistant tool_calls 行（随后与本轮其余 tool 行一并清理），
+            # 出站文本只保留 post-tool 的最终回答。
+            reply_chunks.clear()
+            output, consumed = await self.plugin.memory_tool_service.execute_recall(
+                context=context,
+                arguments=getattr(tool_call, "arguments", None) or {},
+            )
+            if consumed:
+                # consent 判据从"prompt 里有没有那段字"换成"运行时有没有
+                # 真的发生这次读"：写进本轮的 consent_before（生成结束的
+                # 撤销比对读它），并合入 context.consent_snapshot（发送前
+                # 与 buffer 的撤销闸读它）。
+                for key, was_enabled in consumed.items():
+                    consent_before[key] = (
+                        bool(consent_before.get(key)) or bool(was_enabled)
+                    )
+                self._store_consent_snapshot(context, consumed)
+                try:
+                    context.recalled_memory_used = True
+                except Exception:
+                    pass
+            return ToolResult(
+                call_id=getattr(tool_call, "call_id", "") or "",
+                name=getattr(tool_call, "name", "") or "recall_memory",
+                output=output,
+            )
+
+        return _handle_recall_tool
+
+    @staticmethod
+    def _is_tool_round_row(row: Any) -> bool:
+        """A bare dict row the client's tool loop appended to history.
+
+        Two shapes (OpenAI-compat and genai paths both append these):
+        the assistant turn announcing tool_calls, and the role=tool
+        result row carrying the recalled text.
+        """
+        if not isinstance(row, dict):
+            return False
+        role = row.get("role")
+        return role == "tool" or (
+            role == "assistant" and bool(row.get("tool_calls"))
+        )
+
+    @classmethod
+    def _strip_tool_round_rows(cls, history: list, start_index: int) -> int:
+        """Remove this turn's tool-round dict rows from shared history.
+
+        Only rows appended at or after ``start_index`` are considered —
+        the rows sit BETWEEN the human row and the final ai row, so this
+        scans by index instead of popping from the tail. A repetition
+        guard can reset the history to shorter than ``start_index``; the
+        range is then empty and nothing is touched.
+        """
+        removed = 0
+        for index in range(len(history) - 1, max(start_index, 0) - 1, -1):
+            if cls._is_tool_round_row(history[index]):
+                del history[index]
+                removed += 1
+        return removed
 
     async def _run_memory_housekeeping(
         self, session_key: str, user_data: dict[str, Any],

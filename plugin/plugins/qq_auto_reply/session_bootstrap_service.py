@@ -98,6 +98,11 @@ class QQSessionBootstrapService:
                 api_key=api_key,
                 model=model,
                 on_text_delta=on_text_delta,
+                # 一轮只允许一次召回：与旧的每轮同步召回同预算，也压住
+                # 工具轮的最坏超时（每多一次迭代就多一整段 LLM 流，而这里
+                # 超时的代价是丢弃整个共享群会话）。封顶后 forced-finalize
+                # 会摘掉 tools 逼出最终文本，召回结果不会白拿。
+                max_tool_iterations=1,
             )
             await asyncio.wait_for(
                 user_session.connect(instructions=context.system_prompt),
@@ -212,6 +217,9 @@ class QQSessionBootstrapService:
                 api_key=api_key,
                 model=model,
                 on_text_delta=on_text_delta,
+                # 与 ensure_generation_session 对偶：主动会话与回复会话共用
+                # _user_sessions 缓存，回复轮可能复用这里建的 client。
+                max_tool_iterations=1,
             )
 
             login_status, login_self_id, login_nickname = self.plugin._normalize_login_identity(

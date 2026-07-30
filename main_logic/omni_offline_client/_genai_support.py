@@ -275,6 +275,39 @@ def _should_use_genai_sdk(model: str, base_url: str | None) -> bool:
     return bool(_GENAI_AVAILABLE)
 
 
+# 免费路由的两个特征：base_url 落在 lanlan 免费域（lanlan.tech 国内 /
+# lanlan.app 海外，含 www. 等子域），或模型名是免费路由固定的 free-model。
+# 两个信号各自独立成立（区域改写只动 URL，模型名由配置层固定），任一命中
+# 即视为免费路由。
+_FREE_ROUTE_BASE_URL_HINTS = ("lanlan.app", "lanlan.tech")
+_FREE_ROUTE_MODEL_NAME = "free-model"
+
+
+def route_supports_tool_calls(model: str, base_url: str | None) -> bool:
+    """Whether tool definitions handed to ``OmniOfflineClient`` on this
+    route actually reach the model.
+
+    The native google-genai path supports tools. Standard OpenAI-compat
+    endpoints honour the ``tools`` param. The known exception is the free
+    proxy (lanlan.app international / lanlan.tech domestic, fixed model
+    name ``free-model``): it exposes only the OpenAI-compat surface and
+    silently DROPS ``tools`` (see ``_should_use_genai_sdk``'s exclusion
+    note). Callers that depend on a tool being callable (e.g. the QQ
+    plugin's ``recall_memory``) must check this and fall back to a
+    host-driven path, otherwise those users lose the feature silently.
+    The domestic free proxy's tool support is undocumented, so it is
+    treated as unsupported too — the fallback keeps working either way.
+    """
+    if _should_use_genai_sdk(model, base_url):
+        return True
+    bl = (base_url or "").lower()
+    if any(hint in bl for hint in _FREE_ROUTE_BASE_URL_HINTS):
+        return False
+    if (model or "").strip().lower() == _FREE_ROUTE_MODEL_NAME:
+        return False
+    return True
+
+
 class _GenaiMixin:
     async def _astream_genai_with_tools(self, messages, **overrides):
         """google-genai streaming with tool support. Yields
