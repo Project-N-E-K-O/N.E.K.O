@@ -63,6 +63,7 @@
     // other each adopt the other and stay swapped forever. That needs no
     // millisecond tie at all -- a strictly older foreign write still wins.
     let _lastAsrDecision = null;
+    let _asrDecisionWriteIdFloor = 0;
     function _isValidAsrWriteId(value, serverAuthoritative) {
         if (!Number.isSafeInteger(value) || value < 0
             || value > Number.MAX_SAFE_INTEGER - 1) return false;
@@ -89,6 +90,7 @@
             return;
         }
         _lastAsrDecision = { writeId: writeId, writerId: writerId || '', value: value };
+        _asrDecisionWriteIdFloor = Math.max(_asrDecisionWriteIdFloor, writeId);
     }
     function _asrWriteOutranksLocalChoice(meta) {
         if (!_lastAsrDecision) return true;
@@ -131,6 +133,12 @@
         if (candidate.writeId > current.writeId) return true;
         if (candidate.writeId < current.writeId) return false;
         return candidate.writerId > current.writerId;
+    }
+    function _asrDecisionsEqual(left, right) {
+        return !!left && !!right
+            && left.writeId === right.writeId
+            && left.writerId === right.writerId
+            && left.value === right.value;
     }
     function _sharedWriteTokenOutranks(candidate, current) {
         if (!candidate) return false;
@@ -227,9 +235,45 @@
     }
     function _adoptAsrDecisionTuple(value, serverAuthoritative) {
         const decision = _normalizeServerAsrDecision(value, serverAuthoritative);
-        if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
-        _lastAsrDecision = decision;
+        const alreadyCurrent = _asrDecisionsEqual(
+            decision,
+            _lastAsrDecision
+        );
+        if (!alreadyCurrent
+            && !_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
+        if (!alreadyCurrent) {
+            _lastAsrDecision = decision;
+        }
+        _asrDecisionWriteIdFloor = Math.max(
+            _asrDecisionWriteIdFloor,
+            decision.writeId
+        );
         return true;
+    }
+    function _rebaseAsrDecisionForReset(serverDecision, resetValue) {
+        let floor = _asrDecisionWriteIdFloor;
+        if (_lastAsrDecision) {
+            floor = Math.max(floor, _lastAsrDecision.writeId);
+        }
+        if (serverDecision) {
+            floor = Math.max(floor, serverDecision.writeId);
+        }
+        if (floor >= Number.MAX_SAFE_INTEGER - 1) {
+            _asrDecisionWriteIdFloor = floor;
+            _lastAsrDecision = null;
+            return;
+        }
+        const writeId = Math.max(Date.now(), floor + 1);
+        // Materialize reset authority as a matching decision tuple. The reset
+        // writeback sends this tuple instead of asking the server to mint a
+        // potentially later legacy tuple; a user toggle made while that
+        // request is in flight therefore mints strictly above the response.
+        _lastAsrDecision = {
+            writeId,
+            writerId: _SHARED_WRITER_ID,
+            value: resetValue
+        };
+        _asrDecisionWriteIdFloor = writeId;
     }
     function _responseEtag(response) {
         try {
@@ -261,13 +305,29 @@
         return true;
     }
     function _mergeConversationSettingsSnapshot(data, preservedKeys) {
-        const adoptedAsr = _adoptServerAsrDecision(data);
         const serverSettings = _serverSettingsForMerge(data);
         if (!serverSettings || typeof serverSettings !== 'object') return;
         const protectedKeys = preservedKeys || _pendingSettingsKeys;
-        const serverAsrDecision = _serverAsrDecision(data);
-        const preserveLocalAsrDecision = data && data.reset === true
+        const resetSnapshot = !!(data && data.reset === true);
+        const rawServerAsrDecision = _serverAsrDecision(data);
+        const resetReplacesAsrDecision = resetSnapshot
+            && !protectedKeys.has('independentAsrEnabled')
+            && typeof serverSettings.independentAsrEnabled === 'boolean';
+        if (resetReplacesAsrDecision) {
+            _rebaseAsrDecisionForReset(
+                rawServerAsrDecision,
+                serverSettings.independentAsrEnabled
+            );
+        }
+        // A reset tombstone invalidates the persisted tuple. Preserve a pending
+        // local choice, or adopt the materialized reset default without
+        // re-adopting the stale pre-reset tuple.
+        const adoptedAsr = resetSnapshot
             ? false
+            : _adoptServerAsrDecision(data);
+        const serverAsrDecision = resetSnapshot ? null : rawServerAsrDecision;
+        const preserveLocalAsrDecision = resetSnapshot
+            ? !resetReplacesAsrDecision
             : !!(_lastAsrDecision
             && (!serverAsrDecision
                 || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
@@ -377,6 +437,7 @@
     // edits that arrive after the request snapshot.
     const _conversationSettingsEtagKeyMutationVersions = Object.create(null);
     const _CONVERSATION_SETTINGS_MAX_ATTEMPTS = 3;
+    const _CONVERSATION_SETTINGS_REQUEST_TIMEOUT_MS = 15000;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
     // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
@@ -554,10 +615,13 @@
     }
 
     function _nextAsrDecisionWriteId(envelopeWriteId) {
-        const decisionFloor = _lastAsrDecision
+        const decisionFloor = Math.max(
+            _asrDecisionWriteIdFloor,
+            _lastAsrDecision
             && Number.isSafeInteger(_lastAsrDecision.writeId)
             ? _lastAsrDecision.writeId
-            : 0;
+            : 0
+        );
         if (decisionFloor >= Number.MAX_SAFE_INTEGER - 1) {
             return envelopeWriteId;
         }
@@ -659,10 +723,16 @@
         }
         localStorage.setItem('project_neko_settings', JSON.stringify(payload));
         // The server snapshot is now the local source of truth for these keys.
-        // Keep the old token in the transmitted metadata long enough for peers
-        // to learn any confirmation revision, then discard it locally.
+        // Retain the broadcast envelope as a comparable browser-side floor so
+        // a delayed older explicit storage event cannot roll the accepted
+        // server value back. This marker is provenance only: changedKeys stays
+        // empty, so it is not advertised as fresh user intent.
         for (const key of serverAuthoritativeKeys || []) {
-            delete _knownSharedKeyWrites[key];
+            _knownSharedKeyWrites[key] = {
+                writeId: ownMeta.writeId,
+                writerId: ownMeta.writerId,
+                confirmedRevision: ownMeta.serverRevision
+            };
         }
     }
 
@@ -965,6 +1035,41 @@
         return null;
     }
 
+    function _fetchConversationSettingsJsonWithTimeout(url, options) {
+        const AbortControllerCtor =
+            (typeof window.AbortController === 'function'
+                && window.AbortController)
+            || (typeof AbortController === 'function' && AbortController)
+            || null;
+        const abortController = AbortControllerCtor
+            ? new AbortControllerCtor()
+            : null;
+        const requestOptions = Object.assign({}, options);
+        if (abortController) {
+            requestOptions.signal = abortController.signal;
+        }
+        let timeoutId = null;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeoutId = setTimeout(() => {
+                if (abortController) abortController.abort();
+                reject(new Error('conversation settings request timed out'));
+            }, _CONVERSATION_SETTINGS_REQUEST_TIMEOUT_MS);
+            if (timeoutId && typeof timeoutId.unref === 'function') {
+                timeoutId.unref();
+            }
+        });
+        const requestPromise = (async () => {
+            const response = await fetch(url, requestOptions);
+            const data = await response.json();
+            return { response, data };
+        })();
+        return Promise.race([requestPromise, timeoutPromise]).finally(() => {
+            if (timeoutId !== null && typeof clearTimeout === 'function') {
+                clearTimeout(timeoutId);
+            }
+        });
+    }
+
     /**
      * 将对话设置同步到服务器（异步，不阻塞）
      * 用于定期备份和跨会话持久化
@@ -1066,12 +1171,15 @@
                         JSON.stringify(requestDecision);
                 }
                 try {
-                    const response = await fetch('/api/config/conversation-settings', {
-                        method: 'POST',
-                        headers,
-                        body: JSON.stringify(payload)
-                    });
-                    const data = await response.json();
+                    const { response, data } =
+                        await _fetchConversationSettingsJsonWithTimeout(
+                            '/api/config/conversation-settings',
+                            {
+                                method: 'POST',
+                                headers,
+                                body: JSON.stringify(payload)
+                            }
+                        );
                     const nextEtag = _responseEtag(response);
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (Number.isInteger(data.revision)) {
@@ -1703,9 +1811,26 @@
                     ? null
                     : _serverSettingsForMerge(serverResult);
                 const telemetryBranch = serverResult.telemetryBranch;
-                const serverAsrDecision = serverSnapshotOlderThanCurrent
+                const rawServerAsrDecision = serverSnapshotOlderThanCurrent
                     ? null
                     : _serverAsrDecision(serverResult);
+                const resetReplacesAsrDecision =
+                    !serverSnapshotOlderThanCurrent
+                    && serverResult.reset === true
+                    && serverSettings
+                    && typeof serverSettings.independentAsrEnabled === 'boolean'
+                    && !_pendingSettingsKeys.has('independentAsrEnabled')
+                    && (_crossWindowKeyMutationVersions.independentAsrEnabled || 0)
+                        <= mutationVersionAtGetStart;
+                if (resetReplacesAsrDecision) {
+                    _rebaseAsrDecisionForReset(
+                        rawServerAsrDecision,
+                        serverSettings.independentAsrEnabled
+                    );
+                }
+                const serverAsrDecision = serverResult.reset === true
+                    ? null
+                    : rawServerAsrDecision;
                 // A cross-window toggle can reach localStorage before its POST
                 // reaches the server. In that window the local decision tuple is
                 // newer than the GET snapshot, so the generic field merge must
@@ -1714,7 +1839,7 @@
                 const preserveLocalAsrDecision =
                     !serverSnapshotOlderThanCurrent
                     && serverResult.reset === true
-                    ? false
+                    ? !resetReplacesAsrDecision
                     : !!(_lastAsrDecision
                     && (!serverAsrDecision
                         || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
@@ -1802,7 +1927,9 @@
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
                 }
-                if (!serverSnapshotOlderThanCurrent && serverResult.decisions) {
+                if (!serverSnapshotOlderThanCurrent
+                    && serverResult.reset !== true
+                    && serverResult.decisions) {
                     const previousAsr = S.independentAsrEnabled;
                     const adoptedAsrDecision = _adoptServerAsrDecision({
                         settings: serverSettings,
@@ -2086,7 +2213,11 @@
                 _rememberSharedKeyWrites(meta.changedKeys, meta, incoming);
                 for (const key of meta.serverAuthoritativeKeys) {
                     if (Object.prototype.hasOwnProperty.call(incoming, key)) {
-                        delete _knownSharedKeyWrites[key];
+                        _knownSharedKeyWrites[key] = {
+                            writeId: meta.writeId,
+                            writerId: meta.writerId,
+                            confirmedRevision: meta.serverRevision
+                        };
                     }
                 }
                 if (Number.isInteger(meta.serverRevision)) {

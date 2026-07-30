@@ -669,7 +669,9 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     assert "S.settingsHydrated = true;" in user_initiated_gate, (
         "the hydration mark must sit inside the userInitiated gate"
     )
-    assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index("await fetch(")
+    assert sync_fn.index("S.settingsHydrated = true;") < sync_fn.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
 
     # The independent-ASR toggle handler reaches that marker via
     # syncSettingsToServer({ userInitiated: true }); the saveSettings call it
@@ -713,7 +715,8 @@ def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
 
     # Both GET-failure paths do start the periodic task — that is exactly why
     # the tick itself must carry the guard.
-    finally_block = settings_source.split(".finally(() => {", 1)[1].split(
+    load_fn = settings_source.split("function loadSettings()", 1)[1]
+    finally_block = load_fn.split("}).finally(() => {", 1)[1].split(
         "});", 1
     )[0]
     assert "startPeriodicSync();" in finally_block
@@ -805,7 +808,9 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     assert sync_fn.count("_markUserDirtySettings();") == 1
     user_initiated_gate = _block_after(sync_fn, "if (userInitiated) {")
     assert "_markUserDirtySettings();" in user_initiated_gate
-    assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index("await fetch(")
+    assert sync_fn.index("_markUserDirtySettings();") < sync_fn.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
 
     # (2) loadSettings snapshots the pre-GET settings as the diff baseline
     # before issuing the GET, so keys changed while it is pending diverge
@@ -896,7 +901,9 @@ def test_settings_post_snapshot_waits_bounded_for_boot_get_merge():
     run_sync_body = sync_fn.split("const runSync = async () =>", 1)[1]
     gate_index = run_sync_body.index("await _settingsGetGate;")
     snapshot_index = run_sync_body.index("const settings = getConversationSettings();")
-    fetch_index = run_sync_body.index("await fetch(")
+    fetch_index = run_sync_body.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
     assert gate_index < snapshot_index < fetch_index
 
     # The gate is armed at GET issue time as a race between the settled merge
@@ -952,7 +959,9 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
     # after the predecessor completed — not at call time.
     run_sync_index = sync_fn.index("const runSync = async () =>")
     snapshot_index = sync_fn.index("const settings = getConversationSettings();")
-    fetch_index = sync_fn.index("await fetch(")
+    fetch_index = sync_fn.index(
+        "await _fetchConversationSettingsJsonWithTimeout("
+    )
     assert run_sync_index < snapshot_index < fetch_index
 
     # Negative: the synchronous hydration mark and dirty-key recording stay
@@ -998,10 +1007,10 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
         1,
     )[1]
     assert retry_loop.index("const settings = getConversationSettings();") < retry_loop.index(
-        "await fetch("
+        "await _fetchConversationSettingsJsonWithTimeout("
     )
     assert retry_loop.index("const requestDecision = (") < retry_loop.index(
-        "await fetch("
+        "await _fetchConversationSettingsJsonWithTimeout("
     )
 
 
@@ -1117,6 +1126,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           // look only at the POST calls.
           const postCalls = [];
           const getCalls = [];
+          const timeoutCallbacks = [];
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
@@ -1126,6 +1136,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
               // the harness then exits naturally and stdout always flushes.
               const t = setTimeout(fn, ms);
               if (t && typeof t.unref === 'function') t.unref();
+              timeoutCallbacks.push({ fn, ms, timer: t });
               return t;
             },
             clearTimeout,
@@ -1134,7 +1145,7 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
             fetch(url, opts) {
               return new Promise((resolve, reject) => {
                 if (opts && opts.method === 'POST') {
-                  postCalls.push({ url, body: opts.body, resolve, reject });
+                  postCalls.push({ url, body: opts.body, opts, resolve, reject });
                 } else {
                   getCalls.push({ url, resolve, reject });
                 }
@@ -1160,7 +1171,13 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           // The harness drives hydration and the toggle state explicitly from
           // a clean baseline.
           sandbox.window.appState.settingsHydrated = false;
-          return { postCalls, getCalls, S: sandbox.window.appState, mod: sandbox.window.appSettings };
+          return {
+            postCalls,
+            getCalls,
+            timeoutCallbacks,
+            S: sandbox.window.appState,
+            mod: sandbox.window.appSettings,
+          };
         }
 
         const okResponse = { ok: true, json: async () => ({ success: true }) };
@@ -1221,6 +1238,37 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
           postCalls[3].resolve(okResponse);
           await p3;
           await p4;
+
+          // A transport that never settles must time out and release the
+          // serialization tail so the later user state can still be sent.
+          const timeoutCountBeforeStall = ctx.timeoutCallbacks.length;
+          S.independentAsrEnabled = true;
+          const p5 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          S.independentAsrEnabled = false;
+          const p6 = mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          assert(postCalls.length === 5, 'fifth sync in flight, sixth queued');
+          const requestTimeout = ctx.timeoutCallbacks
+            .slice(timeoutCountBeforeStall)
+            .find(
+              (timer) => timer.ms === 15000
+          );
+          assert(requestTimeout, 'the in-flight request must have a bounded timeout');
+          requestTimeout.fn();
+          await tick();
+          await tick();
+          assert(
+            postCalls.length === 6,
+            'a timed-out predecessor must release the queued sync'
+          );
+          assert(
+            JSON.parse(postCalls[5].body).independentAsrEnabled === false,
+            'the post-timeout sync must rebuild from the final state'
+          );
+          postCalls[5].resolve(okResponse);
+          await p5;
+          await p6;
 
           // Negative: a non-userInitiated (periodic-style) call never marks
           // hydration — and after a FAILED boot GET, with nothing the user
@@ -1471,9 +1519,16 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               })
           );
           assert(reset.postCalls.length === 1, 'the reset defaults must be written back once');
+          const resetWritebackDecision = JSON.parse(
+            reset.postCalls[0].opts.headers[
+              'X-Conversation-Settings-ASR-Decision'
+            ]
+          );
           assert(
-            !('X-Conversation-Settings-ASR-Decision' in reset.postCalls[0].opts.headers),
-            'a reset writeback must not attach the stale opposite ASR tuple'
+            resetWritebackDecision.value === false
+              && resetWritebackDecision.writeId
+                > resetPriorDecision.writeId,
+            'a reset writeback must rebase the stale tuple onto the reset default'
           );
           assert(
             reset.postCalls[0].opts.headers['X-Conversation-Settings-Full-Snapshot'] === '1',
@@ -1496,11 +1551,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               revision: 11,
               reset: false,
               decisions: {
-                independentAsrEnabled: {
-                  writeId: resetPriorDecision.writeId + 1,
-                  writerId: 'server-legacy',
-                  value: false,
-                },
+                independentAsrEnabled: resetWritebackDecision,
               },
             }
           ));
@@ -1513,6 +1564,99 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               && resetPersisted._sharedWriteMeta.serverRevision === 11,
             'a full-write success must adopt and rebroadcast the generated server ASR tuple'
           );
+
+          const resetRace = makeContext(false, {
+            success: true,
+            settings: {},
+            revision: 10,
+            reset: true,
+            telemetryBranch: null,
+            decisions: { independentAsrEnabled: resetPriorDecision },
+          });
+          await tick();
+          await tick();
+          assert(
+            resetRace.postCalls.length === 1,
+            'the reset-race writeback must start'
+          );
+          const resetRaceBaselineDecision = JSON.parse(
+            resetRace.postCalls[0].opts.headers[
+              'X-Conversation-Settings-ASR-Decision'
+            ]
+          );
+          resetRace.S.independentAsrEnabled = true;
+          resetRace.mod.saveSettings({
+            skipServerSync: true,
+            explicitSharedKeys: ['independentAsrEnabled'],
+          });
+          const resetToggleSync = resetRace.mod.syncSettingsToServer({
+            userInitiated: true,
+          });
+          await tick();
+          assert(
+            resetRace.postCalls.length === 1,
+            'the user toggle must queue behind the reset writeback'
+          );
+          const resetToggleDecision = JSON.parse(
+            resetRace.store.get('project_neko_settings')
+          )._sharedWriteMeta.asrDecision;
+          assert(
+            resetToggleDecision.value === true
+              && resetToggleDecision.writeId
+                > resetRaceBaselineDecision.writeId,
+            'a toggle during reset must mint above the rebased reset decision'
+          );
+          resetRace.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-11"',
+            {
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                slopFilterEnabled: true,
+              },
+              revision: 11,
+              reset: false,
+              decisions: {
+                independentAsrEnabled: resetRaceBaselineDecision,
+              },
+            }
+          ));
+          await tick();
+          await tick();
+          assert(
+            resetRace.S.independentAsrEnabled === true
+              && resetRace.postCalls.length === 2,
+            'the older reset response must not overwrite the queued toggle'
+          );
+          const resetToggleBody = JSON.parse(resetRace.postCalls[1].opts.body);
+          const resetToggleHeader = JSON.parse(
+            resetRace.postCalls[1].opts.headers[
+              'X-Conversation-Settings-ASR-Decision'
+            ]
+          );
+          assert(
+            resetToggleBody.independentAsrEnabled === true
+              && JSON.stringify(resetToggleHeader)
+                === JSON.stringify(resetToggleDecision),
+            'the queued sync must persist the newer toggle tuple'
+          );
+          resetRace.postCalls[1].resolve(response(
+            true,
+            200,
+            '"conversation-settings-12"',
+            {
+              success: true,
+              settings: resetToggleBody,
+              revision: 12,
+              reset: false,
+              decisions: {
+                independentAsrEnabled: resetToggleDecision,
+              },
+            }
+          ));
+          await resetToggleSync;
 
           const noiseMerge = makeContext(false, {
             success: true,
@@ -1552,6 +1696,26 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 .includes('proactiveVisionEnabled'),
             'a server winner must carry its real revision and authoritative fields'
           );
+          serverBroadcaster.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                },
+              },
+            },
+          }));
+          assert(
+            serverBroadcaster.S.proactiveVisionEnabled === false,
+            'the broadcasting window must retain its own server-authority floor'
+          );
 
           const receiver = makeContext(true);
           await tick();
@@ -1583,6 +1747,49 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               && receiver.runtime.stoppedScreening === 1
               && receiver.runtime.stoppedTracks === 1,
             'the authoritative privacy disable must stop active vision runtime'
+          );
+          receiver.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                  confirmedRevision: 1,
+                },
+              },
+            },
+          }));
+          assert(
+            receiver.S.proactiveVisionEnabled === false,
+            'an accepted server winner must retain a floor against delayed old events'
+          );
+          const newerVisionWriteId =
+            serverSnapshot._sharedWriteMeta.writeId + 1;
+          receiver.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: newerVisionWriteId,
+              writerId: 'window-new',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: newerVisionWriteId,
+                  writerId: 'window-new',
+                },
+              },
+            },
+          }));
+          assert(
+            receiver.S.proactiveVisionEnabled === true,
+            'a genuinely newer explicit event must still supersede the server floor'
           );
 
           const staleReceiver = makeContext(false, {
@@ -3395,13 +3602,13 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
         run_sync_body.index("await _settingsGetGate;")
         < run_sync_body.index("const settings = getConversationSettings();")
         < run_sync_body.index("const payload =")
-        < run_sync_body.index("await fetch(")
+        < run_sync_body.index("await _fetchConversationSettingsJsonWithTimeout(")
     )
     # An empty dirty set means nothing user-authoritative exists yet: skip the
     # POST entirely rather than write pre-merge values.
     assert "if (Object.keys(payload).length === 0) {" in run_sync_body
     assert run_sync_body.index("if (Object.keys(payload).length === 0) {") < run_sync_body.index(
-        "await fetch("
+        "await _fetchConversationSettingsJsonWithTimeout("
     )
 
     # The picker copies ONLY pending keys (negative: acknowledged or untouched
