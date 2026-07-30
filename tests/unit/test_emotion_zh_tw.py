@@ -887,3 +887,33 @@ def test_same_position_ties_prefer_the_longer_alias(monkeypatch):
     monkeypatch.setitem(R._EMOTION_COMPACT_ALIAS_LOOKUP, "難", "angry")
     monkeypatch.setitem(R._EMOTION_NORMALIZED_ALIAS_LOOKUP, "難", "angry")
     assert R._normalize_emotion_label("他難過") == "sad"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # denies one emotion and asserts another: the assertion is the answer
+    ("我難過不起來但很開心", "happy"),
+    ("難過不起來但很開心", "happy"),
+    ("我笑不起來，其實很開心", "happy"),
+    # nothing follows the marker, so the denial IS the answer
+    ("開心不起來", "neutral"), ("難過不起來", "neutral"),
+    ("我笑不起來，其實真的開心不起來", "neutral"),
+])
+def test_postposed_negation_does_not_veto_a_later_emotion(label, expected, confidence):
+    """A denied emotion earlier must not outrank an asserted one later.
+
+    The suffix branch answers for the *whole* label, so firing it whenever the
+    head reads as an emotion reported the denial as the result.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", ["슬프지 않아", "기쁘지 않아"])
+def test_korean_whole_label_negation_is_unchanged(label, confidence):
+    """Korean attaches its negation to the verb ending, so it really is whole-label.
+
+    That branch matches the head fuzzily rather than by alias, which is why the
+    two mechanisms have to coexist.
+    """
+    assert _label(label, confidence) == "neutral"

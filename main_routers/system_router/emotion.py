@@ -177,6 +177,18 @@ def _looks_like_emotion_compact_candidate(candidate, cutoff):
     ))
 
 
+def _alias_after(compact_text, position):
+    """Whether any emotion alias appears at or after `position`.
+
+    Scoped to what follows the marker on purpose, so the very word being denied
+    cannot count as the later assertion. On today's tables the per-match check in
+    the alias scan happens to reach the same answer either way, so no test can
+    tell the two apart — the scoping is intent, not a load-bearing optimisation.
+    """
+    tail = compact_text[position:]
+    return any(alias and alias in tail for alias in _EMOTION_COMPACT_ALIAS_LOOKUP)
+
+
 def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
     tokens = [token for token in _EMOTION_TOKEN_RE.findall(normalized_text) if token]
     if tokens and any(token in _EMOTION_NEGATION_WORDS for token in tokens):
@@ -212,13 +224,14 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
         marker_index = compact_text.find(negation)
         while marker_index > 0:
             head = compact_text[:marker_index]
-            if _looks_like_emotion_compact_candidate(head, fuzzy_compact_cutoff):
-                return True
-            # The marker negates the emotion word it follows, not the whole
-            # label: a sentence-style answer puts something in front of that
-            # word, and requiring the entire head to look like an alias missed
-            # all of them.
-            if any(head.endswith(alias) for alias in _EMOTION_COMPACT_ALIAS_LOOKUP):
+            # This branch answers for the ENTIRE label, so it may only fire when
+            # nothing follows the marker: `我難過不起來但很開心` denies the first
+            # emotion and asserts the second, and vetoing here would report the
+            # denial as the answer. A marker that negates one word among several
+            # is handled per match in the alias scan below instead.
+            if _looks_like_emotion_compact_candidate(
+                head, fuzzy_compact_cutoff
+            ) and not _alias_after(compact_text, marker_index + len(negation)):
                 return True
             marker_index = compact_text.find(negation, marker_index + 1)
 
@@ -341,7 +354,10 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             match_start = compact_text.find(compact_alias, search_start)
             if match_start < 0:
                 break
-            if not _is_negated_compact_match(match_start):
+            if not _is_negated_compact_match(match_start) and not any(
+                compact_text.startswith(marker, match_start + len(compact_alias))
+                for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+            ):
                 matches.append((match_start, -len(compact_alias), canonical))
             search_start = match_start + len(compact_alias)
 
