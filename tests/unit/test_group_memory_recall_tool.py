@@ -728,10 +728,10 @@ async def test_revocation_after_tool_read_discards_reply_and_tool_rows():
 
 @pytest.mark.asyncio
 async def test_pre_tool_text_never_reaches_the_outbound_message():
-    """The model says "我查一下" before calling the tool. That segment is
-    persisted by the client into the assistant tool_calls row (and swept
-    with it) — the QQ message the group receives must contain only the
-    post-tool answer."""
+    """The model announces a lookup ("let me check") before calling the
+    tool. That segment is persisted by the client into the assistant
+    tool_calls row (and swept with it) — the QQ message the group
+    receives must contain only the post-tool answer."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
