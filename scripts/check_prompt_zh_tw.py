@@ -124,44 +124,53 @@ def _string_keys(node: ast.AST) -> set[str]:
     return set()
 
 
-def _is_merged_construction(node: ast.AST) -> bool:
-    """Whether this node assembles a mapping out of other mappings.
+def _merge_operands(node: ast.AST) -> list[ast.AST]:
+    """The sub-mappings a merged construction composes, or ``[]`` if not a merge.
 
-    ``{**a, **b}``, ``dict(BASE, zh=...)`` and ``a | b`` all have keys that are
-    not statically knowable, and their component literals are *fragments* rather
-    than tables: the ``'zh-TW'`` entry may live in any one of them.
+    ``{**a, **b}``, ``dict(BASE, zh=...)`` and ``a | b`` compose their keys out of
+    other mappings, so each operand is a *fragment*: the ``'zh-TW'`` entry may
+    live in any one of them and none can be judged alone.
+
+    Only the operands themselves. A value keyed normally alongside a spread
+    (``{**COMMON, "new": {...}}``) is not a fragment — it is an independent table
+    that happens to sit in a merged container.
     """
     if isinstance(node, ast.Dict):
-        return any(k is None for k in node.keys)
+        return [v for k, v in zip(node.keys, node.values) if k is None]
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "dict"
     ):
-        return bool(node.args) or any(kw.arg is None for kw in node.keywords)
+        return list(node.args) + [kw.value for kw in node.keywords if kw.arg is None]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return True
-    return False
+        return [node.left, node.right]
+    return []
 
 
 def _table_nodes(tree: ast.AST) -> Iterator[ast.AST]:
-    """Yield dict-shaped nodes, pruning the innards of merged constructions.
+    """Yield dict-shaped nodes, suppressing merge fragments.
 
-    Skipping a merged construction is not enough — ``ast.walk`` would still
-    descend into it and judge each component literal on its own, reporting the
-    fragment that happens to lack ``'zh-TW'`` even though the assembled mapping
-    carries it. So a merged construction is skipped *with its descendants*.
+    Two failure modes to thread between:
 
-    Ordinary nesting (``{"greeting": {"en": ..., "zh": ...}}``) is not merging:
-    the inner dict is a table in its own right and is still yielded.
+      * Plain ``ast.walk`` judges each operand of a merge on its own, so
+        ``{**{"en": ..., "zh": ...}, **{"zh-TW": ...}}`` reports the first half as
+        missing zh-TW even though the assembled mapping has it.
+      * Pruning a merge's whole subtree instead loses the independent tables
+        inside it — ``{**COMMON, "new": {"en": ..., "zh": ...}}`` would never
+        check ``"new"``.
+
+    So operand roots are suppressed (not yielded) while traversal continues
+    through them and through everything else the container holds.
     """
+    suppressed: set[int] = set()
     stack: list[ast.AST] = [tree]
     while stack:
         node = stack.pop()
-        if _is_merged_construction(node):
-            continue
-        if isinstance(node, (ast.Dict, ast.Call)):
+        if isinstance(node, (ast.Dict, ast.Call)) and id(node) not in suppressed:
             yield node
+        for operand in _merge_operands(node):
+            suppressed.add(id(operand))
         stack.extend(ast.iter_child_nodes(node))
 
 

@@ -582,6 +582,32 @@ def test_merged_construction_fragments_are_not_judged(src):
     assert _violations(src) == []
 
 
+@pytest.mark.parametrize("src", [
+    'P = {**COMMON, "new": {"en": "hello", "zh": "hi"}}',
+    'P = dict(BASE, extra={"en": "a", "zh": "b"})',
+    'P = {**A, "k": {"en": "x", "zh": "y"}}',
+])
+def test_independent_tables_inside_a_merged_container_are_still_judged(src):
+    """Suppression must cover merge *operands*, not the container's whole subtree.
+
+    A value keyed normally alongside a spread is an independent table that merely
+    sits in a merged container. Pruning the subtree — the first attempt at fixing
+    the fragment false-positive — silently stopped checking these entirely.
+    """
+    assert len(_violations(src)) == 1
+
+
+def test_merge_fragment_and_independent_table_side_by_side():
+    """Only the independent table is reported when both live in one container."""
+    src = '''
+    P = {
+        **{"en": "f", "zh": "g"},
+        "ind": {"en": "x", "zh": "y"},
+    }
+    '''
+    assert _violations(src) == [4]
+
+
 def test_ordinary_nesting_is_still_judged_in_source_order():
     """Pruning merged constructions must not stop ordinary nesting being checked.
 
