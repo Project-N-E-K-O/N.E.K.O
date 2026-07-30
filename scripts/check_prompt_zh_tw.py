@@ -367,7 +367,9 @@ def _generator_pair_keys(node: ast.GeneratorExp) -> set[str] | None:
     handed to ``_comprehension_keys`` in the slots a DictComp keeps them in, so the
     two spellings cannot drift apart.
     """
-    if not isinstance(node.elt, ast.Tuple) or len(node.elt.elts) != 2:
+    # A list element is as valid a pair as a tuple one — `dict` only asks for a
+    # two-item iterable, and `_pair_sequence_keys` already accepts both.
+    if not isinstance(node.elt, (ast.Tuple, ast.List)) or len(node.elt.elts) != 2:
         return None
     return _comprehension_keys(
         ast.DictComp(
@@ -386,6 +388,61 @@ def _source_position(node: ast.AST) -> tuple[int, int]:
     them as preceding the mutation in the middle.
     """
     return getattr(node, "lineno", 0), getattr(node, "col_offset", 0)
+
+
+def _subscript_key(slot: ast.AST) -> str | None:
+    """The constant string key of ``NAME["key"]``, or None for anything else."""
+    if (
+        isinstance(slot, ast.Subscript)
+        and isinstance(slot.value, ast.Name)
+        and isinstance(slot.slice, ast.Constant)
+        and isinstance(slot.slice.value, str)
+    ):
+        return slot.slice.value
+    return None
+
+
+def _unpacked_bindings(target: ast.AST, value: ast.AST) -> list[tuple[str, ast.AST]]:
+    """``(name, bound expression)`` pairs an assignment establishes.
+
+    A plain ``T = {...}`` is one pair. Unpacking is the other shape that binds a
+    name to a table: ``T, flag = ({...}, True)`` reads as an ordinary way to bind
+    two things at once, and registering only top-level Name targets left a later
+    ``T["zh-TW"] = t`` with no binding to exempt.
+
+    Positional only, and only when both sides are literal sequences — anything
+    else (a call, a name) makes the pairing unknowable, and guessing here would
+    exempt the wrong table. A starred slot is paired from both ends around it, the
+    way Python does; the starred name itself always receives a list, never a
+    table, so it binds nothing.
+    """
+    if isinstance(target, ast.Name):
+        return [(target.id, value)]
+    if not (
+        isinstance(target, (ast.Tuple, ast.List))
+        and isinstance(value, (ast.Tuple, ast.List))
+    ):
+        return []
+    stars = [i for i, slot in enumerate(target.elts) if isinstance(slot, ast.Starred)]
+    if len(stars) > 1:
+        return []
+    if not stars:
+        if len(target.elts) != len(value.elts):
+            return []  # a ValueError at runtime; the gate does not guess past it
+        head, tail = list(zip(target.elts, value.elts)), []
+    else:
+        star = stars[0]
+        after = len(target.elts) - star - 1
+        if len(value.elts) < star + after:
+            return []
+        head = list(zip(target.elts[:star], value.elts[:star]))
+        tail = list(
+            zip(target.elts[star + 1:], value.elts[len(value.elts) - after:])
+        ) if after else []
+    pairs: list[tuple[str, ast.AST]] = []
+    for slot, item in head + tail:
+        pairs.extend(_unpacked_bindings(slot, item))
+    return pairs
 
 
 def _assignment_slots(targets: list[ast.AST]) -> list[ast.AST]:
@@ -565,10 +622,12 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if isinstance(node, ast.Assign):
             # Every simple target, so a chained `T = U = {...}` registers both —
             # they name the same object, and a mutation through either completes it.
+            # Unpacking counts too: `T, flag = ({...}, True)` binds T just as much,
+            # and without it a later `T["zh-TW"] = t` found nothing to exempt.
             for target in node.targets:
-                if isinstance(target, ast.Name):
-                    assignments.setdefault(target.id, []).append(
-                        (_source_position(node.value), node.value)
+                for bound, value in _unpacked_bindings(target, node.value):
+                    assignments.setdefault(bound, []).append(
+                        (_source_position(value), value)
                     )
             continue
         if (
@@ -587,6 +646,62 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         )
     for bindings in assignments.values():
         bindings.sort(key=lambda item: item[0])
+
+    # What each name's table gains and loses after it is bound, in source order.
+    # A name is not only what it was bound to: `TW = {}` / `TW["zh-TW"] = t` is an
+    # ordinary way to assemble one, and reading only the literal saw an empty
+    # table. The same index answers the reverse — a later `del TW["zh-TW"]` means
+    # an earlier backfill no longer makes its table compliant.
+    mutations: dict[str, list[tuple[tuple[int, int], set[str], set[str]]]] = {}
+
+    def _record(name: str, at: tuple[int, int], added: set[str], removed: set[str]) -> None:
+        if added or removed:
+            mutations.setdefault(name, []).append((at, added, removed))
+
+    for node in ast.walk(tree):
+        at = _source_position(node)
+        slots: list[ast.AST] = []
+        if isinstance(node, ast.Assign):
+            slots = _assignment_slots(node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            slots = _assignment_slots([node.target])
+        elif isinstance(node, ast.Delete):
+            for slot in _assignment_slots(node.targets):
+                key = _subscript_key(slot)
+                if key is not None:
+                    _record(slot.value.id, at, set(), {key})
+            continue
+        for slot in slots:
+            key = _subscript_key(slot)
+            if key is not None:
+                _record(slot.value.id, at, {key}, set())
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+        ):
+            if node.func.attr == "setdefault" and node.args:
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    _record(node.func.value.id, at, {first.value}, set())
+            elif node.func.attr == "update":
+                # Only what the payload states outright. Resolving names here would
+                # need the very index being built.
+                added: set[str] = set()
+                for payload in list(node.args) + [
+                    kw.value for kw in node.keywords if kw.arg is None
+                ]:
+                    added |= resolve_keys(payload) or _pair_sequence_keys(payload) or set()
+                _record(node.func.value.id, at, added, set())
+        elif (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.BitOr)
+            and isinstance(node.target, ast.Name)
+        ):
+            _record(node.target.id, at, resolve_keys(node.value) or set(), set())
+
+    for entries in mutations.values():
+        entries.sort(key=lambda item: item[0])
 
     # Every node back to the bound expression it sits inside, so a self-rebinding
     # merge can be recognized through any wrapper. Identity against the merge node
@@ -630,6 +745,23 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             return pos, value
         return None
 
+    def _traditional_removed_after(name: str, at: tuple[int, int]) -> bool:
+        """Whether `del name["zh-TW"]` undoes a backfill before `name` is rebound.
+
+        The exemption says "this literal is compliant by the time it runs". A later
+        removal makes that false again, and since a deletion creates no mapping node
+        of its own, nothing else would notice.
+        """
+        rebound = next(
+            (pos for pos, _ in assignments.get(name, ()) if pos > at), None
+        )
+        for pos, _added, removed in mutations.get(name, ()):
+            if pos <= at or (rebound is not None and pos > rebound):
+                continue
+            if TRADITIONAL_KEY in removed:
+                return True
+        return False
+
     def _exempt_binding_before(
         name: str, at: tuple[int, int], strict: bool = False
     ) -> None:
@@ -640,6 +772,8 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         bare ``Name``, so ``F``'s literal — the node actually judged — stayed
         subject to the rule and a compliant table still grew the count.
         """
+        if _traditional_removed_after(name, at):
+            return
         pending, walked = [(name, at, strict)], set()
         while pending:
             current, pos, skip_self = pending.pop()
@@ -721,7 +855,14 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if found is None:
             return set()
         bound_at, value = found
-        return _mapping_keys(value, bound_at, strict=True)
+        keys = _mapping_keys(value, bound_at, strict=True)
+        # Plus whatever demonstrable mutations did to it between then and here.
+        # `TW = {}` / `TW["zh-TW"] = t` / `T.update(TW)` assembles a supplier in two
+        # steps, and reading only the literal saw an empty table.
+        for pos, added, removed in mutations.get(name, ()):
+            if bound_at < pos <= at:
+                keys = (keys | added) - removed
+        return keys
 
     for node in ast.walk(tree):
         # `T["zh-TW"] = t`, and its annotated form `T["zh-TW"]: str = t`.

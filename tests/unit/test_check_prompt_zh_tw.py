@@ -2036,3 +2036,133 @@ def test_unpacking_target_for_another_key_still_reports():
     src = 'T = {"en": "e", "zh": "s"}\nT["ja"], marker = "j", True'
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T, marker = ({"en": "e", "zh": "s"}, True)\nT["zh-TW"] = "t"',
+    'a, (T, b) = (1, ({"en": "e", "zh": "s"}, 2))\nT["zh-TW"] = "t"',
+])
+def test_unpacking_also_binds_a_name_to_a_table(src):
+    """`T, flag = ({...}, True)` binds T as much as `T = {...}` does.
+
+    Registering only top-level Name targets left the later backfill with no
+    binding to exempt, so the compliant table was still reported.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T, marker = ({"en": "e", "zh": "s"}, True)', [1]),
+    # not a literal sequence on both sides: the pairing is unknowable, and
+    # guessing would exempt whichever table happened to be nearby
+    ('T, m = f()\nT["zh-TW"] = "t"\nU = {"en": "e", "zh": "s"}', [3]),
+])
+def test_unpacking_binding_stays_narrow(src, expected):
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = dict([loc, build(loc)] for loc in ("en", "zh"))', [1]),
+    ('T = dict([loc, build(loc)] for loc in ("en", "zh", "zh-TW"))', []),
+])
+def test_generator_pairs_may_be_lists(src, expected):
+    """`dict` only asks for a two-item iterable, and the pair-sequence path
+    already accepted both — so the generator one has to as well."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    'TW = {}\nTW["zh-TW"] = "t"\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    'TW = {}\nTW.update({"zh-TW": "t"})\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    'TW = {}\nTW.setdefault("zh-TW", "t")\nT = {"en": "e", "zh": "s"}\nT |= TW',
+])
+def test_a_supplier_may_be_assembled_in_two_steps(src):
+    """A name is not only what it was bound to.
+
+    `TW = {}` / `TW["zh-TW"] = t` is an ordinary way to build a table, and reading
+    only the literal saw an empty one — so the compliant target got reported.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('TW = {}\nTW["ja"] = "j"\nT = {"en": "e", "zh": "s"}\nT.update(TW)', [3]),
+    # the assembly happens after the use, so it cannot have supplied anything
+    ('TW = {}\nT = {"en": "e", "zh": "s"}\nT.update(TW)\nTW["zh-TW"] = "t"', [2]),
+])
+def test_assembled_supplier_is_read_in_source_order(src, expected):
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_deleting_the_key_revokes_the_backfill_exemption():
+    """The exemption claims the literal is compliant by the time it runs.
+
+    A later removal makes that false again, and a deletion creates no mapping node
+    of its own, so nothing else would have noticed.
+    """
+    src = 'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\ndel T["zh-TW"]'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\ndel T["ja"]',
+    # the deletion applies to the table bound on line 3, not to the one the
+    # backfill completed — the first literal really was compliant while it lived
+    'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\n'
+    'T = {"en": "e2", "zh": "s2", "zh-TW": "t2"}\ndel T["zh-TW"]',
+])
+def test_revocation_is_scoped_to_the_binding_it_applies_to(src):
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    # names before and after a starred slot pair from their own end, as Python does
+    'T, *rest = ({"en": "e", "zh": "s"}, 1, 2)\nT["zh-TW"] = "t"',
+    '*rest, T = (1, 2, {"en": "e", "zh": "s"})\nT["zh-TW"] = "t"',
+    'a, *rest, T = (1, 2, 3, {"en": "e", "zh": "s"})\nT["zh-TW"] = "t"',
+])
+def test_starred_unpacking_pairs_from_both_ends(src):
+    """Refusing to pair anything with a star present is a false positive.
+
+    These bindings are perfectly ordinary at runtime, so the backfill really does
+    complete the table.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    # a ValueError at runtime — the gate must not guess past broken code
+    ('T, m = ({"en": "e", "zh": "s"},)\nT["zh-TW"] = "t"', [1]),
+    ('T, m, x = ({"en": "e", "zh": "s"}, 1)\nT["zh-TW"] = "t"', [1]),
+    # the starred name receives a list, never a table
+    ('*T, b = ({"en": "e", "zh": "s"}, 1)\nT["zh-TW"] = "t"', [1]),
+    # too few values for the slots around the star — also a runtime ValueError
+    ('a, *rest, T = ({"en": "e", "zh": "s"},)\nT["zh-TW"] = "t"', [1]),
+    # two starred slots parse fine but fail at compile time, so the module could
+    # never be imported; the gate still must not invent a pairing for it
+    ('*a, T, *b = (1, {"en": "e", "zh": "s"}, 2)\nT["zh-TW"] = "t"', [1]),
+])
+def test_unknowable_unpacking_binds_nothing(src, expected):
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_mutations_before_the_binding_do_not_count():
+    """A rebinding wipes whatever earlier mutations had put there.
+
+    Reading the whole file's mutations for a name would carry a key across a
+    rebinding that discarded it, and exempt a target that really is missing zh-TW.
+    """
+    src = (
+        "TW = {}\n"
+        'TW["zh-TW"] = "t"\n'
+        "TW = {}\n"
+        'T = {"en": "e", "zh": "s"}\n'
+        "T.update(TW)"
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [4]
