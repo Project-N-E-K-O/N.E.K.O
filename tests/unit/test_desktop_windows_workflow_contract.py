@@ -8,6 +8,7 @@ CROSS_PLATFORM_WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop.yml"
 WINDOWS_WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop-windows.yml"
 SYNC_UPDATE_WORKFLOW = ROOT / ".github" / "workflows" / "sync-update-release.yml"
 LOCAL_RELEASE_SCRIPT = ROOT / "scripts" / "build-desktop-release.ps1"
+LOCAL_ASSET_PUBLISH_SCRIPT = ROOT / "scripts" / "publish-desktop-release-assets.ps1"
 
 
 def _load_workflow(path: Path) -> dict:
@@ -176,14 +177,14 @@ def test_windows_only_nightly_preserves_other_platform_assets() -> None:
     assert "gh release upload nightly release/* --clobber" in windows_nightly["run"]
 
 
-def test_published_stable_release_is_the_only_update_service_sync_trigger() -> None:
+def test_published_stable_release_validation_never_contacts_update_service() -> None:
     workflow = _load_workflow(SYNC_UPDATE_WORKFLOW)
-    condition = workflow["jobs"]["sync"]["if"]
+    condition = workflow["jobs"]["validate"]["if"]
 
     assert "!github.event.release.draft" in condition
     assert "!github.event.release.prerelease" in condition
     assert "startsWith(github.event.release.tag_name, 'v')" in condition
-    validate = _steps_by_name(workflow, "sync")["Validate stable release assets"]
+    validate = _steps_by_name(workflow, "validate")["Validate stable release assets"]
     expected_signatures = (
         "N.E.K.O_${VERSION}_win_manifest.json.sig",
         "N.E.K.O_${VERSION}_mac_x64_manifest.json.sig",
@@ -192,6 +193,23 @@ def test_published_stable_release_is_the_only_update_service_sync_trigger() -> N
         "N.E.K.O_${VERSION}_linux_x64_appimage_manifest.json.sig",
     )
     assert all(f'"{asset}"' in validate["run"] for asset in expected_signatures)
+
+    raw_workflow = SYNC_UPDATE_WORKFLOW.read_text(encoding="utf-8")
+    assert "ALIYUN_OSS_" not in raw_workflow
+    assert "ossutil" not in raw_workflow
+    assert "NEKO_UPDATE_" not in raw_workflow
+    assert "/v1/admin/" not in raw_workflow
+
+
+def test_local_asset_publish_uses_staged_build_output_without_downloading_release_assets() -> None:
+    script = LOCAL_ASSET_PUBLISH_SCRIPT.read_text(encoding="utf-8")
+
+    assert "release-assets" in script
+    assert "Get-ChildItem -LiteralPath $AssetsDirectory -Recurse -File" in script
+    assert "gh release download" not in script
+    assert "ossutil 'cp' $asset.FullName" in script
+    assert "Compare-Object -ReferenceObject" in script
+    assert "NEKO_UPDATE_ADMIN_TOKEN" in script
 
 
 def test_portable_manifest_signing_is_required_for_nightly_and_local_stable_builds() -> None:

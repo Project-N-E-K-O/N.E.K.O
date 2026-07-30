@@ -43,6 +43,24 @@ create` or `gh release upload`.
 Test every staged package before creating a non-prerelease GitHub Release. A
 published stable release must include these Portable full packages, manifests,
 and manifest `.sig` files for Windows x64, macOS x64/arm64, Linux x64, and Linux
-x64 AppImage. Uploading verified CDN/object-storage copies is separate; set
-`NEKO_UPDATE_MIRROR_IDS` only after every release asset is available on those
-mirrors.
+x64 AppImage.
+
+Publishing the Release runs GitHub-side asset validation only; it does not call
+N.E.K.O.-Update. After every native build has been collected under
+`release-assets/<version>/`, run the following on the local release host:
+
+```powershell
+$env:NEKO_UPDATE_ADMIN_TOKEN = '<secret>'
+.\scripts\publish-desktop-release-assets.ps1 `
+  -Tag 'v0.8.4' `
+  -OssReleaseRoot 'oss://<local-bucket>/releases' `
+  -CdnBaseUrl 'https://download.project-neko.cn' `
+  -ServiceUrl 'https://update.project-neko.cn'
+```
+
+The script uploads the already staged build artifacts directly; it never
+downloads them from GitHub. Before upload it verifies that the staged filenames
+exactly match the published Release, then verifies each CDN URL and registers the
+`aliyun` mirror. OSS credentials, endpoints, and Bucket names stay exclusively
+in the local ossutil configuration and are never added to GitHub Actions,
+repository variables, or repository files.

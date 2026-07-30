@@ -1,4 +1,4 @@
-name: Sync Published Stable Release
+name: Validate Published Stable Release
 
 on:
   release:
@@ -8,9 +8,9 @@ permissions:
   contents: read
 
 jobs:
-  sync:
+  validate:
     # A stable release must be deliberately published after local testing.
-    # Drafts and prereleases never become update-service metadata.
+    # Drafts and prereleases are never validated by this workflow.
     if: >-
       github.repository == 'Project-N-E-K-O/N.E.K.O' &&
       !github.event.release.draft &&
@@ -58,36 +58,3 @@ jobs:
           done
           (( missing == 0 ))
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
-
-      # Only list mirrors that have already received and verified every asset.
-      # An empty value intentionally keeps GitHub Release as the download source.
-      - name: Sync release metadata to update service
-        env:
-          NEKO_UPDATE_SERVER: ${{ vars.NEKO_UPDATE_SERVER }}
-          NEKO_UPDATE_ADMIN_TOKEN: ${{ secrets.NEKO_UPDATE_ADMIN_TOKEN }}
-          NEKO_UPDATE_MIRROR_IDS: ${{ vars.NEKO_UPDATE_MIRROR_IDS }}
-          NEKO_UPDATE_VERSION: ${{ steps.validate.outputs.version }}
-        run: |
-          set -euo pipefail
-          if [[ -z "${NEKO_UPDATE_SERVER:-}" || -z "${NEKO_UPDATE_ADMIN_TOKEN:-}" ]]; then
-            echo "::warning::Skipping update-service sync: configure NEKO_UPDATE_SERVER and NEKO_UPDATE_ADMIN_TOKEN to enable it."
-            exit 0
-          fi
-          if [[ "$NEKO_UPDATE_SERVER" != https://* ]]; then
-            echo "::error::NEKO_UPDATE_SERVER must be an HTTPS URL"
-            exit 1
-          fi
-
-          mirror_ids="$(jq -cn --arg values "${NEKO_UPDATE_MIRROR_IDS:-}" \
-            '$values | split(",") | map(gsub("^\\s+|\\s+$"; "") | select(length > 0))')"
-          payload="$(jq -cn \
-            --arg version "$NEKO_UPDATE_VERSION" \
-            --argjson mirror_ids "$mirror_ids" \
-            '{version: $version, mirror_ids: $mirror_ids}')"
-
-          curl --fail-with-body --retry 3 --retry-all-errors --connect-timeout 10 --max-time 60 \
-            --silent --show-error \
-            --request POST "${NEKO_UPDATE_SERVER%/}/v1/admin/N.E.K.O/stable/sync" \
-            --header "Authorization: Bearer $NEKO_UPDATE_ADMIN_TOKEN" \
-            --header 'Content-Type: application/json' \
-            --data "$payload"
