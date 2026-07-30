@@ -890,6 +890,116 @@ async def test_protected_cap_counts_only_entries_that_actually_render():
     )
 
 
+def test_markup_allowance_covers_the_worst_rendered_decoration():
+    """The gate's per-entry allowance is a worst case, not a typical one.
+
+    Composition adds ``- `` and a newline to every entry, and a localized
+    ``[13 months ago] `` prefix to stale reflections on top. An allowance
+    sized for the common case lets a block of short stale reflections slip
+    past the gate and then add several uncounted tokens apiece.
+    """
+    from datetime import timedelta
+
+    from config import SCOPED_RENDER_ENTRY_MARKUP_TOKENS as MARKUP
+    from memory.temporal import time_since_label
+
+    now = datetime.now()
+    worst = count_tokens("- ") + count_tokens("\n")
+    for lang in ("zh", "en", "ja", "ko", "ru", "es", "pt"):
+        for days in (1, 10, 45, 400):
+            label = time_since_label(
+                (now - timedelta(days=days)).isoformat(), now=now, lang=lang,
+            )
+            worst = max(worst, count_tokens("- ") + count_tokens("\n")
+                        + count_tokens(f"[{label}] "))
+    assert MARKUP >= worst, (
+        f"实测最坏单条装饰 {worst} tok（含过时 reflection 的时间标签前缀），"
+        f"预留只有 {MARKUP} tok——短条目多时整块会越过总闸"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_member_does_not_cap_the_members_behind_it():
+    """A subject with nothing recorded spends nothing, so it must not set
+    the ceiling for the members after it.
+
+    An authorized-but-empty participant is the normal state before its
+    first memory is written. If the reserve in front of it drives its
+    allowance to zero, recording that as the ceiling strands whatever the
+    group ahead did not spend, and every later member is dropped with
+    capacity still on the table.
+    """
+    from memory.scopes import MemorySubject
+
+    empty = MemorySubject.group_participant("qq", "7788", "2046")
+    group = MemorySubject.group_chat("qq", "7788")
+    later = MemorySubject.group_participant("qq", "7788", "3057")
+    later_text = '小北在学吉他而且刚买了新琴弦'
+    persona = {
+        empty.persona_section_key: _scoped_section(empty, []),
+        group.persona_section_key: _scoped_section(group, [
+            _entry('g1', '群规', rein=5.0, subject=group),
+        ]),
+        later.persona_section_key: _scoped_section(later, [
+            _entry('l1', later_text, rein=4.0, subject=later),
+        ]),
+    }
+    harness = _RenderHarness(persona)
+    # A reserve big enough to zero the empty member's allowance, and a gate
+    # the thrifty group leaves most of.
+    reserve = _gate(later_text)
+    total = reserve + _gate('群规')
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
+               reserve), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
+            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=[empty, group, later], include_legacy_private=False,
+        )
+
+    assert '- 群规' in rendered, "夹具失效：群没渲染出来"
+    assert later_text in rendered, (
+        "一个什么都没有的成员把后面的成员钳死了，群没花完的额度就此搁浅"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_suppressed_fact_under_many_subjects_spends_one_slot():
+    """The do-not-mention section has one unscoped heading, so the same
+    fact under several subjects renders once and costs one slot.
+
+    Counting every copy lets duplicates fill the cap and push a genuinely
+    different suppression out of the prompt — and the model then
+    volunteers exactly that topic.
+    """
+    group, member = _group_and_member()
+    shared = '不要主动提起的那件事'
+    unique = '另一件也不要主动提起的事'
+    persona = {
+        group.persona_section_key: _scoped_section(group, [
+            _entry('g-h1', shared, suppress=True, subject=group),
+        ]),
+        member.persona_section_key: _scoped_section(member, [
+            _entry('m-h1', shared, suppress=True, subject=member),
+            _entry('m-h2', unique, suppress=True, subject=member),
+        ]),
+    }
+    harness = _RenderHarness(persona)
+
+    with patch('memory.persona.rendering.PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES', 2):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=[group, member], include_legacy_private=False,
+        )
+
+    assert rendered.count(f'- {shared}') == 1, (
+        f"同一条 suppressed 事实渲染了 {rendered.count(f'- {shared}')} 次"
+    )
+    assert unique in rendered, (
+        "重复项占满了条数上限，把另一条真正不同的「别主动提」挤出了 prompt"
+    )
+
+
 @pytest.mark.asyncio
 async def test_allocation_follows_the_caller_subject_order():
     """Order is the caller's call. It sends [group, current speaker] today
@@ -1024,6 +1134,8 @@ async def test_legacy_render_ignores_the_scoped_total_gate():
     assert '主人喜欢辣条' in rendered
 
 
+# NOTE: these knob values are hand-derived from the fixture's token counts
+# and SCOPED_RENDER_ENTRY_MARKUP_TOKENS; changing either means re-deriving.
 # Each scenario pins a different knob AT its boundary. A loose fixture
 # (every budget comfortably larger than the content) makes the parity
 # check vacuous: both twins render everything and agree for the wrong
@@ -1046,7 +1158,7 @@ _PARITY_SCENARIOS = [
         # Gate nearly spent; the floor is low, so the 2nd subject still
         # gets its sliver — only the entries that don't fit drop out.
         'total-gate',
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 40,
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 50,
          'REFLECTION_RENDER_MAX_TOKENS': 13,
          'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
         {'present': ['群规是不许剧透', '- x'], 'absent': ['阿离在准备考试']},
@@ -1056,15 +1168,15 @@ _PARITY_SCENARIOS = [
         # renders NOTHING. Contrasting with the row above is what proves
         # the floor does its own work and isn't just the gate again.
         'min-floor',
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 40,
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 50,
          'REFLECTION_RENDER_MAX_TOKENS': 13,
-         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 7},
+         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 14},
         {'present': ['群规是不许剧透'], 'absent': ['阿离在准备考试', '- x']},
     ),
     (
         'group-reserve',           # group queued last keeps its slice
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 26,
-         'SCOPED_RENDER_GROUP_RESERVED_TOKENS': 17,
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 35,
+         'SCOPED_RENDER_GROUP_RESERVED_TOKENS': 18,
          'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1,
          'reversed_order': True},
         {'present': ['群规是不许剧透'], 'absent': ['阿离养了一只橘猫']},

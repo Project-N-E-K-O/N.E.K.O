@@ -532,6 +532,7 @@ class RenderingMixin:
         # grows this section without any ceiling at all.
         suppressed_lines: list[str] = []
         suppressed_total = 0
+        seen_suppressed: set[str] = set()
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
                 if self._entry_is_skipped(entry, skipped):
@@ -539,6 +540,13 @@ class RenderingMixin:
                     continue
                 text = entry.get('text', '')
                 if text:
+                    if text in seen_suppressed:
+                        # 同一条事实可能同时存在于群和多个成员 subject 下，
+                        # 而这一段是不分 subject 的统一标题。逐份计数会让
+                        # 重复项占满条数上限，把真正另一条「别主动提」挤出
+                        # prompt——模型于是主动提起了那件事。
+                        continue
+                    seen_suppressed.add(text)
                     suppressed_total += 1
                     if len(suppressed_lines) < PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES:
                         suppressed_lines.append(f"- {text}")
@@ -889,7 +897,14 @@ class RenderingMixin:
                 persona_buckets, reflection_buckets,
                 member_ceiling=member_ceiling,
             )
-            if not cls._is_group_slot(subject):
+            if not cls._is_group_slot(subject) and (
+                persona_buckets.get(marker) or reflection_buckets.get(marker)
+            ):
+                # Only members that actually want budget set the ceiling.
+                # An authorized subject with nothing recorded yet (common
+                # before its first memory) spends nothing, so letting its
+                # reservation-reduced allowance cap everyone behind it
+                # would strand capacity the group in front never used.
                 member_ceiling = available
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 if persona_buckets.get(marker) or reflection_buckets.get(marker):
@@ -946,7 +961,14 @@ class RenderingMixin:
                 persona_buckets, reflection_buckets,
                 member_ceiling=member_ceiling,
             )
-            if not cls._is_group_slot(subject):
+            if not cls._is_group_slot(subject) and (
+                persona_buckets.get(marker) or reflection_buckets.get(marker)
+            ):
+                # Only members that actually want budget set the ceiling.
+                # An authorized subject with nothing recorded yet (common
+                # before its first memory) spends nothing, so letting its
+                # reservation-reduced allowance cap everyone behind it
+                # would strand capacity the group in front never used.
                 member_ceiling = available
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 if persona_buckets.get(marker) or reflection_buckets.get(marker):

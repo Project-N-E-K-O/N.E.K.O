@@ -148,8 +148,15 @@ SCOPED_RENDER_SUBJECT_MIN_TOKENS = 200
 #   · 总闸按**渲染出来的行**计，即 text + 本常量（compose 给每条加的 "- "
 #     前缀和换行）。短条目下 markup 占比很大，只数 text 的总闸根本不是上限。
 # 选取时两条同时满足才收下（见 _score_trim_entries 的 budget / gate_budget）。
-# 段落标题不摊到单条上（它按 subject 数有界），不计入。
-SCOPED_RENDER_ENTRY_MARKUP_TOKENS = 4
+#
+# 12 是**最坏情况**下的单条装饰量，不是典型值：
+#   "- " 前缀 2 + 换行 1 = 3，普通条目就这些；
+#   过时 reflection 还会被 compose 加一个本地化时间标签前缀
+#   （`[13 ヶ月前] ` / `[hace 13mes] ` 之类，实测七种语言里最长 8 tok）。
+# 取和 3 + 8 = 11，进位到 12 留一点余量。按典型值取会让「短条目很多」的
+# 场景越过总闸——这段预算的意义就在于最坏情况下也成立，所以按最坏取。
+# 段落标题不摊到单条上（它按 subject 数有界，不随条目数增长），不计入。
+SCOPED_RENDER_ENTRY_MARKUP_TOKENS = 12
 
 # ── 特权段的条数上限（protected / suppressed） ───────────────────────────
 # 这两段刻意不吃 token 预算：protected 是角色卡来源（evidence_score 返回
