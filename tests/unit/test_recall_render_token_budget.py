@@ -608,23 +608,34 @@ _NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambd
 
 
 def _called_function_names(node: ast.AST) -> set[str]:
-    """Function names called in `node`'s OWN body.
+    """Function names called on `node`'s OWN execution path.
 
-    Deliberately does not descend into nested ``def`` / ``class`` /
-    ``lambda`` bodies. ``ast.walk`` does, and that attributes a nested
-    helper's calls to the function enclosing it: park a never-called
-    ``def`` inside the real renderer, move both budget calls into it, and
-    the renderer looks budgeted while its actual render path is not
-    (codex review on PR #2578). A nested function that renders a recall
-    block of its own is picked up on its own by
+    Two exclusions, both of them holes this guard has already been through:
+
+    Nested scopes. ``ast.walk`` descends into nested ``def`` / ``class`` /
+    ``lambda`` bodies, which attributes a nested helper's calls to the
+    function enclosing it: park a never-called ``def`` inside the real
+    renderer, move both budget calls into it, and the renderer looks
+    budgeted while its actual render path is not. A nested function that
+    renders a recall block of its own is picked up on its own by
     ``_recall_render_functions`` — being nested does not exempt it, and
     being an enclosing scope does not earn credit for it.
 
+    Signature and decorator fields. Seeding from ``iter_child_nodes(node)``
+    also sweeps ``decorator_list``, ``args`` (parameter defaults and
+    annotations) and ``returns``. Those run at def/import time, not on the
+    render path — and under ``from __future__ import annotations`` an
+    annotation is never evaluated at all — so a budget call parked in a
+    return annotation satisfies the guard while the body stays unbounded.
+    Seed from ``node.body``: the statements that actually execute when the
+    renderer is called.
+
     Comprehensions are NOT skipped: they carry their own scope at runtime
-    but a call inside one is genuinely part of this function's body.
+    but a call inside one is genuinely on this function's execution path.
     """
     names = set()
-    stack = list(ast.iter_child_nodes(node))
+    body = getattr(node, 'body', [])
+    stack = list(body) if isinstance(body, list) else [body]
     while stack:
         child = stack.pop()
         if isinstance(child, _NESTED_SCOPES):

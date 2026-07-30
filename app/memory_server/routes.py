@@ -922,11 +922,21 @@ async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     ⚠️ `subjects` ORDER IS THE BUDGET PRIORITY. The renderer allocates the
     overall scoped gate (`SCOPED_RENDER_TOTAL_MAX_TOKENS`) strictly first-
     come-first-served down this list, and a subject that arrives after the
-    gate has dropped below `SCOPED_RENDER_SUBJECT_MIN_TOKENS` renders
-    nothing at all — not a shortened version, nothing. No subject kind is
+    gate has dropped below `SCOPED_RENDER_SUBJECT_MIN_TOKENS` loses its
+    whole section — not a shortened version, the whole thing, because half
+    a persona reads to the model as a complete one. No subject kind is
     special-cased; an earlier attempt to reserve a slice for a group
     subject queued behind its members was deleted because every one of its
     interactions was a way to invert the order it was meant to protect.
+
+    One exception, and it is deliberate: a subject whose only content is
+    budget-EXEMPT (`protected` character-card lines, `suppress`ed
+    do-not-mention entries) still renders when the gate is spent. Those
+    sections never cost the gate anything, so there is no fragment to
+    avoid — and dropping them would take a do-not-mention list with it,
+    after which the character volunteers exactly what it was told to sit
+    on. Only subjects with budgeted content they cannot afford are dropped
+    whole. See `test_a_group_holding_only_suppressed_facts_still_renders_them`.
 
     So the caller owns the ranking, and every shipped caller puts the group
     subject FIRST, then the current speaker, then other recent speakers.
