@@ -604,17 +604,38 @@ def _discovered_recall_renderers() -> dict[str, str]:
 _RECALL_RENDER_MARKER = "render_recall_entry_tag"
 
 
+_NESTED_SCOPES = (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef, ast.Lambda)
+
+
 def _called_function_names(node: ast.AST) -> set[str]:
-    """Every function name called anywhere under `node`."""
+    """Function names called in `node`'s OWN body.
+
+    Deliberately does not descend into nested ``def`` / ``class`` /
+    ``lambda`` bodies. ``ast.walk`` does, and that attributes a nested
+    helper's calls to the function enclosing it: park a never-called
+    ``def`` inside the real renderer, move both budget calls into it, and
+    the renderer looks budgeted while its actual render path is not
+    (codex review on PR #2578). A nested function that renders a recall
+    block of its own is picked up on its own by
+    ``_recall_render_functions`` — being nested does not exempt it, and
+    being an enclosing scope does not earn credit for it.
+
+    Comprehensions are NOT skipped: they carry their own scope at runtime
+    but a call inside one is genuinely part of this function's body.
+    """
     names = set()
-    for child in ast.walk(node):
-        if not isinstance(child, ast.Call):
+    stack = list(ast.iter_child_nodes(node))
+    while stack:
+        child = stack.pop()
+        if isinstance(child, _NESTED_SCOPES):
             continue
-        func = child.func
-        if isinstance(func, ast.Name):
-            names.add(func.id)
-        elif isinstance(func, ast.Attribute):
-            names.add(func.attr)
+        if isinstance(child, ast.Call):
+            func = child.func
+            if isinstance(func, ast.Name):
+                names.add(func.id)
+            elif isinstance(func, ast.Attribute):
+                names.add(func.attr)
+        stack.extend(ast.iter_child_nodes(child))
     return names
 
 
@@ -628,28 +649,24 @@ def _recall_render_functions(source: str) -> list[ast.AST]:
     dead helper mentioning the old names at the bottom of the module, and
     both guards stay green while unbounded memory text reaches the prompt.
     Substring matching was the first hole in this wall (a comment could
-    satisfy it) and AST-over-the-module was the second.
+    satisfy it), AST-over-the-module was the second, and AST-over-the-
+    function-including-its-nested-defs was the third — same trick, one
+    indent level in.
 
     A renderer is identified by the same marker the module discovery uses —
     the shared label-table call every recall renderer goes through — so
-    "is this a recall renderer" has one definition here, not two that drift.
-    Innermost wins: if a nested function is the one calling the marker, the
-    enclosing function is not also counted, or a dead sibling nested
-    alongside the real renderer would be back in scope.
+    "is this a recall renderer" has one definition here, not two that
+    drift. Matching is on the function's own body, so an enclosing scope
+    is not credited with a nested renderer's marker call either: whichever
+    function directly renders the block is the one that has to carry the
+    budget.
     """
     tree = ast.parse(source)
-    candidates = [
+    return [
         node for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         and _RECALL_RENDER_MARKER in _called_function_names(node)
     ]
-    inner = {
-        id(nested)
-        for node in candidates
-        for nested in ast.walk(node)
-        if nested is not node and id(nested) in {id(c) for c in candidates}
-    }
-    return [node for node in candidates if id(node) not in inner]
 
 
 def _unbudgeted_recall_functions(source: str, required: set[str]) -> dict[str, list[str]]:
