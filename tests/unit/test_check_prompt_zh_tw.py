@@ -1600,3 +1600,48 @@ def test_self_rebinding_exempts_the_previous_binding(src):
     line search picked the merge's own result and left the first literal reported.
     """
     assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"zh-TW": "t"}\nT.update({"en": "e", "zh": "s"})',
+    'T = {"zh-TW": "t"}\nT.update(**{"en": "e", "zh": "s"})',
+])
+def test_both_update_argument_forms_are_fragments(src):
+    """`update({...})` and `update(**{...})` are the same merge.
+
+    The operand lookup required a positional argument, so the keyword-spread
+    payload was judged standalone and reported despite the target carrying zh-TW.
+    """
+    assert _violations(src) == []
+
+
+def test_update_with_no_arguments_does_not_crash():
+    assert _violations("T.update()") == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = {"en": "e", "zh": "s"}\nT["zh-TW"]: str = "t"', []),
+    ('T = {"en": "e", "zh": "s"}\nT["ja"]: str = "j"', [1]),
+])
+def test_annotated_subscript_backfill(src, expected):
+    """`T["zh-TW"]: str = t` is the same mutation with an annotation.
+
+    AnnAssign carries a single `target` instead of a `targets` list, so matching
+    the subscript shape needs its own unpacking.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_lone_cr_module_keeps_comments_on_their_own_lines():
+    """A CR-only module must not shift noqa onto a neighbouring table.
+
+    io.StringIO does not treat a lone \r as a newline, so tokenize saw one line
+    while the split saw two — the comment landed on index 0, suppressing the table
+    that has no noqa and reporting the one that does. Exactly backwards.
+    """
+    src = 'A = {"en": 1, "zh": 2}\rB = {"en": 1, "zh": 3}  # noqa: PROMPT_ZH_TW'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert comments[0] == ""
+    assert "PROMPT_ZH_TW" in comments[1]
+    assert MOD.find_violations(tree, comments) == [1]

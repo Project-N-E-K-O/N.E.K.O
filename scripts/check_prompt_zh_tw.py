@@ -345,14 +345,16 @@ def _merge_operands(node: ast.AST) -> list[ast.AST]:
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
         and node.func.attr == "update"
-        and node.args
     ):
         # `T.update({...})` merges into T, so the payload is a fragment for the
         # same reason a spread operand is: whether the assembled table has zh-TW
         # depends on T, which this expression does not show. Suppressing it avoids
         # reporting `T = {"zh-TW": ...}` / `T.update({"en": ..., "zh": ...})` —
         # compliant at runtime — as an offender.
-        return [node.args[0]]
+        #
+        # Both argument forms count: `update({...})` and `update(**{...})` are the
+        # same merge, so the keyword-spread payload is a fragment too.
+        return list(node.args) + [kw.value for kw in node.keywords if kw.arg is None]
     return []
 
 
@@ -490,15 +492,25 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             exempt.add(id(value))
 
     for node in ast.walk(tree):
-        if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Subscript)
-            and isinstance(node.targets[0].value, ast.Name)
-            and isinstance(node.targets[0].slice, ast.Constant)
-            and node.targets[0].slice.value == TRADITIONAL_KEY
-        ):
-            _exempt_binding_before(node.targets[0].value.id, node.lineno)
+        # `T["zh-TW"] = t`, and its annotated form `T["zh-TW"]: str = t`.
+        # AnnAssign carries a single `target` rather than a `targets` list, so it
+        # needs its own unpacking even though the shape being matched is identical.
+        subscripts: list[ast.AST] = []
+        if isinstance(node, ast.Assign):
+            subscripts = list(node.targets)
+        elif isinstance(node, ast.AnnAssign) and node.value is not None:
+            subscripts = [node.target]
+        matched = False
+        for slot in subscripts:
+            if (
+                isinstance(slot, ast.Subscript)
+                and isinstance(slot.value, ast.Name)
+                and isinstance(slot.slice, ast.Constant)
+                and slot.slice.value == TRADITIONAL_KEY
+            ):
+                _exempt_binding_before(slot.value.id, node.lineno)
+                matched = True
+        if matched:
             continue
         target: str | None = None
         payload: ast.AST | None = None
@@ -679,8 +691,13 @@ def _comment_lines(source: str) -> list[str]:
     wrong suppression, and ``ast.parse`` will have reported the syntax error.
     """
     blank = [""] * len(re.split(r"\r\n|\r|\n", source))
+    # Normalize line endings first: io.StringIO does not treat a lone \r as a
+    # newline, so a CR-only module collapses to one line for tokenize while the
+    # split above counts them properly. The comment then lands on the wrong index
+    # — which suppresses a table that has no noqa and reports the one that does.
+    normalized = re.sub(r"\r\n|\r", "\n", source)
     try:
-        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+        for token in tokenize.generate_tokens(io.StringIO(normalized).readline):
             if token.type == tokenize.COMMENT:
                 row = token.start[0]
                 if 1 <= row <= len(blank):
