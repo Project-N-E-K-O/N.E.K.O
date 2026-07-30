@@ -940,7 +940,12 @@ class RealtimeResponseArbiter:
                     type(exc).__name__,
                 )
 
-    async def _fail_stuck_lifecycle(self, reason: str) -> None:
+    async def _fail_stuck_lifecycle(
+        self,
+        reason: str,
+        *,
+        transport_write_failed: bool = False,
+    ) -> None:
         """Escalate a response lifecycle that cannot reach a terminal state.
 
         Every escalation in this module funnels through here, and the policy is
@@ -962,24 +967,39 @@ class RealtimeResponseArbiter:
             self._queue.qsize(),
             self._server_vad_response_pending,
             self._worker_send_in_flight,
+            transport_write_failed,
         )
-        # Fail-open rests on one premise: the transport is still usable. A
-        # queue consumer parked inside a transport write is that premise being
-        # falsified — and nothing this function does to the arbiter's own
-        # state can unwind that await, so keeping the connection would leave
-        # the sole consumer wedged while telling every later caller the lane
-        # had recovered. Tearing the transport down is what unblocks the write
-        # (the transport's close wakes its drain waiter), so in that state the
-        # escape hatch deliberately declines to apply. Worst case is exactly
-        # today's shipped default, never worse.
-        if self._fail_open and not self._worker_send_in_flight:
+        # Fail-open rests on one premise: the transport is still usable. Two
+        # things falsify it, and each makes the hatch decline.
+        #
+        # A consumer parked inside a transport write: nothing this function
+        # does to the arbiter's own state unwinds that await, and ``_run`` is
+        # the only consumer, so keeping the connection would leave it wedged
+        # while telling every later caller the lane had recovered. Tearing the
+        # transport down is what unblocks the write (its close wakes the drain
+        # waiter).
+        #
+        # A write that just raised: ``_worker_send`` clears its flag in a
+        # ``finally``, so by the time the caller escalates the first condition
+        # already reads False even though the transport refused the write
+        # moments ago — and on the fatal branch it has already dropped its
+        # socket. Reopening the lane there would dispatch queued work onto a
+        # connection that cannot carry it. Callers whose escalation follows a
+        # failed write say so explicitly.
+        #
+        # Worst case in both is exactly today's shipped default, never worse.
+        if (
+            self._fail_open
+            and not self._worker_send_in_flight
+            and not transport_write_failed
+        ):
             # Wording differs on purpose: the fail-closed line below is the
             # documented grep target for attributing a field disconnect, and
             # this path did not disconnect anyone.
             logger.warning(
                 "response arbiter failing open, transport kept: %s "
                 "(current=%s owner=%s queue_depth=%d server_vad_pending=%s "
-                "worker_send_in_flight=%s)",
+                "worker_send_in_flight=%s transport_write_failed=%s)",
                 *lane_state,
             )
             self._release_stuck_lifecycle(reason)
@@ -987,7 +1007,7 @@ class RealtimeResponseArbiter:
         logger.warning(
             "response arbiter failing closed: %s "
             "(current=%s owner=%s queue_depth=%d server_vad_pending=%s "
-            "worker_send_in_flight=%s)",
+            "worker_send_in_flight=%s transport_write_failed=%s)",
             *lane_state,
         )
         self._mark_connection_lost(reason, fail_current_tickets=False)
@@ -1272,8 +1292,16 @@ class RealtimeResponseArbiter:
     async def _cancel_after_timeout(
         self, queued: _QueuedResponse, original_timeout: asyncio.TimeoutError
     ) -> None:
+        cancel_write_failed = False
         try:
-            await self._worker_send({"type": "response.cancel"})
+            try:
+                await self._worker_send({"type": "response.cancel"})
+            except Exception:
+                # Remember it: _worker_send's finally has already lowered the
+                # in-flight flag, so the escalation below would otherwise read
+                # a usable transport a moment after this one refused a write.
+                cancel_write_failed = True
+                raise
             assert queued.terminal is not None
             await asyncio.wait_for(
                 asyncio.shield(queued.terminal), queued.cancel_timeout
@@ -1282,6 +1310,7 @@ class RealtimeResponseArbiter:
             if queued.terminal is not None and not queued.terminal.done():
                 queued.terminal.cancel()
             await self._fail_stuck_lifecycle(
-                "response lifecycle could not reach a terminal state"
+                "response lifecycle could not reach a terminal state",
+                transport_write_failed=cancel_write_failed,
             )
         raise original_timeout

@@ -682,6 +682,32 @@ async def test_the_lazily_built_arbiter_gets_the_same_notification(client_rig):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_the_release_clears_an_abandoned_turns_output_suppression(client_rig):
+    # Codex P2 on PR #2592, and the exact dual of the case below: a turn
+    # requested with skipped=True raises _skip_until_next_response, and only
+    # that turn's own response.done lowers it — the terminal fail-open just
+    # gave up on. Left raised, the transport suppresses the NEXT healthy
+    # response's text and audio until its own done, so the hatch silently
+    # costs a second turn.
+    #
+    # The flag is set explicitly here rather than through create_response
+    # because no production caller passes skipped=True on this path today;
+    # the guard is defensive, and a test that did not raise the flag first
+    # would assert nothing at all.
+    client_rig.client._skip_until_next_response = True
+
+    raised = await client_rig.drive_to_escalation()
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    assert client_rig.client._skip_until_next_response is False, (
+        "the abandoned turn's output suppression must be lifted with it"
+    )
+    assert client_rig.client._is_responding is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_release_notification_touches_nothing_else(client_rig):
     # Both of these would be tempting to reset here and both would be wrong:
     # _skip_until_next_response is cleared only by response.done, so setting it
@@ -840,6 +866,95 @@ async def test_a_failed_worker_send_does_not_latch_the_stand_down_flag():
             "a previously failed write must not permanently disable fail-open"
         )
         assert harness.arbiter._connection_available is True
+    finally:
+        await harness.arbiter.shutdown("test teardown")
+
+
+class _CancelRefusingHarness(_Harness):
+    """Harness that accepts response.create but refuses response.cancel."""
+
+    async def _send(self, event: dict) -> None:
+        self.sent.append(event)
+        if event.get("type") == "response.cancel":
+            raise RuntimeError("1006 abnormal close")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_refused_cancel_write_forces_the_fail_closed_path(caplog):
+    # Codex P2 on PR #2592. _worker_send lowers its in-flight flag in a
+    # finally, so by the time _cancel_after_timeout escalates, the "consumer
+    # is mid-write" guard already reads False — even though the transport
+    # refused that very write, and on the fatal branch has already dropped its
+    # socket. Reopening the lane there would dispatch queued work onto a
+    # connection that cannot carry it, so the escalation has to carry the
+    # write's outcome with it.
+    harness = _CancelRefusingHarness(fail_open=True)
+    try:
+        # response_started_timeout drives _cancel_after_timeout: the create
+        # goes out, response.created never arrives, so the worker cancels —
+        # and that cancel write is the one the transport refuses.
+        ticket = await harness.arbiter.enqueue(
+            source="native",
+            response_started_timeout=0.05,
+            cancel_timeout=0.05,
+        )
+        await asyncio.wait_for(ticket.sent, timeout=1)
+
+        with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+            with pytest.raises(Exception):
+                await asyncio.wait_for(ticket.done, timeout=2)
+            await _settle()
+
+        assert harness.types == ["response.create", "response.cancel"]
+        assert harness.aborted, (
+            "an escalation that follows a refused write must fail closed, not "
+            "reopen the lane on a transport that just rejected a send"
+        )
+        assert harness.arbiter._connection_available is False
+        messages = [record.getMessage() for record in caplog.records]
+        assert any("failing closed" in message for message in messages)
+        assert any(
+            "transport_write_failed=True" in message for message in messages
+        ), "the log must record why an opted-in session failed closed"
+
+        later = await harness.arbiter.enqueue(source="native-after")
+        with pytest.raises(ConnectionError):
+            await asyncio.wait_for(later.sent, timeout=1)
+    finally:
+        await harness.arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_timeout_with_a_healthy_cancel_still_fails_open(caplog):
+    # The dual: same escalation site, same code path, but the cancel write is
+    # accepted — only the terminal never arrives. That is the ordinary stuck
+    # lifecycle the hatch exists for, and it must still release. Without this
+    # pair, forcing fail-closed on every _cancel_after_timeout escalation
+    # would look correct.
+    harness = _Harness(fail_open=True)
+    try:
+        ticket = await harness.arbiter.enqueue(
+            source="native",
+            response_started_timeout=0.05,
+            cancel_timeout=0.05,
+        )
+        await asyncio.wait_for(ticket.sent, timeout=1)
+
+        with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+            with pytest.raises(Exception):
+                await asyncio.wait_for(ticket.done, timeout=2)
+            await _settle()
+
+        assert harness.aborted == []
+        assert harness.arbiter._connection_available is True
+        assert any(
+            "failing open" in record.getMessage() for record in caplog.records
+        )
+
+        revived = await harness.arbiter.enqueue(source="native-after")
+        await asyncio.wait_for(revived.sent, timeout=1)
     finally:
         await harness.arbiter.shutdown("test teardown")
 

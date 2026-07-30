@@ -906,10 +906,15 @@ class _TransportMixin:
         the rest of the session — silencing proactive chat on a connection the
         escape hatch just kept alive.
 
-        Deliberately narrow. It does NOT touch:
+        ``_skip_until_next_response`` is cleared for the same reason, in the
+        same direction: it suppresses output until the owning turn's
+        ``response.done``, and that terminal is precisely what has been given
+        up on. Note the asymmetry — SETTING it here would be wrong (it would
+        mute the next healthy turn), clearing it is right (the suppression
+        belonged to the turn being abandoned).
 
-        - ``_skip_until_next_response``: only ``response.done`` clears it, so
-          setting it here would mute the whole NEXT turn's text and audio.
+        Deliberately narrow otherwise. It does NOT touch:
+
         - ``_interrupted``: the AI-activity timestamps are recorded inside the
           same guard it gates, and proactive delivery leans on those to avoid
           talking over audio the provider is still streaming.
@@ -917,13 +922,14 @@ class _TransportMixin:
           ``handle_interruption`` keeps it.
         """
 
-        if not self._is_responding:
+        if not self._is_responding and not self._skip_until_next_response:
             return
         logger.info(
             "Clearing client response state after arbiter fail-open release: %s",
             reason,
         )
         self._is_responding = False
+        self._skip_until_next_response = False
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
