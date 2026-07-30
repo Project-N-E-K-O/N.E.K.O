@@ -106,6 +106,7 @@ function createHarness({
         window: context.window,
         controls,
         getLive2DPeekViewport: context.getLive2DPeekViewport,
+        isLive2DHostModelDragActive: context.isLive2DHostModelDragActive,
         setStealthModeEnabled(enabled) {
             stealthEnabledState = enabled === true;
         }
@@ -290,6 +291,38 @@ function createCoreHarness({
         window: context.window
     };
 }
+
+test('physical-crop drag ownership fails closed only after the host declares support', () => {
+    const {
+        window,
+        isLive2DHostModelDragActive,
+    } = createHarness();
+
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop = {};
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop = {
+        hostModelDragOwnershipVersion: 1,
+        isHostModelDragActive: () => false,
+    };
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => true;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => undefined;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    delete window.__nekoNiriPetPhysicalCrop.isHostModelDragActive;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => {
+        throw new Error('bridge failure');
+    };
+    assert.equal(isLive2DHostModelDragActive(), true);
+});
 
 test('edge peek enter naturally moves model offscreen and reports visible bounds', async () => {
     const harness = createHarness();

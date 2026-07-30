@@ -36,10 +36,13 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
-    # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，并发
-    # MEMBER_FLUSH_CONCURRENCY，每发一次 scoped history（那是一次 LLM
-    # 抽取，所以超时给得很宽）。下面的等待上限由它们算出来，别写死——
-    # 三个数任何一个改了，等待上限必须跟着走。
+    # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，打包成若干
+    # **批**（每批 ≤200 条消息、≤8 段，见 _pack_member_batches），并发
+    # MEMBER_FLUSH_CONCURRENCY，每批发一次 scoped history segments 请求
+    # （那是一次 LLM 抽取，所以超时给得很宽）。批的单请求输入工作量上界
+    # 与旧的逐成员单发同口径（200 条），批数 ≤ 桶数 ≤ 名额，所以下面按
+    # "波数 × 单发超时"推导的等待上限在最坏情形下与逐成员时代一致。
+    # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
     SCOPED_HISTORY_TIMEOUT_SECONDS = 30.0
     # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
@@ -613,12 +616,13 @@ class QQSessionMemoryService:
         oldest authorized turns of a group that never goes idle.
 
         The session lock is held only to take the snapshot and to hand the
-        failures back — never across the scoped POSTs. One sweep is two
-        waves of four concurrent requests at up to 30s each; holding the
-        lock for that stalls every message in the group, and the handlers
-        queued behind it keep their share of the global message semaphore,
-        so a couple of always-busy groups could wedge the whole plugin
-        (private chats included)."""
+        failures back — never across the scoped POSTs. One sweep is at
+        worst two waves of four concurrent batch requests at up to 30s
+        each (typically a single packed batch); holding the lock for that
+        stalls every message in the group, and the handlers queued behind
+        it keep their share of the global message semaphore, so a couple
+        of always-busy groups could wedge the whole plugin (private chats
+        included)."""
         snapshot: dict[str, list] = {}
         snapshot_labels: dict[str, str] = {}
         flush_target: dict[str, Any] = {}
@@ -866,12 +870,18 @@ class QQSessionMemoryService:
         reason: str, buckets: dict | None = None, labels: dict | None = None,
         require_consent: bool = False,
     ) -> list[str]:
-        """Concurrently flush member buckets (semaphore 4).
+        """Flush member buckets in packed batches (semaphore 4).
 
-        Success pops the bucket; failures are collected and stay queued for
-        the next sweep. Serial 8x30s used to hold the session lock ~4 min,
-        exhausting the global message semaphore and never fitting the host
-        shutdown kill window."""
+        每批一次 /scoped_history segments 请求 = 一次 LLM 抽取，服务端按
+        段分派回各自的 subject，响应逐段报 ok/failed。成功段当场 pop
+        bucket+label；失败段（或整批异常）留在映射里等下一轮 sweep——
+        与逐成员时代同一份"成功即弹、失败保留"契约，只是粒度从每人一次
+        请求变成每批一次。抽取调用数从 O(发言人数) 降到 O(总消息数/批容
+        量)；最坏（每桶都接近硬顶）退化回一桶一批，与旧形态同形。
+
+        Serial 8x30s used to hold the session lock ~4 min, exhausting the
+        global message semaphore and never fitting the host shutdown kill
+        window."""
         member_buckets = (
             buckets if buckets is not None
             else user_data.get("group_member_memory_messages") or {}
@@ -882,36 +892,47 @@ class QQSessionMemoryService:
         )
         member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
-        async def _flush_one_member(
-            sender_id: str, member_messages: list,
-        ) -> str | None:
+        async def _flush_one_batch(batch_senders: list[str]) -> list[str]:
             async with member_flush_sem:
                 if require_consent and not self._member_memory_consent_live():
-                    # 逐请求复检，因为信号量排队与 gather 的任务调度都是挂起
-                    # 点：调用点检查过之后、真正发出之前，设置侧完全可能把
-                    # 开关翻掉。默认关着——opt-out 结算复用本函数，而它恰恰
-                    # 是在开关已 False 之后调用的，那条路径必须放行。
+                    # 逐批复检（与旧的逐请求复检同语义），因为信号量排队与
+                    # gather 的任务调度都是挂起点：调用点检查过之后、真正发
+                    # 出之前，设置侧完全可能把开关翻掉。默认关着——opt-out
+                    # 结算复用本函数，而它恰恰是在开关已 False 之后调用的，
+                    # 那条路径必须放行。
                     self.plugin.logger.warning(
-                        f"[{reason}] 群 {group_id} 成员 {sender_id} 发出前"
-                        f"授权已撤销，按 fail-closed 丢弃"
+                        f"[{reason}] 群 {group_id} 一批 {len(batch_senders)} "
+                        f"个成员发出前授权已撤销，按 fail-closed 丢弃"
                     )
-                    return sender_id
+                    return list(batch_senders)
+                segments = [
+                    {
+                        "messages": member_buckets.get(sender_id) or [],
+                        "subject": (
+                            self.plugin.memory_bridge.group_participant_subject(
+                                group_id, sender_id,
+                            )
+                        ),
+                        "speaker_label": (
+                            str(member_labels.get(sender_id) or sender_id)[:64]
+                        ),
+                        # 信赖度初值（阶段一只落字段）：按权限等级派生，
+                        # 随段落盘到该段抽出的每条 fact 上。
+                        "speaker_trust": self._speaker_trust_for(sender_id),
+                    }
+                    for sender_id in batch_senders
+                ]
                 try:
                     # 外层再包一次墙钟上限：httpx 的 timeout= 是给 connect /
                     # read / write / pool **各自**一份，不是整次请求的总时长
                     # ——连接池被别的群排空占满时，光等池就能花掉一份，再花
                     # 一份读响应。等待上限是按"波数 × 单发超时"推的，单发不
-                    # 真的封顶，那个推导就不成立。
+                    # 真的封顶，那个推导就不成立。批的输入工作量上界与旧单
+                    # 发同口径（≤200 条消息 = 一次抽取），30s 预算不变。
                     result = await asyncio.wait_for(
-                        self.plugin.memory_bridge.post_scoped_memory_history(
+                        self.plugin.memory_bridge.post_scoped_memory_history_batch(
                             her_name,
-                            member_messages,
-                            subject=self.plugin.memory_bridge.group_participant_subject(
-                                group_id, sender_id,
-                            ),
-                            speaker_label=(
-                                str(member_labels.get(sender_id) or sender_id)[:64]
-                            ),
+                            segments,
                             timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                         ),
                         timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
@@ -923,35 +944,115 @@ class QQSessionMemoryService:
                                 "scoped participant history failed",
                             )
                         )
+                    segment_results = result.get("segments")
+                    if (
+                        not isinstance(segment_results, list)
+                        or len(segment_results) != len(batch_senders)
+                    ):
+                        # 响应形状与请求对不上时绝不按位置乱猜——整批按
+                        # 失败保留重试（fail-closed）。
+                        raise RuntimeError(
+                            "malformed batch response: segment count mismatch"
+                        )
                 except Exception as exc:
                     self.plugin.logger.error(
-                        f"[{reason}] 群 {group_id} 成员 {sender_id} "
-                        f"记忆结算失败: {exc}"
+                        f"[{reason}] 群 {group_id} 一批 {len(batch_senders)} "
+                        f"个成员记忆结算失败: {exc}"
                     )
-                    return sender_id
-                member_buckets.pop(sender_id, None)
-                # label 与 bucket 同生命周期：只弹 bucket 的话，活跃群会
-                # 让 label 映射无限增长，而参与者名额是按 bucket 数算的，
-                # 关闭成员记忆时（bucket 已空）也没人清这些残留。
-                if isinstance(member_labels, dict):
-                    member_labels.pop(sender_id, None)
-                return None
+                    return list(batch_senders)
+                failed: list[str] = []
+                for sender_id, segment_result in zip(
+                    batch_senders, segment_results,
+                ):
+                    if (
+                        isinstance(segment_result, dict)
+                        and segment_result.get("status") == "ok"
+                    ):
+                        member_buckets.pop(sender_id, None)
+                        # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
+                        # 群会让 label 映射无限增长，而参与者名额是按 bucket
+                        # 数算的，关闭成员记忆时（bucket 已空）也没人清这些
+                        # 残留。批内失败段的 label 与 bucket 一起留下。
+                        if isinstance(member_labels, dict):
+                            member_labels.pop(sender_id, None)
+                        continue
+                    self.plugin.logger.error(
+                        f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                        f"记忆结算失败（批内单段失败）"
+                    )
+                    failed.append(sender_id)
+                return failed
 
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
         self._enter_member_flush(user_data)
-        flush_jobs = [
-            _flush_one_member(sender_id, member_messages)
-            for sender_id, member_messages in list(member_buckets.items())
-            if sender_id and member_messages
-        ]
-        if not flush_jobs:
+        batches = self._pack_member_batches(member_buckets)
+        if not batches:
             self._finish_member_flush_generation(user_data)
             return []
         try:
-            return [sid for sid in await asyncio.gather(*flush_jobs) if sid]
+            failed_lists = await asyncio.gather(
+                *(_flush_one_batch(batch) for batch in batches)
+            )
+            return [sid for failed in failed_lists for sid in failed]
         finally:
             self._finish_member_flush_generation(user_data)
+
+    @staticmethod
+    def _pack_member_batches(member_buckets: dict) -> list[list[str]]:
+        """Greedy-pack sender buckets into batches of sender ids.
+
+        每批：段数 ≤ SCOPED_HISTORY_BATCH_MAX_SEGMENTS、消息总量 ≤
+        SCOPED_HISTORY_BATCH_MAX_MESSAGES（服务端同口径校验）。单桶硬顶
+        GROUP_MEMBER_HARD_LIMIT(150) < 批容量(200)，一个桶永远不用跨批
+        拆分；防御性地，真出现超限单桶时让它独占一批（服务端 422 → 该批
+        按失败保留，与旧单发 422 行为一致，不在这里静默截断）。一趟
+        sweep 的桶数 ≤ GROUP_MEMBER_MAX_PARTICIPANTS，批数 ≤ 桶数，所以
+        SETTLE_JOIN_TIMEOUT_LONG_SECONDS 的"波数 × 单发超时"推导在最坏
+        情形下与逐成员时代一致。"""
+        from config import (
+            SCOPED_HISTORY_BATCH_MAX_MESSAGES,
+            SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
+        )
+
+        batches: list[list[str]] = []
+        current: list[str] = []
+        current_messages = 0
+        for sender_id, messages in list(member_buckets.items()):
+            if not sender_id or not messages:
+                continue
+            count = len(messages)
+            if current and (
+                current_messages + count > SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                or len(current) >= SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+            ):
+                batches.append(current)
+                current = []
+                current_messages = 0
+            current.append(sender_id)
+            current_messages += count
+        if current:
+            batches.append(current)
+        return batches
+
+    def _speaker_trust_for(self, sender_id: str) -> float:
+        """按权限等级派生的发言人信赖度初值（阶段一只落字段不接消费）。"""
+        from config import (
+            SPEAKER_TRUST_BY_PERMISSION_LEVEL,
+            SPEAKER_TRUST_DEFAULT,
+        )
+
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        try:
+            level = (
+                permission_mgr.get_permission_level(sender_id)
+                if permission_mgr is not None else "none"
+            )
+        except Exception:
+            level = "none"
+        return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
+            level, SPEAKER_TRUST_DEFAULT,
+        )
 
     def _member_memory_consent_live(self) -> bool:
         """Whether member memory is still authorized right now.

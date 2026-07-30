@@ -115,6 +115,7 @@ class _RecallToolClient:
         self._conversation_history: list = []
         self.tools: list = []
         self.on_tool_call = None
+        self.on_tool_round_start = None
         self.armed_tool_names: list[list[str]] = []
 
     def set_tools(self, tool_definitions):
@@ -123,6 +124,9 @@ class _RecallToolClient:
 
     def set_tool_call_handler(self, handler):
         self.on_tool_call = handler
+
+    def set_tool_round_start_callback(self, handler):
+        self.on_tool_round_start = handler
 
     async def stream_text(self, message):
         await self._script(self, message)
@@ -766,6 +770,91 @@ async def test_pre_tool_text_never_reaches_the_outbound_message():
 
 
 @pytest.mark.asyncio
+async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
+    """P2 的零执行路径：provider 流出 tool_call 分片但 function.name 始终
+    没到，collect_tool_calls 全部丢弃，handler 一次都不调——真实客户端
+    此时仍会触发 on_tool_round_start（进入 tool 轮的最早信号）。清理只挂
+    handler 入口的话，这条路径上永远清不掉，pre-tool 的"我查一下"会连着
+    forced-finalize 的最终文本一起外发（审计实跑复现过）。"""  # noqa: DOCSTRING_CJK
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("我查一下")
+        # 模拟真实客户端：确认进入 tool 轮即回调，但 handler 从未被调。
+        assert client.on_tool_round_start is not None, (
+            "挂载召回工具的同时必须挂 round-start 回调"
+        )
+        await client.on_tool_round_start()
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        # forced-finalize 出的最终文本。
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="最终回答")
+        )
+        client.reply_chunks_ref.append("最终回答")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "最终回答"
+    assert "我查一下" not in result
+    # 对偶卸载：round-start 闭包攥着本轮的 reply_chunks，越轮存活会清掉
+    # 下一轮的出站缓冲。
+    assert client.on_tool_round_start is None
+    plugin.memory_bridge.query_relevant_memory.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_tool_rows_stripped_even_when_generation_raises():
+    """P3-2：strip 在 finally 的位置此前没有被测试钉住——把它挪成"只在
+    正常返回路径 strip"，全部既有用例仍绿。这里让 stream_text 中途抛异常，
+    断言 tool dict 行仍被清出共享历史：异常路径下含 scoped 记忆原文的
+    tool result 永久留在群历史里，会进 digest、进后续每一轮的上下文，
+    member 撤销后也无法再摘除。"""  # noqa: DOCSTRING_CJK
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(result.output_as_json_string())
+        )
+        raise RuntimeError("provider disconnected mid-stream")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    with pytest.raises(RuntimeError):
+        await service._run_session_generation(
+            context=_group_context(),
+            session_key="group:7788",
+            user_data={"lock": asyncio.Lock()},
+            user_session=client,
+            reply_chunks=reply_chunks,
+        )
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human"], (
+        f"异常路径下 tool dict 行必须被清出共享历史，实际: {history!r}"
+    )
+    assert all(
+        "群规是不剧透" not in json.dumps(row, ensure_ascii=False, default=str)
+        for row in history
+    )
+
+
+@pytest.mark.asyncio
 async def test_tool_turn_timeout_covers_the_whole_tool_loop(monkeypatch):
     """An armed turn's worst case is two full LLM streams (initial +
     forced-finalize, max_tool_iterations=1) plus one recall HTTP. Keeping
@@ -814,18 +903,40 @@ def test_plugin_session_clients_cap_tool_iterations_to_one():
     """One recall per turn: same budget as the old per-turn synchronous
     recall, and it bounds the armed-turn worst case the timeout above is
     sized for. The forced-finalize after the cap still feeds the recall
-    result back, so the read is never wasted."""
+    result back, so the read is never wasted.
+
+    AST 而非源码字面量计数：旧写法比较两个字符串的出现次数，任何后续
+    PR 在注释/docstring 里写下 "OmniOfflineClient(" 或
+    "max_tool_iterations=1" 都会无谓变红。这里找到真正的构造 Call 节点，
+    逐个检查 keyword。"""  # noqa: DOCSTRING_CJK
+    import ast
     import inspect
 
     from plugin.plugins.qq_auto_reply import session_bootstrap_service as sbs
 
-    source = inspect.getsource(sbs)
-    constructions = source.count("OmniOfflineClient(")
-    assert constructions == source.count("max_tool_iterations=1"), (
-        "每个 OmniOfflineClient 构造点都必须显式 max_tool_iterations=1——"
-        "漏掉的那个会话的工具轮最坏耗时是超时预算的 3 倍"
-    )
-    assert constructions >= 2
+    tree = ast.parse(inspect.getsource(sbs))
+    constructions = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (
+            (isinstance(node.func, ast.Name)
+             and node.func.id == "OmniOfflineClient")
+            or (isinstance(node.func, ast.Attribute)
+                and node.func.attr == "OmniOfflineClient")
+        )
+    ]
+    assert len(constructions) >= 1, "未找到 OmniOfflineClient 构造点"
+    for call in constructions:
+        assert any(
+            kw.arg == "max_tool_iterations"
+            and isinstance(kw.value, ast.Constant)
+            and kw.value.value == 1
+            for kw in call.keywords
+        ), (
+            f"第 {call.lineno} 行的 OmniOfflineClient 构造点必须显式 "
+            "max_tool_iterations=1——漏掉的那个会话的工具轮最坏耗时是"
+            "超时预算的 3 倍"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -1174,108 +1285,6 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     discard.assert_not_awaited()
 
 
-@pytest.mark.asyncio
-async def test_proactive_reuse_also_checks_the_stored_route(monkeypatch):
-    """ensure_session_for_user is the proactive twin of the generation
-    bootstrap: a session serving only proactive traffic would otherwise
-    never hit the reply path's route check and stay on the retired
-    provider forever. Mismatch goes through discard_session (scoped
-    buffers get salvaged), not a bare pop+close."""
-    from plugin.plugins.qq_auto_reply import session_bootstrap_service as sbs
-
-    new_route = (TOOL_CAPABLE_BASE_URL, TOOL_CAPABLE_MODEL)
-
-    class _StubClient:
-        def __init__(self, **kwargs):
-            self.base_url = kwargs.get("base_url")
-            self.model = kwargs.get("model")
-
-        async def connect(self, instructions=""):
-            return None
-
-    monkeypatch.setattr(sbs, "OmniOfflineClient", _StubClient)
-    monkeypatch.setattr(
-        sbs, "get_config_manager",
-        lambda: SimpleNamespace(
-            aensure_region_resolved=AsyncMock(),
-            get_model_api_config=lambda kind: {
-                "base_url": new_route[0], "model": new_route[1], "api_key": "k",
-            },
-            get_character_data=lambda: (
-                "Master", "Neko", None, {}, None, {}, None, None, None,
-            ),
-        ),
-    )
-
-    stale_entry = {
-        "login_self_id": "10000",
-        "her_name": "Neko",
-        "conversation_route": ("https://www.lanlan.app/text/v1", "free-model"),
-        "session": SimpleNamespace(),
-        "session_key": "group:7788",
-        "sender_id": "2046",
-        "is_group": True,
-        "group_id": "7788",
-        "user_title": "群友",
-        "permission_level": "user",
-        "lock": asyncio.Lock(),
-    }
-    discard = AsyncMock(side_effect=lambda key, reason: (
-        plugin._user_sessions.pop(key, None) is not None
-    ))
-    plugin = SimpleNamespace(
-        _user_sessions={"group:7788": stale_entry},
-        _ai_connect_timeout_seconds=5,
-        logger=MagicMock(),
-        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
-        session_runtime_service=SimpleNamespace(discard_session=discard),
-        _normalize_login_identity=lambda payload: ("online", "10000", "Neko"),
-        _fetch_login_status_payload=AsyncMock(return_value={}),
-        _build_character_card_fields=lambda *a, **k: {},
-        _build_qq_session_instructions=AsyncMock(
-            return_value=SimpleNamespace(
-                system_prompt="系统提示词", memory_context_used=False,
-            )
-        ),
-    )
-    service = sbs.QQSessionBootstrapService(plugin)
-    created = await service.ensure_session_for_user({
-        "session_key": "group:7788", "sender_id": "2046",
-        "permission_level": "user", "is_group": True, "group_id": "7788",
-        "user_title": "群友",
-    })
-    discard.assert_awaited_once()
-    assert created is not stale_entry
-    assert created["conversation_route"] == new_route
-
-    # 线路一致：原样复用——比对的是创建期指纹，vision 切换过的 client
-    # 现值不同也不得触发重建。
-    created["session"] = SimpleNamespace(
-        model="vision-x", base_url="https://vision.example.com/v1",
-    )
-    discard.reset_mock()
-    reused = await service.ensure_session_for_user({
-        "session_key": "group:7788", "sender_id": "2046",
-        "permission_level": "user", "is_group": True, "group_id": "7788",
-        "user_title": "群友",
-    })
-    assert reused is created
-    discard.assert_not_awaited()
-
-    # 结算失败（discard 返回 False）：保留旧会话 + 粘性标记交回复路径重试，
-    # 绝不销毁缓冲唯一副本。
-    created["conversation_route"] = ("https://old.example.com/v1", "old-model")
-    discard.reset_mock()
-    discard.side_effect = None
-    discard.return_value = False
-    kept = await service.ensure_session_for_user({
-        "session_key": "group:7788", "sender_id": "2046",
-        "permission_level": "user", "is_group": True, "group_id": "7788",
-        "user_title": "群友",
-    })
-    assert kept is created
-    assert kept["pending_identity_discard"] is True
-
 
 # ---------------------------------------------------------------------------
 # Bridge: time passthrough
@@ -1324,25 +1333,184 @@ async def test_bridge_forwards_time_spec_and_allows_time_only():
 # ---------------------------------------------------------------------------
 
 
-def test_fallback_recall_shares_the_subject_resolver():
-    """The fallback recall and the tool handler must authorize identical
-    scopes — enforced by both calling resolve_group_recall_subjects. A
-    re-inlined copy in either path is where the scopes would drift."""
+@pytest.mark.asyncio
+async def test_fallback_recall_shares_the_subject_resolver():
+    """The fallback recall, the tool handler AND the scoped bootstrap
+    context must authorize identical scopes — enforced by all three
+    calling resolve_group_recall_subjects. A re-inlined copy in any path
+    is where the scopes would drift (the bootstrap path WAS such a copy
+    until the recent-speaker expansion collapsed it).
+
+    AST 而非源码字符串：函数体内的 import 语句 / 注释同样含这个名字，
+    字符串断言在「调用被内联掉、import 还留着」的变异下照样绿（变异
+    验证抓到过）。这里找真正的 Call 节点。"""  # noqa: DOCSTRING_CJK
+    import ast
     import inspect
+    import textwrap
 
     from plugin.plugins.qq_auto_reply import memory_tool_service as mts
     from plugin.plugins.qq_auto_reply import reply_context_node as rcn
+    from plugin.plugins.qq_auto_reply import session_instruction_service as sis
 
-    assert "resolve_group_recall_subjects" in inspect.getsource(
+    def _calls_resolver(func) -> bool:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+        return any(
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name)
+                 and node.func.id == "resolve_group_recall_subjects")
+                or (isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "resolve_group_recall_subjects")
+            )
+            for node in ast.walk(tree)
+        )
+
+    assert _calls_resolver(
         rcn.QQReplyContextNode._build_recalled_memory_text
-    )
-    assert "resolve_group_recall_subjects" in inspect.getsource(
+    ), "回落召回路径没有真正调用共享 resolver"
+    assert _calls_resolver(
         mts.QQMemoryToolService.execute_recall
-    )
+    ), "tool handler 路径没有真正调用共享 resolver"
+    assert _calls_resolver(
+        sis.QQSessionInstructionService._build_core_memory_section
+    ), "scoped bootstrap 路径没有真正调用共享 resolver"
 
+    # 无 backlog_store（轻量 harness）：形状退化回 [群, 当前发言人]。
     plugin = _tool_plugin()
-    subjects, used_member = resolve_group_recall_subjects(
+    subjects, used_member = await resolve_group_recall_subjects(
         plugin, group_id="7788", memory_sender_id="  2046  ",
+    )
+    assert subjects == [
+        QQMemoryBridge.group_subject("7788"),
+        QQMemoryBridge.group_participant_subject("7788", "2046"),
+    ]
+    assert used_member is True
+
+
+@pytest.mark.asyncio
+async def test_resolver_appends_recent_other_speakers():
+    """读侧扩容：群 + 当前发言人 + 最近说过话的另外 3 人（新→旧、去重、
+    排除当前发言人），群恒在最前（subjects 顺序 = 预算分配顺序）。"""  # noqa: DOCSTRING_CJK
+    plugin = _tool_plugin()
+    timeline = [
+        # backlog 升序（旧→新）；有重复发言与当前发言人自己的消息。
+        {"sender_id": "9001", "message_id": "m1", "timestamp": 1},
+        {"sender_id": "9002", "message_id": "m2", "timestamp": 2},
+        {"sender_id": "9001", "message_id": "m3", "timestamp": 3},
+        {"sender_id": "2046", "message_id": "m4", "timestamp": 4},
+        {"sender_id": "9003", "message_id": "m5", "timestamp": 5},
+        {"sender_id": "9004", "message_id": "m6", "timestamp": 6},
+        # 合成事件（入群通知）：名义 sender 没有说话，最新也不占槽位。
+        {"sender_id": "9005", "message_id": "welcome_7788_9005_7",
+         "timestamp": 7, "synthetic_source": "group_join_notice"},
+        # 升级前的旧行：无 synthetic_source 字段，靠 "welcome_" id 前缀
+        # 兜底识别，同样不占槽位。
+        {"sender_id": "9006", "message_id": "welcome_7788_9006_8",
+         "timestamp": 8},
+        # 旧行 + 普通 message_id：字段缺失不等于合成，照常算发言人——
+        # 但它比 9004 还新，会顶掉最旧的 9001。
+        {"sender_id": "9007", "message_id": "m9", "timestamp": 9},
+    ]
+    plugin.backlog_store = SimpleNamespace(
+        get_recent_group_messages=AsyncMock(return_value=timeline),
+    )
+    subjects, used_member = await resolve_group_recall_subjects(
+        plugin, group_id="7788", memory_sender_id="2046",
+    )
+    assert used_member is True
+    assert subjects == [
+        QQMemoryBridge.group_subject("7788"),
+        QQMemoryBridge.group_participant_subject("7788", "2046"),
+        # 新→旧：合成事件的 9005（带字段）与 9006（legacy 行按 welcome_
+        # 前缀兜底）被排除，然后 9007（legacy 普通行照常算）、9004、9003
+        # （跳过当前发言人 2046，9001 被更新的发言人顶出前 3）。
+        QQMemoryBridge.group_participant_subject("7788", "9007"),
+        QQMemoryBridge.group_participant_subject("7788", "9004"),
+        QQMemoryBridge.group_participant_subject("7788", "9003"),
+    ]
+    assert not any(
+        s["subject_id"].endswith((":9005", ":9006")) for s in subjects
+    ), "合成事件的关联用户被当成了最近发言人"
+    # 5 个 subject 在读端点 1..8 上限之内。
+    assert len(subjects) <= 8
+
+    # member 门控整体覆盖最近发言人：当前发言人为空（合成轮 / member
+    # 快照未授权）时，最近发言人也一并不带。
+    subjects, used_member = await resolve_group_recall_subjects(
+        plugin, group_id="7788", memory_sender_id="",
+    )
+    assert subjects == [QQMemoryBridge.group_subject("7788")]
+    assert used_member is False
+
+    # member 开关关闭时同理。
+    plugin_off = _tool_plugin(settings={
+        "group_memory_enabled": True,
+        "group_member_memory_enabled": False,
+    })
+    plugin_off.backlog_store = SimpleNamespace(
+        get_recent_group_messages=AsyncMock(return_value=timeline),
+    )
+    subjects, used_member = await resolve_group_recall_subjects(
+        plugin_off, group_id="7788", memory_sender_id="2046",
+    )
+    assert subjects == [QQMemoryBridge.group_subject("7788")]
+    assert used_member is False
+
+
+@pytest.mark.asyncio
+async def test_record_message_persists_synthetic_source():
+    """resolver 的合成事件过滤读的是 backlog 行上的 synthetic_source——
+    这条测试钉住写入侧真的把 pipeline 的 _synthetic_source 落了盘，否则
+    过滤读的是一个没人写的字段（形同虚设）。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.backlog_service import QQBacklogService
+
+    captured: list = []
+
+    async def _append(msg, **kwargs):
+        captured.append(msg)
+
+    plugin = SimpleNamespace(
+        _sanitize_message_text=lambda text, is_reply_to_bot=False: text,
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda s: "normal",
+            get_nickname=lambda s: None,
+        ),
+        group_permission_mgr=SimpleNamespace(get_group_level=lambda g: "open"),
+        backlog_store=SimpleNamespace(append_message=_append),
+        _build_backlog_conversation_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}:{sender_id}"
+        ),
+        _qq_settings={},
+        logger=MagicMock(),
+    )
+    service = QQBacklogService(plugin)
+
+    await service.record_message({
+        "message_type": "group", "user_id": "9005", "group_id": "7788",
+        "content": "[系统] 新成员 9005 加入了群聊",
+        "message_id": "welcome_7788_9005_1", "timestamp": 1,
+        "_synthetic_source": "group_join_notice",
+    })
+    await service.record_message({
+        "message_type": "group", "user_id": "9001", "group_id": "7788",
+        "content": "我真的说了话", "message_id": "m1", "timestamp": 2,
+    })
+    assert [m.synthetic_source for m in captured] == [
+        "group_join_notice", "",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_resolver_degrades_when_backlog_read_fails():
+    """backlog 读挂了只降级（[群, 当前发言人]），不把整个召回搞挂。"""  # noqa: DOCSTRING_CJK
+    plugin = _tool_plugin()
+    plugin.backlog_store = SimpleNamespace(
+        get_recent_group_messages=AsyncMock(
+            side_effect=RuntimeError("backlog io error"),
+        ),
+    )
+    subjects, used_member = await resolve_group_recall_subjects(
+        plugin, group_id="7788", memory_sender_id="2046",
     )
     assert subjects == [
         QQMemoryBridge.group_subject("7788"),

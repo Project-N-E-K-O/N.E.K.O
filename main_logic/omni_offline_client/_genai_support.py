@@ -371,6 +371,9 @@ class _GenaiMixin:
         if tools_payload:
             gen_config_kw["tools"] = tools_payload
 
+        # 跨迭代累计真正执行过的 tool call 数（与 OpenAI 路径对偶）：0 与
+        # 非 0 在封顶日志里是两种性质。
+        executed_tool_calls = 0
         for tool_iter in range(self.max_tool_iterations):
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
@@ -410,6 +413,10 @@ class _GenaiMixin:
 
             # Per-iteration accumulators.
             collected_tool_calls: list = []  # list of (id, name, args_dict, raw_args_str)
+            # 是否见过任何 function_call part（含名字为空、随后被 drop 的）：
+            # "进入 tool 轮"的判据必须用它而不是 collected——全被 drop 时
+            # collected 为空，但这轮确实不是普通文本轮。
+            saw_tool_call_fragment = False
             had_text = False
             # 累积本轮已经 yield 给用户的 text，下面写 assistant 历史时
             # 用作 ``content`` —— 否则下一轮 LLM 看到 ``content=""`` 会
@@ -453,6 +460,7 @@ class _GenaiMixin:
                         text = getattr(part, "text", None) or ""
                         fn_call = getattr(part, "function_call", None)
                         if fn_call is not None:
+                            saw_tool_call_fragment = True
                             tc_name = (getattr(fn_call, "name", "") or "").strip()
                             if not tc_name:
                                 # 与 OpenAI 路径对偶：空 name 的 function_call 是
@@ -543,6 +551,38 @@ class _GenaiMixin:
                     getattr(self, "_last_prompt_tokens", None),
                 )
 
+            if saw_tool_call_fragment and self.on_tool_call is not None:
+                # 本轮已确认是 tool 轮（哪怕所有 function_call 都因空 name 被
+                # drop）：先给缓冲型调用方一个丢弃 pre-tool 文本的锚点，与
+                # OpenAI 路径对偶。挂在 collected 非空的分支里会漏掉全 drop
+                # 的那条路径——那正是 pre-tool 文本会被当成整条回复外发的
+                # 场景。
+                await self._notify_tool_round_start()
+            if (
+                saw_tool_call_fragment
+                and not collected_tool_calls
+                and self.on_tool_call is not None
+            ):
+                # 与 OpenAI 路径对偶（那边 collect_tool_calls 全 drop 后经
+                # `if not calls: return 0` 早退、循环 continue）：消耗一次
+                # 迭代重试，而不是把这轮当成"模型不再调工具"直接 return——
+                # 直接 return 的话既无 forced-finalize 也无封顶日志，pre-tool
+                # 的"我查一下"就成了整条回复。
+                #
+                # leak filter 也按 tool 轮边界收尾（与 collected 分支及
+                # OpenAI 分支入口对偶）：不 finalize/reset 的话，挂起的
+                # 半截文本会跨迭代滞留在 filter 里。本轮没有 assistant
+                # turn 入史，tail 只需 yield 给用户，不进 text buffer。
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
+                    tool_leak_filter.reset()
+                continue
             if collected_tool_calls and self.on_tool_call is not None:
                 # Execute tools, append a unified assistant + tool history (dict shape
                 # accepted by both paths), then continue tool-iteration loop.
@@ -576,6 +616,7 @@ class _GenaiMixin:
                     "content": strip_thinking_segments(streamed_text_buffer),
                     "tool_calls": tool_calls_dict,
                 })
+                executed_tool_calls += len(collected_tool_calls)
                 for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
                     tool_call = ToolCall(
                         name=tc_name,
@@ -611,10 +652,27 @@ class _GenaiMixin:
                 # model a chance to follow up after seeing tool results.
                 continue
             return
-        logger.warning(
-            "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
-            self.max_tool_iterations,
-        )
+        if executed_tool_calls == 0:
+            # 与 OpenAI 路径对偶：进过 tool 轮却一次都没执行成（function_call
+            # 分片全部因空 name 被 drop），单列一条最值得排查的日志。
+            logger.warning(
+                "OmniOfflineClient(genai): tool iteration cap %d reached with 0 "
+                "executed tool calls (dropped nameless function_call parts); "
+                "forcing final answer without tools",
+                self.max_tool_iterations,
+            )
+        elif self.max_tool_iterations == 1:
+            # cap=1 的设计内单轮预算（QQ 插件）：正常召回轮必然耗尽循环，
+            # 降为 INFO，与 OpenAI 路径对偶。
+            logger.info(
+                "OmniOfflineClient(genai): single tool round budget spent; "
+                "forcing final answer without tools",
+            )
+        else:
+            logger.warning(
+                "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
+                self.max_tool_iterations,
+            )
         # Forced-finalize：与 OpenAI 路径对偶。去掉 tools 再生成一次，逼模型
         # 基于已积累的 tool 结果输出最终文本，避免封顶后整轮静默。
         # 不吞异常：与 OpenAI 路径一致，让 SDK 调用失败原样向上抛，由 stream_text /

@@ -107,7 +107,14 @@ def _group_drain_harness(post_scoped):
     """The smallest group session that can really run the drain.
 
     ``post_scoped`` may be None when the caller rebinds
-    ``plugin.memory_bridge.post_scoped_memory_history`` itself."""
+    ``plugin.memory_bridge.post_scoped_memory_history`` itself.
+
+    生产代码的排空已改批请求（post_scoped_memory_history_batch），但本
+    文件的用例几乎都以"逐成员一次请求"表达场景（某个 sender 失败/阻塞/
+    计数）。桥上装一个真实转发层：把每批逐段扇回 per-member stub——
+    调用时动态读 ``post_scoped_memory_history``（不少用例事后重绑它），
+    stub 抛异常或返回 {"status": "error"} 都翻译成该段 failed，与服务端
+    per-段结果的消费语义一致。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -124,6 +131,29 @@ def _group_drain_harness(post_scoped):
         "member_drain_in_flight": True,
     }
     run_with_session_lock, locks = _session_lock_runner()
+
+    async def _batch_via_single(her_name, segments, *, timeout=30.0):
+        segment_results = []
+        for segment in segments:
+            try:
+                result = await plugin.memory_bridge.post_scoped_memory_history(
+                    her_name,
+                    segment["messages"],
+                    subject=segment["subject"],
+                    speaker_label=segment["speaker_label"],
+                    timeout=timeout,
+                )
+            except Exception:
+                segment_results.append({"status": "failed"})
+                continue
+            if isinstance(result, dict) and result.get("status") == "error":
+                segment_results.append({"status": "failed"})
+            else:
+                segment_results.append(
+                    {"status": "ok", "created": 0, "fact_ids": []}
+                )
+        return {"status": "processed", "segments": segment_results}
+
     plugin = SimpleNamespace(
         _user_sessions={"group:7788": user_data},
         _qq_settings={
@@ -135,6 +165,7 @@ def _group_drain_harness(post_scoped):
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
         memory_bridge=SimpleNamespace(
             post_scoped_memory_history=post_scoped,
+            post_scoped_memory_history_batch=_batch_via_single,
             group_participant_subject=(
                 lambda gid, sid: {
                     "subject_kind": "group_participant",
@@ -411,6 +442,18 @@ async def _drive_every_endpoint(bridge) -> None:
         "Neko", [{"role": "user"}],
         subject={"subject_kind": "group_participant", "subject_id": "qq:7788:2046"},
     )
+    await bridge.post_scoped_memory_history_batch(
+        "Neko",
+        [{
+            "messages": [{"role": "user"}],
+            "subject": {
+                "subject_kind": "group_participant",
+                "subject_id": "qq:7788:2046",
+            },
+            "speaker_label": "2046",
+            "speaker_trust": 0.5,
+        }],
+    )
 
 
 @pytest.mark.asyncio
@@ -429,19 +472,21 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
     monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(lambda: recorder))
     await _drive_every_endpoint(QQMemoryBridge(SimpleNamespace(logger=MagicMock())))
 
-    # 按完整路径建 key：三条 /xxx/{name} 端点的最后一段都是角色名，用
-    # 末段做 key 会让它们相互覆盖，只剩最后写入的那条真被断言到。
-    assert {
-        url.split("/", 3)[3]: kwargs.get("timeout")
+    # 按完整路径 + 多重集断言：三条 /xxx/{name} 端点的最后一段都是角色
+    # 名，用末段做 key 会相互覆盖；单发与批共用 scoped_history 路径，按
+    # dict 建 key 同样会覆盖——排好序的 (path, timeout) 列表两个都躲开。
+    assert sorted(
+        (url.split("/", 3)[3], kwargs.get("timeout"))
         for _method, url, kwargs in recorder.calls
-    } == {
-        "new_dialog/Neko": 5.0,
-        "query_memory/Neko": 5.0,
-        "cache/Neko": 5.0,
-        "internal/memory/Neko/scoped_context": 5.0,
-        "internal/memory/Neko/scoped_mentions": 5.0,
-        "internal/memory/Neko/scoped_history": 30.0,
-    }
+    ) == sorted([
+        ("new_dialog/Neko", 5.0),
+        ("query_memory/Neko", 5.0),
+        ("cache/Neko", 5.0),
+        ("internal/memory/Neko/scoped_context", 5.0),
+        ("internal/memory/Neko/scoped_mentions", 5.0),
+        ("internal/memory/Neko/scoped_history", 30.0),   # legacy 单发
+        ("internal/memory/Neko/scoped_history", 30.0),   # segments 批
+    ])
 
 
 @pytest.mark.asyncio
@@ -469,7 +514,7 @@ async def test_memory_bridge_uses_the_shared_internal_client(monkeypatch):
     bridge = bridge_module.QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
     await _drive_every_endpoint(bridge)
 
-    assert len(handed_out) == 6 and all(c is recorder for c in handed_out)
+    assert len(handed_out) == 7 and all(c is recorder for c in handed_out)
     # 插件侧没有任何自有 client 生命周期可言。
     assert not hasattr(bridge, "aclose")
     assert not hasattr(bridge_module, "httpx")
@@ -1261,12 +1306,15 @@ async def test_per_request_consent_check_is_opt_in():
 
 @pytest.mark.asyncio
 async def test_second_drain_wave_sees_an_opt_out_from_the_first():
-    """A sweep is two waves; the second must not outrun the switch.
+    """A sweep can be two waves; the second must not outrun the switch.
 
-    Up to eight buckets pass through a four-slot semaphore, so the later
-    wave starts after the earlier requests returned — long enough for an
-    opt-out to land. Those buckets come back as failures and the snapshot
-    return then discards them fail-closed.
+    Batching packs small buckets into one request (no second wave to
+    guard), so this scenario needs buckets near the hard limit: 150+150
+    exceeds the 200-message batch budget, forcing one bucket per batch —
+    eight batches through a four-slot semaphore, so the later wave starts
+    after the earlier requests returned — long enough for an opt-out to
+    land. Those buckets come back as failures and the snapshot return
+    then discards them fail-closed.
     """
     posted: list[str] = []
     first_wave_done = 0
@@ -1275,7 +1323,9 @@ async def test_second_drain_wave_sees_an_opt_out_from_the_first():
     quota = service.GROUP_MEMBER_MAX_PARTICIPANTS
     concurrency = service.MEMBER_FLUSH_CONCURRENCY
     user_data["group_member_memory_messages"] = {
-        str(7000 + i): [{"role": "user", "content": [{"type": "text", "text": "x"}]}]
+        str(7000 + i): [
+            {"role": "user", "content": [{"type": "text", "text": "x"}]}
+        ] * 150
         for i in range(quota)
     }
     user_data["group_member_memory_labels"] = {}

@@ -14,6 +14,7 @@ from main_logic.topic.pipeline import (
     _record_weight,
 )
 from main_logic.topic.signals import TopicSignalStore
+from tests.atomic_read import read_text_tolerating_replace, read_text_when_readable
 from tests.fake_clock import patch_module_clock
 
 
@@ -1004,18 +1005,17 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
     await pool.process_now("妮可", lang="zh-CN")
     used_path = path.with_name("topic_signals.used_topics.json")
-    # The trigger writes this file from a worker thread (to_thread), so a
-    # fixed sleep is a race: a loaded CI runner needs more than 20ms just to
-    # hand the write off. Wait for the artifact itself.
-    deadline = time.monotonic() + 5.0
-    while not used_path.exists() and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)
-    assert used_path.exists(), "used-topics file was never persisted"
+    # The trigger writes this file from a worker thread (to_thread), so a fixed
+    # sleep is a race: a loaded CI runner needs more than 20ms just to hand the
+    # write off. Polling `exists()` is not enough either — on Windows it flips
+    # True while os.replace is still in flight and the read right behind it
+    # loses with PermissionError (CI run 30549810820). Wait for readable, and
+    # read once: the two assertions below must see the same snapshot anyway.
+    used_text = await read_text_when_readable(used_path)
 
     assert delivered == ["买车"]
-    used_payload = json.loads(used_path.read_text(encoding="utf-8"))
+    used_payload = json.loads(used_text)
     assert used_payload["characters"]["妮可"][0]["used_at"] > 0
-    used_text = used_path.read_text(encoding="utf-8")
     assert used_payload["characters"]["妮可"][0]["interest_hash"]
     assert used_payload["characters"]["妮可"][0]["keyword_hashes"] == []
     assert "买车" not in used_text
@@ -1092,7 +1092,9 @@ async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_p
     def _persisted_turns() -> list:
         if not path.exists():
             return []
-        payload = json.loads(path.read_text(encoding="utf-8"))
+        # 这个轮询和还在跑的 trigger 任务并发：它们经 to_thread 落盘同一个文件，
+        # Windows 上 os.replace 和这里的 open() 互斥，谁输谁吃 PermissionError。
+        payload = json.loads(read_text_tolerating_replace(path))
         return payload.get("characters", {}).get("妮可", [])
 
     # 原来是 `for _ in range(20): await asyncio.sleep(0.01)`——计次而没有挂钟

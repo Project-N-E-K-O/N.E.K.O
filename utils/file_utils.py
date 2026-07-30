@@ -585,6 +585,68 @@ if hasattr(os, "register_at_fork"):
     os.register_at_fork(after_in_child=_reset_tmp_sweep_state_after_fork)
 
 
+# Windows 上 os.replace 会因为「目标此刻正被别的句柄打开」而失败，抛 PermissionError，
+# winerror 是 5（ACCESS_DENIED）或 32（SHARING_VIOLATION）。制造这个窗口的不只是杀软扫描
+# 和资源管理器预览 —— 本进程自己就够了：落盘常跑在 to_thread 的工作线程里，同一时刻另一
+# 个线程（或测试）正 open() 读同一个文件，replace 就被拒。POSIX 的 rename 不受读者影响，
+# 这段窗口是 Windows 独有的，而且几乎总是毫秒级：对方句柄一关就没了。
+#
+# 所以这里退避重试。它不会掩盖真实错误，四条理由：
+#   * 判据是 OS 给的错误码，不是消息文本猜测。POSIX 的 OSError 根本没有 winerror 属性，
+#     getattr 取到 None，整段在非 Windows 上恒等于「直接抛」。
+#   * 别的错误码一次都不重试：磁盘满、路径过长、跨卷、目标是目录，第一次就原样抛出。
+#   * 最后一次尝试写在循环外，所以重试用尽后抛出的就是那次真实的 os.replace 异常，带着
+#     完整的 filename/filename2，不是一个被包装过的「重试失败」。
+#   * 上界是固定的（5 次退避，累计 155ms）。目标要是被永久占着（只读、被别的进程长期
+#     持有），行为和改动前完全一样是抛错，只是晚 155ms —— 拿这点延迟换掉绝大多数
+#     毫秒级窗口造成的偶发写失败。
+#
+# 但退避绝不在事件循环上跑。本模块是全仓库共用的落盘原语，而仓库里有二十多处在
+# `async def` 里裸调同步的 atomic_write_*（其中 memory/anti_repeat.py 与
+# memory/user_directives.py 是 per-turn 的，跟音频同在一条循环上）。在那些地方睡
+# 155ms 就是掐音频。而且这不只是量级问题：scripts/check_async_blocking.py 把
+# `time.sleep` 明文列进 RISKY_ATTR_PAIRS，本来就禁止它出现在 async 可达路径上 ——
+# 该守卫此刻不报，只是因为它文档里写明的 depth-1 限制看不到这里（sleep 在
+# atomic_write_text → _replace_with_busy_retry 的深度 2），不是这段代码合规。
+#
+# 所以有运行中的事件循环时，第一次 busy 就抛：上环调用者拿到的**恰好是改动前的
+# 行为**，一个字节的回归都没有。而制造这个 flake 的落盘全部跑在 to_thread 的工作
+# 线程里（那里没有 running loop），完整退避原样保留 —— 修复的收益一分不少。
+#
+# 代价要说清楚：那二十多处上环调用点因此继续吃不到这份保护，撞上占用时照旧丢一次
+# 写（它们的调用方多半是 `except Exception: logger.warning`，所以丢得是静默的）。
+# 这不该靠原语在循环上偷偷睡来补 —— 正确的收口是把那些调用点改成
+# atomic_write_json_async（已存在，仓库里已有 77 处在用），那是独立的一份工作。
+_REPLACE_BUSY_WINERRORS = frozenset({5, 32})
+_REPLACE_RETRY_BACKOFF_S = (0.005, 0.01, 0.02, 0.04, 0.08)
+
+
+def _running_on_event_loop() -> bool:
+    """Whether this thread is currently inside a running asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
+    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            os.replace(temp_path, target_path)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+            # 只在真的撞上 busy 之后才问「我是不是在循环上」：happy path 一条
+            # 指令都不多。
+            if _running_on_event_loop():
+                raise
+        time.sleep(delay)
+    os.replace(temp_path, target_path)
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)
@@ -603,7 +665,7 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
             temp_file.write(content)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, target_path)
+        _replace_with_busy_retry(temp_path, target_path)
     except BaseException:
         # BaseException 而不是 Exception：Ctrl-C / SystemExit 落在 write/fsync 上很常见，
         # 只收 Exception 的话 tmp 直接留盘（要等到下一个清扫窗口 + 24h 才清）。

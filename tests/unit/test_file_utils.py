@@ -203,6 +203,197 @@ def test_missing_temp_file_during_cleanup_is_tolerated(tmp_path, monkeypatch):
         atomic_write_json(target, {"v": 1})
 
 
+# ── Windows: the target is momentarily busy ─────────────────────────────
+
+
+def _busy_error(winerror: int) -> PermissionError:
+    """A PermissionError shaped like Windows' "the target is open elsewhere"."""
+    exc = PermissionError(13, "Access is denied")
+    exc.winerror = winerror
+    return exc
+
+
+class _SleepSpy:
+    """Stands in for ``file_utils.time``: records sleeps, proxies the rest.
+
+    Scoped to the module under test on purpose — patching the global
+    ``time.sleep`` would silently un-sleep every other thread alive in this
+    process for the duration of the test.
+    """
+
+    def __init__(self) -> None:
+        self.delays: list[float] = []
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+    def sleep(self, delay: float) -> None:
+        self.delays.append(delay)
+
+
+def test_a_busy_target_is_retried_until_the_other_handle_goes_away(tmp_path, monkeypatch):
+    # Windows 独有的一段窗口：目标此刻被别的句柄打开时 os.replace 被拒（WinError
+    # 5/32）。制造它的不止杀软扫描和资源管理器预览 —— 本进程自己就够了，落盘跑在
+    # to_thread 的工作线程里，另一个线程正好在读同一个文件。窗口是毫秒级的，退避重试
+    # 之后这次写就该成功，而不是把一次瞬时冲突报成落盘失败。
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"v": 1})
+
+    real_replace = os.replace
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def busy_twice(src, dst):
+        attempts.append(src)
+        if len(attempts) == 1:
+            raise _busy_error(32)
+        if len(attempts) == 2:
+            raise _busy_error(5)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy_twice)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    atomic_write_json(target, {"v": 2})
+
+    assert read_json(target) == {"v": 2}
+    assert len(attempts) == 3
+    assert spy.delays == [0.005, 0.01], "只在被拒之后退避，且必须递增"
+    assert _tmp_siblings(target) == []
+
+
+def test_a_target_that_stays_busy_raises_the_real_replace_error(tmp_path, monkeypatch):
+    # 重试的上界必须是硬的，而且用尽之后抛出来的要是 os.replace 那次真实的异常 ——
+    # 不是一个包装过的「重试失败」。目标被永久占着（只读、别的进程长期持有）时，行为
+    # 和加重试之前完全一样：抛错、旧内容不动、tmp 清掉，只是晚了 155ms。
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"v": 1})
+
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def always_busy(src, dst):
+        attempts.append(src)
+        raise _busy_error(32)
+
+    monkeypatch.setattr(os, "replace", always_busy)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    with pytest.raises(PermissionError) as excinfo:
+        atomic_write_json(target, {"v": 2})
+
+    assert excinfo.value.winerror == 32, "抛的必须是那次真实的 replace 异常"
+    assert "Access is denied" in str(excinfo.value)
+    assert len(attempts) == len(file_utils._REPLACE_RETRY_BACKOFF_S) + 1
+    assert spy.delays == list(file_utils._REPLACE_RETRY_BACKOFF_S)
+    assert sum(spy.delays) < 0.2, "重试预算必须留在亚秒级"
+    assert read_json(target) == {"v": 1}, "失败的写不许动到目标"
+    assert _tmp_siblings(target) == []
+
+
+@pytest.mark.parametrize(
+    "make_error",
+    [
+        pytest.param(lambda: _busy_error(2), id="another-winerror"),
+        pytest.param(lambda: OSError(28, "No space left on device"), id="no-winerror"),
+    ],
+)
+def test_only_the_busy_winerrors_are_retried(tmp_path, monkeypatch, make_error):
+    # 判据是 OS 给的错误码，不是消息文本。磁盘满、路径不存在这类错误一次都不重试；
+    # 非 Windows 平台的 OSError 根本没有 winerror 属性，于是整段退避在那里恒等于
+    # 「直接抛」—— 这条用例就是在任何平台上钉住这一点。
+    target = tmp_path / "state.json"
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def refuse(src, dst):
+        attempts.append(src)
+        raise make_error()
+
+    monkeypatch.setattr(os, "replace", refuse)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    with pytest.raises(OSError):
+        atomic_write_json(target, {"v": 1})
+
+    assert len(attempts) == 1, "非 busy 错误必须第一次就抛出来"
+    assert spy.delays == []
+
+
+@pytest.mark.asyncio
+async def test_the_backoff_never_sleeps_on_the_event_loop(tmp_path, monkeypatch):
+    # 二十多处 `async def` 在裸调同步的 atomic_write_*（memory/anti_repeat.py 与
+    # memory/user_directives.py 甚至是 per-turn 的，跟音频同在一条循环上）。在那里
+    # 睡 155ms 就是掐音频；scripts/check_async_blocking.py 也早就把 time.sleep 列为
+    # 禁止出现在 async 可达路径上的调用。上环调用者必须拿到改动前的行为：第一次
+    # busy 就抛，一次 sleep 都不许有。
+    target = tmp_path / "state.json"
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def always_busy(src, dst):
+        attempts.append(src)
+        raise _busy_error(32)
+
+    monkeypatch.setattr(os, "replace", always_busy)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    with pytest.raises(PermissionError):
+        atomic_write_json(target, {"v": 1})
+
+    assert len(attempts) == 1, "事件循环上不许重试"
+    assert spy.delays == [], "事件循环上一次 sleep 都不许有"
+    assert _tmp_siblings(target) == []
+
+
+@pytest.mark.asyncio
+async def test_a_worker_thread_still_gets_the_full_backoff(tmp_path, monkeypatch):
+    # 对偶面，也是本次 flake 修复真正落地的地方：制造 flake 的落盘全部跑在
+    # to_thread 的工作线程里，那里没有 running loop，退避必须原样生效。
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"v": 1})
+
+    real_replace = os.replace
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def busy_twice(src, dst):
+        attempts.append(src)
+        if len(attempts) <= 2:
+            raise _busy_error(32)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy_twice)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    await asyncio.to_thread(atomic_write_json, target, {"v": 2})
+
+    assert read_json(target) == {"v": 2}
+    assert len(attempts) == 3
+    assert spy.delays == [0.005, 0.01]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only handle semantics")
+def test_windows_really_refuses_to_replace_a_target_held_open(tmp_path):
+    # 这条钉的是重试列表的**前提**：Windows 上「目标被打开着」到底报哪个码。哪天
+    # CPython 换了 open 的共享模式、或者系统换了码，这条会红，而不是让退避悄悄地
+    # 永远不触发。
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"v": 1})
+
+    fd, temp_path = tempfile.mkstemp(dir=str(tmp_path))
+    os.close(fd)
+    try:
+        with open(target, "r", encoding="utf-8"):
+            with pytest.raises(PermissionError) as excinfo:
+                os.replace(temp_path, target)
+    finally:
+        with suppress(OSError):
+            os.unlink(temp_path)
+
+    assert excinfo.value.winerror in file_utils._REPLACE_BUSY_WINERRORS
+
+
 def test_unserializable_payload_never_touches_the_target(tmp_path):
     # json.dumps 在 atomic_write_text 之前跑，所以连 tmp 都不该出现。
     target = tmp_path / "state.json"

@@ -195,6 +195,49 @@ RECALL_RENDER_LINE_OVERHEAD_TOKENS = 40
 RECALL_RENDER_LINE_SEPARATOR_TOKENS = 1  # "\n"，take_lines_within_token_budget 的缝隙计费
 RECALL_RENDER_TOTAL_MAX_TOKENS = 2204
 
+# ── scoped 批抽取（写路径 /scoped_history 的 segments 形态） ─────────────
+# 成员记忆抽取的成本此前与**说话的人数**成正比：一个 subject = 一次 LLM
+# 抽取，桶里 1 条和 150 条一样贵。批形态把多个 (subject, speaker, messages)
+# 段并进一次请求 / 一次 LLM 调用，调用数从 O(发言人数) 降到 O(总消息数/批容量)。
+#
+# 段数上限 8：与读侧三个端点的 subjects 1..8 同一口径，也等于插件侧一趟
+# 排空最多带走的桶数（GROUP_MEMBER_MAX_PARTICIPANTS）。
+SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
+# 单批消息总量上限：沿用 legacy 单 subject 请求的 200——一次 LLM 抽取的
+# 输入工作量上界不因批形态而变（这正是"批不比单发慢"成立的前提，插件侧
+# 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
+# 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
+SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+
+# ── 群召回读侧的 subject 形状 ────────────────────────────────────────────
+# 一轮群回复带的 subject：1 个群 + 最多这么多个成员（当前发言人 + 本轮
+# 上下文里最近说过话的另外 N-1 人）。群恒排最前——subjects 顺序就是渲染
+# 预算的分配顺序（SCOPED_RENDER_TOTAL_MAX_TOKENS 按序先到先得），总数
+# 1 + 4 = 5 不触读端点的 1..8 上限。第二个"群"槽位刻意留空当预留：今天
+# 唯一能填的是别的群的记忆，那是跨群披露，要不要开是单独的决定（现在的
+# 跨群段只读活会话内存、从不碰记忆库）。
+GROUP_RECALL_MAX_MEMBER_SUBJECTS = 4
+# 找"另外 3 人"要扫多少条最近群消息：同一个人连发是常态，只取 3 条扫不
+# 出 3 个不同的人；30 条覆盖到几分钟前的对话，成本只是读一次 backlog。
+GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT = 30
+
+# ── 发言人信赖度（speaker_trust）字段 ────────────────────────────────────
+# 「不同人说的话可信度不同，矛盾时影响覆盖优先级」——本阶段只落字段：
+# 抽取时给每条 scoped fact 打上 speaker_label（谁说的）与 speaker_trust
+# （0..1 初值，由调用方按权限等级派生后随请求带上）。消费点（fact_dedup
+# 的 LLM 仲裁 / corrections 纠错队列 / refine merge / aadd_fact 矛盾扫描）
+# 留给后续 PR，本阶段任何路径都不得读这两个字段做决策。
+#
+# 初值按 QQ 插件权限等级派生（permission.py 的四档）。数值只需保序
+# （admin > trusted > normal > none），绝对值留给消费 PR 调参。
+SPEAKER_TRUST_DEFAULT = 0.5
+SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
+    "admin": 1.0,
+    "trusted": 0.8,
+    "normal": 0.5,
+    "none": 0.3,
+}
+
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
 # cosine 召回，两路各自阈值过滤 + 限 top-K，RRF 融合后整体再限 N 条返回。

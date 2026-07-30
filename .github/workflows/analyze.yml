@@ -200,6 +200,28 @@ jobs:
           BASE_REF: ${{ github.base_ref }}
         run: python scripts/check_docstring_no_cjk.py --base "origin/${BASE_REF}"
 
+      - name: Require zh-TW on new localized prompt dicts (PR-only)
+        # A dict under config/prompts/ with an 'en' key plus 'zh'/'zh-CN' is a
+        # localized prompt table, and `_loc` falls back to 'en' rather than
+        # 'zh' on a missing key — so a table without 'zh-TW' serves Traditional
+        # Chinese users an English prompt. 339 existing tables are still short
+        # one (the batched backfill in issue #2500), so this is a ratchet: it
+        # compares how many such tables exist at the merge-base vs at HEAD and
+        # fails only when the total grew. A plain total is what keeps renames,
+        # copy edits, added locales, and the eventual 'zh'->'zh-CN' migration
+        # from tripping it — see the script docstring for the three narrower
+        # keys that were tried and why each broke. `--full` lists the whole
+        # backlog, `--count` just sizes it. Suppress a single dict with
+        # a `noqa` comment naming PROMPT_ZH_TW on its opening or closing line
+        # (comma-separated lists and a bare `noqa` work too, as in the sibling
+        # gates). Skipped on direct push
+        # to main — nothing to diff against.
+        if: github.event_name == 'pull_request'
+        env:
+          # Same zizmor template-injection indirection as the i18n-sync step.
+          BASE_REF: ${{ github.base_ref }}
+        run: python scripts/check_prompt_zh_tw.py --base "origin/${BASE_REF}"
+
   api-layering:
     name: API & layering
     runs-on: ubuntu-latest

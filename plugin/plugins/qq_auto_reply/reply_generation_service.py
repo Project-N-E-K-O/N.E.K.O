@@ -330,6 +330,17 @@ class QQReplyGenerationService:
                     # prompt_ephemeral 等）绝不能带着本轮的 subject 闭包
                     # 发起召回。
                     try:
+                        # round-start 先清：它的闭包攥着本轮的 reply_chunks，
+                        # 越轮存活会清掉下一轮的出站缓冲，而且下一轮在
+                        # _arm_recall_tool 的早退路径（recall_via_tool 关闭、
+                        # 线路不支持 tool call）上不会覆盖这个槽位——排最前
+                        # 保证前两个卸载万一抛异常也连累不到它。
+                        set_round_start = getattr(
+                            user_session,
+                            "set_tool_round_start_callback", None,
+                        )
+                        if callable(set_round_start):
+                            set_round_start(None)
                         user_session.set_tools(None)
                         user_session.set_tool_call_handler(None)
                     except Exception:
@@ -400,6 +411,9 @@ class QQReplyGenerationService:
                 "缓存会话的线路不支持 tool call，本轮无召回（会话重建后恢复）"
             )
             return False
+        set_round_start = getattr(
+            user_session, "set_tool_round_start_callback", None,
+        )
         try:
             set_tools([
                 self.plugin.memory_tool_service.build_recall_tool_definition()
@@ -409,6 +423,17 @@ class QQReplyGenerationService:
                 reply_chunks=reply_chunks,
                 consent_before=consent_before,
             ))
+            if callable(set_round_start):
+                # pre-tool 文本清理的主锚点：客户端在确认进入 tool 轮的最早
+                # 时刻回调（早于 handler，且覆盖"分片全是空 name、handler
+                # 一次都不调"的路径——那条路径上只挂 handler 入口的清理永远
+                # 不会发生，pre-tool 的"我查一下"会被 forced-finalize 的
+                # 文本接在后面一起外发）。handler 入口的 clear 保留作幂等
+                # 兜底。
+                async def _on_tool_round_start() -> None:
+                    reply_chunks.clear()
+
+                set_round_start(_on_tool_round_start)
             return True
         except Exception as exc:
             self.plugin.logger.warning(
@@ -417,6 +442,8 @@ class QQReplyGenerationService:
             try:
                 set_tools(None)
                 set_handler(None)
+                if callable(set_round_start):
+                    set_round_start(None)
             except Exception:
                 # 挂载半途失败后的兜底清理：清不掉也只影响本轮（返回
                 # False 已宣布未挂载），finally 不会再动这两个槽位。

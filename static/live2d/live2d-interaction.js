@@ -54,6 +54,28 @@ function getLive2DNiriPetPhysicalCropApi() {
     return api;
 }
 
+function isLive2DHostModelDragActive() {
+    // Ownership starts with the primed pointerdown session and remains
+    // authoritative while the crop carrier is transitioning. api.isActive()
+    // can briefly change during prepare/commit without ending that session.
+    const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
+    // No bridge object, or a bridge predating the explicit ownership
+    // capability, means the ordinary web/legacy path owns coordinates. Once a
+    // bridge declares that capability, however, an incompatible or failing
+    // ownership method must not re-enable the legacy writer: that would let
+    // renderer-local and host screen-coordinate paths move the same model
+    // concurrently.
+    if (!api) return false;
+    const ownershipVersion = Number(api.hostModelDragOwnershipVersion);
+    if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;
+    if (typeof api.isHostModelDragActive !== 'function') return true;
+    try {
+        return api.isHostModelDragActive() !== false;
+    } catch (_) {
+        return true;
+    }
+}
+
 function normalizeLive2DPoint(point) {
     if (!point || typeof point !== 'object') return null;
     const x = Number(point.x);
@@ -1548,11 +1570,16 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     });
 
     const onDragEnd = async (event) => {
+        // A physical-crop host owns its drag from the primed pointerdown through
+        // final snap/save settlement. The legacy client-coordinate writer must
+        // not settle coordinates, but local pointer/UI state still needs its
+        // ordinary pointerup cleanup.
         if (this._isDraggingModel) {
             this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
             dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            if (isLive2DHostModelDragActive()) return;
 
             if (!this._isModelReadyForInteraction) return;
 
@@ -1607,6 +1634,7 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
 
     const onDragMove = (event) => {
         if (!this._isModelReadyForInteraction) return;
+        if (isLive2DHostModelDragActive()) return;
         if (this._isDraggingModel) {
             if (typeof this.boostLinuxX11InteractiveFPS === 'function') {
                 this.boostLinuxX11InteractiveFPS(1400);

@@ -912,6 +912,124 @@ async def test_prime_dispatch_failure_surfaces_a_type_the_swap_must_catch():
     await _finish_loop(socket, receive_loop)
 
 
+class _RiggedUUIDModule:
+    """A ``uuid`` stand-in whose hex always embeds ``needle``.
+
+    Every client event_id in ``_responses`` is ``<prefix>_<uuid4().hex>``, and
+    hex is 0-9a-f -- so '429', '1008' and '503' are all spellable by chance.
+    Rigging the id is not inventing an exotic input; it is pinning one of the
+    ~0.7%-per-error draws that CI kept hitting.
+    """
+
+    def __init__(self, needle: str) -> None:
+        self._needle = needle
+        self._counter = 0
+
+    def uuid4(self):
+        self._counter += 1
+        rigged = (f"{self._counter:08x}" + self._needle).ljust(32, "0")[:32]
+
+        class _U:
+            hex = rigged
+
+        return _U()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("needle", ["429", "1008", "503"])
+async def test_a_rejection_id_that_spells_a_quota_code_never_kills_the_transport(
+    needle, monkeypatch
+):
+    # The fatal-error classifier used to substring-match on str(event['error']),
+    # which echoes OUR OWN client event_id. A uuid4 hex that happens to contain
+    # '429'/'1008' turned an ordinary single-event rejection into a full
+    # connection teardown -- she goes silent mid-sentence, and it reproduces
+    # roughly once in 140 rejections. It was also the whole story behind two
+    # Windows CI flakes in this very file (run 30549810820): the prime failed
+    # with ConnectionError('realtime client closed') instead of the RuntimeError
+    # the swap handler is written against.
+    from main_logic.omni_realtime_client import _responses as responses_mod
+
+    monkeypatch.setattr(responses_mod, "uuid", _RiggedUUIDModule(needle))
+
+    connection_errors: list[str] = []
+
+    async def _on_connection_error(msg) -> None:
+        connection_errors.append(msg)
+
+    client, socket = _wired_client(api_type="free", model="free-model")
+    client.on_connection_error = _on_connection_error
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    prime = asyncio.create_task(
+        client.prime_context("[context] the task finished", skipped=False)
+    )
+    await _settle()
+    item_event_id = socket.sent[0]["event_id"]
+    assert needle in item_event_id, "the rigged id must actually spell the code"
+
+    socket.feed(
+        {
+            "type": "error",
+            "error": {"message": "invalid item payload", "event_id": item_event_id},
+        }
+    )
+    await _settle()
+
+    assert prime.done()
+    assert isinstance(prime.exception(), RuntimeError)
+    assert not isinstance(prime.exception(), ConnectionError), (
+        "a rejection whose event_id merely spells a quota code must not be "
+        "escalated into a transport teardown"
+    )
+    assert socket.closed is False
+    assert client.ws is socket, "the transport must stay attached"
+    assert connection_errors == [], "no fatal error was reported by the provider"
+    assert client._is_throttled is False, "nor is this a 503 backpressure signal"
+
+    await _finish_loop(socket, receive_loop)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "error_payload",
+    [
+        {"message": "HTTP 429 Too Many Requests"},
+        {"message": "rejected", "code": 1008},
+        {"message": "your account is not in good standing"},
+    ],
+)
+async def test_a_real_quota_error_still_closes_the_transport(error_payload):
+    # The other half of the contract: dropping correlation ids from the
+    # classifier must not blunt it. A code carried in a semantic field --
+    # message, code, type -- is still fatal and still tears the session down.
+    connection_errors: list[str] = []
+
+    async def _on_connection_error(msg) -> None:
+        connection_errors.append(msg)
+
+    client, socket = _wired_client(api_type="free", model="free-model")
+    client.on_connection_error = _on_connection_error
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    create = asyncio.create_task(client.create_response("hello"))
+    await _settle()
+    payload = dict(error_payload)
+    payload["event_id"] = socket.sent[0]["event_id"]
+    socket.feed({"type": "error", "error": payload})
+    await _settle()
+
+    assert socket.closed is True, "a genuine quota/policy error must fail closed"
+    assert client.ws is None
+    assert connection_errors, "the frontend must be told the session died"
+
+    assert create.done()
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
 # ---------------------------------------------------------------------------
 # T8 — the protect-her-speech contract, stated directly: program-initiated
 # text (proactive chat) queues behind a live response instead of preempting

@@ -19,10 +19,18 @@ Owns the review/correction task registries (``correction_tasks`` /
 ``correction_cancel_flags`` / ``compress_backup_tasks``) and the per-name
 spawn locks, co-located with the unified ``maybe_spawn_review`` gate chain
 (Phase C), the background review runner and the compression-failure backup
-path. Failure-backoff bookkeeping persists via ``gates._maint_state``.
+path.
+
+Failure-backoff bookkeeping lives in ``idle_maintenance_state.json``. Every
+update in this module goes through ``gates._amutate_maint_state`` with a
+synchronous mutator (``_mutate_*`` below) so that read-modify-write runs as one
+critical section; reads go through the read-only ``gates._maint_view``. Anything
+that needs an ``await`` (token counting, fingerprinting a snapshot) is computed
+before the mutator is handed over.
 """
 
 import asyncio
+import functools
 from datetime import datetime
 
 from . import gates, runtime
@@ -46,10 +54,45 @@ correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
 
 
-def _clear_review_output_exhaustion_state(state: dict) -> None:
+def _clear_review_output_exhaustion_state(state: dict) -> bool:
+    """Zero the output-exhaustion breaker in place; returns whether anything changed.
+
+    Mutator helper — always call it with the sub-dict handed to a mutator, never
+    with a ``gates._maint_view`` result.
+    """
+    # 三个键无条件写回（保持重构前的内存形状），但 dirty 只按「原本是否非默认值」
+    # 算：全是默认值时把键补齐一遍不需要落盘，磁盘上缺这三个键与三个默认值等价。
+    changed = (
+        bool(state.get('review_output_exhaustion_attempts'))
+        or state.get('review_output_exhaustion_min_context_tokens') is not None
+        or bool(state.get('review_output_exhaustion_blocked'))
+    )
     state['review_output_exhaustion_attempts'] = 0
     state['review_output_exhaustion_min_context_tokens'] = None
     state['review_output_exhaustion_blocked'] = False
+    return changed
+
+
+def _mutate_clear_output_exhaustion(
+    state: dict, *, seen_attempts: int, seen_min_tokens: int
+) -> tuple[bool, bool]:
+    """Mutator: clear the output-exhaustion breaker, unless a newer failure was armed."""
+    # Gate 6a 的恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以
+    # 锁内要复查它依赖的那份输入还在不在：另一个后台 review 可能在那次 await 期间刚写下
+    # 一次**新的**输出耗尽失败（带着新的 attempts / min_context_tokens）。无条件清零会把
+    # 刚 armed 的断路器抹掉，于是那条已经证明压不动的 context 又会被放行重烧一轮。
+    # 与 _mutate_reset_review_fail_backoff 的锁内复查同构。
+    try:
+        current_min = int(state.get('review_output_exhaustion_min_context_tokens') or 0)
+    except (TypeError, ValueError):
+        current_min = 0
+    current_attempts = state.get('review_output_exhaustion_attempts', 0) or 0
+    if current_min != seen_min_tokens or current_attempts != seen_attempts:
+        return False, False
+    _clear_review_output_exhaustion_state(state)
+    # value 把「恢复是否成立」带给调用方（这正是 (dirty, value) 里 value 的用途）。
+    # dirty 恒 True：走到这里说明观测到的断路器确实还在，清零一定改变了状态。
+    return True, True
 
 
 def _get_review_spawn_lock(name: str) -> asyncio.Lock:
@@ -69,7 +112,7 @@ def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> 
     plenty, allowed through (should re-review ASAP to rebuild the fingerprint).
     """
     from memory.recent import _find_fingerprint_position
-    fp = gates._maint_state.get(name, {}).get('last_reviewed_cutoff_tail')
+    fp = gates._maint_view(name).get('last_reviewed_cutoff_tail')
     if not fp:
         return float('inf')
     cutoff_idx = _find_fingerprint_position(current_history, fp)
@@ -113,7 +156,7 @@ async def maybe_spawn_review(name: str) -> None:
         if len(history) < REVIEW_SKIP_HISTORY_LEN:
             return
         # Gate 4: min interval
-        last_review = gates._maint_state.get(name, {}).get('last_review_ts')
+        last_review = gates._maint_view(name).get('last_review_ts')
         if last_review:
             try:
                 elapsed = (datetime.now() - datetime.fromisoformat(last_review)).total_seconds()
@@ -143,18 +186,19 @@ async def maybe_spawn_review(name: str) -> None:
         # 最小值才恢复。
         from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         from memory.recent import review_context_token_count
-        state = gates._maint_state.setdefault(name, {})
-        exhaustion_attempts = state.get('review_output_exhaustion_attempts', 0) or 0
-        exhaustion_blocked = bool(state.get('review_output_exhaustion_blocked'))
+        view = gates._maint_view(name)
+        exhaustion_attempts = view.get('review_output_exhaustion_attempts', 0) or 0
+        exhaustion_blocked = bool(view.get('review_output_exhaustion_blocked'))
         if (
             exhaustion_blocked
             or exhaustion_attempts >= MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         ):
-            failed_min_tokens = state.get('review_output_exhaustion_min_context_tokens')
+            failed_min_tokens = view.get('review_output_exhaustion_min_context_tokens')
             try:
                 failed_min_tokens = int(failed_min_tokens or 0)
             except (TypeError, ValueError):
                 failed_min_tokens = 0
+            # token 计数是 async（可能走 tiktoken），必须留在临界区外算完再进 mutator。
             current_tokens = await review_context_token_count(history)
             if failed_min_tokens > 0 and current_tokens >= failed_min_tokens:
                 logger.debug(
@@ -163,8 +207,23 @@ async def maybe_spawn_review(name: str) -> None:
                     f"失败最小值 {failed_min_tokens})，跳过本轮"
                 )
                 return
-            _clear_review_output_exhaustion_state(state)
-            await gates._asave_maint_state()
+            cleared = await gates._amutate_maint_state(
+                name,
+                functools.partial(
+                    _mutate_clear_output_exhaustion,
+                    seen_attempts=exhaustion_attempts,
+                    seen_min_tokens=failed_min_tokens,
+                ),
+            )
+            if not cleared:
+                # 锁内复查发现断路器已经被换成更新的一份（在 await token 计数期间又失败
+                # 了一次）。恢复判定已经过期，本轮必须跟着放弃 —— 只是不清零却继续往下
+                # spawn 的话，等于拿一个过期的判定绕过了刚 armed 的断路器。
+                logger.debug(
+                    f"[Review/spawn] {name}: 恢复判定已过期"
+                    f"（断路器在 token 计数期间被并发写者更新），跳过本轮"
+                )
+                return
             logger.info(
                 f"[Review/spawn] {name}: context 已缩短 "
                 f"({current_tokens} < {failed_min_tokens})，恢复历史审阅"
@@ -179,20 +238,26 @@ async def maybe_spawn_review(name: str) -> None:
         # 主动给死循环续命，本闸门要能压过它（用户审计 #1：实锤的整夜无限重烧）。
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from memory.recent import build_review_fingerprint
-        fail_attempts = state.get('review_fail_attempts', 0) or 0
+        # Gate 6a 可能刚落过盘，重新取一次 view（旧的可能还是空角色的 _EMPTY 视图）。
+        view = gates._maint_view(name)
+        fail_attempts = view.get('review_fail_attempts', 0) or 0
         if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
             cur_fp = build_review_fingerprint(history)
-            if state.get('review_fail_fp') == cur_fp:
+            # dead-letter 判定本身也进临界区：判定和复位是同一次 RMW，别的写者不可能
+            # 在「读到输入已变」和「把计数清零」之间插进来。
+            decision = await gates._amutate_maint_state(
+                name,
+                functools.partial(
+                    _mutate_reset_review_fail_backoff, cur_fp, MEMORY_LIVENESS_MAX_ATTEMPTS,
+                ),
+            )
+            if decision == 'dead_letter':
                 logger.debug(
                     f"[Review/spawn] {name}: 失败退避 dead-letter "
                     f"(连续失败 {fail_attempts} 次 ≥ {MEMORY_LIVENESS_MAX_ATTEMPTS} "
                     f"且输入未变)，跳过本轮"
                 )
                 return
-            # 输入已变 → 旧失败计数过期，复位后放行重试
-            state['review_fail_attempts'] = 0
-            state['review_fail_fp'] = None
-            await gates._asave_maint_state()
         # 全过 → spawn
         logger.info(f"[Review/spawn] {name}: 触发 review (history_len={len(history)})")
         cancel_event = asyncio.Event()
@@ -204,35 +269,59 @@ async def maybe_spawn_review(name: str) -> None:
         correction_tasks[name] = task
 
 
+def _mutate_reset_review_fail_backoff(cur_fp, max_attempts: int, state: dict) -> tuple[bool, str]:
+    """Mutator: re-check Gate 6b under lock and expire the backoff if the input changed.
+
+    Returns ``'dead_letter'`` (caller must skip this spawn) or ``'proceed'``.
+    """
+    # 配置常量由调用方在锁外取好传进来：mutator 跑在临界区里，不该在里面碰 import
+    # machinery（本仓库这些 config import 都是函数内 lazy import）。
+    attempts = state.get('review_fail_attempts', 0) or 0
+    if attempts < max_attempts:
+        # 锁外快筛之后另一个写者已经把计数清了（如成功的 review）→ 直接放行。
+        return False, 'proceed'
+    if state.get('review_fail_fp') == cur_fp:
+        return False, 'dead_letter'
+    state['review_fail_attempts'] = 0
+    state['review_fail_fp'] = None
+    return True, 'proceed'
+
+
+def _mutate_record_review_failure(cur_fp, state: dict) -> tuple[bool, int]:
+    """Mutator: bump the review failure counter and break the output-exhaustion streak."""
+    if state.get('review_fail_fp') != cur_fp:
+        state['review_fail_attempts'] = 0
+    state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
+    state['review_fail_fp'] = cur_fp
+    # 普通失败会中断"连续输出耗尽"序列，不能让两类失败交错累计后误开断路器。这一步
+    # 必须和 bump 同在一个临界区、同一次落盘里：重构前它靠调用方先改内存、再靠本函数
+    # 的 save 顺带持久化，拆成两次落盘会留下"清了但没写"的窗口。
+    _clear_review_output_exhaustion_state(state)
+    return True, state['review_fail_attempts']
+
+
 async def _record_review_failure(lanlan_name: str, snapshot: list) -> int:
     """Record one review failure into the failure-backoff counter (used by Gate 6); returns the cumulative count.
 
     If the input fingerprint differs from the last failure record → zero the
     budget first, then +1, so each history tail gets its own independent budget of
-    N attempts instead of accumulating across inputs (Codex P2). The 'failed'
-    return branch and the except branch share this function to keep the two paths
-    from drifting apart.
+    N attempts instead of accumulating across inputs (Codex P2).
+
+    Also clears the output-exhaustion breaker in the same critical section: a
+    generic failure breaks the "consecutive output exhaustion" streak, and the two
+    updates must land in one write.
     """
     from memory.recent import build_review_fingerprint
-    state = gates._maint_state.setdefault(lanlan_name, {})
     cur_fp = build_review_fingerprint(snapshot)
-    if state.get('review_fail_fp') != cur_fp:
-        state['review_fail_attempts'] = 0
-    state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
-    state['review_fail_fp'] = cur_fp
-    await gates._asave_maint_state()
-    return state['review_fail_attempts']
+    return await gates._amutate_maint_state(
+        lanlan_name, functools.partial(_mutate_record_review_failure, cur_fp),
+    )
 
 
-async def _record_review_output_exhaustion(
-    lanlan_name: str, snapshot: list,
-) -> tuple[int, int, int]:
-    """Record one output-limit failure across growing/changed tail fingerprints."""
-    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
-    from memory.recent import review_context_token_count
-
-    state = gates._maint_state.setdefault(lanlan_name, {})
-    current_tokens = await review_context_token_count(snapshot)
+def _mutate_record_output_exhaustion(
+    current_tokens: int, max_attempts: int, state: dict,
+) -> tuple[bool, tuple[int, int]]:
+    """Mutator: fold one output-limit failure into the breaker, tracking the minimum context."""
     previous_min = state.get('review_output_exhaustion_min_context_tokens')
     try:
         previous_min = int(previous_min or 0)
@@ -249,10 +338,27 @@ async def _record_review_output_exhaustion(
     attempts += 1
     state['review_output_exhaustion_attempts'] = attempts
     state['review_output_exhaustion_min_context_tokens'] = minimum_tokens
-    state['review_output_exhaustion_blocked'] = (
-        attempts >= MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+    state['review_output_exhaustion_blocked'] = attempts >= max_attempts
+    return True, (attempts, minimum_tokens)
+
+
+async def _record_review_output_exhaustion(
+    lanlan_name: str, snapshot: list,
+) -> tuple[int, int, int]:
+    """Record one output-limit failure across growing/changed tail fingerprints."""
+    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+    from memory.recent import review_context_token_count
+
+    # token 计数是 async，必须在进临界区前算完（mutator 是同步函数，写不出 await）。
+    current_tokens = await review_context_token_count(snapshot)
+    attempts, minimum_tokens = await gates._amutate_maint_state(
+        lanlan_name,
+        functools.partial(
+            _mutate_record_output_exhaustion,
+            current_tokens,
+            MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS,
+        ),
     )
-    await gates._asave_maint_state()
     return attempts, current_tokens, minimum_tokens
 
 
@@ -265,6 +371,15 @@ async def _record_review_output_exhaustion(
 compress_backup_tasks: dict[str, asyncio.Task] = {}
 
 
+def _mutate_record_compress_backup_failure(cur_fp, state: dict) -> tuple[bool, int]:
+    """Mutator: bump the backup-compression failure counter for this input fingerprint."""
+    if state.get('compress_backup_fail_fp') != cur_fp:
+        state['compress_backup_fail_attempts'] = 0
+    state['compress_backup_fail_attempts'] = (state.get('compress_backup_fail_attempts', 0) or 0) + 1
+    state['compress_backup_fail_fp'] = cur_fp
+    return True, state['compress_backup_fail_attempts']
+
+
 async def _record_compress_backup_failure(lanlan_name: str, snapshot: list) -> int:
     """Record one backup-compression failure and return the current attempt count.
 
@@ -272,23 +387,52 @@ async def _record_compress_backup_failure(lanlan_name: str, snapshot: list) -> i
     its own budget, matching the review-failure backoff shape.
     """
     from memory.recent import build_review_fingerprint
-    state = gates._maint_state.setdefault(lanlan_name, {})
     cur_fp = build_review_fingerprint(snapshot)
-    if state.get('compress_backup_fail_fp') != cur_fp:
-        state['compress_backup_fail_attempts'] = 0
-    state['compress_backup_fail_attempts'] = (state.get('compress_backup_fail_attempts', 0) or 0) + 1
-    state['compress_backup_fail_fp'] = cur_fp
-    await gates._asave_maint_state()
-    return state['compress_backup_fail_attempts']
+    return await gates._amutate_maint_state(
+        lanlan_name, functools.partial(_mutate_record_compress_backup_failure, cur_fp),
+    )
+
+
+def _mutate_clear_compress_backup_failure(state: dict) -> tuple[bool, None]:
+    """Mutator: clear the backup-compression backoff, no-op when already clear."""
+    if not (state.get('compress_backup_fail_attempts') or state.get('compress_backup_fail_fp')):
+        return False, None
+    state['compress_backup_fail_attempts'] = 0
+    state['compress_backup_fail_fp'] = None
+    return True, None
 
 
 async def _clear_compress_backup_failure(lanlan_name: str) -> None:
     """Clear the backup-compression failure backoff counter."""
-    state = gates._maint_state.setdefault(lanlan_name, {})
-    if state.get('compress_backup_fail_attempts') or state.get('compress_backup_fail_fp'):
-        state['compress_backup_fail_attempts'] = 0
-        state['compress_backup_fail_fp'] = None
-        await gates._asave_maint_state()
+    # 锁外快筛，与 gates._aclear_review_clean 对偶。调用点 _on_compress_done 的
+    # ok=True 分支每次主路径压缩成功都会走到这里，而它由 memory/recent.py 的
+    # _notify_compress_done 触发 —— /renew、/settle 是持着 settle lock 调
+    # update_history 的，该回调的 docstring 自己写明 "must not block"。退避计数
+    # 绝大多数时候本来就是空的，没有这一层就等于每次压缩成功都在 settle lock 内
+    # 白排一次 default executor。快筛读到的值可能过期，但无害——真正的判定在
+    # _mutate_clear_compress_backup_failure 里锁内又做了一次，「假阴性」只会让本轮
+    # 少写一次（下次压缩成功立刻会补上），不会写坏状态。
+    view = gates._maint_view(lanlan_name)
+    if not (view.get('compress_backup_fail_attempts') or view.get('compress_backup_fail_fp')):
+        return
+    await gates._amutate_maint_state(lanlan_name, _mutate_clear_compress_backup_failure)
+
+
+def _mutate_reset_compress_backup_backoff(
+    cur_fp, max_attempts: int, state: dict,
+) -> tuple[bool, str]:
+    """Mutator: re-check the compress-backup dead-letter under lock and expire it if the input changed.
+
+    Returns ``'dead_letter'`` (caller must not spawn) or ``'proceed'``.
+    """
+    attempts = state.get('compress_backup_fail_attempts', 0) or 0
+    if attempts < max_attempts:
+        return False, 'proceed'
+    if state.get('compress_backup_fail_fp') == cur_fp:
+        return False, 'dead_letter'
+    state['compress_backup_fail_attempts'] = 0
+    state['compress_backup_fail_fp'] = None
+    return True, 'proceed'
 
 
 async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool):
@@ -359,11 +503,20 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
     # 防 summary 模型持续故障时每轮都起一个注定失败的后台任务空烧。
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.recent import build_review_fingerprint
-    state = gates._maint_state.setdefault(lanlan_name, {})
-    fail_attempts = state.get('compress_backup_fail_attempts', 0) or 0
+    fail_attempts = gates._maint_view(lanlan_name).get('compress_backup_fail_attempts', 0) or 0
     if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
         cur_fp = build_review_fingerprint(snapshot)
-        if state.get('compress_backup_fail_fp') == cur_fp:
+        # dead-letter 判定与复位是同一次 RMW（见 _mutate_reset_compress_backup_backoff）。
+        # mutator 是同步函数，所以它既不可能在锁内 await、也不可能在锁内去取
+        # _get_settle_lock —— 本回调可能已经在 /renew·/settle 的 settle lock 内被调，
+        # 这条结构性约束正是它不会反向死锁的原因。
+        decision = await gates._amutate_maint_state(
+            lanlan_name,
+            functools.partial(
+                _mutate_reset_compress_backup_backoff, cur_fp, MEMORY_LIVENESS_MAX_ATTEMPTS,
+            ),
+        )
+        if decision == 'dead_letter':
             logger.debug(
                 f"[CompressBackup] {lanlan_name} 失败退避 dead-letter"
                 f"（连续失败 {fail_attempts} 次且输入未变），跳过"
@@ -373,13 +526,33 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
             # enforce_hard_cap 是 best-effort 写。
             await runtime.recent_history_manager.enforce_hard_cap(lanlan_name)
             return
-        # 输入变了 → 旧计数过期，复位放行
-        state['compress_backup_fail_attempts'] = 0
-        state['compress_backup_fail_fp'] = None
-        await gates._asave_maint_state()
     task = runtime._spawn_background_task(_run_backup_compress(lanlan_name, list(snapshot), detailed))
     compress_backup_tasks[lanlan_name] = task
     logger.info(f"[CompressBackup] {lanlan_name} 主路径压缩失败，已起后台兜底压缩任务")
+
+
+def _mutate_review_patched(fingerprint, state: dict) -> tuple[bool, None]:
+    """Mutator: record a successful review and clear every backoff it invalidates."""
+    state['review_clean'] = True
+    state['last_review_ts'] = datetime.now().isoformat()
+    state['last_reviewed_cutoff_tail'] = fingerprint
+    # 成功 → 清掉失败退避计数（Gate 6）
+    state['review_fail_attempts'] = 0
+    state['review_fail_fp'] = None
+    _clear_review_output_exhaustion_state(state)
+    return True, None
+
+
+def _mutate_review_white(state: dict) -> tuple[bool, None]:
+    """Mutator: record a white review — drop the anchor, keep ``last_review_ts`` stale."""
+    state['last_reviewed_cutoff_tail'] = None
+    # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
+    # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
+    # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
+    state['review_fail_attempts'] = 0
+    state['review_fail_fp'] = None
+    _clear_review_output_exhaustion_state(state)
+    return True, None
 
 
 async def _run_review_in_background(
@@ -434,29 +607,16 @@ async def _run_review_in_background(
         else:
             status, fingerprint = ('failed', None)
 
-        state = gates._maint_state.setdefault(lanlan_name, {})
         if status == 'patched':
             logger.info(f"✅ {lanlan_name} 的记忆整理任务完成")
-            state['review_clean'] = True
-            state['last_review_ts'] = datetime.now().isoformat()
-            state['last_reviewed_cutoff_tail'] = fingerprint
-            # 成功 → 清掉失败退避计数（Gate 6）
-            state['review_fail_attempts'] = 0
-            state['review_fail_fp'] = None
-            _clear_review_output_exhaustion_state(state)
-            await gates._asave_maint_state()
+            await gates._amutate_maint_state(
+                lanlan_name, functools.partial(_mutate_review_patched, fingerprint),
+            )
         elif status == 'white':
             logger.info(
                 f"⚠️ {lanlan_name} 白 review（cutoff 失配），fingerprint 清空、不刷 ts，允许立即重试"
             )
-            state['last_reviewed_cutoff_tail'] = None
-            # 故意不更新 last_review_ts：让下轮 gate 4 用旧 ts（通常已过 30/60s）
-            # 直接放行，配合 fingerprint=None 触发 gate 5 的 ∞ 通行 → 立即重 review。
-            # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
-            state['review_fail_attempts'] = 0
-            state['review_fail_fp'] = None
-            _clear_review_output_exhaustion_state(state)
-            await gates._asave_maint_state()
+            await gates._amutate_maint_state(lanlan_name, _mutate_review_white)
         elif cancel_event.is_set():
             # review_history 在 cancel_event 置位时也返回 ('failed', None)，但这是
             # 主动取消（cancel_correction：记忆编辑后立即生效）而非失败，不能计入
@@ -482,8 +642,8 @@ async def _run_review_in_background(
             # 'failed'：LLM 持续失败 / 超时 / 格式错误。bump 失败退避计数 + 记下
             # 本次失败的输入 fingerprint，供 Gate 6 在输入不变时 dead-letter，避免
             # correction 模型一直超时 + 长挂机 bypass 续命导致整夜空烧（用户审计 #1）。
-            # 普通失败会中断“连续输出耗尽”序列，不能让两类失败交错累计后误开断路器。
-            _clear_review_output_exhaustion_state(state)
+            # 普通失败中断“连续输出耗尽”序列这一步已并进 _record_review_failure 的
+            # mutator：清计数与 bump 必须落在同一次写里，不能拆成两次。
             attempts = await _record_review_failure(lanlan_name, snapshot)
             logger.info(
                 f"ℹ️ {lanlan_name} 的记忆整理未执行（被跳过或失败），"
