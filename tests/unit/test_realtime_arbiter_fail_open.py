@@ -788,6 +788,62 @@ async def test_a_stalled_worker_send_makes_fail_open_stand_down(
         await asyncio.wait_for(later.sent, timeout=1)
 
 
+class _RaisingHarness(_Harness):
+    """Harness whose FIRST response.create write fails; later ones succeed.
+
+    Only the first, so the test can go on to prove the arbiter still works
+    afterwards rather than just proving the stub keeps raising.
+    """
+
+    def __init__(self, *, fail_open: bool) -> None:
+        super().__init__(fail_open=fail_open)
+        self.refusals = 0
+
+    async def _send(self, event: dict) -> None:
+        self.sent.append(event)
+        if event.get("type") == "response.create" and self.refusals == 0:
+            self.refusals += 1
+            raise RuntimeError("transport write refused")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_failed_worker_send_does_not_latch_the_stand_down_flag():
+    # The stand-down flag is set around the write and must come back down on
+    # EVERY exit, not just the successful one. A write that raises is an
+    # ordinary path (the ticket fails and the worker moves on); if the flag
+    # stayed up, fail-open would be silently disabled for the rest of this
+    # arbiter's life and every later escalation would tear the transport down
+    # while the log still blamed a send that finished long ago.
+    harness = _RaisingHarness(fail_open=True)
+    try:
+        failed = await harness.arbiter.enqueue(source="native-doomed")
+        with pytest.raises(RuntimeError):
+            await asyncio.wait_for(failed.sent, timeout=1)
+        await _settle()
+
+        assert harness.arbiter._worker_send_in_flight is False, (
+            "the flag must clear even when the write raises"
+        )
+
+        # And fail-open still applies afterwards: a fresh stuck turn releases
+        # instead of tearing the transport down.
+        harness.sent.clear()
+        ticket = await harness.arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        harness.arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        raised = await _stick_a_cancel(harness)
+        assert isinstance(raised, asyncio.TimeoutError)
+        assert harness.aborted == [], (
+            "a previously failed write must not permanently disable fail-open"
+        )
+        assert harness.arbiter._connection_available is True
+    finally:
+        await harness.arbiter.shutdown("test teardown")
+
+
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_the_stalled_send_outcome_is_identical_under_both_policies(
