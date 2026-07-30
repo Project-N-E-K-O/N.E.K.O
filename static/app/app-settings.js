@@ -754,15 +754,13 @@
     function _markEtagConfirmedSharedSettings(
         settingsAtSend,
         serverSettings,
-        mutationVersionAtSend,
-        payloadWasFull
+        mutationVersionAtSend
     ) {
         if (!serverSettings || typeof serverSettings !== 'object') return;
         _SHARED_SETTINGS_KEYS.forEach((key) => {
             if (!Object.prototype.hasOwnProperty.call(serverSettings, key)) return;
-            if (!payloadWasFull
-                && (!Object.prototype.hasOwnProperty.call(settingsAtSend, key)
-                    || settingsAtSend[key] !== serverSettings[key])) return;
+            if (!Object.prototype.hasOwnProperty.call(settingsAtSend, key)
+                || settingsAtSend[key] !== serverSettings[key]) return;
             _conversationSettingsEtagKeyMutationVersions[key] =
                 mutationVersionAtSend;
         });
@@ -1041,8 +1039,7 @@
                         _markEtagConfirmedSharedSettings(
                             settings,
                             data.settings,
-                            mutationVersionAtSend,
-                            mergedAtSend
+                            mutationVersionAtSend
                         );
                     }
                     const changedWhileInFlight = _settingsChangedSince(
@@ -1631,8 +1628,9 @@
                     && serverResult.revision > _conversationSettingsRevision;
                 const shouldAdoptServerVersion =
                     !Number.isInteger(_conversationSettingsRevision)
-                    || !Number.isInteger(serverResult.revision)
-                    || serverResult.revision >= _conversationSettingsRevision;
+                    || (Number.isInteger(serverResult.revision)
+                        && serverResult.revision
+                            >= _conversationSettingsRevision);
                 if (serverResult.etag && shouldAdoptServerVersion) {
                     _conversationSettingsEtag = serverResult.etag;
                     if (Number.isInteger(serverResult.revision)) {

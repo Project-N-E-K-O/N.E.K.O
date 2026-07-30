@@ -303,7 +303,15 @@ async def save_conversation_settings(request: Request):
                 },
             )
         if not result.success:
-            return {"success": False, "error": "保存失败"}
+            return JSONResponse(
+                status_code=500,
+                headers=response_headers,
+                content={
+                    "success": False,
+                    "error": "保存失败",
+                    **response_payload,
+                },
+            )
 
         if (
             isinstance(data.get("noiseReductionEnabled"), bool)

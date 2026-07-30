@@ -28,6 +28,12 @@ from pathlib import Path
 from typing import Any
 
 from config import CHARACTER_RESERVED_FIELDS
+from utils.conversation_settings_constants import (
+    ASR_WRITE_ID_MAX_FUTURE_SKEW_MS as _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+    MAX_SAFE_ASR_WRITE_ID as _MAX_SAFE_ASR_WRITE_ID,
+    MAX_SAFE_CONVERSATION_SETTINGS_REVISION
+    as _MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
+)
 
 from ._shared import GLOBAL_CONVERSATION_KEY, _utc_now_iso
 from .legacy_migration import _normalize_catgirl_payload
@@ -41,11 +47,6 @@ from .staging import (
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _CLOUD_RESTORE_ASR_WRITER_ID = "server-cloud-restore"
-_MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
-_MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
-_ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
-
-
 def _load_user_preferences_entries(config_manager) -> list[dict[str, Any]]:
     preferences_path = Path(config_manager.get_config_path("user_preferences.json"))
     if not preferences_path.exists():

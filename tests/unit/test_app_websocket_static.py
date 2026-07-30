@@ -981,6 +981,14 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
     assert "headers['X-Conversation-Settings-ASR-Decision']" in sync_fn
     assert "JSON.stringify(requestDecision)" in sync_fn
+    mark_signature = re.search(
+        r"function _markEtagConfirmedSharedSettings\([^)]*\)\s*\{",
+        settings_source,
+    )
+    assert mark_signature is not None
+    mark_confirmed = _block_after(settings_source, mark_signature.group(0))
+    assert "payloadWasFull" not in mark_confirmed
+    assert "settingsAtSend[key] !== serverSettings[key]" in mark_confirmed
 
     # Both the state snapshot and the ASR token are rebuilt inside the retry
     # loop. An older window that loses the server decision comparison must not
@@ -3639,7 +3647,76 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           ctx4.postCalls[2].resolve(okPost);
           await tick();
 
-          // ---- Scenario 5: the delayed boot GET is newer than the POST that
+          // ---- Scenario 5: a legacy/mangled delayed GET omits revision. Once
+          // a POST established a comparable revision, its ETag must not be
+          // downgraded by the unversioned response.
+          const ctxMissingRevision = makeContext();
+          ctxMissingRevision.win.mergeMessagesEnabled = true;
+          ctxMissingRevision.mod.saveSettings();
+          await tick();
+          ctxMissingRevision.fireGateTimeout();
+          await tick();
+          await tick();
+          ctxMissingRevision.postCalls[0].resolve({
+            ok: true,
+            status: 200,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-1"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: true,
+              },
+              revision: 1,
+              decisions: {},
+            }),
+          });
+          await tick();
+          await tick();
+          ctxMissingRevision.getCalls[0].resolve({
+            ok: true,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-0"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: false,
+              },
+              decisions: {},
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctxMissingRevision.S.mergeMessagesEnabled === true,
+            'an unversioned late GET must preserve the acknowledged local key'
+          );
+          ctxMissingRevision.win.focusModeEnabled = true;
+          ctxMissingRevision.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(
+            ctxMissingRevision.postCalls[1].headers['If-Match']
+              === '"conversation-settings-1"',
+            'an unversioned late GET must not downgrade the confirmed ETag'
+          );
+          ctxMissingRevision.postCalls[1].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 6: the delayed boot GET is newer than the POST that
           // acknowledged a local edit. The newer server snapshot must win.
           const ctxNewer = makeContext();
           ctxNewer.win.mergeMessagesEnabled = true;
@@ -3701,7 +3778,7 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           ctxNewer.postCalls[1].resolve(okPost);
           await tick();
 
-          // ---- Scenario 6: a newer explicit localStorage ASR decision arrives
+          // ---- Scenario 7: a newer explicit localStorage ASR decision arrives
           // before its origin window's POST. The boot GET is older and must not
           // overwrite either the local value or the tuple that will accompany
           // the next save.
@@ -4540,15 +4617,21 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
 
     # The write carries the id of the decision that produced the value...
-    write_fn = _block_after(
+    signature = re.search(
+        r"function _writeSharedSettings\((?P<params>[^)]*)\)\s*\{",
         settings_source,
-        "function _writeSharedSettings(\n"
-        "        snapshot,\n"
-        "        explicitKeys,\n"
-        "        pendingRecovery,\n"
-        "        serverAuthoritativeKeys\n"
-        "    ) {",
     )
+    assert signature is not None, "_writeSharedSettings signature is missing"
+    parameter_names = {
+        parameter.strip() for parameter in signature.group("params").split(",")
+    }
+    assert {
+        "snapshot",
+        "explicitKeys",
+        "pendingRecovery",
+        "serverAuthoritativeKeys",
+    } <= parameter_names
+    write_fn = _block_after(settings_source, signature.group(0))
     assert "ownMeta.asrDecision = {" in write_fn
     assert "_lastAsrDecision.value === snapshot.independentAsrEnabled" in write_fn
 

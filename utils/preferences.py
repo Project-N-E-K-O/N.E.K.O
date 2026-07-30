@@ -26,6 +26,11 @@ import portalocker
 
 from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
+from utils.conversation_settings_constants import (
+    ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+    MAX_SAFE_ASR_WRITE_ID,
+    MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
+)
 from utils.file_utils import atomic_write_json
 
 # 初始化配置管理器
@@ -395,11 +400,6 @@ _ALLOWED_CONVERSATION_SETTINGS = {
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _LEGACY_ASR_DECISION_WRITER_ID = "server-legacy"
-MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
-MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
-ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
-
-
 @dataclass(frozen=True)
 class ConversationSettingsSnapshot:
     settings: Dict[str, Any]

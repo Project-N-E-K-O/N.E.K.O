@@ -392,6 +392,39 @@ async def test_conversation_settings_route_returns_etag_and_412_snapshot(
 
 
 @pytest.mark.asyncio
+async def test_conversation_settings_route_returns_versioned_500_on_save_failure(
+    monkeypatch,
+):
+    snapshot = preferences.ConversationSettingsSnapshot(
+        settings={"focusModeEnabled": True},
+        revision=7,
+        asr_decision=None,
+    )
+    monkeypatch.setattr(
+        preferences_router,
+        "save_global_conversation_settings_versioned",
+        lambda *_args, **_kwargs: preferences.ConversationSettingsWriteResult(
+            success=False,
+            conflict=False,
+            snapshot=snapshot,
+        ),
+    )
+
+    response = await preferences_router.save_conversation_settings(
+        _Request({"focusModeEnabled": False})
+    )
+
+    assert response.status_code == 500
+    assert response.headers["etag"] == '"conversation-settings-7"'
+    assert response.headers["cache-control"] == "no-store"
+    payload = json.loads(response.body)
+    assert payload["success"] is False
+    assert payload["error"] == "保存失败"
+    assert payload["revision"] == 7
+    assert payload["settings"]["focusModeEnabled"] is True
+
+
+@pytest.mark.asyncio
 async def test_set_preferred_model_offloads_locked_write(monkeypatch):
     calls = []
 
