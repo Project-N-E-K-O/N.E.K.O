@@ -599,20 +599,17 @@ class QQSessionInstructionService:
             return ""
         try:
             if is_group:
-                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
-                member_sender = str(sender_id or "").strip()
-                if member_sender and bool(
-                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                        "group_member_memory_enabled", False,
-                    )
-                ):
-                    # 对偶 _build_recalled_memory_text：成员开关同时门控读，
-                    # sender 规范化与写侧一致。
-                    subjects.append(
-                        self.plugin.memory_bridge.group_participant_subject(
-                            group_id, member_sender,
-                        )
-                    )
+                # subject 组装收口进 resolve_group_recall_subjects：本段此前
+                # 是一份内联副本（群 + 当前发言人），三条读路径（tool
+                # handler / 回落召回 / 本段 bootstrap）必须授权完全一致的
+                # 域，扩容（+最近发言人）也只在一处生效。
+                from .memory_tool_service import resolve_group_recall_subjects
+
+                subjects, _used_member = await resolve_group_recall_subjects(
+                    self.plugin,
+                    group_id=group_id,
+                    memory_sender_id=str(sender_id or "").strip(),
+                )
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,

@@ -57,7 +57,7 @@ class QQReplyContextNode:
                 # subject 组装与 recall_memory 工具 handler 共用一处（含
                 # member 开关的读点实时复检、sender 规范化）：两条召回通道
                 # 授权的域必须一致，线路切换不得悄悄改变群轮能读什么。
-                subjects, used_member_subject = resolve_group_recall_subjects(
+                subjects, used_member_subject = await resolve_group_recall_subjects(
                     self.plugin, group_id=group_id, memory_sender_id=sender_id,
                 )
             if used_member_subject and used_member_subject_out is not None:

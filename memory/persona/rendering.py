@@ -425,11 +425,18 @@ class RenderingMixin:
             for entry in section.get('facts', []):
                 if not isinstance(entry, dict):
                     # Pre-PR-1 schema sometimes stored facts as bare
-                    # strings; the legacy render path (`_render_fact_entries`)
-                    # used to emit them. Normalize ad-hoc here so they keep
-                    # appearing in prompt context until a write touches the
-                    # entry and migrates it to dict form via _normalize_entry.
-                    if entry:
+                    # strings; the legacy render path used to emit them.
+                    # Normalize ad-hoc here so they keep appearing in
+                    # prompt context until a write touches the entry and
+                    # migrates it to dict form via _normalize_entry.
+                    # Blank check matches the dict path's _renderable_text
+                    # (strip, not truthiness): a whitespace-only bare
+                    # string is truthy, and promoting it would sail past
+                    # the blank gate below and render an empty bullet.
+                    # _renderable_text itself returns "" for every
+                    # non-dict, so the string must be judged before the
+                    # promotion, not through that helper.
+                    if str(entry).strip():
                         entry = {
                             'text': str(entry),
                             'protected': False,
@@ -637,9 +644,10 @@ class RenderingMixin:
             for entry in entries:
                 if not isinstance(entry, dict):
                     continue
-                text = entry.get('text', '')
-                if text:
-                    lines.append(f"- {text}")
+                # 与拆分侧同一空白判据（#2578 修了 reflection 那半，这里是
+                # persona 半）：裸 truthiness 会把 '   ' 渲成空 bullet。
+                if self._renderable_text(entry):
+                    lines.append(f"- {entry.get('text', '')}")
             if lines:
                 section_meta = persona.get(entity_key, {})
                 subject_kind = section_meta.get('subject_kind')
@@ -1212,17 +1220,3 @@ class RenderingMixin:
                 return True
         return False
 
-    @staticmethod
-    def _render_fact_entries(entries: list) -> list[str]:
-        """Render the fact entry list. Suppressed entries are not rendered here (moved to the dedicated section)."""
-        lines = []
-        for entry in entries:
-            if isinstance(entry, dict):
-                if entry.get('suppress'):
-                    continue  # suppress 的条目在专用区域渲染
-                text = entry.get('text', '')
-                if text:
-                    lines.append(f"- {text}")
-            elif entry:
-                lines.append(f"- {entry}")
-        return lines

@@ -408,6 +408,101 @@ async def test_total_gate_drops_a_trailing_subject_whole(twin):
     )
 
 
+@pytest.mark.parametrize('twin', _TWINS)
+@pytest.mark.asyncio
+async def test_five_subjects_all_over_budget_skip_the_tail_whole(twin):
+    """读侧扩到 [群, 当前发言人, 最近 3 人] = 5 个 subject 后总闸真正开始
+    咬的形态：每个 subject 的语料都超出自己的 per-subject 池（persona 与
+    reflection 双双超额），总闸只够前 4 个拿满配额，第 5 个必须整段跳过
+    ——绝不是每个 subject 各渲染半截。分配是 caller order 先到先得，群排
+    最前，这是调用方唯一的优先级旋钮；按比例摊薄的"等价"实现会让第 5
+    个 subject 渲染出内容、且前 4 个渲染不满，两头都会红。"""
+    from memory.scopes import MemorySubject
+
+    subjects = [MemorySubject.group_chat("qq", "7788")] + [
+        MemorySubject.group_participant("qq", "7788", str(2000 + i))
+        for i in range(4)
+    ]
+
+    def _texts(i: int) -> tuple[list[str], list[str]]:
+        return (
+            [
+                f'主体{i}最近在研究烘焙面包和手冲咖啡',
+                f'主体{i}周末喜欢去美术馆看展览散心',
+                f'主体{i}养了一只很黏人的橘猫叫毛毛',
+            ],
+            [
+                f'小天觉得主体{i}最近的状态松弛了不少',
+                f'小天猜主体{i}可能换了一份新的工作',
+            ],
+        )
+
+    persona: dict = {}
+    reflections: list[dict] = []
+    for i, subject in enumerate(subjects):
+        fact_texts, reflection_texts = _texts(i)
+        persona[subject.persona_section_key] = _scoped_section(subject, [
+            _entry(f's{i}f{j}', text, rein=float(5 - j), subject=subject)
+            for j, text in enumerate(fact_texts)
+        ])
+        reflections.extend(
+            _reflection(f's{i}r{j}', text, rein=float(5 - j), subject=subject)
+            for j, text in enumerate(reflection_texts)
+        )
+
+    # 每个 subject 的池：恰好装下前 2 条 facts / 前 1 条 reflection —— 第
+    # 3 条 fact 与第 2 条 reflection 双双超额。文本只差一个数字，token 数
+    # 必须全体一致，否则"恰好装下"对某些 subject 不成立。
+    fact_texts0, reflection_texts0 = _texts(0)
+    persona_pool = _pool(*fact_texts0[:2])
+    reflection_pool = _pool(reflection_texts0[0])
+    for i in range(len(subjects)):
+        fact_texts, reflection_texts = _texts(i)
+        assert _pool(*fact_texts[:2]) == persona_pool, "夹具失效：token 数不齐"
+        assert _pool(reflection_texts[0]) == reflection_pool
+        assert _pool(fact_texts[2]) > 0
+
+    from config import SCOPED_RENDER_SUBJECT_MIN_TOKENS
+
+    per_subject_gate_spend = (
+        _gate(*fact_texts0[:2]) + _gate(reflection_texts0[0])
+    )
+    total = per_subject_gate_spend * 4 + SCOPED_RENDER_SUBJECT_MIN_TOKENS - 1
+
+    harness = _RenderHarness(persona)
+    logger = MagicMock()
+    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', persona_pool), \
+            patch('memory.persona.rendering.REFLECTION_RENDER_MAX_TOKENS', reflection_pool), \
+            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total), \
+            patch('memory.persona.rendering.logger', logger):
+        rendered = await _render_either(
+            harness, twin, '小天', None, reflections,
+            subjects=subjects, include_legacy_private=False,
+        )
+
+    for i in range(4):
+        fact_texts, reflection_texts = _texts(i)
+        # 前 4 个 subject 拿满自己的配额：per-subject 池内的条目一条不少。
+        assert fact_texts[0] in rendered and fact_texts[1] in rendered, (
+            f"subject {i} 没拿满配额——按比例摊薄的分配会走到这里"
+        )
+        assert reflection_texts[0] in rendered
+        # 超出 per-subject 池的部分照常被池裁掉。
+        assert fact_texts[2] not in rendered
+        assert reflection_texts[1] not in rendered
+    # 第 5 个 subject（最近发言人名单的最后一位）整段消失：facts 与
+    # reflections 一条都不得渲染——半截 persona 比缺席更糟。
+    tail_fact_texts, tail_reflection_texts = _texts(4)
+    for text in tail_fact_texts + tail_reflection_texts:
+        assert text not in rendered, f"尾部 subject 渲染了半截: {text!r}"
+
+    skips = [
+        c for c in logger.warning.call_args_list if '整段跳过' in str(c)
+    ]
+    assert len(skips) == 1, f"期望恰好一次整段跳过，实际 {len(skips)} 次"
+    assert f"剩余 {SCOPED_RENDER_SUBJECT_MIN_TOKENS - 1} tok" in str(skips[0])
+
+
 @pytest.mark.asyncio
 async def test_a_skipped_subject_drops_its_budget_exempt_sections_too():
     """Dropping a subject has to take its protected and suppressed

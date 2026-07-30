@@ -269,3 +269,38 @@ class QQMemoryBridge:
         )
         response.raise_for_status()
         return response.json()
+
+    async def post_scoped_memory_history_batch(
+        self,
+        her_name: str,
+        segments: list[dict[str, Any]],
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """The batched multi-speaker shape of /scoped_history.
+
+        ``segments``: ``[{'messages': [...], 'subject': {...},
+        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
+        发言人。服务端一次抽取后按段分派，响应体按请求顺序逐段报
+        ok/failed，调用方只 pop 成功段的 bucket。"""
+        payload_segments: list[dict[str, Any]] = []
+        for segment in segments:
+            wire: dict[str, Any] = {
+                "input_history": json.dumps(
+                    segment.get("messages") or [], ensure_ascii=False,
+                ),
+                "subject": segment.get("subject"),
+                "speaker_label": segment.get("speaker_label"),
+            }
+            trust = segment.get("speaker_trust")
+            if trust is not None:
+                wire["speaker_trust"] = trust
+            payload_segments.append(wire)
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
+            json={"segments": payload_segments},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()

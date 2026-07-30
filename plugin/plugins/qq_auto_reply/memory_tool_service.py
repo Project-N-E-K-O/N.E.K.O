@@ -21,15 +21,27 @@ RECALL_TOOL_NAME = "recall_memory"
 RECALL_TOOL_HTTP_TIMEOUT_SECONDS = 5.0
 
 
-def resolve_group_recall_subjects(
+async def resolve_group_recall_subjects(
     plugin: Any, *, group_id: str, memory_sender_id: str,
 ) -> tuple[list[dict[str, str]], bool]:
     """One place for the group read path's subject list.
 
-    Shared by the per-turn fallback recall and the recall_memory tool
-    handler: the two paths must authorize exactly the same scopes, or a
-    provider switch would silently change what a group turn can read.
+    Shared by the per-turn fallback recall, the recall_memory tool
+    handler AND the scoped bootstrap context: the three paths must
+    authorize exactly the same scopes, or a provider switch would
+    silently change what a group turn can read.
     Returns ``(subjects, used_member_subject)``.
+
+    形状：[群] + [当前发言人] + [本轮上下文里最近说过话的另外
+    GROUP_RECALL_MAX_MEMBER_SUBJECTS-1 人]。群恒排最前——subjects 顺序
+    就是渲染预算（SCOPED_RENDER_TOTAL_MAX_TOKENS 先到先得）的分配顺序，
+    这是调用方唯一的优先级旋钮。member 槽位整体由 memory_sender_id 非空
+    + member 开关双门控：合成轮 / member 未授权的轮，最近发言人也一并
+    不带。
+
+    第二个"群"槽位刻意留空当预留：今天唯一能填进去的是**别的群**的记忆，
+    那是跨群披露——现有的跨群段只读活会话内存、从不碰记忆库，要不要开
+    这个口子是单独的决定，不在这里顺手做。
     """
     bridge = plugin.memory_bridge
     subjects = [bridge.group_subject(group_id)]
@@ -44,7 +56,57 @@ def resolve_group_recall_subjects(
         subjects.append(
             bridge.group_participant_subject(group_id, member_sender)
         )
+        for other_sender in await _recent_other_speakers(
+            plugin, group_id=group_id, exclude=member_sender,
+        ):
+            subjects.append(
+                bridge.group_participant_subject(group_id, other_sender)
+            )
     return subjects, len(subjects) > 1
+
+
+async def _recent_other_speakers(
+    plugin: Any, *, group_id: str, exclude: str,
+) -> list[str]:
+    """最近说过话的另外 N 人（新→旧去重），从既有 backlog 取。
+
+    不新维护状态：backlog 是消息分发器已经在写的滚动窗口，且记录时已滤
+    掉黑名单与 level=none 的发言人。best-effort——读失败只降级回
+    [群, 当前发言人]，绝不让扩容把整个召回搞挂。"""
+    from config import (
+        GROUP_RECALL_MAX_MEMBER_SUBJECTS,
+        GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT,
+    )
+
+    limit = GROUP_RECALL_MAX_MEMBER_SUBJECTS - 1
+    if limit <= 0:
+        return []
+    store = getattr(plugin, "backlog_store", None)
+    if store is None:
+        return []
+    try:
+        recent = await store.get_recent_group_messages(
+            group_id, limit=GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT,
+        )
+    except Exception as exc:
+        logger = getattr(plugin, "logger", None)
+        if logger is not None:
+            logger.warning(f"读取最近发言人失败（召回降级到当前发言人）: {exc}")
+        return []
+    seen = {str(exclude or "").strip()}
+    speakers: list[str] = []
+    # backlog 按 (timestamp, message_id) 升序返回，反转成新→旧。
+    for item in reversed(recent or []):
+        if not isinstance(item, dict):
+            continue
+        sender = str(item.get("sender_id") or "").strip()
+        if not sender or sender in seen:
+            continue
+        seen.add(sender)
+        speakers.append(sender)
+        if len(speakers) >= limit:
+            break
+    return speakers
 
 
 class QQMemoryToolService:
@@ -175,7 +237,7 @@ class QQMemoryToolService:
                 # 畸形群轮缺 group_id：绝不能让 subjects 退化成 None——
                 # None 的语义是 legacy 私聊主人语料。
                 return no_result, {}
-            subjects, used_member = resolve_group_recall_subjects(
+            subjects, used_member = await resolve_group_recall_subjects(
                 self.plugin,
                 group_id=group_id,
                 memory_sender_id=self._turn_memory_sender(context),
