@@ -249,10 +249,11 @@ def test_negation_tables_live_beside_the_other_language_tables(name):
 def test_negation_prefixes_cover_traditional():
     """Adding Traditional aliases is what makes this mandatory rather than nice.
 
-    Once `生氣` is an alias, `沒有生氣` matches it as a substring. If the negation
-    prefixes only carry Simplified `没有`, the negation is missed and the label
-    comes back `angry` — the opposite of what the model said, and worse than
-    before the aliases existed.
+    Once a Traditional emotion word is an alias, a negated phrase built on it
+    matches that alias as a substring. If the negation prefixes carry only the
+    Simplified spellings, the negation is missed and the label comes back as the
+    emotion itself — the opposite of what the model said, and worse than before
+    the aliases existed. See test_negated_traditional_labels_do_not_invert.
     """
     prefixes = set(P.get_emotion_negation_prefixes_flat())
     for token in ("沒", "沒有", "沒那麼", "並不", "並非", "並沒有", "別", "無"):
