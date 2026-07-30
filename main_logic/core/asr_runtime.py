@@ -246,6 +246,7 @@ class AsrRuntimeMixin:
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
+        self._voice_input_resource_optimization_handshake_override: bool | None = None
         self._voice_input_noise_reduction_enabled = True
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
@@ -258,6 +259,7 @@ class AsrRuntimeMixin:
         # can tell "my own bubble" from "the next turn already took it over".
         self._core_asr_preview_turn_id = ""
         self._core_asr_preview_text = ""
+        self._core_asr_preview_turn_token: VoiceTurnToken | None = None
         self._init_voice_input_registry()
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
@@ -333,10 +335,17 @@ class AsrRuntimeMixin:
             self._last_hot_swap_rebind_drop_log_time = 0.0
         if not hasattr(self, "_independent_asr_handshake_override"):
             self._independent_asr_handshake_override = None
+        if not hasattr(
+            self,
+            "_voice_input_resource_optimization_handshake_override",
+        ):
+            self._voice_input_resource_optimization_handshake_override = None
         if not hasattr(self, "_core_asr_preview_turn_id"):
             self._core_asr_preview_turn_id = ""
         if not hasattr(self, "_core_asr_preview_text"):
             self._core_asr_preview_text = ""
+        if not hasattr(self, "_core_asr_preview_turn_token"):
+            self._core_asr_preview_turn_token = None
         if not hasattr(self, "_blocked_text_mode_microphone_signalled"):
             self._blocked_text_mode_microphone_signalled = False
         if not hasattr(self, "_voice_input_websocket"):
@@ -2215,6 +2224,9 @@ class AsrRuntimeMixin:
             return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+        previous_preview_turn_id = self._core_asr_preview_turn_id
+        previous_preview_turn_token = self._core_asr_preview_turn_token
+        previous_preview_text = self._core_asr_preview_text
         # Turn preparation is the ordered boundary between two turns' partial
         # streams, so every preview from here on belongs to this turn. Stamping
         # the owner here is what lets a previous turn's delayed clear be
@@ -2232,6 +2244,7 @@ class AsrRuntimeMixin:
             )
 
         prepare = getattr(session_ref, "prepare_external_voice_turn", None)
+        preparation_succeeded = False
         try:
             if callable(prepare):
                 await prepare(turn_id=external_turn_id)
@@ -2248,6 +2261,7 @@ class AsrRuntimeMixin:
                 return False
             await self.handle_new_message()
             if operation_is_current():
+                preparation_succeeded = True
                 return True
             if abandon_on_failure:
                 self._abandon_core_voice_turn(
@@ -2275,6 +2289,15 @@ class AsrRuntimeMixin:
                 self.lanlan_name,
             )
             return False
+        finally:
+            if (
+                not preparation_succeeded
+                and self._core_asr_preview_turn_id == external_turn_id
+                and self._core_asr_preview_turn_token == token
+            ):
+                self._core_asr_preview_turn_id = previous_preview_turn_id
+                self._core_asr_preview_turn_token = previous_preview_turn_token
+                self._core_asr_preview_text = previous_preview_text
 
     async def _submit_core_voice_turn(
         self,
@@ -2533,51 +2556,63 @@ class AsrRuntimeMixin:
     async def _handle_core_asr_failure(self, event: AsrFailureEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()
         route_operation_generation = self._asr_route_operation_generation
-        async with self._asr_notification_lock:
-            if (
-                not self._core_asr_operation_identity_matches(source_identity)
-                or event.session_epoch
-                != self._core_asr_identity_ingress_token(source_identity).session_epoch
-            ):
-                return
-            self._set_microphone_route("blocked")
-            self._invalidate_voice_pcm_sync("independent_asr_failure")
-            await self._voice_input_registry.wait_idle()
-            # Fail-safe for clients that never receive or never honour the
-            # teardown notice (an older build, a third-party client, a
-            # throttled background tab). The route is fail-closed for the rest
-            # of the session, so stop accepting the PCM at ingress too. The
-            # game owner is exempt: the galgame route holds the lease through
-            # its built-in Registry consumer and must not be collaterally
-            # revoked.
-            # No notice of its own -- the BLOCKED lifecycle event that produced
-            # this failure already reached the client.
-            #
-            # Re-captured AFTER this handler's own mutations, and that is the
-            # whole point: ``source_identity`` was taken while the route was
-            # still "independent", and the identity tuple carries
-            # ``_asr_route_mode`` (plus ``_microphone_route_generation``, inside
-            # the ingress token). Handing that pre-transition tuple to
-            # ``still_current`` made the predicate false on ENTRY -- against a
-            # transition this handler had itself performed two lines up -- so
-            # _fail_closed_voice_route returned before the revoke and left a
-            # live hardware microphone uploading into a dead route. The fence
-            # exists to reject a COMPETING newer operation, never our own step.
-            # Nothing awaits between the identity check at the top of this lock
-            # and here, so no competing operation can hide in the gap.
-            #
-            # The sibling predicates dodge this by testing the route mode
-            # ABSOLUTELY (``_asr_route_mode == "blocked"``) rather than against
-            # a captured value; a full-tuple comparison cannot, so it has to be
-            # re-based here instead.
-            post_transition_identity = self._capture_core_asr_operation_identity()
-            await self._fail_closed_voice_route(
-                "independent_asr_failure",
-                operation_generation=route_operation_generation,
-                still_current=lambda: self._core_asr_operation_identity_matches(
-                    post_transition_identity
-                ),
+
+        def failure_is_current() -> bool:
+            return bool(
+                self._core_asr_operation_identity_matches(source_identity)
+                and event.session_epoch
+                == self._core_asr_identity_ingress_token(
+                    source_identity
+                ).session_epoch
             )
+
+        async with self._asr_notification_lock:
+            if not failure_is_current():
+                return
+
+        # Registry cancellation may execute consumer callbacks. Those
+        # callbacks are allowed to publish status/lifecycle notifications,
+        # which acquire _asr_notification_lock themselves. Keep the entire
+        # cancellation path outside that lock, and re-fence after releasing it
+        # in case a newer route operation landed while this task was queued.
+        if not failure_is_current():
+            return
+        self._set_microphone_route("blocked")
+        self._invalidate_voice_pcm_sync("independent_asr_failure")
+        post_transition_identity = self._capture_core_asr_operation_identity()
+        await self._voice_input_registry.wait_idle()
+        # Fail-safe for clients that never receive or never honour the
+        # teardown notice (an older build, a third-party client, a
+        # throttled background tab). The route is fail-closed for the rest
+        # of the session, so stop accepting the PCM at ingress too. The
+        # game owner is exempt: the galgame route holds the lease through
+        # its built-in Registry consumer and must not be collaterally
+        # revoked.
+        # No notice of its own -- the BLOCKED lifecycle event that produced
+        # this failure already reached the client.
+        #
+        # Re-captured AFTER this handler's own mutations, and that is the
+        # whole point: ``source_identity`` was taken while the route was
+        # still "independent", and the identity tuple carries
+        # ``_asr_route_mode`` (plus ``_microphone_route_generation``, inside
+        # the ingress token). Handing that pre-transition tuple to
+        # ``still_current`` made the predicate false on ENTRY -- against a
+        # transition this handler had itself performed two lines up -- so
+        # _fail_closed_voice_route returned before the revoke and left a
+        # live hardware microphone uploading into a dead route. The fence
+        # exists to reject a COMPETING newer operation, never our own step.
+        #
+        # The sibling predicates dodge this by testing the route mode
+        # ABSOLUTELY (``_asr_route_mode == "blocked"``) rather than against
+        # a captured value; a full-tuple comparison cannot, so it has to be
+        # re-based here instead.
+        await self._fail_closed_voice_route(
+            "independent_asr_failure",
+            operation_generation=route_operation_generation,
+            still_current=lambda: self._core_asr_operation_identity_matches(
+                post_transition_identity
+            ),
+        )
 
     async def _send_core_asr_status(self, event: AsrStatusEvent) -> None:
         source_identity = self._capture_core_asr_operation_identity()

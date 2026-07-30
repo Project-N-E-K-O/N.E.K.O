@@ -1246,6 +1246,42 @@ async def test_game_takeover_during_core_prepare_drops_stale_message() -> None:
     ]
 
 
+async def test_stale_core_prepare_restores_previous_preview_owner() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    async def block_prepare(*, turn_id: str) -> None:
+        del turn_id
+        prepare_started.set()
+        await release_prepare.wait()
+
+    runtime.session.prepare_external_voice_turn = AsyncMock(side_effect=block_prepare)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    previous_token = replace(token, turn_id=token.turn_id + 100)
+    previous_turn_id = (
+        f"asr-{previous_token.ingress.session_epoch}-{previous_token.turn_id}"
+    )
+    runtime._core_asr_preview_turn_id = previous_turn_id
+    runtime._core_asr_preview_turn_token = previous_token
+    runtime._core_asr_preview_text = "previous partial"
+
+    prepare_task = asyncio.create_task(runtime._prepare_core_voice_turn(token))
+    await asyncio.wait_for(prepare_started.wait(), 1)
+    runtime._voice_input_transition_generation += 1
+    release_prepare.set()
+
+    assert await asyncio.wait_for(prepare_task, 1) is False
+    assert runtime._core_asr_preview_turn_id == previous_turn_id
+    assert runtime._core_asr_preview_turn_token == previous_token
+    assert runtime._core_asr_preview_text == "previous partial"
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+
+
 async def test_turn_endpoint_seals_immediately_before_provider_final() -> None:
     runtime = _Runtime()
     runtime._asr_session = type("Asr", (), {"is_ready": True})()
@@ -1728,6 +1764,20 @@ async def test_runtime_close_preserves_manager_lifetime_registry_builtins() -> N
     assert core_registration.closed is False
     assert game_registration.closed is False
     assert len(registry._records) == 2
+
+
+async def test_runtime_state_initializes_and_backfills_phase4a_fields() -> None:
+    runtime = _Runtime()
+
+    assert runtime._voice_input_resource_optimization_handshake_override is None
+    assert runtime._core_asr_preview_turn_token is None
+
+    del runtime._voice_input_resource_optimization_handshake_override
+    del runtime._core_asr_preview_turn_token
+    runtime._ensure_asr_runtime_state()
+
+    assert runtime._voice_input_resource_optimization_handshake_override is None
+    assert runtime._core_asr_preview_turn_token is None
 
 
 async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
@@ -6694,6 +6744,41 @@ async def test_notification_waiting_on_lock_drops_same_epoch_stale_identity(
 
     runtime.send_status.assert_not_awaited()
     assert runtime._asr_route_mode == "independent"
+
+
+async def test_failure_cancellation_can_publish_without_notification_deadlock() -> (
+    None
+):
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    current_epoch = runtime._asr_session_epoch
+
+    async def cancellation_wait_idle() -> None:
+        assert runtime._asr_notification_lock.locked() is False
+        await runtime._send_core_asr_status(
+            AsrStatusEvent(
+                code="ASR_CANCEL_CLEANUP",
+                provider="plugin-consumer",
+                session_epoch=current_epoch,
+            )
+        )
+
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=cancellation_wait_idle
+    )
+
+    await asyncio.wait_for(
+        runtime._handle_core_asr_failure(
+            AsrFailureEvent(
+                code="ASR_INDEPENDENT_FAILED",
+                provider="current-provider",
+                session_epoch=current_epoch,
+            )
+        ),
+        1,
+    )
+
+    assert "ASR_CANCEL_CLEANUP" in str(runtime.send_status.await_args_list)
 
 
 def _lease_resync_statuses(runtime: _Runtime) -> list[dict]:
