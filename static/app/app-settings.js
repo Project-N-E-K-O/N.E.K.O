@@ -1640,11 +1640,13 @@
             if (pendingKeysToReassert.length > 0) {
                 // A server-merge broadcast can have been built before this
                 // window's latest pending edit reached its sender. Restore the
-                // local full snapshot without enqueueing another POST; the
+                // local full snapshot without claiming a NEW user edit: another
+                // window may already hold a newer pending choice for the same
+                // key, and must keep filtering this recovery broadcast. The
                 // already queued user sync remains the sole server writer.
                 saveSettings({
                     skipServerSync: true,
-                    explicitSharedKeys: pendingKeysToReassert
+                    serverMerged: true
                 });
             }
         } catch (error) {

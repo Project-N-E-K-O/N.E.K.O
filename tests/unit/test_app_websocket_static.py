@@ -1557,8 +1557,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           const reasserted = JSON.parse(ctx.store.get('project_neko_settings'));
           assert(
             reasserted.focusModeEnabled === true
-              && reasserted._sharedWriteMeta.changedKeys.indexOf('focusModeEnabled') !== -1,
-            'the pending value and intent metadata must be restored in localStorage'
+              && reasserted._sharedWriteMeta.changedKeys.length === 0,
+            'the pending value must be restored without advertising new user intent'
           );
 
           // Cross-window ABA edits do not enter this window's pending set and
