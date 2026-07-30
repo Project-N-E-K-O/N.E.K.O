@@ -20,6 +20,7 @@ import difflib
 import hashlib
 import re
 import time
+from contextlib import suppress
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -206,7 +207,11 @@ async def _record_source_used(
         try:
             await asyncio.shield(writer)
         except asyncio.CancelledError:
-            await asyncio.wait({writer})
+            # 循环而不是等一次：第二次取消（退出时最常见）会把这次 asyncio.wait 本身也
+            # 打断，锁又提前放了。writer 是 to_thread，线程一定会跑完，循环必然终止。
+            while not writer.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait({writer})
             raise
 
 

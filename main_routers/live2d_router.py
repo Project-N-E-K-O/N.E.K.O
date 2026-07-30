@@ -43,6 +43,8 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
+from contextlib import suppress
+
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
@@ -90,7 +92,12 @@ async def _persist_model_config(model_json_path, config, *, indent: int) -> None
     try:
         await asyncio.shield(writer)
     except asyncio.CancelledError:
-        await asyncio.wait({writer})
+        # 循环而不是等一次：第二次取消（超时取消之后再来一次应用退出）会把这次
+        # asyncio.wait 本身也打断，锁又提前放了。writer 是 to_thread，线程一定会跑完，
+        # 所以这个循环必然终止。
+        while not writer.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({writer})
         raise
 
 

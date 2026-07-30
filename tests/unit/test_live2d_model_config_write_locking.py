@@ -262,9 +262,15 @@ async def test_cancelling_a_post_does_not_release_the_lock_before_the_write_ends
     assert lock.locked(), "前置条件：写在飞的时候锁是持有状态"
 
     task.cancel()
-    for _ in range(5):
-        await asyncio.sleep(0)
-    assert lock.locked(), "写还在飞，锁不许因为取消就提前放掉"
+    # 不靠「固定 yield 几次」猜取消传播完没有：按真实时钟走一小段，期间每圈都复查。
+    # 顺带把重复取消也覆盖掉 —— 超时取消之后再来一次应用退出，是真实会发生的组合。
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + 0.1
+    while loop.time() < deadline:
+        await asyncio.sleep(0.005)
+        task.cancel()
+        assert lock.locked(), "写还在飞，锁不许因为取消就提前放掉"
+        assert not task.done(), "写还没放行，任务不该已经收尾"
 
     let_write_finish.set()
     with pytest.raises(asyncio.CancelledError):
