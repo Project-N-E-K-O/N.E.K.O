@@ -122,6 +122,30 @@ class RenderingMixin:
         return view
 
     @staticmethod
+    def _renderable_text(entry) -> str:
+        """The text this entry will actually contribute, or `""`.
+
+        One definition, used by every place that counts or budgets
+        entries, because "does this entry produce a line" was being
+        answered three slightly different ways and each answer had its own
+        hole: bucket truthiness charged markup for blanks, `if text:`
+        accepted whitespace-only strings, and a bare `.strip()` crashed on
+        a non-string.
+
+        `str()` coerce is deliberate and load-bearing: facts.json /
+        reflections.json round-trip through JSON, so in principle `text`
+        is a string — but manual edits, pre-PR-1 leftovers and migration
+        bugs all produce truthy non-strings (an epoch int is the classic).
+        The compose path has always formatted those fine; a filter that
+        raises on them would take the whole render down with it, and with
+        it `/scoped_context` and `/new_dialog`. Same reasoning as the
+        coerce in `main_logic/core/tool_calling.py`.
+        """
+        if not isinstance(entry, dict):
+            return ""
+        return str(entry.get('text') or '').strip()
+
+    @staticmethod
     def _text_fingerprint(text: str) -> str:
         """sha256 hex digest of `text` used as the cache key. Same
         encoding as the `rewrite_text_sha256` payload in amerge_into so
@@ -157,7 +181,11 @@ class RenderingMixin:
         either raise or return garbage and bomb the render. On coercion
         failure we treat it as a cache miss and recompute.
         """
-        text = entry.get('text', '') or ''
+        # Coerce, do not assume: a truthy non-string `text` (epoch int,
+        # stray list) otherwise blows up in `_text_fingerprint` and takes
+        # the whole render — /scoped_context and /new_dialog — with it.
+        # No strip: this has to match what compose formats.
+        text = str(entry.get('text') or '')
         if not text:
             return 0
         fp = cls._text_fingerprint(text)
@@ -184,7 +212,11 @@ class RenderingMixin:
         (used by reflection render path, which has no in-memory view),
         and for the defensive coercion of poisoned `token_count` values
         from a hand-edited or corrupted `persona.json`."""
-        text = entry.get('text', '') or ''
+        # Coerce, do not assume: a truthy non-string `text` (epoch int,
+        # stray list) otherwise blows up in `_text_fingerprint` and takes
+        # the whole render — /scoped_context and /new_dialog — with it.
+        # No strip: this has to match what compose formats.
+        text = str(entry.get('text') or '')
         if not text:
             return 0
         fp = cls._text_fingerprint(text)
@@ -366,8 +398,9 @@ class RenderingMixin:
             rendered_total += rendered_cost
         return kept, rendered_total
 
+    @classmethod
     def _split_persona_for_render(
-        self, persona: dict,
+        cls, persona: dict,
     ) -> tuple[list[tuple[str, dict]], dict[str, list[dict]]]:
         """Phase 1 (RFC §3.6.2): split entries into:
           - `protected_entries`: list[(entity_key, entry)] — character_card
@@ -410,6 +443,13 @@ class RenderingMixin:
                         }
                         non_protected_by_entity[entity_key].append(entry)
                     continue
+                if not cls._renderable_text(entry):
+                    # Emits no line, so it must not occupy budget either.
+                    # A blank placeholder used to cost a full markup
+                    # charge against the scoped gate and could push the
+                    # next subject under the floor while producing
+                    # nothing at all.
+                    continue
                 if entry.get('suppress'):
                     # Suppressed entries are rendered in their own section
                     # (compose phase) — they don't compete with protected/
@@ -421,8 +461,8 @@ class RenderingMixin:
                     non_protected_by_entity[entity_key].append(entry)
         return protected_entries, dict(non_protected_by_entity)
 
-    @staticmethod
-    def _cap_protected_entries(protected_entries: list) -> list:
+    @classmethod
+    def _cap_protected_entries(cls, protected_entries: list) -> list:
         """Trim the protected list to its count cap, loudly.
 
         Applied AFTER skipped subjects are filtered out, not at split
@@ -439,7 +479,7 @@ class RenderingMixin:
         """
         protected_entries = [
             (entity_key, entry) for entity_key, entry in protected_entries
-            if isinstance(entry, dict) and (entry.get('text') or '').strip()
+            if cls._renderable_text(entry)
         ]
         if len(protected_entries) <= PERSONA_RENDER_PROTECTED_MAX_ENTRIES:
             return protected_entries
@@ -535,7 +575,7 @@ class RenderingMixin:
                 if self._entry_is_skipped(entry, skipped):
                     # 该 subject 整段被跳过了，它的免预算段也不能单独露出来。
                     continue
-                text = entry.get('text', '')
+                text = self._renderable_text(entry)
                 if text:
                     if text in seen_suppressed:
                         # 同一条事实可能同时存在于群和多个成员 subject 下，

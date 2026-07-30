@@ -987,6 +987,86 @@ async def test_suppressed_entries_are_capped_by_count_with_a_warning():
 
 
 @pytest.mark.asyncio
+async def test_a_malformed_text_value_does_not_bring_the_render_down():
+    """`text` is a string in principle — JSON round-trip — but manual
+    edits, pre-PR-1 leftovers and migration bugs all produce truthy
+    non-strings, an epoch int being the classic. Compose has always
+    formatted those fine, so a blank-filter that calls `.strip()` on them
+    would take `/scoped_context` and `/new_dialog` down with it.
+    """
+    persona = {
+        'master': {'facts': [
+            _entry('int', 0, protected=True),
+            _entry('epoch', 1735689600),
+            _entry('listy', ['a', 'b']),
+            _entry('ok', '主人喜欢辣条', rein=9.0),
+        ]},
+    }
+    harness = _RenderHarness(persona)
+
+    rendered = await harness.arender_persona_markdown('小天')
+
+    assert '主人喜欢辣条' in rendered
+    assert '1735689600' in rendered, "非字符串 text 应照常渲染，不该被当空条目丢掉"
+
+
+@pytest.mark.asyncio
+async def test_blank_entries_do_not_spend_the_scoped_gate():
+    """A blank entry emits no line, so it must not be charged either.
+
+    With the per-entry markup charge it costs a full allowance against the
+    overall gate while producing nothing — enough blanks in front and the
+    next subject drops under the floor and vanishes for no output at all.
+    """
+    group, member = _group_and_member()
+    persona = {
+        group.persona_section_key: _scoped_section(group, [
+            _entry(f'blank{j}', '   ', rein=float(9 - j), subject=group)
+            for j in range(6)
+        ] + [
+            _entry('g1', '群规是不许剧透', rein=1.0, subject=group),
+        ]),
+        member.persona_section_key: _scoped_section(member, [
+            _entry('m1', '阿离在准备考试', rein=5.0, subject=member),
+        ]),
+    }
+    harness = _RenderHarness(persona)
+    gate = _gate('群规是不许剧透', '阿离在准备考试')
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate),             patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=[group, member], include_legacy_private=False,
+        )
+
+    assert '群规是不许剧透' in rendered
+    assert '阿离在准备考试' in rendered, (
+        "空白条目在总闸上收了费，把后面的 subject 挤掉了——而它们一行都没渲染"
+    )
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_suppressions_do_not_spend_the_count_cap():
+    """Same rule for the do-not-mention cap: `if text:` accepted
+    whitespace-only strings, which each took a slot and rendered as an
+    empty bullet, pushing a real suppression out of the prompt."""
+    persona = {
+        'master': {'facts': [
+            _entry(f'ws{j}', ' ' * (j + 1), suppress=True) for j in range(3)
+        ] + [
+            _entry('real', '不要主动提起的那件事', suppress=True),
+        ]},
+    }
+    harness = _RenderHarness(persona)
+
+    with patch('memory.persona.rendering.PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES', 3):
+        rendered = await harness.arender_persona_markdown('小天')
+
+    assert '不要主动提起的那件事' in rendered, (
+        "只有空白的 suppressed 条目占满了配额，真正的「别主动提」被挤出 prompt"
+    )
+
+
+@pytest.mark.asyncio
 async def test_blank_protected_entries_do_not_spend_the_count_cap():
     """The cap counts lines that reach the prompt, not dict entries.
 
