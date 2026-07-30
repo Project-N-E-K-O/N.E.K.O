@@ -15,6 +15,7 @@ listing them, so a third one cannot be added un-budgeted.
 from __future__ import annotations
 
 import ast
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -422,12 +423,13 @@ async def test_tool_recall_bounds_a_line_whose_tag_is_corrupt():
 
 
 def _thread_recording_truncate():
-    """A ``truncate_to_tokens`` stand-in that records where it ran."""
-    import threading
+    """A ``truncate_to_tokens`` stand-in that records where it ran.
 
-    import utils.tokenize as tok
+    Binds the real function before the caller installs the patch, so the
+    stand-in delegates to the genuine tokenizer rather than to itself.
+    """
+    from utils.tokenize import truncate_to_tokens as real
 
-    real = tok.truncate_to_tokens
     threads: list[int] = []
 
     def _recording(*args, **kwargs):
@@ -444,8 +446,6 @@ async def test_plugin_recall_render_runs_off_the_event_loop():
     enormous merged reflection. tiktoken degrades quadratically on a chunk
     the pretokenizer cannot split, so running it inline would stall every
     other session in the process."""
-    import threading
-
     recording, threads = _thread_recording_truncate()
     payload = {"results": [_result("露营的细节" * 200)], "elapsed_ms": 1.0}
     response = SimpleNamespace(
@@ -470,8 +470,6 @@ async def test_plugin_recall_render_runs_off_the_event_loop():
 async def test_tool_recall_render_runs_off_the_event_loop():
     """Main-app twin — this one is on the voice path, where a stall is
     immediately audible."""
-    import threading
-
     recording, threads = _thread_recording_truncate()
     with patch("utils.tokenize.truncate_to_tokens", recording):
         await _call_tool([_result("露营的细节" * 200)])
