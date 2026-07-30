@@ -689,26 +689,39 @@ class RenderingMixin:
     def _subject_available_budget(slots: tuple, index: int, remaining: int) -> int:
         """What slot `index` may spend out of the overall `remaining` gate.
 
-        Any group subject still queued behind this one keeps a reserved
+        Every group subject still queued behind this one keeps a reserved
         slice out of reach. The group's persona is the context every member
         of the conversation shares, so it is the worst thing to lose to
         whoever happened to be listed first — and the caller's order is not
         ours to reshuffle (see `_subject_render_slots`).
+
+        One reserve PER remaining group, not one flat reserve: with two
+        groups in the same render, a single flat slice covers only the last
+        of them, and the earlier group ends up donating to the later one
+        and starving itself — the exact outcome the reserve exists to
+        prevent. A group's own reserve is not deducted from itself; only
+        groups after it count.
         """
         from memory.scopes import SUBJECT_GROUP_CHAT
 
-        reserved = 0
-        for later in slots[index + 1:]:
-            if later is not None and later.kind == SUBJECT_GROUP_CHAT:
-                reserved = SCOPED_RENDER_GROUP_RESERVED_TOKENS
-                break
+        groups_ahead = sum(
+            1 for later in slots[index + 1:]
+            if later is not None and later.kind == SUBJECT_GROUP_CHAT
+        )
+        reserved = groups_ahead * SCOPED_RENDER_GROUP_RESERVED_TOKENS
         return max(0, remaining - reserved)
 
     @classmethod
-    def _log_skipped_subject(cls, subject, available: int) -> None:
+    def _log_skipped_subject(cls, subject, remaining: int, available: int) -> None:
+        # Both numbers, because they diverge exactly when this line matters
+        # most: with a group queued behind, `available` is the gate minus
+        # the reserve. Reporting only that as "总闸剩余" sends whoever is
+        # debugging a vanished persona to raise the wrong constant — the
+        # gate is not what is holding them back, the reserve is.
         label = "legacy" if subject is None else subject.key
         logger.warning(
-            f"[Persona] scoped 渲染总闸剩余 {available} tok 低于单 subject 下限 "
+            f"[Persona] scoped 渲染总闸剩余 {remaining} tok，扣掉群保底后可用 "
+            f"{available} tok，低于单 subject 下限 "
             f"{SCOPED_RENDER_SUBJECT_MIN_TOKENS}，subject {label} 整段跳过"
             f"（半截的人设比缺席更糟）"
         )
@@ -754,7 +767,7 @@ class RenderingMixin:
                 prep.subject_slots, index, remaining,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
-                cls._log_skipped_subject(subject, available)
+                cls._log_skipped_subject(subject, remaining, available)
                 continue
             persona_kept, persona_used = cls._score_trim_entries(
                 persona_buckets.get(marker, ()),
@@ -792,7 +805,7 @@ class RenderingMixin:
                 prep.subject_slots, index, remaining,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
-                cls._log_skipped_subject(subject, available)
+                cls._log_skipped_subject(subject, remaining, available)
                 continue
             persona_kept, persona_used = await cls._ascore_trim_entries(
                 persona_buckets.get(marker, ()),

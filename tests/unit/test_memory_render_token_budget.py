@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -175,11 +176,21 @@ async def test_render_keeps_persona_section_despite_oversized_top_entry():
 async def test_each_subject_gets_its_own_persona_budget():
     """Group and member subjects used to fight over one 2000-token pool,
     so a talkative member could starve the group's own persona (or the
-    other way round) purely by sort order."""
+    other way round) purely by sort order.
+
+    Two claims in one, and both matter: the second subject reaches its
+    OWN pool (lower bound), and the first cannot spend past its pool
+    (upper bound). Drop the ceiling and the original defect comes right
+    back with the sign flipped — whoever is listed first eats the gate.
+    """
     group, member = _group_and_member()
     group_facts = [
         _entry('g1', '群规是不许剧透', rein=9.0, subject=group),
         _entry('g2', '群里在筹划露营', rein=8.0, subject=group),
+        # Well past the group's own pool: must not be funded out of the
+        # gate's remainder just because the group is enumerated first.
+        _entry('g3', '群里还聊过一堆别的事情要占掉很多预算', rein=7.0, subject=group),
+        _entry('g4', '群里又聊过另外一堆事情同样很占预算', rein=6.0, subject=group),
     ]
     member_facts = [
         _entry('m1', '阿离在准备考试', rein=3.0, subject=member),
@@ -190,11 +201,11 @@ async def test_each_subject_gets_its_own_persona_budget():
         member.persona_section_key: _scoped_section(member, member_facts),
     }
     harness = _RenderHarness(persona)
-    # Exactly what the group's two entries cost: under one shared pool the
-    # member's entries (lower score) get nothing at all.
-    shared_pool = sum(count_tokens(e['text']) for e in group_facts)
+    # Exactly what the group's first two entries cost: under one shared
+    # pool the member's entries (lower score) get nothing at all.
+    pool = sum(count_tokens(e['text']) for e in group_facts[:2])
 
-    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', shared_pool):
+    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', pool):
         rendered = await harness.arender_persona_markdown(
             '小天', subjects=[group, member], include_legacy_private=False,
         )
@@ -202,12 +213,18 @@ async def test_each_subject_gets_its_own_persona_budget():
     for text in ('群规是不许剧透', '群里在筹划露营',
                  '阿离在准备考试', '阿离养了一只橘猫'):
         assert text in rendered, f"{text} 被另一个 subject 抢走了预算"
+    for text in ('群里还聊过一堆别的事情要占掉很多预算',
+                 '群里又聊过另外一堆事情同样很占预算'):
+        assert text not in rendered, (
+            "排在第一位的 subject 越过了自己的 per-subject 上限，"
+            "只剩总闸约束它——原缺陷换了个方向又回来了"
+        )
 
 
 @pytest.mark.asyncio
 async def test_each_subject_gets_its_own_reflection_budget():
-    """Same split for reflections — they have their own per-subject pool,
-    not a share of the persona one."""
+    """Same split for reflections — their own per-subject pool, with the
+    same lower and upper bound as persona."""
     group, member = _group_and_member()
     persona = {
         group.persona_section_key: _scoped_section(group, []),
@@ -216,28 +233,40 @@ async def test_each_subject_gets_its_own_reflection_budget():
     group_reflections = [
         _reflection('rg1', '小天觉得这个群很热闹', rein=9.0, subject=group),
         _reflection('rg2', '小天觉得群里爱聊吃的', rein=8.0, subject=group),
+        _reflection('rg3', '小天觉得群里的人都特别爱开玩笑而且很热心',
+                    rein=7.0, subject=group),
     ]
     member_reflections = [
         _reflection('rm1', '小天觉得阿离最近很忙', rein=3.0, subject=member),
     ]
     harness = _RenderHarness(persona)
-    shared_pool = sum(count_tokens(r['text']) for r in group_reflections)
+    pool = sum(count_tokens(r['text']) for r in group_reflections[:2])
 
-    with patch('memory.persona.rendering.REFLECTION_RENDER_MAX_TOKENS', shared_pool):
+    with patch('memory.persona.rendering.REFLECTION_RENDER_MAX_TOKENS', pool):
         rendered = await harness.arender_persona_markdown(
             '小天', None, group_reflections + member_reflections,
             subjects=[group, member], include_legacy_private=False,
         )
 
     assert '小天觉得这个群很热闹' in rendered
+    assert '小天觉得群里爱聊吃的' in rendered
     assert '小天觉得阿离最近很忙' in rendered
+    assert '小天觉得群里的人都特别爱开玩笑而且很热心' not in rendered, (
+        "第一个 subject 的 reflection 越过了自己的 per-subject 上限"
+    )
 
 
 @pytest.mark.asyncio
 async def test_total_gate_drops_a_trailing_subject_whole():
     """When the overall gate runs out, the remaining subject renders
     nothing — a two-line persona reads to the model as that person's
-    complete profile, which is worse than an honest absence."""
+    complete profile, which is worse than an honest absence.
+
+    The earlier subjects carry reflections as well as facts, so the gate
+    has to account for BOTH. Fact-only fixtures leave the reflection half
+    of the accounting untested: drop `remaining -= reflection_used` and
+    a fact-only test never notices.
+    """
     from memory.scopes import MemorySubject
 
     subjects = [
@@ -257,6 +286,11 @@ async def test_total_gate_drops_a_trailing_subject_whole():
         _entry('p2a', '短', rein=5.0, subject=subjects[2]),
         _entry('p2b', '也短', rein=4.0, subject=subjects[2]),
     ]
+    reflections = [
+        _reflection(f'r{i}', f'小天觉得成员{i}最近状态还不错也挺好聊的',
+                    rein=5.0, subject=s)
+        for i, s in enumerate(subjects[:2])
+    ]
     persona = {
         s.persona_section_key: _scoped_section(s, facts[s.subject_id])
         for s in subjects
@@ -268,16 +302,19 @@ async def test_total_gate_drops_a_trailing_subject_whole():
     spent = sum(
         count_tokens(e['text'])
         for s in subjects[:2] for e in facts[s.subject_id]
-    )
+    ) + sum(count_tokens(r['text']) for r in reflections)
     total = spent + SCOPED_RENDER_SUBJECT_MIN_TOKENS - 1
 
     with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
         rendered = await harness.arender_persona_markdown(
-            '小天', subjects=subjects, include_legacy_private=False,
+            '小天', None, reflections,
+            subjects=subjects, include_legacy_private=False,
         )
 
     assert '成员0最近在学做菜和爬山还在写小说' in rendered
     assert '成员1周末常去看展顺便逛书店' in rendered
+    assert '小天觉得成员0最近状态还不错也挺好聊的' in rendered
+    assert '小天觉得成员1最近状态还不错也挺好聊的' in rendered
     assert '短' not in rendered, (
         "总闸剩量低于单 subject 下限时该整段跳过，而不是塞进能放下的碎片"
     )
@@ -324,6 +361,59 @@ async def test_group_subject_keeps_a_reserve_against_earlier_members():
 
 
 @pytest.mark.asyncio
+async def test_reserve_covers_every_group_still_queued_not_just_one():
+    """Two groups in one render need two reserves.
+
+    A single flat reserve covers only the last group in the list: the
+    earlier one deducts a slice for the later one, gets nothing back for
+    itself, and is the subject that disappears — while every member ahead
+    of it renders in full. That is exactly the outcome the reserve exists
+    to prevent, so it has to scale with how many groups are still queued.
+    """
+    from memory.scopes import MemorySubject
+
+    members = [
+        MemorySubject.group_participant("qq", "7788", str(2000 + i))
+        for i in range(2)
+    ]
+    group_a = MemorySubject.group_chat("qq", "7788")
+    group_b = MemorySubject.group_chat("qq", "9900")
+    order = members + [group_a, group_b]
+
+    def _facts(subject, label):
+        return [
+            _entry(f'{label}-{i}', f'{label}说过的第{i}件事情要占掉不少预算才行',
+                   rein=9.0 - i, subject=subject)
+            for i in range(4)
+        ]
+
+    persona = {
+        s.persona_section_key: _scoped_section(s, _facts(s, name))
+        for s, name in zip(order, ('成员甲', '成员乙', '群A', '群B'))
+    }
+    harness = _RenderHarness(persona)
+    per_subject = count_tokens('成员甲说过的第0件事情要占掉不少预算才行') * 2
+
+    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', per_subject), \
+            patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
+                  per_subject), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
+            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS',
+                  per_subject * 3):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=order, include_legacy_private=False,
+        )
+
+    assert '群A说过的第0件事情要占掉不少预算才行' in rendered, (
+        "排在前面的那个群替后面的群留了额度，把自己饿死了"
+    )
+    assert '群B说过的第0件事情要占掉不少预算才行' in rendered
+    # The gate funds three subjects' worth; two reserves mean the members
+    # split what is left, so at least one of them gives way — never a group.
+    assert '成员甲说过的第0件事情要占掉不少预算才行' in rendered
+
+
+@pytest.mark.asyncio
 async def test_allocation_follows_the_caller_subject_order():
     """Order is the caller's call. It sends [group, current speaker] today
     and grows to [group, speaker, three recent speakers] next; ranking the
@@ -364,6 +454,50 @@ async def test_allocation_follows_the_caller_subject_order():
     # proof the allocator is not sorting by score, key or anything else.
     assert '小北在学吉他而且刚买了新琴弦' in second_wins
     assert '阿离在准备考试而且最近睡得很晚' not in second_wins
+
+
+@pytest.mark.asyncio
+async def test_two_custom_scopes_of_one_subject_id_get_separate_budgets():
+    """Bucketing is by (key, scope), not by persona section.
+
+    A section key is only ``kind:subject_id``, so the same kind/id under
+    two custom scopes shares one section. Bucket by section and their
+    budgets merge back together — precisely what this split exists to
+    stop. Every other fixture here uses the factory helpers, whose scope
+    defaults to ``kind:subject_id``, so key and scope move together and
+    the distinction is invisible.
+    """
+    from memory.scopes import MemorySubject
+
+    domain_a = MemorySubject.create(
+        'group_participant', 'qq:7788:2046', scope='domain-a',
+    )
+    domain_b = MemorySubject.create(
+        'group_participant', 'qq:7788:2046', scope='domain-b',
+    )
+    assert domain_a.key == domain_b.key, "夹具失效：两个 subject 的 key 应当相同"
+    assert domain_a.persona_section_key == domain_b.persona_section_key
+
+    a_facts = [_entry('a1', '阿离在 A 域说过的事情', rein=9.0, subject=domain_a)]
+    b_facts = [_entry('b1', '阿离在 B 域说过的事情', rein=1.0, subject=domain_b)]
+    persona = {
+        domain_a.persona_section_key: {
+            **domain_a.as_entry_fields(), 'facts': a_facts + b_facts,
+        },
+    }
+    harness = _RenderHarness(persona)
+    # Only enough for ONE entry if the two scopes share a pool.
+    pool = count_tokens(a_facts[0]['text'])
+
+    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', pool):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=[domain_a, domain_b], include_legacy_private=False,
+        )
+
+    assert '阿离在 A 域说过的事情' in rendered
+    assert '阿离在 B 域说过的事情' in rendered, (
+        "两个自定义 scope 被并回一个预算池，低分那份被挤掉了"
+    )
 
 
 @pytest.mark.asyncio
@@ -413,11 +547,53 @@ async def test_legacy_render_ignores_the_scoped_total_gate():
     assert '主人喜欢辣条' in rendered
 
 
-@pytest.mark.asyncio
-async def test_sync_and_async_scoped_renders_agree():
-    """The two render paths differ only in how they count tokens. This is
-    the behavioural version of "fix both twins" — it stays true however
-    the budget code is later restructured."""
+# Each scenario pins a different knob AT its boundary. A loose fixture
+# (every budget comfortably larger than the content) makes the parity
+# check vacuous: both twins render everything and agree for the wrong
+# reason. `expect` is what the async path must produce, so a scenario that
+# stops exercising its knob fails here instead of quietly going slack.
+_PARITY_SCENARIOS = [
+    (
+        'persona-pool',            # per-subject persona ceiling binds
+        {'PERSONA_RENDER_MAX_TOKENS': 6, 'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
+        {'present': ['群规是不许剧透', '阿离在准备考试'],
+         'absent': ['群里在筹划露营', '阿离养了一只橘猫']},
+    ),
+    (
+        'reflection-pool',         # per-subject reflection ceiling binds
+        {'REFLECTION_RENDER_MAX_TOKENS': 9, 'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
+        {'present': ['小天觉得这个群很热闹', '小天觉得阿离最近很忙'],
+         'absent': ['小天觉得群里爱聊吃的']},
+    ),
+    (
+        # Gate nearly spent; the floor is low, so the 2nd subject still
+        # gets its sliver — only the entries that don't fit drop out.
+        'total-gate',
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 15,
+         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
+        {'present': ['群规是不许剧透', '- x'], 'absent': ['阿离在准备考试']},
+    ),
+    (
+        # Same gate, floor raised above the sliver: now the 2nd subject
+        # renders NOTHING. Contrasting with the row above is what proves
+        # the floor does its own work and isn't just the gate again.
+        'min-floor',
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 15,
+         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 3},
+        {'present': ['群规是不许剧透'], 'absent': ['阿离在准备考试', '- x']},
+    ),
+    (
+        'group-reserve',           # group queued last keeps its slice
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 18,
+         'SCOPED_RENDER_GROUP_RESERVED_TOKENS': 12,
+         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1,
+         'reversed_order': True},
+        {'present': ['群规是不许剧透'], 'absent': ['阿离养了一只橘猫']},
+    ),
+]
+
+
+def _parity_fixture():
     group, member = _group_and_member()
     persona = {
         group.persona_section_key: _scoped_section(group, [
@@ -427,28 +603,60 @@ async def test_sync_and_async_scoped_renders_agree():
         member.persona_section_key: _scoped_section(member, [
             _entry('m1', '阿离在准备考试', rein=3.0, subject=member),
             _entry('m2', '阿离养了一只橘猫', rein=2.0, subject=member),
+            # 1-token crumb: it is what distinguishes "the gate left a
+            # sliver" from "the floor refused to render a sliver".
+            _entry('m3', 'x', rein=1.0, subject=member),
         ]),
     }
     reflections = [
         _reflection('rg1', '小天觉得这个群很热闹', rein=5.0, subject=group),
+        _reflection('rg2', '小天觉得群里爱聊吃的', rein=4.5, subject=group),
         _reflection('rm1', '小天觉得阿离最近很忙', rein=4.0, subject=member),
     ]
+    return group, member, persona, reflections
 
-    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', 12), \
-            patch('memory.persona.rendering.REFLECTION_RENDER_MAX_TOKENS', 10), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', 40):
+
+@pytest.mark.parametrize(
+    'name,knobs,expect', _PARITY_SCENARIOS, ids=[s[0] for s in _PARITY_SCENARIOS],
+)
+@pytest.mark.asyncio
+async def test_sync_and_async_scoped_renders_agree(name, knobs, expect):
+    """The two paths differ only in how they count tokens.
+
+    This is the behavioural version of "fix both twins": it holds however
+    the budget code is later restructured, and unlike a source-shape check
+    it cannot be satisfied by a cosmetic edit. Every knob gets a scenario
+    where it actually binds — a twin that diverges on exactly one knob has
+    nowhere to hide.
+    """
+    group, member, persona, reflections = _parity_fixture()
+    knobs = dict(knobs)
+    order = ([member, group] if knobs.pop('reversed_order', False)
+             else [group, member])
+    patches = [
+        patch(f'memory.persona.rendering.{key}', value)
+        for key, value in knobs.items()
+    ]
+    with ExitStack() as stack:
+        for p in patches:
+            stack.enter_context(p)
         sync_out = _RenderHarness(persona).render_persona_markdown(
             '小天', None, reflections,
-            subjects=[group, member], include_legacy_private=False,
+            subjects=order, include_legacy_private=False,
         )
         async_out = await _RenderHarness(persona).arender_persona_markdown(
             '小天', None, reflections,
-            subjects=[group, member], include_legacy_private=False,
+            subjects=order, include_legacy_private=False,
         )
 
-    assert sync_out == async_out
-    assert sync_out, "夹具失效：预算太紧，两边都渲染出空串就证明不了什么"
+    assert sync_out == async_out, f"sync/async 在 {name} 这档上分叉了"
+    for text in expect['present']:
+        assert text in async_out, f"[{name}] 夹具失效：{text} 本该渲染出来"
+    for text in expect['absent']:
+        assert text not in async_out, (
+            f"[{name}] 夹具失效：{text} 还在，这一档的预算根本没绑定，"
+            f"相等性断言就成了两边都全渲染的空话"
+        )
 
 
 @pytest.mark.asyncio
@@ -543,3 +751,22 @@ async def test_protected_entries_still_bypass_the_token_budget():
         rendered = await harness.arender_persona_markdown('小天')
 
     assert '主人是一只猫娘的主人' in rendered
+
+
+@pytest.mark.asyncio
+async def test_suppressed_entries_still_bypass_the_token_budget():
+    """Strict dual of the protected case. A half-listed do-not-mention
+    list is worse than none: the character confidently volunteers the
+    entries that fell off the end."""
+    persona = {
+        'master': {'facts': [
+            _entry('s1', '不要主动提这件很长很长的事情' * 30, suppress=True),
+        ]},
+    }
+    harness = _RenderHarness(persona)
+
+    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', 1), \
+            patch('memory.persona.rendering.REFLECTION_RENDER_MAX_TOKENS', 1):
+        rendered = await harness.arender_persona_markdown('小天')
+
+    assert '不要主动提这件很长很长的事情' in rendered

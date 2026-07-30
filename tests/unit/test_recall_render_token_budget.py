@@ -46,6 +46,28 @@ def test_shared_helper_takes_a_prefix_and_reports_what_it_dropped():
     assert dropped == 1
 
 
+def test_shared_helper_stops_rather_than_letting_a_shorter_line_jump_the_queue():
+    """Prefix, not skip-and-continue.
+
+    The fixture above cannot tell the two apart — with descending lengths
+    both strategies return the same two lines. Here a short line sits
+    behind a long one: skipping would smuggle it in ahead of the entry it
+    was ranked below, which reorders recall results by length.
+    """
+    from utils.tokenize import take_lines_within_token_budget
+
+    lines = ["甲" * 5, "乙" * 400, "丙" * 5]
+    budget = count_tokens(lines[0]) + count_tokens(lines[2]) + 1
+    assert count_tokens(lines[1]) > budget, "夹具失效：中间那条并没有放不下"
+
+    kept, dropped = take_lines_within_token_budget(lines, budget)
+
+    assert kept == [lines[0]], (
+        "放不下的一条应当终止整段，而不是跳过它把后面更短的塞进来"
+    )
+    assert dropped == 2
+
+
 def test_shared_helper_always_emits_the_top_ranked_line():
     """Zero lines is the wrong answer for a relevance-ranked list: the
     caller asked for the best match and would get an empty memory block
@@ -67,6 +89,84 @@ def test_entry_cap_cannot_exceed_the_block_cap():
     from blowing the block budget. Raise it above the total and the first
     entry alone can overshoot."""
     assert RECALL_RENDER_ENTRY_MAX_TOKENS <= RECALL_RENDER_TOTAL_MAX_TOKENS
+
+
+def test_block_cap_funds_a_full_page_of_max_length_entries():
+    """The block cap has to cover ``limit`` entries at the per-entry cap
+    PLUS the line decoration, or the last relevance hit is dropped for a
+    reason nobody chose.
+
+    The per-entry cap trims ``text``; the block cap counts the rendered
+    line (index, localized tier/entity tag, date suffix). Reasoning about
+    that in a comment is how the arithmetic went wrong the first time, so
+    it is asserted here — and ``limit`` is read off the signature rather
+    than typed in, so raising it in a later PR fails here instead of
+    silently shrinking the block.
+    """
+    import inspect
+
+    from config import RECALL_RENDER_LINE_OVERHEAD_TOKENS
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    limit = inspect.signature(
+        QQMemoryBridge.query_relevant_memory
+    ).parameters["limit"].default
+    assert isinstance(limit, int) and limit > 0
+
+    assert RECALL_RENDER_TOTAL_MAX_TOKENS >= limit * (
+        RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS
+    ), (
+        f"整段预算 {RECALL_RENDER_TOTAL_MAX_TOKENS} 装不下 {limit} 条满额条目"
+        f"（每条 {RECALL_RENDER_ENTRY_MAX_TOKENS} tok 正文 + "
+        f"{RECALL_RENDER_LINE_OVERHEAD_TOKENS} tok 行装饰）"
+    )
+
+
+def test_line_overhead_allowance_covers_what_the_renderer_actually_adds():
+    """The allowance above is only honest if it matches reality. Measure
+    the decoration on a real rendered line instead of trusting the number.
+    """
+    from config import RECALL_RENDER_LINE_OVERHEAD_TOKENS
+
+    body = "群里聊过的一件事情，" * 400
+    with patch("utils.language_utils.get_global_language", return_value="zh"):
+        rendered = _bridge().render_relevant_memory([
+            {
+                "text": body,
+                "tier": "reflection",
+                "entity": "group_participant",
+                "created_at": "2026-05-01T10:00:00",
+            },
+        ])
+
+    overhead = count_tokens(rendered) - RECALL_RENDER_ENTRY_MAX_TOKENS
+    assert 0 < overhead <= RECALL_RENDER_LINE_OVERHEAD_TOKENS, (
+        f"实测行装饰 {overhead} tok 超出预留的 "
+        f"{RECALL_RENDER_LINE_OVERHEAD_TOKENS} tok"
+    )
+
+
+def test_a_full_page_of_max_length_entries_all_survive():
+    """Behavioural mirror of the arithmetic above: five hits, each longer
+    than the per-entry cap, all five reach the prompt."""
+    body = "群里聊过的一件事情，" * 400
+    results = [
+        {
+            "text": f"{i}{body}",
+            "tier": "fact",
+            "entity": "group_chat",
+            "created_at": "2026-05-01T10:00:00",
+        }
+        for i in range(5)
+    ]
+
+    with patch("utils.language_utils.get_global_language", return_value="zh"):
+        rendered = _bridge().render_relevant_memory(results)
+
+    assert len(rendered.split("\n")) == 5, (
+        f"5 条满额召回没能全部进 prompt：\n{rendered[:200]}"
+    )
+    assert rendered.startswith("1. ") and "\n5. " in rendered
 
 
 # ── plugin side: memory_bridge.render_relevant_memory ────────────────
@@ -185,25 +285,30 @@ async def test_tool_recall_header_count_matches_what_was_actually_rendered():
     chunk = "聊过的一件事情" * 200
     rendered = await _call_tool([_result(f"{i}{chunk}") for i in range(10)])
 
+    from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
+
     lines = rendered.split("\n")
     listed = [ln for ln in lines[1:] if ln.strip()]
     assert listed, "夹具失效：一条都没渲染出来"
-    assert str(len(listed)) in lines[0], (
-        f"首行总览与实际条数不符：{lines[0]!r} vs {len(listed)} 条"
-    )
+    assert len(listed) < 10, "夹具失效：没触发丢弃，这条用例什么都没测到"
+    # 整行相等，不是子串包含：`str(4) in "找到 41 条相关记忆"` 会放过任何
+    # 以正确数字开头的错误计数。
+    assert lines[0] == RECALL_MEMORY_TOOL_FOUND_HEADER["zh"].format(
+        n=len(listed)
+    ), f"首行总览与实际条数不符：{lines[0]!r} vs {len(listed)} 条"
 
 
 # ── discovery guard: no un-budgeted third renderer ───────────────────
 
 
-def test_every_recall_renderer_is_token_budgeted():
-    """Discovered, not listed.
+def _discovered_recall_renderers() -> dict[str, str]:
+    """Every module that renders a recall block, found by scanning.
 
-    A hand-kept list of renderers only covers the ones whoever wrote it
-    happened to know about, and this repo's recall block has already grown
-    from one site to two. The marker is ``render_recall_entry_tag`` — the
-    shared label table every recall renderer goes through — so a third
-    renderer shows up here the moment it is written.
+    A hand-kept list only covers the sites whoever wrote it knew about,
+    and this repo's recall block has already grown from one to two. The
+    marker is ``render_recall_entry_tag`` — the shared label table every
+    recall renderer goes through — so a third one shows up here the moment
+    it is written.
     """
     marker = "render_recall_entry_tag"
     skip_parts = {
@@ -228,42 +333,65 @@ def test_every_recall_renderer_is_token_budgeted():
         if rel.as_posix() == "config/prompts/prompts_memory.py":
             continue
         renderers[rel.as_posix()] = source
+    return renderers
 
+
+def _called_function_names(source: str) -> set[str]:
+    names = set()
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Name):
+            names.add(func.id)
+        elif isinstance(func, ast.Attribute):
+            names.add(func.attr)
+    return names
+
+
+def test_every_recall_renderer_is_token_budgeted():
+    """Discovered, not listed — and checked on calls, not on text.
+
+    Substring-matching the constant names would pass on an ``import`` that
+    is never used, or on a ``# TODO: hook up RECALL_RENDER_*`` comment. The
+    claim is that the budget RUNS, so both budget calls have to be present
+    as actual calls.
+    """
+    renderers = _discovered_recall_renderers()
     assert len(renderers) >= 2, (
         f"发现式扫描只找到 {sorted(renderers)}；标记词失效了，这条护栏已经形同虚设"
     )
-    unbudgeted = [
-        rel for rel, source in sorted(renderers.items())
-        if "RECALL_RENDER_ENTRY_MAX_TOKENS" not in source
-        or "RECALL_RENDER_TOTAL_MAX_TOKENS" not in source
-    ]
-    assert unbudgeted == [], (
-        f"这些召回渲染点没有 token 预算，会把任意长度的记忆原文塞进 "
-        f"prompt：{unbudgeted}"
+    required = {"truncate_to_tokens", "take_lines_within_token_budget"}
+    unbudgeted = {}
+    for rel, source in sorted(renderers.items()):
+        missing = required - _called_function_names(source)
+        if missing:
+            unbudgeted[rel] = sorted(missing)
+    assert unbudgeted == {}, (
+        f"这些召回渲染点没有真正调用 token 预算（只是提到了常量名不算），"
+        f"会把任意长度的记忆原文塞进 prompt：{unbudgeted}"
     )
 
 
-def test_shared_budget_helper_is_what_both_renderers_use():
-    """Both twins call one helper, so their budgets cannot drift apart.
+def test_every_recall_renderer_goes_through_the_shared_budget_helper():
+    """One helper for both, so the two budgets cannot drift apart.
 
-    Checked on the AST rather than by grepping the constant, because a
-    renderer could import the constants and then hand-roll a loop that
-    quietly differs from the other side.
+    The renderer set comes from the same discovery as above rather than a
+    second hardcoded list — otherwise a newly discovered third renderer
+    would be budget-checked but never helper-checked.
     """
-    callers = set()
-    for rel in (
+    renderers = _discovered_recall_renderers()
+    expected = {
         "plugin/plugins/qq_auto_reply/memory_bridge.py",
         "main_logic/core/tool_calling.py",
-    ):
-        tree = ast.parse((_REPO_ROOT / rel).read_text(encoding="utf-8"))
-        for node in ast.walk(tree):
-            if (
-                isinstance(node, ast.Call)
-                and isinstance(node.func, ast.Name)
-                and node.func.id == "take_lines_within_token_budget"
-            ):
-                callers.add(rel)
-    assert callers == {
-        "plugin/plugins/qq_auto_reply/memory_bridge.py",
-        "main_logic/core/tool_calling.py",
-    }, f"只有 {sorted(callers)} 走共享预算 helper，另一侧会独自漂移"
+    }
+    assert expected <= set(renderers), (
+        f"已知的两处渲染点没被发现式扫描找到：{expected - set(renderers)}"
+    )
+    hand_rolled = [
+        rel for rel, source in sorted(renderers.items())
+        if "take_lines_within_token_budget" not in _called_function_names(source)
+    ]
+    assert hand_rolled == [], (
+        f"{hand_rolled} 没走共享预算 helper，会独自漂移"
+    )

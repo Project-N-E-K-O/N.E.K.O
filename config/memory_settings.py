@@ -158,9 +158,14 @@ PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES = 40
 # 合并过的长条目，又不至于让一条吃掉整段。超出的**截断**不丢弃——召回是
 # 按相关度排的，命中的那条哪怕只剩前半段也比整条消失有用。
 RECALL_RENDER_ENTRY_MAX_TOKENS = 400
-# 整段 2000：与单个 subject 的 persona 预算同档。当前 limit=5 × 400 上限
-# 正好卡在 2000，总闸暂时不会绑定；后续 PR 放大 limit 时它才是真正的闸。
-RECALL_RENDER_TOTAL_MAX_TOKENS = 2000
+# 整段上限。⚠️ 单条 cap 只截 text，而总闸数的是**整行**
+# `f"{i}. {tag} {text}{suffix}"`——序号 + 本地化 tier/entity 标签 + 日期
+# 后缀实测约 17-25 tok/行（英文标签更长）。所以「5 × 400 = 2000」是错的
+# 算术：5 条满额实际是 5 × 425 ≈ 2125，按 2000 设会把相关度第 5 的那条
+# 静默丢掉。按含开销的口径给 40 tok/行余量：5 × (400 + 40) = 2200。
+# 后续 PR 放大 limit 时这条才是真正绑定的闸。
+RECALL_RENDER_LINE_OVERHEAD_TOKENS = 40
+RECALL_RENDER_TOTAL_MAX_TOKENS = 2200
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
@@ -446,7 +451,8 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 
 # ---- Memory: 外部记忆导入 · persona LLM 融合预算 ----
 # 背景（也是这条链路存在的根本原因）：persona 渲染进 system prompt 有一个严格的
-# token 上限（PERSONA_RENDER_MAX_TOKENS，non-protected 条目共抢一个池），外部工作
+# token 上限（PERSONA_RENDER_MAX_TOKENS；scoped 群渲染是每个 subject 各一份，但外部
+# 导入只写 legacy 私聊语料，所以这里绑定的是单池那份），外部工作
 # 区（OpenClaw/Hermes 的 USER.md / SOUL.md）动辄几十条自由 Markdown，若原样精确
 # 去重后逐条追加，很快就会把 persona 池撑爆、把角色自身积累的印象挤掉。因此
 # USER.md / SOUL.md 必须先经一次 LLM 融合（归纳/合并/去重/消歧/按重要度排序），
