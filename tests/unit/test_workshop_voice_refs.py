@@ -291,3 +291,53 @@ async def test_a_reader_never_observes_a_half_swapped_pair(tmp_path, monkeypatch
     voice_ref = reader.result()
     assert voice_ref is not None
     assert voice_ref["manifest"]["prefix"] == "new"
+
+
+def test_every_reader_outside_the_swap_takes_the_lock():
+    """The rule is uniform: readers and writers of a pair share its lock.
+
+    Pinned structurally because the alternative argument — "these particular
+    readers look at Steam's install tree, and uploads only ever write under
+    WorkshopExport, so they cannot collide" — is true today and invisible
+    tomorrow. A reader that quietly switches back to the unlocked helper would
+    otherwise fail nothing.
+
+    The one legitimate unlocked caller is the cleanup reached from inside the
+    swap: threading.Lock is not reentrant, so it must stay unlocked.
+    """
+    import ast
+    import inspect
+
+    from main_routers.workshop_router import ugc, voice_manifest, voice_refs
+
+    allowed_unlocked = {
+        # 在锁内被调用，必须保持不加锁，否则死锁
+        ("voice_manifest", "_cleanup_workshop_voice_reference"),
+        # 串行化包装自己就是那把锁
+        ("voice_manifest", "resolve_voice_reference_serialized"),
+    }
+
+    offenders = []
+    for module in (voice_refs, voice_manifest, ugc):
+        tree = ast.parse(inspect.getsource(module))
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            key = (module.__name__.rsplit(".", 1)[-1], node.name)
+            if key in allowed_unlocked:
+                continue
+            for child in ast.walk(node):
+                if not isinstance(child, ast.Call):
+                    continue
+                func = child.func
+                name = (
+                    func.id if isinstance(func, ast.Name)
+                    else func.attr if isinstance(func, ast.Attribute)
+                    else None
+                )
+                if name == "_resolve_workshop_voice_reference":
+                    offenders.append(f"{key[0]}.{node.name}:{child.lineno}")
+
+    assert not offenders, (
+        f"这些地方绕过了 voice_reference_lock 直接裸读：{offenders}"
+    )

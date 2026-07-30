@@ -29,7 +29,7 @@ from .voice_manifest import (
     WORKSHOP_VOICE_MANIFEST_NAME,
     _cleanup_workshop_voice_reference,
     _normalize_workshop_voice_manifest,
-    _resolve_workshop_voice_reference,
+    resolve_voice_reference_serialized,
     _sanitize_voice_prefix,
     voice_reference_lock,
 )
@@ -243,7 +243,7 @@ async def get_workshop_voice_reference(item_id: str):
         }, status_code=404)
 
     try:
-        voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, install_folder)
+        voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, install_folder)
     except FileNotFoundError as e:
         return JSONResponse({
             "success": False,
@@ -299,7 +299,7 @@ async def get_workshop_voice_reference_audio(item_id: str):
         }, status_code=404)
 
     try:
-        voice_ref = await asyncio.to_thread(_resolve_workshop_voice_reference, install_folder)
+        voice_ref = await asyncio.to_thread(resolve_voice_reference_serialized, install_folder)
     except FileNotFoundError as e:
         return JSONResponse({
             "success": False,

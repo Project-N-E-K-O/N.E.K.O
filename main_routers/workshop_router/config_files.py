@@ -23,6 +23,7 @@ from ._shared import logger, router
 
 import os
 import asyncio
+import threading
 from urllib.parse import unquote
 from fastapi.responses import JSONResponse
 from utils.workshop_utils import (
@@ -43,40 +44,45 @@ async def get_workshop_config():
 
 # 保存创意工坊配置
 
+# 整个「读 → 合并 → 落盘 → 建目录」是一次事务，必须串行。
+#
+# 这几步现在都跑在 worker 线程上（落盘含无上界 fsync，ensure 还可能对着网络盘或
+# 可移动盘做 exists / makedirs，留在事件循环上会卡住所有协程）。但一挪进线程，两个
+# 并发的 /config 请求就能真交错，而 ensure_workshop_folder_exists 会**重新读一次
+# 配置文件**来决定 auto_create（utils/workshop_utils.py:53 与 :75）：A 存下
+# auto_create=true + 目录 A，B 紧接着存下 auto_create=false，A 的 ensure 读到的是
+# B 的配置于是拒绝建目录，而 A 照样返回 success —— 用户看到"保存成功"但目录没建。
+# 改动前这一整段同步跑在循环线程上，物理上交错不了。
+#
+# 锁覆盖到 ensure 之内，所以它那次重读看到的一定是本次事务自己刚写的配置，不需要
+# 去改 ensure_workshop_folder_exists 这个公共 util 的签名。
+_WORKSHOP_CONFIG_TRANSACTION_LOCK = threading.Lock()
+
+
 @router.post('/config')
 async def save_workshop_config_api(config_data: dict):
     try:
         # 导入与get_workshop_config相同路径的函数，保持一致性
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
-        
-        # 先加载现有配置，避免使用全局变量导致的不一致问题
-        workshop_config_data = await asyncio.to_thread(load_workshop_config) or {}
-        
-        # 更新配置
-        if 'default_workshop_folder' in config_data:
-            workshop_config_data['default_workshop_folder'] = config_data['default_workshop_folder']
-        if 'auto_create_folder' in config_data:
-            workshop_config_data['auto_create_folder'] = config_data['auto_create_folder']
-        # 支持用户mod路径配置
-        if 'user_mod_folder' in config_data:
-            workshop_config_data['user_mod_folder'] = config_data['user_mod_folder']
-        
-        # 落盘 + 建目录一起交给同一个 worker。ensure_workshop_folder_exists 自己
-        # 还要再读一次配置文件、exists 一把、可能 os.makedirs —— 目标是网络盘或可
-        # 移动盘时这几下同样能把事件循环卡住，而且它必须排在保存之后（读的是刚写
-        # 进去的配置）。收成一个单元既保住次序，也不留半截在环上。
-        folder_path = ''
-        if workshop_config_data.get('auto_create_folder', True):
-            # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
-            folder_path = workshop_config_data.get('user_mod_folder') or workshop_config_data.get('default_workshop_folder') or ''
 
-        def _save_and_ensure() -> None:
-            save_workshop_config(workshop_config_data)
-            if folder_path:
-                ensure_workshop_folder_exists(folder_path)
+        def _apply_config_transaction() -> dict:
+            with _WORKSHOP_CONFIG_TRANSACTION_LOCK:
+                # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
+                # 后写的那次会把前一次的字段整份盖掉。
+                merged = load_workshop_config() or {}
+                for key in ('default_workshop_folder', 'auto_create_folder', 'user_mod_folder'):
+                    if key in config_data:
+                        merged[key] = config_data[key]
+                save_workshop_config(merged)
+                if merged.get('auto_create_folder', True):
+                    # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
+                    folder_path = merged.get('user_mod_folder') or merged.get('default_workshop_folder')
+                    if folder_path:
+                        ensure_workshop_folder_exists(folder_path)
+                return merged
 
-        await asyncio.to_thread(_save_and_ensure)
-        
+        workshop_config_data = await asyncio.to_thread(_apply_config_transaction)
+
         return {"success": True, "config": workshop_config_data}
     except Exception as e:
         logger.error(f"保存创意工坊配置失败: {str(e)}")

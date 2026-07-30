@@ -487,24 +487,6 @@ class ProactiveMixin:
                 # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
                 # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
                 # BM25 评分豁免对偶）。
-                if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
-                    try:
-                        from memory.anti_repeat import get_anti_repeat_corpus
-                        # 落盘走 async 孪生：同步版尾部是 atomic_write_json
-                        # （含无上界的 fsync），压在会话循环上就是掐音频。
-                        await get_anti_repeat_corpus().arecord_output(
-                            self.lanlan_name,
-                            full_text,
-                            is_proactive=True,
-                            now=(
-                                publication_times[0]
-                                if publication_times
-                                else None
-                            ),
-                        )
-                    except Exception as _exc:  # pragma: no cover
-                        logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
-
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
                     await self._request_tts_done_for_turn("finish_proactive_delivery")
@@ -521,6 +503,29 @@ class ProactiveMixin:
             except Exception:
                 # Turn-end push is best-effort; the client may have gone away.
                 pass
+
+            # 防复读 corpus 排在**所有收尾信号之后**。落盘走 async 孪生（同步版
+            # 尾部是 atomic_write_json，含无上界 fsync，压在会话循环上就是掐音
+            # 频），但那个 await 也是个取消点：文本此刻已经投递出去了，被取消的
+            # 话 CancelledError 是 BaseException、下面的 except Exception 接不住，
+            # TTS 收尾和两处 turn end 就全被跳过 —— 用户看得见的一轮没有终止信号，
+            # 比漏录一条语料严重得多。与 omni_offline_client/_lifecycle.py 同款处置。
+            #
+            # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+            # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+            # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+            # BM25 评分豁免对偶）。
+            if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    await get_anti_repeat_corpus().arecord_output(
+                        self.lanlan_name,
+                        full_text,
+                        is_proactive=True,
+                        now=publication_times[0] if publication_times else None,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
         # proactive 原文不写 logger（隐私）；本地 print 兜底
         logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")

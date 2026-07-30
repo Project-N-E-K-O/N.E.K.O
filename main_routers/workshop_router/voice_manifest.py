@@ -126,9 +126,15 @@ def voice_reference_lock(content_folder: str) -> threading.Lock:
 def resolve_voice_reference_serialized(item_dir: str) -> dict | None:
     """``_resolve_workshop_voice_reference`` that cannot observe a half-swap.
 
-    For readers running OUTSIDE the swap. Callers already inside the lock
-    (``_cleanup_workshop_voice_reference``) must keep using the unlocked form —
-    ``threading.Lock`` is not reentrant.
+    The rule this file follows: **everyone who reads or writes the pair in a
+    directory takes that directory's lock.** Stating it that way — rather than
+    "only the publish reader needs it, because the other readers happen to look
+    at Steam's install tree while uploads only ever write under
+    WorkshopExport" — keeps it from rotting the day those paths converge.
+
+    One exception, and it is structural: callers already inside the lock
+    (``_cleanup_workshop_voice_reference``, reached from the swap) must keep
+    using the unlocked form. ``threading.Lock`` is not reentrant.
     """
     with voice_reference_lock(item_dir):
         return _resolve_workshop_voice_reference(item_dir)
@@ -188,7 +194,9 @@ def _cleanup_workshop_voice_reference(content_folder: str) -> None:
 
 def _build_workshop_voice_reference_summary(install_folder: str) -> dict | None:
     try:
-        voice_ref = _resolve_workshop_voice_reference(install_folder)
+        # 走串行化读：见 resolve_voice_reference_serialized 的注释。这个函数只从
+        # ugc.py 的列表流程调用（已在 to_thread 里），不在锁内，不存在重入问题。
+        voice_ref = resolve_voice_reference_serialized(install_folder)
     except FileNotFoundError:
         return None
     except Exception as e:
