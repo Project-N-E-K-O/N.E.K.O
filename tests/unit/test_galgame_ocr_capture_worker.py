@@ -693,13 +693,19 @@ def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
         manager,
     )
 
+    # 被取消的那次 drain 跑在 to_thread 的线程上，它什么时候返回不受本用例控制，
+    # 迟到几毫秒排到 order 末尾都算正常。真正要盯的是「取消后在当前线程重做的那
+    # 次」有没有在释放 backend 之前跑完，所以两次按线程分开记。
+    loop_thread = threading.current_thread()
+
     def _slow_drain(self, _futures, **_kwargs) -> list:
         del self
         drain_entered.set()
         # 取消不会停掉在飞的 worker —— 收尾必须等它落地再释放 backend。
         worker_finished.wait(timeout=5.0)
+        on_loop_thread = threading.current_thread() is loop_thread
         with order_lock:
-            order.append("drain-returned")
+            order.append("sync-drain" if on_loop_thread else "threaded-drain")
         return []
 
     manager._drain_inflight_capture_workers = types.MethodType(_slow_drain, manager)
@@ -733,9 +739,12 @@ def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
 
     with order_lock:
         settled = list(order)
-    assert "drain-returned" in settled, "取消绕过了 drain，没等在飞任务落地"
-    assert settled[-1] == "backend-released", (
-        f"backend 在 worker 还没跑完时就被释放了：{settled}"
+    assert "sync-drain" in settled, (
+        f"取消绕过了 drain，没在当前线程把等待重做一遍：{settled}"
+    )
+    assert "backend-released" in settled
+    assert settled.index("sync-drain") < settled.index("backend-released"), (
+        f"backend 在重做的那次 drain 落地之前就被释放了：{settled}"
     )
     assert observed["closed_classifier"] == [True]
     assert manager.vision_classifier is None
