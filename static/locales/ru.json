@@ -4337,6 +4337,7 @@
         "testCoreTooltip": "Тест подключения основного API",
         "testAssist": "Тест",
         "testAssistTooltip": "Тест подключения вспомогательного API",
+        "maskedSecretRetype": "Ключ сохранён, но не может быть показан. Введите его заново перед проверкой.",
         "gsvTestText": "Тест подключения GSV",
         "gsvTestTooltip": "Тест подключения GPT-SoVITS",
         "error": {

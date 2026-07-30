@@ -4337,6 +4337,7 @@
         "testCoreTooltip": "Test Core API Connectivity",
         "testAssist": "Test",
         "testAssistTooltip": "Test Assist API Connectivity",
+        "maskedSecretRetype": "This key is saved but cannot be displayed. Re-enter it before testing.",
         "gsvTestText": "GSV connectivity test",
         "gsvTestTooltip": "Test GPT-SoVITS Connectivity",
         "error": {

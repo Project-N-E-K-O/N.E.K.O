@@ -25,9 +25,17 @@ Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` o
 | `NEKO_INSTANCE_ID` | Shared instance ID; normally created by the launcher |
 | `NEKO_AUTOSTART_CSRF_TOKEN` | Autostart request token; defaults to the instance ID |
 | `NEKO_AUTOSTART_ALLOWED_ORIGINS` | Comma-separated extra allowed origins |
+| `NEKO_TRUSTED_HOSTS` | Comma-separated extra hostnames accepted by local HTTP/WebSocket services. Loopback names and IP literals are accepted automatically. |
+| `NEKO_TRUSTED_ORIGINS` | Comma-separated extra browser origins accepted for WebSocket connections. Same-origin connections and loopback aliases are accepted automatically. |
 | `NEKO_BEHIND_PROXY` | Enables proxy-header handling in supported entrypoints |
 | `NEKO_LOG_LEVEL` | Main-server log level |
 | `NEKO_MERGED` | Launcher merged-mode override |
+
+Trusted hosts are exact names (optionally with a port); `*.example.com` permits
+subdomains but not the bare suffix. A global `*` is deliberately ignored. The
+Docker entrypoint adds `SSL_DOMAIN` to `NEKO_TRUSTED_HOSTS` by default. Trusted
+origins must be complete `http://` or `https://` origins and affect browser
+WebSocket handshakes, not CORS.
 
 Most shared boolean helpers accept `1/true/yes/on` and `0/false/no/off`.
 `NEKO_MERGED` itself accepts `1/true/yes` and `0/false/no`.

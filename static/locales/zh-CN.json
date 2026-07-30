@@ -4337,6 +4337,7 @@
         "testCoreTooltip": "测试核心 API 连通性",
         "testAssist": "测试",
         "testAssistTooltip": "测试辅助 API 连通性",
+        "maskedSecretRetype": "密钥已保存但不可回显，请重新输入后再测试。",
         "gsvTestText": "GSV连通性测试",
         "gsvTestTooltip": "GPT-SoVITS 连通性测试",
         "error": {

@@ -4337,6 +4337,7 @@
         "testCoreTooltip": "コアAPI接続テスト",
         "testAssist": "テスト",
         "testAssistTooltip": "アシストAPI接続テスト",
+        "maskedSecretRetype": "このキーは保存済みですが表示できません。テストするには再入力してください。",
         "gsvTestText": "GSV接続テスト",
         "gsvTestTooltip": "GPT-SoVITS 接続テスト",
         "error": {

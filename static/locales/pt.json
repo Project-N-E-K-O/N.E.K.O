@@ -4337,6 +4337,7 @@
         "testCoreTooltip": "Testar conectividade da API principal",
         "testAssist": "Testar",
         "testAssistTooltip": "Testar conectividade da API auxiliar",
+        "maskedSecretRetype": "A chave está salva, mas não pode ser exibida. Digite-a novamente antes de testar.",
         "gsvTestText": "Teste de conectividade GSV",
         "gsvTestTooltip": "Testar conectividade do GPT-SoVITS",
         "error": {
