@@ -834,7 +834,6 @@ def test_hot_swap_never_rebinds_lease_mute_or_game_identity(
         mgr._voice_lease_focus_suppressed = True
     else:
         mgr._voice_lease_owner = "game"
-        mgr._voice_input_consumer_bindings["game"] = object()
 
     assert (
         mgr._rebind_hot_swap_ingress_token(
@@ -1425,27 +1424,57 @@ async def test_rejected_final_after_runtime_moved_on_sends_no_clear():
     assert expected_clear  # payload helper stays usable for the positive twin
 
 
-async def test_bound_game_consumer_empty_final_sends_preview_clear():
-    # A preview created before a game takeover would otherwise survive an
-    # empty final silently consumed by the binding branch.
+async def test_game_takeover_clears_core_preview_and_empty_final_stays_terminal(
+    monkeypatch,
+):
     mgr = _make_transcript_dispatch_manager()
-    on_final = AsyncMock()
-    mgr._voice_lease_owner = "none"
-    mgr.bind_voice_input_consumer("game", on_final)
-    mgr._voice_lease_owner = "game"
-    event = _transcript_event(mgr, "  ")
+    mgr._set_microphone_route("independent")
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
+    core_turn = VoiceTurnToken(ingress=mgr._capture_ingress_token(), turn_id=7)
+    assert await mgr._prepare_voice_input_turn(core_turn) is True
+    await mgr._dispatch_voice_input_partial(
+        VoicePartialEvent(turn_token=core_turn, text="go"),
+    )
+    mgr.websocket.send_json.reset_mock()
 
-    await mgr._dispatch_core_asr_transcript(event)
+    await mgr._apply_voice_lease_state(
+        owner="game",
+        hard_muted=False,
+        focus_suppressed=False,
+        reason="game_takeover",
+        force_abort=True,
+    )
 
     mgr.websocket.send_json.assert_awaited_once_with(_preview_clear_payload(mgr))
-    on_final.assert_not_awaited()
+    route_transcript.assert_not_awaited()
 
-    # Negative validation: a non-empty game final reaches the consumer and
-    # sends nothing on the core websocket.
     mgr.websocket.send_json.reset_mock()
-    non_empty = _transcript_event(mgr, "go left", turn_id=9)
-    await mgr._dispatch_core_asr_transcript(non_empty)
-    on_final.assert_awaited_once_with(non_empty)
+    empty = _transcript_event(mgr, "  ", turn_id=9)
+    assert await mgr._prepare_voice_input_turn(empty.turn_token) is True
+    await mgr._dispatch_voice_input_final(empty)
+    await mgr._voice_input_registry.wait_idle()
+    route_transcript.assert_not_awaited()
+    mgr.websocket.send_json.assert_not_awaited()
+
+    non_empty = _transcript_event(mgr, "go left", turn_id=10)
+    assert await mgr._prepare_voice_input_turn(non_empty.turn_token) is True
+    await mgr._dispatch_voice_input_final(non_empty)
+    route_transcript.assert_awaited_once_with(
+        "Test",
+        "go left",
+        request_id=(
+            f"asr-{non_empty.turn_token.ingress.session_epoch}-"
+            f"{non_empty.turn_token.turn_id}"
+        ),
+    )
     mgr.websocket.send_json.assert_not_awaited()
 
 
@@ -2731,6 +2760,15 @@ async def test_absent_settings_still_default_without_failing_closed():
     mgr.user_language = None
     mgr.send_status = AsyncMock()
     mgr._asr_runtime.abort = AsyncMock()
+
+    async def _ready_start(**_kwargs):
+        return AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=mgr._capture_ingress_token().session_epoch,
+        )
+
+    mgr._asr_runtime.start = AsyncMock(side_effect=_ready_start)
 
     async def _empty(**_kwargs):
         return {}

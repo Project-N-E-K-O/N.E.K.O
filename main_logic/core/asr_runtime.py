@@ -11,7 +11,7 @@ import asyncio
 import json
 import struct
 import time
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, replace
 from typing import Callable, ClassVar, Literal
 
 from websockets import exceptions as web_exceptions
@@ -21,6 +21,17 @@ from main_logic.asr_client.runtime import (
     AsrStartStatus,
     IndependentAsrRuntime,
 )
+from main_logic.voice_input import (
+    BuiltinVoiceInputConsumer,
+    VoiceInputConsumerCapabilities,
+    VoiceInputDispatchResult,
+    VoiceInputRegistry,
+)
+from main_logic.voice_input.consumers import (
+    CoreChatTurnContext,
+    CoreChatVoiceInputConsumer,
+    GameVoiceInputConsumer,
+)
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
     AsrLifecycleNotification,
@@ -28,7 +39,6 @@ from main_logic.voice_turn.contracts import (
     AsrSubmitStatus,
     VoicePartialEvent,
     VoiceIngressToken,
-    VoiceTranscriptCallback,
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
@@ -39,14 +49,6 @@ from main_logic.voice_turn.audio_input import (
 from main_logic import core as _core_facade
 
 from ._shared import logger
-
-
-@dataclass(frozen=True, slots=True)
-class VoiceInputConsumerBinding:
-    owner: Literal["game"]
-    on_final: VoiceTranscriptCallback
-    identity: object = field(default_factory=object, repr=False, compare=False)
-
 
 @dataclass(frozen=True, slots=True)
 class _QueuedMicFrame:
@@ -220,10 +222,6 @@ class AsrRuntimeMixin:
         self._voice_lease_resync_signal_state: tuple[str, int, bool, str] | None = (
             None
         )
-        self._voice_input_consumer_bindings: dict[
-            str,
-            VoiceInputConsumerBinding,
-        ] = {}
         self._audio_stream_queue = _AudioDurationQueue(
             capacity_us=2_000_000,
             max_frames=256,
@@ -260,11 +258,12 @@ class AsrRuntimeMixin:
         # can tell "my own bubble" from "the next turn already took it over".
         self._core_asr_preview_turn_id = ""
         self._core_asr_preview_text = ""
+        self._init_voice_input_registry()
         callbacks = AsrRuntimeCallbacks(
             display_name=lambda: str(getattr(self, "lanlan_name", "core")),
-            on_prepare_turn=self._prepare_core_voice_turn,
-            on_partial=self._send_core_asr_preview,
-            on_final=self._dispatch_core_asr_transcript,
+            on_prepare_turn=self._prepare_voice_input_turn,
+            on_partial=self._dispatch_voice_input_partial,
+            on_final=self._dispatch_voice_input_final,
             on_turn_abandoned=self._handle_core_asr_turn_abandoned,
             on_failure=self._handle_core_asr_failure,
             on_status=self._send_core_asr_status,
@@ -272,9 +271,54 @@ class AsrRuntimeMixin:
         )
         self._asr_runtime = IndependentAsrRuntime(callbacks)
 
+    def _init_voice_input_registry(self) -> None:
+        """Install the manager-lifetime built-ins exactly once."""
+
+        if hasattr(self, "_voice_input_registry"):
+            return
+        registry = VoiceInputRegistry()
+        core_chat = CoreChatVoiceInputConsumer(
+            session_ref=lambda: getattr(self, "session", None),
+            on_prepare=lambda token, context: self._prepare_core_voice_turn(
+                token,
+                session_ref=context.session_ref,
+                abandon_on_failure=False,
+            ),
+            on_partial_event=self._send_core_asr_preview,
+            on_final_event=lambda event, context: self._dispatch_core_asr_transcript(
+                event,
+                session_ref=context.session_ref,
+            ),
+            on_cancelled_event=self._cancel_core_chat_voice_turn,
+        )
+        game = GameVoiceInputConsumer(
+            lanlan_name=lambda: str(getattr(self, "lanlan_name", "core")),
+        )
+        core_registration = registry.register_builtin(
+            BuiltinVoiceInputConsumer.CORE_CHAT,
+            core_chat,
+            capabilities=VoiceInputConsumerCapabilities(
+                accepts_partial=True,
+                accepts_final=True,
+            ),
+        )
+        game_registration = registry.register_builtin(
+            BuiltinVoiceInputConsumer.GAME,
+            game,
+            capabilities=VoiceInputConsumerCapabilities(
+                accepts_partial=False,
+                accepts_final=True,
+            ),
+        )
+        registry.activate(core_registration.handle)
+        self._voice_input_registry = registry
+        self._core_chat_voice_input_registration = core_registration
+        self._game_voice_input_registration = game_registration
+
     def _ensure_asr_runtime_state(self) -> None:
         if not hasattr(self, "_asr_runtime"):
             self._init_asr_runtime_state()
+        self._init_voice_input_registry()
         if not hasattr(self, "_asr_route_operation_generation"):
             self._asr_route_operation_generation = 0
         if not hasattr(self, "_asr_notification_lock"):
@@ -411,9 +455,19 @@ class AsrRuntimeMixin:
         )
 
     def _voice_input_accepts_pcm(self) -> bool:
-        owner_has_target = self._voice_lease_owner == "core" or (
-            self._voice_lease_owner == "game"
-            and self._voice_input_consumer_bindings.get("game") is not None
+        owner = self._voice_lease_owner
+        active_identity = self._voice_input_registry.active_identity
+        owner_has_target = bool(
+            owner in {"core", "game"}
+            and active_identity is not None
+            and active_identity.namespace == "builtin"
+            and active_identity.name
+            == (
+                BuiltinVoiceInputConsumer.CORE_CHAT.value
+                if owner == "core"
+                else BuiltinVoiceInputConsumer.GAME.value
+            )
+            and self._voice_input_registry.active_accepts_input
         )
         return bool(
             self._voice_lease_synchronized
@@ -422,44 +476,6 @@ class AsrRuntimeMixin:
             and not self._voice_lease_focus_suppressed
             and not self._voice_input_suppressed
         )
-
-    def bind_voice_input_consumer(
-        self,
-        owner: str,
-        on_final: VoiceTranscriptCallback,
-    ) -> VoiceInputConsumerBinding:
-        self._ensure_asr_runtime_state()
-        normalized_owner = str(owner or "").strip().lower()
-        if normalized_owner != "game":
-            raise ValueError("VOICE_INPUT_CONSUMER_OWNER_UNSUPPORTED")
-        if not callable(on_final):
-            raise TypeError("VOICE_INPUT_CONSUMER_CALLBACK_REQUIRED")
-        if self._voice_lease_owner == normalized_owner:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_BIND_BEFORE_TAKEOVER")
-        if normalized_owner in self._voice_input_consumer_bindings:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_ALREADY_BOUND")
-        binding = VoiceInputConsumerBinding(owner="game", on_final=on_final)
-        self._voice_input_consumer_bindings[normalized_owner] = binding
-        return binding
-
-    def unbind_voice_input_consumer(
-        self,
-        binding: VoiceInputConsumerBinding,
-    ) -> bool:
-        self._ensure_asr_runtime_state()
-        if not isinstance(binding, VoiceInputConsumerBinding):
-            return False
-        if self._voice_lease_owner == binding.owner:
-            raise RuntimeError("VOICE_INPUT_CONSUMER_RELEASE_LEASE_FIRST")
-        if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
-            return False
-        del self._voice_input_consumer_bindings[binding.owner]
-        return True
-
-    def _current_voice_input_consumer(self) -> VoiceInputConsumerBinding | None:
-        if self._voice_lease_owner != "game":
-            return None
-        return self._voice_input_consumer_bindings.get("game")
 
     def set_independent_asr_handshake(self, value: object) -> None:
         # Record the frontend's authoritative independent-ASR toggle carried by
@@ -731,8 +747,9 @@ class AsrRuntimeMixin:
             )
 
     async def _abort_independent_asr(self, reason: str) -> None:
-        self._abandon_core_voice_turn()
         await self._asr_runtime.abort(reason)
+        self._invalidate_voice_pcm_sync(reason)
+        await self._voice_input_registry.wait_idle()
 
     async def _reset_native_audio_turn(
         self,
@@ -808,7 +825,8 @@ class AsrRuntimeMixin:
             await abort
 
     async def _suspend_independent_asr(self, reason: str) -> None:
-        self._abandon_core_voice_turn()
+        self._invalidate_voice_pcm_sync(reason)
+        await self._voice_input_registry.wait_idle()
         await self._asr_runtime.suspend(reason)
 
     async def _close_independent_asr(
@@ -830,13 +848,17 @@ class AsrRuntimeMixin:
         self._set_microphone_route("blocked")
         if not preserve_hot_swap_audio:
             self._invalidate_voice_pcm_sync("independent_asr_close")
+        else:
+            self._voice_input_registry.invalidate_utterance(
+                reason="independent_asr_close",
+            )
+        await self._voice_input_registry.wait_idle()
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
         )
         self._voice_input_pipeline_failed = False
         self._independent_asr_provider = None
         self._independent_asr_route_key = None
-        self._abandon_core_voice_turn()
         await self._asr_runtime.close()
         try:
             await pipeline.close()
@@ -1723,6 +1745,7 @@ class AsrRuntimeMixin:
                 )
 
     def _invalidate_voice_pcm_sync(self, reason: str) -> None:
+        self._voice_input_registry.invalidate_utterance(reason=reason)
         self._clear_audio_stream_queue(reason)
         self.hot_swap_audio_cache.clear()
 
@@ -1745,10 +1768,23 @@ class AsrRuntimeMixin:
         self._voice_lease_owner = owner
         self._voice_lease_hard_muted = hard_muted
         self._voice_lease_focus_suppressed = focus_suppressed
+        previous_owner = previous[0]
+        if owner != previous_owner:
+            if owner == "game":
+                self._voice_input_registry.activate(
+                    self._game_voice_input_registration.handle,
+                )
+            elif owner == "core":
+                self._voice_input_registry.activate(
+                    self._core_chat_voice_input_registration.handle,
+                )
         reasons: set[str] = set()
         if owner == "none":
             reasons.add("owner_none")
-        elif owner == "game" and self._current_voice_input_consumer() is None:
+        elif (
+            owner == "game"
+            and not self._voice_input_registry.active_accepts_input
+        ):
             reasons.add("game")
         if hard_muted:
             reasons.add("hard_mute")
@@ -1762,14 +1798,14 @@ class AsrRuntimeMixin:
             force_abort or self._voice_lease_requires_abort or previous != current
         )
         self._voice_lease_requires_abort = False
-        if reason == "game_takeover" or (
-            owner == "game" and self._current_voice_input_consumer() is None
-        ):
-            await self._suspend_independent_asr(reason)
+        if owner == "game" and not self._voice_input_registry.active_accepts_input:
+            await self._voice_input_registry.wait_idle()
+            await self._asr_runtime.suspend(reason)
         elif reason == "game_release":
             if should_abort:
                 route_operation_snapshot = self._asr_route_operation_generation
-                await self._abort_independent_asr(reason)
+                await self._voice_input_registry.wait_idle()
+                await self._asr_runtime.abort(reason)
                 if (
                     self._asr_route_operation_generation != route_operation_snapshot
                     or self._voice_lease_owner != "core"
@@ -1783,7 +1819,8 @@ class AsrRuntimeMixin:
             # the rest of the session.
             await self._asr_runtime.resume(reason)
         elif should_abort:
-            await self._abort_independent_asr(reason)
+            await self._voice_input_registry.wait_idle()
+            await self._asr_runtime.abort(reason)
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
         await self._apply_voice_lease_state(
@@ -2079,17 +2116,72 @@ class AsrRuntimeMixin:
         return True
 
     async def _handle_core_asr_turn_abandoned(self, token: VoiceTurnToken) -> None:
-        external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
-        self._abandon_core_voice_turn(external_turn_id)
+        self._voice_input_registry.invalidate_utterance(
+            token,
+            reason="asr_turn_abandoned",
+        )
+        await self._voice_input_registry.wait_idle()
 
-    async def _prepare_core_voice_turn(self, token: VoiceTurnToken) -> bool:
+    async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
+        self._ensure_asr_runtime_state()
+        if not self._voice_input_registry.begin_utterance(token):
+            return False
+        return await self._voice_input_registry.prepare_utterance(token)
+
+    async def _dispatch_voice_input_partial(
+        self,
+        event: VoicePartialEvent,
+    ) -> None:
+        await self._voice_input_registry.dispatch_partial(event)
+
+    async def _dispatch_voice_input_final(
+        self,
+        event: VoiceTranscriptEvent,
+    ) -> None:
+        result = await self._voice_input_registry.dispatch_final(event)
+        if result is VoiceInputDispatchResult.CALLBACK_FAILED:
+            await self._send_core_asr_status(
+                AsrStatusEvent(
+                    code="ASR_INDEPENDENT_INJECTION_FAILED",
+                    provider=event.provider,
+                    session_epoch=event.turn_token.ingress.session_epoch,
+                )
+            )
+        elif result is VoiceInputDispatchResult.REJECTED:
+            logger.debug(
+                "[%s] voice input final rejected turn=%s-%s",
+                self.lanlan_name,
+                event.turn_token.ingress.session_epoch,
+                event.turn_token.turn_id,
+            )
+
+    async def _cancel_core_chat_voice_turn(
+        self,
+        context: CoreChatTurnContext,
+        reason: str,
+    ) -> None:
+        del reason
+        await self._send_core_asr_preview_clear(context.external_turn_id)
+        self._abandon_core_voice_turn(
+            context.external_turn_id,
+            session_ref=context.session_ref,
+        )
+
+    async def _prepare_core_voice_turn(
+        self,
+        token: VoiceTurnToken,
+        *,
+        session_ref: object | None = None,
+        abandon_on_failure: bool = True,
+    ) -> bool:
         if not self._ingress_token_matches(token.ingress):
             return False
-        if self._voice_lease_owner == "game":
-            return self._current_voice_input_consumer() is not None
         if self._voice_lease_owner != "core":
             return False
-        session_ref = self.session
+        if session_ref is None:
+            session_ref = getattr(self, "session", None)
+        if session_ref is None:
+            return False
         transition_generation = self._voice_input_transition_generation
         external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
         # Turn preparation is the ordered boundary between two turns' partial
@@ -2117,30 +2209,34 @@ class AsrRuntimeMixin:
                 if callable(interrupt):
                     await interrupt()
             if not operation_is_current():
-                self._abandon_core_voice_turn(
-                    external_turn_id,
-                    session_ref=session_ref,
-                )
+                if abandon_on_failure:
+                    self._abandon_core_voice_turn(
+                        external_turn_id,
+                        session_ref=session_ref,
+                    )
                 return False
             await self.handle_new_message()
             if operation_is_current():
                 return True
-            self._abandon_core_voice_turn(
-                external_turn_id,
-                session_ref=session_ref,
-            )
+            if abandon_on_failure:
+                self._abandon_core_voice_turn(
+                    external_turn_id,
+                    session_ref=session_ref,
+                )
             return False
         except asyncio.CancelledError:
-            self._abandon_core_voice_turn(
-                external_turn_id,
-                session_ref=session_ref,
-            )
+            if abandon_on_failure:
+                self._abandon_core_voice_turn(
+                    external_turn_id,
+                    session_ref=session_ref,
+                )
             raise
         except Exception:
-            self._abandon_core_voice_turn(
-                external_turn_id,
-                session_ref=session_ref,
-            )
+            if abandon_on_failure:
+                self._abandon_core_voice_turn(
+                    external_turn_id,
+                    session_ref=session_ref,
+                )
             if not operation_is_current():
                 return False
             logger.warning(
@@ -2177,28 +2273,21 @@ class AsrRuntimeMixin:
     async def _dispatch_core_asr_transcript(
         self,
         event: VoiceTranscriptEvent,
+        *,
+        session_ref: object | None = None,
     ) -> None:
         token = event.turn_token.ingress
-        if not self._ingress_token_matches(token):
-            return
         external_turn_id = f"asr-{token.session_epoch}-{event.turn_token.turn_id}"
-        binding = self._current_voice_input_consumer()
-        if binding is not None:
-            if self._voice_input_consumer_bindings.get(binding.owner) is not binding:
-                return
-            if not event.text.strip():
-                # Same lingering-preview hazard as the core branch below: a
-                # preview created before a game takeover would otherwise
-                # survive this silently consumed empty final.
-                await self._send_core_asr_preview_clear(external_turn_id)
-                return
-            await binding.on_final(event)
-            return
-        if self._voice_lease_owner != "core":
-            return
-        session_ref = self.session
+        if session_ref is None:
+            session_ref = getattr(self, "session", None)
         transition_generation = self._voice_input_transition_generation
         try:
+            if (
+                not self._ingress_token_matches(token)
+                or self._voice_lease_owner != "core"
+                or session_ref is None
+            ):
+                return
             if not event.text.strip():
                 # An empty final still completed the turn provider-side (e.g.
                 # the OpenAI/Step stalled-item timeouts): Core deliberately
@@ -2416,10 +2505,9 @@ class AsrRuntimeMixin:
                 != self._core_asr_identity_ingress_token(source_identity).session_epoch
             ):
                 return
-            self._abandon_core_voice_turn()
             self._set_microphone_route("blocked")
-            self._clear_audio_stream_queue("independent_asr_failure")
-            self.hot_swap_audio_cache.clear()
+            self._invalidate_voice_pcm_sync("independent_asr_failure")
+            await self._voice_input_registry.wait_idle()
             # Fail-safe for clients that never receive or never honour the
             # teardown notice (an older build, a third-party client, a
             # throttled background tab). The route is fail-closed for the rest
@@ -2511,3 +2599,4 @@ class AsrRuntimeMixin:
         """
 
         await self._asr_runtime.wait_transcript_idle()
+        await self._voice_input_registry.wait_idle()
