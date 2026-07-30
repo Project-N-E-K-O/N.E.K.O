@@ -160,7 +160,7 @@ def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
     Resolves the two shapes whose keys are fully determined by the source::
 
         {loc: build(loc) for loc in ("en", "zh", "ja")}
-        {k: v for k, v in (("en", "hello"), ("zh", "你好"))}
+        {k: v for k, v in (("en", "hello"), ("zh", "ni hao"))}
 
     The first is a realistic way to write a localized table — one template per
     locale off a literal locale list — so leaving it unresolved would be a real
