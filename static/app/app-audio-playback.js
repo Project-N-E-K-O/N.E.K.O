@@ -32,8 +32,16 @@
     // 还粘着，30s 后强制 cancel 收尾。比 ASSISTANT_TURN_COMPLETION_FALLBACK_MS
     // 长一个数量级——前者覆盖正常 race，后者覆盖 server 漏包。
     const STUCK_SPEAKING_FALLBACK_MS = 30000;
+    // 权威 audio_done 迟迟不来时的有界放弃时长。必须是独立计时器，不能复用
+    // scheduleAssistantTurnCompletionFallback：后者 fire 前有 hasAssistantSpeechActivity
+    // 守卫，会把"speech 仍 active 但已 drained、正在等 audio_done"误判成还在说话
+    // 而跳过收尾——那正好是要兜的场景。漏发 audio_done 的 provider 靠它保证
+    // 每轮最多多等这么久，而不是一路卡到 30s 看门狗。
+    const ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS = 700;
     let _assistantTurnCompletionFallbackTimer = 0;
     let _assistantTurnCompletionFallbackTurnId = null;
+    let _audioStreamCloseGiveUpTimer = 0;
+    let _audioStreamCloseGiveUpTurnId = null;
     let _pendingAudioMetaStallTimer = 0;
     let _stuckSpeakingFallbackTimer = 0;
     const SPEECH_PLAYBACK_STATE_KEY = 'neko_speech_playback_state';
@@ -329,6 +337,9 @@
         // 表不撤 → 30s 到点时如果刚好在第 N 段间隙 → 误 fire cancel。
         if (normalizedTurnId) {
             clearStuckSpeakingFallback();
+            // 新一阵音频到了 = 上一次"队列空了"不是流结束。撤掉正在跑的
+            // give-up，等这阵放完时再重新排，否则它会在播放中途强制收尾。
+            clearAudioStreamCloseGiveUp();
         }
         if (!normalizedTurnId || S.assistantSpeechActiveTurnId === normalizedTurnId) {
             return;
@@ -461,6 +472,115 @@
         }
     }
 
+    function clearAudioStreamCloseGiveUp() {
+        if (_audioStreamCloseGiveUpTimer) {
+            clearTimeout(_audioStreamCloseGiveUpTimer);
+            _audioStreamCloseGiveUpTimer = 0;
+        }
+        _audioStreamCloseGiveUpTurnId = null;
+    }
+
+    // 把"本轮音频流已关闭"的记录连同 speech_id 映射一起清掉。挂在
+    // clearAssistantTurnCompletion 上，于是 turn-start / speech-cancel /
+    // clearAudioQueue / 正常收尾 四条路径都会走到。
+    function resetAssistantAudioStreamClose() {
+        clearAudioStreamCloseGiveUp();
+        S.assistantAudioStreamClosedTurnId = null;
+        S.assistantAudioStreamClosedEpoch = -1;
+        S.assistantAudioTurnBySpeechId = {};
+    }
+
+    function isAssistantAudioStreamClosed(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return false;
+        }
+        // 打断会推 epoch。此后才到达的 audio_done 属于上一世代，作废——
+        // 否则它会去收尾一个已经被取消的轮（#1566 的镜像 bug）。
+        if (S.assistantAudioStreamClosedEpoch !== S.incomingAudioEpoch) {
+            return false;
+        }
+        return normalizeAssistantTurnId(S.assistantAudioStreamClosedTurnId) === normalizedTurnId;
+    }
+
+    // 音频头只带 speech_id，audio_done 也只能按 speech_id 对账，所以在音频头
+    // 到达时把当时解析出的 turnId 记下来。
+    function rememberAssistantAudioSpeechTurn(speechId, turnId) {
+        var sid = normalizeAssistantTurnId(speechId);
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!sid || !normalizedTurnId) {
+            return;
+        }
+        if (!S.assistantAudioTurnBySpeechId || typeof S.assistantAudioTurnBySpeechId !== 'object') {
+            S.assistantAudioTurnBySpeechId = {};
+        }
+        S.assistantAudioTurnBySpeechId[sid] = normalizedTurnId;
+    }
+
+    // 后端权威信号：该 speech_id 的音频流已关闭，之后不会再有属于它的 chunk。
+    function noteAssistantAudioStreamClosed(speechId) {
+        var sid = normalizeAssistantTurnId(speechId);
+        var mapped = (sid && S.assistantAudioTurnBySpeechId)
+            ? S.assistantAudioTurnBySpeechId[sid]
+            : null;
+        var turnId = normalizeAssistantTurnId(mapped) || resolveAssistantAudioTurnId(null, sid);
+        if (!turnId) {
+            logAudioLifecycle('noteAssistantAudioStreamClosed:skip_no_turn', {
+                speechId: sid
+            });
+            return false;
+        }
+
+        S.assistantAudioStreamClosedTurnId = turnId;
+        S.assistantAudioStreamClosedEpoch = S.incomingAudioEpoch;
+        logAudioLifecycle('noteAssistantAudioStreamClosed', {
+            speechId: sid,
+            turnId: turnId,
+            epoch: S.incomingAudioEpoch
+        });
+        // 信号可能早于最后一段音频播完（它只承诺"不会再有新的了"），
+        // 所以照样要过 drained 那一关；没过就等 onended 再来一次。
+        return maybeFinalizeAssistantSpeech(turnId);
+    }
+
+    // 等 audio_done 的有界放弃。刻意不加 hasAssistantSpeechActivity 守卫：
+    // 这里要兜的就是"speech 还挂着 active、队列已空、只差信号"这个状态。
+    function scheduleAudioStreamCloseGiveUp(turnId) {
+        var normalizedTurnId = normalizeAssistantTurnId(turnId);
+        if (!normalizedTurnId) {
+            return;
+        }
+        if (_audioStreamCloseGiveUpTimer && _audioStreamCloseGiveUpTurnId === normalizedTurnId) {
+            return;
+        }
+        clearAudioStreamCloseGiveUp();
+
+        _audioStreamCloseGiveUpTurnId = normalizedTurnId;
+        logAudioLifecycle('audioStreamCloseGiveUp:armed', {
+            turnId: normalizedTurnId,
+            delayMs: ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS
+        });
+        _audioStreamCloseGiveUpTimer = window.setTimeout(function () {
+            var pendingTurnId = _audioStreamCloseGiveUpTurnId;
+            _audioStreamCloseGiveUpTimer = 0;
+            _audioStreamCloseGiveUpTurnId = null;
+
+            if (!pendingTurnId || S.assistantTurnCompletedId !== pendingTurnId) {
+                logAudioLifecycle('audioStreamCloseGiveUp:skip_completion_mismatch', {
+                    turnId: pendingTurnId || normalizedTurnId
+                });
+                return;
+            }
+            logAudioLifecycle('audioStreamCloseGiveUp:fire', {
+                turnId: pendingTurnId
+            });
+            // force 只放行"等 audio_done"这一道门。等待期间又涌进音频时，
+            // maybeFinalizeAssistantSpeech 自己的 drained 检查会拦住，
+            // 等那阵播完再重新排 —— 所以这里不需要也不该再复查一遍。
+            maybeFinalizeAssistantSpeech(pendingTurnId, { force: true });
+        }, ASSISTANT_AUDIO_STREAM_CLOSE_GIVEUP_MS);
+    }
+
     // 4 个队列 + 3 个 in-flight async flag，覆盖所有"音频还在路上"的状态。
     // - 4 queue 对齐 isAssistantTurnPlaybackDrained（少查 pendingAudioChunkMetaQueue
     //   会在 header 到了 blob 还没到的窗口里误判空）
@@ -545,6 +665,7 @@
 
     function clearAssistantTurnCompletion() {
         clearAssistantTurnCompletionFallback();
+        resetAssistantAudioStreamClose();
         S.assistantTurnCompletedId = null;
         S.assistantTurnCompletionSource = null;
         S.assistantSpeechStartedTurnId = null;
@@ -693,12 +814,14 @@
         }
     }
 
-    function maybeFinalizeAssistantSpeech(turnId) {
+    function maybeFinalizeAssistantSpeech(turnId, options) {
+        var force = !!(options && options.force);
         var normalizedTurnId = normalizeAssistantTurnId(
             turnId || S.assistantSpeechActiveTurnId || S.assistantTurnCompletedId
         );
         logAudioLifecycle('maybeFinalizeAssistantSpeech:enter', {
-            requestedTurnId: normalizedTurnId
+            requestedTurnId: normalizedTurnId,
+            force: force
         });
         if (!normalizedTurnId || S.assistantTurnCompletedId !== normalizedTurnId) {
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_completion_mismatch', {
@@ -708,6 +831,20 @@
         }
         if (!isAssistantTurnPlaybackDrained(normalizedTurnId)) {
             logAudioLifecycle('maybeFinalizeAssistantSpeech:skip_not_drained', {
+                requestedTurnId: normalizedTurnId
+            });
+            return false;
+        }
+        // 队列空了只说明"此刻手里没有音频"。本轮真的放过音频时，这既可能是
+        // 阵间空档也可能是流结束，两者在前端完全同构 —— 凭它收尾就是 #1566：
+        // 口型停一下又重启、emotion/字幕早触发、后来的尾音成了孤儿（completedId
+        // 已被清，没人再收尾）→ isPlaying 卡到 30s 看门狗。等后端的 audio_done，
+        // 或等 give-up 计时器到点（force）。
+        if (!force &&
+            normalizeAssistantTurnId(S.assistantSpeechStartedTurnId) === normalizedTurnId &&
+            !isAssistantAudioStreamClosed(normalizedTurnId)) {
+            scheduleAudioStreamCloseGiveUp(normalizedTurnId);
+            logAudioLifecycle('maybeFinalizeAssistantSpeech:await_audio_done', {
                 requestedTurnId: normalizedTurnId
             });
             return false;
@@ -1464,6 +1601,8 @@
     mod.enqueueIncomingAudioBlob = enqueueIncomingAudioBlob;
     mod.processIncomingAudioBlobQueue = processIncomingAudioBlobQueue;
     mod.schedulePendingAudioMetaStallCheck = schedulePendingAudioMetaStallCheck;
+    mod.rememberAssistantAudioSpeechTurn = rememberAssistantAudioSpeechTurn;
+    mod.noteAssistantAudioStreamClosed = noteAssistantAudioStreamClosed;
     mod.saveSpeakerVolumeSetting = saveSpeakerVolumeSetting;
     mod.loadSpeakerVolumeSetting = loadSpeakerVolumeSetting;
 
