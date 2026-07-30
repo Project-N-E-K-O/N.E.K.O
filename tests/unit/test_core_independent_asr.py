@@ -15,6 +15,7 @@ from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
 from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
 from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
+from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
@@ -737,6 +738,10 @@ async def test_game_consumer_reuses_smart_turn_asr_without_core(
         lambda _name: True,
     )
     monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
         route_transcript,
     )
@@ -763,6 +768,8 @@ async def test_game_consumer_reuses_smart_turn_asr_without_core(
         "Test",
         "play",
         request_id=f"asr-{epoch}-1",
+        game_type="game",
+        session_id="session-a",
     )
     runtime.handle_new_message.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
@@ -787,6 +794,10 @@ async def test_game_consumer_ignores_empty_final(monkeypatch) -> None:
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.is_game_route_active",
         lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
@@ -829,6 +840,10 @@ async def test_game_takeover_pre_abort_window_rejects_stale_core_turn(
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.is_game_route_active",
         lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
@@ -953,6 +968,10 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
         "main_logic.voice_input.consumers.game.is_game_route_active",
         lambda _name: True,
     )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
     assert (
         await runtime._handle_voice_input_control(
             "lease_sync",
@@ -1048,6 +1067,10 @@ async def test_game_consumer_failure_never_falls_back_to_core(
         lambda _name: True,
     )
     monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
         route_transcript,
     )
@@ -1069,6 +1092,8 @@ async def test_game_consumer_failure_never_falls_back_to_core(
         "Test",
         "play",
         request_id=f"asr-{epoch}-1",
+        game_type="game",
+        session_id="session-a",
     )
     runtime.handle_new_message.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
@@ -1082,6 +1107,10 @@ async def test_game_final_cannot_cross_lease_back_to_core(monkeypatch) -> None:
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.is_game_route_active",
         lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
     )
     monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
@@ -1536,6 +1565,82 @@ async def test_pre_dispatch_hot_swap_reprepares_turn_on_promoted_session() -> No
     )
 
 
+async def test_final_waits_for_shared_swap_barrier_then_uses_promoted_session() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    prepared_session = runtime.session
+    prepared_session.abandon_external_voice_turn = MagicMock()
+
+    replacement = type("Omni", (), {})()
+    replacement.submit_external_voice_turn = AsyncMock()
+    replacement.prepare_external_voice_turn = AsyncMock()
+    replacement.abandon_external_voice_turn = MagicMock()
+
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    await runtime._core_voice_session_swap_lock.acquire()
+    dispatch = asyncio.create_task(
+        runtime._dispatch_core_asr_transcript(
+            VoiceTranscriptEvent(
+                turn_token=token,
+                provider="qwen",
+                text="after swap",
+            ),
+            session_ref=prepared_session,
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        assert dispatch.done() is False
+        runtime.session = replacement
+    finally:
+        runtime._core_voice_session_swap_lock.release()
+    await dispatch
+
+    replacement.prepare_external_voice_turn.assert_awaited_once_with(
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+    replacement.submit_external_voice_turn.assert_awaited_once_with(
+        "after swap",
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
+
+
+async def test_final_swap_barrier_timeout_drops_without_blocking_dispatcher() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    runtime._CORE_VOICE_SESSION_SWAP_BARRIER_TIMEOUT_S = 0.01
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+
+    await runtime._core_voice_session_swap_lock.acquire()
+    try:
+        await asyncio.wait_for(
+            runtime._dispatch_core_asr_transcript(
+                VoiceTranscriptEvent(
+                    turn_token=token,
+                    provider="qwen",
+                    text="bounded",
+                )
+            ),
+            timeout=0.5,
+        )
+    finally:
+        runtime._core_voice_session_swap_lock.release()
+
+    runtime.session.create_response.assert_not_awaited()
+
+
+async def test_hot_swap_lifecycle_guards_close_and_promote_with_voice_barrier() -> None:
+    source = inspect.getsource(
+        core_module.LLMSessionManager._perform_final_swap_sequence
+    )
+
+    barrier = source.index("async with core_voice_session_lock")
+    close = source.index("await old_main_session.close()")
+    promote = source.index("self.session = new_session")
+    assert barrier < close < promote
+
+
 async def test_final_transcript_is_dropped_when_the_route_leaves_core_mid_restore() -> None:
     # Codex P2, the other half of the case above. Pinning session_ref protects
     # only the SESSION: a game or text takeover landing inside the preview
@@ -1588,6 +1693,28 @@ async def test_transcript_dispatch_failure_releases_keyed_external_turn_pause() 
 
     runtime.session.abandon_external_voice_turn.assert_called_once_with(
         f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+
+
+async def test_cancelled_preview_clear_still_releases_keyed_external_turn_pause() -> None:
+    runtime = _Runtime()
+    session = runtime.session
+    session.abandon_external_voice_turn = MagicMock()
+    runtime._send_core_asr_preview_clear = AsyncMock(
+        side_effect=asyncio.CancelledError
+    )
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=7)
+    context = CoreChatTurnContext(
+        token=token,
+        external_turn_id="asr-cancelled-preview",
+        session_ref=session,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime._cancel_core_chat_voice_turn(context, "takeover")
+
+    session.abandon_external_voice_turn.assert_called_once_with(
+        "asr-cancelled-preview"
     )
 
 

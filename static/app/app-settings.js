@@ -578,7 +578,7 @@
             focusModeEnabled: false,
             focusCognitionEnabled: true,
             noiseReductionEnabled: true,
-            independentAsrEnabled: false,
+            independentAsrEnabled: true,
             voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,

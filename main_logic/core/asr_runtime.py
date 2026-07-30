@@ -204,6 +204,8 @@ class _HotSwapAudioBuffer:
 class AsrRuntimeMixin:
     """Core manager facade for microphone input and independent ASR."""
 
+    _CORE_VOICE_SESSION_SWAP_BARRIER_TIMEOUT_S: ClassVar[float] = 5.0
+
     def _init_asr_runtime_state(self) -> None:
         self._voice_lease_generation = -1
         self._voice_lease_connection_id = ""
@@ -243,6 +245,10 @@ class AsrRuntimeMixin:
         self._microphone_route_generation = 0
         self._asr_route_operation_generation = 0
         self._asr_notification_lock = asyncio.Lock()
+        # Shared with the hot-swap lifecycle: a prepared final either finishes
+        # against the still-open old session, or waits until close+promotion
+        # has atomically exposed the replacement.
+        self._core_voice_session_swap_lock = asyncio.Lock()
         self._independent_asr_provider: str | None = None
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
@@ -326,6 +332,8 @@ class AsrRuntimeMixin:
             self._asr_route_operation_generation = 0
         if not hasattr(self, "_asr_notification_lock"):
             self._asr_notification_lock = asyncio.Lock()
+        if not hasattr(self, "_core_voice_session_swap_lock"):
+            self._core_voice_session_swap_lock = asyncio.Lock()
         if not hasattr(self, "_voice_input_transition_generation"):
             self._voice_input_transition_generation = 0
         if not hasattr(self, "_voice_lease_resync_signal_state"):
@@ -2219,11 +2227,16 @@ class AsrRuntimeMixin:
         reason: str,
     ) -> None:
         del reason
-        await self._send_core_asr_preview_clear(context.external_turn_id)
-        self._abandon_core_voice_turn(
-            context.external_turn_id,
-            session_ref=context.session_ref,
-        )
+        try:
+            await self._send_core_asr_preview_clear(context.external_turn_id)
+        finally:
+            # Registry cancellation has already consumed the keyed route. Even
+            # if websocket preview cleanup is itself cancelled, the response
+            # arbiter pause must be released exactly once here.
+            self._abandon_core_voice_turn(
+                context.external_turn_id,
+                session_ref=context.session_ref,
+            )
 
     async def _prepare_core_voice_turn(
         self,
@@ -2421,45 +2434,53 @@ class AsrRuntimeMixin:
             # order _fail_closed_voice_route owns.
             if not route_still_core():
                 return
-            # A same-conversation hot swap keeps the ingress and transition
-            # identities live, but closes the prepared Core session before
-            # promoting its replacement. Wait for that barrier so a final
-            # cannot target the closed response arbiter in the close->promote
-            # window. asyncio.wait observes completion without propagating a
-            # handled swap-task exception into transcript dispatch.
-            swap_task = getattr(self, "final_swap_task", None)
-            if (
-                bool(getattr(self, "is_hot_swap_imminent", False))
-                and isinstance(swap_task, asyncio.Task)
-                and swap_task is not asyncio.current_task()
-                and not swap_task.done()
-            ):
-                await asyncio.wait((swap_task,))
+            # Synchronize with close+promotion itself, rather than sampling
+            # final_swap_task once. A swap may begin during any awaited submit;
+            # sharing this barrier means it cannot close the prepared session
+            # until this final finishes, while a final arriving second observes
+            # the promoted replacement. Bound the wait so the serial transcript
+            # dispatcher cannot be held forever by a stuck swap.
+            session_swap_lock = self._core_voice_session_swap_lock
+            try:
+                await asyncio.wait_for(
+                    session_swap_lock.acquire(),
+                    timeout=self._CORE_VOICE_SESSION_SWAP_BARRIER_TIMEOUT_S,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[%s] Timed out waiting for Core voice hot-swap barrier; "
+                    "dropping final fail-closed",
+                    self.lanlan_name,
+                )
+                return
+            try:
                 if not route_still_core():
                     return
 
-            # Re-read only after the route identity has survived every await.
-            # An unchanged transition/ingress means a replacement session is
-            # the promoted endpoint for this same conversation, not an
-            # unrelated start. Re-prepare the external turn there so its
-            # response arbiter owns the pause before the priority-0 final is
-            # submitted. A real conversation/lease transition bumps one of the
-            # fences above and is still dropped fail-closed.
-            target_session = getattr(self, "session", None)
-            if target_session is None:
-                return
-            if target_session is not session_ref:
-                session_ref = target_session
-                prepare = getattr(session_ref, "prepare_external_voice_turn", None)
-                if callable(prepare):
-                    await prepare(turn_id=external_turn_id)
-                if not route_still_core() or self.session is not session_ref:
+                # Re-read only while close+promotion is excluded. An unchanged
+                # transition/ingress means a replacement session is the endpoint
+                # for this same conversation, not an unrelated start.
+                target_session = getattr(self, "session", None)
+                if target_session is None:
                     return
-            await self._submit_core_voice_turn(
-                event.text,
-                turn_id=external_turn_id,
-                session_ref=session_ref,
-            )
+                if target_session is not session_ref:
+                    session_ref = target_session
+                    prepare = getattr(
+                        session_ref,
+                        "prepare_external_voice_turn",
+                        None,
+                    )
+                    if callable(prepare):
+                        await prepare(turn_id=external_turn_id)
+                    if not route_still_core() or self.session is not session_ref:
+                        return
+                await self._submit_core_voice_turn(
+                    event.text,
+                    turn_id=external_turn_id,
+                    session_ref=session_ref,
+                )
+            finally:
+                session_swap_lock.release()
         finally:
             self._abandon_core_voice_turn(
                 external_turn_id,

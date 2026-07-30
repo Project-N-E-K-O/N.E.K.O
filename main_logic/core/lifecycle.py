@@ -2368,38 +2368,42 @@ class LifecycleMixin:
                 except Exception as e:
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
-            # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────────
-            if old_main_session:
-                try:
-                    await old_main_session.close()
-                except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+            # Exclude Core voice-final delivery across the entire close+promote
+            # window. The ASR dispatcher shares this lock, so a final either
+            # completes before the old arbiter closes or sees the replacement
+            # after promotion; it can no longer land between the two.
+            core_voice_session_lock = getattr(
+                self,
+                "_core_voice_session_swap_lock",
+                None,
+            )
+            if core_voice_session_lock is None:
+                core_voice_session_lock = asyncio.Lock()
+                self._core_voice_session_swap_lock = core_voice_session_lock
+            async with core_voice_session_lock:
+                # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
+                if old_main_session:
+                    try:
+                        await old_main_session.close()
+                    except Exception as e:
+                        logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
-            # ── promote 前的协作取消检查点 ───────────────────────────────────────
-            # Python 3.11 的 asyncio.wait_for（步骤 1）以及部分 session.close()（步骤 2）
-            # 在外层取消恰好落在其内层 await 已完成之后时，会把该取消“正常返回”式吞掉
-            # —— except CancelledError 分支不触发，僵尸带着 cancelling()>0 继续走到 promote。
-            # 步骤 1 的 except 只能拦到 wait_for *抛出* 取消的路径，拦不到这条“被吞”的路径。
-            # 这里在真正改 self.session 之前补一次显式检查：只要本任务有未确认的取消请求，
-            # 就 re-raise 交给下面的 CancelledError 处理器关闭 new_session、重置状态。
-            # 对正常热切换零影响（无外层取消时 cancelling()==0）。
-            _swap_task = asyncio.current_task()
-            if _swap_task is not None and _swap_task.cancelling() > 0:
-                raise asyncio.CancelledError()
+                # ── promote 前的协作取消检查点 ───────────────────────────────────
+                # Python 3.11 的 asyncio.wait_for（步骤 1）以及部分 session.close()
+                # （步骤 2）在外层取消恰好落在其内层 await 已完成之后时，会把该取消
+                # “正常返回”式吞掉。只要本任务有未确认的取消请求，就交给下面的
+                # CancelledError 处理器关闭 new_session、重置状态。
+                _swap_task = asyncio.current_task()
+                if _swap_task is not None and _swap_task.cancelling() > 0:
+                    raise asyncio.CancelledError()
 
-            # ── 步骤 3：promote 新 session ────────────────────────────────────────
-            # 旧 listener 已停、旧 session 已关，现在切换 self.session；
-            # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
-            # 镜像启动侧的强 CAS（_start_session_start_llm 的持锁提升）：整段 swap
-            # 期间本函数从不改 self.session，正常路径它必然仍是入口快照的
-            # old_main_session；任何偏离都意味着并发 start/end_session 已接管会话
-            # （典型：swap 被取消但存活成僵尸后，新 start_session 已清场或已就位），
-            # 此时覆盖 self.session 会孤儿化赢家 —— 中止 swap 并关闭 new_session。
-            # 不回滚共享准备状态：它已属于接管方的新纪元，由接管方管理。
-            async with self.lock:
-                _promote_allowed = self.session is old_main_session
-                if _promote_allowed:
-                    self.session = new_session
+                # ── 步骤 3：promote 新 session ────────────────────────────────────
+                # 镜像启动侧的强 CAS：任何偏离都意味着并发 start/end_session
+                # 已接管会话，此时覆盖 self.session 会孤儿化赢家。
+                async with self.lock:
+                    _promote_allowed = self.session is old_main_session
+                    if _promote_allowed:
+                        self.session = new_session
             if not _promote_allowed:
                 logger.warning("⚠️ Final Swap Sequence: promote 时 self.session 已被并发接管，中止 swap 并关闭 new_session")
                 try:

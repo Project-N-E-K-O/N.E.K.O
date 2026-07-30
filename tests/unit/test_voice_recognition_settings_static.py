@@ -29,6 +29,17 @@ def test_voice_settings_preserve_explicit_false_during_boot_merge() -> None:
     assert "settings.voiceInputResourceOptimizationEnabled || true" not in settings
 
 
+def test_reset_defaults_match_new_profile_voice_defaults() -> None:
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+    reset_defaults = settings.split(
+        "function _defaultConversationSettingsForReset()",
+        maxsplit=1,
+    )[1].split("function _serverSettingsForMerge", maxsplit=1)[0]
+
+    assert "independentAsrEnabled: true" in reset_defaults
+    assert "voiceInputResourceOptimizationEnabled: true" in reset_defaults
+
+
 def test_resource_optimization_uses_only_the_canonical_shared_setting_key() -> None:
     settings = APP_SETTINGS.read_text(encoding="utf-8")
 

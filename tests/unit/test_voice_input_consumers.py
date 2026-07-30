@@ -132,6 +132,10 @@ async def test_game_consumer_uses_token_derived_request_id(monkeypatch) -> None:
         lambda name: name == "Lan",
     )
     monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda name: ("puzzle", "session-a") if name == "Lan" else None,
+    )
+    monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
         routed,
     )
@@ -143,26 +147,44 @@ async def test_game_consumer_uses_token_derived_request_id(monkeypatch) -> None:
     assert await consumer.prepare_turn(token) is True
     await consumer.on_final(event)
 
-    routed.assert_awaited_once_with("Lan", "play", request_id="asr-11-3")
+    routed.assert_awaited_once_with(
+        "Lan",
+        "play",
+        request_id="asr-11-3",
+        game_type="puzzle",
+        session_id="session-a",
+    )
 
 
 async def test_game_consumer_surfaces_route_delivery_failure(monkeypatch) -> None:
     routed = AsyncMock(return_value=False)
     monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("puzzle", "session-a"),
+    )
+    monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
         routed,
     )
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _token(turn_id=4)
     event = VoiceTranscriptEvent(
-        turn_token=_token(turn_id=4),
+        turn_token=token,
         provider="qwen",
         text="play",
     )
 
+    assert await consumer.prepare_turn(token) is True
     with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
         await consumer.on_final(event)
 
-    routed.assert_awaited_once_with("Lan", "play", request_id="asr-11-4")
+    routed.assert_awaited_once_with(
+        "Lan",
+        "play",
+        request_id="asr-11-4",
+        game_type="puzzle",
+        session_id="session-a",
+    )
 
 
 async def test_game_consumer_is_fail_closed_when_route_is_unavailable(
@@ -172,7 +194,40 @@ async def test_game_consumer_is_fail_closed_when_route_is_unavailable(
         "main_logic.voice_input.consumers.game.is_game_route_active",
         lambda _name: False,
     )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: None,
+    )
     consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
 
     assert consumer.is_available() is False
     assert await consumer.prepare_turn(_token()) is False
+
+
+async def test_game_consumer_pins_route_identity_at_prepare(monkeypatch) -> None:
+    routed = AsyncMock(return_value=True)
+    active_identity = ["maze", "session-a"]
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: tuple(active_identity),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        routed,
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    token = _token(turn_id=5)
+
+    assert await consumer.prepare_turn(token) is True
+    active_identity[:] = ["maze", "session-b"]
+    await consumer.on_final(
+        VoiceTranscriptEvent(turn_token=token, provider="qwen", text="left")
+    )
+
+    routed.assert_awaited_once_with(
+        "Lan",
+        "left",
+        request_id="asr-11-5",
+        game_type="maze",
+        session_id="session-a",
+    )

@@ -1435,6 +1435,10 @@ async def test_game_takeover_clears_core_preview_and_empty_final_stays_terminal(
         lambda _name: True,
     )
     monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
         "main_logic.voice_input.consumers.game.route_external_voice_transcript",
         route_transcript,
     )
@@ -1474,6 +1478,8 @@ async def test_game_takeover_clears_core_preview_and_empty_final_stays_terminal(
             f"asr-{non_empty.turn_token.ingress.session_epoch}-"
             f"{non_empty.turn_token.turn_id}"
         ),
+        game_type="game",
+        session_id="session-a",
     )
     mgr.websocket.send_json.assert_not_awaited()
 
