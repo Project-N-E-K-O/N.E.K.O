@@ -1160,17 +1160,7 @@ def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | Non
     just the user code-switching mid-conversation, and forcing a translation
     risked mangling proper nouns / titles / quoted wording.
     """
-    lang_key = _normalize_memory_prompt_lang(lang)
-    # Fact extraction predates a full Traditional-Chinese template. Reuse the
-    # Chinese instructions for zh-TW.
-    #
-    # This collapse is per-call-site, not module-wide: the rename-event dicts
-    # below do carry 'zh-TW', so _normalize_memory_prompt_lang keeps it. Delete
-    # this line in the change that adds 'zh-TW' to FACT_EXTRACTION_PROMPT and
-    # FACT_EXTRACTION_AI_AWARE_PROMPT — fact text is persisted and indexed, so
-    # issue #2500 wants those templates first.
-    template_key = "zh" if lang_key == "zh-TW" else lang_key
-    return _loc(templates, template_key)
+    return _loc(templates, _normalize_memory_prompt_lang(lang))
 
 
 def render_profile_rename_event_context(
@@ -1239,6 +1229,44 @@ event_when（可选 — 事件发生时间，一律用相对时间，绝不写�
 请以 JSON 数组格式返回（如果没有值得提取的事实，返回空数组 []）：
 [
   {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null},
+  ...
+]""",
+    # The ======以下为对话====== / ======以上为对话====== pair stays Simplified in
+    # every locale, this one included: it is the safety watermark, a fixed literal
+    # the runtime matches on, not user-facing copy. See docs/contributing/
+    # developer-notes.md "Prompt watermark".
+    "zh-TW": """從以下對話中擷取關於 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事實資訊。
+
+要求：
+- 只擷取重要且明確的事實（偏好、習慣、身分、關係動態等）
+- 忽略閒聊、寒暄、模糊的內容
+- 忽略 AI 幻覺、胡言亂語(gibberish)、無意義的編造內容，只擷取對話中有真實依據的事實
+- 每條事實必須是一個獨立的原子陳述
+- entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
+
+importance 評分 1-10，評分指引（請按此打分，不要泛泛都打 7）：
+- **10**：關鍵長期資訊——姓名、暱稱、生日、身分、核心關係節點；使用者明確表示「請{LANLAN_NAME}記住 X」/「這個你一定要記得」；或者 {LANLAN_NAME} 自己特別希望記住的重要相處細節。這些會被快速沉澱為長期記憶。
+- **8-9**：長期穩定的核心偏好 / 固定習慣（不是一時興起）
+- **6-7**：普通偏好、日常習慣、近期動態
+- **5**：次要但有紀錄價值的觀察
+- **1-4**：弱相關或不確定的線索（仍請回傳，下游按情境過濾；不要在此處預先丟棄）
+
+event_when（選填 — 事件發生時間，一律用相對時間，絕不寫絕對日期）：
+- 如果事實裡提到具體時間線索（「昨天」、「上週一」、「三月份」、「今早」），用 event_when 標註
+- 格式 {"start": {"offset": <整數>, "unit": "<單位>"}, "end": {"offset": <整數>, "unit": "<單位>"}}
+- offset 負值=過去、0=當下、正值=未來；unit ∈ minute | hour | day | week | month | year
+- **粒度可以粗，不要求精確**——「幾天前」→ day、「上週」→ week、「幾個月前」→ month 即可，不必精確到 minute/hour（沒有具體數字的話，可以根據上下文猜測一個數字）
+- 沒有時間線索就直接省略 event_when 欄位，或寫 null
+- 例 1：使用者說「昨天晚上沒睡好」→ event_when = {"start": {"offset": -1, "unit": "day"}, "end": null}
+- 例 2：使用者說「喜歡喝咖啡」（長期偏好，無時間）→ 不寫 event_when
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+請以 JSON 陣列格式回傳（如果沒有值得擷取的事實，回傳空陣列 []）：
+[
+  {"text": "事實描述", "importance": 7, "entity": "master", "event_when": null},
   ...
 ]""",
     "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
@@ -1496,6 +1524,40 @@ FACT_EXTRACTION_AI_AWARE_PROMPT = {
 [
   {"text": "事实描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
   {"text": "事实描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
+  ...
+]""",
+    # Known-facts-pool delimiters ARE localized (every locale translates them);
+    # only the ======以下为对话====== pair stays Simplified, being the watermark.
+    "zh-TW": """從以下對話中擷取關於 {LANLAN_NAME} 和 {MASTER_NAME} 的重要事實資訊。
+
+⚠️ 本次擷取的特殊點（與基礎擷取不同）：
+- 對話包含 {MASTER_NAME} 和 {LANLAN_NAME} 雙方發言，形如 "{MASTER_NAME} | ..." / "{LANLAN_NAME} | ..."
+- 另一通道已經從 {MASTER_NAME} 單邊發言抽過一遍 fact（見下面「已知事實池」），**請只補抓那一通道漏掉的內容**——特別是 {LANLAN_NAME} 自己披露的特徵、{LANLAN_NAME} 引入的螢幕/活動上下文 grounded fact
+- 每條 fact 必須輸出 `source` 欄位標註 trust-tier：
+  - `"user_observation"`：主要從 {MASTER_NAME} 的發言推出（如果發現「已知池」漏抓的，歸這一類）
+  - `"ai_disclosure"`：主要從 {LANLAN_NAME} 自己的發言推出，且 {MASTER_NAME} 在鄰近 turn 內沒明確反對/否認。例："{LANLAN_NAME} | 我今天突然覺得自己挺喜歡秋天的" → fact text "{LANLAN_NAME} 覺得自己挺喜歡秋天" + source=ai_disclosure
+
+要求：
+- 只擷取重要且明確的事實（偏好、習慣、身分、關係動態等）
+- 忽略閒聊、寒暄、模糊的內容
+- 忽略 AI 幻覺、胡言亂語(gibberish)、無意義的編造內容，只擷取對話中有真實依據的事實
+- 每條事實必須是一個獨立的原子陳述
+- entity 標註為 "master"(關於{MASTER_NAME})、"neko"(關於{LANLAN_NAME})或 "relationship"(關於兩人關係)
+- importance 1-10，規則與基礎擷取一致（10 = 關鍵長期資訊；8-9 = 長期穩定核心；6-7 = 普通偏好/日常；5 = 次要觀察；1-4 = 弱相關線索）
+- event_when 選填，相對時間格式 `{"start": {"offset": <int>, "unit": "<unit>"}, "end": {...}}`；無時間線索寫 null
+
+======以下為已知事實池（已被另一通道擷取，避免重複擷取相同內容）======
+{KNOWN_POOL}
+======以上為已知事實池======
+
+======以下为对话======
+{CONVERSATION}
+======以上为对话======
+
+請以 JSON 陣列格式回傳（如果沒有值得補抓的事實，回傳空陣列 []）：
+[
+  {"text": "事實描述", "importance": 7, "entity": "master", "event_when": null, "source": "user_observation"},
+  {"text": "事實描述", "importance": 7, "entity": "neko", "event_when": null, "source": "ai_disclosure"},
   ...
 ]""",
     "en": """Extract important factual information about {LANLAN_NAME} and {MASTER_NAME} from the following conversation.
