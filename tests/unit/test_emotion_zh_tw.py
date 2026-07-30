@@ -784,3 +784,16 @@ def test_postposed_negation_after_the_emotion_word(label, confidence):
     its own, so it cannot reach into an unrelated part of the label.
     """
     assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "真的開心不起來", "其實生氣不起來", "我開心不起來", "真的开心不起来",
+])
+def test_postposed_negation_after_descriptive_text(label, confidence):
+    """The marker negates the emotion word it follows, not the whole label.
+
+    Requiring everything before it to look like an alias covered only the bare
+    form, so any sentence-style answer came back as the emotion itself.
+    """
+    assert _label(label, confidence) == "neutral"
