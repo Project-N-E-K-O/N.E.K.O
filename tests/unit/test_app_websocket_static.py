@@ -948,7 +948,9 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     assert "let _conversationSettingsEtag = null;" in settings_source
     assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
     assert "response.status === 412" in sync_fn
-    assert "_mergeConversationSettingsSnapshot(data);" in sync_fn
+    assert "const preservedKeys = new Set(_pendingSettingsKeys);" in sync_fn
+    assert "_settingsChangedSince(settings).forEach" in sync_fn
+    assert "_mergeConversationSettingsSnapshot(data, preservedKeys);" in sync_fn
     assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
     assert "headers['X-Conversation-Settings-ASR-Decision']" in sync_fn
     assert "JSON.stringify(requestDecision)" in sync_fn
@@ -1490,6 +1492,12 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           ctx.mod.saveSettings();
           await tick();
           assert(ctx.postCalls.length === 2, 'the unrelated edit must POST');
+
+          // A cross-window storage update can change local state without
+          // entering this window's pending-key set. It still happened after
+          // the request snapshot and must survive the 412 reconciliation.
+          ctx.win.mergeMessagesEnabled = true;
+          ctx.S.mergeMessagesEnabled = true;
           ctx.postCalls[1].resolve(response(
             false,
             412,
@@ -1501,6 +1509,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 proactiveVisionEnabled: false,
                 slopFilterEnabled: false,
                 focusModeEnabled: false,
+                mergeMessagesEnabled: false,
               },
               revision: 2,
               decisions: {},
@@ -1519,6 +1528,10 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'the still-pending local edit must survive the conflict merge'
           );
           assert(
+            retryBody.mergeMessagesEnabled === true,
+            'a non-pending edit made after send must survive the conflict merge'
+          );
+          assert(
             retryBody.proactiveVisionEnabled === false,
             'the retry must retain the server privacy winner'
           );
@@ -1532,7 +1545,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             reconciledLocal.slopFilterEnabled === false
               && reconciledLocal.focusModeEnabled === true
-              && reconciledLocal.proactiveVisionEnabled === false,
+              && reconciledLocal.proactiveVisionEnabled === false
+              && reconciledLocal.mergeMessagesEnabled === true,
             'the conflict winners and pending local edit must persist to shared localStorage'
           );
           assert(

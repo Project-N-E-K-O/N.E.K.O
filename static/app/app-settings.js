@@ -753,7 +753,11 @@
                     const nextEtag = _responseEtag(response);
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (response.status === 412) {
-                        _mergeConversationSettingsSnapshot(data);
+                        const preservedKeys = new Set(_pendingSettingsKeys);
+                        _settingsChangedSince(settings).forEach((key) => {
+                            preservedKeys.add(key);
+                        });
+                        _mergeConversationSettingsSnapshot(data, preservedKeys);
                         if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
                             continue;
                         }
