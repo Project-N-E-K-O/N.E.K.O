@@ -122,6 +122,62 @@ test('CAT1 desktop chat rect ignores a stale virtual origin after physical crop 
     assert.equal(rect.screenLeft, 1300);
 });
 
+test('CAT1 virtual origin falls back when crop coordinates are null', () => {
+    const context = {
+        window: {
+            screenX: 1224,
+            screenY: 84,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        virtualBounds: { x: null, y: null, width: 1706, height: 1066 },
+                        offsetX: 1223,
+                        offsetY: 83
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualViewportOrigin'),
+        context
+    );
+
+    const origin = vm.runInContext('_getNekoDesktopVirtualViewportOrigin()', context);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(origin)), { x: 1, y: 1 });
+});
+
+test('CAT1 virtual origin rejects a partially null crop offset', () => {
+    const context = {
+        window: {
+            screenX: 1224,
+            screenY: 84,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        virtualBounds: null,
+                        offsetX: null,
+                        offsetY: 83
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualViewportOrigin'),
+        context
+    );
+
+    const origin = vm.runInContext('_getNekoDesktopVirtualViewportOrigin()', context);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(origin)), { x: 1224, y: 84 });
+});
+
 test('CAT1 converts a cropped DOM rect back to virtual desktop coordinates before moving', () => {
     const context = {
         window: {
@@ -283,6 +339,63 @@ test('CAT1 virtual rect fallback keeps the crop offset when conversion is unavai
     const throwingConverter = vm.runInContext('_getNekoDesktopVirtualRect(localRect)', context);
     assert.equal(throwingConverter.left, 1500);
     assert.equal(throwingConverter.top, 252);
+});
+
+test('CAT1 virtual rect rejects partial null crop offsets', () => {
+    const context = {
+        window: {
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        offsetX: null,
+                        offsetY: 251
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualRect'),
+        context
+    );
+
+    context.localRect = { left: 1, top: 1, width: 122, height: 122 };
+    const rect = vm.runInContext('_getNekoDesktopVirtualRect(localRect)', context);
+
+    assert.equal(rect.left, 1);
+    assert.equal(rect.top, 1);
+});
+
+test('CAT1 virtual rect falls back per axis when conversion coordinates are null', () => {
+    const context = {
+        window: {
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        offsetX: 1499,
+                        offsetY: 251
+                    };
+                },
+                toVirtualRect() {
+                    return { x: null, y: 252, width: 122, height: 122 };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualRect'),
+        context
+    );
+
+    context.localRect = { left: 1, top: 1, width: 122, height: 122 };
+    const rect = vm.runInContext('_getNekoDesktopVirtualRect(localRect)', context);
+
+    assert.equal(rect.left, 1500);
+    assert.equal(rect.top, 252);
 });
 
 test('CAT1 drag keeps using the virtual desktop size while the Pet window is cropped', () => {

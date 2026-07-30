@@ -72,13 +72,21 @@ function _getNekoDesktopVirtualViewportOrigin() {
         const virtualBounds = cropState && cropState.enabled === true
             ? cropState.virtualBounds
             : null;
-        const virtualX = Number(virtualBounds && virtualBounds.x);
-        const virtualY = Number(virtualBounds && virtualBounds.y);
+        const virtualX = virtualBounds && virtualBounds.x != null
+            ? Number(virtualBounds.x)
+            : NaN;
+        const virtualY = virtualBounds && virtualBounds.y != null
+            ? Number(virtualBounds.y)
+            : NaN;
         if (virtualBounds && Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
             return { x: virtualX, y: virtualY };
         }
-        const offsetX = Number(cropState && cropState.offsetX);
-        const offsetY = Number(cropState && cropState.offsetY);
+        const offsetX = cropState && cropState.offsetX != null
+            ? Number(cropState.offsetX)
+            : NaN;
+        const offsetY = cropState && cropState.offsetY != null
+            ? Number(cropState.offsetY)
+            : NaN;
         if (
             cropState
             && (cropState.active === true || cropState.enabled === true)
@@ -132,8 +140,12 @@ function _getNekoDesktopVirtualRect(rect) {
         const cropState = cropApi && typeof cropApi.getState === 'function'
             ? cropApi.getState()
             : null;
-        const offsetX = Number(cropState && cropState.offsetX);
-        const offsetY = Number(cropState && cropState.offsetY);
+        const offsetX = cropState && cropState.offsetX != null
+            ? Number(cropState.offsetX)
+            : NaN;
+        const offsetY = cropState && cropState.offsetY != null
+            ? Number(cropState.offsetY)
+            : NaN;
         if (
             cropState
             && (cropState.active === true || cropState.enabled === true)
@@ -150,8 +162,12 @@ function _getNekoDesktopVirtualRect(rect) {
         virtualRect = null;
     }
 
-    const virtualLeft = virtualRect ? Number(virtualRect.x) : NaN;
-    const virtualTop = virtualRect ? Number(virtualRect.y) : NaN;
+    const virtualLeft = virtualRect && virtualRect.x != null
+        ? Number(virtualRect.x)
+        : NaN;
+    const virtualTop = virtualRect && virtualRect.y != null
+        ? Number(virtualRect.y)
+        : NaN;
     const normalizedLeft = Number.isFinite(virtualLeft) ? virtualLeft : left + fallbackOffsetX;
     const normalizedTop = Number.isFinite(virtualTop) ? virtualTop : top + fallbackOffsetY;
     return {
