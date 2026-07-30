@@ -708,6 +708,31 @@ async def test_the_release_clears_an_abandoned_turns_output_suppression(client_r
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_suppression_is_lifted_even_when_no_response_ever_started(client_rig):
+    # The skipped turn raises the flag at request time, before any
+    # response.created. If it gets stuck in that window, _is_responding is
+    # still False while the flag is up — so a release handler that returns
+    # early on _is_responding alone would leave the suppression raised and
+    # mute the next healthy turn.
+    client_rig.client._skip_until_next_response = True
+    client_rig.client._is_responding = False
+
+    ticket = await client_rig.arbiter.enqueue(source="native")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    try:
+        await client_rig.arbiter.cancel_current(timeout=0.05)
+    except Exception:  # noqa: BLE001 - the escalation is the point
+        pass
+    await _settle()
+
+    assert client_rig.client._skip_until_next_response is False, (
+        "the release must lift suppression even for a turn that never "
+        "reached response.created"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_release_notification_touches_nothing_else(client_rig):
     # Both of these would be tempting to reset here and both would be wrong:
     # _skip_until_next_response is cleared only by response.done, so setting it
