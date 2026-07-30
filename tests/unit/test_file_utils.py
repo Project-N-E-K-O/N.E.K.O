@@ -458,6 +458,7 @@ def test_the_fork_hook_is_registered_at_import(monkeypatch):
     assert calls[0].get("after_in_child") is probe._reset_tmp_sweep_state_after_fork
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only handle semantics")
 def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
     # 年龄门槛本身不能证明 tmp 没有主人（写者理论上可以在 mkstemp 之后被冻结很久）。
     # Windows 上还有一道 OS 级兜底：活写者的句柄一直开着，unlink 会被拒（WinError
