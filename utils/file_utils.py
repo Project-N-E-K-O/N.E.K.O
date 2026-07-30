@@ -501,36 +501,60 @@ def robust_json_loads(raw: str) -> Any:
 
 # 崩后残留 tmp 的清扫。mkstemp 与 os.replace 之间被硬杀（taskkill、断电、OOM）会留下
 # 一个 `.<目标名>.<随机>.tmp`：没人读它，但会一直攒在用户的 config / memory 目录里。
-# 摊销策略是「每个目标文件在本进程内扫一次」——残留是崩溃造成的，而崩溃结束了那个
-# 进程，所以长寿进程反复扫没有意义。年龄门槛是防误删：正常写盘是毫秒级，比这更老的
-# tmp 不可能还有活着的写者（包括另一个进程的）在用它。
-_STALE_TMP_MIN_AGE_S = 3600.0
-_swept_tmp_targets: set[str] = set()
-_swept_tmp_targets_lock = threading.Lock()
+#
+# 摊销策略是「每个**目录**在本进程内扫一次」，而不是每个目标一次。按目标记账有两个
+# 毛病：同一目录下每多一个目标就多扫一遍整个目录（归档分片是一个目录几百个各自独立
+# 的目标），而且一个「再也不会被写第二次」的目标（写完就沉底的老分片）留下的残留
+# 永远扫不到。
+#
+# 按目录扫就得靠形状而不是靠目标名来认自己的 tmp。mkstemp 产出的形状是
+# `.<目标名>.<8 个 [a-z0-9_]>.tmp`（前缀由本模块给，随机段由 tempfile 给，长度和字符集
+# 固定）。形状不匹配时的方向是安全的：少删，不会误删。
+#
+# 记账允许有界重试：瞬时失败（目录被短暂锁住、某个 tmp 一时删不掉）不该把这个目录的
+# 唯一机会用掉，但也不能每次写都重扫——永久性失败（只读文件、ACL）会变成每次写盘都
+# 多一次 scandir。所以最多扫 _STALE_TMP_SWEEP_ATTEMPTS 次，扫干净了就提前收工。
+#
+# 年龄门槛是防误删。它不能证明 tmp 已经没有主人（一个写者理论上可以在 mkstemp 之后
+# 被冻结超过这个时长），所以还有两道兜底：
+#   - Windows 上活写者的 tmp 句柄一直开着，unlink 会被拒（实测 WinError 32），
+#     下面的 except OSError 直接跳过它 —— 物理上抢不走；
+#   - POSIX 上 unlink 会成功，但后果是那次写的 os.replace 抛 FileNotFoundError，
+#     一个诚实的异常，不是静默损坏。门槛取 24h 是让这个场景（写盘中途被冻结一整天）
+#     退到不现实的量级；代价是崩溃残留最多多留一天才被清掉。
+_STALE_TMP_RE = re.compile(r"^\..+\.[a-z0-9_]{8}\.tmp$")
+_STALE_TMP_MIN_AGE_S = 86400.0
+_STALE_TMP_SWEEP_ATTEMPTS = 3
+_swept_tmp_dirs: dict[str, int] = {}
+_swept_tmp_dirs_lock = threading.Lock()
 
 
 def _sweep_stale_tmp_once(target_path: Path) -> None:
-    """Best-effort removal of this target's abandoned temp files. Never fatal."""
-    key = f"{target_path.parent}\x00{target_path.name}"
-    with _swept_tmp_targets_lock:
-        if key in _swept_tmp_targets:
+    """Best-effort removal of abandoned temp files in this target's directory. Never fatal."""
+    parent = str(target_path.parent)
+    with _swept_tmp_dirs_lock:
+        if _swept_tmp_dirs.get(parent, 0) >= _STALE_TMP_SWEEP_ATTEMPTS:
             return
-        _swept_tmp_targets.add(key)
+        _swept_tmp_dirs[parent] = _swept_tmp_dirs.get(parent, 0) + 1
 
-    # 用 scandir 前缀匹配而不是 glob：目标名里出现 `[` `?` `*` 时 glob 会把它们当
-    # 通配符，匹配范围会跑偏（config 目录下的文件名不是我们能控制的）。
-    prefix = f".{target_path.name}."
-    cutoff = time.time() - _STALE_TMP_MIN_AGE_S
     try:
-        entries = list(os.scandir(target_path.parent))
+        entries = list(os.scandir(parent))
     except OSError:
-        return
+        return  # 本次尝试已计数，下次写这个目录里的任何目标时还会再试
+
+    cutoff = time.time() - _STALE_TMP_MIN_AGE_S
+    swept_clean = True
     for entry in entries:
-        if not (entry.name.startswith(prefix) and entry.name.endswith(".tmp")):
+        if not _STALE_TMP_RE.match(entry.name):
             continue
-        with suppress(OSError):
+        try:
             if entry.stat().st_mtime < cutoff:
                 os.unlink(entry.path)
+        except OSError:
+            swept_clean = False
+    if swept_clean:
+        with _swept_tmp_dirs_lock:
+            _swept_tmp_dirs[parent] = _STALE_TMP_SWEEP_ATTEMPTS
 
 
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:

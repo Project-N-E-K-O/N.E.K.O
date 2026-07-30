@@ -210,23 +210,44 @@ def test_temp_file_of_a_live_writer_is_not_swept(tmp_path):
     assert inflight.exists()
 
 
-def test_sweep_ignores_files_that_are_not_this_target_s_temps(tmp_path):
+def test_sweep_also_clears_other_targets_abandoned_temps(tmp_path):
+    # 清扫按目录而不是按目标：同一个目录里别的目标留下的残留同样是这个原语产生的
+    # 垃圾。按目标记账会漏掉「写完就沉底、再也不会被写第二次」的目标（归档分片就是
+    # 这种），那些残留永远扫不到。
     target = tmp_path / "state.json"
     other_target_tmp = tmp_path / ".other.json.deadbeef.tmp"
-    not_a_tmp = tmp_path / f".{target.name}.deadbeef.bak"
-    for path in (other_target_tmp, not_a_tmp):
+    other_target_tmp.write_text("garbage from a crash", encoding="utf-8")
+    _age(other_target_tmp, file_utils._STALE_TMP_MIN_AGE_S + 60)
+
+    atomic_write_json(target, {"v": 1})
+
+    assert not other_target_tmp.exists()
+
+
+def test_sweep_only_matches_the_shape_this_module_creates(tmp_path):
+    # 按目录扫就得靠形状认自己的 tmp：mkstemp 产出的是
+    # `.<目标名>.<8 个 [a-z0-9_]>.tmp`。形状不匹配一律不碰 —— 方向是少删不误删。
+    target = tmp_path / "state.json"
+    keepers = [
+        tmp_path / f".{target.name}.deadbeef.bak",   # 不是 .tmp
+        tmp_path / f"{target.name}.deadbeef.tmp",    # 没有前导点
+        tmp_path / ".state.json.short.tmp",          # 随机段不是 8 位
+        tmp_path / ".state.json.deadbeefx.tmp",      # 随机段是 9 位
+        tmp_path / ".state.json.DEADBEEF.tmp",       # 随机段字符集不对（大写）
+        tmp_path / ".notes.tmp",                     # 用户自己的文件
+    ]
+    for path in keepers:
         path.write_text("keep me", encoding="utf-8")
         _age(path, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
     atomic_write_json(target, {"v": 1})
 
-    assert other_target_tmp.exists()
-    assert not_a_tmp.exists()
+    assert [p.name for p in keepers if not p.exists()] == []
 
 
-def test_sweep_runs_once_per_target_per_process(tmp_path):
-    # 摊销是有意的：残留由崩溃产生，而崩溃结束了那个进程，所以长寿进程反复扫
-    # 目录没有意义。这条把「只扫一次」钉下来，免得后来有人把它改成每次写都扫。
+def test_sweep_is_amortised_per_directory(tmp_path):
+    # 摊销是有意的：残留由崩溃产生，而崩溃结束了那个进程，所以长寿进程反复扫目录
+    # 没有意义。这条把「扫干净之后就不再扫」钉下来，免得后来有人改成每次写都扫。
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
@@ -235,6 +256,7 @@ def test_sweep_runs_once_per_target_per_process(tmp_path):
     _age(appeared_later, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
     atomic_write_json(target, {"v": 2})
+    atomic_write_json(tmp_path / "another.json", {"v": 1})  # 同目录的另一个目标也不重扫
 
     assert appeared_later.exists()
 
@@ -249,6 +271,96 @@ def test_sweep_survives_an_unreadable_directory(tmp_path, monkeypatch):
     atomic_write_json(target, {"v": 1})
 
     assert read_json(target) == {"v": 1}
+
+
+def test_a_failed_scan_does_not_consume_every_attempt(tmp_path, monkeypatch):
+    # 瞬时 OSError（目录被短暂锁住、网络盘抖动）不该把这个目录的机会一次用光，
+    # 否则残留会一直留到进程退出。
+    target = tmp_path / "state.json"
+    leftover = tmp_path / f".{target.name}.deadbeef.tmp"
+    leftover.write_text("garbage", encoding="utf-8")
+    _age(leftover, file_utils._STALE_TMP_MIN_AGE_S + 60)
+
+    real_scandir = os.scandir
+
+    def transiently_denied(path):
+        raise PermissionError("directory momentarily locked")
+
+    monkeypatch.setattr(os, "scandir", transiently_denied)
+    atomic_write_json(target, {"v": 1})
+    assert leftover.exists(), "first write could not scan, so nothing is swept yet"
+
+    monkeypatch.setattr(os, "scandir", real_scandir)
+    atomic_write_json(target, {"v": 2})
+
+    assert not leftover.exists(), "the retry after a failed scan must sweep"
+
+
+def test_sweep_gives_up_after_a_bounded_number_of_attempts(tmp_path, monkeypatch):
+    # 重试必须有界。永久性失败（只读文件、ACL 拒绝）不能让每一次写盘都白搭一次
+    # 全目录 scandir —— 那就把 O(1) 的摊销变回了 O(每次写)。
+    target = tmp_path / "state.json"
+    scans = []
+    real_scandir = os.scandir
+
+    def counted_then_denied(path):
+        scans.append(str(path))
+        raise PermissionError("permanently unreadable")
+
+    monkeypatch.setattr(os, "scandir", counted_then_denied)
+    for i in range(file_utils._STALE_TMP_SWEEP_ATTEMPTS + 3):
+        atomic_write_json(target, {"v": i})
+
+    assert len(scans) == file_utils._STALE_TMP_SWEEP_ATTEMPTS
+    monkeypatch.setattr(os, "scandir", real_scandir)
+    assert read_json(target) == {"v": file_utils._STALE_TMP_SWEEP_ATTEMPTS + 2}
+
+
+def test_a_temp_file_that_cannot_be_removed_leaves_a_retry(tmp_path, monkeypatch):
+    # 删不掉一个 tmp 不代表整个目录扫过了：Windows 上活写者的句柄还开着就会撞这个，
+    # 句柄一放开就该能扫掉。所以「没扫干净」不记成完成，留给后续写盘重试。
+    target = tmp_path / "state.json"
+    leftover = tmp_path / f".{target.name}.deadbeef.tmp"
+    leftover.write_text("garbage", encoding="utf-8")
+    _age(leftover, file_utils._STALE_TMP_MIN_AGE_S + 60)
+
+    real_unlink = os.unlink
+    denied = {"on": True}
+
+    def unlink_maybe_denied(path):
+        if denied["on"] and str(path) == str(leftover):
+            raise PermissionError("held open by a live writer")
+        return real_unlink(path)
+
+    monkeypatch.setattr(os, "unlink", unlink_maybe_denied)
+    atomic_write_json(target, {"v": 1})
+    assert leftover.exists()
+
+    denied["on"] = False
+    atomic_write_json(target, {"v": 2})
+
+    assert not leftover.exists(), "the retry must sweep once the handle is released"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows-only handle semantics")
+def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
+    # 年龄门槛本身不能证明 tmp 没有主人（写者理论上可以在 mkstemp 之后被冻结很久）。
+    # Windows 上还有一道 OS 级兜底：活写者的句柄一直开着，unlink 会被拒（WinError
+    # 32），清扫器物理上抢不走。这条把那道兜底钉住。
+    import tempfile
+
+    target = tmp_path / "state.json"
+    fd, inflight = tempfile.mkstemp(
+        prefix=f".{target.name}.", suffix=".tmp", dir=str(tmp_path)
+    )
+    try:
+        _age(Path(inflight), file_utils._STALE_TMP_MIN_AGE_S + 60)
+        atomic_write_json(target, {"v": 1})
+        assert Path(inflight).exists(), "an open temp file must survive the sweep"
+    finally:
+        os.close(fd)
+        with __import__("contextlib").suppress(OSError):
+            os.unlink(inflight)
 
 
 def test_sweep_survives_a_temp_file_that_cannot_be_removed(tmp_path, monkeypatch):
