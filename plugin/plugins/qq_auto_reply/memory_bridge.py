@@ -181,8 +181,12 @@ class QQMemoryBridge:
         kept, dropped = take_lines_within_token_budget(
             lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
-        if dropped:
-            self.plugin.logger.info(
+        logger = getattr(self.plugin, "logger", None)
+        if dropped and logger is not None:
+            # 诊断行不该成为渲染的硬依赖：这个函数此前对 plugin 对象零依赖，
+            # 抛 AttributeError 会被上游 _build_recalled_memory_text 的
+            # except 吞掉，整段召回为了一条日志凭空消失。
+            logger.info(
                 f"QQ 长期记忆召回段超出 {RECALL_RENDER_TOTAL_MAX_TOKENS} tok 预算，"
                 f"丢弃末尾 {dropped} 条"
             )
