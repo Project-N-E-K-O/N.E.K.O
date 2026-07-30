@@ -676,6 +676,22 @@ EMOTION_NEGATION_WORDS_BY_LANG = {
     'ru': ('не', 'нет', 'никогда'),
 }
 
+# 程度副词：夹在否定词和情绪词之间的成分（`不怎麼開心` 里的 `怎麼`）。
+#
+# 英文那条路径按 token 回看三个词，所以 `not very happy` 天然认得；中文压掉标点
+# 后是一整串，没有词边界，回看窗口只能看到 `不怎麼` 这样的串，`endswith('不')`
+# 就为假 —— 结果 `不怎麼開心` 被判成 happy，意思正好反了。剥掉尾部的程度副词再
+# 判否定，就是中文这一侧的等价物。
+#
+# 副作用是对的那种：`特別` 本身就是程度副词，列进来之后 `特別開心` 的窗口被剥空，
+# 不再因为单字 `別` 命中而被误判成否定。
+EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG = {
+    'zh': ('怎么', '那么', '什么', '这么', '那样', '非常', '特别', '十分', '相当',
+           '比较', '有点', '有些', '很', '太', '超', '挺', '蛮', '多', '更', '最'),
+    'zh-TW': ('怎麼', '那麼', '什麼', '這麼', '那樣', '非常', '特別', '十分', '相當',
+              '比較', '有點', '有些', '很', '太', '超', '挺', '蠻', '多', '更', '最'),
+}
+
 # 后缀否定：韩语特有——否定绑定在词尾（`슬프지 않아`），其余语种没有对应形态
 EMOTION_NEGATION_SUFFIXES_BY_LANG = {
     'ko': ('지 않', '지않', '지 않아', '지않아', '지 않다', '지않다', '지 않음', '지않음',
@@ -694,6 +710,10 @@ def get_emotion_negation_words_flat() -> tuple:
 
 def get_emotion_negation_suffixes_flat() -> tuple:
     return _flatten_lang_tuples(EMOTION_NEGATION_SUFFIXES_BY_LANG)
+
+
+def get_emotion_negation_degree_adverbs_flat() -> tuple:
+    return _flatten_lang_tuples(EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG)
 
 
 def get_emotion_label_aliases_flat() -> dict:

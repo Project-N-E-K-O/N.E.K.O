@@ -49,6 +49,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_negation_prefixes_flat,
     get_emotion_negation_words_flat,
     get_emotion_negation_suffixes_flat,
+    get_emotion_negation_degree_adverbs_flat,
 )
 from utils.language_utils import detect_prompt_language
 
@@ -118,6 +119,41 @@ _EMOTION_NEGATION_CONTEXT_WINDOW = max(
     (len(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES),
     default=6,
 )
+
+
+_EMOTION_DEGREE_ADVERBS = tuple(sorted(
+    {
+        re.sub(r"[\W_]+", "", str(adverb).strip().lower(), flags=re.UNICODE)
+        for adverb in get_emotion_negation_degree_adverbs_flat()
+        if str(adverb).strip()
+    },
+    key=len,
+    reverse=True,
+))
+
+
+def _strip_degree_adverbs(text):
+    """Peel degree adverbs off the end of `text`, longest first, repeatedly.
+
+    The compact negation test compares a punctuation-free window against the
+    negation table, so a degree adverb sitting between the negation and the
+    emotion word breaks the comparison: `不怎麼開心` reads as `happy`, the
+    opposite of what the model said. English needs no such thing — its match runs
+    over the last three *tokens*, and a compact CJK window has no token
+    boundaries to count.
+
+    Longest first, and repeatedly, because adverbs stack (`不是很特別開心`) and
+    because a shorter entry can be the tail of a longer one — strip the short one
+    and the remainder no longer matches anything.
+    """
+    previous = None
+    while text and text != previous:
+        previous = text
+        for adverb in _EMOTION_DEGREE_ADVERBS:
+            if text.endswith(adverb):
+                text = text[:-len(adverb)]
+                break
+    return text
 
 
 def _looks_like_emotion_compact_candidate(candidate, cutoff):
@@ -199,6 +235,9 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
 
     def _is_negated_compact_match(match_start):
         prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
+        # `沒有很生氣`: the window before the alias is `沒有很`, so testing it as-is
+        # finds no negation and the label comes back as the emotion itself.
+        prefix = _strip_degree_adverbs(prefix)
         return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES)
 
     alias_items = sorted(

@@ -367,3 +367,105 @@ def test_core_passes_the_session_language_into_analyze():
     assert any(
         any(kw.arg == "ui_language" for kw in call.keywords) for call in calls
     ), "core 没有把 session 语言传给 analyze"
+
+
+def test_degree_adverb_table_pairs_across_scripts():
+    """Same phenomenon, two orthographies — like every other table in this file."""
+    table = P.EMOTION_NEGATION_DEGREE_ADVERBS_BY_LANG
+    assert table["zh"] and table["zh-TW"]
+    assert len(table["zh"]) == len(table["zh-TW"])
+    assert not any(ch in SIMPLIFIED_ONLY for entry in table["zh-TW"] for ch in entry)
+
+
+@pytest.mark.parametrize("label", [
+    # negation, degree adverb, emotion — the adverb used to break the match
+    "不怎麼開心", "不怎么开心",
+    "沒有很生氣", "没有很生气",
+    "不是很開心", "不很開心",
+    "並不怎麼開心", "不太怎麼開心",
+    "沒有那麼驚訝", "没有那么惊讶",
+    "不是很難過", "並不特別開心",
+])
+def test_negation_survives_a_degree_adverb(label):
+    """`不怎麼開心` means "not very happy"; reporting `happy` inverts it.
+
+    English never had this problem — its scan runs over the last three *tokens*, and
+    a compact CJK window has no token boundaries to count, so the adverb sat between
+    the negation and the alias and the endswith test simply failed.
+    """
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label(label) == "neutral"
+
+
+@pytest.mark.parametrize("label,expected", [
+    # intensified but NOT negated — stripping adverbs must not reach a negation
+    ("很開心", "happy"), ("非常生氣", "angry"), ("十分驚訝", "surprised"),
+    ("超級開心", "happy"), ("最難過", "sad"), ("有點難過", "sad"),
+    ("太開心", "happy"), ("更開心", "happy"),
+    # `特別` is itself a degree adverb, so listing it also stops the single
+    # character `別` inside it from reading as a negation
+    ("特別開心", "happy"), ("特别开心", "happy"),
+    ("特別難過", "sad"), ("特别难过", "sad"),
+    # a word that merely contains a negation character
+    ("無比開心", "happy"),
+    # plain aliases, both scripts
+    ("開心", "happy"), ("生氣", "angry"), ("难过", "sad"),
+])
+def test_intensifiers_are_not_read_as_negations(label, expected):
+    """The other direction: reaching further left must not invent a negation."""
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label(label) == expected
+
+
+def test_adverb_stripping_is_confined_to_the_label_parser():
+    """The keyword heuristic has its own, separate negation machinery.
+
+    Its tables already carry the compound forms (`不怎么` / `沒那麼`), so it must not
+    be pulled into this change — the two paths answer different questions.
+    """
+    from main_routers.system_router import emotion as R
+
+    assert "不怎么" in R._HEURISTIC_NEGATION_TOKENS
+    assert "不怎麼" in R._HEURISTIC_NEGATION_TOKENS
+    for probe in ("我今天好開心", "我不太開心", "不是很難過但還好"):
+        assert R._infer_emotion_from_text(probe) is not None
+
+
+def test_stacked_degree_adverbs_are_all_peeled():
+    """Adverbs stack, so one pass is not enough.
+
+    `不是很特別開心` needs both to come off before the window ends in a negation.
+    """
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label("不是很特別開心") == "neutral"
+    assert _normalize_emotion_label("沒有非常生氣") == "neutral"
+
+
+def test_longest_adverb_wins_when_entries_overlap(monkeypatch):
+    """A shorter entry that is the tail of a longer one must not be taken first.
+
+    Nothing in the shipped table overlaps, so this pins the helper's contract
+    rather than today's data — the ordering is the only thing keeping a future
+    entry from stranding the rest of a word.
+    """
+    from main_routers.system_router import emotion as R
+
+    monkeypatch.setattr(R, "_EMOTION_DEGREE_ADVERBS", ("十分", "分"))
+    assert R._strip_degree_adverbs("不十分") == "不"
+    monkeypatch.setattr(R, "_EMOTION_DEGREE_ADVERBS", ("分", "十分"))
+    assert R._strip_degree_adverbs("不十分") == "不十"
+
+
+def test_module_builds_the_adverb_list_longest_first():
+    """The ordering the helper above depends on has to actually be established.
+
+    Its own table happens to have no overlapping entries, so only this pins the
+    construction; the two together are what keeps a future entry safe.
+    """
+    from main_routers.system_router import emotion as R
+
+    lengths = [len(adverb) for adverb in R._EMOTION_DEGREE_ADVERBS]
+    assert lengths == sorted(lengths, reverse=True), R._EMOTION_DEGREE_ADVERBS
