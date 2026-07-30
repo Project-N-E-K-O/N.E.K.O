@@ -137,8 +137,13 @@ def resolve_keys(node: ast.AST) -> set[str] | None:
                 if inner is None:
                     return None
                 keys |= inner
-            elif isinstance(key, ast.Constant) and isinstance(key.value, str):
-                keys.add(key.value)
+            elif isinstance(key, ast.Constant):
+                # A *constant* non-string key (a None sentinel, an int) cannot be
+                # 'zh-TW', so it hides nothing and is simply not a locale key —
+                # skip it and keep reading. Only a non-constant key forces the
+                # whole table to be abandoned, since that one could be anything.
+                if isinstance(key.value, str):
+                    keys.add(key.value)
             else:
                 return None
         return keys
@@ -175,7 +180,39 @@ def resolve_keys(node: ast.AST) -> set[str] | None:
         return left | right
     if isinstance(node, ast.DictComp):
         return _comprehension_keys(node)
+    if isinstance(node, ast.Call) and _is_dict_fromkeys(node.func):
+        # `dict.fromkeys(("en", "zh"), template)` — one template shared across a
+        # literal locale list. func is an Attribute, so the `dict(...)` branch
+        # above does not see it, and there is no child mapping node for the walker
+        # to fall back on.
+        return _literal_string_sequence(node.args[0]) if node.args else None
     return None
+
+
+def _is_dict_fromkeys(func: ast.AST) -> bool:
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "fromkeys"
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "dict"
+    )
+
+
+def _literal_string_sequence(node: ast.AST) -> set[str] | None:
+    """String constants of a literal Tuple/List/Set, or None if not literal.
+
+    Non-string *constants* are skipped rather than disqualifying the sequence, for
+    the same reason as constant non-string dict keys: they cannot be 'zh-TW'.
+    """
+    if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+        return None
+    keys: set[str] = set()
+    for element in node.elts:
+        if not isinstance(element, ast.Constant):
+            return None
+        if isinstance(element.value, str):
+            keys.add(element.value)
+    return keys
 
 
 def _pair_sequence_keys(node: ast.AST) -> set[str] | None:
@@ -192,9 +229,12 @@ def _pair_sequence_keys(node: ast.AST) -> set[str] | None:
         if not isinstance(element, (ast.Tuple, ast.List)) or len(element.elts) != 2:
             return None
         first = element.elts[0]
-        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+        if not isinstance(first, ast.Constant):
             return None
-        keys.add(first.value)
+        # Constant non-string keys are skipped, not disqualifying — same rule as
+        # dict literals: such a key cannot be 'zh-TW'.
+        if isinstance(first.value, str):
+            keys.add(first.value)
     return keys
 
 
@@ -229,13 +269,7 @@ def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
     if isinstance(gen.target, ast.Name):
         if gen.target.id != node.key.id:
             return None
-        keys: set[str] = set()
-        for element in gen.iter.elts:
-            if not (isinstance(element, ast.Constant)
-                    and isinstance(element.value, str)):
-                return None
-            keys.add(element.value)
-        return keys
+        return _literal_string_sequence(gen.iter)
 
     if isinstance(gen.target, ast.Tuple):
         names = [e.id for e in gen.target.elts if isinstance(e, ast.Name)]

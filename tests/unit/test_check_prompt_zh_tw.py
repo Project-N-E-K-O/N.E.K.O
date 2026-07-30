@@ -1130,3 +1130,71 @@ def test_git_visible_prompt_files_returns_none_on_git_failure(monkeypatch):
 
     monkeypatch.setattr(MOD.subprocess, "run", lambda cmd, **kw: _Result())
     assert MOD._git_visible_prompt_files() is None
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict.fromkeys(("en", "zh"), "tpl")',
+    'T = dict.fromkeys(["en", "zh"], "tpl")',
+])
+def test_dict_fromkeys_over_a_literal_is_judged(src):
+    """`dict.fromkeys(("en", "zh"), tpl)` — one template across a literal list.
+
+    `node.func` is an Attribute, so the `dict(...)` branch never sees it, and
+    there is no child mapping node for the walker to fall back on. The constructor
+    itself is already used under config/prompts.
+    """
+    assert _violations(src) == [1]
+
+
+def test_dict_fromkeys_with_traditional_is_silent():
+    assert _violations('T = dict.fromkeys(("en", "zh", "zh-TW"), "t")') == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict.fromkeys(LOCALES, "t")',
+    'T = dict.fromkeys()',
+    'T = other.fromkeys(("en", "zh"), "t")',
+])
+def test_dict_fromkeys_unresolvable_is_not_judged(src):
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = {None: "d", "en": "e", "zh": "s"}',
+    'T = {1: "d", "en": "e", "zh": "s"}',
+    'T = dict([(None, "d"), ("en", "e"), ("zh", "s")])',
+])
+def test_constant_non_string_key_does_not_abandon_the_table(src):
+    """A None sentinel or int key cannot be 'zh-TW', so it hides nothing.
+
+    Abandoning the whole mapping over it let a real offender through; only a
+    *non-constant* key justifies giving up, because that one could be anything.
+    """
+    assert _violations(src) == [1]
+
+
+def test_constant_non_string_key_alongside_traditional_stays_silent():
+    assert _violations('T = {None: "d", "en": "e", "zh": "s", "zh-TW": "t"}') == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = {DYNAMIC: "d", "en": "e", "zh": "s"}',
+    'T = dict([(VAR, "d"), ("en", "e"), ("zh", "s")])',
+])
+def test_non_constant_key_still_abandons_the_table(src):
+    """The unknown key could be 'zh-TW' itself, so stay silent."""
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict.fromkeys(("en", "zh", MAYBE_ZH_TW), "t")',
+    'T = {loc: 1 for loc in ("en", "zh", MAYBE_ZH_TW)}',
+])
+def test_non_constant_element_in_a_key_sequence_abandons_the_table(src):
+    """One unknown element makes the whole key set unknown.
+
+    Skipping it instead would resolve to {en, zh} and report an offender, when the
+    unknown element may well be the 'zh-TW' entry that makes the table compliant —
+    a false positive on code that is actually fine.
+    """
+    assert _violations(src) == []
