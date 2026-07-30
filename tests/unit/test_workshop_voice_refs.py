@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import threading
 
 import pytest
@@ -170,18 +171,23 @@ def test_every_mutation_lives_in_the_offloaded_unit():
                     names.add(func.attr)
         return names
 
-    MUTATIONS = {"_cleanup_workshop_voice_reference", "open", "atomic_write_json"}
+    MUTATIONS = {
+        "_cleanup_workshop_voice_reference", "open", "fdopen", "mkstemp",
+        "atomic_write_json", "replace", "remove",
+    }
 
     handler = by_name["upload_reference_audio"]
     leaked = MUTATIONS & _called_names(handler)
     assert not leaked, (
-        f"{sorted(leaked)} 回到了协程体里——它和其余两步之间的 await 就是可观测的半套窗口"
+        f"{sorted(leaked)} 回到了协程体里——它和其余步骤之间的 await 就是可观测的半套窗口"
     )
     assert "to_thread" in _called_names(handler)
 
     unit = by_name["_replace_voice_reference"]
     assert isinstance(unit, ast.FunctionDef), "这个单元必须是同步 def"
-    assert MUTATIONS <= _called_names(unit), "三步必须都在这个同步单元里"
+    assert {"mkstemp", "replace", "atomic_write_json"} <= _called_names(unit), (
+        "暂存音频 → os.replace 顶上去 → 原子写 manifest，三步必须都在这个同步单元里"
+    )
     assert not any(isinstance(n, ast.Await) for n in ast.walk(unit)), (
         "这个单元里出现 await 就说明它不再是不可分割的"
     )
@@ -341,3 +347,62 @@ def test_every_reader_outside_the_swap_takes_the_lock():
     assert not offenders, (
         f"这些地方绕过了 voice_reference_lock 直接裸读：{offenders}"
     )
+
+
+def test_a_failed_write_leaves_the_previous_pair_intact(tmp_path, monkeypatch):
+    """A failed upload must not destroy the reference the user already had.
+
+    The swap writes the new audio to a staged file and renames it into place
+    before anything is deleted, so a disk-full / permission failure on either
+    write leaves the previous pair exactly as it was. Deleting first — which is
+    what the code did before — turns one failed upload into lost data the user
+    cannot get back.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    _seed_existing_reference(tmp_path)          # voice_sample.mp3 + manifest(prefix=old)
+
+    def _boom(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(voice_refs, "atomic_write_json", _boom)
+
+    with pytest.raises(OSError):
+        voice_refs._replace_voice_reference(
+            str(tmp_path),
+            str(tmp_path / "voice_sample.wav"),
+            b"new-audio",
+            str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+        )
+
+    assert (tmp_path / "voice_sample.mp3").read_bytes() == b"old-audio", (
+        "写失败把用户原来的参考语音删掉了"
+    )
+    assert _manifest(tmp_path)["prefix"] == "old", "旧 manifest 也必须还在"
+
+
+def test_a_failed_audio_write_stages_nothing(tmp_path, monkeypatch):
+    """The staged temp file must not survive a failure either."""
+    from main_routers.workshop_router import voice_refs
+
+    _seed_existing_reference(tmp_path)
+    real_replace = os.replace
+
+    def _boom(src, dst):
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(os, "replace", _boom)
+    with pytest.raises(OSError):
+        voice_refs._replace_voice_reference(
+            str(tmp_path),
+            str(tmp_path / "voice_sample.wav"),
+            b"new-audio",
+            str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+        )
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    assert (tmp_path / "voice_sample.mp3").read_bytes() == b"old-audio"
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == [], f"失败路径留下了暂存文件：{leftovers}"

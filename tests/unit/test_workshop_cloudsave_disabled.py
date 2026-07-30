@@ -154,7 +154,7 @@ async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monke
         order.append(f"ensure:{folder}:auto={_load().get('auto_create_folder')}")
         return True
 
-    import utils.workshop_utils as workshop_utils
+    from utils import workshop_utils
 
     monkeypatch.setattr(workshop_utils, "load_workshop_config", _load)
     monkeypatch.setattr(workshop_utils, "save_workshop_config", _save)

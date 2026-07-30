@@ -36,6 +36,8 @@ from .voice_manifest import (
 
 import os
 import asyncio
+import tempfile
+from contextlib import suppress
 import mimetypes
 from urllib.parse import unquote
 from fastapi import Request
@@ -56,15 +58,43 @@ def _replace_voice_reference(
     """Swap in a new reference-audio/manifest pair as one blocking unit.
 
     Kept synchronous on purpose so the caller can hand the whole swap to a
-    single worker thread: the three steps have no await between them, so a
-    cancelled request can never observe a half-replaced pair. The per-folder
-    lock covers the other direction — two workers racing the same folder.
+    single worker thread: the steps have no await between them, so a cancelled
+    request can never observe a half-replaced pair. The per-folder lock covers
+    the other direction — two workers racing the same folder.
+
+    Nothing is deleted until the replacement is durable. Writing the new audio
+    first (staged, fsynced, then renamed into place) means a disk-full or
+    permission failure leaves the previous pair exactly as it was, instead of
+    destroying a reference the user cannot get back.
     """
     with voice_reference_lock(content_folder):
-        _cleanup_workshop_voice_reference(content_folder)
-        with open(audio_path, 'wb') as f:
-            f.write(audio_bytes)
+        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 上去。
+        #    失败的话旧的一对纹丝不动 —— 这一步之前不删任何东西。
+        fd, temp_audio = tempfile.mkstemp(dir=content_folder, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(audio_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_audio, audio_path)
+        except BaseException:
+            with suppress(OSError):
+                os.remove(temp_audio)
+            raise
+
+        # 2) manifest 也是原子替换。走到这里新的一对已经完整可用。
         atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
+
+        # 3) 最后才清掉「换了扩展名」留下的旧音频（mp3 → wav 这种）。同名的那次
+        #    已经被上面的 os.replace 顶掉了。删失败只是留个孤儿文件，不影响这对
+        #    引用可用，所以吞掉。
+        for ext in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
+            stale = os.path.join(content_folder, f'voice_sample{ext}')
+            if os.path.abspath(stale) == os.path.abspath(audio_path):
+                continue
+            if os.path.exists(stale):
+                with suppress(OSError):
+                    os.remove(stale)
 
 
 def _remove_voice_reference(content_folder: str) -> None:
