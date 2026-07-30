@@ -249,7 +249,7 @@ async def test_a_reader_never_observes_a_half_swapped_pair(tmp_path, monkeypatch
     """Publishing resolves the reference while an upload may be mid-swap.
 
     A bare read can land between "old pair deleted" and "new manifest
-    committed" and fail the publish with "参考语音清单无效", even though the
+    committed" and fail the publish as an invalid manifest, even though the
     replacement completes right after. The serialized reader takes the same
     per-folder lock — and it already runs in a worker thread, so no event-loop
     code ever waits on it.
