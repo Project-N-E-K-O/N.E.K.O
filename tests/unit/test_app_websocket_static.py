@@ -523,6 +523,20 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
     assert "var SETTINGS_SYNC_GATE_TIMEOUT_MS = 3000;" in websocket_source
 
 
+def test_noise_reduction_toggle_uses_conversation_settings_cas_client():
+    capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
+    save_block = capture_source.split(
+        "function saveNoiseReductionSetting() {",
+        1,
+    )[1].split("function loadNoiseReductionSetting()", 1)[0]
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+
+    assert "window.appSettings.saveSettings();" in save_block
+    assert "fetch('/api/config/conversation-settings'" not in save_block
+    assert "'noiseReductionEnabled'," in settings_source
+    assert "noiseReductionEnabled: S.noiseReductionEnabled" in settings_source
+
+
 def test_every_start_session_send_sits_behind_the_ensure_websocket_gate():
     # The settings-sync gate lives in ensureWebSocketOpen(), so it only closes
     # the toggle-vs-session-start race if every start_session send awaits
@@ -1938,7 +1952,7 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         "\n    }", 1
     )[0]
     assert "if (!meta || typeof meta !== 'object') return null;" in read_fn
-    assert "typeof meta.writeId !== 'number'" in read_fn
+    assert "!Number.isSafeInteger(meta.writeId)" in read_fn
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
 
     listener_block = settings_source.split(
@@ -3853,7 +3867,7 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     # ...the reader parses it defensively, falling back to today's behaviour...
     read_fn = _block_after(settings_source, "function _readSharedWriteMeta(settings) {")
     assert "asrDecision:" in read_fn
-    assert "typeof meta.asrDecision.writeId === 'number'" in read_fn
+    assert "Number.isSafeInteger(meta.asrDecision.writeId)" in read_fn
 
     # ...and both the boot seed and the adopted cross-window flip record the
     # ORIGINAL id, or this window re-inflates the value on its own next save.

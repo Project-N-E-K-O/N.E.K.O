@@ -97,7 +97,7 @@
     }
     function _normalizeServerAsrDecision(value) {
         if (!value || typeof value !== 'object') return null;
-        if (typeof value.writeId !== 'number' || !isFinite(value.writeId)) return null;
+        if (!Number.isSafeInteger(value.writeId) || value.writeId < 0) return null;
         if (typeof value.writerId !== 'string' || !value.writerId) return null;
         if (typeof value.value !== 'boolean') return null;
         return {
@@ -279,6 +279,7 @@
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
+        'noiseReductionEnabled',
         'independentAsrEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
@@ -320,6 +321,7 @@
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
+            noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
@@ -467,7 +469,7 @@
     function _readSharedWriteMeta(settings) {
         const meta = settings ? settings[_SHARED_WRITE_META_KEY] : null;
         if (!meta || typeof meta !== 'object') return null;
-        if (typeof meta.writeId !== 'number' || !isFinite(meta.writeId)) return null;
+        if (!Number.isSafeInteger(meta.writeId) || meta.writeId < 0) return null;
         return {
             writeId: meta.writeId,
             // Absent on snapshots written by the previous build: '' sorts below
@@ -486,8 +488,8 @@
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
             asrDecision: (meta.asrDecision
-                && typeof meta.asrDecision.writeId === 'number'
-                && isFinite(meta.asrDecision.writeId))
+                && Number.isSafeInteger(meta.asrDecision.writeId)
+                && meta.asrDecision.writeId >= 0)
                 ? {
                     writeId: meta.asrDecision.writeId,
                     writerId: typeof meta.asrDecision.writerId === 'string'
@@ -999,6 +1001,7 @@
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
+            noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,

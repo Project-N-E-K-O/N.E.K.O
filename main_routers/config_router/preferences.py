@@ -31,6 +31,7 @@ from utils.preferences import (
     GLOBAL_CONVERSATION_KEY,
     aload_global_conversation_settings_snapshot,
     aload_user_preferences,
+    is_valid_asr_decision,
     move_model_to_top,
     save_global_conversation_settings_versioned,
     update_model_preferences,
@@ -254,8 +255,12 @@ async def save_conversation_settings(request: Request):
                     status_code=400,
                     content={"success": False, "error": "ASR decision header 格式无效"},
                 )
-            if isinstance(parsed_asr_decision, dict):
-                asr_decision = parsed_asr_decision
+            if not is_valid_asr_decision(parsed_asr_decision):
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "error": "ASR decision header 格式无效"},
+                )
+            asr_decision = parsed_asr_decision
         try:
             expected_revision = _parse_conversation_settings_if_match(
                 request.headers.get("if-match")

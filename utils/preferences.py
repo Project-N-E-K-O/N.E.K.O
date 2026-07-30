@@ -395,6 +395,7 @@ _ALLOWED_CONVERSATION_SETTINGS = {
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _LEGACY_ASR_DECISION_WRITER_ID = "server-legacy"
+MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
 
 
 @dataclass(frozen=True)
@@ -427,6 +428,7 @@ def _normalize_asr_decision(value: Any) -> Optional[Dict[str, Any]]:
         not isinstance(write_id, int)
         or isinstance(write_id, bool)
         or write_id < 0
+        or write_id > MAX_SAFE_ASR_WRITE_ID
         or not isinstance(writer_id, str)
         or not writer_id
         or len(writer_id) > 128
@@ -438,6 +440,10 @@ def _normalize_asr_decision(value: Any) -> Optional[Dict[str, Any]]:
         "writerId": writer_id,
         "value": decision_value,
     }
+
+
+def is_valid_asr_decision(value: Any) -> bool:
+    return _normalize_asr_decision(value) is not None
 
 
 def _asr_decision_key(decision: Dict[str, Any]) -> tuple[int, str]:
