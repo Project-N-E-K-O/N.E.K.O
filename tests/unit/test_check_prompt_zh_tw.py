@@ -2112,8 +2112,8 @@ def test_deleting_the_key_revokes_the_backfill_exemption():
     'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\ndel T["ja"]',
     # the deletion applies to the table bound on line 3, not to the one the
     # backfill completed — the first literal really was compliant while it lived
-    'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\n'
-    'T = {"en": "e2", "zh": "s2", "zh-TW": "t2"}\ndel T["zh-TW"]',
+    ('T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\n'
+        + 'T = {"en": "e2", "zh": "s2", "zh-TW": "t2"}\ndel T["zh-TW"]'),
 ])
 def test_revocation_is_scoped_to_the_binding_it_applies_to(src):
     assert _violations(src) == []
@@ -2166,3 +2166,77 @@ def test_mutations_before_the_binding_do_not_count():
     )
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [4]
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\nT.pop("zh-TW")', [1]),
+    ('T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\nT.pop("zh-TW", None)', [1]),
+    ('T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\nT.pop("ja")', []),
+])
+def test_pop_removes_the_key_like_del_does(src, expected):
+    """`T.pop("zh-TW")` undoes a backfill as plainly as `del T["zh-TW"]`.
+
+    Recording one removal form and not the other is the same near-miss the rest
+    of this gate keeps producing.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    'A = {"zh-TW": "t"}\nTW = {}\nTW.update(A)\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    'A = {"zh-TW": "t"}\nTW = {}\nTW |= A\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    ('B = {"zh-TW": "t"}\nA = {}\nA.update(B)\nTW = {}\nTW.update(A)\n'
+        + 'T = {"en": "e", "zh": "s"}\nT.update(TW)'),
+])
+def test_a_mutation_payload_may_itself_be_a_name(src):
+    """The supplier is assembled from another name, possibly several hops out.
+
+    Resolving it while the index is being built would need the index, so the
+    reference is recorded and resolved on the way out.
+    """
+    assert _violations(src) == []
+
+
+def test_named_mutation_payload_without_zh_tw_still_reports():
+    src = (
+        'A = {"ja": "j"}\nTW = {}\nTW.update(A)\n'
+        'T = {"en": "e", "zh": "s"}\nT.update(TW)'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [4]
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('A = {}\nA.update(A)\nT = {"en": "e", "zh": "s"}\nT.update(A)', [3]),
+     (('A = {}\nB = {}\nA.update(B)\nB.update(A)\n'
+         + 'T = {"en": "e", "zh": "s"}\nT.update(A)', [5])),
+])
+def test_self_and_mutual_mutation_payloads_terminate(src, expected):
+    """A mutation resolves its own payload through the same lookup.
+
+    Folding the mutation being resolved would recurse forever on `A.update(A)`,
+    which is why the fold stops strictly before the position it is asked about.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = {k: v for [k, v] in [["en", e], ["zh", z]]}', [1]),
+    ('T = {k: v for [k, v] in [["en", e], ["zh", z], ["zh-TW", t]]}', []),
+])
+def test_comprehension_target_may_be_a_list(src, expected):
+    """Python unpacks a list target the same way it unpacks a tuple one."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('if (T := {"en": "e", "zh": "s"}):\n    T["zh-TW"] = "t"', []),
+    ('if (T := {"en": "e", "zh": "s"}):\n    pass', [1]),
+])
+def test_walrus_binds_a_name_to_a_table(src, expected):
+    """`if (T := {...}):` binds T as much as a statement does."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected

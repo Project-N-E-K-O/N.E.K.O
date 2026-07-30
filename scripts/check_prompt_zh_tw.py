@@ -332,7 +332,9 @@ def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
             return None
         return _literal_string_sequence(gen.iter)
 
-    if isinstance(gen.target, ast.Tuple):
+    # A list target unpacks the same way a tuple one does, and the pair inputs
+    # already accept both — restricting to Tuple left this shape unresolved.
+    if isinstance(gen.target, (ast.Tuple, ast.List)):
         names = [e.id for e in gen.target.elts if isinstance(e, ast.Name)]
         if len(names) != len(gen.target.elts) or node.key.id not in names:
             return None
@@ -630,6 +632,12 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                         (_source_position(value), value)
                     )
             continue
+        if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
+            # `if (T := {...}): T["zh-TW"] = t` binds T as much as a statement does.
+            assignments.setdefault(node.target.id, []).append(
+                (_source_position(node.value), node.value)
+            )
+            continue
         if (
             # `T: dict[str, str] = {...}` — an annotated binding is still a
             # binding, and typed prompt constants are ordinary style. Missing them
@@ -652,11 +660,19 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     # ordinary way to assemble one, and reading only the literal saw an empty
     # table. The same index answers the reverse — a later `del TW["zh-TW"]` means
     # an earlier backfill no longer makes its table compliant.
-    mutations: dict[str, list[tuple[tuple[int, int], set[str], set[str]]]] = {}
+    mutations: dict[
+        str, list[tuple[tuple[int, int], set[str], set[str], tuple[str, ...]]]
+    ] = {}
 
-    def _record(name: str, at: tuple[int, int], added: set[str], removed: set[str]) -> None:
-        if added or removed:
-            mutations.setdefault(name, []).append((at, added, removed))
+    def _record(
+        name: str,
+        at: tuple[int, int],
+        added: set[str],
+        removed: set[str],
+        added_names: tuple[str, ...] = (),
+    ) -> None:
+        if added or removed or added_names:
+            mutations.setdefault(name, []).append((at, added, removed, added_names))
 
     for node in ast.walk(tree):
         at = _source_position(node)
@@ -680,7 +696,12 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
         ):
-            if node.func.attr == "setdefault" and node.args:
+            if node.func.attr == "pop" and node.args:
+                # `T.pop("zh-TW")` removes the key as plainly as `del T["zh-TW"]`.
+                first = node.args[0]
+                if isinstance(first, ast.Constant) and isinstance(first.value, str):
+                    _record(node.func.value.id, at, set(), {first.value})
+            elif node.func.attr == "setdefault" and node.args:
                 first = node.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
                     _record(node.func.value.id, at, {first.value}, set())
@@ -688,17 +709,26 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 # Only what the payload states outright. Resolving names here would
                 # need the very index being built.
                 added: set[str] = set()
+                # A payload that is a name is kept as a reference and resolved
+                # later: resolving it here would need this very index.
+                names: list[str] = []
                 for payload in list(node.args) + [
                     kw.value for kw in node.keywords if kw.arg is None
                 ]:
+                    if isinstance(payload, ast.Name):
+                        names.append(payload.id)
+                        continue
                     added |= resolve_keys(payload) or _pair_sequence_keys(payload) or set()
-                _record(node.func.value.id, at, added, set())
+                _record(node.func.value.id, at, added, set(), tuple(names))
         elif (
             isinstance(node, ast.AugAssign)
             and isinstance(node.op, ast.BitOr)
             and isinstance(node.target, ast.Name)
         ):
-            _record(node.target.id, at, resolve_keys(node.value) or set(), set())
+            if isinstance(node.value, ast.Name):
+                _record(node.target.id, at, set(), set(), (node.value.id,))
+            else:
+                _record(node.target.id, at, resolve_keys(node.value) or set(), set())
 
     for entries in mutations.values():
         entries.sort(key=lambda item: item[0])
@@ -755,7 +785,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         rebound = next(
             (pos for pos, _ in assignments.get(name, ()) if pos > at), None
         )
-        for pos, _added, removed in mutations.get(name, ()):
+        for pos, _added, removed, _names in mutations.get(name, ()):
             if pos <= at or (rebound is not None and pos > rebound):
                 continue
             if TRADITIONAL_KEY in removed:
@@ -859,9 +889,17 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         # Plus whatever demonstrable mutations did to it between then and here.
         # `TW = {}` / `TW["zh-TW"] = t` / `T.update(TW)` assembles a supplier in two
         # steps, and reading only the literal saw an empty table.
-        for pos, added, removed in mutations.get(name, ()):
-            if bound_at < pos <= at:
-                keys = (keys | added) - removed
+        # Strictly before `at`: a mutation resolves its own named payload through
+        # here, and including the mutation itself would recurse forever on
+        # `A.update(A)`. Nothing legitimate sits at exactly the use position — a
+        # statement records its mutation against the name it mutates, not the one
+        # it reads.
+        for pos, added, removed, added_names in mutations.get(name, ()):
+            if not bound_at < pos < at:
+                continue
+            for other in added_names:
+                added = added | _name_keys(other, pos)
+            keys = (keys | added) - removed
         return keys
 
     for node in ast.walk(tree):
