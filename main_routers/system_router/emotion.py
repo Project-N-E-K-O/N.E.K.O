@@ -27,7 +27,11 @@ from fastapi import Request
 from utils.llm_client import (
     create_chat_llm_async,
 )
-from ..shared_state import get_config_manager, get_sync_message_queue
+from ..shared_state import (
+    get_config_manager,
+    get_session_manager,
+    get_sync_message_queue,
+)
 from config import (
     EMOTION_ANALYSIS_MAX_TOKENS,
 )
@@ -42,6 +46,9 @@ from config.prompts.prompts_emotion import (
     get_heuristic_negation_blocklist_flat,
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
+    get_emotion_negation_prefixes_flat,
+    get_emotion_negation_words_flat,
+    get_emotion_negation_suffixes_flat,
 )
 from utils.language_utils import detect_prompt_language
 
@@ -80,26 +87,14 @@ _EMOTION_FUZZY_COMPACT_KEYS = tuple(_EMOTION_COMPACT_ALIAS_LOOKUP.keys())
 _ASCII_EMOTION_ALIAS_RE = re.compile(r"^[a-z0-9]+(?:\s+[a-z0-9]+)*$")
 
 
-_EMOTION_NEGATION_WORDS = frozenset((
-    "not", "no", "never", "without",
-    "안", "아니", "못", "않", "아니다", "아닌", "아님",
-    "не", "нет", "никогда",
-))
+# 否定词表同样按语种维护在 config/prompts/prompts_emotion.py，此处只做扁平索引。
+_EMOTION_NEGATION_WORDS = frozenset(get_emotion_negation_words_flat())
 
 
-_EMOTION_NEGATION_PREFIXES = (
-    "不是", "并不", "并非", "不太", "没那么", "没有", "并没有",
-    "不", "没", "無", "无", "非", "别", "別",
-    "안", "아니", "못",
-    "не", "нет", "никогда",
-)
+_EMOTION_NEGATION_PREFIXES = get_emotion_negation_prefixes_flat()
 
 
-_EMOTION_NEGATION_SUFFIXES = (
-    "지 않", "지않", "지 않아", "지않아", "지 않다", "지않다", "지 않음", "지않음",
-    "지 못", "지못", "지 못해", "지못해", "지 못하다", "지못하다",
-    "않", "않아", "않다", "않음", "아냐", "아니야", "아니다", "아닌", "아님",
-)
+_EMOTION_NEGATION_SUFFIXES = get_emotion_negation_suffixes_flat()
 
 
 _EMOTION_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
@@ -450,10 +445,24 @@ def _infer_emotion_from_text(text):
     return best_emotion, best_score
 
 
-def _resolve_emotion_prompt_language(text):
+def _resolve_emotion_prompt_language(text, lanlan_name=None):
     # detect_language 分不出繁简（都是 zh），所以繁中使用者过去一律拿到简体 prompt。
     # detect_prompt_language 在 zh 这一支上用界面语言细分，其余语种原样短码。
-    return detect_prompt_language(text)
+    #
+    # 界面语言优先取**该角色 session** 的 user_language：它由前端 i18n 真值设定，
+    # 而进程级全局值来自 Steam/系统 locale。两者不一致时（在简体机器上切繁中，或
+    # 反过来）全局值两个方向都会给错。取不到 session 才回落到全局。
+    return detect_prompt_language(text, ui_language=_session_user_language(lanlan_name))
+
+
+def _session_user_language(lanlan_name):
+    if not lanlan_name:
+        return None
+    try:
+        session = get_session_manager().get(lanlan_name)
+    except Exception:
+        return None
+    return getattr(session, 'user_language', None)
 
 
 @router.post('/emotion/analysis')
@@ -505,7 +514,7 @@ async def emotion_analysis(request: Request):
         if not model:
             return {"error": "情绪分析模型配置缺失: 模型名称未提供且配置中未设置默认模型"}
        
-        prompt_lang = _resolve_emotion_prompt_language(text)
+        prompt_lang = _resolve_emotion_prompt_language(text, lanlan_name)
 
         # 构建请求消息
         messages = [

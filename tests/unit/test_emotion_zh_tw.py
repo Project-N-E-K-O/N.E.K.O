@@ -231,3 +231,138 @@ def test_call_sites_can_reach_the_traditional_template(resolver_path, resolver_n
         assert resolve("我今天好開心") == "zh-TW"
     with language_context("zh-CN"):
         assert resolve("我今天好开心") == "zh"
+
+
+NEGATION_TABLES = [
+    "EMOTION_NEGATION_PREFIXES_BY_LANG",
+    "EMOTION_NEGATION_WORDS_BY_LANG",
+    "EMOTION_NEGATION_SUFFIXES_BY_LANG",
+]
+
+
+@pytest.mark.parametrize("name", NEGATION_TABLES)
+def test_negation_tables_live_beside_the_other_language_tables(name):
+    """They used to be hardcoded in the router, against its own stated convention."""
+    assert hasattr(P, name)
+
+
+def test_negation_prefixes_cover_traditional():
+    """Adding Traditional aliases is what makes this mandatory rather than nice.
+
+    Once `生氣` is an alias, `沒有生氣` matches it as a substring. If the negation
+    prefixes only carry Simplified `没有`, the negation is missed and the label
+    comes back `angry` — the opposite of what the model said, and worse than
+    before the aliases existed.
+    """
+    prefixes = set(P.get_emotion_negation_prefixes_flat())
+    for token in ("沒", "沒有", "沒那麼", "並不", "並非", "並沒有", "別", "無"):
+        assert token in prefixes, f"缺繁体否定前缀 {token}"
+
+
+def test_negation_flattening_preserves_the_previous_vocabulary():
+    """The move must be additive; a dropped token silently un-negates a label."""
+    previous_prefixes = {
+        "不是", "并不", "并非", "不太", "没那么", "没有", "并没有",
+        "不", "没", "無", "无", "非", "别", "別",
+        "안", "아니", "못", "не", "нет", "никогда",
+    }
+    assert previous_prefixes <= set(P.get_emotion_negation_prefixes_flat())
+    assert set(P.get_emotion_negation_words_flat()) == {
+        "not", "no", "never", "without",
+        "안", "아니", "못", "않", "아니다", "아닌", "아님",
+        "не", "нет", "никогда",
+    }
+    assert len(set(P.get_emotion_negation_suffixes_flat())) == 23
+
+
+@pytest.mark.parametrize("label,expected", [
+    ("沒有生氣", "neutral"),
+    ("並不開心", "neutral"),
+    ("沒那麼難過", "neutral"),
+    ("別生氣", "neutral"),
+    ("無驚訝", "neutral"),
+    ("生氣", "angry"),
+    ("驚訝", "surprised"),
+    ("開心", "happy"),
+    # the Simplified and non-Chinese paths must be untouched by the move
+    ("没有生气", "neutral"),
+    ("not happy", "neutral"),
+    ("happy", "happy"),
+    ("슬프지 않아", "neutral"),
+])
+def test_negated_traditional_labels_do_not_invert(label, expected):
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label(label) == expected
+
+
+def test_session_language_wins_over_the_process_wide_one():
+    """The frontend sets the session language; the global one is the OS/Steam one.
+
+    They disagree whenever the user picks a language inside the app, and then the
+    global value is wrong in both directions — Traditional sessions on a
+    Simplified install and vice versa.
+    """
+    with language_context("zh-TW"):
+        assert detect_prompt_language("我今天好开心", ui_language="zh-CN") == "zh"
+    with language_context("zh-CN"):
+        assert detect_prompt_language("我今天好開心", ui_language="zh-TW") == "zh-TW"
+
+
+def test_session_language_is_normalized_before_comparison():
+    """`user_language` is whatever the frontend sent, not a canonical code."""
+    for variant in ("zh-TW", "zh_TW", "zh-Hant-TW", "zh-Hant"):
+        assert detect_prompt_language("我今天好開心", ui_language=variant) == "zh-TW"
+
+
+def test_absent_session_language_falls_back_to_the_global_one():
+    with language_context("zh-TW"):
+        assert detect_prompt_language("我今天好開心", ui_language=None) == "zh-TW"
+
+
+def test_route_resolver_reads_the_session_language(monkeypatch):
+    """The endpoint gets `lanlan_name` in the body and nothing else locale-ish."""
+    from main_routers.system_router import emotion as R
+
+    class _Session:
+        user_language = "zh-TW"
+
+    monkeypatch.setattr(R, "get_session_manager", lambda: {"neko": _Session()})
+    with language_context("zh-CN"):
+        assert R._resolve_emotion_prompt_language("我今天好開心", "neko") == "zh-TW"
+        # unknown / absent name must not raise, just fall back
+        assert R._resolve_emotion_prompt_language("我今天好开心", "missing") == "zh"
+        assert R._resolve_emotion_prompt_language("我今天好开心", None) == "zh"
+
+
+def test_master_emotion_resolver_takes_the_language_from_its_caller():
+    """The tracker has no session handle, so the core passes its own value down."""
+    from main_logic.activity.master_emotion import MasterEmotionTracker
+
+    with language_context("zh-CN"):
+        assert MasterEmotionTracker._resolve_lang("我今天好開心", "zh-TW") == "zh-TW"
+        assert MasterEmotionTracker._resolve_lang("我今天好开心", "zh-CN") == "zh"
+
+
+def test_core_passes_the_session_language_into_analyze():
+    """Pinned at the call site: the plumbing is only useful if the core uses it.
+
+    Located through the AST rather than by scanning the file, so the assertion is
+    about *this* call and not about the word appearing somewhere in the module.
+    """
+    import ast
+    import pathlib
+
+    from main_logic.core import turn
+
+    tree = ast.parse(pathlib.Path(turn.__file__).read_text(encoding="utf-8"))
+    calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "analyze"
+    ]
+    assert calls, "core 里找不到 master emotion 的 analyze 调用"
+    assert any(
+        any(kw.arg == "ui_language" for kw in call.keywords) for call in calls
+    ), "core 没有把 session 语言传给 analyze"

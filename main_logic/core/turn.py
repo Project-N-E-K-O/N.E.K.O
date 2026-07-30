@@ -221,7 +221,12 @@ class TurnMixin:
             self._focus_emotion_reading = _me.latest
         if text and text.strip() and _me is not None:
             try:
-                self._fire_task(_me.analyze(text, now=now))
+                # Pass the session language: it is the frontend's i18n truth, while
+                # the process-wide value is the Steam/system locale -- they disagree
+                # whenever the user picks a different language inside the app.
+                self._fire_task(_me.analyze(
+                    text, now=now, ui_language=getattr(self, 'user_language', None),
+                ))
             except Exception as _me_err:
                 logger.debug("[%s] master emotion fire failed: %s", self.lanlan_name, _me_err)
 

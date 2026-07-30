@@ -1630,14 +1630,16 @@ def detect_language(text: str) -> str:
         return 'unknown'
 
 
-def detect_prompt_language(text: str, default: str = 'zh') -> str:
+def detect_prompt_language(
+    text: str, default: str = 'zh', ui_language: Optional[str] = None
+) -> str:
     """
     Pick the prompt locale for a prompt whose subject is the user's own words.
 
     detect_language reports script families rather than orthographies: Traditional
     and Simplified Chinese are both 'zh', because they share every code point the
-    detector counts. A Chinese detection is therefore refined with the configured
-    UI language, which is the only signal that tells the two apart -- without it a
+    detector counts. A Chinese detection is therefore refined with the caller's UI
+    language, which is the only signal that tells the two apart -- without it a
     Traditional-Chinese user is analyzed with the Simplified prompt no matter what
     they typed, and any zh-TW template stays unreachable.
 
@@ -1648,6 +1650,11 @@ def detect_prompt_language(text: str, default: str = 'zh') -> str:
     Args:
         text: the user text the prompt will be asked about
         default: returned when detection is unavailable
+        ui_language: the caller's own language, preferred over the process-wide
+            one. Pass the session's ``user_language`` where there is a session:
+            the frontend sets it per character session, so on a machine whose
+            Steam/system locale disagrees, the global value is the wrong answer
+            in both directions.
 
     Returns:
         Prompt language code -- a short code, or 'zh-TW' for Traditional Chinese
@@ -1659,9 +1666,13 @@ def detect_prompt_language(text: str, default: str = 'zh') -> str:
     if detected != 'zh':
         return detected
     try:
-        # Reads a process-level cache after first call, and a context var before
-        # that, so this stays cheap on a per-request path.
-        return 'zh-TW' if get_global_language_full() == 'zh-TW' else detected
+        if ui_language:
+            configured = normalize_language_code(ui_language, format='full')
+        else:
+            # Reads a context var, then a process-level cache filled on first
+            # call, so this stays cheap on a per-request path.
+            configured = get_global_language_full()
+        return 'zh-TW' if configured == 'zh-TW' else detected
     except Exception:
         return detected
 

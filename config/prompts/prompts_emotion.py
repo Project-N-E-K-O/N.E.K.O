@@ -644,6 +644,58 @@ def get_heuristic_contrast_conjunctions_flat() -> tuple:
     return _flatten_lang_tuples(HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG)
 
 
+# ============================================================================
+# 模型 label 解析器的否定词表
+# ============================================================================
+# 上面 EMOTION_LABEL_ALIASES_BY_LANG 是「哪些字面量算某个情绪」，这三张是它的
+# 反面：模型有时不照 5 个 canonical label 答，而是回一句描述（`{"emotion":
+# "沒有生氣"}`）。别名表按子串命中，所以命中点前后的否定成分必须先被识别出来，
+# 否则整句意思会被读反。
+#
+# 三张表原先硬编码在 system_router/emotion.py 里，与本文件顶部注释声明的
+# 「多语言关键词/别名表统一在这里按语种维护」不一致；一并搬过来，形态与上面
+# 那些表相同（按语种 block + 拍平 helper）。
+
+# 前缀否定：出现在命中词**之前**（`不开心` / `not happy` / `не злюсь`）
+EMOTION_NEGATION_PREFIXES_BY_LANG = {
+    'zh': ('不是', '并不', '并非', '不太', '没那么', '没有', '并没有',
+           '不', '没', '无', '非', '别'),
+    # 繁体这一 block 是必需的而不是锦上添花：别名表加了繁体 label 之后，
+    # `沒有生氣` 会命中 `生氣` 子串，而这里若只有简体 `没有`，否定就识别不到，
+    # 结果把「没有生气」判成 angry —— 比加繁体别名之前更糟。
+    'zh-TW': ('不是', '並不', '並非', '不太', '沒那麼', '沒有', '並沒有',
+              '不', '沒', '無', '非', '別'),
+    'ko': ('안', '아니', '못'),
+    'ru': ('не', 'нет', 'никогда'),
+}
+
+# 独立否定词：按 token 匹配，不做子串
+EMOTION_NEGATION_WORDS_BY_LANG = {
+    'en': ('not', 'no', 'never', 'without'),
+    'ko': ('안', '아니', '못', '않', '아니다', '아닌', '아님'),
+    'ru': ('не', 'нет', 'никогда'),
+}
+
+# 后缀否定：韩语特有——否定绑定在词尾（`슬프지 않아`），其余语种没有对应形态
+EMOTION_NEGATION_SUFFIXES_BY_LANG = {
+    'ko': ('지 않', '지않', '지 않아', '지않아', '지 않다', '지않다', '지 않음', '지않음',
+           '지 못', '지못', '지 못해', '지못해', '지 못하다', '지못하다',
+           '않', '않아', '않다', '않음', '아냐', '아니야', '아니다', '아닌', '아님'),
+}
+
+
+def get_emotion_negation_prefixes_flat() -> tuple:
+    return _flatten_lang_tuples(EMOTION_NEGATION_PREFIXES_BY_LANG)
+
+
+def get_emotion_negation_words_flat() -> tuple:
+    return _flatten_lang_tuples(EMOTION_NEGATION_WORDS_BY_LANG)
+
+
+def get_emotion_negation_suffixes_flat() -> tuple:
+    return _flatten_lang_tuples(EMOTION_NEGATION_SUFFIXES_BY_LANG)
+
+
 def get_emotion_label_aliases_flat() -> dict:
     """Merge per-language aliases into dict[alias → canonical], used by _normalize_emotion_label."""
     merged: dict = {}
