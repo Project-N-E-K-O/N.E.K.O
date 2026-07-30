@@ -1506,6 +1506,10 @@
             // Cross-window independent-ASR flips are authoritative (Codex P2):
             // detect the flip BEFORE applySharedRuntimeSettings mutates S.
             const meta = _readSharedWriteMeta(settings);
+            const writeIdFloorBeforeIncoming = Math.max(
+                _lastSharedWriteId,
+                _lastAppliedSharedWriteId
+            );
             const asrValueDiffers =
                 Object.prototype.hasOwnProperty.call(settings, 'independentAsrEnabled') &&
                 S.independentAsrEnabled !== settings.independentAsrEnabled;
@@ -1560,7 +1564,7 @@
             }
             const serverMergePredatesLocalWrite = !!meta
                 && meta.changedKeys.length === 0
-                && meta.writeId <= _lastSharedWriteId;
+                && meta.writeId <= writeIdFloorBeforeIncoming;
             if (serverMergePredatesLocalWrite) {
                 if (incoming === settings) incoming = Object.assign({}, settings);
                 // Non-ASR server-merge fields have no per-key decision token.

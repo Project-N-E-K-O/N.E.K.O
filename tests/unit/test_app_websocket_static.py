@@ -1528,6 +1528,36 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'a delayed same-id server merge must not roll back an acknowledged local edit'
           );
 
+          // A newer explicit value may only have been received from another
+          // window, so it advances the applied floor without minting a local
+          // write id. A delayed merge must respect that floor too.
+          const externalWriteId =
+            acknowledgedLocal._sharedWriteMeta.writeId + 10;
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: externalWriteId,
+              writerId: 'window-c',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: false,
+            _sharedWriteMeta: {
+              writeId: externalWriteId,
+              writerId: 'window-d',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.mergeMessagesEnabled === true,
+            'a delayed merge must not roll back a newer externally applied value'
+          );
+
           // A different local edit races a newer server revision. The earlier
           // slopFilterEnabled=true was already acknowledged and must no longer
           // be protected as pending during the 412 merge.
