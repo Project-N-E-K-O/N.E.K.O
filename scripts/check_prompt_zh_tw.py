@@ -101,7 +101,7 @@ import subprocess
 import sys
 import tokenize
 from pathlib import Path
-from typing import Iterator
+from typing import Callable, Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_SUBDIR = "config/prompts"
@@ -356,7 +356,9 @@ def _merge_operands(node: ast.AST) -> list[ast.AST]:
     return []
 
 
-def _directly_visible_keys(node: ast.AST) -> set[str]:
+def _directly_visible_keys(
+    node: ast.AST, resolve_name: Callable[[str], set[str]] | None = None
+) -> set[str]:
     """Keys an expression states itself, ignoring what it merges in by name.
 
     Answers "does this construction demonstrably supply zh-TW?" — the condition for
@@ -375,7 +377,7 @@ def _directly_visible_keys(node: ast.AST) -> set[str]:
         }
         for key, value in zip(node.keys, node.values):
             if key is None:
-                keys |= _directly_visible_keys(value)
+                keys |= _directly_visible_keys(value, resolve_name)
         return keys
     if (
         isinstance(node, ast.Call)
@@ -385,15 +387,17 @@ def _directly_visible_keys(node: ast.AST) -> set[str]:
         keys = {kw.arg for kw in node.keywords if kw.arg is not None}
         for kw in node.keywords:
             if kw.arg is None:
-                keys |= _directly_visible_keys(kw.value)
+                keys |= _directly_visible_keys(kw.value, resolve_name)
         for arg in node.args:
-            keys |= _directly_visible_keys(arg)
+            keys |= _directly_visible_keys(arg, resolve_name)
             pairs = _pair_sequence_keys(arg)
             if pairs:
                 keys |= pairs
         return keys
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
-        return _directly_visible_keys(node.left) | _directly_visible_keys(node.right)
+        return _directly_visible_keys(node.left, resolve_name) | _directly_visible_keys(node.right, resolve_name)
+    if isinstance(node, ast.Name) and resolve_name is not None:
+        return resolve_name(node.id)
     if isinstance(node, ast.Call) and _is_dict_fromkeys(node.func) and node.args:
         # `_F | dict.fromkeys(("zh-TW",), t)` — resolve_keys handles this
         # constructor, so the visibility scan has to as well or the union looks
@@ -440,7 +444,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     assignments.setdefault(target.id, []).append(
-                        (node.lineno, id(node.value))
+                        (node.lineno, node.value)
                     )
             continue
         if (
@@ -454,16 +458,36 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             name = node.target.id
         if name is None:
             continue
-        assignments.setdefault(name, []).append((node.lineno, id(node.value)))
+        assignments.setdefault(name, []).append((node.lineno, node.value))
     for bindings in assignments.values():
-        bindings.sort()
+        bindings.sort(key=lambda item: item[0])
 
     exempt: set[int] = set()
 
-    def _exempt_binding_before(name: str, lineno: int) -> None:
-        prior = [vid for ln, vid in assignments.get(name, []) if ln <= lineno]
-        if prior:
-            exempt.add(prior[-1])
+    def _binding_before(
+        name: str, lineno: int, exclude: ast.AST | None = None
+    ) -> ast.AST | None:
+        """The value bound to `name` most recently at or before `lineno`.
+
+        ``exclude`` skips one candidate: for a self-rebinding merge like
+        ``T = T | {...}`` the new assignment registers on the same line as the
+        merge, so an inclusive line search would pick the merge's own result
+        instead of the binding its right-hand side actually reads.
+        """
+        for ln, value in reversed(assignments.get(name, [])):
+            if ln > lineno:
+                continue
+            if exclude is not None and value is exclude:
+                continue
+            return value
+        return None
+
+    def _exempt_binding_before(
+        name: str, lineno: int, exclude: ast.AST | None = None
+    ) -> None:
+        value = _binding_before(name, lineno, exclude)
+        if value is not None:
+            exempt.add(id(value))
 
     for node in ast.walk(tree):
         if (
@@ -481,11 +505,27 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
-            and node.func.attr == "update"
+            and node.func.attr in ("update", "setdefault")
             and isinstance(node.func.value, ast.Name)
-            and node.args
         ):
-            target, payload = node.func.value.id, node.args[0]
+            target = node.func.value.id
+            if node.func.attr == "setdefault":
+                # `T.setdefault("zh-TW", tpl)` names the key directly.
+                first = node.args[0] if node.args else None
+                if (
+                    isinstance(first, ast.Constant)
+                    and first.value == TRADITIONAL_KEY
+                ):
+                    _exempt_binding_before(target, node.lineno)
+                continue
+            if node.args:
+                payload = node.args[0]
+            else:
+                # `T.update(**{"zh-TW": t})` — the spread carries the mapping.
+                # Named keywords are deliberately not consulted: 'zh-TW' is not a
+                # valid identifier, so it can never arrive as `update(zh-TW=...)`.
+                spread = [kw.value for kw in node.keywords if kw.arg is None]
+                payload = spread[0] if spread else None
         elif (
             isinstance(node, ast.AugAssign)
             and isinstance(node.op, ast.BitOr)
@@ -515,11 +555,22 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         operands = _merge_operands(node)
         if not operands:
             continue
-        if TRADITIONAL_KEY not in _directly_visible_keys(node):
+
+        def _named_keys(name: str, _at: int = node.lineno, _self: ast.AST = node) -> set[str]:
+            """Keys of a name's preceding binding, so a named supplier counts.
+
+            `_TW = {"zh-TW": t}` / `T = {**_F, **_TW}` supplies zh-TW as plainly as
+            an inline literal. Following the name only ever *adds* visible keys, so
+            `U = dict(T)` still sees {en, zh} and leaves T subject to the rule.
+            """
+            bound = _binding_before(name, _at, exclude=_self)
+            return (resolve_keys(bound) or set()) if bound is not None else set()
+
+        if TRADITIONAL_KEY not in _directly_visible_keys(node, _named_keys):
             continue
         for operand in operands:
             if isinstance(operand, ast.Name):
-                _exempt_binding_before(operand.id, node.lineno)
+                _exempt_binding_before(operand.id, node.lineno, exclude=node)
 
     return exempt
 

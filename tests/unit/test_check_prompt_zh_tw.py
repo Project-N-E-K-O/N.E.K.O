@@ -1538,3 +1538,65 @@ def test_fromkeys_without_zh_tw_does_not_exempt(src):
     """Supplying some other locale, or an unresolvable list, exempts nothing."""
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT.update(**{"zh-TW": "t"})',
+    'T = {"en": "e", "zh": "s"}\nT.setdefault("zh-TW", "t")',
+])
+def test_other_explicit_backfill_forms_exempt(src):
+    """`update(**{...})` and `setdefault(key, ...)` supply zh-TW just as plainly.
+
+    The detector only accepted `update()` with a positional argument, so both of
+    these left the target unexempted and its compliant literal was reported.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT.update(**{"ja": "j"})',
+    'T = {"en": "e", "zh": "s"}\nT.setdefault("ja", "j")',
+])
+def test_other_backfill_forms_supplying_something_else_do_not_exempt(src):
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+def test_named_traditional_supplier_exempts_the_named_fragment():
+    """Both halves of a merge can be names: `{**_F, **_TW}`.
+
+    Visibility has to follow a name to its preceding binding, or a merge whose
+    zh-TW comes from `_TW` looks like it supplies nothing.
+    """
+    src = (
+        '_F = {"en": "e", "zh": "s"}\n'
+        '_TW = {"zh-TW": "t"}\n'
+        'T = {**_F, **_TW}'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == []
+
+
+def test_named_supplier_without_zh_tw_still_reports():
+    """Following names only adds visible keys; it must not excuse a plain copy."""
+    src = (
+        '_F = {"en": "e", "zh": "s"}\n'
+        '_X = {"ja": "j"}\n'
+        'T = {**_F, **_X}'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT = T | {"zh-TW": "t"}',
+    'T = {"en": "e", "zh": "s"}\nT = {**T, "zh-TW": "t"}',
+    'T = {"en": "e", "zh": "s"}\nT = dict(T, **{"zh-TW": "t"})',
+])
+def test_self_rebinding_exempts_the_previous_binding(src):
+    """`T = T | {...}` — the RHS reads the *earlier* binding.
+
+    The new assignment registers on the merge's own line, so an inclusive
+    line search picked the merge's own result and left the first literal reported.
+    """
+    assert _violations(src) == []
