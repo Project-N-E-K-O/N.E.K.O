@@ -142,11 +142,13 @@ SCOPED_RENDER_GROUP_RESERVED_TOKENS = 4000
 # （"这个人只有一条偏好"），而缺席至少是诚实的空白。
 SCOPED_RENDER_SUBJECT_MIN_TOKENS = 200
 
-# 每条 kept 条目在**总闸**上额外记的渲染开销。per-subject 的两个池一直是
-# 按条目 text 计的（改它会连带动私聊基线），保持不变；但总闸承诺的是"整块
-# L10 不超过 N"，而 compose 会给每条加 "- " 前缀和换行。短条目下这点 markup
-# 占比很大，text 刚好填满总闸时实际渲染出来会明显超。段落标题不摊到单条上
-# （它按 subject 数有界），不计入。
+# 每条 kept 条目在**总闸**上额外记的渲染开销。两个口径是分开的，别混：
+#   · per-subject 的两个池按条目 **text** 计——scoped 与 legacy 同一个含义，
+#     一个常量不能在两种模式下代表两件事；
+#   · 总闸按**渲染出来的行**计，即 text + 本常量（compose 给每条加的 "- "
+#     前缀和换行）。短条目下 markup 占比很大，只数 text 的总闸根本不是上限。
+# 选取时两条同时满足才收下（见 _score_trim_entries 的 budget / gate_budget）。
+# 段落标题不摊到单条上（它按 subject 数有界），不计入。
 SCOPED_RENDER_ENTRY_MARKUP_TOKENS = 4
 
 # ── 特权段的条数上限（protected / suppressed） ───────────────────────────

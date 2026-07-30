@@ -287,6 +287,7 @@ class RenderingMixin:
     def _score_trim_entries(
         cls, entries: list, budget: int, now: datetime,
         *, cache_writeback: bool = True, per_entry_overhead: int = 0,
+        gate_budget: int | None = None,
     ) -> tuple[list, int]:
         """Sync score-trim: sort by (evidence_score, importance) DESC, keep
         entries whose accumulated cost stays within `budget`.
@@ -304,14 +305,27 @@ class RenderingMixin:
         per-subject allocator needs the usage to hand what is left of the
         overall gate to the next subject.
 
-        `per_entry_overhead` is what composition adds around each entry —
-        the `- ` bullet and its newline. Zero (the default) keeps the
-        legacy private/main-app pools measured exactly as they always
-        were, in entry text alone. The scoped allocator passes the real
-        markup, because its gate advertises a bound on the RENDERED block:
-        with short facts the markup is most of the line, and selecting on
-        text while charging markup afterwards lets one pool hand the next
-        one tokens the gate no longer has.
+        Two budgets, because the caller has two different ceilings and
+        they are denominated differently:
+
+        - `budget` is the per-subject pool, measured in entry TEXT. Same
+          meaning in every mode, scoped or legacy, so one constant does
+          not mean two things.
+        - `gate_budget` (optional) is what is left of the scoped overall
+          gate, measured in RENDERED tokens — text plus
+          `per_entry_overhead`, the `- ` bullet and its newline that
+          composition adds. With short facts that markup is most of the
+          line, so a gate counting text alone is not a bound at all.
+
+        An entry is taken only if it fits BOTH. Charging markup against
+        the pool instead (the previous shape) quietly shrank every scoped
+        subject's allowance below the number the constant advertises;
+        selecting on text and charging markup afterwards (the shape before
+        that) let one pool hand the next one tokens the gate no longer
+        had. Legacy passes neither and is bit-for-bit unchanged.
+
+        Returns the RENDERED cost, since that is what the gate is debited
+        by; the pool is per-subject and reset each time.
 
         `cache_writeback`: default True writes `token_count` fields back
         onto each entry for across-render reuse (persona path — entries
@@ -321,37 +335,48 @@ class RenderingMixin:
         misleading and pollute reflection.json on the next save.
         """
         kept = []
-        total = 0
+        text_total = 0
+        rendered_total = 0
         for e in cls._score_trim_sort(entries, now):
-            cost = cls._get_cached_token_count(
+            text_cost = cls._get_cached_token_count(
                 e, writeback=cache_writeback,
-            ) + per_entry_overhead
-            if total + cost > budget:
+            )
+            rendered_cost = text_cost + per_entry_overhead
+            if text_total + text_cost > budget:
+                continue
+            if gate_budget is not None and rendered_total + rendered_cost > gate_budget:
                 continue
             kept.append(e)
-            total += cost
-        return kept, total
+            text_total += text_cost
+            rendered_total += rendered_cost
+        return kept, rendered_total
 
     @classmethod
     async def _ascore_trim_entries(
         cls, entries: list, budget: int, now: datetime,
         *, cache_writeback: bool = True, per_entry_overhead: int = 0,
+        gate_budget: int | None = None,
     ) -> tuple[list, int]:
         """Async twin of `_score_trim_entries`. Identical math; the only
         difference is `acount_tokens` (worker-thread tiktoken). See the
-        sync twin for the skip-don't-stop rule, the `(kept, tokens_used)`
-        return, `per_entry_overhead` and the `cache_writeback` contract."""
+        sync twin for the skip-don't-stop rule, the two budgets,
+        `per_entry_overhead` and the `cache_writeback` contract."""
         kept = []
-        total = 0
+        text_total = 0
+        rendered_total = 0
         for e in cls._score_trim_sort(entries, now):
-            cost = await cls._aget_cached_token_count(
+            text_cost = await cls._aget_cached_token_count(
                 e, writeback=cache_writeback,
-            ) + per_entry_overhead
-            if total + cost > budget:
+            )
+            rendered_cost = text_cost + per_entry_overhead
+            if text_total + text_cost > budget:
+                continue
+            if gate_budget is not None and rendered_total + rendered_cost > gate_budget:
                 continue
             kept.append(e)
-            total += cost
-        return kept, total
+            text_total += text_cost
+            rendered_total += rendered_cost
+        return kept, rendered_total
 
     def _split_persona_for_render(
         self, persona: dict,
@@ -406,17 +431,28 @@ class RenderingMixin:
                     protected_entries.append((entity_key, entry))
                 else:
                     non_protected_by_entity[entity_key].append(entry)
-        if len(protected_entries) > PERSONA_RENDER_PROTECTED_MAX_ENTRIES:
-            logger.warning(
-                f"[Persona] protected 条目 {len(protected_entries)} 条超过渲染"
-                f"上限 {PERSONA_RENDER_PROTECTED_MAX_ENTRIES}，尾部 "
-                f"{len(protected_entries) - PERSONA_RENDER_PROTECTED_MAX_ENTRIES}"
-                f" 条本轮不渲染（protected 不吃 token 预算，只能按条数封顶）"
-            )
-            protected_entries = protected_entries[
-                :PERSONA_RENDER_PROTECTED_MAX_ENTRIES
-            ]
         return protected_entries, dict(non_protected_by_entity)
+
+    @staticmethod
+    def _cap_protected_entries(protected_entries: list) -> list:
+        """Trim the protected list to its count cap, loudly.
+
+        Applied AFTER skipped subjects are filtered out, not at split
+        time. Capping first spends the allowance on entries that a later
+        allocator decision throws away, and the ones it displaced cannot
+        be recovered — a bulk card import on a subject that never renders
+        would silently take another subject's character-card lines with
+        it.
+        """
+        if len(protected_entries) <= PERSONA_RENDER_PROTECTED_MAX_ENTRIES:
+            return protected_entries
+        logger.warning(
+            f"[Persona] protected 条目 {len(protected_entries)} 条超过渲染"
+            f"上限 {PERSONA_RENDER_PROTECTED_MAX_ENTRIES}，尾部 "
+            f"{len(protected_entries) - PERSONA_RENDER_PROTECTED_MAX_ENTRIES}"
+            f" 条本轮不渲染（protected 不吃 token 预算，只能按条数封顶）"
+        )
+        return protected_entries[:PERSONA_RENDER_PROTECTED_MAX_ENTRIES]
 
     @staticmethod
     def _filter_reflections_for_render(
@@ -707,7 +743,7 @@ class RenderingMixin:
     @classmethod
     def _subject_available_budget(
         cls, slots: tuple, index: int, remaining: int,
-        *bucket_maps,
+        *bucket_maps, member_ceiling: int | None = None,
     ) -> int:
         """What slot `index` may spend out of the overall `remaining` gate.
 
@@ -742,6 +778,9 @@ class RenderingMixin:
 
         current = slots[index] if index < len(slots) else None
         if current is not None and current.kind == SUBJECT_GROUP_CHAT:
+            # Groups are the documented exception to caller order — the
+            # reserve exists precisely so one can outrank a member ahead
+            # of it — so the monotone ceiling below does not apply here.
             return max(0, remaining)
         groups_ahead = sum(
             1 for later in slots[index + 1:]
@@ -750,7 +789,22 @@ class RenderingMixin:
             and cls._slot_has_entries(later, bucket_maps)
         )
         reserved = groups_ahead * SCOPED_RENDER_GROUP_RESERVED_TOKENS
-        return max(0, remaining - reserved)
+        available = max(0, remaining - reserved)
+        if member_ceiling is not None:
+            # Never more than the member before it got. Without this a
+            # reserve that a group ends up not spending is released to
+            # whoever follows, so an earlier member is skipped to fund a
+            # later one — caller order inverted across the group boundary.
+            # Capping instead of forfeiting keeps the capacity usable by
+            # the group it was held for.
+            available = min(available, member_ceiling)
+        return available
+
+    @staticmethod
+    def _is_group_slot(subject) -> bool:
+        from memory.scopes import SUBJECT_GROUP_CHAT
+
+        return subject is not None and subject.kind == SUBJECT_GROUP_CHAT
 
     @classmethod
     def _slot_has_entries(cls, subject, bucket_maps) -> bool:
@@ -760,6 +814,9 @@ class RenderingMixin:
         individually over budget. Erring toward reserving is the safe
         direction — the failure it guards against is the group getting
         nothing, not a member getting slightly less.
+
+        `member_ceiling` is the allowance the previous non-group slot
+        received; see the clamp below.
 
         Pass the BUDGETED buckets only. Exempt sections render without
         debiting anything, so reserving for a slot that holds nothing else
@@ -824,12 +881,16 @@ class RenderingMixin:
         kept_reflections: list = []
         skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
+        member_ceiling: int | None = None
         for index, subject in enumerate(prep.subject_slots):
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
                 persona_buckets, reflection_buckets,
+                member_ceiling=member_ceiling,
             )
+            if not cls._is_group_slot(subject):
+                member_ceiling = available
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 if persona_buckets.get(marker) or reflection_buckets.get(marker):
                     # Has budgeted content it cannot afford → drop it whole,
@@ -841,8 +902,9 @@ class RenderingMixin:
                 continue
             persona_kept, persona_used = cls._score_trim_entries(
                 persona_buckets.get(marker, ()),
-                min(PERSONA_RENDER_MAX_TOKENS, available), now,
+                PERSONA_RENDER_MAX_TOKENS, now,
                 per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
+                gate_budget=available,
             )
             # Both counters move by the CHARGED cost. Subtracting only the
             # text from `available` would let the reflection pool spend
@@ -851,9 +913,10 @@ class RenderingMixin:
             available = max(0, available - persona_used)
             reflection_kept, reflection_used = cls._score_trim_entries(
                 reflection_buckets.get(marker, ()),
-                min(REFLECTION_RENDER_MAX_TOKENS, available), now,
+                REFLECTION_RENDER_MAX_TOKENS, now,
                 cache_writeback=False,
                 per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
+                gate_budget=available,
             )
             remaining -= reflection_used
             kept_persona.extend(persona_kept)
@@ -875,12 +938,16 @@ class RenderingMixin:
         kept_reflections: list = []
         skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
+        member_ceiling: int | None = None
         for index, subject in enumerate(prep.subject_slots):
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
                 persona_buckets, reflection_buckets,
+                member_ceiling=member_ceiling,
             )
+            if not cls._is_group_slot(subject):
+                member_ceiling = available
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 if persona_buckets.get(marker) or reflection_buckets.get(marker):
                     # Has budgeted content it cannot afford → drop it whole,
@@ -892,8 +959,9 @@ class RenderingMixin:
                 continue
             persona_kept, persona_used = await cls._ascore_trim_entries(
                 persona_buckets.get(marker, ()),
-                min(PERSONA_RENDER_MAX_TOKENS, available), now,
+                PERSONA_RENDER_MAX_TOKENS, now,
                 per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
+                gate_budget=available,
             )
             # Both counters move by the CHARGED cost. Subtracting only the
             # text from `available` would let the reflection pool spend
@@ -902,9 +970,10 @@ class RenderingMixin:
             available = max(0, available - persona_used)
             reflection_kept, reflection_used = await cls._ascore_trim_entries(
                 reflection_buckets.get(marker, ()),
-                min(REFLECTION_RENDER_MAX_TOKENS, available), now,
+                REFLECTION_RENDER_MAX_TOKENS, now,
                 cache_writeback=False,
                 per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
+                gate_budget=available,
             )
             remaining -= reflection_used
             kept_persona.extend(persona_kept)
@@ -980,10 +1049,10 @@ class RenderingMixin:
         trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
             trimmed_reflections, pending_reflections, prep.suppressed_text_set,
         )
-        protected_entries = [
+        protected_entries = self._cap_protected_entries([
             (entity_key, entry) for entity_key, entry in prep.protected_entries
             if not self._entry_is_skipped(entry, skipped)
-        ]
+        ])
         return self._compose_markdown_from_trimmed(
             name, prep.persona_view, name_mapping,
             protected_entries, trimmed_non_protected,
