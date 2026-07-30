@@ -1339,22 +1339,41 @@ async def test_fallback_recall_shares_the_subject_resolver():
     context must authorize identical scopes — enforced by all three
     calling resolve_group_recall_subjects. A re-inlined copy in any path
     is where the scopes would drift (the bootstrap path WAS such a copy
-    until the recent-speaker expansion collapsed it)."""
+    until the recent-speaker expansion collapsed it).
+
+    AST 而非源码字符串：函数体内的 import 语句 / 注释同样含这个名字，
+    字符串断言在「调用被内联掉、import 还留着」的变异下照样绿（变异
+    验证抓到过）。这里找真正的 Call 节点。"""  # noqa: DOCSTRING_CJK
+    import ast
     import inspect
+    import textwrap
 
     from plugin.plugins.qq_auto_reply import memory_tool_service as mts
     from plugin.plugins.qq_auto_reply import reply_context_node as rcn
     from plugin.plugins.qq_auto_reply import session_instruction_service as sis
 
-    assert "resolve_group_recall_subjects" in inspect.getsource(
+    def _calls_resolver(func) -> bool:
+        tree = ast.parse(textwrap.dedent(inspect.getsource(func)))
+        return any(
+            isinstance(node, ast.Call)
+            and (
+                (isinstance(node.func, ast.Name)
+                 and node.func.id == "resolve_group_recall_subjects")
+                or (isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "resolve_group_recall_subjects")
+            )
+            for node in ast.walk(tree)
+        )
+
+    assert _calls_resolver(
         rcn.QQReplyContextNode._build_recalled_memory_text
-    )
-    assert "resolve_group_recall_subjects" in inspect.getsource(
+    ), "回落召回路径没有真正调用共享 resolver"
+    assert _calls_resolver(
         mts.QQMemoryToolService.execute_recall
-    )
-    assert "resolve_group_recall_subjects" in inspect.getsource(
+    ), "tool handler 路径没有真正调用共享 resolver"
+    assert _calls_resolver(
         sis.QQSessionInstructionService._build_core_memory_section
-    )
+    ), "scoped bootstrap 路径没有真正调用共享 resolver"
 
     # 无 backlog_store（轻量 harness）：形状退化回 [群, 当前发言人]。
     plugin = _tool_plugin()
