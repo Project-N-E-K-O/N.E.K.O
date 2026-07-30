@@ -1645,3 +1645,63 @@ def test_lone_cr_module_keeps_comments_on_their_own_lines():
     assert comments[0] == ""
     assert "PROMPT_ZH_TW" in comments[1]
     assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT.update({"ja": "j"}, **{"zh-TW": "t"})',
+    'T = {"en": "e", "zh": "s"}\nT.update(**{"ja": "j"}, **{"zh-TW": "t"})',
+])
+def test_every_update_payload_is_inspected(src):
+    """`update()` takes a positional mapping and any number of `**` spreads.
+
+    Looking at only the first payload missed zh-TW whenever it arrived in a later
+    one, and reported the compliant target's literal.
+    """
+    assert _violations(src) == []
+
+
+def test_mixed_update_payloads_without_zh_tw_still_report():
+    src = 'T = {"en": "e", "zh": "s"}\nT.update({"ja": "j"}, **{"ko": "k"})'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'TW = {"zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    'TW = {"zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT |= TW',
+])
+def test_named_mutation_payload_is_resolved(src):
+    """A payload can be a name bound to a mapping earlier.
+
+    Merge operands already used the preceding-binding lookup; mutation payloads
+    did not, so `T.update(TW)` left T reported. `prompts_emotion.py:573` shows the
+    `update(<name>)` shape does occur in this repo.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('X = {"ja": "j"}\nT = {"en": "e", "zh": "s"}\nT.update(X)', [2]),
+    ('T = {"en": "e", "zh": "s"}\nT.update(UNKNOWN)', [1]),
+])
+def test_named_payload_without_zh_tw_or_unresolvable_still_reports(src, expected):
+    """Following the name only helps when it demonstrably supplies zh-TW."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    # A copy taken before the backfill: U lacks zh-TW at runtime but is not judged.
+    'T = {"en": "e", "zh": "s"}\nU = dict(T)\nT["zh-TW"] = "t"',
+    # dict(zip(...)) — every other static constructor resolves, this one does not.
+    'T = dict(zip(("en", "zh"), (english, simplified)))',
+])
+def test_documented_miss_side_blind_spots(src):
+    """Pinned so a change here is deliberate, not accidental.
+
+    Both are on the miss side and both are called out in the module docstring:
+    ordering the exemption against each use needs statement-level data flow, and
+    `dict(zip(...))` has zero occurrences under config/prompts because splitting a
+    localized table into parallel sequences makes the template bodies unreadable.
+    """
+    assert _violations(src) == []

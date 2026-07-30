@@ -80,6 +80,25 @@ exemption is deliberately keyed on the mutation *demonstrably supplying zh-TW*:
 exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a real
 offender, trading one rare false positive for a broad blind spot.
 
+Two accepted blind spots follow from that choice, both on the miss side:
+
+  * The exemption is not ordered against *other* uses of the name, so a copy taken
+    before the backfill is not judged::
+
+        T = {"en": "e", "zh": "s"}
+        U = dict(T)              # U really does lack zh-TW at runtime
+        T["zh-TW"] = "t"         # …but this exempts T's literal, and dict(T)
+                                 #    resolves through the name to the same keys
+
+    Ordering the exemption against each use needs statement-level data flow, the
+    same analysis the section above declines.
+  * ``dict(zip(keys, values))`` is not resolved. Every other static constructor is
+    (literal, ``dict()``, ``|``, comprehension, iterable-of-pairs, ``fromkeys``),
+    but splitting a localized table into two parallel sequences makes the template
+    bodies unreadable, so it is not a shape prompt modules use — there are zero
+    occurrences under config/prompts. Chasing constructor forms with no realistic
+    use grows ``resolve_keys`` without shrinking the backlog.
+
 
 Usage:
     python scripts/check_prompt_zh_tw.py [--base origin/main]
@@ -513,7 +532,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if matched:
             continue
         target: str | None = None
-        payload: ast.AST | None = None
+        payloads: list[ast.AST] = []
         if (
             isinstance(node, ast.Call)
             and isinstance(node.func, ast.Attribute)
@@ -530,29 +549,39 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 ):
                     _exempt_binding_before(target, node.lineno)
                 continue
-            if node.args:
-                payload = node.args[0]
-            else:
-                # `T.update(**{"zh-TW": t})` — the spread carries the mapping.
-                # Named keywords are deliberately not consulted: 'zh-TW' is not a
-                # valid identifier, so it can never arrive as `update(zh-TW=...)`.
-                spread = [kw.value for kw in node.keywords if kw.arg is None]
-                payload = spread[0] if spread else None
+            # Every payload, not just the first: `update({...}, **{...})` is legal
+            # and so is more than one `**`. Named keywords are deliberately not
+            # consulted — 'zh-TW' is not an identifier, so it can never arrive as
+            # `update(zh-TW=...)`.
+            payloads = list(node.args) + [
+                kw.value for kw in node.keywords if kw.arg is None
+            ]
         elif (
             isinstance(node, ast.AugAssign)
             and isinstance(node.op, ast.BitOr)
             and isinstance(node.target, ast.Name)
         ):
-            target, payload = node.target.id, node.value
-        if target is None or payload is None:
+            target, payloads = node.target.id, [node.value]
+        if target is None or not payloads:
             continue
-        keys = resolve_keys(payload)
-        if keys is None:
-            # `T.update([("zh-TW", "t")])` — the iterable-of-pairs form is just as
-            # knowable, and missing it means the target is not marked backfilled
-            # and its literal gets reported despite being compliant at runtime.
-            keys = _pair_sequence_keys(payload)
-        if keys and TRADITIONAL_KEY in keys:
+
+        def _payload_keys(payload: ast.AST, _at: int = node.lineno) -> set[str]:
+            """Keys a mutation payload supplies, or empty if unknowable.
+
+            Three shapes, in order: a mapping expression, an iterable of pairs
+            (`update([("zh-TW", t)])`), and a name bound to a mapping earlier
+            (`TW = {"zh-TW": t}` / `T.update(TW)`) — the last one uses the same
+            preceding-binding lookup as merge operands, which it previously did not.
+            """
+            keys = resolve_keys(payload)
+            if keys is None:
+                keys = _pair_sequence_keys(payload)
+            if keys is None and isinstance(payload, ast.Name):
+                bound = _binding_before(payload.id, _at)
+                keys = resolve_keys(bound) if bound is not None else None
+            return keys or set()
+
+        if any(TRADITIONAL_KEY in _payload_keys(p) for p in payloads):
             _exempt_binding_before(target, node.lineno)
 
     # A name merged into a construction that *demonstrably supplies zh-TW* is a
