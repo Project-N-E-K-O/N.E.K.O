@@ -81,6 +81,47 @@ test('CAT1 desktop chat rect uses the Niri virtual viewport origin after physica
     assert.notEqual(rect.left, 0, 'the cat target must not be clamped from a false negative local coordinate');
 });
 
+test('CAT1 desktop chat rect ignores a stale virtual origin after physical crop is disabled', () => {
+    const context = {
+        Date,
+        window: {
+            screenX: 1224,
+            screenY: 84,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: false,
+                        virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 },
+                        offsetX: 1223,
+                        offsetY: 83
+                    };
+                }
+            }
+        },
+        _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS: 10_000,
+        _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS: 2_500,
+        _nekoIdleDesktopChatMinimizedState: null,
+        _nekoIdleDesktopCompactSurfaceState: {
+            visible: true,
+            screenRect: { x: 1300, y: 200, width: 88, height: 88 },
+            updatedAt: Date.now(),
+            sourceUpdatedAt: Date.now()
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualViewportOrigin'),
+        readFunction('static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js', '_normalizeNekoIdleScreenRect'),
+        readFunction('static/avatar/avatar-ui-buttons/idle-journey-and-presentation.js', '_getNekoIdleDesktopCompactSurfaceRect')
+    ].join('\n'), context);
+
+    const rect = vm.runInContext('_getNekoIdleDesktopCompactSurfaceRect()', context);
+
+    assert.equal(rect.left, 76);
+    assert.equal(rect.top, 116);
+    assert.equal(rect.screenLeft, 1300);
+});
+
 test('CAT1 converts a cropped DOM rect back to virtual desktop coordinates before moving', () => {
     const context = {
         window: {

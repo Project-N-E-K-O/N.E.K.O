@@ -69,10 +69,12 @@ function _getNekoDesktopVirtualViewportOrigin() {
         const cropState = cropApi && typeof cropApi.getState === 'function'
             ? cropApi.getState()
             : null;
-        const virtualBounds = cropState && cropState.virtualBounds;
+        const virtualBounds = cropState && cropState.enabled === true
+            ? cropState.virtualBounds
+            : null;
         const virtualX = Number(virtualBounds && virtualBounds.x);
         const virtualY = Number(virtualBounds && virtualBounds.y);
-        if (Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
+        if (virtualBounds && Number.isFinite(virtualX) && Number.isFinite(virtualY)) {
             return { x: virtualX, y: virtualY };
         }
         const offsetX = Number(cropState && cropState.offsetX);
