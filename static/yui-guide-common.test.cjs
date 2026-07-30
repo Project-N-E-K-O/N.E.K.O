@@ -28,6 +28,23 @@ const dayGuideFiles = [
     'tutorial/yui-guide/days/day6-agent-guide.js'
 ];
 
+function getBalancedBlockFrom(source, startIndex) {
+    const openBraceIndex = source.indexOf('{', startIndex);
+    assert.notEqual(openBraceIndex, -1, 'expected block opening brace');
+    let depth = 0;
+    for (let index = openBraceIndex; index < source.length; index += 1) {
+        if (source[index] === '{') {
+            depth += 1;
+        } else if (source[index] === '}') {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(startIndex, index + 1);
+            }
+        }
+    }
+    assert.fail('expected balanced block closing brace');
+}
+
 test('common guide helpers freeze config, register guides, and create locale audio maps', () => {
     const win = {};
     const nested = { day: 3, child: { label: 'x' } };
@@ -1240,12 +1257,23 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /entry\.localSelectors\.some\(function \(selector\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
-    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)/);
-    // 修改原因：胶囊输入框定位走 registry 的 capsuleBody，不新增 capsule-input 的 plain-capsule 特例。
-    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
-    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
-    assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
-    assert.match(appInterpageSource, /return \{ rect: sourceRect \};/);
+    const shouldAlignFunctionStart = appInterpageSource.indexOf(
+        'function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics)'
+    );
+    const sourceRectFunctionStart = appInterpageSource.indexOf(
+        'function getYuiGuideChatSpotlightSourceRect(kind, variant, rect, metrics)'
+    );
+    assert.notEqual(shouldAlignFunctionStart, -1);
+    assert.notEqual(sourceRectFunctionStart, -1);
+    const shouldAlignFunction = getBalancedBlockFrom(appInterpageSource, shouldAlignFunctionStart);
+    const sourceRectFunction = getBalancedBlockFrom(appInterpageSource, sourceRectFunctionStart);
+    // 修改原因：普通 input 保留旧 plain-capsule 逻辑；capsule-input 仅在桌面宿主明确声明
+    // Wayland work-area carrier 时对齐文字，避免改变 X11/macOS 的 registry 几何。
+    assert.match(shouldAlignFunction, /kind === 'capsule-input'[\s\S]*metrics\.waylandWorkAreaCarrier === true/);
+    assert.match(sourceRectFunction, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
+    assert.match(sourceRectFunction, /width:\s*rect\.width/);
+    assert.doesNotMatch(sourceRectFunction, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
+    assert.match(sourceRectFunction, /return \{ rect: sourceRect \};/);
 });
 
 test('daily guide files consume common helpers instead of redeclaring shared helpers', () => {
@@ -2834,6 +2862,7 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(lifecycleMessageBlock, /tutorialRunId:\s*tutorialRunId/);
     assert.match(appInterpageSource, /if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
     assert.match(appInterpageSource, /function getYuiGuideScreenCoordinateBounds\(metrics\) \{/);
+    assert.match(appInterpageSource, /metrics\.coordinateSpace === 'screen-dip'[\s\S]*metrics\.renderBounds/);
     assert.match(appInterpageSource, /return metrics && \(metrics\.bounds \|\| metrics\.contentBounds\) \|\| \{ x: 0, y: 0 \};/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);

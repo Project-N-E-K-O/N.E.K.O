@@ -929,7 +929,14 @@
         "volumeWaiting": "待機中",
         "volumeHintWaiting": "マイクが入力を待っています、話してください",
         "noiseReduction": "ノイズリダクション",
-        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに"
+        "noiseReductionHint": "RNNoise AI ノイズリダクションで音声をクリアに",
+        "independentAsr": "独立音声認識",
+        "independentAsrActive": "独立 ASR を使用中：{{provider}}",
+        "independentAsrFallback": "独立 ASR を利用できないため、この音声セッションの入力を停止しました。独立 ASR の設定を確認してから、新しい音声セッションを開始してください。",
+        "audioPreprocessingFailed": "マイク音声の処理に失敗しました。このセッションの音声入力は停止しました。新しい音声セッションを開始してください。",
+        "independentAsrProviderUnavailable": "{{provider}} は一時的に利用できません。この音声セッションの入力を停止しました。別の音声認識サービスには切り替えていません。後でもう一度音声セッションを開始してください。",
+        "independentAsrNextSession": "次の音声セッションから有効になります。利用できない場合も Omni へ自動的に切り替わりません。",
+        "independentAsrNative": "Omni 標準音声認識を使用中"
     },
     "speaker": {
         "volumeLabel": "スピーカー音量",
@@ -1028,7 +1035,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "無料版",
+            "dummy": "テスト用プロバイダー",
+            "unknown": "不明なプロバイダー"
         },
         "coreProviderNames": {
             "free": "無料版（猫娘特典、Web検索対応）",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "ttsModelApiKeyPlaceholder": "任意、ローカルプロバイダーは空欄可",
         "ttsVoiceId": "ボイスID",
+        "ttsProtocolHintOpenAI": "OpenAI互換：HTTP(S) POST /v1/audio/speech。テキストを一括送信し、音声レスポンスをストリーミングします。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream。テキストと音声を双方向ストリーミングします。",
         "ttsVoiceIdHint": "（任意、キャラクター音声がない場合のフォールバック）",
         "ttsVoiceIdPlaceholder": "例: 日本語（女性）, alloy",
         "agentModelUrlPlaceholder": "空欄のままにすると、アシストAPIビジョンモデルのURLを継承します",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime APIはLocalモード（ローカル音声会話）専用です",
             "wsProtocol": "• URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
             "autoSwitchLocal": "• 設定後、Core APIタイプは自動的に「local」になります"
-        },
-        "ttsWarning": {
-            "title": "重要:",
-            "duplexStreaming": "• TTS APIは全二重ストリーミング（リアルタイム音声合成）対応必須です",
-            "wsProtocol": "• URLはWebSocketプロトコル（ws:// または wss://）である必要があります",
-            "cosyVoiceOnly": "• 現在はAlibaba Cloud CosyVoice互換プロトコルのみサポートしています"
         },
         "gptsovitsConfig": "GPT-SoVITS 設定",
         "gptsovitsDescription": "GPT-SoVITS 説明：",
@@ -1765,7 +1774,6 @@
         "close": "閉じる",
         "catgirlMemory": "キャラクター",
         "compactLibraryLabel": "キャラクター一覧",
-        "currentRole": "現在のキャラクター:",
         "autoReview": "自動メモリレビュー",
         "globalActionsAria": "メモリアクション",
         "openTutorialManager": "ガイド",
@@ -1791,6 +1799,7 @@
         "autoReviewTooltipLabel": "自動メモリレビューについて",
         "strongMemoryTooltipLabel": "強力なメモリについて",
         "externalImportTooltipLabel": "外部メモリのインポートについて",
+        "roleSourceTooltip": "由来：{{source}}",
         "loading": "読み込み中...",
         "externalImportTitle": "外部メモリをインポート",
         "externalImportNote": "OpenClaw または Hermes の USER.md、SOUL.md、MEMORY.md、日次メモ、ワークスペース ZIP を選択中のキャラクターにインポートします。",
@@ -1827,7 +1836,6 @@
         "olderSection": "以前",
         "me": "私:",
         "memoNone": "なし。",
-        "delete": "削除",
         "deleteEntryAria": "{{speaker}}の{{position}}件目の記憶を削除",
         "pleaseSelectFile": "まずファイルを選択してください",
         "saveFailed": "保存失敗: {{error}}",
@@ -2376,7 +2384,7 @@
             "never": "今後表示しない"
         },
         "screenSource": {
-            "notAvailable": "画面ソース選択はデスクトップ版のみで利用可能です",
+            "notAvailable": "現在の環境では画面ソースを選択できません",
             "loading": "読み込み中...",
             "noSources": "利用可能な画面ソースがありません",
             "loadFailed": "画面ソースの読み込みに失敗しました",
@@ -2384,7 +2392,8 @@
             "screenLabel": "画面 {{index}}",
             "windows": "ウィンドウ",
             "selected": "{{source}}を選択しました",
-            "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました"
+            "sourceLost": "画面共有で以前選択したウィンドウが見つかりません。全画面共有に切り替えました",
+            "captureFailed": "画面キャプチャを停止しました。システム権限を確認するか、ソースを選択し直してください"
         },
         "deviceSwitchFailed": "デバイスの切り替えに失敗しました",
         "deviceSwitching": "デバイスを切り替え中...",
@@ -2687,9 +2696,11 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "エッジドックモード Beta を有効にしました。",
-            "disabledNotice": "エッジドックモード Beta を無効にしました。Live2D は通常の端スナップに戻ります。",
-            "toggleFailed": "エッジドックモード Beta を切り替えられませんでした。しばらくしてから再試行してください。"
+            "enabledNotice": "エッジ覗きを有効にしました。",
+            "disabledNotice": "エッジ覗きを無効にしました。Live2D は再び表示され、ドラッグできます。",
+            "stealthEnabledNotice": "ステルスモードを有効にしました。",
+            "stealthDisabledNotice": "ステルスモードを無効にしました。Yui はエッジから覗いた状態を保ちます。",
+            "toggleFailed": "エッジ覗きを切り替えられませんでした。しばらくしてから再試行してください。"
         },
         "toggles": {
             "allowInterrupt": "割り込み許可",
@@ -2697,8 +2708,6 @@
             "avatarReactionBubble": "表情バブル",
             "focusCognition": "集中モード",
             "focusCognitionTooltip": "オンにすると、あなたが弱音を吐いたり複雑な話題のときに集中して深く考えます。オフにすると集中モードに入りません。",
-            "widgetMode": "エッジドックモード Beta",
-            "widgetModeTooltip": "エッジドックモードを手動で有効にすると、Live2D が画面端の 6 つのアンカーから覗けます。",
             "slopFilter": "自然な表現",
             "slopFilterTooltip": "過去の返答にある繰り返しや型にはまった言い回しを減らし、より自然に話せるようにします。",
             "autoCat": "自動ねこ化",

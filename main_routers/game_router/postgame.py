@@ -934,6 +934,43 @@ def _build_postgame_context_snapshot(state: dict) -> dict:
     }
 
 
+def _game_voice_lease_release_needed(mgr: Any) -> bool:
+    """Decide whether game exit must call ``_resume_independent_voice_input_after_game``.
+
+    Realtime-STT games never move the microphone lease: the frontend keeps
+    ordinary microphone upload active (the ``stt_provider === 'realtime'``
+    branch in app-websocket.js stops the STT gate immediately) and the
+    backend lease owner stays ``core`` throughout. Running resume anyway
+    performs a core->core no-op transition in ``_apply_voice_lease_state``
+    — which still bumps ``_voice_input_transition_generation`` and clears
+    the microphone queue / hot-swap cache, cutting off in-flight speech PCM
+    that spans the game-exit instant.
+
+    game_release is needed only when the lease actually left Core:
+
+    - owner == "game": the game still holds the lease (browser STT gate);
+    - owner == "none": the player closed the mic mid-takeover (lease_sync
+      owner=none only aborts, never resumes), and SUSPENDED's sole exit is
+      game_release;
+    - owner == "core" while the lifecycle is still SUSPENDED: the browser
+      STT gate failed mid-game and fell back to the ordinary microphone, so
+      the owner returned to core without a resume — only this game_release
+      can unstick the runtime from SUSPENDED.
+
+    The lifecycle probe is read-only and fully ``getattr``-guarded to avoid
+    importing asr_client internals; legacy/degraded managers without
+    MicLease state keep the historical unconditional resume.
+    """
+    owner = getattr(mgr, "_voice_lease_owner", None)
+    if owner is None:
+        return True
+    if owner != "core":
+        return True
+    lifecycle = getattr(getattr(mgr, "_asr_runtime", None), "_asr_lifecycle", None)
+    lifecycle_state = getattr(getattr(lifecycle, "snapshot", None), "state", None)
+    return getattr(lifecycle_state, "value", None) == "suspended"
+
+
 async def _finalize_game_route_state_inner(
     state: dict,
     *,
@@ -970,6 +1007,24 @@ async def _finalize_game_route_state_inner(
         mgr._takeover_input_dispatcher = None
     realtime_restore = {"attempted": False, "ok": True, "reason": "takeover_released"}
     state["realtime_restore"] = realtime_restore
+    resume_voice = getattr(
+        mgr,
+        "_resume_independent_voice_input_after_game",
+        None,
+    )
+    if callable(resume_voice) and not _game_voice_lease_release_needed(mgr):
+        # realtime-STT 游戏租约从未离开 Core：跳过 resume，避免 core->core
+        # 空转换清掉在途麦克风 PCM（见 ``_game_voice_lease_release_needed``）。
+        realtime_restore["reason"] = "voice_lease_not_taken"
+    elif callable(resume_voice):
+        realtime_restore["attempted"] = True
+        try:
+            await resume_voice()
+            realtime_restore["reason"] = "voice_input_resumed"
+        except Exception as exc:
+            realtime_restore["ok"] = False
+            realtime_restore["reason"] = "voice_input_resume_failed"
+            logger.warning("⚠️ 游戏路由退出时恢复语音输入失败: %s", exc)
     if mgr and hasattr(mgr, "send_status"):
         try:
             await mgr.send_status(json.dumps({

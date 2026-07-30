@@ -217,10 +217,17 @@ function getNativeVoiceProviderLabel(nativeEntries) {
     if (!Array.isArray(nativeEntries)) return '';
     for (const [, voiceData] of nativeEntries) {
         const provider = voiceData && String(voiceData.provider || '').trim();
+        const configuredLabel = voiceData && String(voiceData.provider_label || '').trim();
+        // Configured presets share the Custom API source label without losing
+        // the provider key that owns preview and synthesis behavior.
+        // 配置音色共用“自定义 API”来源名，provider key 仍负责试听与合成路由。
+        if (VoiceDisplayUtils.isKnownProvider(configuredLabel)) {
+            return getNativeProviderShortName(configuredLabel);
+        }
         if (VoiceDisplayUtils.isKnownProvider(provider)) {
             return getNativeProviderShortName(provider);
         }
-        const label = voiceData && (voiceData.provider_label || provider);
+        const label = configuredLabel || provider;
         if (label) return String(label);
     }
     return '';

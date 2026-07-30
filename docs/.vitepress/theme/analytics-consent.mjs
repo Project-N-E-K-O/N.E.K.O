@@ -212,6 +212,7 @@ export function trackSteamCtaClick(
 
   const linkUrl = new URL(rawUrl, baseUrl)
   const normalizedLinkUrl = normalizeAnalyticsDestinationUrl(rawUrl, baseUrl)
+  const sanitizedLinkUrl = sanitizeAnalyticsPageUrl(rawUrl, baseUrl)
   const pageUrl = sanitizeAnalyticsPageUrl(
     windowObject.location.href,
     windowObject.location.href,
@@ -219,7 +220,8 @@ export function trackSteamCtaClick(
   const eventParameters = {
     link_url: normalizedLinkUrl.href,
     link_domain: linkUrl.hostname,
-    cta_location: linkUrl.searchParams.get('utm_content') || 'unspecified',
+    cta_location:
+      sanitizedLinkUrl.searchParams.get('utm_content') || 'unspecified',
     page_location: pageUrl.href,
     page_title: documentObject?.title || '',
     transport_type: 'beacon',

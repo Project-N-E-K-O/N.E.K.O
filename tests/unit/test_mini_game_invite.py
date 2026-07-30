@@ -24,6 +24,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 import main_logic.proactive_chat.mini_game_invite as sr  # noqa: E402
 import main_logic.proactive_chat.state as sr_history  # noqa: E402
 import main_logic.proactive_chat.contracts as sr_parsing  # noqa: E402
+from tests.fake_clock import patch_module_clock  # noqa: E402
 
 LANLAN = "test_lanlan"
 MASTER = "小明"
@@ -304,7 +305,9 @@ def test_advance_response_dismisses_pending_invite_with_short_suppression(monkey
     误判 expired 并已悄悄进入长冷却（违 D2 语义）。改成等同 'later' 选项的
     reset+短抑制语义：保留 ever_delivered（force-first 不再 fire）但不长锁。"""
     fixed_now = 1_700_000_000.0
-    monkeypatch.setattr(sr.time, 'time', lambda: fixed_now)
+    # 假时钟打在 mini_game_invite 上：advance → _apply_mini_game_invite_choice →
+    # suppressed_until 这条链上读 time.time() 的就是该模块自身。
+    patch_module_clock(monkeypatch, sr, time=lambda: fixed_now)
 
     delivered_at = fixed_now - 30
     state = sr._mini_game_invite_get_state(LANLAN)
@@ -337,7 +340,9 @@ def test_advance_response_does_not_trigger_long_cooldown(monkeypatch):
             pending 仍返 expired（按钮已晚），但 5min 后下次 proactive 重新
             走骰子可重新邀请，不长锁。"""
     fixed_now = 1_700_005_000.0
-    monkeypatch.setattr(sr.time, 'time', lambda: fixed_now)
+    # advance / _apply_mini_game_invite_choice / _mini_game_invite_in_cooldown
+    # 三个断言点都在 mini_game_invite 模块内读 time.time()。
+    patch_module_clock(monkeypatch, sr, time=lambda: fixed_now)
 
     state = sr._mini_game_invite_get_state(LANLAN)
     state['delivered_at'] = fixed_now - 60
@@ -360,7 +365,10 @@ def test_advance_response_does_not_trigger_long_cooldown(monkeypatch):
         <= sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS + 1
     ), f"suppressed_until 应是 5min 短抑制，实际 {suppress_window}s"
     # 5min 后冷却应自然解除
-    monkeypatch.setattr(sr.time, 'time', lambda: fixed_now + sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS + 1)
+    patch_module_clock(
+        monkeypatch, sr,
+        time=lambda: fixed_now + sr.MINI_GAME_INVITE_LATER_SUPPRESS_SECONDS + 1,
+    )
     assert sr._mini_game_invite_in_cooldown(LANLAN) is False
 
 

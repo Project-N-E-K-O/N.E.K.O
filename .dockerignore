@@ -48,6 +48,13 @@ N.E.K.O/
 # (repo, revision) doesn't match the pin, so a developer's stale/partial local
 # copy riding in via `COPY . /app` is corrected rather than shipped.
 
+# Voice-turn ONNX weights (data/vad_models/*.onnx) follow the same contract:
+# untracked in git but prepared on the native runner before the build, they ride
+# into the context via `COPY . /app` and step 6c verifies them offline against
+# data/vad_models/manifest.json (SHA-256), downloading only as a local-build
+# fallback. Do not add an ignore pattern for data/vad_models here — the
+# build-contract tests pin this invariant.
+
 # Build artifacts
 build/
 dist/

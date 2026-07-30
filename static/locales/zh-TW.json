@@ -929,7 +929,14 @@
         "volumeWaiting": "等待聲音",
         "volumeHintWaiting": "麥克風正在監聽，請說話",
         "noiseReduction": "降噪",
-        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰"
+        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰",
+        "independentAsr": "獨立語音辨識",
+        "independentAsrActive": "目前使用獨立 ASR：{{provider}}",
+        "independentAsrFallback": "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
+        "audioPreprocessingFailed": "麥克風音訊處理失敗，本次工作階段的語音輸入已停止。請重新開始一次語音工作階段。",
+        "independentAsrProviderUnavailable": "{{provider}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
+        "independentAsrNextSession": "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
+        "independentAsrNative": "目前使用 Omni 原生語音辨識"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",
@@ -1028,7 +1035,13 @@
             "silicon": "矽基流動",
             "gemini": "Gemini",
             "kimi_code": "Kimi Code（月之暗面）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "通義千問",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "免費版",
+            "dummy": "測試服務",
+            "unknown": "未知服務"
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "可選，本地服務商可留空",
         "ttsModelApiKeyPlaceholder": "可選，本地服務商可留空",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI 相容：HTTP(S) POST /v1/audio/speech，完整文字請求、串流音訊回應。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文字與音訊雙向串流傳輸。",
         "ttsVoiceIdHint": "（可選，角色未設置時的回退音色）",
         "ttsVoiceIdPlaceholder": "如：中文女、alloy",
         "agentModelUrlPlaceholder": "留空則跟隨輔助 API 視覺模型 URL",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API 僅用於 Local 模式（本地語音對話）",
             "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
             "autoSwitchLocal": "• 配置後，核心 API 類型將自動切換為 \"local\""
-        },
-        "ttsWarning": {
-            "title": "重要提示：",
-            "duplexStreaming": "• TTS API 必須支持雙工流式（全雙工實時語音閤成）",
-            "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
-            "cosyVoiceOnly": "• 目前僅支持阿里雲 CosyVoice 兼容的協議格式"
         },
         "gptsovitsConfig": "GPT-SoVITS 配置",
         "gptsovitsDescription": "GPT-SoVITS 說明：",
@@ -1765,7 +1774,6 @@
         "close": "關閉",
         "catgirlMemory": "角色",
         "compactLibraryLabel": "角色列表",
-        "currentRole": "目前角色:",
         "autoReview": "自動記憶整理",
         "globalActionsAria": "記憶操作",
         "openTutorialManager": "新手引導",
@@ -1791,6 +1799,7 @@
         "autoReviewTooltipLabel": "瞭解自動記憶整理",
         "strongMemoryTooltipLabel": "瞭解強力記憶",
         "externalImportTooltipLabel": "關於匯入外部記憶",
+        "roleSourceTooltip": "來源：{{source}}",
         "loading": "加載中...",
         "externalImportTitle": "匯入外部記憶",
         "externalImportNote": "將 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日記憶或工作區 ZIP 匯入目前選取的角色。",
@@ -1827,7 +1836,6 @@
         "olderSection": "較久前",
         "me": "我：",
         "memoNone": "無。",
-        "delete": "刪除",
         "deleteEntryAria": "刪除 {{speaker}} 的第 {{position}} 條記憶",
         "pleaseSelectFile": "請先選擇文件",
         "saveFailed": "保存失敗：{{error}}",
@@ -2376,7 +2384,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
-            "notAvailable": "屏幕源選擇僅在桌面版可用",
+            "notAvailable": "目前環境無法選擇螢幕來源",
             "loading": "加載中...",
             "noSources": "沒有可用的屏幕源",
             "loadFailed": "獲取屏幕源失敗",
@@ -2384,7 +2392,8 @@
             "screenLabel": "螢幕 {{index}}",
             "windows": "窗口",
             "selected": "已選擇 {{source}}",
-            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享"
+            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享",
+            "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源"
         },
         "deviceSwitchFailed": "裝置切換失敗",
         "deviceSwitching": "裝置切換中...",
@@ -2687,9 +2696,11 @@
             "visionInterval": "感知間隔"
         },
         "widgetMode": {
-            "enabledNotice": "掛邊模式 Beta 已開啟。",
-            "disabledNotice": "掛邊模式 Beta 已關閉。Live2D 將恢復一般邊緣吸附行為。",
-            "toggleFailed": "掛邊模式 Beta 切換失敗，請稍後重試。"
+            "enabledNotice": "貼邊探身已開啟。",
+            "disabledNotice": "貼邊探身已關閉。Live2D 已恢復可見與可拖動狀態。",
+            "stealthEnabledNotice": "隱身模式已開啟。",
+            "stealthDisabledNotice": "隱身模式已關閉，Yui 將保持貼邊探身。",
+            "toggleFailed": "貼邊探身切換失敗，請稍後重試。"
         },
         "toggles": {
             "allowInterrupt": "允許打斷",
@@ -2697,8 +2708,6 @@
             "avatarReactionBubble": "表情氣泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "開啟後，遇到你傾訴脆弱或複雜的話題時她會更專注地深入思考；關閉則不再進入凝神。",
-            "widgetMode": "掛邊模式 Beta",
-            "widgetModeTooltip": "手動開啟掛邊模式後，Live2D 可從左右與四角共六個螢幕邊緣錨點探身。",
             "slopFilter": "自然表達",
             "slopFilterTooltip": "減少歷史回覆中重複、套路化的說法，讓她表達得更自然。",
             "autoCat": "自動變貓",

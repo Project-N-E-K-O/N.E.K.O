@@ -54,6 +54,13 @@ from ._shared import (
     logger,
 )
 from .platform_helpers import _get_bilibili_credential, _get_platform_cookies
+from .bilibili_content import (
+    enrich_bilibili_video,
+    fetch_bilibili_home,
+    fetch_bilibili_hot,
+    fetch_bilibili_radar,
+    format_bilibili_phase2_context,
+)
 from .trending_content import (
     _fetch_content_by_region,
     _fetch_twitter_trending_fallback,

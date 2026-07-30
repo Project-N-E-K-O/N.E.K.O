@@ -37,7 +37,7 @@
     let storagePreflightState = null;
     let storagePreflightBusy = false;
     const STORAGE_APP_FOLDER_NAME = 'N.E.K.O';
-    const MEMORY_ROLE_COMPACT_MEDIA_QUERY = '(max-width: 839px)';
+    const MEMORY_ROLE_COMPACT_MEDIA_QUERY = window.__memoryRoleCompactMediaQuery;
     const memoryRoleCompactMediaQuery = window.matchMedia
         ? window.matchMedia(MEMORY_ROLE_COMPACT_MEDIA_QUERY)
         : null;
@@ -56,6 +56,7 @@
     let memoryRoleHoverPreviewOpen = false;
     let memoryRoleHoverCloseTimer = 0;
     let memoryRolePanelInitialized = false;
+    let memoryRoleListRequestId = 0;
     const MEMORY_AUXILIARY_PANEL_NAMES = ['settings', 'guide', 'import'];
     let activeMemoryAuxiliaryPanel = '';
     let memoryAuxiliaryPanelOpener = null;
@@ -163,13 +164,7 @@
         trigger.disabled = memoryExportLogsBusy || !available;
         trigger.setAttribute('aria-busy', memoryExportLogsBusy ? 'true' : 'false');
         trigger.dataset.exportState = statusState;
-        if (label) {
-            // Keep the localized template text during the first frame. The i18n
-            // runtime emits localechange once it is ready and refreshes idle text.
-            if (statusState || window.t) {
-                label.textContent = getMemoryExportLogsButtonLabel(statusState);
-            }
-        }
+        if (label) label.textContent = getMemoryExportLogsButtonLabel(statusState);
         if (available) {
             trigger.title = statusMessage || translate(
                     'memory.exportLogsReview',
@@ -251,9 +246,7 @@
     }
 
     function getTutorialResetNoticeTitle() {
-        const titleEl = document.querySelector('.tutorial-section .file-list-title');
-        const domTitle = titleEl ? String(titleEl.textContent || '').trim() : '';
-        return translate('memory.tutorialReset', domTitle || 'Tutorial');
+        return translate('memory.tutorialReset', 'Tutorial');
     }
 
     let activeTutorialResetNotice = null;
@@ -673,23 +666,16 @@
     function syncMemoryRolePanelPosition() {
         const panel = document.getElementById('memory-role-panel');
         const utilityBar = document.querySelector('.memory-utility-bar');
-        if (!panel || !utilityBar || !isCompactRolePanelMode()) return;
+        if (!utilityBar) return;
         const nextTop = Math.ceil(utilityBar.getBoundingClientRect().bottom) + 'px';
         if (memoryRolePanelTop === nextTop) return;
         memoryRolePanelTop = nextTop;
-        panel.style.setProperty('--memory-role-panel-top', nextTop);
+        document.body.style.setProperty('--memory-floating-panel-top', nextTop);
+        if (panel) panel.style.setProperty('--memory-role-panel-top', nextTop);
     }
 
     function scheduleMemoryRolePanelPositionSync() {
-        const trigger = document.getElementById('memory-role-panel-trigger');
-        if (
-            memoryRolePanelPositionFrame
-            || !isCompactRolePanelMode()
-            || !trigger
-            || trigger.getAttribute('aria-expanded') !== 'true'
-        ) {
-            return;
-        }
+        if (memoryRolePanelPositionFrame) return;
         memoryRolePanelPositionFrame = window.requestAnimationFrame(function () {
             memoryRolePanelPositionFrame = 0;
             syncMemoryRolePanelPosition();
@@ -767,7 +753,7 @@
     }
 
     function didMemoryRolePointerCrossHoverEdge(event, hoverTarget) {
-        if (!event || !hoverTarget) return false;
+        if (!event || !hoverTarget || !canOpenMemoryRoleHoverPreview()) return false;
         const clientX = Number(event.clientX);
         const clientY = Number(event.clientY);
         const movementX = Number(event.movementX);
@@ -825,6 +811,7 @@
 
         setMemoryRolePanelOpen(false, false);
         window.addEventListener('resize', scheduleMemoryRolePanelPositionSync);
+        window.addEventListener('localechange', scheduleMemoryRolePanelPositionSync);
         if (utilityBar && window.ResizeObserver) {
             memoryRolePanelResizeObserver = new ResizeObserver(
                 scheduleMemoryRolePanelPositionSync
@@ -2145,43 +2132,133 @@
         );
     }
 
-    function syncRoleArtwork(button, selected) {
-        if (!button) return;
-        const existing = button.querySelector('.memory-role-card-face');
-        if (!selected) {
-            if (existing) existing.remove();
-            return;
-        }
-        if (existing) return;
-
-        const catName = String(button.getAttribute('data-catname') || '');
-        if (!catName) return;
-        const image = document.createElement('img');
-        image.className = 'memory-role-card-face';
-        image.alt = '';
-        image.hidden = true;
-        image.draggable = false;
-        image.setAttribute('aria-hidden', 'true');
-        image.addEventListener('load', function () {
-            image.hidden = false;
-        }, { once: true });
-        image.addEventListener('error', function () {
-            image.hidden = true;
-        }, { once: true });
-        image.src = `/api/characters/catgirl/${encodeURIComponent(catName)}/card-face`;
-        button.appendChild(image);
-    }
-
     function setRoleSelected(item, selected) {
         if (!item) return;
         item.classList.toggle('selected', selected);
         const button = item.querySelector('.cat-btn');
         if (!button) return;
         button.setAttribute('aria-current', selected ? 'true' : 'false');
-        syncRoleArtwork(button, selected);
+    }
+
+    const MEMORY_ROLE_ORIGIN_KEYS = {
+        self: 'character.cardOriginSelf',
+        imported: 'character.cardOriginImported',
+        steam: 'character.cardOriginSteam'
+    };
+
+    function syncMemoryRoleNameOverflow(button) {
+        const viewport = button?.querySelector('.memory-role-name-viewport');
+        const roleName = viewport?.querySelector('.memory-role-name');
+        if (!viewport || !roleName) return;
+
+        const overflow = Math.max(0, roleName.scrollWidth - viewport.clientWidth);
+        const isOverflowing = overflow > 1;
+        button.classList.toggle('is-name-overflowing', isOverflowing);
+        roleName.style.setProperty('--memory-role-name-shift', `${-overflow}px`);
+        roleName.style.setProperty(
+            '--memory-role-name-duration',
+            `${Math.max(1800, Math.min(7000, Math.round(overflow / 32 * 1000)))}ms`
+        );
+    }
+
+    function getMemoryRoleOriginLabel(origin) {
+        const key = MEMORY_ROLE_ORIGIN_KEYS[origin];
+        if (!key || !window.t) return origin;
+        return window.t(key);
+    }
+
+    function getMemoryRoleSourceText(origin) {
+        const sourceLabel = getMemoryRoleOriginLabel(origin);
+        return window.t
+            ? window.t('memory.roleSourceTooltip', { source: sourceLabel })
+            : `Source: ${sourceLabel}`;
+    }
+
+    function createMemoryRoleSourceIcon(origin) {
+        const svgNamespace = 'http://www.w3.org/2000/svg';
+        const svg = document.createElementNS(svgNamespace, 'svg');
+        svg.classList.add('memory-role-source-icon');
+        svg.classList.add(`is-${origin}`);
+        svg.setAttribute('viewBox', '0 0 24 24');
+        svg.setAttribute('aria-hidden', 'true');
+
+        const elements = {
+            self: [
+                ['path', { d: 'M5 5h14l2 6v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-7l2-6Z' }],
+                ['path', { d: 'M3 11h18' }],
+                ['circle', { cx: '17', cy: '15.5', r: '1' }]
+            ],
+            imported: [
+                ['path', { d: 'M12 3v12' }],
+                ['path', { d: 'm7 10 5 5 5-5' }],
+                ['path', { d: 'M5 18v2h14v-2' }]
+            ],
+            // Steam glyph from Simple Icons (CC0-1.0):
+            // https://github.com/simple-icons/simple-icons/blob/develop/icons/steam.svg
+            steam: [
+                ['path', {
+                    fill: 'currentColor',
+                    stroke: 'none',
+                    d: 'M11.979 0C5.678 0 .511 4.86.022 11.037l6.432 2.658c.545-.371 1.203-.59 1.912-.59.063 0 .125.004.188.006l2.861-4.142V8.91c0-2.495 2.028-4.524 4.524-4.524 2.494 0 4.524 2.031 4.524 4.527s-2.03 4.525-4.524 4.525h-.105l-4.076 2.911c0 .052.004.105.004.159 0 1.875-1.515 3.396-3.39 3.396-1.635 0-3.016-1.173-3.331-2.727L.436 15.27C1.862 20.307 6.486 24 11.979 24c6.627 0 11.999-5.373 11.999-12S18.605 0 11.979 0zM7.54 18.21l-1.473-.61c.262.543.714.999 1.314 1.25 1.297.539 2.793-.076 3.332-1.375.263-.63.264-1.319.005-1.949s-.75-1.121-1.377-1.383c-.624-.26-1.29-.249-1.878-.03l1.523.63c.956.4 1.409 1.5 1.009 2.455-.397.957-1.497 1.41-2.454 1.012H7.54zm11.415-9.303c0-1.662-1.353-3.015-3.015-3.015-1.665 0-3.015 1.353-3.015 3.015 0 1.665 1.35 3.015 3.015 3.015 1.663 0 3.015-1.35 3.015-3.015zm-5.273-.005c0-1.252 1.013-2.266 2.265-2.266 1.249 0 2.266 1.014 2.266 2.266 0 1.251-1.017 2.265-2.266 2.265-1.253 0-2.265-1.014-2.265-2.265z'
+                }]
+            ]
+        };
+
+        (elements[origin] || []).forEach(([tagName, attributes]) => {
+            const child = document.createElementNS(svgNamespace, tagName);
+            Object.entries(attributes).forEach(([name, value]) => {
+                child.setAttribute(name, value);
+            });
+            svg.appendChild(child);
+        });
+        return svg;
+    }
+
+    function syncMemoryRoleSourceCopy(button) {
+        if (!button) return;
+        const origin = button.dataset.memoryRoleOrigin;
+        if (!MEMORY_ROLE_ORIGIN_KEYS[origin]) return;
+
+        const catName = button.dataset.catname || '';
+        const sourceText = getMemoryRoleSourceText(origin);
+        const tooltip = button.querySelector('.memory-role-source-tooltip');
+        if (tooltip) tooltip.textContent = sourceText;
+        button.setAttribute('aria-label', `${catName}. ${sourceText}`);
+    }
+
+    function syncMemoryRoleSourceCopies() {
+        document.querySelectorAll(
+            '#memory-file-list .cat-btn[data-memory-role-origin]'
+        ).forEach(syncMemoryRoleSourceCopy);
+    }
+
+    function applyMemoryRoleSources(cardMetas, requestId) {
+        if (requestId !== memoryRoleListRequestId) return;
+        document.querySelectorAll('#memory-file-list .cat-btn[data-catname]').forEach(
+            function (button, index) {
+                const catName = button.dataset.catname || '';
+                const origin = cardMetas?.[catName]?.origin;
+                if (!MEMORY_ROLE_ORIGIN_KEYS[origin]) return;
+
+                button.dataset.memoryRoleOrigin = origin;
+                const source = document.createElement('span');
+                source.className = `memory-role-source is-${origin}`;
+                source.setAttribute('aria-hidden', 'true');
+                const sourceIcon = createMemoryRoleSourceIcon(origin);
+                const sourceTooltip = document.createElement('span');
+                sourceTooltip.id = `memory-role-source-tooltip-${index}`;
+                sourceTooltip.className = 'memory-role-source-tooltip';
+                sourceTooltip.setAttribute('role', 'tooltip');
+                source.append(sourceIcon, sourceTooltip);
+                button.appendChild(source);
+                syncMemoryRoleSourceCopy(button);
+                syncMemoryRoleNameOverflow(button);
+            }
+        );
     }
 
     async function loadMemoryFileList() {
+        const roleListRequestId = ++memoryRoleListRequestId;
         const ul = document.getElementById('memory-file-list');
         ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.loading') : '加载中...'}</li>`;
         try {
@@ -2189,6 +2266,19 @@
             const data = await resp.json();
             ul.innerHTML = '';
             if (data.files && data.files.length) {
+                const cardMetasPromise = fetch('/api/characters/card-metas')
+                    .then(function (response) {
+                        if (!response.ok) return {};
+                        return response.json();
+                    })
+                    .then(function (metasData) {
+                        return metasData?.metas || {};
+                    })
+                    .catch(function (error) {
+                        console.error('Failed to load character origins:', error);
+                        return {};
+                    });
+
                 // 获取当前猫娘名称
                 let currentCatgirl = null;
                 try {
@@ -2200,7 +2290,7 @@
                 }
 
                 let foundCurrentCatgirl = false;
-                data.files.forEach(f => {
+                data.files.forEach((f) => {
                     // 提取猫娘名
                     let match = f.match(/^recent_(.+)\.json$/);
                     let catName = match ? match[1] : f;
@@ -2211,11 +2301,18 @@
                     btn.setAttribute('data-filename', f);
                     btn.setAttribute('data-catname', catName);
                     btn.setAttribute('aria-current', 'false');
-                    btn.title = catName;
+                    const roleNameViewport = document.createElement('span');
+                    roleNameViewport.className = 'memory-role-name-viewport';
                     const roleName = document.createElement('span');
                     roleName.className = 'memory-role-name';
                     roleName.textContent = catName;
-                    btn.appendChild(roleName);
+                    roleName.title = catName;
+                    roleNameViewport.appendChild(roleName);
+                    btn.appendChild(roleNameViewport);
+
+                    const syncNameOverflow = () => syncMemoryRoleNameOverflow(btn);
+                    btn.addEventListener('pointerenter', syncNameOverflow);
+                    btn.addEventListener('focus', syncNameOverflow);
                     btn.addEventListener('click', () => requestMemoryFileSelection(f, li, catName));
                     li.appendChild(btn);
                     ul.appendChild(li);
@@ -2232,6 +2329,9 @@
                             requestMemoryFileSelection(f, li, catName);
                         }, 100);
                     }
+                });
+                void cardMetasPromise.then(function (cardMetas) {
+                    applyMemoryRoleSources(cardMetas, roleListRequestId);
                 });
             } else {
                 ul.innerHTML = `<li style="color:#888; padding: 8px;">${window.t ? window.t('memory.noFiles') : '无文件'}</li>`;
@@ -2887,8 +2987,21 @@
         if (pendingMemoryClose) {
             return document.querySelector('.close-page-btn');
         }
-        if (!pendingMemorySelection || !pendingMemorySelection.li) return null;
-        return pendingMemorySelection.li.querySelector('.cat-btn');
+        if (!pendingMemorySelection) return null;
+        return findMemoryRoleButton(pendingMemorySelection.filename);
+    }
+
+    function findMemoryRoleButton(filename) {
+        return Array.from(
+            document.querySelectorAll('#memory-file-list .cat-btn[data-filename]')
+        ).find(function (button) {
+            return button.dataset.filename === filename;
+        }) || null;
+    }
+
+    function findMemoryRoleListItem(filename) {
+        const button = findMemoryRoleButton(filename);
+        return button ? button.closest('li') : null;
     }
 
     function updateMemoryUnsavedSwitchCopy() {
@@ -3011,10 +3124,11 @@
     function openMemoryUnsavedSwitchDialog(filename, li, catName) {
         const dialog = document.getElementById('memory-unsaved-switch-dialog');
         const blocker = document.getElementById('memory-unsaved-switch-blocker');
-        const target = li ? li.querySelector('.cat-btn') : null;
+        const target = findMemoryRoleButton(filename)
+            || (li ? li.querySelector('.cat-btn') : null);
         if (!dialog || !blocker || !target) return false;
 
-        pendingMemorySelection = { filename, li, catName };
+        pendingMemorySelection = { filename, catName };
         pendingMemoryClose = false;
         memoryUnsavedSwitchSaveError = '';
         memoryUnsavedSwitchRestoreFocus = target;
@@ -3087,7 +3201,11 @@
             if (closeRequested) {
                 performCloseMemoryBrowser(true);
             } else {
-                selectMemoryFile(selection.filename, selection.li, selection.catName);
+                selectMemoryFile(
+                    selection.filename,
+                    findMemoryRoleListItem(selection.filename),
+                    selection.catName
+                );
             }
         });
         save.addEventListener('click', async function () {
@@ -3112,7 +3230,11 @@
             if (closeRequested) {
                 performCloseMemoryBrowser(false);
             } else {
-                selectMemoryFile(selection.filename, selection.li, selection.catName);
+                selectMemoryFile(
+                    selection.filename,
+                    findMemoryRoleListItem(selection.filename),
+                    selection.catName
+                );
             }
         });
         document.addEventListener('keydown', function (event) {
@@ -3165,8 +3287,6 @@
             Array.from(document.getElementById('memory-file-list').children).forEach(function (item) {
                 setRoleSelected(item, item === li);
             });
-        } else {
-            syncRoleArtwork(li.querySelector('.cat-btn'), true);
         }
         setMemoryCurrentRoleName(currentCatName);
         setMemoryRolePanelOpen(false, false);
@@ -3556,6 +3676,7 @@
             syncTutorialResetCascader();
             syncExternalMemoryFormatDropdown();
             syncMemoryRoleTriggerLabel();
+            syncMemoryRoleSourceCopies();
         });
 
         const externalFiles = document.getElementById('external-memory-files');

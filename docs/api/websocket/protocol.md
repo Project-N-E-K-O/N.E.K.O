@@ -19,13 +19,16 @@ Only the newest connection UUID for a character is authoritative in the router. 
 
 ## Frame model
 
-- Client commands are UTF-8 JSON text frames with top-level `action`.
+- Client commands are normally UTF-8 JSON text frames with top-level `action`.
+- Client microphone audio may use the preferred binary frame: ASCII `NEKO`,
+  then a little-endian uint32 sample rate (`16000` or `48000`), then mono
+  little-endian signed PCM16. JSON `stream_data.data` arrays remain supported
+  for compatibility.
 - Server events are normally UTF-8 JSON text frames with top-level `type`.
 - TTS audio is the exception: an `audio_chunk` JSON header is followed by one binary frame.
-- The server currently expects `receive_text()` from clients. Do not send client binary audio frames.
 - Any client JSON object may include `language`; the router updates the character's current UI language before dispatching its `action`.
 
-Malformed JSON is a connection-level error: the handler sends a best-effort `SERVER_ERROR` status, exits its receive loop, and cleans up the current session.
+Malformed JSON is a connection-level error: the handler sends a best-effort `SERVER_ERROR` status, exits its receive loop, and cleans up the current session. Binary frames behave asymmetrically: a malformed `NEKO` binary frame is logged and dropped, and the connection stays open for the next frame.
 
 ## Session lifecycle
 
@@ -34,8 +37,11 @@ The WebSocket connection and provider session have separate lifetimes:
 ```text
 socket open
     │
-    ├─ start_session ─> session_preparing ─> session_started
-    │                                      └> session_failed
+    ├─ voice_input_control(lease_sync) [recommended for audio]
+    │
+    ├─ start_session ─> lease authorized ─> session_preparing ─> session_started
+    │                         │                                  └> session_failed
+    │                         └> VOICE_INPUT_LEASE_REQUIRED
     │
     ├─ stream_data / avatar_interaction / control events
     │
@@ -58,7 +64,26 @@ socket open
 
 Accepted `input_type` values are `audio`, `screen`, `camera`, `text`, `avatar_drop_image`, and `user_image`. `text` and the two one-shot image types start the text/offline mode; `audio`, `screen`, and `camera` select the realtime/audio mode. `new_session` is a provider-session hint, not the WebSocket connection UUID.
 
-Session startup runs asynchronously. Wait for the matching `session_started.input_mode` before streaming microphone samples. `session_preparing` is progress only, and `session_failed` means the requested mode did not start. A `status` event often precedes a failure with the machine-readable cause.
+New audio clients are strongly encouraged to first send a complete
+`voice_input_control` snapshot with `event: "lease_sync"`. Its
+`lease_generation` must increase monotonically within the current WebSocket and
+restarts after reconnecting. Invalid or stale control messages produce
+`VOICE_INPUT_CONTROL_REJECTED` and permanently disable legacy fallback for that
+connection.
+
+For compatibility, a connection that has sent no control message can acquire a
+generation-0 Core lease immediately before its first ordinary audio session
+starts. This does not run on the game route and cannot override an explicit
+owner, hard mute, focus suppression, connection replacement, or newer lease
+generation. If authorization fails, the server sends
+`VOICE_INPUT_LEASE_REQUIRED` and does not start the Provider session.
+
+Session startup runs asynchronously. Wait for the matching
+`session_started.input_mode` before streaming microphone samples.
+`session_preparing` is progress only, and `session_failed` means the requested
+mode did not start. A `status` event often precedes a failure with the
+machine-readable cause. `session_started` reports Provider readiness only; it
+does not bypass MicLease checks.
 
 When a game route is active, text/image inputs may be acknowledged or routed to the game controller, and an audio session can be used as the game's realtime STT provider. That behavior is part of the first-party game integration.
 
@@ -103,7 +128,11 @@ Status is a nested JSON envelope for historical frontend compatibility:
 }
 ```
 
-Parse `message` once more as JSON. Known examples include `INVALID_INPUT_TYPE`, `UNKNOWN_ACTION`, `SERVER_ERROR`, provider/auth/quota codes, and `CHARACTER_SWITCHING_TERMINAL`. The set can grow; clients should provide a generic fallback for unknown codes.
+Parse `message` once more as JSON. Known examples include
+`INVALID_INPUT_TYPE`, `UNKNOWN_ACTION`, `SERVER_ERROR`,
+`VOICE_INPUT_CONTROL_REJECTED`, `VOICE_INPUT_LEASE_REQUIRED`,
+provider/auth/quota codes, and `CHARACTER_SWITCHING_TERMINAL`. The set can grow;
+clients should provide a generic fallback for unknown codes.
 
 Unknown actions do not close the socket: they produce `UNKNOWN_ACTION`. In contrast, invalid JSON, superseded connections, character deletion/rename, or transport disconnect lead to cleanup.
 

@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import time
 import uuid
 from collections import deque
 from dataclasses import dataclass, field
@@ -28,6 +29,7 @@ import websockets
 from websockets.exceptions import ConnectionClosed
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection
 
 _QWEN_MODEL = "qwen3-asr-flash-realtime"
 _QWEN_CN_URL = f"wss://dashscope.aliyuncs.com/api-ws/v1/realtime?model={_QWEN_MODEL}"
@@ -35,6 +37,12 @@ _QWEN_INTL_URL = (
     f"wss://dashscope-intl.aliyuncs.com/api-ws/v1/realtime?model={_QWEN_MODEL}"
 )
 _QWEN_FINISH_TIMEOUT_SECONDS = 3.0
+# Server VAD publishes speech_stopped/committed as the logical endpoint of a
+# turn, but the transcription completed event may be delayed or never arrive.
+# An item that outlives this deadline after its endpoint is completed with an
+# empty final so the upstream utterance lifecycle converges instead of waiting
+# unboundedly. Mirrors the OpenAI worker's stalled-item deadline.
+_QWEN_STALLED_ITEM_TIMEOUT_SECONDS = 30.0
 _QWEN_SUPPORTED_LANGUAGES = frozenset(
     {
         "ar",
@@ -78,6 +86,10 @@ class _QwenConnectionState:
     emit_ready: bool
     item_keys: dict[str, _ItemKey] = field(default_factory=dict)
     pending_manual_commits: deque[_ItemKey] = field(default_factory=deque)
+    # Monotonic timestamps of provider endpoints whose transcription final is
+    # still outstanding, keyed by item id (see _qwen_watch_stalled_items).
+    item_deadlines: dict[str, float] = field(default_factory=dict)
+    stalled_deadline_armed: asyncio.Event = field(default_factory=asyncio.Event)
     configured: asyncio.Event = field(default_factory=asyncio.Event)
     finish_received: asyncio.Event = field(default_factory=asyncio.Event)
     intentional_close: asyncio.Event = field(default_factory=asyncio.Event)
@@ -105,11 +117,7 @@ def _qwen_language_code(language: str) -> str | None:
 
 
 def _qwen_is_auth_rejection(exc: BaseException) -> bool:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code is None:
-        status_code = getattr(exc, "status_code", None)
-    return status_code in {401, 403}
+    return is_auth_rejection(exc)
 
 
 def _qwen_session_update(
@@ -165,6 +173,66 @@ async def _emit_qwen_error_once(
             error_message=error_message,
         )
     )
+
+
+def _qwen_arm_stalled_item_deadline(
+    state: _QwenConnectionState,
+    item_id: str,
+) -> None:
+    if item_id and item_id in state.item_keys and item_id not in state.item_deadlines:
+        state.item_deadlines[item_id] = time.monotonic()
+        state.stalled_deadline_armed.set()
+
+
+async def _qwen_expire_stalled_items(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _QwenConnectionState,
+) -> None:
+    now = time.monotonic()
+    expired_ids = [
+        item_id
+        for item_id, armed_at in state.item_deadlines.items()
+        if now - armed_at >= _QWEN_STALLED_ITEM_TIMEOUT_SECONDS
+    ]
+    for item_id in expired_ids:
+        del state.item_deadlines[item_id]
+        # Popping the key tombstones the item: a late completed event finds
+        # no mapping and is dropped instead of resurrecting the closed turn.
+        key = state.item_keys.pop(item_id, None)
+        if key is None:
+            continue
+        await response_queue.put(
+            _AsrWorkerEvent(
+                kind="final",
+                generation=key[0],
+                buffer_epoch=key[1],
+                utterance_id=key[2],
+                text="",
+            )
+        )
+
+
+async def _qwen_watch_stalled_items(
+    response_queue: asyncio.Queue[_AsrWorkerEvent],
+    state: _QwenConnectionState,
+) -> None:
+    # Runs beside the receiver because the receiver blocks on provider
+    # frames; a provider that goes silent after server VAD reported the end
+    # of speech would otherwise never trigger the sweep, leaving the
+    # upstream turn open unboundedly.
+    while True:
+        if not state.item_deadlines:
+            await state.stalled_deadline_armed.wait()
+            state.stalled_deadline_armed.clear()
+            continue
+        earliest = min(state.item_deadlines.values())
+        remaining = (
+            earliest + _QWEN_STALLED_ITEM_TIMEOUT_SECONDS - time.monotonic()
+        )
+        if remaining > 0:
+            await asyncio.sleep(remaining)
+            continue
+        await _qwen_expire_stalled_items(response_queue, state)
 
 
 async def _qwen_sender(
@@ -391,8 +459,23 @@ async def _qwen_receiver(
                 )
                 continue
 
+            if event_type == "input_audio_buffer.speech_stopped":
+                if config.endpointing_mode != "provider":
+                    continue
+                # Server VAD sealed the turn; the transcription final is
+                # still outstanding. Arm the stalled-item deadline so a
+                # delayed or missing completed event cannot leave the
+                # upstream turn open unboundedly.
+                _qwen_arm_stalled_item_deadline(state, str(event.get("item_id") or ""))
+                continue
+
             if event_type == "input_audio_buffer.committed":
                 item_id = str(event.get("item_id") or "")
+                if config.endpointing_mode == "provider":
+                    # Some server VAD turns publish committed without (or
+                    # after) speech_stopped; either event is the endpoint.
+                    _qwen_arm_stalled_item_deadline(state, item_id)
+                    continue
                 if (
                     config.endpointing_mode == "manual"
                     and item_id
@@ -415,6 +498,11 @@ async def _qwen_receiver(
                     state.item_keys.get(item_id) if item_id else state.legacy_manual_key
                 )
                 if key is not None:
+                    if item_id in state.item_deadlines:
+                        # Streaming text proves the transcription is alive;
+                        # push the stalled-item deadline forward instead of
+                        # expiring mid-stream.
+                        state.item_deadlines[item_id] = time.monotonic()
                     text = str(event.get("text") or "") + str(event.get("stash") or "")
                     await response_queue.put(
                         _AsrWorkerEvent(
@@ -429,6 +517,8 @@ async def _qwen_receiver(
 
             if event_type == "conversation.item.input_audio_transcription.completed":
                 item_id = str(event.get("item_id") or "")
+                if item_id:
+                    state.item_deadlines.pop(item_id, None)
                 key = (
                     state.item_keys.pop(item_id, None)
                     if item_id
@@ -548,6 +638,7 @@ async def qwen_asr_worker(
                 None
             )
             receiver_task: asyncio.Task[str] | None = None
+            stalled_watch_task: asyncio.Task[None] | None = None
             outcome = "error"
             outcome_request: _AsrWorkerRequest | None = None
             try:
@@ -570,6 +661,12 @@ async def qwen_asr_worker(
                         state,
                     ),
                     name="qwen-asr-sender",
+                )
+                # The watchdog never finishes on its own and stays out of the
+                # outcome wait; teardown below cancels it with its siblings.
+                stalled_watch_task = asyncio.create_task(
+                    _qwen_watch_stalled_items(response_queue, state),
+                    name="qwen-asr-stalled-watch",
                 )
                 done, pending = await asyncio.wait(
                     {sender_task, receiver_task},
@@ -617,12 +714,12 @@ async def qwen_asr_worker(
                 )
                 outcome = "error"
             finally:
-                for task in (sender_task, receiver_task):
+                for task in (sender_task, receiver_task, stalled_watch_task):
                     if task is not None and not task.done():
                         task.cancel()
                 pending_tasks = [
                     task
-                    for task in (sender_task, receiver_task)
+                    for task in (sender_task, receiver_task, stalled_watch_task)
                     if task is not None and not task.done()
                 ]
                 if pending_tasks:

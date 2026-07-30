@@ -226,16 +226,16 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
     async def _synthesize_reply_voice_file(self, text: str) -> tuple[str, str]:
         return await self.voice_reply_service.synthesize_reply_voice_file(text)
 
-    async def _deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
-        await self.voice_reply_service.deliver_private_reply(
+    async def _deliver_private_reply(self, target_qq: str, text: str, *, voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> bool:
+        return await self.voice_reply_service.deliver_private_reply(
             target_qq,
             text,
             voice_text=voice_text,
             fallback_to_text_on_voice_failure=fallback_to_text_on_voice_failure,
         )
 
-    async def _deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> None:
-        await self.voice_reply_service.deliver_group_reply(
+    async def _deliver_group_reply(self, group_id: str, text: str, *, reply_message_id: str = "", at_user_id: str = "", keyboard: str = "", voice_text: str = "", fallback_to_text_on_voice_failure: bool) -> bool:
+        return await self.voice_reply_service.deliver_group_reply(
             group_id,
             text,
             reply_message_id=reply_message_id,
@@ -362,6 +362,22 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if self.attention_gate_service:
             await self.attention_gate_service.stop_proactive_loop()
         await self._stop_auto_reply_runtime(stop_napcat=True)
+        sync_tasks = (
+            list(getattr(self, "_group_memory_sync_tasks", ()) or ())
+            + list(getattr(self, "_prompt_change_discard_tasks", ()) or ())
+        )
+        if sync_tasks:
+            # 隐私关键的开关转变任务在关机 flush 前 join（限 1s），避免
+            # 结算做到一半被进程退出截断。
+            # asyncio.wait 不取消未完成任务——超时放行但不杀结算。
+            done_tasks, _pending = await asyncio.wait(sync_tasks, timeout=1.0)
+            for finished in done_tasks:
+                if finished.cancelled():
+                    self._emit_log("WARNING", "记忆同步任务被外部取消")
+                    continue
+                exc = finished.exception()
+                if exc is not None:
+                    self._emit_log("ERROR", f"记忆同步任务异常结束: {exc}")
         await self._flush_all_memory_sessions(reason="shutdown")
         if self.attention_gate_service:
             await self.attention_gate_service.shutdown()
@@ -376,6 +392,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             except asyncio.CancelledError:
                 pass
             self._session_housekeeping_task = None
+        # 这里不关 http client：记忆桥与附件下载用的是 utils/http 的进程级
+        # 单例，由 main_server 的 shutdown 钩子统一关。插件自己关会把上面
+        # 那批"只 join 1s、不取消"的结算任务的在途请求打断。
         return Ok({"status": "shutdown"})
 
     def _mask_token(self, token: str) -> str:
@@ -783,7 +802,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         return Ok({"stickers": items, "total": len(items)})
 
     @ui.action(id="save_settings", label=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), refresh_context=True)
-    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}}, "additionalProperties": False})
+    @plugin_entry(id="save_settings", name=tr("entries.save_settings.name", default="保存 QQ 自动回复设置"), description=tr("entries.save_settings.description", default="保存 QQ 插件当前的 OneBot 地址、Token、NapCat 路径、回复概率和 backlog 标签等设置。"), input_schema={"type": "object", "properties": {"onebot_url": {"type": "string"}, "token": {"type": "string"}, "napcat_directory": {"type": "string"}, "show_napcat_window": {"type": "boolean"}, "reply_mode": {"type": "string", "enum": ["text", "voice", "both"]}, "show_onboarding": {"type": "boolean"}, "guide_step_napcat_done": {"type": "boolean"}, "guide_step_config_done": {"type": "boolean"}, "guide_step_runtime_done": {"type": "boolean"}, "normal_relay_probability": {"type": "number"}, "truth_reply_probability": {"type": "number"}, "backlog_labels": {"type": "array", "items": {"type": "object"}}, "strategy_mode": {"type": "string", "enum": ["neko_dynamic", "neko_scene"]}, "qq_connection_mode": {"type": "string", "enum": ["napcat", "open_platform"]}, "qq_open_app_id": {"type": "string"}, "qq_open_client_secret": {"type": "string"}, "sticker_cooldown_messages": {"type": "integer"}, "retroactive_review_max_messages": {"type": "integer"}, "retroactive_review_max_reply": {"type": "integer"}, "group_memory_enabled": {"type": "boolean"}, "group_member_memory_enabled": {"type": "boolean"}, "allow_cross_group_context": {"type": "boolean"}}, "additionalProperties": False})
     async def save_settings(
         self,
         onebot_url: Optional[str] = None,
@@ -801,6 +820,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         sticker_cooldown_messages: Optional[int] = None,
         retroactive_review_max_messages: Optional[int] = None,
         retroactive_review_max_reply: Optional[int] = None,
+        group_memory_enabled: Optional[bool] = None,
+        group_member_memory_enabled: Optional[bool] = None,
+        allow_cross_group_context: Optional[bool] = None,
         strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
         qq_open_app_id: Optional[str] = None,
@@ -823,6 +845,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             sticker_cooldown_messages=sticker_cooldown_messages,
             retroactive_review_max_messages=retroactive_review_max_messages,
             retroactive_review_max_reply=retroactive_review_max_reply,
+            group_memory_enabled=group_memory_enabled,
+            group_member_memory_enabled=group_member_memory_enabled,
+            allow_cross_group_context=allow_cross_group_context,
             strategy_mode=strategy_mode,
             qq_connection_mode=qq_connection_mode,
             qq_open_app_id=qq_open_app_id,
@@ -1117,7 +1142,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         success = await self._persist_business_config()
         # 清除该群的当前会话，下次回复时重新注入新提示词
         if self.session_runtime_service:
-            await self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_changed")
+            discarded = await self._run_with_session_lock(
+                f"group:{gid}",
+                lambda: self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_changed"),
+            )
+            if discarded is False:
+                self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
         return Ok({"persisted": success, "group_id": gid, "has_text": bool(custom_text)})
 
     @plugin_entry(id="delete_group_prompt")
@@ -1133,7 +1163,12 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         if existed:
             success = await self._persist_business_config()
             if self.session_runtime_service:
-                await self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_deleted")
+                discarded = await self._run_with_session_lock(
+                    f"group:{gid}",
+                    lambda: self.session_runtime_service.discard_session(f"group:{gid}", reason="group_prompt_deleted"),
+                )
+                if discarded is False:
+                    self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
             self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})

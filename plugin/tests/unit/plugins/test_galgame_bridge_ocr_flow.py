@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from _galgame_test_support import *
 
+from plugin.plugins.galgame_plugin import plugin_core as galgame_plugin_core
+from tests.fake_clock import patch_module_clock
+
 @pytest.mark.asyncio
 @pytest.mark.plugin_unit
 async def test_background_bridge_poll_continues_for_subsecond_ocr_interval(
@@ -495,7 +498,9 @@ def test_ocr_foreground_refresh_uses_ttl_cache(
     plugin = GalgameBridgePlugin(ctx)
     plugin._cfg = build_config(cfg)
     now = {"value": 1000.0}
-    monkeypatch.setattr(galgame_plugin_module.time, "monotonic", lambda: now["value"])
+    # TTL 判定发生在 plugin_core._refresh_ocr_foreground_state 里的 time.monotonic()；
+    # galgame_plugin 包的 __init__ 只是把 plugin_core 的名字再导出一遍，绑在包上不生效。
+    patch_module_clock(monkeypatch, galgame_plugin_core, monotonic=lambda: now["value"])
     calls = {"count": 0}
 
     class _OcrManager:
@@ -524,7 +529,8 @@ def test_ocr_foreground_refresh_preserves_bridge_diagnostics(
     cfg = _make_effective_config(bridge_root, ocr_reader={"enabled": True})
     plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
     plugin._cfg = build_config(cfg)
-    monkeypatch.setattr(galgame_plugin_module.time, "monotonic", lambda: 1000.0)
+    # 同上：读时钟的是 plugin_core._refresh_ocr_foreground_state，不是 galgame_plugin 包。
+    patch_module_clock(monkeypatch, galgame_plugin_core, monotonic=lambda: 1000.0)
 
     class _OcrManager:
         def refresh_foreground_state(self):
@@ -567,7 +573,9 @@ def test_status_debug_payload_overlays_live_pending_ocr_advance_capture(
     cfg = _make_effective_config(bridge_root, ocr_reader={"enabled": True})
     plugin = GalgameBridgePlugin(_Ctx(plugin_dir, cfg))
     plugin._cfg = build_config(cfg)
-    monkeypatch.setattr(galgame_plugin_module.time, "monotonic", lambda: 1000.0)
+    # pending 的年龄由 plugin_core._bridge_poll_debug_payload 里的 time.monotonic() 算出，
+    # 假时钟要打在 plugin_core 上，绑到 galgame_plugin 包的同名再导出上不生效。
+    patch_module_clock(monkeypatch, galgame_plugin_core, monotonic=lambda: 1000.0)
     with plugin._state_lock:
         plugin._pending_ocr_advance_captures = 2
         plugin._last_ocr_advance_capture_requested_at = 999.0

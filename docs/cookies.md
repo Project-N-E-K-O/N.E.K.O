@@ -26,4 +26,4 @@ The saved preference and optional analytics data are retained only as needed for
 
 ## Managing your choice
 
-Use **Cookie settings** in the footer to change your choice. Clearing the site's stored data resets the saved choice, so the site will ask again on a later visit.
+Use the persistent **Cookie settings** control at the bottom of any documentation page to change your choice. Clearing the site's stored data resets the saved choice, so the site will ask again on a later visit.

@@ -36,6 +36,7 @@ from ._tools import _ToolingMixin
 from ._audio import _AudioMixin
 from ._transport import _TransportMixin
 from ._responses import _ResponseMixin
+from ._response_arbiter import RealtimeResponseArbiter
 from ._gemini_support import _GeminiMixin
 
 
@@ -127,6 +128,10 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._current_response_id = None
         self._current_item_id = None
         self._is_responding = False
+        self._response_arbiter = RealtimeResponseArbiter(
+            self.send_event,
+            abort_transport=self._abort_failed_transport,
+        )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False
         self._is_first_transcript_chunk = False
@@ -166,8 +171,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._image_being_analyzed = False
         self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._latest_image_b64 = None  # Cached latest screenshot for proactive injection
+        self._latest_image_generation = 0  # Distinguishes identical consecutive frames
         self._proactive_image_consumed = True  # Whether the cached image has been used by a proactive nudge
-        self._proactive_injecting = False  # True while prompt_ephemeral is injecting audio — suppresses mic input
 
         # Silence detection for auto-closing inactive sessions
         # 只在 GLM 和 free API 时启用90秒静默超时，Qwen 和 Step 放行
@@ -191,8 +196,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._audio_processor = self._create_audio_processor()
 
         # ── Uplink (client→provider) sample rate ──────────────────────
-        # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k、主动
-        # 注入 WAV 也是 16k）。绝大多数 Realtime API（Gemini/Qwen/GLM/Step/
+        # 内部管线一律 16kHz（RNNoise 降采样到 16k、移动端原生 16k）。
+        # 绝大多数 Realtime API（Gemini/Qwen/GLM/Step/
         # Grok/free）都吃 16kHz PCM —— 唯独 OpenAI Realtime 的 PCM 输入
         # *只* 接受 24kHz（GA 文档：audio/pcm 的 rate 固定 24000，不能声明
         # 16000）。否则服务端会把我们的 16k 字节当 24k 解，等于喂模型 1.5×
@@ -203,7 +208,6 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._uplink_sample_rate = 24000 if 'gpt' in self._model_lower else 16000
         # 持续型流式重采样器：连续麦克风流必须维持 FIR 状态，否则每个 chunk
         # 边界都会引入伪影（与 AudioProcessor 的 downsample stream 同理）。
-        # 一次性的预录 WAV（prompt_ephemeral）走整段无状态重采样，不复用它。
         self._uplink_resampler = (
             soxr.ResampleStream(16000, self._uplink_sample_rate, 1, dtype='float32', quality='HQ')
             if self._uplink_sample_rate != 16000
@@ -253,7 +257,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._speech_detect_start = 0.0  # RNNoise 连续检测到语音的起始时间
         self._speech_sustain_threshold = 0.5  # 需持续 500ms 才算真正说话（防噪音误触）
         self._rnnoise_vad_active = False  # RNNoise VAD 是否正在运行（48kHz + denoiser ok）
-        # Fudge 保护专用信号：与 _client_vad_active 解耦，记录"最近任何一帧 RNNoise
+        # 主动搭话保护信号：与 _client_vad_active 解耦，记录"最近任何一帧 RNNoise
         # 判定为语音（>0.4，无需 sustain 500ms）或 server-VAD speech_started"的时刻。
         # 解决两个 _client_vad_active 覆盖不到的窗口：
         #   1. 用户说话首 500ms 还未达 sustain 阈值时
@@ -268,7 +272,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         #   1. OpenAI response.created 到首 content chunk 之间的几百毫秒空窗
         #   2. Gemini turn_complete 早于最后几帧音频送达 → late audio
         #   3. Gemini 长回复被拆多 sub-turn，两个 sub-turn 之间 False 的瞬间
-        # prompt_ephemeral 和 Gemini turn 分配分别用此信号兜底 "fudge 打断 AI 自己"
+        # prompt_ephemeral 和 Gemini turn 分配分别用此信号兜底 "主动文本打断 AI 自己"
         # 和 "late audio 被当新 turn" 两个 race。不改 _is_responding 语义（它还有
         # 8 个消费者：handle_interruption / QQ 插件 / system_router 409 等），只做正交增量。
         self._ai_recent_activity_time = 0.0
@@ -286,6 +290,33 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
 
         # Gemini Live API specific attributes
         self._is_gemini = self._api_type.lower() == 'gemini'
+        _base_url_lower = (base_url or '').lower()
+        _known_lanlan_free_route = (
+            'lanlan.tech' in _base_url_lower
+            or 'lanlan.app' in _base_url_lower
+            or bool(livestream_mode)
+        )
+        # ``api_type`` is the provider-ownership signal. The model name is
+        # user-configurable, so an arbitrary local model such as
+        # ``freeform-realtime`` must not inherit Lanlan's image wire protocol.
+        # Keep a narrow compatibility fallback only for old callers that omit
+        # api_type while targeting a known Lanlan/livestream route.
+        self._is_free_provider = (
+            self._api_type.lower() == 'free'
+            or (
+                not self._api_type
+                and 'free' in self._model_lower
+                and _known_lanlan_free_route
+            )
+        )
+
+        # Only the international/livestream free routes proxy Gemini. This flag
+        # remains about VAD/lifecycle behaviour, not image capability: every
+        # Lanlan free route now accepts native input_image_buffer events.
+        self._is_free_proxy = self._is_free_provider and (
+            'lanlan.app' in _base_url_lower
+            or bool(livestream_mode)
+        )
 
         # Whether this API returns server-side VAD events (speech_started/speech_stopped)
         # Gemini (direct), lanlan.app+free (Gemini proxy), 以及 livestream 模式
@@ -294,25 +325,18 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # 那条 on_new_message 路径，多轮对话 sid 不轮换，TTS 在 turn 2 起静音。
         self._has_server_vad = (
             not self._is_gemini
-            and not ('lanlan.app' in (base_url or '') and 'free' in self._model_lower)
+            and not self._is_free_proxy
             and not bool(livestream_mode)
         )
 
-        # free 经 Gemini 代理（OpenAI-realtime 协议，发图走 input_image_buffer.append、
-        # 服务端 VAD 由代理吞掉）：lanlan.app 海外节点，或 livestream 主播自建 server_prefix。
-        # 二者上游同为 Gemini 系，原生视觉与发图协议一致；lanlan.tech free 上游是
-        # StepFun（无原生视觉，走 VISION_MODEL 分析通道），不在此列。
-        self._is_free_proxy = 'free' in self._model_lower and (
-            'lanlan.app' in (base_url or '')
-            or bool(livestream_mode)
-        )
-
         # Whether this client supports native image input
-        # qwen/glm/gpt/gemini have native vision; free Gemini-proxy (lanlan.app / livestream) also does
+        # qwen/glm/gpt/gemini and every Lanlan free route have native vision.
+        # Standard StepFun is the sole realtime provider that still needs the
+        # external VISION_MODEL description path.
         self._supports_native_image = (
             any(m in self._model_lower for m in ['qwen', 'glm', 'gpt'])
             or self._is_gemini
-            or self._is_free_proxy
+            or self._is_free_provider
         )
         self._gemini_client = None  # genai.Client instance
         self._gemini_session = None  # Live session from SDK
@@ -358,12 +382,14 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # One-shot gate for the no-event_id content fallback in
         # ``_route_inject_rejection``. True only between "a proactive inject
         # just sent its ``response.create``" and "that inject's outcome was
-        # observed" (rejection fired, or a response lifecycle event arrived).
+        # observed" on its exact arbiter ticket.
         # Without this, a no-id ``response_already_active`` from a DIFFERENT
         # ``response.create`` sender (create_response / tool-result /
         # signal_user_activity_end) could content-match a lingering — already
         # succeeded — proactive handler and wrongly re-enqueue its cb.
         self._proactive_inject_awaiting_outcome = False
+        self._proactive_inject_outcome_token: Optional[str] = None
+        self._gemini_proactive_outcome: Optional[tuple] = None
 
     def _create_audio_processor(self) -> AudioProcessor:
         """Create session-owned audio state, including native RNNoise state."""

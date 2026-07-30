@@ -929,7 +929,14 @@
         "volumeWaiting": "等待声音",
         "volumeHintWaiting": "麦克风正在监听，请说话",
         "noiseReduction": "降噪",
-        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
+        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰",
+        "independentAsr": "独立语音识别",
+        "independentAsrActive": "当前使用独立 ASR：{{provider}}",
+        "independentAsrFallback": "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
+        "audioPreprocessingFailed": "麦克风音频处理失败，本次会话的语音输入已停止。请重新开始一次语音会话。",
+        "independentAsrProviderUnavailable": "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
+        "independentAsrNextSession": "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
+        "independentAsrNative": "当前使用 Omni 原生语音识别"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -1028,7 +1035,13 @@
             "silicon": "硅基流动",
             "gemini": "Gemini",
             "kimi_code": "Kimi Code（月之暗面）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "通义千问",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "免费版",
+            "dummy": "测试服务",
+            "unknown": "未知服务"
         },
         "coreProviderNames": {
             "free": "免费版（猫娘专属福利，支持联网搜索）",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "ttsModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI 兼容：HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。",
         "ttsVoiceIdHint": "（可选，角色未设置时的回退音色）",
         "ttsVoiceIdPlaceholder": "如：中文女、alloy",
         "agentModelUrlPlaceholder": "留空则跟随辅助API视觉模型URL",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API 仅用于 Local 模式（本地语音对话）",
             "wsProtocol": "• URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
             "autoSwitchLocal": "• 配置后，核心 API 类型将自动切换为 \"local\""
-        },
-        "ttsWarning": {
-            "title": "重要提示：",
-            "duplexStreaming": "• TTS API 必须支持双工流式（全双工实时语音合成）",
-            "wsProtocol": "• URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
-            "cosyVoiceOnly": "• 目前仅支持阿里云 CosyVoice 兼容的协议格式"
         },
         "gptsovitsConfig": "GPT-SoVITS 配置",
         "gptsovitsDescription": "GPT-SoVITS 说明：",
@@ -1765,7 +1774,6 @@
         "close": "关闭",
         "catgirlMemory": "角色",
         "compactLibraryLabel": "角色列表",
-        "currentRole": "当前角色:",
         "autoReview": "自动记忆整理",
         "globalActionsAria": "记忆操作",
         "openTutorialManager": "新手引导",
@@ -1791,6 +1799,7 @@
         "autoReviewTooltipLabel": "了解自动记忆整理",
         "strongMemoryTooltipLabel": "了解强力记忆",
         "externalImportTooltipLabel": "关于导入外部记忆",
+        "roleSourceTooltip": "来源：{{source}}",
         "loading": "加载中...",
         "externalImportTitle": "导入外部记忆",
         "externalImportNote": "将 OpenClaw 或 Hermes 的 USER.md、SOUL.md、MEMORY.md、每日记忆或工作区 ZIP 导入当前选中的角色。",
@@ -1827,7 +1836,6 @@
         "olderSection": "较久前",
         "me": "我：",
         "memoNone": "无。",
-        "delete": "删除",
         "deleteEntryAria": "删除 {{speaker}} 的第 {{position}} 条记忆",
         "pleaseSelectFile": "请先选择文件",
         "saveFailed": "保存失败：{{error}}",
@@ -2376,7 +2384,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
-            "notAvailable": "屏幕源选择仅在桌面版可用",
+            "notAvailable": "当前环境无法选择屏幕来源",
             "loading": "加载中...",
             "noSources": "没有可用的屏幕源",
             "loadFailed": "获取屏幕源失败",
@@ -2384,7 +2392,8 @@
             "screenLabel": "屏幕 {{index}}",
             "windows": "窗口",
             "selected": "已选择 {{source}}",
-            "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享"
+            "sourceLost": "屏幕分享无法找到之前选择窗口，已切换为全屏分享",
+            "captureFailed": "屏幕捕获已停止，请检查系统权限或重新选择来源"
         },
         "deviceSwitchFailed": "设备切换失败",
         "deviceSwitching": "设备切换中...",
@@ -2687,9 +2696,11 @@
             "visionInterval": "感知间隔"
         },
         "widgetMode": {
-            "enabledNotice": "挂边模式 Beta 已开启。",
-            "disabledNotice": "挂边模式 Beta 已关闭。Live2D 将恢复普通边缘吸附行为。",
-            "toggleFailed": "挂边模式 Beta 切换失败，请稍后重试。"
+            "enabledNotice": "贴边探身已开启。",
+            "disabledNotice": "贴边探身已关闭。Live2D 已恢复可见和可拖动状态。",
+            "stealthEnabledNotice": "隐身模式已开启。",
+            "stealthDisabledNotice": "隐身模式已关闭，Yui 将保持贴边探身。",
+            "toggleFailed": "贴边探身切换失败，请稍后重试。"
         },
         "toggles": {
             "allowInterrupt": "允许打断",
@@ -2697,8 +2708,6 @@
             "avatarReactionBubble": "表情气泡",
             "focusCognition": "凝神模式",
             "focusCognitionTooltip": "开启后，遇到你倾诉脆弱或复杂的话题时她会更专注地深入思考；关闭则不再进入凝神。",
-            "widgetMode": "挂边模式 Beta",
-            "widgetModeTooltip": "手动开启挂边模式后，Live2D 可从左右和四角共六个屏幕边缘锚点探身。",
             "slopFilter": "自然表达",
             "slopFilterTooltip": "减少历史回复中重复、套路化的说法，让她表达得更自然。",
             "autoCat": "自动变猫",

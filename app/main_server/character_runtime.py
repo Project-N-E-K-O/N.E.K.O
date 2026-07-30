@@ -17,13 +17,15 @@
 
 import asyncio
 import atexit
+import logging
 import sys
+import traceback
 from dataclasses import dataclass
 from typing import Any, Optional
 
 from config import MONITOR_SERVER_PORT, USER_NOTIFICATION_ERROR_MAX_CHARS
 from main_logic import core, cross_server
-from main_logic.agent_event_bus import notify_analyze_ack, register_ws_broadcaster
+from main_logic.agent_event_bus import notify_analyze_ack
 from utils.config_manager import get_reserved
 
 from ._shared import runtime
@@ -282,12 +284,6 @@ async def _broadcast_to_all_connected(event_payload: dict) -> int:
         *(_send_one(n, ws) for n, ws in targets), return_exceptions=False
     )
     return sum(1 for r in results if r is True)
-
-
-# Wire the app-owned WebSocket fan-out into the lower-layer event-bus seam.
-# Consumers such as quota dropper and card-drop routes can then broadcast
-# without importing ``app.main_server`` and inverting the module layering.
-register_ws_broadcaster(_broadcast_to_all_connected)
 
 
 async def _handle_agent_event(event: dict):
@@ -935,10 +931,21 @@ async def _handle_agent_event(event: dict):
                     lanlan,
                 )
     except Exception as exc:
+        # 这个兜底 except 包住整个 agent event 分发，而 event payload 里带用户对话
+        # 文本——异常消息很可能把它捎进来。所以 logger 只写异常类型；完整 traceback
+        # 走 print（同 proactive 原文的处理方式），且只在 DEBUG 级下输出。
+        #
+        # 不能用 logger.debug(exc_info=True)：源码运行且 log_level<=DEBUG 时
+        # setup_logging 会挂一个只收 DEBUG 的 RotatingFileHandler 落到 logs/
+        # （utils/logger_config.py），那等于把隐私文本持久化了。仓库规则见
+        # .agent/rules/neko-guide.md 与 docs/contributing/code-style.md：
+        # 涉及用户隐私（原始对话）的 log 只能用 print，不得使用 logger。
         logger.warning(
             "[EventBus] handle_agent_event failed (error_type=%s)",
             type(exc).__name__,
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            traceback.print_exc()
 
 
 async def _refresh_character_globals():

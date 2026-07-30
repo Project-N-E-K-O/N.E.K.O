@@ -58,10 +58,11 @@ class QQAutoReplyPromptingMixin:
             requested=requested,
         )
 
-    def _should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool]) -> bool:
+    def _should_persist_memory(self, *, should_use_memory_context: bool, requested: Optional[bool], is_group: bool = False) -> bool:
         return self.prompt_builder.should_persist_memory(
             should_use_memory_context=should_use_memory_context,
             requested=requested,
+            is_group=is_group,
         )
 
     def _build_prompt_message(
@@ -168,6 +169,19 @@ class QQAutoReplyPromptingMixin:
             return Path(candidate)
         return Path(text)
 
+    @staticmethod
+    def _attachment_http_client():
+        """The process-wide external client (QQ CDN, not localhost).
+
+        Building one AsyncClient per attachment eagerly initializes an
+        SSLContext each time — the cost utils/http/external_client.py
+        exists to avoid. Its lifetime is the process's (main_server's
+        shutdown hook closes it), so nothing here may close it: a handler
+        still finishing while the plugin shuts down keeps working."""
+        from utils.external_http_client import get_external_http_client
+
+        return get_external_http_client()
+
     async def _prepare_attachment_image_b64(self, attachment: dict[str, Any]) -> str | None:
         locator = str(attachment.get("url") or attachment.get("path") or attachment.get("file") or "").strip()
         if not locator:
@@ -175,13 +189,13 @@ class QQAutoReplyPromptingMixin:
         try:
             image_bytes: bytes
             if locator.startswith(("http://", "https://")):
-                import httpx
-
+                # 逐请求超时：它由回合超时推导，而设置可以在插件运行期间改。
                 timeout = max(3.0, min(float(self._ai_turn_timeout_seconds or 60.0) / 2.0, 15.0))
-                async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-                    response = await client.get(locator)
-                    response.raise_for_status()
-                    image_bytes = response.content
+                response = await self._attachment_http_client().get(
+                    locator, timeout=timeout,
+                )
+                response.raise_for_status()
+                image_bytes = response.content
             else:
                 image_path = self._resolve_local_attachment_path(locator)
                 image_bytes = await asyncio.to_thread(image_path.read_bytes)
@@ -213,15 +227,13 @@ class QQAutoReplyPromptingMixin:
 
     @staticmethod
     def _build_group_turn_message(*, group_scene_mode: str, user_title: str, sender_id: str, group_id: str | None, message: str, current_message_id: str = "") -> str:
+        # 没有 group_collective 分支：唯一调用点 build_prompt_message 的条件是
+        # `is_group and not group_facing`，而 reply_context_node 保证
+        # `group_facing or scene == group_collective` 才是有效的 group_facing
+        # ——collective 场景下 group_facing 恒为真，永远走不到这里（走的是
+        # 原样返回 message 的那条路）。群体面向的措辞由 scene prompt 段承担。
         normalized_mode = str(group_scene_mode or "shared_context").strip() or "shared_context"
         msg_id_line = f"当前消息ID: {current_message_id}\n" if current_message_id else ""
-        if normalized_mode == "group_collective":
-            return (
-                f"[QQ 群公开发言]\n"
-                f"当前群号: {str(group_id or '').strip()}\n"
-                f"当前讨论内容:\n{message}\n"
-                f"请把这次回复视为面向整个群体的公开发言，而不是只对某一个人说话。"
-            )
         if normalized_mode == "directed_user":
             return (
                 f"[QQ 群定向回应]\n"
@@ -251,6 +263,7 @@ class QQAutoReplyPromptingMixin:
         permission_level: str,
         sender_id: str,
         user_title: str,
+        memory_sender_id: str | None = None,
         is_group: bool = False,
         group_id: Optional[str] = None,
         use_memory_context: Optional[bool] = None,
@@ -269,6 +282,7 @@ class QQAutoReplyPromptingMixin:
             character_card_fields=character_card_fields,
             permission_level=permission_level,
             sender_id=sender_id,
+            memory_sender_id=memory_sender_id,
             user_title=user_title,
             is_group=is_group,
             group_id=group_id,

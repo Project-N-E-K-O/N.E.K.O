@@ -929,7 +929,14 @@
         "volumeWaiting": "Ожидание",
         "volumeHintWaiting": "Микрофон слушает, можете говорить",
         "noiseReduction": "Шумоподавление",
-        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса"
+        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса",
+        "independentAsr": "Независимое распознавание речи",
+        "independentAsrActive": "Активен независимый ASR: {{provider}}",
+        "independentAsrFallback": "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
+        "audioPreprocessingFailed": "Не удалось обработать звук микрофона. Голосовой ввод в этой сессии остановлен. Начните новую голосовую сессию.",
+        "independentAsrProviderUnavailable": "{{provider}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
+        "independentAsrNextSession": "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
+        "independentAsrNative": "Используется встроенное распознавание речи Omni"
     },
     "speaker": {
         "volumeLabel": "Громкость динамика",
@@ -1028,7 +1035,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Бесплатная версия",
+            "dummy": "Тестовый провайдер",
+            "unknown": "Неизвестный провайдер"
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "ttsModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI-совместимый API: HTTP(S) POST /v1/audio/speech с полной текстовой фразой и потоковым аудиоответом.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream с двунаправленной потоковой передачей текста и аудио.",
         "ttsVoiceIdHint": "(Необязательно, запасной голос)",
         "ttsVoiceIdPlaceholder": "например, Chinese Female, alloy",
         "agentModelUrlPlaceholder": "Оставьте пустым для URL модели вспомогательного API",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API только для локального режима",
             "wsProtocol": "• URL должен использовать ws:// или wss://",
             "autoSwitchLocal": "• Тип основного API переключится на \"local\""
-        },
-        "ttsWarning": {
-            "title": "Важное уведомление:",
-            "duplexStreaming": "• TTS API должен поддерживать дуплексную потоковую передачу",
-            "wsProtocol": "• URL должен использовать ws:// или wss://",
-            "cosyVoiceOnly": "• Поддерживается только протокол Alibaba Cloud CosyVoice"
         },
         "gptsovitsConfig": "Конфигурация GPT-SoVITS",
         "gptsovitsDescription": "Примечание GPT-SoVITS:",
@@ -1765,7 +1774,6 @@
         "close": "Закрыть",
         "catgirlMemory": "Персонажи",
         "compactLibraryLabel": "Список персонажей",
-        "currentRole": "Текущий персонаж:",
         "autoReview": "Автоматическая ревизия памяти",
         "globalActionsAria": "Действия с памятью",
         "openTutorialManager": "Справка",
@@ -1791,6 +1799,7 @@
         "autoReviewTooltipLabel": "Об автоматической ревизии памяти",
         "strongMemoryTooltipLabel": "Об усиленной памяти",
         "externalImportTooltipLabel": "Об импорте внешней памяти",
+        "roleSourceTooltip": "Источник: {{source}}",
         "loading": "Загрузка...",
         "externalImportTitle": "Импорт внешней памяти",
         "externalImportNote": "Импортируйте USER.md, SOUL.md, MEMORY.md, дневные заметки или ZIP рабочего пространства OpenClaw/Hermes в выбранного персонажа.",
@@ -1827,7 +1836,6 @@
         "olderSection": "Ранее",
         "me": "Я:",
         "memoNone": "Нет.",
-        "delete": "Удалить",
         "deleteEntryAria": "Удалить запись памяти {{position}} от {{speaker}}",
         "pleaseSelectFile": "Сначала выберите файл",
         "saveFailed": "Ошибка сохранения: {{error}}",
@@ -2376,7 +2384,7 @@
             "never": "Больше не напоминать"
         },
         "screenSource": {
-            "notAvailable": "Выбор источника экрана доступен только в десктопной версии",
+            "notAvailable": "Выбор источника экрана недоступен в текущей среде",
             "loading": "Загрузка...",
             "noSources": "Нет доступных источников экрана",
             "loadFailed": "Не удалось загрузить источники экрана",
@@ -2384,7 +2392,8 @@
             "screenLabel": "Экран {{index}}",
             "windows": "Окна",
             "selected": "Выбрано {{source}}",
-            "sourceLost": "Не удалось найти ранее выбранное окно, переключено на полноэкранную демонстрацию"
+            "sourceLost": "Не удалось найти ранее выбранное окно, переключено на полноэкранную демонстрацию",
+            "captureFailed": "Захват экрана остановлен. Проверьте системные разрешения или выберите источник снова"
         },
         "deviceSwitchFailed": "Ошибка переключения устройства",
         "deviceSwitching": "Переключение устройства...",
@@ -2687,9 +2696,11 @@
             "visionInterval": "Интервал восприятия"
         },
         "widgetMode": {
-            "enabledNotice": "Режим крепления к краю Beta включён.",
-            "disabledNotice": "Режим крепления к краю Beta выключен. Live2D снова использует обычное прилипание к краям.",
-            "toggleFailed": "Не удалось переключить Режим крепления к краю Beta. Повторите попытку позже."
+            "enabledNotice": "Выглядывание из-за края включено.",
+            "disabledNotice": "Выглядывание из-за края выключено. Live2D снова видим и доступен для перетаскивания.",
+            "stealthEnabledNotice": "Скрытый режим включён.",
+            "stealthDisabledNotice": "Скрытый режим выключен. Yui останется выглядывать из-за края.",
+            "toggleFailed": "Не удалось переключить выглядывание из-за края. Повторите попытку позже."
         },
         "toggles": {
             "allowInterrupt": "Разрешить прерывание",
@@ -2697,8 +2708,6 @@
             "avatarReactionBubble": "Пузырек эмоций",
             "focusCognition": "Режим сосредоточения",
             "focusCognitionTooltip": "Когда включено, она сосредотачивается и думает глубже, когда вы откровенничаете или задаёте сложный вопрос; выключено полностью отключает сосредоточение.",
-            "widgetMode": "Режим крепления к краю Beta",
-            "widgetModeTooltip": "Включите режим крепления вручную, чтобы Live2D мог выглядывать из шести точек у края экрана.",
             "slopFilter": "Естественная речь",
             "slopFilterTooltip": "Уменьшает повторяющиеся и шаблонные обороты в прошлых ответах, чтобы её речь звучала естественнее.",
             "autoCat": "Авторежим кота",

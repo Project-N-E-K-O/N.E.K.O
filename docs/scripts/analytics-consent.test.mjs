@@ -269,6 +269,26 @@ test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
   })
 })
 
+test('Steam CTA placement is sanitized before it is sent to GA4', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+  const longPlacement = 'x'.repeat(150)
+  const anchor = {
+    href: `https://store.steampowered.com/app/4099310/__NEKO/?utm_content=${longPlacement}&token=secret`,
+  }
+
+  analytics.acceptGoogleAnalytics(fixture)
+  assert.equal(analytics.trackSteamCtaClick(anchor, fixture), true)
+
+  const eventCommand = Array.from(fixture.windowObject.dataLayer.at(-1))
+  assert.equal(eventCommand[2].cta_location, 'x'.repeat(100))
+  assert.equal(eventCommand[2].cta_location.includes('secret'), false)
+  assert.equal(
+    eventCommand[2].link_url,
+    'https://store.steampowered.com/app/4099310/__NEKO/',
+  )
+})
+
 test('a cross-tab denial immediately disables active analytics', async () => {
   const analytics = await freshAnalyticsModule()
   const fixture = browserFixture()

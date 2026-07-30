@@ -18,6 +18,7 @@ const VoiceDisplayUtils = (() => {
         grok: 'Grok',
         mimo: 'MiMo',
         vllm_omni: 'vLLM-Omni',
+        custom: 'Custom API',
     });
 
     function t(key, fallback) {
@@ -50,6 +51,9 @@ const VoiceDisplayUtils = (() => {
         }
         if (normalized === 'free') {
             return t(options.freeKey || 'voice.providerFree', options.freeFallback || 'Free');
+        }
+        if (normalized === 'custom') {
+            return t('api.customModelProviderCustom', 'Custom API');
         }
         return PROVIDER_SHORT[normalized] || normalized;
     }

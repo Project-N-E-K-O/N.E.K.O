@@ -1361,10 +1361,12 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
     assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
     assert "if (pcOverlayAvailable) {" in update_block
-    assert "var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;" in update_block
+    assert "var pcWindowMetrics = pcOverlayAvailable && typeof getYuiGuideWindowMetrics === 'function'" in update_block
+    assert "getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect, pcWindowMetrics)" in update_block
+    assert "metrics.waylandWorkAreaCarrier === true" in script
     assert "var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;" in update_block
     assert "toYuiGuideScreenRect({" in update_block
-    assert "}, kind, yuiGuideChatSpotlightVariant)" in update_block
+    assert "}, kind, yuiGuideChatSpotlightVariant, pcWindowMetrics)" in update_block
     assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script
@@ -2823,7 +2825,7 @@ def test_chat_composer_user_images_use_text_attachment_input_type():
     assert "input_type: U.isMobile() ? 'camera' : 'screen'" not in send_block
 
 
-def test_text_mode_screenshot_payload_only_tags_paired_text_turn():
+def test_text_mode_screenshot_payload_always_tags_interaction_request():
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
 
     screenshot_block = script.split("// Send screenshots first", 1)[1].split(
@@ -2835,7 +2837,7 @@ def test_text_mode_screenshot_payload_only_tags_paired_text_turn():
         1,
     )[0]
 
-    assert "request_id: requestId" not in screenshot_block
-    assert "if (text)" in screenshot_block
-    assert "msg.request_id = requestId" in screenshot_block
+    assert "request_id: requestId" in screenshot_block
+    assert "if (text)" not in screenshot_block
+    assert "msg.request_id = requestId" not in screenshot_block
     assert "request_id: requestId" in text_block
