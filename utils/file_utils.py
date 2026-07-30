@@ -22,7 +22,6 @@ import tempfile
 import threading
 import time
 import unicodedata
-from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -557,6 +556,30 @@ def _sweep_stale_tmp_once(target_path: Path) -> None:
             _swept_tmp_dirs[parent] = _STALE_TMP_SWEEP_ATTEMPTS
 
 
+def _rearm_tmp_sweep(target_path: Path) -> None:
+    """Undo the sweep bookkeeping for this directory so a later write scans again."""
+    # 清扫发生在 mkstemp **之前**，所以本次调用自己泄漏出来的 tmp（replace 失败且
+    # 兜底的 remove 也被拒 —— 正是本模块要容忍的那个 Windows 场景）落在已经记账为
+    # 「扫过」的目录里，本进程再也不会去清它。长寿进程（桌面端一开一整天）里这就是
+    # 永久泄漏。这里把记账撤掉，让后续任何一次写这个目录时重扫。
+    with _swept_tmp_dirs_lock:
+        _swept_tmp_dirs.pop(str(target_path.parent), None)
+
+
+def _reset_tmp_sweep_state_after_fork() -> None:
+    """Re-create the sweep lock in a forked child and drop inherited bookkeeping."""
+    # app/main_server/__init__.py:56 选的是 fork 启动方式，而 fork 只复制调用它的那
+    # 一个线程：如果别的线程正持着这把锁，子进程继承到的就是一把永远锁着的 mutex，
+    # 子进程里任何一次落盘都会死锁。记账也一并清掉——子进程是新进程，本来就该重扫。
+    global _swept_tmp_dirs_lock
+    _swept_tmp_dirs_lock = threading.Lock()
+    _swept_tmp_dirs.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_tmp_sweep_state_after_fork)
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)
@@ -580,8 +603,13 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
         # 目标被别的句柄占着（杀软扫描、资源管理器预览）会让 os.replace 抛
         # PermissionError，而紧随其后的 os.remove 往往被同一个原因拒掉，于是调用方
         # 看到的是 remove 的异常、真实原因退到 __context__ 里去了，同时 tmp 还是留盘。
-        with suppress(OSError):
+        try:
             os.remove(temp_path)
+        except OSError:
+            # tmp 删不掉（目标/tmp 被句柄占着、权限不足），它就成了残留。清扫在本次
+            # 写之前已经跑过并把这个目录记账为「扫过」，所以要撤掉记账，否则本进程
+            # 再也不会清它。
+            _rearm_tmp_sweep(target_path)
         raise
 
 

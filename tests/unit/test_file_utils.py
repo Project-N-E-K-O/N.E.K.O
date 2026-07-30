@@ -318,6 +318,79 @@ def test_sweep_gives_up_after_a_bounded_number_of_attempts(tmp_path, monkeypatch
     assert read_json(target) == {"v": file_utils._STALE_TMP_SWEEP_ATTEMPTS + 2}
 
 
+def test_a_temp_file_leaked_by_this_write_rearms_the_sweep(tmp_path, monkeypatch):
+    # 清扫跑在 mkstemp 之前，所以本次调用自己泄漏出来的 tmp（replace 失败且兜底的
+    # remove 也被拒 —— 正是这个模块要容忍的 Windows 场景）落在已经记账为「扫过」的
+    # 目录里。不撤记账的话，长寿进程（桌面端一开一整天）里它就是永久泄漏。
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"v": 1})   # 这一次把目录记账成「扫干净了」
+
+    def replace_denied(src, dst):
+        raise PermissionError("target held open")
+
+    def remove_denied(path):
+        raise PermissionError("cannot clean up the temp file either")
+
+    monkeypatch.setattr(os, "replace", replace_denied)
+    monkeypatch.setattr(os, "remove", remove_denied)
+    with pytest.raises(PermissionError, match="target held open"):
+        atomic_write_json(target, {"v": 2})
+
+    leaked = _tmp_siblings(target)
+    assert len(leaked) == 1, "这一次写确实泄漏了一个 tmp"
+    assert str(tmp_path) not in file_utils._swept_tmp_dirs, (
+        "泄漏之后必须撤掉记账，否则本进程再也不会清它"
+    )
+
+    monkeypatch.undo()
+    _age(leaked[0], file_utils._STALE_TMP_MIN_AGE_S + 60)
+    atomic_write_json(target, {"v": 3})
+
+    assert _tmp_siblings(target) == [], "重扫必须把泄漏的 tmp 清掉"
+
+
+def test_fork_child_gets_a_fresh_sweep_lock(tmp_path):
+    # app/main_server/__init__.py:56 选的是 fork 启动方式，而 fork 只复制调用它的那
+    # 一个线程：别的线程正持着这把锁时，子进程继承到的是一把永远锁着的 mutex，子进程
+    # 里任何一次落盘都会死锁。这条直接验 after_in_child 钩子（Windows 上没有 fork，
+    # 所以只能直接调它，但要守的不变量是平台无关的）。
+    atomic_write_json(tmp_path / "state.json", {"v": 1})
+    assert file_utils._swept_tmp_dirs, "先造出一些继承过来的记账"
+
+    inherited = file_utils._swept_tmp_dirs_lock
+    inherited.acquire()                      # 模拟「fork 时别的线程正持着锁」
+    try:
+        file_utils._reset_tmp_sweep_state_after_fork()
+        assert file_utils._swept_tmp_dirs_lock is not inherited
+        assert not file_utils._swept_tmp_dirs_lock.locked()
+        assert file_utils._swept_tmp_dirs == {}
+        # 子进程里落盘不该死锁
+        atomic_write_json(tmp_path / "child.json", {"v": 1})
+    finally:
+        inherited.release()
+
+
+def test_the_fork_hook_is_registered_at_import(monkeypatch):
+    # 上一条只验了钩子函数本身干得对；这条验它真的被挂上去了 —— 否则函数写得再对也
+    # 不会在 fork 时跑（护栏测试最常见的失效就是只测谓词、不测调用点）。
+    # 独立加载一份模块来观察注册动作，不动已经导入的那份。Windows 上 os 本来没有
+    # register_at_fork，raising=False 会把它加上，于是那个 hasattr 分支也会走到。
+    import importlib.util
+
+    calls = []
+    monkeypatch.setattr(
+        os, "register_at_fork", lambda **kw: calls.append(kw), raising=False
+    )
+    spec = importlib.util.spec_from_file_location(
+        "_file_utils_fork_probe", file_utils.__file__
+    )
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+
+    assert calls, "模块导入时必须注册 after_in_child 钩子"
+    assert calls[0].get("after_in_child") is probe._reset_tmp_sweep_state_after_fork
+
+
 def test_a_temp_file_that_cannot_be_removed_leaves_a_retry(tmp_path, monkeypatch):
     # 删不掉一个 tmp 不代表整个目录扫过了：Windows 上活写者的句柄还开着就会撞这个，
     # 句柄一放开就该能扫掉。所以「没扫干净」不记成完成，留给后续写盘重试。
