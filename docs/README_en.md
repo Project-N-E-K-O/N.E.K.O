@@ -58,7 +58,11 @@ Build both frontend projects on the first checkout or after frontend changes:
 Start the supported service suite:
 
 ```bash
-uv run python launcher.py
+# Development Auth environment
+./scripts/start-dev.sh
+
+# Production Auth environment
+# ./scripts/start-prod.sh
 ```
 
 Open `http://127.0.0.1:48911`. See [development setup](guide/dev-setup.md) and [quick start](guide/quick-start.md) before splitting services manually.

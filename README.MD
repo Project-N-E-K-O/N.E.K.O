@@ -512,6 +512,18 @@ uv run python -m app.agent_server
 # 5. 访问 http://localhost:48911 配置 API Key 并开始使用
 ```
 
+社区登录需要按环境选择对应的启动入口：
+
+```bash
+# 开发环境：使用 neko-servers-desktop-dev
+./scripts/start-dev.sh
+
+# 生产环境：使用 neko-servers-desktop-prod
+./scripts/start-prod.sh
+```
+
+不要直接使用 `python3 launcher.py` 启动需要连接生产 Auth 平台的实例，否则会回落到开发 Client。
+
 **调试聊天界面形态（full / compact）**：Web 端默认 `full`（完整聊天窗口），Electron 端默认 `compact`（悬浮对话条）。在浏览器控制台用 localStorage 切换测试（硬刷新生效）：
 
 ```js

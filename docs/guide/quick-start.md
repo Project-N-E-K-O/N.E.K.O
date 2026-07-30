@@ -7,10 +7,16 @@ Complete [Development Setup](./dev-setup) first.
 ## 1. Launch
 
 ```bash
-uv run python launcher.py
+# Development Auth environment
+./scripts/start-dev.sh
+
+# Production Auth environment
+# ./scripts/start-prod.sh
 ```
 
 The launcher starts the cooperating services and reports selected ports. Use the reported main URL; `http://127.0.0.1:48911` is only the preferred default.
+
+Use `start-dev.sh` with the development Auth client and `start-prod.sh` with the production Auth client. Do not launch this flow with a bare `python3 launcher.py`, because it defaults to the development client.
 
 ## 2. Configure providers
 
