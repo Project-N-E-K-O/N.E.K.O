@@ -242,7 +242,7 @@ async def test_participant_subject_gating_matches_write_side():
     # the participant scope too.
     plugin._qq_settings["group_member_memory_enabled"] = False
     plugin.memory_bridge.query_relevant_memory.reset_mock()
-    output, consumed = await plugin.memory_tool_service.execute_recall(
+    _, consumed = await plugin.memory_tool_service.execute_recall(
         context=_group_context(), arguments={"query": "群规"},
     )
     kwargs = plugin.memory_bridge.query_relevant_memory.await_args.kwargs
@@ -602,7 +602,7 @@ async def test_tool_recall_backfills_the_direct_fallback_text():
     fallback prompt via the existing sanitizer."""
     plugin = _tool_plugin()
     context = _group_context()
-    output, consumed = await plugin.memory_tool_service.execute_recall(
+    await plugin.memory_tool_service.execute_recall(
         context=context, arguments={"query": "群规"},
     )
     assert "群规是不剧透" in context.recalled_memory_text
@@ -846,6 +846,37 @@ def test_route_capability_predicate_knows_the_free_proxy():
         TOOL_CAPABLE_MODEL, TOOL_CAPABLE_BASE_URL,
     ) is True
     assert route_supports_tool_calls("", "") is True
+    # 免费域按 host 判，不是子串：路径/查询串里提到 lanlan.* 的自配端点
+    # 不是免费代理（与 voice registry 的免费路由判法同口径）。
+    assert route_supports_tool_calls(
+        TOOL_CAPABLE_MODEL, "https://custom.example/v1/lanlan.tech",
+    ) is True
+    assert route_supports_tool_calls(
+        TOOL_CAPABLE_MODEL, "https://api.lanlan.app/v1",
+    ) is False
+
+
+@pytest.mark.asyncio
+async def test_recall_header_counts_entries_not_lines():
+    """A single multiline reflection must not inflate the header into
+    "found N memories": entries are counted by their rendered "N. "
+    prefixes, never by newline characters."""
+    from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
+    from config.prompts.prompts_sys import _loc
+
+    plugin = _tool_plugin()
+    plugin.memory_bridge.query_relevant_memory = AsyncMock(
+        return_value=QQMemoryQueryResult(
+            text="1. [事实] 第一行\n第二行\n第三行", hit_count=1,
+        ),
+    )
+    output, _ = await plugin.memory_tool_service.execute_recall(
+        context=_group_context(), arguments={"query": "群规"},
+    )
+    lang = plugin.memory_tool_service._short_lang()
+    assert output.startswith(
+        _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, lang).format(n=1)
+    )
 
 
 def _build_stub_plugin(bridge):

@@ -283,6 +283,27 @@ _FREE_ROUTE_BASE_URL_HINTS = ("lanlan.app", "lanlan.tech")
 _FREE_ROUTE_MODEL_NAME = "free-model"
 
 
+def _is_free_route_host(base_url: str | None) -> bool:
+    """Whether ``base_url``'s HOST is a lanlan free-proxy domain.
+
+    Host-parsed on purpose (same discipline as the voice registry's
+    free-route check): a custom endpoint whose path or query merely
+    mentions ``lanlan.app`` must not be misread as the free proxy."""
+    from urllib.parse import urlparse
+
+    bl = (base_url or "").strip()
+    if not bl:
+        return False
+    parsed = urlparse(bl if "//" in bl else "//" + bl)
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    return any(
+        host == hint or host.endswith("." + hint)
+        for hint in _FREE_ROUTE_BASE_URL_HINTS
+    )
+
+
 def route_supports_tool_calls(model: str, base_url: str | None) -> bool:
     """Whether tool definitions handed to ``OmniOfflineClient`` on this
     route actually reach the model.
@@ -300,8 +321,7 @@ def route_supports_tool_calls(model: str, base_url: str | None) -> bool:
     """
     if _should_use_genai_sdk(model, base_url):
         return True
-    bl = (base_url or "").lower()
-    if any(hint in bl for hint in _FREE_ROUTE_BASE_URL_HINTS):
+    if _is_free_route_host(base_url):
         return False
     if (model or "").strip().lower() == _FREE_ROUTE_MODEL_NAME:
         return False

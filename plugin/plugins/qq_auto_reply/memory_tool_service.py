@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from config.prompts.prompts_sys import _loc
@@ -19,6 +20,11 @@ from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 RECALL_TOOL_NAME = "recall_memory"
 # 召回 HTTP 的单次预算：也是生成服务给工具轮扩超时时计入的量。
 RECALL_TOOL_HTTP_TIMEOUT_SECONDS = 5.0
+
+# bridge 渲染的每条召回恒以 "N. " 开行（render_relevant_memory 的
+# f"{index}. {tag} ..."）。header 的条数按它数，不能拿换行数当替身——
+# 记忆原文可含内嵌换行，一条多行 reflection 会把 header 吹成"找到 20 条"。
+_RECALL_ENTRY_PREFIX_RE = re.compile(r"^\d+\. ", re.MULTILINE)
 
 
 def resolve_group_recall_subjects(
@@ -250,8 +256,8 @@ class QQMemoryToolService:
             # 轻量测试 context 可能不可写：回填是 fallback 增强，绝不让
             # 它连累主路径的 tool 结果返回。
             pass
-        rendered_lines = result.text.count("\n") + 1
+        rendered_entries = len(_RECALL_ENTRY_PREFIX_RE.findall(result.text)) or 1
         header = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, lang).format(
-            n=rendered_lines,
+            n=rendered_entries,
         )
         return f"{header}\n{result.text}", consumed
