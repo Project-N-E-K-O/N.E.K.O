@@ -17,11 +17,13 @@ from main_logic.asr_client.endpointing.detector_runtime import (
 )
 from main_logic.asr_client.endpointing.detector import (
     DetectorActivityEvent,
+    DetectorPrewarmEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
 from main_logic.asr_client.lifecycle import VoiceIngressToken, VoiceTurnToken
 from main_logic.asr_client.provider_policy import AsrProviderPolicy
+from main_logic.asr_client.endpointing.throttle_policy import ThrottleAction
 from main_logic.voice_turn.contracts import (
     EvaluationStatus,
     SpeechActivityEvent,
@@ -162,17 +164,85 @@ class _OverflowAdapter:
 
 def _smart_turn_policy() -> AsrProviderPolicy:
     return AsrProviderPolicy(
-        transport="streaming",
+        transport="segmented",
         endpoint_authority="smart_turn",
         smart_turn_required=True,
-        max_segment_ms=None,
-        warm_transport_ms=25_000,
-        replay_policy="preconnect_only",
+        max_segment_ms=30_000,
+        warm_transport_ms=0,
+        replay_policy="none",
     )
 
 
 def _ingress_token() -> VoiceIngressToken:
     return VoiceIngressToken(1, "socket", 1, 1, 1)
+
+
+async def test_provider_prewarm_keeps_candidate_open_until_silero_confirms() -> None:
+    gate = _Gate()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        provider_policy=_provider_endpoint_policy(),
+    )
+    ingress = _ingress_token()
+
+    prewarm = await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.9,
+            available=True,
+        ),
+        ingress_token=ingress,
+    )
+    followup = await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        ),
+        ingress_token=ingress,
+    )
+
+    assert prewarm.throttle_action is ThrottleAction.PREWARM
+    assert followup.throttle_action is ThrottleAction.KEEP_CANDIDATE_OPEN
+    assert gate.inputs == [b"\x01\x00", b"\x02\x00"]
+    assert detector.candidate_open is True
+    await detector.close()
+
+
+async def test_stale_provider_ingress_does_not_mutate_throttle_policy() -> None:
+    policy = VoiceThrottlePolicy(
+        resource_optimization_enabled=True,
+        minimum_baseline_samples=1,
+    )
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_provider_endpoint_policy(),
+        throttle_policy=policy,
+    )
+    current_ingress = _ingress_token()
+    await detector.feed(
+        b"\x01\x00",
+        rnnoise_evidence=RnnoiseEvidence.unavailable(),
+        ingress_token=current_ingress,
+    )
+    before = policy.shadow_metrics
+
+    stale = await detector.feed(
+        b"\x02\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        ),
+        ingress_token=VoiceIngressToken(1, "stale-socket", 1, 1, 1),
+        allow_baseline_update=True,
+    )
+
+    assert stale.endpointing_available is False
+    assert policy.shadow_metrics == before
+    assert policy.baseline is None
+    await detector.close()
 
 
 async def test_detector_loads_silero_off_loop_and_returns_activity() -> None:
@@ -185,6 +255,7 @@ async def test_detector_loads_silero_off_loop_and_returns_activity() -> None:
     assert result == DetectorFeedResult(
         events=(SpeechActivityEvent.SPEECH_STARTED,),
         throttle_available=True,
+        throttle_action=ThrottleAction.OPEN_CANDIDATE,
     )
     assert gate.inputs == [b"\x01\x00" * 160]
     assert vad.load_threads and vad.load_threads[0] != threading.get_ident()
@@ -467,6 +538,7 @@ async def test_scoped_detector_events_bind_before_logical_complete() -> None:
         await asyncio.sleep(0.001)
 
     assert [type(event) for event in events] == [
+        DetectorPrewarmEvent,
         DetectorActivityEvent,
         DetectorActivityEvent,
         DetectorTurnEvent,
@@ -597,14 +669,7 @@ async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
     detector = DetectorRuntime(
         vad=_Vad(),
         gate=_Gate(),
-        provider_policy=AsrProviderPolicy(
-            transport="streaming",
-            endpoint_authority="smart_turn",
-            smart_turn_required=True,
-            max_segment_ms=None,
-            warm_transport_ms=25_000,
-            replay_policy="preconnect_only",
-        ),
+        provider_policy=_smart_turn_policy(),
         coordinator=coordinator,
         on_turn_complete=AsyncMock(),
     )
@@ -630,6 +695,63 @@ async def test_smart_turn_readiness_is_pinned_to_one_logical_turn() -> None:
     await detector.reset()
     assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
     await next_lease.release()
+    await detector.close()
+
+
+async def test_provider_authority_streaming_never_builds_or_prepares_smart_turn() -> None:
+    coordinator = _SemanticCoordinator()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.CANDIDATE_PAUSE,)),
+        provider_policy=AsrProviderPolicy(
+            transport="streaming",
+            endpoint_authority="provider",
+            smart_turn_required=False,
+            max_segment_ms=None,
+            warm_transport_ms=25_000,
+            replay_policy="preconnect_only",
+        ),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+
+    result = await detector.feed(b"\x01\x00" * 160)
+
+    assert result.events == (SpeechActivityEvent.CANDIDATE_PAUSE,)
+    assert detector._semantic_adapter is None
+    assert detector.smart_turn_readiness is SmartTurnReadiness.UNLOADED
+    assert coordinator.prepare_calls == 0
+    assert coordinator.audio == []
+    assert coordinator.state is CoordinatorState.IDLE
+    await detector.close()
+    assert coordinator.state is CoordinatorState.IDLE
+
+
+async def test_manual_streaming_provider_builds_and_prepares_smart_turn() -> None:
+    coordinator = _SemanticCoordinator()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=AsrProviderPolicy(
+            transport="streaming",
+            endpoint_authority="smart_turn",
+            smart_turn_required=True,
+            max_segment_ms=None,
+            warm_transport_ms=25_000,
+            replay_policy="preconnect_only",
+        ),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    token = VoiceTurnToken(_ingress_token(), turn_id=1)
+
+    lease = await detector.prepare_endpointing(token)
+
+    assert lease is not None
+    assert detector.smart_turn_readiness is SmartTurnReadiness.READY
+    assert detector.endpointing_ready(token) is True
+    assert coordinator.prepare_calls == 1
+    await lease.release()
     await detector.close()
 
 
@@ -994,14 +1116,7 @@ async def test_silero_unavailable_keeps_periodic_smart_turn_authority() -> None:
     detector = DetectorRuntime(
         vad=_Vad(available=False),
         gate=_Gate(),
-        provider_policy=AsrProviderPolicy(
-            transport="streaming",
-            endpoint_authority="smart_turn",
-            smart_turn_required=True,
-            max_segment_ms=None,
-            warm_transport_ms=25_000,
-            replay_policy="preconnect_only",
-        ),
+        provider_policy=_smart_turn_policy(),
         coordinator=_SemanticCoordinator(),
         on_turn_complete=lambda: completed.set() or asyncio.sleep(0),
     )
