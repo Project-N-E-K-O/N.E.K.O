@@ -55,13 +55,13 @@ def test_desktop_client_id_is_owned_here_and_rejects_plugin_market_client(monkey
     # 单一真相源：main_routers 是 L3、plugin 是 L4，前者不能 import 后者，所以这个
     # 值不在 plugin/settings.py 里另立常量（那份曾经存在但无人消费）。
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-desktop")
-    assert O._desktop_client_id() == "neko-servers-desktop-dev"
+    assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "  ")
-    assert O._desktop_client_id() == "neko-servers-desktop-dev"
+    assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
     monkeypatch.delenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", raising=False)
-    assert O._desktop_client_id() == "neko-servers-desktop-dev"
+    assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-servers-desktop-prod")
     assert O._desktop_client_id() == "neko-servers-desktop-prod"
