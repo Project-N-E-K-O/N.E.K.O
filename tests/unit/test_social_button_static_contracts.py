@@ -33,9 +33,15 @@ def test_social_open_request_is_deduped_before_fetching_config():
     assert listener.count("releaseSocialOpenRequest();") == 2
     assert "if (!socialOpenRequestReleased)" in listener
     # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
-    assert "window.open(" in listener
-    assert "'neko-social'" in listener
-    assert "popup=yes,width=1200,height=800,resizable=yes" in listener
+    helper_start = listener.index("const openElectronSocialWindow = (targetUrl) => {")
+    helper_end = listener.index("const fetchNativeSyncTicket = async () => {", helper_start)
+    electron_helper = listener[helper_start:helper_end]
+    assert re.search(
+        r"window\.open\(\s*String\(targetUrl\),\s*"
+        r"'neko-social',\s*"
+        r"'popup=yes,width=1200,height=800,resizable=yes'\s*\)",
+        electron_helper,
+    )
     assert "openElectronSocialWindow(url)" in listener
     assert listener.index("releaseSocialOpenRequest();") > listener.index("openElectronSocialWindow(url)")
     assert "fetch('/api/card-drop/sync-ticket', {" in listener
