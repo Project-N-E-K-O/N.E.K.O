@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor, wait as _futures_wait
 import ctypes
 from datetime import datetime, timezone
 import hashlib
@@ -21,7 +21,7 @@ from ctypes import wintypes
 from dataclasses import dataclass, field, replace
 from functools import wraps
 from pathlib import Path
-from typing import Any, Callable, ClassVar, Iterable, Protocol
+from typing import Any, Callable, ClassVar, Iterable, Protocol, Sequence
 from uuid import uuid4
 
 from .models import (
@@ -690,17 +690,29 @@ class CaptureMixin:
         return executors
 
 
-    def _shutdown_capture_worker(self) -> None:
+    def _shutdown_capture_worker(self) -> list[Future[OcrExtractionResult]]:
+        """Detach capture workers without blocking; return the ones still running.
+
+        Callers on the hot path (worker rotation) drop the return value: they
+        must not block. Teardown paths feed it to
+        `_drain_inflight_capture_workers` before releasing heavy dependencies.
+        """
         executors: list[ThreadPoolExecutor] = []
+        # cancel() 只对还在队列里的任务有效；已经进 _capture_and_extract_text 的
+        # 那个照跑不误，而它正攥着 RapidOCR runtime。收尾路径必须知道它还在，
+        # 否则紧接着的 _release_rapidocr_backend() 就是在它脚下拆台。
+        inflight: list[Future[OcrExtractionResult]] = []
         with self._capture_worker_lock:
             future = self._capture_future
             if future is not None and not future.done():
-                future.cancel()
+                if not future.cancel():
+                    inflight.append(future)
             if self._capture_executor is not None:
                 executors.append(self._capture_executor)
             for executor, abandoned_future in self._abandoned_capture_workers:
                 if not abandoned_future.done():
-                    abandoned_future.cancel()
+                    if not abandoned_future.cancel():
+                        inflight.append(abandoned_future)
                 executors.append(executor)
             self._abandoned_capture_workers = []
             self._capture_executor = None
@@ -710,6 +722,39 @@ class CaptureMixin:
         for executor in executors:
             # Project requires Python 3.11; cancel_futures is available on >=3.9.
             executor.shutdown(wait=False, cancel_futures=True)
+        return inflight
+
+
+    def _drain_inflight_capture_workers(
+        self,
+        futures: Sequence[Future[OcrExtractionResult]],
+        *,
+        timeout: float | None = None,
+    ) -> list[Future[OcrExtractionResult]]:
+        """Bounded wait for detached capture workers; returns those still running.
+
+        Only teardown calls this. Waiting is bounded on purpose: a worker stuck
+        inside a native capture call cannot be killed from Python, so past the
+        deadline the only options are to leak the wait or move on with a warning.
+        """
+        pending = [future for future in futures if not future.done()]
+        if not pending:
+            return []
+        if timeout is None:
+            timeout = float(
+                _ocr_reader_module._OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS
+            )
+        if timeout > 0.0:
+            _done, not_done = _futures_wait(pending, timeout=timeout)
+            pending = [future for future in pending if future in not_done]
+        if pending:
+            self._logger.warning(
+                "ocr_reader gave up waiting for {} in-flight capture worker(s) after {:.1f}s; "
+                "releasing OCR runtime anyway",
+                len(pending),
+                timeout,
+            )
+        return pending
 
 
     def _clear_completed_capture_worker(self) -> None:

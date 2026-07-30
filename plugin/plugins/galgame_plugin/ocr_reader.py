@@ -382,17 +382,24 @@ class OcrReaderManager(
         # 面，任一抛错就把下面几段守卫整个跳过、线程与线程池全漏 —— 正是这
         # 些 try/except 当初要防的场景。
         #
-        # 四步各自独立守卫，不合并：合并后任一步抛错都会把它后面的步骤连带
+        # 各步各自独立守卫，不合并：合并后任一步抛错都会把它后面的步骤连带
         # 跳过，而异常又已经被吞掉，调用方看到的是「关成功了」，实际还留着
         # 活着的资源（Codex P2）。
         try:
             self._stop_foreground_advance_monitor(join_timeout=1.0)
         except Exception as exc:
             self._log_warning("ocr_reader foreground advance monitor shutdown failed: {}", exc)
+        inflight: list[Future[OcrExtractionResult]] = []
         try:
-            self._shutdown_capture_worker()
+            inflight = self._shutdown_capture_worker() or []
         except Exception as exc:
             self._log_warning("ocr_reader capture worker shutdown failed: {}", exc)
+        # 关线程池不等于任务停了：已经在跑的那次 capture 还攥着下面要释放的
+        # RapidOCR runtime。先有界地等它退栈，再往下拆。
+        try:
+            self._drain_inflight_capture_workers(inflight)
+        except Exception as exc:
+            self._log_warning("ocr_reader in-flight capture drain failed: {}", exc)
         try:
             self._release_rapidocr_backend()
         except Exception as exc:

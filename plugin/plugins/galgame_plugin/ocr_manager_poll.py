@@ -210,7 +210,11 @@ class PollMixin:
 
     async def shutdown(self) -> None:
         self._stop_foreground_advance_monitor()
-        self._shutdown_capture_worker()
+        # 顺序与 OcrReaderManager.close() 对偶：停线程/线程池 → 等在飞 capture
+        # 跑完 → 再释放它可能仍在用的重依赖。中间这一等是有界的，跑到点就放行。
+        inflight = self._shutdown_capture_worker() or []
+        if inflight:
+            await asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
         self._release_rapidocr_backend()
         classifier = self.vision_classifier
         self.vision_classifier = None

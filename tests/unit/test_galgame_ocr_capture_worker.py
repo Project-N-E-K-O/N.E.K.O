@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from concurrent.futures import Future, ThreadPoolExecutor
 import threading
 import time
@@ -31,11 +32,15 @@ class _ExplodingLogger(_NullLogger):
         raise RuntimeError("logger failed")
 
 
-@pytest.mark.parametrize("exploding_step", [
+_CLOSE_STEPS = (
     "_stop_foreground_advance_monitor",
     "_shutdown_capture_worker",
+    "_drain_inflight_capture_workers",
     "_release_rapidocr_backend",
-])
+)
+
+
+@pytest.mark.parametrize("exploding_step", list(_CLOSE_STEPS))
 def test_ocr_reader_manager_close_releases_every_resource_despite_one_failure(
     exploding_step: str,
 ) -> None:
@@ -65,20 +70,12 @@ def test_ocr_reader_manager_close_releases_every_resource_despite_one_failure(
                 raise RuntimeError(f"{name} exploded")
         return _run
 
-    for name in (
-        "_stop_foreground_advance_monitor",
-        "_shutdown_capture_worker",
-        "_release_rapidocr_backend",
-    ):
+    for name in _CLOSE_STEPS:
         setattr(manager, name, types.MethodType(_step(name), manager))
 
     manager.close()
 
-    assert done == [
-        "_stop_foreground_advance_monitor",
-        "_shutdown_capture_worker",
-        "_release_rapidocr_backend",
-    ], f"{exploding_step} 抛错后其余步骤仍必须跑到"
+    assert done == list(_CLOSE_STEPS), f"{exploding_step} 抛错后其余步骤仍必须跑到"
     assert closed_classifier == [True], "classifier 必须被关掉"
     assert manager.vision_classifier is None, "classifier 引用必须摘掉"
 
@@ -93,11 +90,7 @@ def test_ocr_reader_manager_close_drops_classifier_reference_when_its_close_rais
             raise RuntimeError("classifier close exploded")
 
     manager.vision_classifier = _Classifier()
-    for name in (
-        "_stop_foreground_advance_monitor",
-        "_shutdown_capture_worker",
-        "_release_rapidocr_backend",
-    ):
+    for name in _CLOSE_STEPS:
         setattr(manager, name, types.MethodType(lambda self, *a, **k: None, manager))
 
     manager.close()
@@ -116,13 +109,19 @@ def test_ocr_reader_manager_context_manager_closes_capture_resources() -> None:
     def _shutdown(self) -> None:
         calls.append(("shutdown", None))
 
+    def _drain(self, futures, **_kwargs) -> list:
+        del self
+        calls.append(("drain", None))
+        return list(futures)
+
     manager._stop_foreground_advance_monitor = types.MethodType(_stop, manager)
     manager._shutdown_capture_worker = types.MethodType(_shutdown, manager)
+    manager._drain_inflight_capture_workers = types.MethodType(_drain, manager)
 
     with manager as active:
         assert active is manager
 
-    assert calls == [("stop", 1.0), ("shutdown", None)]
+    assert calls == [("stop", 1.0), ("shutdown", None), ("drain", None)]
 
 
 def test_ocr_reader_manager_close_swallows_shutdown_errors() -> None:
@@ -140,12 +139,20 @@ def test_ocr_reader_manager_close_swallows_shutdown_errors() -> None:
         calls.append(("shutdown", None))
         raise RuntimeError("shutdown failed")
 
+    def _drain(self, futures, **_kwargs) -> list:
+        del self
+        calls.append(("drain", list(futures)))
+        return []
+
     manager._stop_foreground_advance_monitor = types.MethodType(_stop, manager)
     manager._shutdown_capture_worker = types.MethodType(_shutdown, manager)
+    manager._drain_inflight_capture_workers = types.MethodType(_drain, manager)
 
     manager.close()
 
-    assert calls == [("stop", 1.0), ("shutdown", None)]
+    # _shutdown_capture_worker 抛错时拿不到在飞清单，drain 仍要跑（独立守卫），
+    # 只是无事可等。
+    assert calls == [("stop", 1.0), ("shutdown", None), ("drain", [])]
 
 
 def test_stop_foreground_advance_monitor_does_not_retry_without_timeout() -> None:
@@ -372,3 +379,243 @@ def test_timed_out_capture_is_retained_when_recovery_limit_is_reached(
         assert first_future.result(timeout=1.0).text == "stale"
     finally:
         manager._shutdown_capture_worker()
+
+
+class _FakeRapidOcrBackend:
+    """Stand-in for the real backend: only tracks whether close() has run."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _teardown_manager(backend: _FakeRapidOcrBackend) -> OcrReaderManager:
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = _NullLogger()
+    manager._capture_worker_lock = threading.Lock()
+    manager._capture_executor = None
+    manager._capture_future = None
+    manager._capture_future_started_at = 0.0
+    manager._capture_future_timed_out = False
+    manager._abandoned_capture_workers = []
+    manager._rapidocr_backend_cache = backend
+    manager._rapidocr_backend_cache_key = ("a", "b", "c", "d", "e")
+    manager.vision_classifier = None
+    manager._writer = types.SimpleNamespace(session_id="")
+    manager._attached_window = None
+    manager._stop_foreground_advance_monitor = types.MethodType(
+        lambda self, **_kwargs: None,
+        manager,
+    )
+    return manager
+
+
+def _submit_blocked_capture(
+    manager: OcrReaderManager,
+    capture,
+) -> Future[OcrExtractionResult]:
+    manager._capture_and_extract_text = capture
+    return manager._submit_capture_worker(
+        DetectedGameWindow(hwnd=1, width=800, height=600),
+        OcrCaptureProfile(),
+        SelectedOcrBackendPlan(),
+        True,
+        True,
+    )
+
+
+def test_shutdown_capture_worker_reports_only_uncancellable_futures_as_inflight() -> None:
+    """Report the worker that is already running; cancelled ones need no wait."""
+    manager = _teardown_manager(_FakeRapidOcrBackend())
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def _blocked_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        return OcrExtractionResult(text="done")
+
+    running_future = _submit_blocked_capture(manager, _blocked_capture)
+    assert worker_started.wait(timeout=1.0)
+
+    queued_executor = ThreadPoolExecutor(max_workers=1)
+    queued_future: Future[OcrExtractionResult] = Future()
+    finished_executor = ThreadPoolExecutor(max_workers=1)
+    finished_future: Future[OcrExtractionResult] = Future()
+    finished_future.set_result(OcrExtractionResult(text="already done"))
+    manager._abandoned_capture_workers = [
+        (queued_executor, queued_future),
+        (finished_executor, finished_future),
+    ]
+
+    try:
+        inflight = manager._shutdown_capture_worker()
+
+        assert inflight == [running_future], "只有取消不掉的在飞任务需要等"
+        assert queued_future.cancelled(), "还在排队的任务应该被取消而不是被等"
+    finally:
+        release_worker.set()
+        running_future.result(timeout=5.0)
+        queued_executor.shutdown(wait=True)
+        finished_executor.shutdown(wait=True)
+
+
+def test_shutdown_capture_worker_itself_never_waits_for_running_worker() -> None:
+    """Only teardown waits. Hot-path worker rotation calls this too."""
+    manager = _teardown_manager(_FakeRapidOcrBackend())
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def _blocked_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        return OcrExtractionResult(text="done")
+
+    running_future = _submit_blocked_capture(manager, _blocked_capture)
+    assert worker_started.wait(timeout=1.0)
+
+    drain_calls: list[object] = []
+
+    def _record_drain(self, futures, **_kwargs) -> list:
+        del self
+        drain_calls.append(futures)
+        return []
+
+    manager._drain_inflight_capture_workers = types.MethodType(_record_drain, manager)
+
+    try:
+        started_at = time.monotonic()
+        manager._shutdown_capture_worker()
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 0.5, f"_shutdown_capture_worker 阻塞了 {elapsed:.2f}s"
+        assert drain_calls == [], "等待只能发生在收尾路径，不能塞进这个函数"
+    finally:
+        release_worker.set()
+        running_future.result(timeout=5.0)
+
+
+def test_close_releases_rapidocr_backend_only_after_inflight_capture_finishes() -> None:
+    """close() must not free the backend while a capture still holds its runtime."""
+    backend = _FakeRapidOcrBackend()
+    manager = _teardown_manager(backend)
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    backend_closed_seen_by_worker: list[bool] = []
+
+    def _blocked_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        backend_closed_seen_by_worker.append(backend.closed)
+        return OcrExtractionResult(text="done")
+
+    running_future = _submit_blocked_capture(manager, _blocked_capture)
+    assert worker_started.wait(timeout=1.0)
+
+    releaser = threading.Timer(0.15, release_worker.set)
+    releaser.start()
+    try:
+        manager.close()
+    finally:
+        releaser.cancel()
+        release_worker.set()
+        running_future.result(timeout=5.0)
+
+    assert backend_closed_seen_by_worker == [False], (
+        "worker 跑完之前 backend 就被 close 了 —— 释放没有等在飞任务"
+    )
+    assert backend.closed is True, "等完之后重依赖仍然必须释放"
+
+
+def test_async_shutdown_releases_rapidocr_backend_only_after_inflight_capture_finishes() -> None:
+    """Plugin unload goes through async shutdown(); it waits just like close()."""
+    backend = _FakeRapidOcrBackend()
+    manager = _teardown_manager(backend)
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    backend_closed_seen_by_worker: list[bool] = []
+
+    def _blocked_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        worker_started.set()
+        release_worker.wait(timeout=5.0)
+        backend_closed_seen_by_worker.append(backend.closed)
+        return OcrExtractionResult(text="done")
+
+    running_future = _submit_blocked_capture(manager, _blocked_capture)
+    assert worker_started.wait(timeout=1.0)
+
+    releaser = threading.Timer(0.15, release_worker.set)
+    releaser.start()
+    try:
+        asyncio.run(manager.shutdown())
+    finally:
+        releaser.cancel()
+        release_worker.set()
+        running_future.result(timeout=5.0)
+
+    assert backend_closed_seen_by_worker == [False], (
+        "worker 跑完之前 backend 就被 close 了 —— 释放没有等在飞任务"
+    )
+    assert backend.closed is True
+
+
+def test_close_gives_up_on_stuck_capture_after_bounded_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stuck worker cannot be killed, so teardown must move on at the deadline."""
+    monkeypatch.setattr(
+        "plugin.plugins.galgame_plugin.ocr_reader._OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS",
+        0.05,
+    )
+    backend = _FakeRapidOcrBackend()
+    manager = _teardown_manager(backend)
+    warnings: list[str] = []
+
+    class _RecordingLogger(_NullLogger):
+        def warning(self, message: str, *_args) -> None:
+            warnings.append(str(message))
+
+    manager._logger = _RecordingLogger()
+
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def _stuck_capture(*_args, **_kwargs) -> OcrExtractionResult:
+        worker_started.set()
+        release_worker.wait(timeout=10.0)
+        return OcrExtractionResult(text="finally")
+
+    running_future = _submit_blocked_capture(manager, _stuck_capture)
+    assert worker_started.wait(timeout=1.0)
+
+    try:
+        started_at = time.monotonic()
+        manager.close()
+        elapsed = time.monotonic() - started_at
+
+        assert elapsed < 2.0, f"卡死的 worker 把 close() 拖了 {elapsed:.2f}s"
+        assert backend.closed is True, "等不到也必须继续释放重依赖"
+        assert any("in-flight capture worker" in message for message in warnings), (
+            "放弃等待必须留下 warning"
+        )
+    finally:
+        release_worker.set()
+        running_future.result(timeout=5.0)
+
+
+def test_drain_inflight_capture_workers_skips_wait_when_nothing_is_running() -> None:
+    manager = _teardown_manager(_FakeRapidOcrBackend())
+    finished: Future[OcrExtractionResult] = Future()
+    finished.set_result(OcrExtractionResult(text="done"))
+
+    started_at = time.monotonic()
+    pending = manager._drain_inflight_capture_workers([finished], timeout=30.0)
+
+    assert pending == []
+    assert time.monotonic() - started_at < 0.5, "没有在飞任务时不该等待"

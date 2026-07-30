@@ -196,6 +196,7 @@ __all__ = [
     "_OCR_PREPARE_MAX_LONG_EDGE",
     "_OCR_PREPARE_TARGET_LONG_EDGE",
     "_OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE",
+    "_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS",
     "_OCR_STABILITY_IGNORED_CHARS_RE",
     "_OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE",
     "_OCR_TRAILING_GARBAGE_AFTER_DASH_RE",
@@ -331,6 +332,12 @@ _KEYBOARD_ADVANCE_VK_CODES = frozenset({
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
 _OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
+# 收尾时等在飞 capture 跑完的上限。不复用上面那 12s：worker 拖住的只是
+# RapidOCR runtime 的回收时机（capture 线程栈上还攥着 runtime 引用，重依赖
+# 要等它退栈才真落地），代价是「内存晚几秒吐出来 + 一条 OCR warning」，拿
+# 插件卸载卡十几秒来换不划算。而且 Python 杀不掉跑飞的线程：真卡死的 worker
+# 多等十几秒同样等不到，只能记 warning 放它去。
+_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS = 1.5
 class _CaptureStillRunning(TimeoutError):
     """Backpressure: previous capture worker has not finished yet."""
 
