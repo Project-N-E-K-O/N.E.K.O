@@ -1019,7 +1019,10 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
         for line in listener_block.splitlines()
         if not line.strip().startswith("//")
     )
-    assert "saveSettings" not in listener_code
+    assert "syncSettingsToServer" not in listener_code
+    assert "saveSettings();" not in listener_code
+    if "saveSettings({" in listener_code:
+        assert "skipServerSync: true" in listener_code
     assert "syncSettingsToServer" not in listener_code
     assert "fetch(" not in listener_code
 
@@ -1500,6 +1503,30 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           ctx.mod.saveSettings();
           await tick();
           assert(ctx.postCalls.length === 2, 'the unrelated edit must POST');
+
+          // A server-merge broadcast may have been built before this pending
+          // edit. It must neither overwrite the local value nor leave its
+          // stale full snapshot in shared localStorage.
+          ctx.fireStorage(JSON.stringify({
+            focusModeEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 99,
+              writerId: 'server-window',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.focusModeEnabled === true,
+            'a server-merge broadcast must preserve a pending local edit'
+          );
+          const reasserted = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            reasserted.focusModeEnabled === true
+              && reasserted._sharedWriteMeta.changedKeys.indexOf('focusModeEnabled') !== -1,
+            'the pending value and intent metadata must be restored in localStorage'
+          );
 
           // Cross-window ABA edits do not enter this window's pending set and
           // leave the final value equal to the request snapshot. The mutation

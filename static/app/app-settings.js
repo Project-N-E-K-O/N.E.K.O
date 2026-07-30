@@ -886,7 +886,11 @@
      * 将当前设置保存到 localStorage
      * 从 window 全局变量读取最新值（确保同步 live2d.js 中的更改）
      *
-     * @param {{ skipServerSync?: boolean, serverMerged?: boolean }} [options]
+     * @param {{
+     *   skipServerSync?: boolean,
+     *   serverMerged?: boolean,
+     *   explicitSharedKeys?: string[]
+     * }} [options]
      *   传 skipServerSync 跳过 POST；
      *   serverMerged 表示共享快照来自服务端合并，不得标记成新的用户修改。
      *   首启用——避免在 loadSettingsFromServer 拿到 telemetryBranch 之前就把首启本地
@@ -895,6 +899,9 @@
     function saveSettings(options) {
         const skipServerSync = !!(options && options.skipServerSync);
         const serverMerged = !!(options && options.serverMerged);
+        const explicitSharedKeys = options && Array.isArray(options.explicitSharedKeys)
+            ? options.explicitSharedKeys
+            : null;
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -1013,7 +1020,9 @@
         // cross-window toggle from an unrelated save's incidental copy.
         _writeSharedSettings(
             settings,
-            serverMerged ? [] : _collectExplicitSharedKeys(settings)
+            explicitSharedKeys !== null
+                ? explicitSharedKeys
+                : (serverMerged ? [] : _collectExplicitSharedKeys(settings))
         );
 
         // 同步回共享状态，保持一致性
@@ -1527,6 +1536,17 @@
                 incoming = Object.assign({}, settings);
                 delete incoming.independentAsrEnabled;
             }
+            const pendingKeysToReassert = [];
+            if (meta && meta.changedKeys.length === 0) {
+                // Keep this as for...of: static listener-contract tests slice
+                // at the first callback terminator.
+                for (const key of _pendingSettingsKeys) {
+                    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+                    if (incoming === settings) incoming = Object.assign({}, settings);
+                    delete incoming[key];
+                    pendingKeysToReassert.push(key);
+                }
+            }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
             if (meta && meta.asrDecision
@@ -1590,6 +1610,16 @@
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
+            }
+            if (pendingKeysToReassert.length > 0) {
+                // A server-merge broadcast can have been built before this
+                // window's latest pending edit reached its sender. Restore the
+                // local full snapshot without enqueueing another POST; the
+                // already queued user sync remains the sole server writer.
+                saveSettings({
+                    skipServerSync: true,
+                    explicitSharedKeys: pendingKeysToReassert
+                });
             }
         } catch (error) {
             console.warn('[app-settings] 跨窗口设置同步失败:', error);
