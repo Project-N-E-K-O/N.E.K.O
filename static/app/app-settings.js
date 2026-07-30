@@ -311,6 +311,12 @@
     // below plus the same ASR decision tuple localStorage already uses.
     let _syncChainTail = Promise.resolve();
     let _conversationSettingsEtag = null;
+    // Cross-window mutation version represented by the current ETag. A field
+    // explicitly edited after this watermark is absent from that server
+    // revision even when the edit arrived before the next CAS request began.
+    // Preserve such fields across a 412; mutationVersionAtSend alone only sees
+    // edits that arrive after the request snapshot.
+    let _conversationSettingsEtagMutationVersion = 0;
     const _CONVERSATION_SETTINGS_MAX_ATTEMPTS = 3;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
@@ -636,6 +642,16 @@
         return changedKeys;
     }
 
+    function _crossWindowSettingsChangedSince(mutationVersion) {
+        const changedKeys = new Set();
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if ((_crossWindowKeyMutationVersions[key] || 0) > mutationVersion) {
+                changedKeys.add(key);
+            }
+        });
+        return changedKeys;
+    }
+
     function _noteCrossWindowMutations(settings, explicitKeys) {
         _SHARED_SETTINGS_KEYS.forEach((key) => {
             if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
@@ -834,6 +850,8 @@
             for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
                 const settings = getConversationSettings();
                 const mutationVersionAtSend = _crossWindowMutationVersion;
+                const etagMutationVersionAtSend =
+                    _conversationSettingsEtagMutationVersion;
                 const mergedAtSend = _settingsMergedFromServer;
                 // Full snapshot only once server values were actually merged. If
                 // the gate opened on its timeout instead — or the GET resolved to
@@ -873,6 +891,11 @@
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (response.status === 412) {
                         const preservedKeys = new Set(_pendingSettingsKeys);
+                        _crossWindowSettingsChangedSince(
+                            etagMutationVersionAtSend
+                        ).forEach((key) => {
+                            preservedKeys.add(key);
+                        });
                         _settingsChangedSince(settings, mutationVersionAtSend).forEach((key) => {
                             preservedKeys.add(key);
                         });
@@ -889,6 +912,10 @@
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
                     }
+                    if (nextEtag && mergedAtSend) {
+                        _conversationSettingsEtagMutationVersion =
+                            mutationVersionAtSend;
+                    }
                     const changedWhileInFlight = _settingsChangedSince(
                         settings,
                         mutationVersionAtSend
@@ -899,6 +926,11 @@
                     // the gate race, hydrate untouched fields from this response
                     // while preserving edits made after the request was sent.
                     if (!mergedAtSend) {
+                        _crossWindowSettingsChangedSince(
+                            etagMutationVersionAtSend
+                        ).forEach((key) => {
+                            changedWhileInFlight.add(key);
+                        });
                         _mergeConversationSettingsSnapshot(data, changedWhileInFlight);
                     }
                     return;
@@ -1451,6 +1483,8 @@
                         || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
                 if (serverResult.etag) {
                     _conversationSettingsEtag = serverResult.etag;
+                    _conversationSettingsEtagMutationVersion =
+                        mutationVersionAtGetStart;
                 }
                 let hasUpdate = false;
 

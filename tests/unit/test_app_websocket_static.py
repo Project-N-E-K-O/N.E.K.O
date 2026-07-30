@@ -965,6 +965,9 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
     assert "response.status === 412" in sync_fn
     assert "const preservedKeys = new Set(_pendingSettingsKeys);" in sync_fn
+    assert "_conversationSettingsEtagMutationVersion" in sync_fn
+    assert "_crossWindowSettingsChangedSince(" in sync_fn
+    assert "etagMutationVersionAtSend" in sync_fn
     assert "_settingsChangedSince(settings, mutationVersionAtSend).forEach" in sync_fn
     assert "_mergeConversationSettingsSnapshot(data, preservedKeys);" in sync_fn
     assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
@@ -1560,6 +1563,25 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'a delayed merge must not roll back a newer externally applied value'
           );
 
+          // This explicit edit arrives after the boot ETag but before the next
+          // CAS request starts. It is already present in that request snapshot,
+          // so mutationVersionAtSend alone cannot detect it later; the ETag's
+          // cross-window watermark must preserve it across the 412.
+          ctx.fireStorage(JSON.stringify({
+            avatarReactionBubbleEnabled: true,
+            _sharedWriteMeta: {
+              writeId: externalWriteId + 1,
+              writerId: 'window-c',
+              changedKeys: ['avatarReactionBubbleEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.avatarReactionBubbleEnabled === true,
+            'the pre-request cross-window edit must be accepted locally'
+          );
+
           // A different local edit races a newer server revision. The earlier
           // slopFilterEnabled=true was already acknowledged and must no longer
           // be protected as pending during the 412 merge.
@@ -1644,6 +1666,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 slopFilterEnabled: false,
                 focusModeEnabled: false,
                 mergeMessagesEnabled: true,
+                avatarReactionBubbleEnabled: false,
               },
               revision: 2,
               decisions: {},
@@ -1666,6 +1689,10 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'a non-pending ABA edit made after send must survive the conflict merge'
           );
           assert(
+            retryBody.avatarReactionBubbleEnabled === true,
+            'an explicit cross-window edit after the ETag but before send must survive'
+          );
+          assert(
             retryBody.proactiveVisionEnabled === false,
             'the retry must retain the server privacy winner'
           );
@@ -1680,7 +1707,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             reconciledLocal.slopFilterEnabled === false
               && reconciledLocal.focusModeEnabled === true
               && reconciledLocal.proactiveVisionEnabled === false
-              && reconciledLocal.mergeMessagesEnabled === false,
+              && reconciledLocal.mergeMessagesEnabled === false
+              && reconciledLocal.avatarReactionBubbleEnabled === true,
             'the conflict winners and pending local edit must persist to shared localStorage'
           );
           assert(
@@ -1710,6 +1738,20 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           await tick();
           assert(ctx.S.settingsHydrated === false, 'failed boot GET stays unhydrated');
+
+          // A cross-window edit arrives before this partial request starts.
+          // It is not this window's pending key and therefore is absent from
+          // the dirty-only payload, but the success snapshot must not erase it.
+          ctx.fireStorage(JSON.stringify({
+            avatarReactionBubbleEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 101,
+              writerId: 'window-b',
+              changedKeys: ['avatarReactionBubbleEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
 
           ctx.win.focusModeEnabled = true;
           ctx.mod.saveSettings();
@@ -1758,6 +1800,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 focusModeEnabled: true,
                 mergeMessagesEnabled: true,
                 noiseReductionEnabled: true,
+                avatarReactionBubbleEnabled: false,
               },
               revision: 1,
               decisions: {},
@@ -1780,6 +1823,10 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'a same-value explicit cross-window edit survives the delayed response'
           );
           assert(
+            ctx.S.avatarReactionBubbleEnabled === true,
+            'a pre-request cross-window edit absent from the partial body survives'
+          );
+          assert(
             ctx.store.get('neko_noise_reduction') === '1',
             'accepted shared noise reduction mirrors into the legacy cache'
           );
@@ -1796,7 +1843,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               && secondBody.proactiveVisionEnabled === false
               && secondBody.slopFilterEnabled === true
               && secondBody.mergeMessagesEnabled === false
-              && secondBody.noiseReductionEnabled === true,
+              && secondBody.noiseReductionEnabled === true
+              && secondBody.avatarReactionBubbleEnabled === true,
             'the queued retry uses the reconciled full snapshot plus the pending edit'
           );
           const reconciledLocal = JSON.parse(ctx.store.get('project_neko_settings'));
