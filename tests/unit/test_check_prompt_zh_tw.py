@@ -1496,3 +1496,45 @@ def test_directly_visible_keys_recurses_into_spreads():
         _ast.parse('{**OTHER, **{"zh-TW": "t"}}', mode="eval").body
     )
     assert visible == {"zh-TW"}
+
+
+@pytest.mark.parametrize("src", [
+    'T = U = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"',
+    'T = U = {"en": "e", "zh": "s"}\nU["zh-TW"] = "t"',
+])
+def test_chained_binding_is_exempt_through_either_name(src):
+    """`T = U = {...}` names one object; a mutation through either completes it.
+
+    Requiring exactly one target kept chained bindings out of the lookup, so the
+    literal was reported despite being compliant at runtime.
+    """
+    assert _violations(src) == []
+
+
+def test_chained_binding_without_a_backfill_is_still_reported():
+    src = 'T = U = {"en": "e", "zh": "s"}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    '_F = {"en": "e", "zh": "s"}\nT = _F | dict.fromkeys(("zh-TW",), "t")',
+    '_F = {"en": "e", "zh": "s"}\nT = {**_F, **dict.fromkeys(("zh-TW",), "t")}',
+])
+def test_fromkeys_counts_as_a_visible_supplier(src):
+    """resolve_keys handles dict.fromkeys, so the visibility scan must too.
+
+    Otherwise the union looks like it supplies nothing and the named fragment is
+    reported even though the assembled table is compliant.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    '_F = {"en": "e", "zh": "s"}\nT = _F | dict.fromkeys(("ja",), "t")',
+    '_F = {"en": "e", "zh": "s"}\nT = _F | dict.fromkeys(LOCALES, "t")',
+])
+def test_fromkeys_without_zh_tw_does_not_exempt(src):
+    """Supplying some other locale, or an unresolvable list, exempts nothing."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]

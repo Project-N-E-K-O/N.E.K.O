@@ -394,6 +394,11 @@ def _directly_visible_keys(node: ast.AST) -> set[str]:
         return keys
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return _directly_visible_keys(node.left) | _directly_visible_keys(node.right)
+    if isinstance(node, ast.Call) and _is_dict_fromkeys(node.func) and node.args:
+        # `_F | dict.fromkeys(("zh-TW",), t)` — resolve_keys handles this
+        # constructor, so the visibility scan has to as well or the union looks
+        # like it supplies nothing and _F gets reported.
+        return _literal_string_sequence(node.args[0]) or set()
     return set()
 
 
@@ -429,13 +434,16 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     assignments: dict[str, list[tuple[int, int]]] = {}
     for node in ast.walk(tree):
         name: str | None = None
+        if isinstance(node, ast.Assign):
+            # Every simple target, so a chained `T = U = {...}` registers both —
+            # they name the same object, and a mutation through either completes it.
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    assignments.setdefault(target.id, []).append(
+                        (node.lineno, id(node.value))
+                    )
+            continue
         if (
-            isinstance(node, ast.Assign)
-            and len(node.targets) == 1
-            and isinstance(node.targets[0], ast.Name)
-        ):
-            name = node.targets[0].id
-        elif (
             # `T: dict[str, str] = {...}` — an annotated binding is still a
             # binding, and typed prompt constants are ordinary style. Missing them
             # left the table unexempted and reported despite being compliant.
