@@ -682,57 +682,6 @@ async def test_the_lazily_built_arbiter_gets_the_same_notification(client_rig):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_the_release_clears_an_abandoned_turns_output_suppression(client_rig):
-    # Codex P2 on PR #2592, and the exact dual of the case below: a turn
-    # requested with skipped=True raises _skip_until_next_response, and only
-    # that turn's own response.done lowers it — the terminal fail-open just
-    # gave up on. Left raised, the transport suppresses the NEXT healthy
-    # response's text and audio until its own done, so the hatch silently
-    # costs a second turn.
-    #
-    # The flag is set explicitly here rather than through create_response
-    # because no production caller passes skipped=True on this path today;
-    # the guard is defensive, and a test that did not raise the flag first
-    # would assert nothing at all.
-    client_rig.client._skip_until_next_response = True
-
-    raised = await client_rig.drive_to_escalation()
-    assert isinstance(raised, asyncio.TimeoutError)
-    await _settle()
-
-    assert client_rig.client._skip_until_next_response is False, (
-        "the abandoned turn's output suppression must be lifted with it"
-    )
-    assert client_rig.client._is_responding is False
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
-async def test_suppression_is_lifted_even_when_no_response_ever_started(client_rig):
-    # The skipped turn raises the flag at request time, before any
-    # response.created. If it gets stuck in that window, _is_responding is
-    # still False while the flag is up — so a release handler that returns
-    # early on _is_responding alone would leave the suppression raised and
-    # mute the next healthy turn.
-    client_rig.client._skip_until_next_response = True
-    client_rig.client._is_responding = False
-
-    ticket = await client_rig.arbiter.enqueue(source="native")
-    await asyncio.wait_for(ticket.sent, timeout=1)
-    try:
-        await client_rig.arbiter.cancel_current(timeout=0.05)
-    except Exception:  # noqa: BLE001 - the escalation is the point
-        pass
-    await _settle()
-
-    assert client_rig.client._skip_until_next_response is False, (
-        "the release must lift suppression even for a turn that never "
-        "reached response.created"
-    )
-
-
-@pytest.mark.unit
-@pytest.mark.asyncio
 async def test_the_release_notification_touches_nothing_else(client_rig):
     # Both of these would be tempting to reset here and both would be wrong:
     # _skip_until_next_response is cleared only by response.done, so setting it

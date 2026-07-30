@@ -906,30 +906,32 @@ class _TransportMixin:
         the rest of the session — silencing proactive chat on a connection the
         escape hatch just kept alive.
 
-        ``_skip_until_next_response`` is cleared for the same reason, in the
-        same direction: it suppresses output until the owning turn's
-        ``response.done``, and that terminal is precisely what has been given
-        up on. Note the asymmetry — SETTING it here would be wrong (it would
-        mute the next healthy turn), clearing it is right (the suppression
-        belonged to the turn being abandoned).
-
-        Deliberately narrow otherwise. It does NOT touch:
+        Deliberately narrow. It does NOT touch:
 
         - ``_interrupted``: the AI-activity timestamps are recorded inside the
-          same guard it gates, and proactive delivery leans on those to avoid
-          talking over audio the provider is still streaming.
+          guard it gates, and proactive delivery leans on those — the 3s
+          window in ``prompt_ephemeral`` is what keeps a proactive line from
+          landing on top of audio the provider is still streaming for the
+          turn we just abandoned.
         - ``_current_response_id``: kept for terminal attribution, same reason
           ``handle_interruption`` keeps it.
+        - ``_skip_until_next_response``: it is a single global flag with no
+          association to a turn, so this handler cannot tell "the abandoned
+          turn raised it" from "a turn queued behind it raised it". Clearing
+          would strip the queued turn's suppression; leaving it raised would
+          mute the next healthy turn. Neither is reachable today — no caller
+          passes ``skipped=True`` down the ``create_response`` path, and
+          ``prime_context(skipped=True)`` goes to ``update_session`` instead —
+          so the fix belongs with per-turn suppression rather than here.
         """
 
-        if not self._is_responding and not self._skip_until_next_response:
+        if not self._is_responding:
             return
         logger.info(
             "Clearing client response state after arbiter fail-open release: %s",
             reason,
         )
         self._is_responding = False
-        self._skip_until_next_response = False
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
