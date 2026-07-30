@@ -66,6 +66,7 @@ def _conversation_settings_response_payload(snapshot) -> dict:
         "settings": snapshot.settings,
         "revision": snapshot.revision,
         "decisions": decisions,
+        "reset": snapshot.reset,
     }
 
 

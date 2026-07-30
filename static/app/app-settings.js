@@ -63,12 +63,19 @@
     // other each adopt the other and stay swapped forever. That needs no
     // millisecond tie at all -- a strictly older foreign write still wins.
     let _lastAsrDecision = null;
-    function _isValidAsrWriteId(value) {
+    function _isValidAsrWriteId(value, serverAuthoritative) {
+        if (!Number.isSafeInteger(value) || value < 0
+            || value > Number.MAX_SAFE_INTEGER - 1) return false;
+        // The server is the clock authority for persisted decision tuples.
+        // Rechecking its accepted ceiling against this browser's Date.now()
+        // makes a lagging browser reject a valid winner. Keep the clock-relative
+        // bound only for untrusted localStorage/write metadata.
+        if (serverAuthoritative === true) return true;
         const maxAccepted = Math.min(
             Number.MAX_SAFE_INTEGER - 1,
             Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS
         );
-        return Number.isSafeInteger(value) && value >= 0 && value <= maxAccepted;
+        return value <= maxAccepted;
     }
     function _noteAsrDecision(writeId, writerId, value) {
         // A write that merely re-asserts the value already decided is not a new
@@ -106,9 +113,9 @@
         // build) reads as '' and loses, keeping this window's own choice.
         return (decision.writerId || '') > _lastAsrDecision.writerId;
     }
-    function _normalizeServerAsrDecision(value) {
+    function _normalizeServerAsrDecision(value, serverAuthoritative) {
         if (!value || typeof value !== 'object') return null;
-        if (!_isValidAsrWriteId(value.writeId)) return null;
+        if (!_isValidAsrWriteId(value.writeId, serverAuthoritative)) return null;
         if (typeof value.writerId !== 'string'
             || !/^[\x20-\x7E]{1,128}$/.test(value.writerId)) return null;
         if (typeof value.value !== 'boolean') return null;
@@ -214,11 +221,12 @@
     function _serverAsrDecision(data) {
         const decisions = data && data.decisions;
         return _normalizeServerAsrDecision(
-            decisions && decisions.independentAsrEnabled
+            decisions && decisions.independentAsrEnabled,
+            true
         );
     }
-    function _adoptAsrDecisionTuple(value) {
-        const decision = _normalizeServerAsrDecision(value);
+    function _adoptAsrDecisionTuple(value, serverAuthoritative) {
+        const decision = _normalizeServerAsrDecision(value, serverAuthoritative);
         if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
         _lastAsrDecision = decision;
         if (decision.writeId > _lastAppliedSharedWriteId) {
@@ -237,7 +245,7 @@
     }
     function _adoptServerAsrDecision(data) {
         const decision = _serverAsrDecision(data);
-        if (!_adoptAsrDecisionTuple(decision)) return false;
+        if (!_adoptAsrDecisionTuple(decision, true)) return false;
         // The next explicit local choice must mint above every decision this
         // window has accepted, including cloud/server decisions whose clock is
         // ahead of this browser's Date.now().
@@ -257,11 +265,13 @@
     }
     function _mergeConversationSettingsSnapshot(data, preservedKeys) {
         const adoptedAsr = _adoptServerAsrDecision(data);
-        const serverSettings = data && data.settings;
+        const serverSettings = _serverSettingsForMerge(data);
         if (!serverSettings || typeof serverSettings !== 'object') return;
         const protectedKeys = preservedKeys || _pendingSettingsKeys;
         const serverAsrDecision = _serverAsrDecision(data);
-        const preserveLocalAsrDecision = !!(_lastAsrDecision
+        const preserveLocalAsrDecision = data && data.reset === true
+            ? false
+            : !!(_lastAsrDecision
             && (!serverAsrDecision
                 || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
         const acceptedSettings = {};
@@ -400,6 +410,47 @@
         'renderQuality',
         'targetFrameRate'
     ];
+
+    function _defaultConversationSettingsForReset() {
+        return {
+            proactiveChatEnabled: true,
+            proactiveVisionEnabled: _isUserRegionChina(),
+            proactiveVisionChatEnabled: true,
+            proactiveNewsChatEnabled: false,
+            proactiveVideoChatEnabled: true,
+            proactivePersonalChatEnabled: false,
+            proactiveMusicEnabled: true,
+            proactiveMemeEnabled: true,
+            proactiveMiniGameInviteEnabled: true,
+            mergeMessagesEnabled: false,
+            focusModeEnabled: false,
+            focusCognitionEnabled: true,
+            noiseReductionEnabled: true,
+            independentAsrEnabled: false,
+            avatarReactionBubbleEnabled: true,
+            slopFilterEnabled: true,
+            proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)
+                ? C.DEFAULT_PROACTIVE_CHAT_INTERVAL
+                : 15,
+            proactiveVisionInterval: Number.isFinite(C.DEFAULT_PROACTIVE_VISION_INTERVAL)
+                ? C.DEFAULT_PROACTIVE_VISION_INTERVAL
+                : 10,
+            subtitleEnabled: false,
+            userLanguage: null,
+            textGuardMaxLength: 300
+        };
+    }
+
+    function _serverSettingsForMerge(data) {
+        const settings = data && data.settings;
+        if (data && data.reset === true) {
+            return Object.assign(
+                _defaultConversationSettingsForReset(),
+                settings && typeof settings === 'object' ? settings : {}
+            );
+        }
+        return settings;
+    }
 
     function getDefaultRenderQuality() {
         return S.renderQuality || 'medium';
@@ -665,7 +716,10 @@
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
             asrDecision: (meta.asrDecision
-                && _isValidAsrWriteId(meta.asrDecision.writeId))
+                && _isValidAsrWriteId(
+                    meta.asrDecision.writeId,
+                    Number.isInteger(meta.serverRevision)
+                ))
                 ? {
                     writeId: meta.asrDecision.writeId,
                     writerId: typeof meta.asrDecision.writerId === 'string'
@@ -890,7 +944,8 @@
                 telemetryBranch,
                 etag,
                 revision: Number.isInteger(data.revision) ? data.revision : null,
-                decisions: data.decisions || null
+                decisions: data.decisions || null,
+                reset: data.reset === true
             };
         } catch (e) {
             console.warn('[app-settings] 从服务器加载设置失败:', e);
@@ -1373,7 +1428,10 @@
                     // it carries authority, not a fresh user action. Restore its
                     // matching decision tuple anyway so reloads retain both the
                     // ordering token and the floor for the next local choice.
-                    _adoptAsrDecisionTuple(bootMeta.asrDecision);
+                    _adoptAsrDecisionTuple(
+                        bootMeta.asrDecision,
+                        Number.isInteger(bootMeta.serverRevision)
+                    );
                 } else if (bootMeta
                     && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
                     const bootDecision = bootMeta.asrDecision || bootMeta;
@@ -1611,7 +1669,7 @@
                 // nothing a full write could clobber (and the first-launch
                 // forced push below depends on it).
                 _settingsMergedFromServer = true;
-                const serverSettings = serverResult.settings;
+                const serverSettings = _serverSettingsForMerge(serverResult);
                 const telemetryBranch = serverResult.telemetryBranch;
                 const serverAsrDecision = _serverAsrDecision(serverResult);
                 // A cross-window toggle can reach localStorage before its POST
@@ -1619,13 +1677,16 @@
                 // newer than the GET snapshot, so the generic field merge must
                 // not copy the older server value into S before the decision
                 // merge gets a chance to reject it.
-                const preserveLocalAsrDecision = !!(_lastAsrDecision
+                const preserveLocalAsrDecision = serverResult.reset === true
+                    ? false
+                    : !!(_lastAsrDecision
                     && (!serverAsrDecision
                         || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
                 const serverSnapshotNewerThanCurrent =
-                    Number.isInteger(serverResult.revision)
-                    && Number.isInteger(_conversationSettingsRevision)
-                    && serverResult.revision > _conversationSettingsRevision;
+                    serverResult.reset === true
+                    || (Number.isInteger(serverResult.revision)
+                        && Number.isInteger(_conversationSettingsRevision)
+                        && serverResult.revision > _conversationSettingsRevision);
                 const shouldAdoptServerVersion =
                     !Number.isInteger(_conversationSettingsRevision)
                     || (Number.isInteger(serverResult.revision)
@@ -1990,20 +2051,22 @@
                         delete _knownSharedKeyWrites[key];
                     }
                 }
-                if (Number.isInteger(meta.serverRevision)
-                    && (!Number.isInteger(_conversationSettingsRevision)
-                        || meta.serverRevision
-                            > _conversationSettingsRevision)) {
-                    _conversationSettingsRevision = meta.serverRevision;
-                    _conversationSettingsEtag =
-                        `"conversation-settings-${meta.serverRevision}"`;
-                    for (const key of meta.serverAuthoritativeKeys) {
-                        if (!Object.prototype.hasOwnProperty.call(
-                            incoming,
-                            key
-                        )) continue;
-                        _conversationSettingsEtagKeyMutationVersions[key] =
-                            _crossWindowKeyMutationVersions[key] || 0;
+                if (Number.isInteger(meta.serverRevision)) {
+                    if (!Number.isInteger(_conversationSettingsRevision)
+                        || meta.serverRevision > _conversationSettingsRevision) {
+                        _conversationSettingsRevision = meta.serverRevision;
+                        _conversationSettingsEtag =
+                            `"conversation-settings-${meta.serverRevision}"`;
+                    }
+                    if (meta.serverRevision === _conversationSettingsRevision) {
+                        for (const key of meta.serverAuthoritativeKeys) {
+                            if (!Object.prototype.hasOwnProperty.call(
+                                incoming,
+                                key
+                            )) continue;
+                            _conversationSettingsEtagKeyMutationVersions[key] =
+                                _crossWindowKeyMutationVersions[key] || 0;
+                        }
                     }
                 }
             }
@@ -2013,7 +2076,10 @@
                     'independentAsrEnabled'
                 )
                 && incoming.independentAsrEnabled === meta.asrDecision.value) {
-                _adoptAsrDecisionTuple(meta.asrDecision);
+                _adoptAsrDecisionTuple(
+                    meta.asrDecision,
+                    Number.isInteger(meta.serverRevision)
+                );
             }
             // Roll the dirty-diff baseline for every key just adopted from
             // another window. _markUserDirtySettings diffs against this

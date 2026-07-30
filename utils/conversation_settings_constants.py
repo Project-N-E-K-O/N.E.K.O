@@ -12,8 +12,9 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Ordering bounds shared by conversation-settings persistence paths."""
+"""Protocol constants shared by conversation-settings persistence paths."""
 
 MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
 MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
 ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
+CONVERSATION_SETTINGS_RESET_KEY = "_conversation_settings_reset"

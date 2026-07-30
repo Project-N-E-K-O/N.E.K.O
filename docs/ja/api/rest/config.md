@@ -74,6 +74,9 @@ POST body は `coreApi`、`coreApiKey`、`assistApi` など同梱設定 UI の f
 revision が古い場合は `412 Precondition Failed` とともに現在の設定、revision、decision
 metadata、ETag が返るため、caller は merge 後に retry できます。旧 client との互換性の
 ため `If-Match` 省略も受け付けますが、現行 client は conditional write を使用します。
+`reset` が `true` の場合、cloud restore に設定が存在しないこと自体が authoritative
+です。現行 client は古い local storage から server を再投入せず、conditional
+writeback の前に会話設定の既定値を具体化します。
 `independentAsrEnabled` の更新時、bundled UI は
 `X-Conversation-Settings-ASR-Decision` に JSON
 `{writeId, writerId, value}` decision tuple も送り、古い window request が最後に完了しても

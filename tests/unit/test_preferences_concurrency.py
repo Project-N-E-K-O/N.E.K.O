@@ -377,6 +377,7 @@ async def test_conversation_settings_route_returns_etag_and_412_snapshot(
     assert get_response.headers["cache-control"] == "no-store"
     assert get_payload["revision"] == 1
     assert get_payload["settings"]["independentAsrEnabled"] is True
+    assert get_payload["reset"] is False
 
     conflict_response = await preferences_router.save_conversation_settings(
         _Request(
@@ -630,7 +631,7 @@ def test_cloud_restore_rebases_asr_decision_and_revision(monkeypatch, tmp_path):
     }
 
 
-def test_cloud_restore_empty_settings_still_advances_revision(tmp_path):
+def test_cloud_restore_empty_settings_emits_reset_and_advances_revision(tmp_path):
     path = tmp_path / "user_preferences.json"
     path.write_text(
         json.dumps(
@@ -658,7 +659,42 @@ def test_cloud_restore_empty_settings_still_advances_revision(tmp_path):
     assert restored == {
         "model_path": preferences.GLOBAL_CONVERSATION_KEY,
         "_conversation_settings_revision": 10,
+        "_conversation_settings_reset": True,
     }
+    snapshot = preferences._snapshot_from_preferences_data(payload)
+    assert snapshot.settings == {}
+    assert snapshot.revision == 10
+    assert snapshot.reset is True
+
+
+def test_versioned_save_clears_cloud_restore_reset_tombstone(monkeypatch, tmp_path):
+    path = _use_preferences_file(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                "_conversation_settings_revision": 10,
+                "_conversation_settings_reset": True,
+            }
+        ],
+    )
+
+    result = preferences.save_global_conversation_settings_versioned(
+        {"focusModeEnabled": False},
+        expected_revision=10,
+    )
+
+    assert result.success is True
+    assert result.snapshot.revision == 11
+    assert result.snapshot.reset is False
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    global_entry = next(
+        entry
+        for entry in saved
+        if entry.get("model_path") == preferences.GLOBAL_CONVERSATION_KEY
+    )
+    assert "_conversation_settings_reset" not in global_entry
 
 
 def test_cloud_restore_rejects_unsafe_conversation_settings_revision(tmp_path):

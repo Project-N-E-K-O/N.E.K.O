@@ -1412,7 +1412,9 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
 
         async function runBootMetadataScenario() {
           const tuple = {
-            writeId: Date.now() + 1000,
+            // Valid at an authority whose clock is just over one second ahead,
+            // but beyond this browser's independently measured +1 year bound.
+            writeId: Date.now() + (365 * 24 * 60 * 60 * 1000) + 1000,
             writerId: 'server-ahead',
             value: false,
           };
@@ -1432,6 +1434,51 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             JSON.stringify(persistedTuple) === JSON.stringify(tuple),
             'a newer same-value server tuple must persist for offline write-id flooring'
           );
+
+          const reset = makeContext(false, {
+            success: true,
+            settings: {},
+            revision: 10,
+            reset: true,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          const resetVisionDefault = reset.mod._isUserRegionChina();
+          assert(
+            reset.S.slopFilterEnabled === true
+              && reset.S.proactiveVisionEnabled === resetVisionDefault
+              && reset.S.independentAsrEnabled === false,
+            'an empty authoritative restore must reset stale local values to defaults: '
+              + JSON.stringify({
+                slop: reset.S.slopFilterEnabled,
+                vision: reset.S.proactiveVisionEnabled,
+                visionDefault: resetVisionDefault,
+                asr: reset.S.independentAsrEnabled,
+              })
+          );
+          assert(reset.postCalls.length === 1, 'the reset defaults must be written back once');
+          const resetBody = JSON.parse(reset.postCalls[0].opts.body);
+          assert(
+            resetBody.slopFilterEnabled === true
+              && resetBody.proactiveVisionEnabled === resetVisionDefault
+              && resetBody.independentAsrEnabled === false,
+            'the reset writeback must not repopulate the server with stale localStorage'
+          );
+          reset.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-11"',
+            {
+              success: true,
+              settings: resetBody,
+              revision: 11,
+              reset: false,
+              decisions: {},
+            }
+          ));
+          await tick();
 
           const noiseMerge = makeContext(false, {
             success: true,
@@ -1551,6 +1598,92 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'a same-revision server snapshot must not launder its envelope '
               + 'over an unconfirmed explicit edit'
           );
+
+          const equalRevision = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              focusModeEnabled: false,
+            },
+            revision: 2,
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          equalRevision.fireStorage(JSON.stringify({
+            focusModeEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 600,
+              writerId: 'window-editor',
+              changedKeys: ['focusModeEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 600,
+                  writerId: 'window-editor',
+                },
+              },
+            },
+          }));
+          equalRevision.fireStorage(JSON.stringify({
+            focusModeEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 601,
+              writerId: 'window-server-reader',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              serverRevision: 2,
+              serverAuthoritativeKeys: ['focusModeEnabled'],
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 600,
+                  writerId: 'window-editor',
+                  confirmedRevision: 2,
+                },
+              },
+            },
+          }));
+          const equalSync = equalRevision.mod.syncSettingsToServer();
+          await tick();
+          assert(equalRevision.postCalls.length === 1, 'the confirmed view must POST');
+          equalRevision.postCalls[0].resolve(response(
+            false,
+            412,
+            '"conversation-settings-3"',
+            {
+              success: false,
+              settings: {
+                independentAsrEnabled: false,
+                focusModeEnabled: false,
+              },
+              revision: 3,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+          assert(equalRevision.postCalls.length === 2, 'the newer conflict must retry');
+          const equalRetryBody = JSON.parse(equalRevision.postCalls[1].opts.body);
+          assert(
+            equalRetryBody.focusModeEnabled === false,
+            'an equal-revision confirmation must stop the older local value '
+              + 'being preserved over revision 3'
+          );
+          equalRevision.postCalls[1].resolve(response(
+            true,
+            200,
+            '"conversation-settings-4"',
+            {
+              success: true,
+              settings: equalRetryBody,
+              revision: 4,
+              decisions: {},
+            }
+          ));
+          await equalSync;
         }
 
         async function runScenario(serverDecisionIsNewer) {
@@ -2412,10 +2545,14 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     )[0]
     assert "if (!meta || typeof meta !== 'object') return null;" in read_fn
     assert "if (!_isValidAsrWriteId(meta.writeId)) return null;" in read_fn
-    id_validator = _block_after(settings_source, "function _isValidAsrWriteId(value) {")
+    id_validator = _block_after(
+        settings_source,
+        "function _isValidAsrWriteId(value, serverAuthoritative) {",
+    )
     assert "Number.isSafeInteger(value)" in id_validator
     assert "Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS" in id_validator
     assert "Number.MAX_SAFE_INTEGER - 1" in id_validator
+    assert "if (serverAuthoritative === true) return true;" in id_validator
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
     assert "knownKeyWritesPresent" in read_fn
 
@@ -4638,7 +4775,9 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     # ...the reader parses it defensively, falling back to today's behaviour...
     read_fn = _block_after(settings_source, "function _readSharedWriteMeta(settings) {")
     assert "asrDecision:" in read_fn
-    assert "_isValidAsrWriteId(meta.asrDecision.writeId)" in read_fn
+    assert "_isValidAsrWriteId(" in read_fn
+    assert "meta.asrDecision.writeId," in read_fn
+    assert "Number.isInteger(meta.serverRevision)" in read_fn
 
     # ...and both the boot seed and the adopted cross-window flip record the
     # ORIGINAL id, or this window re-inflates the value on its own next save.

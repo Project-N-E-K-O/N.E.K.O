@@ -30,6 +30,7 @@ from typing import Any
 from config import CHARACTER_RESERVED_FIELDS
 from utils.conversation_settings_constants import (
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS as _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+    CONVERSATION_SETTINGS_RESET_KEY as _CONVERSATION_SETTINGS_RESET_KEY,
     MAX_SAFE_ASR_WRITE_ID as _MAX_SAFE_ASR_WRITE_ID,
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION
     as _MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
@@ -95,6 +96,19 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
         for key, value in (conversation_settings or {}).items()
         if key != "model_path"
     }
+    restored_setting_keys = set(filtered_settings) - {
+        _CONVERSATION_SETTINGS_REVISION_KEY,
+        _CONVERSATION_SETTINGS_ASR_DECISION_KEY,
+        _CONVERSATION_SETTINGS_RESET_KEY,
+    }
+    if restored_setting_keys:
+        filtered_settings.pop(_CONVERSATION_SETTINGS_RESET_KEY, None)
+    else:
+        # A revision-only entry preserves CAS ordering but cannot tell browsers
+        # that the archived absence is authoritative. Persist an explicit
+        # tombstone so clients reset missing fields instead of reposting stale
+        # localStorage values over the restore.
+        filtered_settings[_CONVERSATION_SETTINGS_RESET_KEY] = True
     current_revision = current_global.get(_CONVERSATION_SETTINGS_REVISION_KEY)
     imported_revision = filtered_settings.get(_CONVERSATION_SETTINGS_REVISION_KEY)
     for revision in (current_revision, imported_revision):

@@ -75,6 +75,10 @@ revision returns `412 Precondition Failed` with the current settings, revision,
 decision metadata, and ETag so the caller can merge and retry. Omitting
 `If-Match` remains supported for older clients, but current clients should use
 the conditional write.
+When `reset` is `true`, the absence of restored cloud settings is
+authoritative. Current clients materialize conversation-setting defaults before
+their conditional writeback instead of repopulating the server from stale local
+storage.
 For `independentAsrEnabled`, the bundled UI also sends
 `X-Conversation-Settings-ASR-Decision` with its JSON
 `{writeId, writerId, value}` decision tuple; this lets the server reject an

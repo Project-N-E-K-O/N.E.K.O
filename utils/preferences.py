@@ -28,6 +28,7 @@ from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.conversation_settings_constants import (
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+    CONVERSATION_SETTINGS_RESET_KEY,
     MAX_SAFE_ASR_WRITE_ID,
     MAX_SAFE_CONVERSATION_SETTINGS_REVISION,
 )
@@ -405,6 +406,7 @@ class ConversationSettingsSnapshot:
     settings: Dict[str, Any]
     revision: int
     asr_decision: Optional[Dict[str, Any]]
+    reset: bool = False
 
 
 @dataclass(frozen=True)
@@ -510,6 +512,7 @@ def _snapshot_from_preferences_data(data: Any) -> ConversationSettingsSnapshot:
                         pref.get(_CONVERSATION_SETTINGS_REVISION_KEY)
                     ),
                     asr_decision=decision,
+                    reset=pref.get(CONVERSATION_SETTINGS_RESET_KEY) is True,
                 )
     return ConversationSettingsSnapshot(settings={}, revision=0, asr_decision=None)
 
@@ -712,6 +715,8 @@ def save_global_conversation_settings_versioned(
             global_pref = data[global_index].copy() if global_index >= 0 else {}
             previous_asr_value = global_pref.get("independentAsrEnabled")
             changed = global_index < 0
+            if global_pref.pop(CONVERSATION_SETTINGS_RESET_KEY, None) is not None:
+                changed = True
             for key, value in validated.items():
                 if global_pref.get(key) != value:
                     changed = True
