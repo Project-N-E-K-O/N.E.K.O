@@ -651,3 +651,43 @@ def test_cloud_restore_ignores_out_of_range_asr_decision_floor(
         "writerId": "server-cloud-restore",
         "value": False,
     }
+
+
+def test_cloud_restore_rejects_unadvanceable_asr_decision_floor(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "user_preferences.json"
+    now_ms = 150
+    ceiling = now_ms + preferences.ASR_WRITE_ID_MAX_FUTURE_SKEW_MS
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                    "independentAsrEnabled": True,
+                    "_conversation_settings_revision": 4,
+                    "_independent_asr_decision": {
+                        "writeId": ceiling,
+                        "writerId": "zzzz-current",
+                        "value": True,
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    patch_module_clock(
+        monkeypatch,
+        cloudsave_bindings,
+        time_ns=lambda: now_ms * 1_000_000,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="cloud restore ASR decision cannot advance the accepted floor",
+    ):
+        cloudsave_bindings._build_runtime_preferences_payload(
+            _FakeConfigManager(path),
+            {"independentAsrEnabled": False},
+        )

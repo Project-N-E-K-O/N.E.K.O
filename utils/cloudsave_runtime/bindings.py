@@ -111,7 +111,7 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
             _MAX_SAFE_ASR_WRITE_ID - 1,
             now_ms + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
         )
-        known_write_ids = []
+        known_decision_keys = []
         for entry in (current_global, filtered_settings):
             decision = entry.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
             if not isinstance(decision, dict):
@@ -128,18 +128,30 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
                 and isinstance(decision_value, bool)
                 and entry.get("independentAsrEnabled") is decision_value
             ):
-                known_write_ids.append(write_id)
-        filtered_settings[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = {
+                known_decision_keys.append((write_id, writer_id))
+        restored_decision = {
             "writeId": min(
                 max([
                     now_ms,
-                    *(write_id + 1 for write_id in known_write_ids),
+                    *(write_id + 1 for write_id, _writer_id in known_decision_keys),
                 ]),
                 max_accepted_write_id,
             ),
             "writerId": _CLOUD_RESTORE_ASR_WRITER_ID,
             "value": restored_asr_value,
         }
+        if (
+            known_decision_keys
+            and (
+                restored_decision["writeId"],
+                restored_decision["writerId"],
+            )
+            <= max(known_decision_keys)
+        ):
+            raise ValueError(
+                "cloud restore ASR decision cannot advance the accepted floor"
+            )
+        filtered_settings[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = restored_decision
     else:
         filtered_settings.pop(_CONVERSATION_SETTINGS_ASR_DECISION_KEY, None)
 

@@ -18,14 +18,11 @@
     // 周期同步因「设置未水合」被跳过时只 log 一次，避免 GET 持续失败刷屏
     let _periodicSyncSkippedUnhydratedLogged = false;
     // Field-level user authority (Codex P2): _dirtySettingsKeys records which
-    // conversation-settings keys the user explicitly changed since boot. It is
-    // intentionally monotone because a boot GET started before an acknowledged
-    // POST can still arrive later with an older snapshot; its merge must keep
-    // every user-touched key. _pendingSettingsKeys is narrower: it contains only
-    // changes not yet acknowledged by a successful POST, and is the set used by
-    // dirty-only writes plus 412 conflict merges. Keeping those roles separate
-    // prevents an acknowledged stale local value from winning a later conflict
-    // without reopening the late-boot-GET overwrite race.
+    // conversation-settings keys the user explicitly changed since boot.
+    // _pendingSettingsKeys is narrower: it contains only changes not yet
+    // acknowledged by a successful POST. A delayed boot GET preserves pending
+    // keys unconditionally and preserves acknowledged dirty keys only when the
+    // returned revision does not supersede the POST that acknowledged them.
     const _dirtySettingsKeys = new Set();
     const _pendingSettingsKeys = new Set();
     let _crossWindowMutationVersion = 0;
@@ -317,6 +314,7 @@
     // below plus the same ASR decision tuple localStorage already uses.
     let _syncChainTail = Promise.resolve();
     let _conversationSettingsEtag = null;
+    let _conversationSettingsRevision = null;
     // Cross-window mutation version represented by the current ETag. A field
     // explicitly edited after this watermark is absent from that server
     // revision even when the edit arrived before the next CAS request began.
@@ -818,6 +816,7 @@
                 settings: hasSettings ? data.settings : null,
                 telemetryBranch,
                 etag,
+                revision: Number.isInteger(data.revision) ? data.revision : null,
                 decisions: data.decisions || null
             };
         } catch (e) {
@@ -932,6 +931,9 @@
                     const data = await response.json();
                     const nextEtag = _responseEtag(response);
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
+                    if (Number.isInteger(data.revision)) {
+                        _conversationSettingsRevision = data.revision;
+                    }
                     if (response.status === 412) {
                         const preservedKeys = new Set(_pendingSettingsKeys);
                         _crossWindowSettingsNewerThanEtag(
@@ -1534,8 +1536,19 @@
                 const preserveLocalAsrDecision = !!(_lastAsrDecision
                     && (!serverAsrDecision
                         || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
-                if (serverResult.etag) {
+                const serverSnapshotNewerThanCurrent =
+                    Number.isInteger(serverResult.revision)
+                    && Number.isInteger(_conversationSettingsRevision)
+                    && serverResult.revision > _conversationSettingsRevision;
+                const shouldAdoptServerVersion =
+                    !Number.isInteger(_conversationSettingsRevision)
+                    || !Number.isInteger(serverResult.revision)
+                    || serverResult.revision >= _conversationSettingsRevision;
+                if (serverResult.etag && shouldAdoptServerVersion) {
                     _conversationSettingsEtag = serverResult.etag;
+                    if (Number.isInteger(serverResult.revision)) {
+                        _conversationSettingsRevision = serverResult.revision;
+                    }
                     _SHARED_SETTINGS_KEYS.forEach((key) => {
                         _conversationSettingsEtagKeyMutationVersions[key] =
                             mutationVersionAtGetStart;
@@ -1570,7 +1583,9 @@
                     // snapshot into the POSTed truth.
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] === undefined) continue;
-                        if (_dirtySettingsKeys.has(key)) continue;
+                        if (_pendingSettingsKeys.has(key)) continue;
+                        if (_dirtySettingsKeys.has(key)
+                            && !serverSnapshotNewerThanCurrent) continue;
                         if ((_crossWindowKeyMutationVersions[key] || 0)
                             > mutationVersionAtGetStart) continue;
                         if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;
@@ -1587,10 +1602,18 @@
                     }
                     // Subtitle bridge mirrors follow the same dirty gating so
                     // a user-changed subtitle preference survives the merge.
-                    if (serverSettings.subtitleEnabled !== undefined && !_dirtySettingsKeys.has('subtitleEnabled') && window.subtitleBridge) {
+                    if (serverSettings.subtitleEnabled !== undefined
+                        && !_pendingSettingsKeys.has('subtitleEnabled')
+                        && (!_dirtySettingsKeys.has('subtitleEnabled')
+                            || serverSnapshotNewerThanCurrent)
+                        && window.subtitleBridge) {
                         window.subtitleBridge.setSubtitleEnabled(serverSettings.subtitleEnabled);
                     }
-                    if (serverSettings.userLanguage !== undefined && !_dirtySettingsKeys.has('userLanguage') && window.subtitleBridge) {
+                    if (serverSettings.userLanguage !== undefined
+                        && !_pendingSettingsKeys.has('userLanguage')
+                        && (!_dirtySettingsKeys.has('userLanguage')
+                            || serverSnapshotNewerThanCurrent)
+                        && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
                 }
@@ -1799,9 +1822,17 @@
                 // at the first callback terminator.
                 for (const key of _pendingSettingsKeys) {
                     // A full snapshot carries incidental copies of every other
-                    // key. Only a sender-declared edit may supersede local
-                    // pending intent.
-                    if (meta.changedKeys.indexOf(key) !== -1) continue;
+                    // key. A sender-declared edit supersedes local pending
+                    // intent only when its per-key token is at least as new.
+                    const localToken = _knownSharedKeyWrites[key];
+                    const incomingIsExplicit =
+                        meta.changedKeys.indexOf(key) !== -1;
+                    const incomingCanSupersede = incomingIsExplicit
+                        && (!localToken
+                            || _sharedWriteTokenOutranks(meta, localToken)
+                            || (meta.writeId === localToken.writeId
+                                && meta.writerId === localToken.writerId));
+                    if (incomingCanSupersede) continue;
                     if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
                     if (incoming === settings) incoming = Object.assign({}, settings);
                     delete incoming[key];

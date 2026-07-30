@@ -815,8 +815,10 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     get_index = load_fn.index("loadSettingsFromServer().then(serverResult => {")
     assert snapshot_index < get_index
 
-    # (3) The merge is field-level: the per-key dirty skip runs before the S
-    # mutation, the subtitle-bridge mirrors carry the same dirty gating, and
+    # (3) The merge is field-level: pending keys are always preserved, while
+    # acknowledged dirty keys yield only to a newer server revision. Both
+    # guards run before the S mutation, the subtitle-bridge mirrors carry the
+    # same gating, and
     # the baseline is rolled to the merged state BEFORE the writeback
     # saveSettings() so server-applied values are never misattributed as
     # user-dirty by the writeback's own userInitiated diff.
@@ -826,12 +828,18 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     null_guard_index = merge_block.index("if (!serverResult) return;")
     hydrate_index = merge_block.index("S.settingsHydrated = true;")
     assert null_guard_index < hydrate_index
-    skip_index = merge_block.index("if (_dirtySettingsKeys.has(key)) continue;")
-    assert skip_index < merge_block.index("S[key] = serverSettings[key];")
-    assert "!_dirtySettingsKeys.has('subtitleEnabled')" in merge_block
-    assert "!_dirtySettingsKeys.has('userLanguage')" in merge_block
+    pending_skip_index = merge_block.index(
+        "if (_pendingSettingsKeys.has(key)) continue;"
+    )
+    dirty_guard_index = merge_block.index("if (_dirtySettingsKeys.has(key)")
+    mutation_index = merge_block.index("S[key] = serverSettings[key];")
+    assert pending_skip_index < dirty_guard_index < mutation_index
+    assert "&& !serverSnapshotNewerThanCurrent) continue;" in merge_block
+    assert "!_pendingSettingsKeys.has('subtitleEnabled')" in merge_block
+    assert "!_pendingSettingsKeys.has('userLanguage')" in merge_block
+    assert "serverSnapshotNewerThanCurrent" in merge_block
     roll_index = merge_block.index("_settingsBaseline = getConversationSettings();")
-    assert skip_index < roll_index < merge_block.index("saveSettings({")
+    assert pending_skip_index < roll_index < merge_block.index("saveSettings({")
     assert "serverAuthoritativeKeys: Object.keys(" in merge_block
     # The whole-merge drop is gone: no early return between the null-guard
     # and the hydration mark, and the old drop log no longer exists.
@@ -1852,6 +1860,27 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             Object.keys(firstBody).length === 1 && firstBody.focusModeEnabled === true,
             'an unmerged view must send only its pending key, got: '
               + JSON.stringify(firstBody)
+          );
+
+          ctx.fireStorage(JSON.stringify({
+            focusModeEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['focusModeEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                focusModeEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                },
+              },
+            },
+          }));
+          assert(
+            ctx.S.focusModeEnabled === true,
+            'an older explicit token must not replace a newer pending edit'
           );
 
           // A later edit happens while the partial write is in flight. The
@@ -3528,7 +3557,69 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           ctx4.postCalls[2].resolve(okPost);
           await tick();
 
-          // ---- Scenario 5: a newer explicit localStorage ASR decision arrives
+          // ---- Scenario 5: the delayed boot GET is newer than the POST that
+          // acknowledged a local edit. The newer server snapshot must win.
+          const ctxNewer = makeContext();
+          ctxNewer.win.mergeMessagesEnabled = true;
+          ctxNewer.mod.saveSettings();
+          await tick();
+          ctxNewer.fireGateTimeout();
+          await tick();
+          await tick();
+          assert(ctxNewer.postCalls.length === 1, 'the bound releases the local edit');
+          ctxNewer.postCalls[0].resolve({
+            ok: true,
+            status: 200,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-1"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: true,
+              },
+              revision: 1,
+              decisions: {},
+            }),
+          });
+          await tick();
+          await tick();
+          ctxNewer.getCalls[0].resolve({
+            ok: true,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-2"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: false,
+              },
+              revision: 2,
+              decisions: {},
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctxNewer.S.mergeMessagesEnabled === false,
+            'a boot GET newer than the acknowledged POST must win'
+          );
+          assert(ctxNewer.postCalls.length === 2, 'the newer merge writes back once');
+          ctxNewer.postCalls[1].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 6: a newer explicit localStorage ASR decision arrives
           // before its origin window's POST. The boot GET is older and must not
           // overwrite either the local value or the tuple that will accompany
           // the next save.
