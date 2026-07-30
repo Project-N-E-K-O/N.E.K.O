@@ -748,6 +748,61 @@ async def test_the_release_finalizes_the_abandoned_turn(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_server_vad_route_is_not_rotated_by_the_release(monkeypatch):
+    # The dual of the case above. Routes WITH server VAD rotate the speech id
+    # from speech_stopped, so rotating here as well would be a second,
+    # unpaired rotation on a live turn. The finalization must carry the same
+    # condition the terminal path carries, not rotate unconditionally.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    monkeypatch.setenv(FAIL_OPEN_ENV_VAR, "1")
+    done_calls: list[str] = []
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    assert client._has_server_vad is True, "this route rotates on speech_stopped"
+
+    async def _send(event: dict) -> None:
+        return None
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        client._is_responding = True
+
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+        await _settle()
+
+        assert done_calls == ["done"], "the turn is still finalized"
+        assert rotations == [], (
+            "a server-VAD route already rotates from speech_stopped; a second "
+            "rotation here would land on a live turn"
+        )
+    finally:
+        await arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_an_uncorrelatable_owner_makes_fail_open_stand_down(caplog):
     # Codex P2 on PR #2592. An owner that reached response.created without an
     # id leaves nothing to quarantine its late terminal by: after release, that
@@ -778,6 +833,34 @@ async def test_an_uncorrelatable_owner_makes_fail_open_stand_down(caplog):
         )
     finally:
         await harness.arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_owner_that_never_started_is_not_treated_as_uncorrelatable(
+    make_harness,
+):
+    # The stand-down asks whether a LIVE response's terminal could be confused
+    # with the next one's. An owner still waiting for its response.created has
+    # no live response at all, so there is no terminal to confuse — dropping
+    # the started() half of the condition would make the hatch decline here
+    # too. That direction is safe rather than wrong, which is exactly why it
+    # needs a test: nothing else would notice the hatch quietly narrowing.
+    harness = make_harness(fail_open=True)
+    ticket = await harness.arbiter.enqueue(source="native")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    # No response.created is fed, so started is pending and response_id is None.
+    assert harness.arbiter._response_owner is not None
+    assert harness.arbiter._response_owner.ticket.started.done() is False
+
+    raised = await _stick_a_cancel(harness)
+
+    assert isinstance(raised, asyncio.TimeoutError)
+    assert harness.aborted == [], (
+        "a turn that never started cannot emit a confusable terminal, so the "
+        "hatch should still apply"
+    )
+    assert harness.arbiter._connection_available is True
 
 
 @pytest.mark.unit
