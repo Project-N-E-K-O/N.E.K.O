@@ -91,17 +91,29 @@ def _replace_voice_reference(
             # 2) manifest 也是原子替换。走到这里新的一对才算完整可用。
             atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
         except BaseException:
-            # 回滚到进来时的状态：旧音频挪回原位，旧 manifest 本来就没动过。
-            if backup_audio is not None and os.path.exists(backup_audio):
-                with suppress(OSError):
-                    os.replace(backup_audio, audio_path)
             with suppress(OSError):
                 os.remove(temp_audio)
-            raise
-        finally:
+            # 回滚到进来时的状态：旧音频挪回原位，旧 manifest 本来就没动过。
             if backup_audio is not None:
-                with suppress(OSError):
-                    os.remove(backup_audio)
+                try:
+                    os.replace(backup_audio, audio_path)
+                except OSError as restore_error:
+                    # ⚠️ 恢复也失败了（Windows 上目标仍被占着是最常见的原因）。
+                    # 此刻这个 .bak 是旧音频**唯一**的副本，绝不能删 —— 删了就是
+                    # 永久丢数据。留着它并把两个路径打进日志，至少还能人工恢复。
+                    logger.error(
+                        '参考语音回滚失败，旧音频保留在备份路径未删除: %s -> %s (%s)',
+                        backup_audio, audio_path, restore_error,
+                    )
+                else:
+                    with suppress(OSError):
+                        os.remove(backup_audio)
+            raise
+
+        # 成功路径：manifest 已经提交，备份到这里才可以删。
+        if backup_audio is not None:
+            with suppress(OSError):
+                os.remove(backup_audio)
 
         # 3) 最后才清掉「换了扩展名」留下的旧音频（mp3 → wav 这种）。同名的那次
         #    已经被上面的 os.replace 顶掉了。删失败只是留个孤儿文件，不影响这对

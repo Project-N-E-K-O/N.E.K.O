@@ -470,3 +470,51 @@ def test_a_successful_replace_leaves_no_backup_behind(tmp_path):
     assert _manifest(tmp_path)["prefix"] == "new"
     leftovers = sorted(p.name for p in tmp_path.iterdir() if ".tmp" in p.name)
     assert leftovers == [], f"成功路径留下了暂存/备份文件：{leftovers}"
+
+
+def test_a_failed_rollback_keeps_the_only_copy_of_the_old_audio(tmp_path, monkeypatch, caplog):
+    """If the restore itself fails, the backup is the last copy — keep it.
+
+    Deleting it unconditionally in a finally would turn a recoverable failure
+    into permanent data loss: the rollback rename can fail on Windows when the
+    destination is still held open, and at that moment the .bak file is the
+    only remaining copy of the audio the user uploaded earlier.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    (tmp_path / "voice_sample.wav").write_bytes(b"old-audio")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "reference_audio": "voice_sample.wav", "prefix": "old"}),
+        encoding="utf-8",
+    )
+
+    real_replace = os.replace
+    calls: list[tuple[str, str]] = []
+
+    def _replace_but_fail_the_restore(src, dst):
+        calls.append((str(src), str(dst)))
+        # 第三次调用是回滚（backup -> audio_path），让它失败。
+        if len(calls) >= 3:
+            raise OSError(13, "Permission denied")
+        return real_replace(src, dst)
+
+    def _boom(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(os, "replace", _replace_but_fail_the_restore)
+    monkeypatch.setattr(voice_refs, "atomic_write_json", _boom)
+
+    with pytest.raises(OSError):
+        voice_refs._replace_voice_reference(
+            str(tmp_path),
+            str(tmp_path / "voice_sample.wav"),
+            b"new-audio",
+            str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+        )
+
+    monkeypatch.setattr(os, "replace", real_replace)
+
+    backups = [p for p in tmp_path.iterdir() if p.name.endswith(".bak")]
+    assert len(backups) == 1, "回滚失败后备份被删了——旧音频永久丢失"
+    assert backups[0].read_bytes() == b"old-audio"
