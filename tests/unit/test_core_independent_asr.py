@@ -1387,12 +1387,16 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
 
     # 单个 sleep 睡了多久在 Windows 上不可信（15.6ms 分辨率，既会提前弹出也会
     # 超发），所以只信真实时钟：轮询到确实过了 150ms —— 远超一个 tick，也远小于
-    # 上面的 500ms 窗口。
+    # 上面的 500ms 窗口。醒来后必须先复查挂钟再断言：这一觉可能被别的任务拖长而
+    # 睡过了观察窗口（甚至睡过 500ms 守护窗口），那时守护任务改成 blocked 是合法的，
+    # 先断言就会把「事后才发生」误报成「窗口内提前开火」。
     # A watchdog stuck on the shared default (10 ms in the scaled test above)
     # would have fired by now; the per-provider override keeps it armed.
     deadline = time.monotonic() + 0.15
-    while time.monotonic() < deadline:
+    while True:
         await asyncio.sleep(0.005)
+        if time.monotonic() >= deadline:
+            break
         assert runtime._asr_route_mode == "independent"
 
     # 正向那半不猜时间：守护任务自己跑完（内部 await 完错误处理才结束）即同步点。

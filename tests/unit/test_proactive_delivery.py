@@ -192,9 +192,10 @@ async def test_min_gap_delays_release():
     mgr.on_playback_start()
     mgr.submit({"id": "x"}, priority=1)
     mgr.on_playback_end()           # records last_play_end; gap not elapsed
-    await _settle()                 # 不受 min-gap 约束的话 call_later(0) 早放行了
-    assert delivered == []          # still inside min-gap
-    # 走满 min-gap 的 40%：只取一瞬间的样证明不了 min-gap 还在生效。
+    # 不能先 _settle() 再裸断言：那是 5 次不受检的真实 sleep，被拖长到超过 min-gap
+    # 之后放行是合法的，裸断言就会假红。直接交给 _stays_true —— 它每次醒来先复查挂钟，
+    # 而第一次醒来（约 5ms）时 call_later(0) 那轮 pump 早已跑过，所以「不受 min-gap
+    # 约束就会立刻放行」这个回归照样会被第一次断言抓住。走满 min-gap 的 40%。
     await _stays_true(lambda: delivered == [], seconds=0.4, what="min-gap window")
     await _wait_until(lambda: bool(delivered), what="min-gap release")
     assert [c["id"] for c in delivered] == ["x"]

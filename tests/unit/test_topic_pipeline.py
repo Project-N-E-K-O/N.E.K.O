@@ -2105,8 +2105,14 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
     pool.note_user_message("妮可", "第一轮认真聊一个深话题，里面有足够多的具体背景、现实纠结、近期计划和反复提到的细节", lang="zh-CN")
     await pool.process_now("妮可")
     # 首投在后台 trigger task 里落地，固定 sleep 是抛硬币；等它真的投出来。
+    # 光等 delivered 不够：fake_trigger 在 _run_trigger_when_available 走到
+    # to_thread 落盘、清掉当前 pending material 之前就已经 append 了，此时第二次
+    # process_now 会撞上「已有 pending material」的提前返回，第二个话题根本不会被
+    # 分析，下面等 deferred_delays 就只能超时。所以要等 trigger task 自己收尾。
     deadline = time.monotonic() + 5.0
-    while not delivered and time.monotonic() < deadline:
+    while (
+        not delivered or pool._trigger_tasks.get("妮可")
+    ) and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     assert delivered == ["凯迪拉克预算压力"]
 
