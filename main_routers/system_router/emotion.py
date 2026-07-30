@@ -280,17 +280,22 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
     def _is_negated_compact_match(match_start):
         prefix = _current_clause(match_start)
         peeled = _strip_degree_adverbs(prefix)
-        if peeled == prefix:
-            # Nothing between the negation and the emotion word: the original
-            # adjacency test, unchanged.
-            return any(
-                prefix.endswith(negation)
-                for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
-            )
-        # An intensifier sits against the alias, so whatever the window ends with
-        # belongs to *it*, not to a negation — `我特別開心` must not read `別` as
-        # one. The negation, if there is one, is what peeling uncovers, and it has
-        # to really be one: a single character is a coincidence waiting to happen
+        adverbs = len(prefix) - len(peeled)
+        # A negation adjacent to the alias still counts, as long as it reaches
+        # back past the intensifiers rather than living inside one: `我不太开心`
+        # ends with the negation `不太`, while `我特別開心` only appears to end
+        # with `別` because `特別` is an adverb. Peeling first and testing second
+        # would lose the former; testing first and peeling never would keep the
+        # latter.
+        if any(
+            len(negation) > adverbs and prefix.endswith(negation)
+            for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
+        ):
+            return True
+        # No early-out when nothing was peeled: the test above already ran every
+        # negation against the unchanged window, so the two below can only agree.
+        # The negation, if there is one, is what peeling uncovers, and it has to
+        # really be one: a single character is a coincidence waiting to happen
         # (`分别很开心` peels to `分别`), so it must be the whole of what is left;
         # two or more are specific enough to sit after other text (`我沒有很生氣`).
         return peeled in _EMOTION_NEGATION_COMPACT_PREFIX_SET or any(

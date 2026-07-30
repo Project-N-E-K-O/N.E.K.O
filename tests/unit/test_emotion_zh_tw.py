@@ -19,10 +19,10 @@ import pytest
 from config.prompts import prompts_emotion as P
 from utils.language_utils import detect_prompt_language, language_context
 
-TRADITIONAL_ONLY = "開興歡愛難傷嗚遺喪負氣煩惱惡會這麼貼嬌並僅過驚憤靜裡閉憐別沒"
+TRADITIONAL_ONLY = "開興歡愛難傷嗚遺喪負氣煩惱惡會這麼貼嬌並僅過驚憤靜裡閉憐別沒來"
 # 有意不含 `里`：它在两种写法里都是正字（公里／里長），拿它当简体标记会把将来
 # 合法的繁体词条判成违规。`裡` 只在繁体侧出现，所以只放在上面那一串里。
-SIMPLIFIED_ONLY = "开兴欢爱难伤呜遗丧负气烦恼恶会这么贴娇并仅过惊愤静闭怜别没"
+SIMPLIFIED_ONLY = "开兴欢爱难伤呜遗丧负气烦恼恶会这么贴娇并仅过惊愤静闭怜别没来"
 
 def _chinese_tables():
     """Every `*_BY_LANG` table in the module that has a Chinese block.
@@ -281,7 +281,11 @@ def test_negation_flattening_preserves_the_previous_vocabulary():
         "안", "아니", "못", "않", "아니다", "아닌", "아님",
         "не", "нет", "никогда",
     }
-    assert len(set(P.get_emotion_negation_suffixes_flat())) == 23
+    # The Korean set is what the move had to preserve; the Chinese postposed
+    # forms are a later, deliberate addition on top of it.
+    korean = set(P.EMOTION_NEGATION_SUFFIXES_BY_LANG["ko"])
+    assert len(korean) == 23
+    assert korean <= set(P.get_emotion_negation_suffixes_flat())
 
 
 @pytest.mark.parametrize("label,expected", [
@@ -753,3 +757,30 @@ def test_documented_gap_negation_across_a_degree_word(text, expected):
     from main_routers.system_router.emotion import _infer_emotion_from_text
 
     assert _infer_emotion_from_text(text)[0] == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "我不太开心", "其实不怎么开心", "我沒那麼難過", "我不怎麼開心",
+])
+def test_a_negation_may_reach_back_past_the_intensifiers(label, confidence):
+    """These end with a negation that itself spans the degree adverb.
+
+    Peeling first and testing second lost them; testing first and never peeling
+    would read the last character of an ordinary intensifier as a negation. The
+    length of the match against the length of what was peeled separates the two.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "開心不起來", "高興不起來", "生氣不起來", "开心不起来",
+])
+def test_postposed_negation_after_the_emotion_word(label, confidence):
+    """Chinese can negate from behind, and the suffix table was Korean-only.
+
+    That branch requires everything before the marker to look like an alias on
+    its own, so it cannot reach into an unrelated part of the label.
+    """
+    assert _label(label, confidence) == "neutral"
