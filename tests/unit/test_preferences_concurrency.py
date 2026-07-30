@@ -256,3 +256,27 @@ async def test_conversation_settings_route_returns_etag_and_412_snapshot(
     payload = json.loads(conflict_response.body)
     assert payload["settings"]["independentAsrEnabled"] is True
     assert payload["decisions"]["independentAsrEnabled"]["writeId"] == 20
+
+
+@pytest.mark.asyncio
+async def test_set_preferred_model_offloads_locked_write(monkeypatch):
+    calls = []
+
+    def fake_move_model_to_top(model_path):
+        calls.append(("move", model_path))
+        return True
+
+    async def fake_to_thread(func, *args):
+        calls.append(("to_thread", func, args))
+        return func(*args)
+
+    monkeypatch.setattr(preferences_router, "move_model_to_top", fake_move_model_to_top)
+    monkeypatch.setattr(preferences_router.asyncio, "to_thread", fake_to_thread)
+
+    result = await preferences_router.set_preferred_model(
+        _Request({"model_path": "model-a"})
+    )
+
+    assert result["success"] is True
+    assert calls[0] == ("to_thread", fake_move_model_to_top, ("model-a",))
+    assert calls[1] == ("move", "model-a")

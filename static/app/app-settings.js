@@ -1203,6 +1203,15 @@
                 _settingsMergedFromServer = true;
                 const serverSettings = serverResult.settings;
                 const telemetryBranch = serverResult.telemetryBranch;
+                const serverAsrDecision = _serverAsrDecision(serverResult);
+                // A cross-window toggle can reach localStorage before its POST
+                // reaches the server. In that window the local decision tuple is
+                // newer than the GET snapshot, so the generic field merge must
+                // not copy the older server value into S before the decision
+                // merge gets a chance to reject it.
+                const preserveLocalAsrDecision = !!(_lastAsrDecision
+                    && (!serverAsrDecision
+                        || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
                 if (serverResult.etag) {
                     _conversationSettingsEtag = serverResult.etag;
                 }
@@ -1235,6 +1244,7 @@
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] === undefined) continue;
                         if (_dirtySettingsKeys.has(key)) continue;
+                        if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;
                         if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;

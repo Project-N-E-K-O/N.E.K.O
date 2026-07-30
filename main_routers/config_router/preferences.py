@@ -182,7 +182,9 @@ async def set_preferred_model(request: Request):
         if not data or 'model_path' not in data:
             return {"success": False, "error": "无效的数据"}
         
-        if move_model_to_top(data['model_path']):
+        # move_model_to_top performs a cross-process locked read-modify-write.
+        # Keep lock waits off the application event loop.
+        if await asyncio.to_thread(move_model_to_top, data['model_path']):
             return {"success": True, "message": "首选模型已更新"}
         else:
             return {"success": False, "error": "模型不存在或更新失败"}

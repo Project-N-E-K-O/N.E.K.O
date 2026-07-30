@@ -2422,23 +2422,31 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           if (!cond) throw new Error('ASSERT: ' + msg);
         }
 
-        function makeContext() {
+        function makeContext(initialSettings) {
           const postCalls = [];
           const getCalls = [];
           const timers = [];
           const intervals = [];
+          const storage = {};
+          if (initialSettings) {
+            storage.project_neko_settings = JSON.stringify(initialSettings);
+          }
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval(fn, ms) { intervals.push({ fn, ms }); return 1; },
             clearInterval() {},
             setTimeout(fn, ms) { timers.push({ fn, ms }); return { unref() {} }; },
             clearTimeout() {},
-            localStorage: { getItem() { return null; }, setItem() {}, removeItem() {} },
+            localStorage: {
+              getItem(key) { return Object.prototype.hasOwnProperty.call(storage, key) ? storage[key] : null; },
+              setItem() {},
+              removeItem(key) { delete storage[key]; },
+            },
             document: { getElementById() { return null; } },
             fetch(url, opts) {
               return new Promise((resolve, reject) => {
                 if (opts && opts.method === 'POST') {
-                  postCalls.push({ url, body: opts.body, resolve, reject });
+                  postCalls.push({ url, body: opts.body, headers: opts.headers, resolve, reject });
                 } else {
                   getCalls.push({ url, resolve, reject });
                 }
@@ -2650,6 +2658,66 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
             'the full snapshot carries the merged server value, not the boot default'
           );
           ctx4.postCalls[2].resolve(okPost);
+          await tick();
+
+          // ---- Scenario 5: a newer explicit localStorage ASR decision arrives
+          // before its origin window's POST. The boot GET is older and must not
+          // overwrite either the local value or the tuple that will accompany
+          // the next save.
+          const ctx5 = makeContext({
+            independentAsrEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 20,
+              writerId: 'window-b',
+              changedKeys: ['independentAsrEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              asrDecision: { writeId: 20, writerId: 'window-b', value: true },
+            },
+          });
+          ctx5.getCalls[0].resolve({
+            ok: true,
+            headers: { get(name) { return name.toLowerCase() === 'etag' ? '"conversation-settings-3"' : null; } },
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: false, mergeMessagesEnabled: false },
+              decisions: {
+                independentAsrEnabled: {
+                  writeId: 10,
+                  writerId: 'window-a',
+                  value: false,
+                },
+              },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctx5.S.independentAsrEnabled === true,
+            'an older boot GET must not overwrite the newer local ASR choice'
+          );
+          assert(ctx5.postCalls.length === 0, 'preserving the local winner needs no merge writeback');
+          ctx5.win.focusModeEnabled = true;
+          ctx5.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx5.postCalls.length === 1, 'a later unrelated edit is persisted');
+          const afterLocalWinner = JSON.parse(ctx5.postCalls[0].body);
+          assert(
+            afterLocalWinner.independentAsrEnabled === true,
+            'the later full snapshot keeps the newer local ASR value'
+          );
+          const decisionHeader = JSON.parse(
+            ctx5.postCalls[0].headers['X-Conversation-Settings-ASR-Decision']
+          );
+          assert(
+            decisionHeader.writeId === 20
+              && decisionHeader.writerId === 'window-b'
+              && decisionHeader.value === true,
+            'the later POST carries the newer local ASR decision tuple'
+          );
+          ctx5.postCalls[0].resolve(okPost);
           await tick();
 
           console.log('HARNESS_OK');
