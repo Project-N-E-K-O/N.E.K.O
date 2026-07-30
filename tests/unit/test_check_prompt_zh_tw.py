@@ -2240,3 +2240,47 @@ def test_walrus_binds_a_name_to_a_table(src, expected):
     """`if (T := {...}):` binds T as much as a statement does."""
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    'A = {"zh-TW": "t"}\nTW = {}\nTW.update({**A})\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    'A = {"zh-TW": "t"}\nTW = {}\nTW.update(dict(A))\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+])
+def test_a_mutation_payload_may_wrap_the_name(src):
+    """Recording only the names a payload *is* missed the ones it *contains*.
+
+    Keeping the payload expression itself and resolving it on the way out covers
+    both, and is less code than the name list it replaced.
+    """
+    assert _violations(src) == []
+
+
+def test_wrapped_payload_without_zh_tw_still_reports():
+    src = (
+        'A = {"ja": "j"}\nTW = {}\nTW.update({**A})\n'
+        'T = {"en": "e", "zh": "s"}\nT.update(TW)'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [4]
+
+
+def test_wrapped_self_referential_payload_terminates():
+    src = 'A = {}\nA.update({**A})\nT = {"en": "e", "zh": "s"}\nT.update(A)'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [3]
+
+
+@pytest.mark.parametrize("src", [
+    # a removal through an alias of the same object
+    'T = {"en": "e", "zh": "s"}\nA = T\nT["zh-TW"] = "t"\nA.pop("zh-TW")',
+    # a mutation buried in the right-hand side of a rebinding of the same name
+    'T = {}\nT = {"en": "e", "zh": "s", "side": T.update({"zh-TW": "t"})}',
+])
+def test_documented_blind_spots_around_aliased_mutation(src):
+    """Pinned so a change here is deliberate — see the module docstring.
+
+    The first needs alias analysis (which names share an object), not the
+    per-name timeline everything else uses. The second stores the result of
+    `update()`, which is None — code that cannot be doing what it looks like.
+    """
+    assert _violations(src) == []

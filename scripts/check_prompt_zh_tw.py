@@ -80,7 +80,7 @@ exemption is deliberately keyed on the mutation *demonstrably supplying zh-TW*:
 exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a real
 offender, trading one rare false positive for a broad blind spot.
 
-Three accepted blind spots, all on the miss side:
+Four accepted blind spots, all on the miss side:
 
   * The exemption is not ordered against *other* uses of the name, so a copy taken
     before the backfill is not judged::
@@ -98,6 +98,16 @@ Three accepted blind spots, all on the miss side:
     bodies unreadable, so it is not a shape prompt modules use — there are zero
     occurrences under config/prompts. Chasing constructor forms with no realistic
     use grows ``resolve_keys`` without shrinking the backlog.
+  * A removal that reaches the table through a different name is not seen::
+
+        T = {"en": "e", "zh": "s"}
+        A = T                    # same object
+        T["zh-TW"] = "t"
+        A.pop("zh-TW")           # …so this really does un-complete T
+
+    Knowing that A and T are the same object is alias analysis -- a set of names
+    per object, maintained across rebinding -- rather than the per-name timeline
+    everything else here uses.
   * A table assembled from fragments that are each *individually* fine is not
     judged::
 
@@ -661,7 +671,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     # table. The same index answers the reverse — a later `del TW["zh-TW"]` means
     # an earlier backfill no longer makes its table compliant.
     mutations: dict[
-        str, list[tuple[tuple[int, int], set[str], set[str], tuple[str, ...]]]
+        str, list[tuple[tuple[int, int], set[str], set[str], tuple[ast.AST, ...]]]
     ] = {}
 
     def _record(
@@ -669,10 +679,10 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         at: tuple[int, int],
         added: set[str],
         removed: set[str],
-        added_names: tuple[str, ...] = (),
+        payloads: tuple[ast.AST, ...] = (),
     ) -> None:
-        if added or removed or added_names:
-            mutations.setdefault(name, []).append((at, added, removed, added_names))
+        if added or removed or payloads:
+            mutations.setdefault(name, []).append((at, added, removed, payloads))
 
     for node in ast.walk(tree):
         at = _source_position(node)
@@ -708,27 +718,22 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             elif node.func.attr == "update":
                 # Only what the payload states outright. Resolving names here would
                 # need the very index being built.
-                added: set[str] = set()
-                # A payload that is a name is kept as a reference and resolved
-                # later: resolving it here would need this very index.
-                names: list[str] = []
-                for payload in list(node.args) + [
-                    kw.value for kw in node.keywords if kw.arg is None
-                ]:
-                    if isinstance(payload, ast.Name):
-                        names.append(payload.id)
-                        continue
-                    added |= resolve_keys(payload) or _pair_sequence_keys(payload) or set()
-                _record(node.func.value.id, at, added, set(), tuple(names))
+                # The payload expressions themselves, resolved on the way out:
+                # resolving them here would need this very index. Keeping the
+                # nodes rather than just the names they mention also covers a
+                # wrapped source — `update({**A})`, `update(dict(A))`.
+                _record(
+                    node.func.value.id, at, set(), set(),
+                    tuple(node.args) + tuple(
+                        kw.value for kw in node.keywords if kw.arg is None
+                    ),
+                )
         elif (
             isinstance(node, ast.AugAssign)
             and isinstance(node.op, ast.BitOr)
             and isinstance(node.target, ast.Name)
         ):
-            if isinstance(node.value, ast.Name):
-                _record(node.target.id, at, set(), set(), (node.value.id,))
-            else:
-                _record(node.target.id, at, resolve_keys(node.value) or set(), set())
+            _record(node.target.id, at, set(), set(), (node.value,))
 
     for entries in mutations.values():
         entries.sort(key=lambda item: item[0])
@@ -785,7 +790,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         rebound = next(
             (pos for pos, _ in assignments.get(name, ()) if pos > at), None
         )
-        for pos, _added, removed, _names in mutations.get(name, ()):
+        for pos, _added, removed, _payloads in mutations.get(name, ()):
             if pos <= at or (rebound is not None and pos > rebound):
                 continue
             if TRADITIONAL_KEY in removed:
@@ -894,11 +899,11 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         # `A.update(A)`. Nothing legitimate sits at exactly the use position — a
         # statement records its mutation against the name it mutates, not the one
         # it reads.
-        for pos, added, removed, added_names in mutations.get(name, ()):
+        for pos, added, removed, payloads in mutations.get(name, ()):
             if not bound_at < pos < at:
                 continue
-            for other in added_names:
-                added = added | _name_keys(other, pos)
+            for payload in payloads:
+                added = added | _mapping_keys(payload, pos)
             keys = (keys | added) - removed
         return keys
 
