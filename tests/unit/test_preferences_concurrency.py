@@ -333,6 +333,7 @@ class _Request:
         if_match=None,
         asr_decision=None,
         raw_asr_decision=None,
+        full_snapshot=False,
     ):
         self._body = body
         self.headers = {}
@@ -344,6 +345,8 @@ class _Request:
             self.headers["x-conversation-settings-asr-decision"] = json.dumps(
                 asr_decision
             )
+        if full_snapshot:
+            self.headers["x-conversation-settings-full-snapshot"] = "1"
 
     async def json(self):
         return dict(self._body) if isinstance(self._body, dict) else self._body
@@ -423,6 +426,39 @@ async def test_conversation_settings_route_returns_versioned_500_on_save_failure
     assert payload["error"] == "保存失败"
     assert payload["revision"] == 7
     assert payload["settings"]["focusModeEnabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_conversation_settings_route_forwards_full_snapshot_marker(monkeypatch):
+    captured = {}
+    snapshot = preferences.ConversationSettingsSnapshot(
+        settings={"focusModeEnabled": False},
+        revision=11,
+        asr_decision=None,
+    )
+
+    def fake_save(settings, **kwargs):
+        captured["settings"] = settings
+        captured.update(kwargs)
+        return preferences.ConversationSettingsWriteResult(
+            success=True,
+            conflict=False,
+            snapshot=snapshot,
+        )
+
+    monkeypatch.setattr(
+        preferences_router,
+        "save_global_conversation_settings_versioned",
+        fake_save,
+    )
+
+    response = await preferences_router.save_conversation_settings(
+        _Request({"focusModeEnabled": False}, full_snapshot=True)
+    )
+
+    assert response.status_code == 200
+    assert captured["settings"] == {"focusModeEnabled": False}
+    assert captured["full_snapshot"] is True
 
 
 @pytest.mark.asyncio
@@ -667,7 +703,7 @@ def test_cloud_restore_empty_settings_emits_reset_and_advances_revision(tmp_path
     assert snapshot.reset is True
 
 
-def test_versioned_save_clears_cloud_restore_reset_tombstone(monkeypatch, tmp_path):
+def test_partial_save_preserves_cloud_restore_reset_tombstone(monkeypatch, tmp_path):
     path = _use_preferences_file(
         monkeypatch,
         tmp_path,
@@ -683,6 +719,38 @@ def test_versioned_save_clears_cloud_restore_reset_tombstone(monkeypatch, tmp_pa
     result = preferences.save_global_conversation_settings_versioned(
         {"focusModeEnabled": False},
         expected_revision=10,
+    )
+
+    assert result.success is True
+    assert result.snapshot.revision == 11
+    assert result.snapshot.reset is True
+    assert result.snapshot.settings == {"focusModeEnabled": False}
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    global_entry = next(
+        entry
+        for entry in saved
+        if entry.get("model_path") == preferences.GLOBAL_CONVERSATION_KEY
+    )
+    assert global_entry["_conversation_settings_reset"] is True
+
+
+def test_full_snapshot_save_clears_cloud_restore_reset_tombstone(monkeypatch, tmp_path):
+    path = _use_preferences_file(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                "_conversation_settings_revision": 10,
+                "_conversation_settings_reset": True,
+            }
+        ],
+    )
+
+    result = preferences.save_global_conversation_settings_versioned(
+        {"focusModeEnabled": False, "slopFilterEnabled": True},
+        expected_revision=10,
+        full_snapshot=True,
     )
 
     assert result.success is True

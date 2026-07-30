@@ -672,6 +672,7 @@ def save_global_conversation_settings_versioned(
     *,
     expected_revision: Optional[int] = None,
     asr_decision: Optional[Dict[str, Any]] = None,
+    full_snapshot: bool = False,
 ) -> ConversationSettingsWriteResult:
     """Compare-and-set a partial conversation-settings update."""
     empty_snapshot = ConversationSettingsSnapshot(
@@ -715,7 +716,10 @@ def save_global_conversation_settings_versioned(
             global_pref = data[global_index].copy() if global_index >= 0 else {}
             previous_asr_value = global_pref.get("independentAsrEnabled")
             changed = global_index < 0
-            if global_pref.pop(CONVERSATION_SETTINGS_RESET_KEY, None) is not None:
+            if (
+                full_snapshot
+                and global_pref.pop(CONVERSATION_SETTINGS_RESET_KEY, None) is not None
+            ):
                 changed = True
             for key, value in validated.items():
                 if global_pref.get(key) != value:

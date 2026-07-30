@@ -79,6 +79,9 @@ When `reset` is `true`, the absence of restored cloud settings is
 authoritative. Current clients materialize conversation-setting defaults before
 their conditional writeback instead of repopulating the server from stale local
 storage.
+Current clients mark full-snapshot writes with
+`X-Conversation-Settings-Full-Snapshot: 1`; partial pre-hydration writes leave
+the reset marker intact so their response can still apply defaults.
 For `independentAsrEnabled`, the bundled UI also sends
 `X-Conversation-Settings-ASR-Decision` with its JSON
 `{writeId, writerId, value}` decision tuple; this lets the server reject an

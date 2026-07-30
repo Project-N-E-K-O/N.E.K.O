@@ -1430,18 +1430,30 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           const persistedTuple = JSON.parse(
             tupleOnly.store.get('project_neko_settings')
           )._sharedWriteMeta.asrDecision;
+          const tupleEnvelope = JSON.parse(
+            tupleOnly.store.get('project_neko_settings')
+          )._sharedWriteMeta.writeId;
           assert(
             JSON.stringify(persistedTuple) === JSON.stringify(tuple),
             'a newer same-value server tuple must persist for offline write-id flooring'
           );
+          assert(
+            tupleEnvelope < tuple.writeId,
+            'a server ASR floor must not inflate the localStorage envelope id'
+          );
 
+          const resetPriorDecision = {
+            writeId: Date.now() + 1000,
+            writerId: 'server-before-reset',
+            value: true,
+          };
           const reset = makeContext(false, {
             success: true,
             settings: {},
             revision: 10,
             reset: true,
             telemetryBranch: null,
-            decisions: {},
+            decisions: { independentAsrEnabled: resetPriorDecision },
           });
           await tick();
           await tick();
@@ -1459,6 +1471,14 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               })
           );
           assert(reset.postCalls.length === 1, 'the reset defaults must be written back once');
+          assert(
+            !('X-Conversation-Settings-ASR-Decision' in reset.postCalls[0].opts.headers),
+            'a reset writeback must not attach the stale opposite ASR tuple'
+          );
+          assert(
+            reset.postCalls[0].opts.headers['X-Conversation-Settings-Full-Snapshot'] === '1',
+            'a reset writeback must declare that it can clear the tombstone'
+          );
           const resetBody = JSON.parse(reset.postCalls[0].opts.body);
           assert(
             resetBody.slopFilterEnabled === true
@@ -1475,10 +1495,24 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               settings: resetBody,
               revision: 11,
               reset: false,
-              decisions: {},
+              decisions: {
+                independentAsrEnabled: {
+                  writeId: resetPriorDecision.writeId + 1,
+                  writerId: 'server-legacy',
+                  value: false,
+                },
+              },
             }
           ));
           await tick();
+          const resetPersisted = JSON.parse(
+            reset.store.get('project_neko_settings')
+          );
+          assert(
+            resetPersisted._sharedWriteMeta.asrDecision.value === false
+              && resetPersisted._sharedWriteMeta.serverRevision === 11,
+            'a full-write success must adopt and rebroadcast the generated server ASR tuple'
+          );
 
           const noiseMerge = makeContext(false, {
             success: true,
@@ -1810,6 +1844,34 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
 
           const acknowledgedLocal = JSON.parse(
             ctx.store.get('project_neko_settings')
+          );
+          const acknowledgedSlopToken =
+            acknowledgedLocal._sharedWriteMeta.knownKeyWrites.slopFilterEnabled;
+          ctx.fireStorage(JSON.stringify({
+            slopFilterEnabled: false,
+            proactiveMusicEnabled: false,
+            _sharedWriteMeta: {
+              writeId: acknowledgedLocal._sharedWriteMeta.writeId + 20,
+              writerId: 'window-unrelated-editor',
+              changedKeys: ['proactiveMusicEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                slopFilterEnabled: {
+                  writeId: Math.max(0, acknowledgedSlopToken.writeId - 1),
+                  writerId: 'window-stale',
+                },
+                proactiveMusicEnabled: {
+                  writeId: acknowledgedLocal._sharedWriteMeta.writeId + 20,
+                  writerId: 'window-unrelated-editor',
+                },
+              },
+            },
+          }));
+          assert(
+            ctx.S.slopFilterEnabled === true
+              && ctx.S.proactiveMusicEnabled === false,
+            'an unrelated explicit snapshot must filter a stale incidental field'
           );
           ctx.fireStorage(JSON.stringify({
             slopFilterEnabled: false,
@@ -2208,6 +2270,51 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
         }
 
+        async function runPartialResetSnapshotScenario() {
+          const ctx = makeContext(true);
+          await tick();
+          await tick();
+          assert(ctx.S.slopFilterEnabled === false, 'the harness starts with stale local slop');
+
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the pre-hydration edit must POST');
+          assert(
+            !('X-Conversation-Settings-Full-Snapshot' in ctx.postCalls[0].opts.headers),
+            'a dirty-only pre-hydration write must not clear the reset tombstone'
+          );
+
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: { focusModeEnabled: true },
+              revision: 1,
+              reset: true,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          assert(
+            ctx.S.focusModeEnabled === true
+              && ctx.S.slopFilterEnabled === true
+              && ctx.S.independentAsrEnabled === false,
+            'a partial reset response must materialize defaults without losing the edit'
+          );
+          const restoredLocal = JSON.parse(ctx.store.get('project_neko_settings'));
+          assert(
+            restoredLocal.focusModeEnabled === true
+              && restoredLocal.slopFilterEnabled === true,
+            'the partial reset response must replace stale localStorage values'
+          );
+        }
+
         async function runPartialConfirmedWatermarkScenario() {
           const ctx = makeContext(true);
           await tick();
@@ -2314,6 +2421,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await runScenario(true);
           await runAcknowledgedDirtyScenario();
           await runSuccessfulPartialSnapshotScenario();
+          await runPartialResetSnapshotScenario();
           await runPartialConfirmedWatermarkScenario();
           console.log('CAS_HARNESS_OK');
           process.exitCode = 0;
@@ -3915,7 +4023,74 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           ctxNewer.postCalls[1].resolve(okPost);
           await tick();
 
-          // ---- Scenario 7: a newer explicit localStorage ASR decision arrives
+          // ---- Scenario 7: a timeout-released partial POST advances the server
+          // revision before the captured boot GET returns. The older GET must
+          // not roll back even fields that were never locally dirty.
+          const ctxOlder = makeContext();
+          ctxOlder.win.mergeMessagesEnabled = true;
+          ctxOlder.mod.saveSettings();
+          await tick();
+          ctxOlder.fireGateTimeout();
+          await tick();
+          await tick();
+          ctxOlder.postCalls[0].resolve({
+            ok: true,
+            status: 200,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-2"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: true,
+                slopFilterEnabled: true,
+              },
+              revision: 2,
+              decisions: {},
+            }),
+          });
+          await tick();
+          await tick();
+          assert(ctxOlder.S.slopFilterEnabled === true, 'the POST response hydrates rev2');
+          ctxOlder.getCalls[0].resolve({
+            ok: true,
+            headers: {
+              get(name) {
+                return name.toLowerCase() === 'etag'
+                  ? '"conversation-settings-1"'
+                  : null;
+              },
+            },
+            json: async () => ({
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                mergeMessagesEnabled: false,
+                slopFilterEnabled: false,
+              },
+              revision: 1,
+              decisions: {},
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctxOlder.S.mergeMessagesEnabled === true
+              && ctxOlder.S.slopFilterEnabled === true,
+            'a delayed older GET must not merge any stale settings fields'
+          );
+          assert(
+            ctxOlder.postCalls.length === 1,
+            'discarding an older GET must not trigger a stale writeback'
+          );
+
+          // ---- Scenario 8: a newer explicit localStorage ASR decision arrives
           // before its origin window's POST. The boot GET is older and must not
           // overwrite either the local value or the tuple that will accompany
           // the next save.
@@ -4676,7 +4851,8 @@ def test_concurrent_asr_toggles_are_totally_ordered_not_swapped():
     write_fn = settings_source.split("function _writeSharedSettings(", 1)[1].split(
         "\n    }", 1
     )[0]
-    assert "_noteAsrDecision(ownMeta.writeId, ownMeta.writerId," in write_fn
+    assert "_nextAsrDecisionWriteId(ownMeta.writeId)" in write_fn
+    assert "_noteAsrDecision(" in write_fn
 
     # Refusing authority alone is not enough: applySharedRuntimeSettings copies
     # independentAsrEnabled unconditionally, so the losing write must also be

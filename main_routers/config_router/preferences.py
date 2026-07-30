@@ -41,6 +41,7 @@ from utils.cloudsave_runtime import MaintenanceModeError
 
 
 _CONVERSATION_SETTINGS_ASR_DECISION_HEADER = "x-conversation-settings-asr-decision"
+_CONVERSATION_SETTINGS_FULL_SNAPSHOT_HEADER = "x-conversation-settings-full-snapshot"
 _CONVERSATION_SETTINGS_ETAG_RE = re.compile(r'^(?:W/)?"conversation-settings-(\d+)"$')
 _NOISE_REDUCTION_APPLY_LOCK = asyncio.Lock()
 
@@ -287,6 +288,9 @@ async def save_conversation_settings(request: Request):
             data,
             expected_revision=expected_revision,
             asr_decision=asr_decision,
+            full_snapshot=(
+                request.headers.get(_CONVERSATION_SETTINGS_FULL_SNAPSHOT_HEADER) == "1"
+            ),
         )
         response_payload = _conversation_settings_response_payload(result.snapshot)
         response_headers = {

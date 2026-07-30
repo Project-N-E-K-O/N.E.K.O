@@ -77,6 +77,9 @@ metadata、ETag が返るため、caller は merge 後に retry できます。�
 `reset` が `true` の場合、cloud restore に設定が存在しないこと自体が authoritative
 です。現行 client は古い local storage から server を再投入せず、conditional
 writeback の前に会話設定の既定値を具体化します。
+現行 client は full-snapshot write に
+`X-Conversation-Settings-Full-Snapshot: 1` を付けます。pre-hydration の
+partial write は reset marker を保持し、response 側で既定値を適用できるようにします。
 `independentAsrEnabled` の更新時、bundled UI は
 `X-Conversation-Settings-ASR-Decision` に JSON
 `{writeId, writerId, value}` decision tuple も送り、古い window request が最後に完了しても

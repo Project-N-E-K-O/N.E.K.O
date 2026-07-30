@@ -229,9 +229,6 @@
         const decision = _normalizeServerAsrDecision(value, serverAuthoritative);
         if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
         _lastAsrDecision = decision;
-        if (decision.writeId > _lastAppliedSharedWriteId) {
-            _lastAppliedSharedWriteId = decision.writeId;
-        }
         return true;
     }
     function _responseEtag(response) {
@@ -246,9 +243,9 @@
     function _adoptServerAsrDecision(data) {
         const decision = _serverAsrDecision(data);
         if (!_adoptAsrDecisionTuple(decision, true)) return false;
-        // The next explicit local choice must mint above every decision this
-        // window has accepted, including cloud/server decisions whose clock is
-        // ahead of this browser's Date.now().
+        // Decision ordering is independent from localStorage envelope ordering.
+        // In particular, a server clock ahead of this browser must not raise the
+        // shared-write floor and make later envelopes invalid to sibling windows.
         const serverSettings = data && data.settings;
         if (serverSettings
             && typeof serverSettings.independentAsrEnabled === 'boolean'
@@ -556,6 +553,17 @@
         return _lastSharedWriteId;
     }
 
+    function _nextAsrDecisionWriteId(envelopeWriteId) {
+        const decisionFloor = _lastAsrDecision
+            && Number.isSafeInteger(_lastAsrDecision.writeId)
+            ? _lastAsrDecision.writeId
+            : 0;
+        if (decisionFloor >= Number.MAX_SAFE_INTEGER - 1) {
+            return envelopeWriteId;
+        }
+        return Math.max(envelopeWriteId, decisionFloor + 1);
+    }
+
     /**
      * Keys of `snapshot` this window may claim explicit user authority over:
      * still-pending keys plus keys that diverge from the current dirty-diff
@@ -628,7 +636,11 @@
         }
         ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
-            _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
+            _noteAsrDecision(
+                _nextAsrDecisionWriteId(ownMeta.writeId),
+                ownMeta.writerId,
+                snapshot.independentAsrEnabled
+            );
         }
         // Stamp the ASR key with the id of the decision that PRODUCED this
         // value. _noteAsrDecision already refuses to advance the LOCAL decision
@@ -1046,6 +1058,9 @@
                 if (_conversationSettingsEtag) {
                     headers['If-Match'] = _conversationSettingsEtag;
                 }
+                if (mergedAtSend) {
+                    headers['X-Conversation-Settings-Full-Snapshot'] = '1';
+                }
                 if (requestDecision) {
                     headers['X-Conversation-Settings-ASR-Decision'] =
                         JSON.stringify(requestDecision);
@@ -1102,6 +1117,8 @@
                         mutationVersionAtSend
                     );
                     _clearAcknowledgedPendingSettings(payload);
+                    const adoptedServerAsrDecision =
+                        _adoptServerAsrDecision(data);
                     // A successful dirty-only write returns the complete
                     // authoritative snapshot. If the boot GET failed or lost
                     // the gate race, hydrate untouched fields from this response
@@ -1113,6 +1130,15 @@
                             changedWhileInFlight.add(key);
                         });
                         _mergeConversationSettingsSnapshot(data, changedWhileInFlight);
+                    } else if (adoptedServerAsrDecision) {
+                        // Re-broadcast a server-generated/confirmed tuple with
+                        // serverRevision authority. Its decision clock may be
+                        // ahead of a sibling browser's local Date.now() bound.
+                        saveSettings({
+                            skipServerSync: true,
+                            serverMerged: true,
+                            serverAuthoritativeKeys: ['independentAsrEnabled']
+                        });
                     }
                     return;
                 } catch (err) {
@@ -1669,21 +1695,32 @@
                 // nothing a full write could clobber (and the first-launch
                 // forced push below depends on it).
                 _settingsMergedFromServer = true;
-                const serverSettings = _serverSettingsForMerge(serverResult);
+                const serverSnapshotOlderThanCurrent =
+                    Number.isInteger(serverResult.revision)
+                    && Number.isInteger(_conversationSettingsRevision)
+                    && serverResult.revision < _conversationSettingsRevision;
+                const serverSettings = serverSnapshotOlderThanCurrent
+                    ? null
+                    : _serverSettingsForMerge(serverResult);
                 const telemetryBranch = serverResult.telemetryBranch;
-                const serverAsrDecision = _serverAsrDecision(serverResult);
+                const serverAsrDecision = serverSnapshotOlderThanCurrent
+                    ? null
+                    : _serverAsrDecision(serverResult);
                 // A cross-window toggle can reach localStorage before its POST
                 // reaches the server. In that window the local decision tuple is
                 // newer than the GET snapshot, so the generic field merge must
                 // not copy the older server value into S before the decision
                 // merge gets a chance to reject it.
-                const preserveLocalAsrDecision = serverResult.reset === true
+                const preserveLocalAsrDecision =
+                    !serverSnapshotOlderThanCurrent
+                    && serverResult.reset === true
                     ? false
                     : !!(_lastAsrDecision
                     && (!serverAsrDecision
                         || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
                 const serverSnapshotNewerThanCurrent =
-                    serverResult.reset === true
+                    (!serverSnapshotOlderThanCurrent
+                        && serverResult.reset === true)
                     || (Number.isInteger(serverResult.revision)
                         && Number.isInteger(_conversationSettingsRevision)
                         && serverResult.revision > _conversationSettingsRevision);
@@ -1765,7 +1802,7 @@
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
                 }
-                if (serverResult.decisions) {
+                if (!serverSnapshotOlderThanCurrent && serverResult.decisions) {
                     const previousAsr = S.independentAsrEnabled;
                     const adoptedAsrDecision = _adoptServerAsrDecision({
                         settings: serverSettings,
@@ -1961,8 +1998,7 @@
                     delete incoming[key];
                 }
             }
-            if (meta && meta.changedKeys.length === 0
-                && meta.knownKeyWritesPresent) {
+            if (meta && meta.knownKeyWritesPresent) {
                 for (const key of _SHARED_SETTINGS_KEYS) {
                     if (key === 'independentAsrEnabled') continue;
                     if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
@@ -2035,9 +2071,11 @@
                             || (meta.writeId === localToken.writeId
                                 && meta.writerId === localToken.writerId));
                     if (incomingCanSupersede) continue;
-                    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
-                    if (incoming === settings) incoming = Object.assign({}, settings);
-                    delete incoming[key];
+                    if (!Object.prototype.hasOwnProperty.call(settings, key)) continue;
+                    if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+                        if (incoming === settings) incoming = Object.assign({}, settings);
+                        delete incoming[key];
+                    }
                     pendingKeysToReassert.push(key);
                 }
             }
