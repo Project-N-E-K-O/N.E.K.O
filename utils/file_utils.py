@@ -532,9 +532,11 @@ def _sweep_stale_tmp_once(target_path: Path) -> None:
     """Best-effort removal of abandoned temp files in this target's directory. Never fatal."""
     parent = str(target_path.parent)
     with _swept_tmp_dirs_lock:
-        if _swept_tmp_dirs.get(parent, 0) >= _STALE_TMP_SWEEP_ATTEMPTS:
+        attempts = _swept_tmp_dirs.get(parent, 0)
+        if attempts >= _STALE_TMP_SWEEP_ATTEMPTS:
             return
-        _swept_tmp_dirs[parent] = _swept_tmp_dirs.get(parent, 0) + 1
+        claimed = attempts + 1
+        _swept_tmp_dirs[parent] = claimed
 
     try:
         entries = list(os.scandir(parent))
@@ -553,7 +555,12 @@ def _sweep_stale_tmp_once(target_path: Path) -> None:
             swept_clean = False
     if swept_clean:
         with _swept_tmp_dirs_lock:
-            _swept_tmp_dirs[parent] = _STALE_TMP_SWEEP_ATTEMPTS
+            # 只在记账还是自己刚占下的那个值时才写「已扫干净」。本次扫描期间别的写者
+            # 可能泄漏了一个 tmp 并调 _rearm_tmp_sweep 撤掉记账 —— 无条件覆盖会把那次
+            # 撤记账（对应一个真实泄漏）抹掉，泄漏就永远不会被清。CAS 失败最多是白扫
+            # 一轮（上限 3 次照旧），代价远小于漏清。
+            if _swept_tmp_dirs.get(parent) == claimed:
+                _swept_tmp_dirs[parent] = _STALE_TMP_SWEEP_ATTEMPTS
 
 
 def _rearm_tmp_sweep(target_path: Path) -> None:

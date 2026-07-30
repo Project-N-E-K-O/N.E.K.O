@@ -349,6 +349,26 @@ def test_a_temp_file_leaked_by_this_write_rearms_the_sweep(tmp_path, monkeypatch
     assert _tmp_siblings(target) == [], "重扫必须把泄漏的 tmp 清掉"
 
 
+def test_a_concurrent_rearm_survives_a_clean_sweep(tmp_path, monkeypatch):
+    # 同一目录两个首写并发扫描时，慢的那个「扫干净了」不许覆盖掉快的那个
+    # 「泄漏了、撤记账」—— 撤记账对应一个真实泄漏，被抹掉就等于永远不清。
+    target = tmp_path / "state.json"
+    real_scandir = os.scandir
+
+    def scandir_then_rearm(path):
+        entries = list(real_scandir(path))
+        # 模拟另一个写者在本次扫描期间泄漏 tmp 并撤掉记账
+        file_utils._rearm_tmp_sweep(target)
+        return entries
+
+    monkeypatch.setattr(os, "scandir", scandir_then_rearm)
+    atomic_write_json(target, {"v": 1})
+
+    assert str(tmp_path) not in file_utils._swept_tmp_dirs, (
+        "扫干净的收尾不能把并发发生的撤记账覆盖掉"
+    )
+
+
 def test_fork_child_gets_a_fresh_sweep_lock(tmp_path):
     # app/main_server/__init__.py:56 选的是 fork 启动方式，而 fork 只复制调用它的那
     # 一个线程：别的线程正持着这把锁时，子进程继承到的是一把永远锁着的 mutex，子进程
