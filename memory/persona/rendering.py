@@ -62,10 +62,6 @@ class _RenderPrep(NamedTuple):
     lives here (built once by ``_prepare_render``, consumed by
     ``_compose_from_prep``).
 
-    ``exempt_entries`` are the protected and suppressed entries: they
-    never pass through the trim, but they DO render, so the allocator has
-    to count them when deciding whether a slot has anything to show.
-
     ``subject_slots`` is the allocation order for scoped rendering: one
     entry per authorized subject, in the order the CALLER supplied, plus a
     trailing ``None`` slot when legacy-private rows are also allowed in.
@@ -78,7 +74,6 @@ class _RenderPrep(NamedTuple):
     flat_non_protected: list
     reflections: list
     suppressed_text_set: set
-    exempt_entries: list
     subject_slots: tuple
 
 
@@ -766,13 +761,14 @@ class RenderingMixin:
         direction — the failure it guards against is the group getting
         nothing, not a member getting slightly less.
 
-        Callers must include the budget-exempt buckets. A group holding
-        only suppressed facts has empty persona/reflection buckets yet
-        still renders a do-not-mention section, and a slot judged empty
-        gets no reserve, falls under the minimum, and is dropped whole —
-        taking those suppression instructions with it. Losing them means
-        the character starts volunteering exactly what it was told to sit
-        on.
+        Pass the BUDGETED buckets only. Exempt sections render without
+        debiting anything, so reserving for a slot that holds nothing else
+        parks capacity no one will ever spend — the slot releases it to
+        whoever comes next, and an earlier member gets skipped so a later
+        one can render. "Should anyone reserve for this slot" and "may
+        this slot be dropped whole" are separate questions; the second is
+        answered at the skip site, which never drops a slot that has only
+        exempt content.
         """
         marker = cls._subject_bucket_marker(subject)
         return any(buckets.get(marker) for buckets in bucket_maps)
@@ -824,7 +820,6 @@ class RenderingMixin:
         """
         persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
-        exempt_buckets = cls._bucket_entries_by_subject(prep.exempt_entries)
         kept_persona: list = []
         kept_reflections: list = []
         skipped: set = set()
@@ -833,11 +828,16 @@ class RenderingMixin:
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
-                persona_buckets, reflection_buckets, exempt_buckets,
+                persona_buckets, reflection_buckets,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
-                cls._log_skipped_subject(subject, remaining, available)
-                skipped.add(marker)
+                if persona_buckets.get(marker) or reflection_buckets.get(marker):
+                    # Has budgeted content it cannot afford → drop it whole,
+                    # exempt sections included, rather than emit a fragment.
+                    cls._log_skipped_subject(subject, remaining, available)
+                    skipped.add(marker)
+                # Nothing budgeted to drop: whatever exempt sections this
+                # slot has cost the gate nothing and still render.
                 continue
             persona_kept, persona_used = cls._score_trim_entries(
                 persona_buckets.get(marker, ()),
@@ -871,7 +871,6 @@ class RenderingMixin:
         the token counter differs (worker-thread tiktoken)."""
         persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
-        exempt_buckets = cls._bucket_entries_by_subject(prep.exempt_entries)
         kept_persona: list = []
         kept_reflections: list = []
         skipped: set = set()
@@ -880,11 +879,16 @@ class RenderingMixin:
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
-                persona_buckets, reflection_buckets, exempt_buckets,
+                persona_buckets, reflection_buckets,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
-                cls._log_skipped_subject(subject, remaining, available)
-                skipped.add(marker)
+                if persona_buckets.get(marker) or reflection_buckets.get(marker):
+                    # Has budgeted content it cannot afford → drop it whole,
+                    # exempt sections included, rather than emit a fragment.
+                    cls._log_skipped_subject(subject, remaining, available)
+                    skipped.add(marker)
+                # Nothing budgeted to drop: whatever exempt sections this
+                # slot has cost the gate nothing and still render.
                 continue
             persona_kept, persona_used = await cls._ascore_trim_entries(
                 persona_buckets.get(marker, ()),
@@ -940,10 +944,6 @@ class RenderingMixin:
             subjects,
             include_legacy_private,
         )
-        exempt_entries = [entry for _ek, entry in protected_entries] + [
-            entry for entry in self._collect_all_entries(persona_view)
-            if isinstance(entry, dict) and entry.get('suppress')
-        ]
         return _RenderPrep(
             persona_view=persona_view,
             protected_entries=protected_entries,
@@ -951,7 +951,6 @@ class RenderingMixin:
             flat_non_protected=flat_non_protected,
             reflections=reflections,
             suppressed_text_set=suppressed_text_set,
-            exempt_entries=exempt_entries,
             subject_slots=self._subject_render_slots(
                 subjects, include_legacy_private,
             ),

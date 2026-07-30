@@ -650,14 +650,16 @@ async def test_the_gate_is_never_overspent_within_one_subject():
 
 
 @pytest.mark.asyncio
-async def test_a_group_holding_only_suppressed_facts_still_gets_its_reserve():
-    """"Has something to render" includes the budget-exempt sections.
+async def test_a_group_holding_only_suppressed_facts_still_renders_them():
+    """The floor drops fragments, not slots that cost nothing.
 
     A group whose facts are all suppressed has empty persona and
-    reflection buckets, so a demand probe that only looks at those judges
-    it empty, denies it a reserve, and the floor then drops it whole —
-    taking its do-not-mention list with it. Losing that list makes the
-    character start volunteering exactly what it was told to sit on.
+    reflection buckets, so it always falls under the minimum once earlier
+    subjects have spent the gate. Dropping it there would take its
+    do-not-mention list with it — and the character would start
+    volunteering exactly what it was told to sit on. There is no fragment
+    to avoid here: the slot has nothing budgeted, so nothing is being
+    half-rendered.
     """
     group, member = _group_and_member()
     persona = {
@@ -692,8 +694,61 @@ async def test_a_group_holding_only_suppressed_facts_still_gets_its_reserve():
         "夹具失效：成员一条都没渲染出来"
     )
     assert '群里不要主动提起的那件事' in rendered, (
-        "只有 suppressed 内容的群被判成空、没拿到保底额度，整段被跳过，"
+        "只有免预算内容的 subject 被下限当成「半截人设」丢掉了，"
         "「别主动提」清单跟着一起没了"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_exempt_only_group_reserves_nothing_for_itself():
+    """Rendering for free must not park capacity nobody spends.
+
+    An exempt-only group debits the gate nothing, so a reserve held on its
+    behalf is released untouched to whatever slot follows it. The member
+    ahead pays for it and gets skipped; the member behind inherits it and
+    renders — the caller's order, inverted across the group boundary.
+
+    Both halves are asserted: the group's own exempt content still shows
+    up (that is the round-5 property this must not regress), and the
+    earlier member wins over the later one.
+    """
+    from memory.scopes import MemorySubject
+
+    early = MemorySubject.group_participant("qq", "7788", "2046")
+    exempt_group = MemorySubject.group_chat("qq", "7788")
+    late = MemorySubject.group_participant("qq", "7788", "3057")
+    persona = {
+        early.persona_section_key: _scoped_section(early, [
+            _entry('e1', '阿离在准备考试而且最近睡得很晚', rein=5.0, subject=early),
+        ]),
+        exempt_group.persona_section_key: _scoped_section(exempt_group, [
+            _entry('g-hush', '群里不要主动提起的那件事', suppress=True,
+                   subject=exempt_group),
+        ]),
+        late.persona_section_key: _scoped_section(late, [
+            _entry('l1', '小北在学吉他而且刚买了新琴弦', rein=4.0, subject=late),
+        ]),
+    }
+    harness = _RenderHarness(persona)
+    gate = _pool('阿离在准备考试而且最近睡得很晚')
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
+               gate), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
+            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=[early, exempt_group, late],
+            include_legacy_private=False,
+        )
+
+    assert '群里不要主动提起的那件事' in rendered, (
+        "只有免预算内容的群没能渲染出它的「别主动提」清单"
+    )
+    assert '阿离在准备考试而且最近睡得很晚' in rendered, (
+        "排在前面的成员替一个根本不花钱的群让了位"
+    )
+    assert '小北在学吉他而且刚买了新琴弦' not in rendered, (
+        "排在后面的成员捡走了那份没人花的保底额度——caller order 被跨过群边界倒了"
     )
 
 
