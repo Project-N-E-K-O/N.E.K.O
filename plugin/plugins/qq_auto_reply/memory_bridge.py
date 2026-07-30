@@ -12,6 +12,10 @@ class QQMemoryQueryResult:
     hit_count: int = 0
     elapsed_ms: float = 0.0
     raw_results: list[dict[str, Any]] = field(default_factory=list)
+    # text 里实际渲染出的条目数（预算截断后）：hit_count 是检索命中数，
+    # 两者在预算丢弃尾部条目时会不同。消费方给模型报条数必须用它——
+    # 记忆原文可含 "N. " 开头的行，从 text 反解会数错。
+    rendered_count: int = 0
 
 
 class QQMemoryBridge:
@@ -144,8 +148,10 @@ class QQMemoryBridge:
         # 切不开的超长 chunk 是二次退化，同步跑在事件循环上会连带卡住这
         # 个进程里其它群的回复。渲染函数本身保持同步（本体侧同构、测试
         # 直调），offload 放在唯一的 async 调用点。
+        kept_count_out: list[int] = []
         rendered = await asyncio.to_thread(
             self.render_relevant_memory, memory_items[:limit],
+            kept_count_out=kept_count_out,
         )
         elapsed_ms = response_payload.get("elapsed_ms", 0.0) if isinstance(response_payload, dict) else 0.0
         try:
@@ -157,9 +163,15 @@ class QQMemoryBridge:
             hit_count=len(memory_items),
             elapsed_ms=normalized_elapsed,
             raw_results=memory_items,
+            rendered_count=kept_count_out[0] if kept_count_out else 0,
         )
 
-    def render_relevant_memory(self, results: list[dict[str, Any]]) -> str:
+    def render_relevant_memory(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        kept_count_out: list[int] | None = None,
+    ) -> str:
         # tier / entity 是内部枚举（scoped 条目的 entity 恒等于 subject.kind），
         # 裸拼会让 `[fact/group_chat]` 出现在中文 prompt 里。与本体侧
         # main_logic/core/tool_calling.py 的召回渲染同一张标签表。
@@ -206,6 +218,10 @@ class QQMemoryBridge:
         kept, dropped = take_lines_within_token_budget(
             lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
+        if kept_count_out is not None:
+            # out-param 而非改返回签名（与 reply_context_node 的
+            # used_member_subject_out 同模式）：既有直调方不受影响。
+            kept_count_out.append(len(kept))
         logger = getattr(self.plugin, "logger", None)
         if dropped and logger is not None:
             # 诊断行不该成为渲染的硬依赖：这个函数此前对 plugin 对象零依赖，

@@ -264,9 +264,11 @@ async def test_private_admin_recall_uses_legacy_corpus():
     assert kwargs["subjects"] is None
     assert kwargs["time_spec"] == "2026-05"
     assert kwargs["timeout"] == RECALL_TOOL_HTTP_TIMEOUT_SECONDS
-    # 私聊 legacy 语料不受群开关管辖：无运行时 consent 依赖要记。
+    # 私聊 legacy 语料不受群开关管辖：无运行时 consent 依赖要记——
+    # 但"召回被消费"的标志与 consent 解耦，私聊命中也要记 used。
     assert consumed == {}
     assert "群规是不剧透" in output
+    assert context.recalled_memory_used is True
 
 
 # ---------------------------------------------------------------------------
@@ -859,15 +861,19 @@ def test_route_capability_predicate_knows_the_free_proxy():
 @pytest.mark.asyncio
 async def test_recall_header_counts_entries_not_lines():
     """A single multiline reflection must not inflate the header into
-    "found N memories": entries are counted by their rendered "N. "
-    prefixes, never by newline characters."""
+    "found N memories". Memory text is preserved verbatim and can itself
+    contain lines shaped like "2. ..." — so the count comes from the
+    renderer's kept-entry tally, never from re-parsing the rendered
+    text."""
     from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
     from config.prompts.prompts_sys import _loc
 
     plugin = _tool_plugin()
+    # 对抗样例：一条 reflection 的原文自带 "2. " 开头的行。
     plugin.memory_bridge.query_relevant_memory = AsyncMock(
         return_value=QQMemoryQueryResult(
-            text="1. [事实] 第一行\n第二行\n第三行", hit_count=1,
+            text="1. [事实] 第一行\n2. 原文里的编号行\n第三行",
+            hit_count=1, rendered_count=1,
         ),
     )
     output, _ = await plugin.memory_tool_service.execute_recall(
@@ -877,6 +883,20 @@ async def test_recall_header_counts_entries_not_lines():
     assert output.startswith(
         _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, lang).format(n=1)
     )
+
+    # 渲染器侧：kept 计数经 out-param 带出（预算丢弃尾部条目时与
+    # hit_count 不同），多行原文只算一条。
+    bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
+    kept_out: list = []
+    rendered = bridge.render_relevant_memory(
+        [
+            {"text": "第一行\n2. 原文里的编号行", "tier": "fact"},
+            {"text": "另一条", "tier": "fact"},
+        ],
+        kept_count_out=kept_out,
+    )
+    assert kept_out == [2]
+    assert rendered.startswith("1. ")
 
 
 def _build_stub_plugin(bridge):

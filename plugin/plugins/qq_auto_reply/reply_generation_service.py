@@ -471,18 +471,14 @@ class QQReplyGenerationService:
                 # consent 判据从"prompt 里有没有那段字"换成"运行时有没有
                 # 真的发生这次读"：写进本轮的 consent_before（生成结束的
                 # 撤销比对读它），并合入 context.consent_snapshot（发送前
-                # 与 buffer 的撤销闸读它）。
+                # 与 buffer 的撤销闸读它）。recalled_memory_used 不在这里
+                # 记——它跟的是"召回内容被消费"而非"消费了群授权"，私聊
+                # legacy 召回 consumed 恒空，由 execute_recall 在回填点记。
                 for key, was_enabled in consumed.items():
                     consent_before[key] = (
                         bool(consent_before.get(key)) or bool(was_enabled)
                     )
                 self._store_consent_snapshot(context, consumed)
-                try:
-                    context.recalled_memory_used = True
-                except Exception:
-                    # trace 用的布尔而已：合成调用方可能传只读轻量对象，
-                    # 写不进去不影响 consent 记录与工具结果。
-                    pass
             return ToolResult(
                 call_id=getattr(tool_call, "call_id", "") or "",
                 name=getattr(tool_call, "name", "") or "recall_memory",
