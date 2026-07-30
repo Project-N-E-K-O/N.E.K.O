@@ -155,8 +155,65 @@ def _readable_fact_id(entry: dict):
     return fact_id
 
 
+def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
+    """Merge archive rows keyed by id: later occurrence wins, first slot kept.
+
+    facts_archive.json is appended by a two-file commit (archive first, then
+    facts.json — see ``_archive_absorbed``). An interrupted commit leaves a row
+    in BOTH files, so the next archive pass re-appends it. Keying on
+    ``_readable_fact_id`` makes that append idempotent, and merging ``existing``
+    against itself also heals duplicates an earlier half-commit already wrote to
+    a user's disk.
+
+    Later wins because ``incoming`` is the live copy being archived right now —
+    it may carry flag updates the older archived copy predates.
+
+    Rows with an unusable id are all kept: there is no key to compare them on,
+    and folding them together would trade a duplicate for silent data loss (the
+    same call ``_readable_fact_id`` already makes).
+    """
+    out: list[dict] = []
+    pos: dict = {}
+    for entry in list(existing) + list(incoming):
+        if not isinstance(entry, dict):
+            continue
+        fid = _readable_fact_id(entry)
+        if fid is None:
+            out.append(entry)
+            continue
+        if fid in pos:
+            out[pos[fid]] = entry
+        else:
+            pos[fid] = len(out)
+            out.append(entry)
+    return out
+
+
+# 惰性创建 recheck 镜像时的互斥（见 FactStore._recheck_mem）。放模块级而不是
+# 实例级，是因为它要保护的正是「实例上还没有那把锁」的那一瞬间。只护创建的
+# 那几行，不参与后续读写。
+_RECHECK_MEM_BOOTSTRAP = threading.Lock()
+
+
 class FactStore:
     """Manages raw fact extraction, deduplication, and persistence."""
+
+    # legacy fact 重判的失败计数「进程内镜像」：{name: {fid: {"n", "at"}}}。
+    # session 内它是权威工作副本，facts.json 里那两栏只是持久化 + 重启恢复。
+    # 对齐 ReflectionEngine._synth_backoff_mem（memory/reflection/manager.py:79）：
+    # 计数器如果只活在「那个写不进去的文件」里，只读 FS / 权限 / 维护态下熔断
+    # 永远不会触发。
+    #
+    # class 级默认 None + 惰性创建（不是只在 __init__ 里赋值）：仓库里有多处
+    # `FactStore.__new__(FactStore)` 绕过 __init__ 造实例
+    # （tests/unit/test_ai_aware_stage1_path_b.py、tests/unit/test_group_memory_scopes.py），
+    # 那些实例一碰镜像就会 AttributeError。
+    #
+    # 刻意用实例级而不是模块级状态：它是 liveness 兜底不是持久状态，热重载
+    # （app/memory_server/runtime.py 重建 FactStore）丢掉只是让卡住的 fact 多跑
+    # 几轮，而模块单例会在 pytest 用例之间串状态。
+    _recheck_attempts_mem: dict | None = None
+    _recheck_mem_guard: threading.Lock | None = None
 
     def __init__(self, *, time_indexed_memory: TimeIndexedMemory | None = None):
         self._config_manager = get_config_manager()
@@ -242,7 +299,14 @@ class FactStore:
         archive via this loader before any per-day isolation, so a non-UTF-8
         archive must degrade here instead of aborting the whole import — Codex
         P2). ``UnicodeDecodeError`` is a ``ValueError`` subclass, distinct from
-        ``JSONDecodeError``, so it is listed explicitly."""
+        ``JSONDecodeError``, so it is listed explicitly.
+
+        Rows whose id also exists among the active facts are dropped, keeping
+        the active copy. That is not an optional extra guard — it is the read
+        half of ``_archive_absorbed``'s two-file commit protocol, whose write
+        order deliberately prefers "the row is in both files" over "the row is
+        in neither". Something has to collapse "in both", and a warning makes
+        this a backstop with a detector rather than a cover-up."""
         active = self.load_facts(name)
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
@@ -255,7 +319,30 @@ class FactStore:
             return list(active)
         if not isinstance(archived, list):
             return list(active)
-        return list(active) + [f for f in archived if isinstance(f, dict)]
+        # active 与 archive 的 id 重叠 = 归档两文件提交被打断后还没收敛的残留。
+        # 收敛到 active 那份：它至少和归档副本一样新，且 absorbed /
+        # signal_processed 之类的 monotonic 标记以它为准。
+        merged = list(active)
+        active_ids = {
+            fid for fid in (
+                _readable_fact_id(f) for f in merged if isinstance(f, dict)
+            ) if fid is not None
+        }
+        dropped = 0
+        for f in archived:
+            if not isinstance(f, dict):
+                continue
+            fid = _readable_fact_id(f)
+            if fid is not None and fid in active_ids:
+                dropped += 1
+                continue
+            merged.append(f)
+        if dropped:
+            logger.warning(
+                f"[FactStore] {name}: active/archive 存在 {dropped} 条 id 重叠，"
+                f"已按 active 收敛（多半是上一次归档两文件提交被打断）"
+            )
+        return merged
 
     async def aload_facts_full(self, name: str) -> list[dict]:
         return await asyncio.to_thread(self.load_facts_full, name)
@@ -393,12 +480,44 @@ class FactStore:
                     mtime = datetime.fromtimestamp(os.path.getmtime(marker_path))
                     if (datetime.now() - mtime).total_seconds() < _ARCHIVE_COOLDOWN_HOURS * 3600:
                         return
-                self._archive_absorbed(name)
-                # 更新 marker（无论归档是否有实际条目都 touch 一次）
-                with open(marker_path, 'w', encoding='utf-8') as f:
-                    f.write(datetime.now().isoformat())
+                # 只在归档「真跑过」（跑完或真失败）时才 touch marker。维护态是
+                # 预期跳过、不该消耗归档窗口：否则维护期间每次 save 都把冷却续
+                # 24h，维护结束后要再等一整天才归档。
+                archive_ran = True
+                try:
+                    self._archive_absorbed(name)
+                except MaintenanceModeError as exc:
+                    # 对齐 load_facts 里的迁移分支：维护态跳过走 debug。
+                    #
+                    # 窄但不是死代码：save_facts 顶部的 assert_cloudsave_writable
+                    # 已经判过一次维护态，稳态维护期根本进不到这里。能走到的只有
+                    # 「顶部那次判定放行之后、_archive_absorbed 里那次判定之前
+                    # 进入维护态」这一窄窗——两次判定之间没有跨进程锁，root_state
+                    # 由别的进程/线程改。所以别按"不可达"把 archive_ran 一并删掉：
+                    # 真踩上时它决定了不消耗 24h 归档窗口。
+                    archive_ran = False
+                    logger.debug(f"[FactStore] {name}: 维护态跳过归档: {exc}")
+                except Exception:
+                    # 归档失败不能让调用方的 save 失败（facts.json 本身已经落盘
+                    # 成功了），但必须留痕：原来是裸 pass，两文件半提交在生产里
+                    # 完全不可见。marker 照常 touch —— archive 那次写就失败时
+                    # archive 的 mtime 不变、冷却不生效，不 touch 就会每次 save
+                    # 都重跑一遍必然失败的归档。
+                    logger.warning(
+                        f"[FactStore] {name}: 归档失败，facts.json 已落盘，"
+                        f"{_ARCHIVE_COOLDOWN_HOURS}h 后重试",
+                        exc_info=True,
+                    )
+                if archive_ran:
+                    # 更新 marker（无论归档是否有实际条目都 touch 一次）
+                    with open(marker_path, 'w', encoding='utf-8') as f:
+                        f.write(datetime.now().isoformat())
             except Exception:
-                pass
+                # 冷却判定 / marker 落盘本身出错：不影响已成功的 facts.json 保存，
+                # 但不再整个吞掉。
+                logger.debug(
+                    f"[FactStore] {name}: 归档冷却判定失败", exc_info=True,
+                )
 
     async def asave_facts(self, name: str) -> None:
         await asyncio.to_thread(self.save_facts, name)
@@ -443,13 +562,32 @@ class FactStore:
                 # 归档文件损坏 → 放弃本次归档，避免覆盖丢数据
                 logger.warning(f"[FactStore] {name}: 读取归档文件失败，跳过本次归档: {e}")
                 return 0
-        existing_archive.extend(to_archive)
+        # 追加按 id 幂等合并：半提交（archive 写成功、facts.json 没写成）之后
+        # 下一轮归档会把同一批 fact 再送进来一次，extend 会让它在归档里永久存在
+        # 两份。顺带修好已经落在用户盘上的历史重复。
+        existing_archive = _merge_archive_entries(existing_archive, to_archive)
         atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
-        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）
-        facts.clear()
-        facts.extend(active)
-        atomic_write_json(self._facts_path(name), facts, indent=2, ensure_ascii=False)
-        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(active)} 条")
+        # 两文件提交顺序固定为「先 archive 再 facts.json」：中断窗口的状态是
+        # 「两边都有」（重复 —— 读侧 load_facts_full 按 id 收敛、下轮归档按 id
+        # 幂等追加），而不是「两边都没有」（永久丢已归档 fact，连带丢 daily
+        # import 的指纹 → 整天重导）。顺序不要反过来。
+        atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+        # 缓存只在 facts.json 落盘成功之后才动 —— 对齐 event_log.record_and_save
+        # 已经写明的纪律（cache only changes after the disk write）。原来是先改
+        # 缓存再写盘，写盘失败就留下「缓存少 k 条 / 磁盘多 k 条」的半提交，而
+        # save_facts 的 evict 只挂在前一个 try 上、这里不触发。
+        #
+        # 原地更新活跃列表（保持对象引用不变，避免外部持有旧引用导致修改丢失）。
+        # 按身份剔除已归档的那几条，而不是拿函数开头算的 active 快照整体替换：
+        # add_facts 在 aload_facts 之后直接 append，并不持 _get_lock（本仓库既有
+        # 约定），快照整体替换会把「快照之后、这里之前」append 进来的 fact 一起
+        # 抹掉，而写序重排把这个窗口从一次写盘拉长成了两次。
+        # 用 id() 作键是安全的：to_archive 全程持有这些 dict 的强引用，它们不会
+        # 在此期间被回收、id 也就不会被别的对象复用。
+        archived_identities = {id(f) for f in to_archive}
+        facts[:] = [f for f in facts if id(f) not in archived_identities]
+        # 剩余数报缓存实际长度而不是 active 快照长度：并发 append 进来的行也还在。
+        logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(facts)} 条")
         return len(to_archive)
 
     # ── extraction ───────────────────────────────────────────────────
@@ -2289,30 +2427,175 @@ class FactStore:
     async def amark_signal_processed(self, name: str, fact_ids: list[str]) -> None:
         await asyncio.to_thread(self.mark_signal_processed, name, fact_ids)
 
+    def _recheck_mem(self) -> tuple[dict, threading.Lock]:
+        """Return the recheck failure mirror and its guard, creating them once.
+
+        Lazy rather than ``__init__``-only because several call sites build a
+        ``FactStore`` through ``object.__new__``, which never runs ``__init__``;
+        a plain instance attribute would make those instances raise
+        ``AttributeError`` the moment the recheck path touches the mirror.
+        Creation is serialised by a module-level lock — the thing that has to be
+        protected here is precisely the window in which the instance has no lock
+        of its own yet.
+        """
+        mem = self._recheck_attempts_mem
+        guard = self._recheck_mem_guard
+        if mem is not None and guard is not None:
+            return mem, guard
+        with _RECHECK_MEM_BOOTSTRAP:
+            if self._recheck_attempts_mem is None:
+                # 赋到实例上（不是 class 上）：镜像必须是 per-instance，否则会变成
+                # 跨实例 / 跨 pytest 用例的单例。
+                self._recheck_attempts_mem = {}
+            if self._recheck_mem_guard is None:
+                self._recheck_mem_guard = threading.Lock()
+            return self._recheck_attempts_mem, self._recheck_mem_guard
+
+    def _note_recheck_attempt(
+        self, name: str, fid: str, *, base: dict | None,
+    ) -> tuple[int, str]:
+        """Record one recheck failure in the in-process mirror; returns (n, at).
+
+        The mirror stores the failure timestamp as well as the count on
+        purpose: ``cooldown_elapsed(None, …)`` returns True, so a count-only
+        mirror would let the dead-letter self-heal branch re-admit the entry on
+        the very next round — the breaker would look implemented and still
+        never bite.
+
+        On first entry for a fact the count resumes from the on-disk column so
+        a restart does not reset the budget to zero.
+
+        Concurrency contract: writers always replace an entry wholesale
+        (``per_char[fid] = {...}``) instead of mutating its fields in place, so
+        the lock-free reader in ``arecheck_one_legacy_fact`` can never observe a
+        half-written entry. Keep it that way.
+
+        No entry cap, unlike ``_abump_synth_backoff``'s 64: that map is keyed by
+        content-derived synth keys (unbounded key space), this one by fact id
+        (bounded by facts.json rows, which the archive sweep itself caps). A cap
+        here would evict entries already frozen at MAX and un-freeze them.
+        """
+        stamp = datetime.now().isoformat()
+        mem, guard = self._recheck_mem()
+        with guard:
+            per_char = mem.setdefault(name, {})
+            prev = per_char.get(fid)
+            if prev is not None:
+                n = safe_int_field(prev, 'n') + 1
+            else:
+                n = (safe_int_field(base, 'recheck_attempts') if base else 0) + 1
+            per_char[fid] = {"n": n, "at": stamp}
+        return n, stamp
+
+    def _clear_recheck_attempt(self, name: str, fid: str) -> None:
+        """Drop a fact's failure record after it migrates successfully.
+
+        Dual of ``_note_recheck_attempt``, mirroring
+        ``ReflectionEngine._aclear_synth_backoff``: without it the mirror would
+        only ever grow, and a migrated fact carrying a stale failure count is
+        unexplainable state even though the schema filter already excludes it.
+        """
+        mem = self._recheck_attempts_mem
+        if not mem:
+            return
+        _, guard = self._recheck_mem()
+        with guard:
+            mem.get(name, {}).pop(fid, None)
+
+    def _recheck_budget_open(self, mem_entry: dict | None, fact: dict) -> bool:
+        """Whether this legacy fact may still consume a recheck slot.
+
+        The in-process mirror wins over the two on-disk columns. When
+        facts.json cannot be written (read-only FS / permissions / maintenance
+        mode) ``recheck_attempts`` stays 0 and ``last_recheck_attempt_at`` stays
+        ``None`` on disk forever, and ``cooldown_elapsed(None, …)`` returns
+        True — reading disk only would mean neither the breaker nor the
+        self-heal gate ever bites, which is exactly the situation both were
+        added for.
+
+        ``safe_int_field`` rather than ``(… or 0)``: both columns come out of
+        hand-editable JSON, and a dirty value like ``""`` / ``[]`` would raise
+        inside the comparison and stall the whole drain loop.
+
+        A mirror entry always carries both fields — ``_note_recheck_attempt``
+        is its only writer and stamps ``at`` on every write — so this reads
+        ``at`` straight, with no on-disk fallback that could never run.
+        """
+        from config import (
+            MEMORY_RECHECK_MAX_ATTEMPTS,
+            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
+        )
+        from memory.temporal import cooldown_elapsed
+
+        if mem_entry is not None:
+            attempts = safe_int_field(mem_entry, 'n')
+            last_at = mem_entry.get('at')
+        else:
+            attempts = safe_int_field(fact, 'recheck_attempts')
+            last_at = fact.get('last_recheck_attempt_at')
+        if attempts < MEMORY_RECHECK_MAX_ATTEMPTS:
+            return True
+        # 时间自愈：达上限的 entry 过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS 后放行
+        # 一次 probe，让一次性写盘/网络故障恢复后自愈。
+        return cooldown_elapsed(last_at, MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS)
+
     def _bump_fact_recheck_attempts(self, name: str, fid: str, reason: str) -> None:
-        """Increment the given fact's ``recheck_attempts`` counter.
+        """Increment the given fact's recheck failure count.
 
         Once failures reach the ``MEMORY_RECHECK_MAX_ATTEMPTS`` cap, the
         candidates filter excludes the fact so the loop gives its slot to other
-        v1 entries. Directly mutates the cached list + save_facts (mirroring the
-        mark_absorbed style; save_facts takes its own lock).
-        Best-effort — save failures don't raise.
+        v1 entries.
+
+        The count lands in the in-process mirror first, then best-effort on
+        disk. The old version only wrote facts.json — the very file whose
+        failure it was supposed to count — so in the read-only FS / permission
+        case named in ``arecheck_one_legacy_fact``'s comment the counter never
+        moved (``save_facts`` even evicts the cache on failure, discarding the
+        just-incremented value), and the same fact was re-judged, at the cost of
+        one LLM call, every 30s forever.
+
+        A failed persist logs at WARNING — "the mirror moved but the disk
+        counter did not" has no other visible signal in production — except
+        under maintenance mode, an expected write ban that the archive block in
+        ``save_facts`` also keeps at debug.
         """
+        target: dict | None = None
         try:
-            current = self.load_facts(name)
-            for f in current:
-                if f.get('id') == fid:
-                    f['recheck_attempts'] = (f.get('recheck_attempts') or 0) + 1
-                    # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
-                    f['last_recheck_attempt_at'] = datetime.now().isoformat()
-                    self.save_facts(name)
-                    logger.debug(
-                        f"[Recheck-Fact] {name} {fid}: "
-                        f"recheck_attempts → {f['recheck_attempts']} ({reason})"
-                    )
-                    return
+            for f in self.load_facts(name):
+                if isinstance(f, dict) and f.get('id') == fid:
+                    target = f
+                    break
         except Exception as e:
-            logger.debug(f"[Recheck-Fact] {name} {fid}: bump attempts 失败: {e}")
+            logger.debug(f"[Recheck-Fact] {name} {fid}: 读 facts 失败: {e}")
+        if target is None and fid not in (self._recheck_attempts_mem or {}).get(name, {}):
+            # fact 已经不在库里、镜像里也没有历史计数 → 无需记账。
+            return
+        # 1) 先更新进程内镜像（纯内存，不可能失败）。
+        attempts, stamp = self._note_recheck_attempt(name, fid, base=target)
+        if target is not None:
+            # 2) 再尽力持久化。写失败只 WARN 不抛 —— 镜像已经生效，熔断不受影响；
+            #    对齐 ReflectionEngine._asave_synth_backoff 的口径。
+            target['recheck_attempts'] = attempts
+            # 戳失败时刻供 dead-letter 时间自愈（cooldown_elapsed）
+            target['last_recheck_attempt_at'] = stamp
+            try:
+                self.save_facts(name)
+            except MaintenanceModeError as e:
+                # 维护态是预期的写禁止（save_facts 顶部的闸），不是故障。对齐
+                # save_facts 里的归档分支：那里也把维护态从 WARNING 降到 debug，
+                # 否则维护期间每一次重判失败都在日志里报一条"落盘失败"。
+                logger.debug(
+                    f"[Recheck-Fact] {name} {fid}: 维护态跳过 recheck_attempts "
+                    f"落盘（进程内镜像仍生效）: {e}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"[Recheck-Fact] {name} {fid}: recheck_attempts 落盘失败"
+                    f"（进程内镜像仍生效，熔断不受影响）: {e}"
+                )
+        logger.debug(
+            f"[Recheck-Fact] {name} {fid}: recheck_attempts → {attempts} ({reason})"
+        )
 
     async def arecheck_one_legacy_fact(self, name: str) -> bool:
         """Schema v1 → v2 slow recheck (processes only 1 fact per call).
@@ -2326,31 +2609,23 @@ class FactStore:
         Returns: True when one fact was processed successfully; False when no
         candidate was found or processing failed.
         """
-        from config import (
-            MEMORY_RECHECK_MAX_ATTEMPTS,
-            MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
-        )
         from config.prompts.prompts_memory import MEMORY_RECHECK_FACT_PROMPT
         from memory.temporal import (
             normalize_event_when as _norm_when,
             compute_event_timestamps as _compute_ts,
-            cooldown_elapsed,
         )
 
         facts = await self.aload_facts(name)
+        # 无锁单次读：写侧整体替换条目 dict，读者不会看到半写状态
+        # （契约见 _note_recheck_attempt）。
+        recheck_mem = (self._recheck_attempts_mem or {}).get(name, {})
         candidates = [
             f for f in facts
             if (f.get('schema_version') or 1) < MEMORY_SCHEMA_VERSION_CURRENT
             # 重试预算：LLM 持续失败的 entry 累计达上限后不再阻塞队列
             # (Codex review on PR #1316 P2，对齐 reflection 同样写法)。
-            # 时间自愈：达上限的 entry 过 MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS
-            # 后放行一次 probe，让一次性写盘/网络故障恢复后自愈。
-            and (
-                (f.get('recheck_attempts') or 0) < MEMORY_RECHECK_MAX_ATTEMPTS
-                or cooldown_elapsed(
-                    f.get('last_recheck_attempt_at'),
-                    MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
-                )
+            and self._recheck_budget_open(
+                recheck_mem.get(_readable_fact_id(f)), f,
             )
         ]
         if not candidates:
@@ -2467,6 +2742,7 @@ class FactStore:
             )
             return False
         if ok:
+            self._clear_recheck_attempt(name, fid)
             logger.info(
                 f"[Recheck-Fact] {name} {fid}: v1→v{MEMORY_SCHEMA_VERSION_CURRENT} "
                 f"when={event_when_raw}"
