@@ -4,7 +4,7 @@ import wave
 import numpy as np
 import pytest
 
-from tools.voice_eval.evaluate_smart_turn_v3 import evaluate_cases, load_cases
+from scripts.evaluate_smart_turn_v3 import evaluate_cases, load_cases
 
 
 def _wav(path, samples):

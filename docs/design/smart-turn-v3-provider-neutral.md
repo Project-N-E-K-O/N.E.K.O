@@ -115,7 +115,7 @@ continues to own the turn boundary.
 licenses, and SHA-256 digests. Run:
 
 ```text
-uv run python tools/voice_eval/prepare_voice_turn_assets.py
+uv run python scripts/prepare_voice_turn_assets.py
 ```
 
 The runtime is lazy and is loaded on the first candidate turn only for a
@@ -166,7 +166,7 @@ Existing human-speech tests show that English and Japanese sentence-internal
 pauses still need tuning. The current acceptance target is reliable recovery;
 it does not claim to eliminate every roughly 500 ms premature split.
 Before treating the integrated routes as product-quality, maintainers must run
-`tools/voice_eval/evaluate_smart_turn_v3.py` on an authorized labelled set that
+`scripts/evaluate_smart_turn_v3.py` on an authorized labelled set that
 includes sentence-internal pauses, hesitation followed by continuation,
 complete turns, keyboard noise, and barge-in. The report always includes all
 four confusion-matrix cells and per-sample probabilities.

@@ -183,7 +183,7 @@ RUN cd /app && \
 RUN cd /app && \
     if [ -n "$HTTP_PROXY" ]; then export http_proxy=$HTTP_PROXY; fi; \
     if [ -n "$HTTPS_PROXY" ]; then export https_proxy=$HTTPS_PROXY; fi; \
-    python3 tools/voice_eval/prepare_voice_turn_assets.py && \
+    python3 scripts/prepare_voice_turn_assets.py && \
     unset http_proxy && \
     unset https_proxy
 

@@ -8,14 +8,12 @@ from pathlib import Path
 import pytest
 
 import main_logic.voice_turn.asset_manifest as asset_manifest
-import tools.voice_eval.prepare_voice_turn_assets as preparer
+import scripts.prepare_voice_turn_assets as preparer
 from main_logic.voice_turn.asset_manifest import AssetManifestError
-from tools.voice_eval.prepare_voice_turn_assets import prepare_assets
+from scripts.prepare_voice_turn_assets import prepare_assets
 
 
-SCRIPT_PATH = (
-    Path(__file__).resolve().parents[3] / "tools" / "voice_eval" / "prepare_voice_turn_assets.py"
-)
+SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "prepare_voice_turn_assets.py"
 
 # Runs the preparer on a bare interpreter (-I -S: no site-packages, no env
 # influence) with NumPy imports force-blocked, mirroring the Docker build
@@ -132,7 +130,7 @@ def test_preparer_dynamic_load_first_shares_exception_identity():
         """
         import sys
 
-        import tools.voice_eval.prepare_voice_turn_assets as preparer
+        import scripts.prepare_voice_turn_assets as preparer
 
         assert "main_logic.voice_turn.asset_manifest" in sys.modules, (
             "preparer import must register the path-loaded manifest module"
@@ -146,7 +144,7 @@ def test_preparer_dynamic_load_first_shares_exception_identity():
     )
     result = subprocess.run(
         [sys.executable, "-c", driver],
-        cwd=str(SCRIPT_PATH.parents[2]),
+        cwd=str(SCRIPT_PATH.parents[1]),
         capture_output=True,
         text=True,
         check=False,

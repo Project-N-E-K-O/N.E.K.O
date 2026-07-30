@@ -24,7 +24,7 @@ def test_nuitka_workflows_prepare_bundle_and_verify_voice_turn_assets():
     )
 
     for workflow in (desktop_workflow, linux_workflow):
-        assert "tools/voice_eval/prepare_voice_turn_assets.py" in workflow
+        assert "scripts/prepare_voice_turn_assets.py" in workflow
         assert "--include-data-dir=data/vad_models=data/vad_models" in workflow
         assert "hashFiles('data/vad_models/manifest.json')" in workflow
 
@@ -43,7 +43,7 @@ def test_docker_workflow_prepares_and_caches_voice_turn_assets():
     # Both build jobs (standard + full) must pre-fetch the weights on the
     # native runner so they ride into the build context for every platform.
     assert (
-        workflow.count("run: python3 tools/voice_eval/prepare_voice_turn_assets.py")
+        workflow.count("run: python3 scripts/prepare_voice_turn_assets.py")
         == 2
     )
     assert workflow.count("path: data/vad_models/*.onnx") == 2
@@ -59,12 +59,12 @@ def test_docker_workflow_prepares_and_caches_voice_turn_assets():
 def test_dockerfiles_verify_voice_turn_assets_in_image():
     for name in ("Dockerfile", "Dockerfile.full"):
         dockerfile = (ROOT / "docker" / name).read_text(encoding="utf-8")
-        assert "python3 tools/voice_eval/prepare_voice_turn_assets.py" in dockerfile, name
+        assert "python3 scripts/prepare_voice_turn_assets.py" in dockerfile, name
         # The verify step must run after the project lands in the image but
         # before ownership is fixed up for the runtime user.
         copy_index = dockerfile.index("COPY --chown=neko:neko . /app")
         prepare_index = dockerfile.index(
-            "python3 tools/voice_eval/prepare_voice_turn_assets.py"
+            "python3 scripts/prepare_voice_turn_assets.py"
         )
         chown_index = dockerfile.index("chown -R neko:neko /app", copy_index)
         assert copy_index < prepare_index < chown_index, name
