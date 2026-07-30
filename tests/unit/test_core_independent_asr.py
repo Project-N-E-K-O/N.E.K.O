@@ -821,6 +821,106 @@ async def test_game_consumer_ignores_empty_final(monkeypatch) -> None:
     runtime.session.create_response.assert_not_awaited()
 
 
+async def test_game_takeover_pre_abort_window_rejects_stale_core_turn(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="core",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_session.close = AsyncMock()
+    runtime._asr_session.signal_user_activity_end = AsyncMock()
+
+    preview_clear_started = asyncio.Event()
+    release_preview_clear = asyncio.Event()
+
+    async def block_preview_clear(payload: dict[str, object]) -> None:
+        if (
+            payload.get("type") == "user_transcript_preview"
+            and payload.get("text") == ""
+        ):
+            preview_clear_started.set()
+            await release_preview_clear.wait()
+
+    runtime.websocket = SimpleNamespace(
+        send_json=AsyncMock(side_effect=block_preview_clear),
+    )
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "openai")
+    sealed = runtime._asr_runtime._asr_sealed_turn_token
+    assert sealed is not None
+    stale_ingress = sealed.turn.ingress
+
+    await runtime._handle_independent_asr_final("", epoch, "openai")
+    await asyncio.wait_for(preview_clear_started.wait(), 1)
+
+    takeover = asyncio.create_task(
+        runtime._handle_voice_input_control("game_takeover", 2)
+    )
+    endpoint: asyncio.Task[None] | None = None
+    try:
+        for _ in range(100):
+            if runtime._voice_lease_owner == "game":
+                break
+            await asyncio.sleep(0)
+        assert runtime._voice_lease_owner == "game"
+        assert runtime._voice_lease_generation == 2
+        assert takeover.done() is False
+
+        await runtime._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_STARTED,
+            epoch,
+        )
+        prepared_token = runtime._asr_runtime._asr_partial_turn_token
+        endpoint = asyncio.create_task(
+            runtime._handle_independent_asr_endpoint(epoch)
+        )
+        for _ in range(100):
+            if endpoint.done():
+                break
+            await asyncio.sleep(0)
+        await runtime._handle_independent_asr_final(
+            "stale core audio",
+            epoch,
+            "openai",
+        )
+        await runtime._asr_runtime.wait_transcript_idle()
+
+        assert stale_ingress.lease_generation == 1
+        assert prepared_token is None
+        route_transcript.assert_not_awaited()
+    finally:
+        release_preview_clear.set()
+        pending = [takeover]
+        if endpoint is not None:
+            pending.append(endpoint)
+        results = await asyncio.wait_for(asyncio.gather(*pending), 1)
+        assert results[0] is True
+        await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{epoch}-1"
+    )
+
+
 async def test_rejected_voice_input_final_is_observable(monkeypatch) -> None:
     runtime = _Runtime()
     _install_ready_lifecycle(runtime, "qwen")

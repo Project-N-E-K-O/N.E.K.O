@@ -2124,6 +2124,16 @@ class AsrRuntimeMixin:
 
     async def _prepare_voice_input_turn(self, token: VoiceTurnToken) -> bool:
         self._ensure_asr_runtime_state()
+        # A lease transition activates its next consumer before waiting for
+        # keyed cancellation callbacks and aborting the ASR transport. Reject
+        # a prepare arriving in that window before it can pin an old ingress
+        # token to the newly active consumer.
+        if (
+            not isinstance(token, VoiceTurnToken)
+            or token.ingress != self._capture_ingress_token()
+            or not self._voice_input_accepts_pcm()
+        ):
+            return False
         if not self._voice_input_registry.begin_utterance(token):
             return False
         return await self._voice_input_registry.prepare_utterance(token)
