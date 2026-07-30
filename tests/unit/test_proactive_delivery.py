@@ -55,8 +55,12 @@ async def _stays_true(predicate, *, seconds, what="condition"):
     # 只有按真实时钟走一段才测得出窗口本身还在。
     loop = asyncio.get_running_loop()
     deadline = loop.time() + seconds
-    while loop.time() < deadline:
+    while True:
         await asyncio.sleep(0.005)
+        # 醒来后先复查挂钟再断言。这一觉可能被别的任务拖长而睡过了窗口，此时窗口
+        # 外发生的放行是合法的，先断言就会把「事后才发生」误报成「窗口内破了」。
+        if loop.time() >= deadline:
+            return
         assert predicate(), f"{what} broke within {seconds}s"
 
 

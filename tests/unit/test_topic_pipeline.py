@@ -728,10 +728,14 @@ async def test_topic_pool_preserves_post_candidate_signals_after_delivery():
 
     # 投递后的 signal 清理挂在 to_thread flush 之后，固定 sleep 只是在赌它做完了；
     # 轮询这条链的终点，超时后照旧交给下面的断言报错。
+    # 内存里的 signal 被摘掉只是链条的中段——_discard_delivered_signals_async 先同步
+    # 摘除、之后才 await flush，所以还要等 trigger task 本身收尾，否则用例会在它仍在
+    # 飞的时候返回，落到 pytest teardown 去取消它。
     deadline = time.monotonic() + 5.0
     while (
         not delivered
         or "旧话题" in pool._signal_store.format_global_signals("妮可", lang="zh-CN")
+        or pool._trigger_tasks.get("妮可")
     ) and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
 
@@ -2092,8 +2096,9 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
         topic_trigger=fake_trigger,
         trigger_delay_seconds=0.01,
         # 0.2s 的间隔只比一个 Windows 定时器 tick（约 15.6ms，且 sleep 会超发 20%+）
-        # 大一个量级，抬到 0.5s 让「窗口还没过」这件事有十倍以上余量。
-        min_trigger_gap_seconds=0.5,
+        # 大一个量级；抬到 1.0s 既让「窗口还没过」有余量，也给下面那条改期延迟的
+        # 断言留出「从首投到第二次 gap 检查之间过去了多久」的不可控开销。
+        min_trigger_gap_seconds=1.0,
         min_user_turns_for_topic=1,
     )
 
@@ -2123,9 +2128,12 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
     while not deferred_delays and time.monotonic() < deadline:
         await asyncio.sleep(0.01)
     assert deferred_delays, "第二个话题的 trigger 没有被 min trigger gap 改期"
-    # 改期这件事本身还不够：min gap 被误缩短时 trigger 照样会改期一小段，
-    # 断言就成了恒真。改期的延迟必须接近整个 gap，才说明 gap 真的在生效。
-    assert deferred_delays[0] > 0.4, f"min trigger gap 没有生效: {deferred_delays}"
+    # 改期这件事本身还不够：min gap 被误缩短时 trigger 照样会改期一小段，断言就成了
+    # 恒真。但也不能拿延迟去跟整个 gap 比——延迟是「gap 减去已经过去的时间」，而从
+    # 首投到第二次 gap 检查之间过去多久不受控（中间夹着轮询、又一次 process_now、
+    # to_thread 交接）。取一个既远大于「gap 被误缩十倍」后的上限（0.1s）、又给挂钟
+    # 留出 0.85s 余量的门槛。
+    assert deferred_delays[0] > 0.15, f"min trigger gap 没有生效: {deferred_delays}"
     assert delivered == ["凯迪拉克预算压力"]
 
     deadline = time.monotonic() + 5.0
