@@ -1820,13 +1820,13 @@ class AsrRuntimeMixin:
         )
         self._voice_lease_requires_abort = False
         if owner == "game" and not self._voice_input_registry.active_accepts_input:
-            await self._voice_input_registry.wait_idle()
             await self._asr_runtime.suspend(reason)
+            await self._voice_input_registry.wait_idle()
         elif reason == "game_release":
             if should_abort:
                 route_operation_snapshot = self._asr_route_operation_generation
-                await self._voice_input_registry.wait_idle()
                 await self._asr_runtime.abort(reason)
+                await self._voice_input_registry.wait_idle()
                 if (
                     self._asr_route_operation_generation != route_operation_snapshot
                     or self._voice_lease_owner != "core"
@@ -1840,8 +1840,8 @@ class AsrRuntimeMixin:
             # the rest of the session.
             await self._asr_runtime.resume(reason)
         elif should_abort:
-            await self._voice_input_registry.wait_idle()
             await self._asr_runtime.abort(reason)
+            await self._voice_input_registry.wait_idle()
 
     async def _suspend_independent_voice_input_for_game(self) -> None:
         await self._apply_voice_lease_state(

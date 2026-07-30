@@ -1573,6 +1573,48 @@ async def test_abort_bumps_generation_before_waiting_for_registry_cancel() -> No
     assert order == ["abort", "invalidate", "wait_idle"]
 
 
+@pytest.mark.parametrize(
+    ("previous_owner", "owner", "reason", "barrier_method"),
+    [
+        ("core", "game", "game_takeover", "suspend"),
+        ("game", "core", "game_release", "abort"),
+        ("core", "none", "connection_closed", "abort"),
+    ],
+)
+async def test_voice_lease_advances_runtime_barrier_before_waiting_for_registry(
+    previous_owner: str,
+    owner: str,
+    reason: str,
+    barrier_method: str,
+) -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_owner = previous_owner
+    order: list[str] = []
+    runtime._invalidate_voice_pcm_sync = MagicMock(
+        side_effect=lambda _reason: order.append("invalidate")
+    )
+    runtime._asr_runtime.suspend = AsyncMock(
+        side_effect=lambda _reason: order.append("suspend")
+    )
+    runtime._asr_runtime.abort = AsyncMock(
+        side_effect=lambda _reason: order.append("abort")
+    )
+    runtime._asr_runtime.resume = AsyncMock()
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=lambda: order.append("wait_idle")
+    )
+
+    await runtime._apply_voice_lease_state(
+        owner=owner,
+        hard_muted=False,
+        focus_suppressed=False,
+        reason=reason,
+        force_abort=True,
+    )
+
+    assert order == ["invalidate", barrier_method, "wait_idle"]
+
+
 @pytest.mark.parametrize("operation", ["abort", "close"])
 async def test_core_asr_teardown_force_releases_external_turn_pause(
     operation: str,

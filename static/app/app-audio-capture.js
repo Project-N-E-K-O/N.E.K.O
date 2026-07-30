@@ -3449,8 +3449,8 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     togglePinnedVoicePanel(true);
                 }
             });
-            createVoicePanel();
             disposeVoiceRecognitionPopover = destroyVoicePanel;
+            createVoicePanel();
 
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });

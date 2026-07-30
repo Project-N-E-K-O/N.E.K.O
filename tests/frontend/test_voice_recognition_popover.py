@@ -38,13 +38,19 @@ def _install_voice_popover_harness(
     harness = r"""
 (() => {
     const listenerBalance = Object.create(null);
+    let failWindowListenerType = null;
     function trackListeners(target, prefix) {
         const originalAdd = target.addEventListener.bind(target);
         const originalRemove = target.removeEventListener.bind(target);
         target.addEventListener = function (type, listener, options) {
             const key = prefix + ':' + type;
             listenerBalance[key] = (listenerBalance[key] || 0) + 1;
-            return originalAdd(type, listener, options);
+            const result = originalAdd(type, listener, options);
+            if (prefix === 'window' && type === failWindowListenerType) {
+                failWindowListenerType = null;
+                throw new Error('forced voice panel setup failure');
+            }
+            return result;
         };
         target.removeEventListener = function (type, listener, options) {
             const key = prefix + ':' + type;
@@ -164,6 +170,9 @@ def _install_voice_popover_harness(
         failMicVolumeVisualization() {
             failMicVolumeVisualization = true;
         },
+        failVoicePanelSetupOn(type) {
+            failWindowListenerType = type;
+        },
         pendingPermissions: () => mediaResolvers.length,
         popup: () => document.getElementById('live2d-popup-mic'),
         panel: () => document.querySelector('[role="dialog"]'),
@@ -226,6 +235,7 @@ def test_overlapping_voice_popover_renders_keep_one_owned_instance(
         "window:scroll": 1,
         "window:voice-input-lifecycle-changed": 1,
         "window:neko:voice-session-started": 1,
+        "window:neko:voice-settings-pending-changed": 1,
     }
     for key, expected in expected_global_listeners.items():
         assert result["afterOverlap"]["listenerBalance"].get(key) == expected
@@ -296,6 +306,47 @@ def test_current_voice_popover_failure_disposes_owned_portal(page: Page) -> None
         "window:scroll",
         "window:voice-input-lifecycle-changed",
         "window:neko:voice-session-started",
+        "window:neko:voice-settings-pending-changed",
+        "window:neko:voice-settings-pending-changed",
+    ):
+        assert result["listenerBalance"].get(key) == 0
+
+
+@pytest.mark.frontend
+def test_voice_popover_setup_failure_disposes_registered_listeners(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = window.__voicePopoverTest.popup();
+            window.__voicePopoverTest.failVoicePanelSetupOn(
+                'neko:voice-settings-pending-changed'
+            );
+            const rendered = await window.renderFloatingMicList(popup);
+            return {
+                rendered,
+                panels: window.__voicePopoverTest.panels(),
+                errorText: popup.textContent,
+                listenerBalance: {
+                    ...window.__voicePopoverTest.listenerBalance,
+                },
+            };
+        }"""
+    )
+
+    assert result["rendered"] is True
+    assert result["panels"] == 0
+    assert result["errorText"] == "microphone.loadFailed"
+    for key in (
+        "document:pointerdown",
+        "document:keydown",
+        "window:resize",
+        "window:scroll",
+        "window:voice-input-lifecycle-changed",
+        "window:neko:voice-session-started",
+        "window:neko:voice-settings-pending-changed",
     ):
         assert result["listenerBalance"].get(key) == 0
 
@@ -457,6 +508,10 @@ def test_voice_settings_pending_clears_only_after_target_session(
     assert result["oldPanelConnected"] is False
     assert result["panels"] == 1
     assert result["listenerBalance"]["window:neko:voice-session-started"] == 1
+    assert (
+        result["listenerBalance"]["window:neko:voice-settings-pending-changed"]
+        == 1
+    )
 
 
 @pytest.mark.frontend

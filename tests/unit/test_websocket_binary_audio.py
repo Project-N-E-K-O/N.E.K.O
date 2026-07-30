@@ -372,10 +372,29 @@ async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
         if name == "resource_optimization_handshake"
     ] == [False, None]
     call_names = [name for name, _payload in manager.calls]
-    assert call_names.index("asr_handshake") < call_names.index("start_session")
-    assert (
-        call_names.index("resource_optimization_handshake")
-        < call_names.index("start_session")
+    start_indices = [
+        index for index, name in enumerate(call_names) if name == "start_session"
+    ]
+    asr_indices = [
+        index for index, name in enumerate(call_names) if name == "asr_handshake"
+    ]
+    optimization_indices = [
+        index
+        for index, name in enumerate(call_names)
+        if name == "resource_optimization_handshake"
+    ]
+    assert len(start_indices) == len(asr_indices) == len(optimization_indices) == 2
+    assert all(
+        asr_handshake < start
+        for asr_handshake, start in zip(asr_indices, start_indices, strict=True)
+    )
+    assert all(
+        optimization_handshake < start
+        for optimization_handshake, start in zip(
+            optimization_indices,
+            start_indices,
+            strict=True,
+        )
     )
 
 
