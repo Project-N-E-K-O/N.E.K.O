@@ -72,6 +72,11 @@
         pendingAudioChunkMetaQueue: [],
         incomingAudioEpoch: 0,
         isProcessingIncomingAudioBlob: false,
+        // 正在解码中的那个 blob 属于哪一轮。processIncomingAudioBlobQueue 是
+        // 先 shift 出队再 await 解码，这段窗口里该 chunk 不在任何一个队列里，
+        // 只有这个字段能证明"这一轮还有音频在路上"。缺了它，解码期间进来的
+        // turn-end / source.onended 会把本轮判成已放完 → 提前收尾。
+        processingAudioBlobTurnId: null,
         decoderResetPromise: null,
 
         // --- Audio (录音/麦克风) ---

@@ -612,6 +612,17 @@
             return false;
         }
 
+        // 四个队列之外还有一段真空洞：processIncomingAudioBlobQueue 先 shift 出队
+        // 再 await 解码，那期间 chunk 不在任何队列里，只有 processingAudioBlobTurnId
+        // 证明它属于本轮。不查 pendingDecoderReset —— 它是打断时 latch 的意图标记，
+        // 会一直粘到下一条音频 header 才清，拿它当"音频在路上"会把纯文本轮判成
+        // 永不 drained（settledId 不置位 → 切语音干等 15s 的老毛病复发）。
+        // decoderResetPromise 的等待发生在同一个循环内，已被本标志覆盖。
+        if (S.isProcessingIncomingAudioBlob &&
+            normalizeAssistantTurnId(S.processingAudioBlobTurnId) === normalizedTurnId) {
+            return false;
+        }
+
         var hasScheduledSource = S.scheduledSources.some(function (source) {
             return normalizeAssistantTurnId(source && source._nekoAssistantTurnId) === normalizedTurnId;
         });
@@ -822,6 +833,7 @@
         S.audioBufferQueue = [];
         S.pendingAudioChunkMetaQueue = [];
         S.incomingAudioBlobQueue = [];
+        S.processingAudioBlobTurnId = null;
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
@@ -854,6 +866,7 @@
         S.audioBufferQueue = [];
         S.pendingAudioChunkMetaQueue = [];
         S.incomingAudioBlobQueue = [];
+        S.processingAudioBlobTurnId = null;
         S.isPlaying = false;
         S.audioStartTime = 0;
         S.nextChunkTime = 0;
@@ -1314,6 +1327,7 @@
         try {
             while (S.incomingAudioBlobQueue.length > 0) {
                 var item = S.incomingAudioBlobQueue.shift();
+                S.processingAudioBlobTurnId = null;
                 if (!item) continue;
                 if (item.epoch !== S.incomingAudioEpoch) {
                     continue;
@@ -1329,6 +1343,10 @@
                     }
                     continue;
                 }
+
+                // 出队之后、解码完成之前这个 chunk 不在任何队列里。记下它属于哪一轮，
+                // 让 isAssistantTurnPlaybackDrained 看得见这段空洞。
+                S.processingAudioBlobTurnId = item.turnId || null;
 
                 if (S.decoderResetPromise) {
                     var resetTask = S.decoderResetPromise;
@@ -1354,6 +1372,7 @@
                 });
             }
         } finally {
+            S.processingAudioBlobTurnId = null;
             S.isProcessingIncomingAudioBlob = false;
             maybeFinalizeAssistantSpeech();
             schedulePendingAudioMetaStallCheck();
