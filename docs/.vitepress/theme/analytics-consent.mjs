@@ -127,7 +127,8 @@ export function sanitizeAnalyticsPageUrl(
   baseUrl = globalThis.window?.location?.href || 'https://project-neko.online/',
 ) {
   const sourceUrl = new URL(target || baseUrl, baseUrl)
-  const sanitizedUrl = new URL(sourceUrl.pathname, sourceUrl.origin)
+  const sanitizedUrl = new URL(sourceUrl.origin)
+  sanitizedUrl.pathname = sourceUrl.pathname
 
   for (const parameter of ANALYTICS_CAMPAIGN_PARAMETERS) {
     const value = sourceUrl.searchParams.get(parameter)
@@ -138,7 +139,9 @@ export function sanitizeAnalyticsPageUrl(
 
 export function normalizeAnalyticsDestinationUrl(target, baseUrl) {
   const destinationUrl = new URL(target, baseUrl)
-  return new URL(destinationUrl.pathname, destinationUrl.origin)
+  const normalizedUrl = new URL(destinationUrl.origin)
+  normalizedUrl.pathname = destinationUrl.pathname
+  return normalizedUrl
 }
 
 export function trackAnalyticsPageView(

@@ -199,6 +199,20 @@ test('analytics URLs keep approved campaign tags and remove sensitive query data
   assert.equal(sanitized.hash, '')
 })
 
+test('analytics URL sanitization preserves the source origin for double-slash paths', async () => {
+  const analytics = await freshAnalyticsModule()
+  const sanitized = analytics.sanitizeAnalyticsPageUrl(
+    'https://project-neko.online//attacker.example/path?utm_source=newsletter#account',
+  )
+
+  assert.equal(sanitized.origin, 'https://project-neko.online')
+  assert.equal(sanitized.pathname, '//attacker.example/path')
+  assert.equal(
+    sanitized.href,
+    'https://project-neko.online//attacker.example/path?utm_source=newsletter',
+  )
+})
+
 test('outbound analytics destinations do not include query strings or fragments', async () => {
   const analytics = await freshAnalyticsModule()
   const sanitized = analytics.normalizeAnalyticsDestinationUrl(
@@ -209,6 +223,12 @@ test('outbound analytics destinations do not include query strings or fragments'
     sanitized.href,
     'https://store.steampowered.com/app/4099310/__NEKO/',
   )
+
+  const doubleSlashPath = analytics.normalizeAnalyticsDestinationUrl(
+    'https://store.steampowered.com//attacker.example/path?token=secret',
+  )
+  assert.equal(doubleSlashPath.origin, 'https://store.steampowered.com')
+  assert.equal(doubleSlashPath.pathname, '//attacker.example/path')
 })
 
 test('recognizes only the N.E.K.O. Steam store app URL', async () => {
