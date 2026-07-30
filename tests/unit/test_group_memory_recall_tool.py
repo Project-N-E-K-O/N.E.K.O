@@ -555,6 +555,85 @@ async def test_tool_read_records_runtime_consent_for_all_gates():
 
 
 @pytest.mark.asyncio
+async def test_one_turn_executes_at_most_one_recall_http():
+    """max_tool_iterations=1 caps LLM/tool cycles, not calls per cycle: a
+    model can emit several recall_memory calls in one assistant response
+    and each would cost a sequential 5s HTTP — blowing the one-recall
+    assumption the turn timeout is sized for, where the overrun discards
+    the shared group session. The handler latch allows one substantive
+    execution per turn; empty-argument probes (no HTTP anyway) must not
+    burn the turn's only budget."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    outputs: list = []
+
+    async def _script(client, message):
+        # 模型在同一个回复里连发：空参试探 + 两个实质查询。
+        for arguments in ({}, {"query": "群规"}, {"query": "再查一次"}):
+            result = await client.on_tool_call(_recall_tool_call(arguments))
+            outputs.append(result.output_as_json_string())
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="回复")
+        )
+
+    client = _RecallToolClient(_script)
+    await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=[],
+    )
+    plugin.memory_bridge.query_relevant_memory.assert_awaited_once()
+    assert plugin.memory_bridge.query_relevant_memory.await_args.args[1] == "群规"
+    assert "群规是不剧透" in outputs[1]
+    assert "群规是不剧透" not in outputs[2]
+
+
+@pytest.mark.asyncio
+async def test_tool_recall_backfills_the_direct_fallback_text():
+    """The direct fallback sends only context.recalled_memory_text to a
+    bare LLM. When the model actually recalled something this turn, that
+    content must ride along (it still originated from a tool call) — and
+    used_member_subject must flip so a member opt-out strips it from the
+    fallback prompt via the existing sanitizer."""
+    plugin = _tool_plugin()
+    context = _group_context()
+    output, consumed = await plugin.memory_tool_service.execute_recall(
+        context=context, arguments={"query": "群规"},
+    )
+    assert "群规是不剧透" in context.recalled_memory_text
+    assert "长期记忆" in context.recalled_memory_text  # 走统一的包装段
+    assert context.used_member_subject is True
+
+    # 只读到群域（member 关闭）：不得虚标 participant 依赖。
+    plugin = _tool_plugin(settings={
+        "group_memory_enabled": True,
+        "group_member_memory_enabled": False,
+    })
+    context = _group_context()
+    await plugin.memory_tool_service.execute_recall(
+        context=context, arguments={"query": "群规"},
+    )
+    assert "群规是不剧透" in context.recalled_memory_text
+    assert context.used_member_subject is False
+
+    # 零命中：不回填，fallback 维持无召回。
+    plugin = _tool_plugin()
+    plugin.memory_bridge.query_relevant_memory = AsyncMock(
+        return_value=QQMemoryQueryResult(),
+    )
+    context = _group_context()
+    await plugin.memory_tool_service.execute_recall(
+        context=context, arguments={"query": "群规"},
+    )
+    assert context.recalled_memory_text == ""
+
+
+@pytest.mark.asyncio
 async def test_armed_but_uncalled_tool_creates_no_consent_dependency():
     """The dependency is the READ, not the arming: an armed turn where the
     model never calls the tool consumed nothing, so a mid-stream opt-out
@@ -691,8 +770,6 @@ async def test_tool_turn_timeout_covers_the_whole_tool_loop(monkeypatch):
     the single-stream budget would turn slow-but-succeeding tool turns
     into timeouts — and a timeout here discards the whole shared group
     session."""
-    import plugin.plugins.qq_auto_reply.reply_generation_service as rgs
-
     captured: list = []
     original_wait_for = asyncio.wait_for
 
@@ -700,7 +777,8 @@ async def test_tool_turn_timeout_covers_the_whole_tool_loop(monkeypatch):
         captured.append(timeout)
         return await original_wait_for(awaitable, timeout=timeout)
 
-    monkeypatch.setattr(rgs.asyncio, "wait_for", _capture_wait_for)
+    # reply_generation_service 模块内引用的就是全局 asyncio 模块。
+    monkeypatch.setattr(asyncio, "wait_for", _capture_wait_for)
 
     plugin = _tool_plugin()
     service = _generation_service(plugin)
@@ -921,6 +999,128 @@ async def test_capability_probe_failure_degrades_to_fallback(monkeypatch):
     )
     assert context.recall_via_tool is False
     bridge.query_relevant_memory.assert_awaited_once()
+
+
+# ---------------------------------------------------------------------------
+# Stale-route sessions rebuild onto the current provider
+# ---------------------------------------------------------------------------
+
+
+def test_session_reuse_compares_the_stored_creation_route():
+    """A cached session outliving a provider switch answers on the retired
+    provider indefinitely (busy groups never idle out) — and after a
+    free→tool-capable switch the turn has NO recall channel at all: the
+    context skips the synchronous recall per the new config while the arm
+    step refuses the old client's route. The reuse predicate must compare
+    the CURRENT config route against the route stored at creation time —
+    never the live client's attributes, which a vision turn legitimately
+    switches mid-session."""
+    from plugin.plugins.qq_auto_reply.session_bootstrap_service import (
+        generation_session_is_reusable,
+    )
+
+    free_route = ("https://www.lanlan.app/text/v1", "free-model")
+    new_route = (TOOL_CAPABLE_BASE_URL, TOOL_CAPABLE_MODEL)
+    entry = {
+        "login_self_id": "10000",
+        "her_name": "Neko",
+        "conversation_route": free_route,
+        # 图片轮把 client 合法切到 vision 模型：现值≠创建线路。
+        "session": SimpleNamespace(
+            model="vision-x", base_url="https://vision.example.com/v1",
+        ),
+    }
+    common = dict(login_self_id="10000", her_name="Neko")
+
+    assert generation_session_is_reusable(
+        entry, conversation_route=new_route, **common,
+    ) is False
+    assert generation_session_is_reusable(
+        entry, conversation_route=free_route, **common,
+    ) is True  # 指纹比对用创建线路，vision 切换过的 client 不被误重建
+    # 线路未知（配置读取失败 / 旧条目没存指纹）：跳过比对，不误杀。
+    assert generation_session_is_reusable(
+        entry, conversation_route=None, **common,
+    ) is True
+    legacy_entry = {"login_self_id": "10000", "her_name": "Neko"}
+    assert generation_session_is_reusable(
+        legacy_entry, conversation_route=new_route, **common,
+    ) is True
+
+
+@pytest.mark.asyncio
+async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
+    from plugin.plugins.qq_auto_reply import session_bootstrap_service as sbs
+
+    new_route = (TOOL_CAPABLE_BASE_URL, TOOL_CAPABLE_MODEL)
+    built = []
+
+    class _StubClient:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.base_url = kwargs.get("base_url")
+            self.model = kwargs.get("model")
+            built.append(self)
+
+        async def connect(self, instructions=""):
+            return None
+
+    monkeypatch.setattr(sbs, "OmniOfflineClient", _StubClient)
+    monkeypatch.setattr(
+        sbs, "get_config_manager",
+        lambda: SimpleNamespace(
+            aensure_region_resolved=AsyncMock(),
+            get_model_api_config=lambda kind: {
+                "base_url": new_route[0], "model": new_route[1], "api_key": "k",
+            },
+        ),
+    )
+
+    stale_entry = {
+        "login_self_id": "10000",
+        "her_name": "Neko",
+        "conversation_route": ("https://www.lanlan.app/text/v1", "free-model"),
+        "session": SimpleNamespace(model="free-model"),
+    }
+    discard = AsyncMock(side_effect=lambda key, reason: (
+        plugin._user_sessions.pop(key, None) is not None
+    ))
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": stale_entry},
+        _ai_connect_timeout_seconds=5,
+        logger=MagicMock(),
+        session_runtime_service=SimpleNamespace(discard_session=discard),
+    )
+    context = SimpleNamespace(
+        ephemeral_session=False,
+        login_self_id="10000",
+        her_name="Neko",
+        system_prompt="系统提示词",
+        character_card_fields={},
+        persist_memory=True,
+        memory_context_used=False,
+        sender_id="2046",
+        permission_level="user",
+        is_group=True,
+        group_id="7788",
+        user_title="群友",
+        user_nickname=None,
+        login_status="online",
+        login_nickname="Neko",
+    )
+    service = sbs.QQSessionBootstrapService(plugin)
+    created = await service.ensure_generation_session(context, "group:7788")
+    # 旧线路会话被结算丢弃，新会话建在当前线路上、存了新指纹。
+    discard.assert_awaited_once()
+    assert created is not stale_entry
+    assert created["conversation_route"] == new_route
+    assert built and built[-1].base_url == new_route[0]
+
+    # 线路一致的下一轮：原样复用，不再重建。
+    discard.reset_mock()
+    reused = await service.ensure_generation_session(context, "group:7788")
+    assert reused is created
+    discard.assert_not_awaited()
 
 
 # ---------------------------------------------------------------------------

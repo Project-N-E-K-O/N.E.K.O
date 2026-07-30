@@ -244,10 +244,26 @@ class QQReplyContextNode:
                 from .session_bootstrap_service import (
                     generation_session_is_reusable,
                 )
+                # 线路指纹与 bootstrap 的重建触发保持同一组判据（helper
+                # docstring 的硬约束）。此处读的是**落定前**的配置快照：
+                # 免费线路的区域改写可能让它与会话存的指纹假错配，方向是
+                # 安全的——多预测一次"要重建"只是多等一次区域落定。
+                _prediction_route = None
+                try:
+                    _prediction_config = config_manager.get_model_api_config(
+                        "conversation",
+                    )
+                    _prediction_route = (
+                        str(_prediction_config.get("base_url") or ""),
+                        str(_prediction_config.get("model") or ""),
+                    )
+                except Exception:
+                    _prediction_route = None
                 session_cached = generation_session_is_reusable(
                     entry,
                     login_self_id=login_self_id,
                     her_name=config_manager.get_character_data()[1],
+                    conversation_route=_prediction_route,
                 )
             except Exception:
                 session_cached = False

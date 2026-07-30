@@ -14,6 +14,7 @@ from main_logic.tool_calling import ToolDefinition
 from utils.language_utils import get_global_language, normalize_language_code
 
 from .pipeline_models import is_synthetic_source
+from .prompt_fragment_templates import LONG_TERM_MEMORY_SECTION
 
 RECALL_TOOL_NAME = "recall_memory"
 # 召回 HTTP 的单次预算：也是生成服务给工具轮扩超时时计入的量。
@@ -101,6 +102,29 @@ class QQMemoryToolService:
             metadata={"source": "qq_auto_reply"},
         )
 
+    def no_result_text(self) -> str:
+        return _loc(RECALL_MEMORY_TOOL_NO_RESULT, self._short_lang())
+
+    @staticmethod
+    def _normalized_recall_arguments(arguments: Any) -> tuple[str, str]:
+        """The (query, time) pair execute_recall actually acts on.
+
+        One extraction shared with ``has_recall_arguments`` so the
+        generation service's one-recall-per-turn latch and the executor
+        can never disagree about what counts as a substantive call."""
+        args = arguments if isinstance(arguments, dict) else {}
+        raw_query = args.get("query")
+        query = raw_query.strip() if isinstance(raw_query, str) else ""
+        raw_time = args.get("time")
+        time_spec = raw_time.strip() if isinstance(raw_time, str) else ""
+        return query, time_spec
+
+    @classmethod
+    def has_recall_arguments(cls, arguments: Any) -> bool:
+        """Whether this call would actually cost a recall HTTP round-trip."""
+        query, time_spec = cls._normalized_recall_arguments(arguments)
+        return bool(query or time_spec)
+
     def _live_settings(self) -> dict:
         return (getattr(self.plugin, "_qq_settings", {}) or {})
 
@@ -130,10 +154,7 @@ class QQMemoryToolService:
         lang = self._short_lang()
         no_result = _loc(RECALL_MEMORY_TOOL_NO_RESULT, lang)
         args = arguments if isinstance(arguments, dict) else {}
-        raw_query = args.get("query")
-        query = raw_query.strip() if isinstance(raw_query, str) else ""
-        raw_time = args.get("time")
-        time_spec = raw_time.strip() if isinstance(raw_time, str) else ""
+        query, time_spec = self._normalized_recall_arguments(args)
         if not query and not time_spec:
             # 空入参早退（与本体对偶）：省一次 HTTP。
             return no_result, {}
@@ -214,6 +235,21 @@ class QQMemoryToolService:
             consumed["group_memory_enabled"] = True
             if used_member:
                 consumed["group_member_memory_enabled"] = True
+        # 回填给 direct fallback：主会话空回复时 fallback 只带
+        # context.recalled_memory_text——本轮模型真的调过工具、读到了内容，
+        # 这份召回就该跟着 fallback 一起用（内容仍来自 tool call，不是
+        # 宿主的自动召回）。used_member_subject 一并置位：member 撤销时
+        # _sanitize_for_live_consent 才会把这段从 fallback prompt 里撤掉。
+        try:
+            context.recalled_memory_text = LONG_TERM_MEMORY_SECTION.format(
+                memory_context=result.text,
+            )
+            if used_member:
+                context.used_member_subject = True
+        except Exception:
+            # 轻量测试 context 可能不可写：回填是 fallback 增强，绝不让
+            # 它连累主路径的 tool 结果返回。
+            pass
         rendered_lines = result.text.count("\n") + 1
         header = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, lang).format(
             n=rendered_lines,

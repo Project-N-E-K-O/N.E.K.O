@@ -333,6 +333,8 @@ class QQReplyGenerationService:
                         user_session.set_tools(None)
                         user_session.set_tool_call_handler(None)
                     except Exception:
+                        # 卸载失败不能连累收尾（下面还有历史清理与成员轮
+                        # 记录），下一轮挂载会整体覆盖这两个槽位。
                         pass
                 restore_session_prompt()
                 history_now = getattr(user_session, "_conversation_history", []) or []
@@ -416,6 +418,8 @@ class QQReplyGenerationService:
                 set_tools(None)
                 set_handler(None)
             except Exception:
+                # 挂载半途失败后的兜底清理：清不掉也只影响本轮（返回
+                # False 已宣布未挂载），finally 不会再动这两个槽位。
                 pass
             return False
 
@@ -431,15 +435,37 @@ class QQReplyGenerationService:
         consent record.
         """
 
+        # 一轮一次召回的闸在 handler 层：max_tool_iterations=1 只限 LLM/
+        # tool 循环轮数，模型在同一个 assistant 回复里可以并排发多个
+        # recall_memory 调用（客户端会逐个执行），流内重试也会再次进
+        # tool 轮——每次都是一段 5s HTTP，会击穿超时预算里"一次召回"的
+        # 假设，而这条路径超时的代价是丢弃整个共享群会话。空参试探
+        # （execute_recall 本就不发 HTTP）不烧额度。
+        recall_executed = [False]
+
         async def _handle_recall_tool(tool_call: Any) -> ToolResult:
             # pre-tool 文本（"我查一下"之类）不得外发：走到这里说明本轮
             # 进入了 tool 轮，之前流出的增量已由客户端写进 history 的
             # assistant tool_calls 行（随后与本轮其余 tool 行一并清理），
             # 出站文本只保留 post-tool 的最终回答。
             reply_chunks.clear()
-            output, consumed = await self.plugin.memory_tool_service.execute_recall(
+            tool_service = self.plugin.memory_tool_service
+            arguments = getattr(tool_call, "arguments", None) or {}
+            substantive = tool_service.has_recall_arguments(arguments)
+            if substantive and recall_executed[0]:
+                self.plugin.logger.info(
+                    "recall_memory 本轮已执行过，追加调用返回空结果"
+                )
+                return ToolResult(
+                    call_id=getattr(tool_call, "call_id", "") or "",
+                    name=getattr(tool_call, "name", "") or "recall_memory",
+                    output=tool_service.no_result_text(),
+                )
+            if substantive:
+                recall_executed[0] = True
+            output, consumed = await tool_service.execute_recall(
                 context=context,
-                arguments=getattr(tool_call, "arguments", None) or {},
+                arguments=arguments,
             )
             if consumed:
                 # consent 判据从"prompt 里有没有那段字"换成"运行时有没有
@@ -454,6 +480,8 @@ class QQReplyGenerationService:
                 try:
                     context.recalled_memory_used = True
                 except Exception:
+                    # trace 用的布尔而已：合成调用方可能传只读轻量对象，
+                    # 写不进去不影响 consent 记录与工具结果。
                     pass
             return ToolResult(
                 call_id=getattr(tool_call, "call_id", "") or "",
