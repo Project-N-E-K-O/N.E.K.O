@@ -146,6 +146,25 @@ async def test_game_consumer_uses_token_derived_request_id(monkeypatch) -> None:
     routed.assert_awaited_once_with("Lan", "play", request_id="asr-11-3")
 
 
+async def test_game_consumer_surfaces_route_delivery_failure(monkeypatch) -> None:
+    routed = AsyncMock(return_value=False)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        routed,
+    )
+    consumer = GameVoiceInputConsumer(lanlan_name=lambda: "Lan")
+    event = VoiceTranscriptEvent(
+        turn_token=_token(turn_id=4),
+        provider="qwen",
+        text="play",
+    )
+
+    with pytest.raises(RuntimeError, match="GAME_VOICE_TRANSCRIPT_NOT_ROUTED"):
+        await consumer.on_final(event)
+
+    routed.assert_awaited_once_with("Lan", "play", request_id="asr-11-4")
+
+
 async def test_game_consumer_is_fail_closed_when_route_is_unavailable(
     monkeypatch,
 ) -> None:

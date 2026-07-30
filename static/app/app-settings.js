@@ -986,8 +986,10 @@
                 }
                 : null,
             optimizationDecision: (meta.optimizationDecision
-                && typeof meta.optimizationDecision.writeId === 'number'
-                && isFinite(meta.optimizationDecision.writeId))
+                && _isValidAsrWriteId(
+                    meta.optimizationDecision.writeId,
+                    Number.isInteger(meta.serverRevision)
+                ))
                 ? {
                     writeId: meta.optimizationDecision.writeId,
                     writerId: typeof meta.optimizationDecision.writerId === 'string'

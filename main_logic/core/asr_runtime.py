@@ -855,8 +855,8 @@ class AsrRuntimeMixin:
             await abort
 
     async def _suspend_independent_asr(self, reason: str) -> None:
-        self._invalidate_voice_pcm_sync(reason)
         await self._asr_runtime.suspend(reason)
+        self._invalidate_voice_pcm_sync(reason)
         await self._voice_input_registry.wait_idle()
 
     async def _close_independent_asr(

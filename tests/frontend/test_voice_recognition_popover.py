@@ -6,6 +6,15 @@ from playwright.sync_api import Page
 
 ROOT = Path(__file__).resolve().parents[2]
 APP_AUDIO_CAPTURE = ROOT / "static" / "app" / "app-audio-capture.js"
+VOICE_POPOVER_GLOBAL_LISTENERS = (
+    "document:pointerdown",
+    "document:keydown",
+    "window:resize",
+    "window:scroll",
+    "window:voice-input-lifecycle-changed",
+    "window:neko:voice-session-started",
+    "window:neko:voice-settings-pending-changed",
+)
 
 
 def _voice_popover_sources() -> tuple[str, str]:
@@ -299,16 +308,7 @@ def test_current_voice_popover_failure_disposes_owned_portal(page: Page) -> None
     assert result["rendered"] is True
     assert result["panels"] == 0
     assert result["errorText"] == "microphone.loadFailed"
-    for key in (
-        "document:pointerdown",
-        "document:keydown",
-        "window:resize",
-        "window:scroll",
-        "window:voice-input-lifecycle-changed",
-        "window:neko:voice-session-started",
-        "window:neko:voice-settings-pending-changed",
-        "window:neko:voice-settings-pending-changed",
-    ):
+    for key in VOICE_POPOVER_GLOBAL_LISTENERS:
         assert result["listenerBalance"].get(key) == 0
 
 
@@ -339,15 +339,7 @@ def test_voice_popover_setup_failure_disposes_registered_listeners(
     assert result["rendered"] is True
     assert result["panels"] == 0
     assert result["errorText"] == "microphone.loadFailed"
-    for key in (
-        "document:pointerdown",
-        "document:keydown",
-        "window:resize",
-        "window:scroll",
-        "window:voice-input-lifecycle-changed",
-        "window:neko:voice-session-started",
-        "window:neko:voice-settings-pending-changed",
-    ):
+    for key in VOICE_POPOVER_GLOBAL_LISTENERS:
         assert result["listenerBalance"].get(key) == 0
 
 
@@ -369,14 +361,7 @@ def test_voice_popover_disposes_when_popup_host_is_removed(page: Page) -> None:
     )
 
     assert result["panels"] == 0
-    for key in (
-        "document:pointerdown",
-        "document:keydown",
-        "window:resize",
-        "window:scroll",
-        "window:voice-input-lifecycle-changed",
-        "window:neko:voice-session-started",
-    ):
+    for key in VOICE_POPOVER_GLOBAL_LISTENERS:
         assert result["listenerBalance"].get(key) == 0
 
 

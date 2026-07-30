@@ -2506,7 +2506,8 @@ def test_start_session_snapshots_resource_optimization_handshake_before_await():
     ]
 
     assert snapshot_lines
-    assert min(snapshot_lines) < min(await_lines)
+    assert await_lines
+    assert max(snapshot_lines) < min(await_lines)
 
     def passes_override(fn, keyword_value):
         return any(

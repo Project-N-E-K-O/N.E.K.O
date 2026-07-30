@@ -34,11 +34,13 @@ class GameVoiceInputConsumer:
 
     async def on_final(self, event: VoiceTranscriptEvent) -> None:
         token = event.turn_token
-        await route_external_voice_transcript(
+        routed = await route_external_voice_transcript(
             self.lanlan_name(),
             event.text,
             request_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}",
         )
+        if not routed:
+            raise RuntimeError("GAME_VOICE_TRANSCRIPT_NOT_ROUTED")
 
     async def on_cancelled(self, token: VoiceTurnToken, reason: str) -> None:
         del token, reason

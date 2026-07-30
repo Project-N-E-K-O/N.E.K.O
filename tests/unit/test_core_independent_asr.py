@@ -1650,7 +1650,7 @@ async def test_suspend_advances_runtime_barrier_before_waiting_for_registry_canc
 
     await runtime._suspend_independent_asr("game_takeover")
 
-    assert order == ["invalidate", "suspend", "wait_idle"]
+    assert order == ["suspend", "invalidate", "wait_idle"]
 
 
 @pytest.mark.parametrize(

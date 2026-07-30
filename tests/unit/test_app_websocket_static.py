@@ -3060,6 +3060,13 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "if (serverAuthoritative === true) return true;" in id_validator
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
     assert "knownKeyWritesPresent" in read_fn
+    optimization_reader = read_fn.split(
+        "optimizationDecision: (meta.optimizationDecision", 1
+    )[1].split("optimizationDecisionPendingSync:", 1)[0]
+    assert "_isValidAsrWriteId(" in optimization_reader
+    assert "meta.optimizationDecision.writeId," in optimization_reader
+    assert "Number.isInteger(meta.serverRevision)" in optimization_reader
+    assert "isFinite(meta.optimizationDecision.writeId)" not in optimization_reader
 
     listener_block = settings_source.split(
         "window.addEventListener('storage', function (event) {", 1
@@ -3198,11 +3205,16 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
         const okPost = { ok: true, json: async () => ({ success: true }) };
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-        async function hydrateFromServer(ctx, settings) {
+        async function hydrateFromServer(ctx, settings, decisions = null) {
           assert(ctx.getCalls.length === 1, 'boot must issue the settings GET');
           ctx.getCalls[0].resolve({
             ok: true,
-            json: async () => ({ success: true, settings, telemetryBranch: null }),
+            json: async () => ({
+              success: true,
+              settings,
+              decisions: decisions || {},
+              telemetryBranch: null,
+            }),
           });
           await tick();
           await tick();
@@ -3643,7 +3655,7 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             writerId: 'restored-writer',
             value: false,
           };
-          const rebound = makeContext(JSON.stringify({
+          const rebound = makeContext({
             independentAsrEnabled: false,
             voiceInputResourceOptimizationEnabled: false,
             _sharedWriteMeta: {
@@ -3657,11 +3669,22 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
               optimizationDecision: restoredDecision,
               optimizationDecisionPendingSync: false,
             },
-          }));
+          });
           await hydrateFromServer(rebound, {
             independentAsrEnabled: true,
             voiceInputResourceOptimizationEnabled: true,
+          }, {
+            independentAsrEnabled: {
+              writeId: 2,
+              writerId: 'server-winner',
+              value: true,
+            },
           });
+          assert(
+            rebound.S.independentAsrEnabled === true
+              && rebound.S.voiceInputResourceOptimizationEnabled === true,
+            'server decisions must apply before testing a return to the restored value'
+          );
           rebound.S.independentAsrEnabled = false;
           rebound.S.voiceInputResourceOptimizationEnabled = false;
           rebound.mod.saveSettings({ skipServerSync: true });
@@ -3677,6 +3700,35 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             reboundMeta.optimizationDecision.writeId === reboundMeta.writeId
               && reboundMeta.optimizationDecision.writerId === reboundMeta.writerId,
             'returning to a restored optimization value is a fresh user decision'
+          );
+
+          // ---- Scenario 9: an invalid optimization decision id cannot poison
+          // later local choices by permanently outranking the browser clock.
+          const poisonedOptimization = makeContext({
+            voiceInputResourceOptimizationEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'poisoned-writer',
+              changedKeys: ['voiceInputResourceOptimizationEnabled'],
+              optimizationDecision: {
+                writeId: Number.MAX_SAFE_INTEGER,
+                writerId: 'poisoned-writer',
+                value: false,
+              },
+              optimizationDecisionPendingSync: false,
+            },
+          });
+          poisonedOptimization.S.voiceInputResourceOptimizationEnabled = true;
+          poisonedOptimization.mod.saveSettings({ skipServerSync: true });
+          const recoveredOptimizationMeta = JSON.parse(
+            poisonedOptimization.lastSharedWrite()
+          )._sharedWriteMeta;
+          assert(
+            recoveredOptimizationMeta.optimizationDecision
+              && recoveredOptimizationMeta.optimizationDecision.value === true
+              && recoveredOptimizationMeta.optimizationDecision.writeId
+                === recoveredOptimizationMeta.writeId,
+            'invalid optimization decision ids must not block a fresh local choice'
           );
 
           console.log('HARNESS_OK');
