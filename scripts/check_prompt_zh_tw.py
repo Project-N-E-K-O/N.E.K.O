@@ -61,7 +61,9 @@ Usage:
     python scripts/check_prompt_zh_tw.py --full     # list the whole backlog
     python scripts/check_prompt_zh_tw.py --count    # backlog size only
 
-Escape hatch: put ``# noqa: PROMPT_ZH_TW`` on the dict's opening line.
+Escape hatch: a ``noqa`` comment naming PROMPT_ZH_TW on the dict's opening or
+closing line. It may sit in a comma-separated code list in any order, and a bare
+``noqa`` suppresses everything — same behaviour as the sibling gates and ruff.
 """
 from __future__ import annotations
 
@@ -602,11 +604,16 @@ def _git_visible_prompt_files() -> set[str] | None:
     scan is used unfiltered — ``--count`` and ``--full`` are useful outside a
     checkout, and the ratchet itself already needs git for its base side.
     """
-    result = subprocess.run(
-        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
-         "--", PROMPTS_SUBDIR],
-        cwd=REPO_ROOT, capture_output=True, check=False,
-    )
+    try:
+        result = subprocess.run(
+            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+             "--", PROMPTS_SUBDIR],
+            cwd=REPO_ROOT, capture_output=True, check=False,
+        )
+    except OSError:
+        # git not on PATH raises FileNotFoundError rather than returning nonzero,
+        # and a missing git is precisely one of the cases this fallback is for.
+        return None
     if result.returncode != 0:
         return None
     out = result.stdout.decode("utf-8", errors="replace")
@@ -659,7 +666,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
             "Require 'zh-TW' on newly added localized prompt dicts "
-            "(signature ratchet against --base; --full scans everything)."
+            "(offender-count ratchet against --base; --full scans everything)."
         )
     )
     parser.add_argument(
@@ -725,7 +732,7 @@ def main(argv: list[str] | None = None) -> int:
         "\nA prompt dict with 'en' + 'zh'/'zh-CN' needs 'zh-TW' too: _loc falls "
         "back to 'en', not 'zh', so Traditional Chinese users would get an "
         "English prompt. Add the template, or put '# noqa: PROMPT_ZH_TW' on the "
-        "dict's opening line if it genuinely does not need one.\n"
+        "dict's opening or closing line if it genuinely does not need one.\n"
         "The ratchet compares totals rather than source lines, so the locations "
         "above are narrowed to the tables this change touched.\n"
         f"(Set $PROMPT_ZH_TW_BASE or pass --base to override the base ref.)"

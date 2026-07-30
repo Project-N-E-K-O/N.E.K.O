@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -1198,3 +1199,40 @@ def test_non_constant_element_in_a_key_sequence_abandons_the_table(src):
     a false positive on code that is actually fine.
     """
     assert _violations(src) == []
+
+
+def test_git_visible_prompt_files_returns_none_when_git_is_missing(monkeypatch):
+    """git absent from PATH raises rather than returning nonzero.
+
+    A missing git is one of the two cases this fallback exists for, so letting
+    FileNotFoundError escape would crash --count/--full in exactly the environment
+    the fallback was written for.
+    """
+    def boom(*_args, **_kwargs):
+        raise FileNotFoundError(2, "No such file or directory", "git")
+
+    monkeypatch.setattr(MOD.subprocess, "run", boom)
+    assert MOD._git_visible_prompt_files() is None
+
+
+def test_cli_description_matches_the_implemented_ratchet():
+    """--help must not advertise a judgement the gate no longer uses.
+
+    The ratchet went through signature-based and scheme-based forms before landing
+    on a plain offender count; stale help text sends a reader looking for logic
+    that is not there.
+    """
+    result = _run("--help")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "signature ratchet" not in result.stdout
+    assert "offender-count ratchet" in result.stdout
+
+
+def test_failure_message_mentions_both_noqa_positions():
+    """The message must describe the suppression the gate actually accepts.
+
+    Suppression works on the opening *or* closing line; telling authors only about
+    the opening line makes a correct `}  # noqa: PROMPT_ZH_TW` look like a mistake.
+    """
+    source = pathlib.Path(SCRIPT_PATH).read_text(encoding="utf-8")
+    assert "opening or closing line if it genuinely does not need one" in source

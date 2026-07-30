@@ -212,7 +212,9 @@ jobs:
         # from tripping it — see the script docstring for the three narrower
         # keys that were tried and why each broke. `--full` lists the whole
         # backlog, `--count` just sizes it. Suppress a single dict with
-        # `# noqa: PROMPT_ZH_TW` on its opening line. Skipped on direct push
+        # a `noqa` comment naming PROMPT_ZH_TW on its opening or closing line
+        # (comma-separated lists and a bare `noqa` work too, as in the sibling
+        # gates). Skipped on direct push
         # to main — nothing to diff against.
         if: github.event_name == 'pull_request'
         env:
