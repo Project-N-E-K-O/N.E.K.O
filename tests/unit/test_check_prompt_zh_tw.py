@@ -31,6 +31,8 @@ import sys
 import textwrap
 from pathlib import Path
 
+import pytest
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_PATH = PROJECT_ROOT / "scripts" / "check_prompt_zh_tw.py"
 
@@ -57,6 +59,16 @@ def _grew(base: dict[str, str], head: dict[str, str]) -> int:
     base = {k: textwrap.dedent(v) for k, v in base.items()}
     head = {k: textwrap.dedent(v) for k, v in head.items()}
     return MOD.count_offenders(head) - MOD.count_offenders(base)
+
+
+def _touched_from(diff: str) -> dict[str, set[int]]:
+    """Parse a diff into touched lines without invoking git."""
+    original = MOD._git
+    MOD._git = lambda *_a: diff
+    try:
+        return MOD._touched_lines("BASE_SHA")
+    finally:
+        MOD._git = original
 
 
 # ---------------------------------------------------------------------------
@@ -548,6 +560,87 @@ def test_dict_call_with_positional_base_is_not_judged():
     assert _violations("T = dict({'zh-TW': 't'}, en='e', zh='s')") == []
     # Keyword-only is still fully knowable, so it is still judged.
     assert len(_violations("T = dict(en='e', zh='s')")) == 1
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict({"en": "e", "zh": "s"}, **{"zh-TW": "t"})',
+    'T = {**{"en": "e", "zh": "s"}, **{"zh-TW": "t"}}',
+    'T = {"en": "e", "zh": "s"} | {"zh-TW": "t"}',
+    # Positional base only, no `**`: the sole thing marking this as a merge is
+    # the positional arg, so this case is what proves that half of
+    # _is_merged_construction is load-bearing for pruning.
+    'T = dict({"en": "e", "zh": "s"}, note="x")',
+    'T = dict({"en": "e", "zh": "s"}, {"zh-TW": "t"})',
+])
+def test_merged_construction_fragments_are_not_judged(src):
+    """A table assembled from several mappings must not report its fragments.
+
+    Skipping the outer node is not enough: a plain ast.walk still descends into
+    the inner `{en, zh}` literal and flags it, even though the assembled mapping
+    does carry zh-TW. The whole subtree has to be pruned.
+    """
+    assert _violations(src) == []
+
+
+def test_ordinary_nesting_is_still_judged_in_source_order():
+    """Pruning merged constructions must not stop ordinary nesting being checked.
+
+    `{"a": {...}}` is not a merge — the inner dict is a table in its own right.
+    Order is asserted because the pruning walk uses a stack, which reverses it.
+    """
+    src = '''
+    OUTER = {
+        "a": {"en": "x", "zh": "y"},
+        "b": {"en": "p", "zh": "q"},
+    }
+    '''
+    assert _violations(src) == [3, 4]
+
+
+def test_touched_lines_records_a_location_for_deletion_only_hunks():
+    """Removing a table's only zh-TW entry must stay locatable.
+
+    `@@ -4 +3,0 @@` has a zero-length new side, so a plain range() is empty — and
+    that transition (a compliant table losing zh-TW) is a real way for the total
+    to grow, so having no location would send the author through all 339 entries.
+    """
+    diff = (
+        "diff --git a/p.py b/p.py\n"
+        "--- a/p.py\n"
+        "+++ b/p.py\n"
+        "@@ -4 +3,0 @@\n"
+        '-    "zh-TW": "c",\n'
+    )
+    touched = _touched_from(diff)
+    assert touched == {"p.py": {3, 4}}
+
+
+def test_deletion_at_file_start_does_not_emit_line_zero():
+    """`@@ -1 +0,0 @@` must not produce line 0 — line numbers are 1-based."""
+    diff = (
+        "diff --git a/p.py b/p.py\n"
+        "--- a/p.py\n"
+        "+++ b/p.py\n"
+        "@@ -1 +0,0 @@\n"
+        "-x\n"
+    )
+    assert _touched_from(diff) == {"p.py": {1}}
+
+
+def test_losing_zh_tw_is_located_end_to_end(monkeypatch):
+    """The deletion-hunk location actually names the table that lost zh-TW."""
+    diff = (
+        "diff --git a/p.py b/p.py\n"
+        "--- a/p.py\n"
+        "+++ b/p.py\n"
+        "@@ -4 +3,0 @@\n"
+        '-    "zh-TW": "c",\n'
+    )
+    head = {"p.py": 'T = {\n    "en": "a",\n    "zh": "b",\n}\n'}
+    monkeypatch.setattr(MOD, "_git", lambda *a: diff)
+    likely, other = MOD.locate_touched(head, MOD._touched_lines("BASE_SHA"))
+    assert likely == ["p.py:1"]
+    assert other == 0
 
 
 def test_touched_lines_disables_git_path_quoting(monkeypatch):

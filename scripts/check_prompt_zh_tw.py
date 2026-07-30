@@ -74,6 +74,7 @@ import subprocess
 import sys
 import tokenize
 from pathlib import Path
+from typing import Iterator
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 PROMPTS_SUBDIR = "config/prompts"
@@ -123,10 +124,51 @@ def _string_keys(node: ast.AST) -> set[str]:
     return set()
 
 
+def _is_merged_construction(node: ast.AST) -> bool:
+    """Whether this node assembles a mapping out of other mappings.
+
+    ``{**a, **b}``, ``dict(BASE, zh=...)`` and ``a | b`` all have keys that are
+    not statically knowable, and their component literals are *fragments* rather
+    than tables: the ``'zh-TW'`` entry may live in any one of them.
+    """
+    if isinstance(node, ast.Dict):
+        return any(k is None for k in node.keys)
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+    ):
+        return bool(node.args) or any(kw.arg is None for kw in node.keywords)
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return True
+    return False
+
+
+def _table_nodes(tree: ast.AST) -> Iterator[ast.AST]:
+    """Yield dict-shaped nodes, pruning the innards of merged constructions.
+
+    Skipping a merged construction is not enough — ``ast.walk`` would still
+    descend into it and judge each component literal on its own, reporting the
+    fragment that happens to lack ``'zh-TW'`` even though the assembled mapping
+    carries it. So a merged construction is skipped *with its descendants*.
+
+    Ordinary nesting (``{"greeting": {"en": ..., "zh": ...}}``) is not merging:
+    the inner dict is a table in its own right and is still yielded.
+    """
+    stack: list[ast.AST] = [tree]
+    while stack:
+        node = stack.pop()
+        if _is_merged_construction(node):
+            continue
+        if isinstance(node, (ast.Dict, ast.Call)):
+            yield node
+        stack.extend(ast.iter_child_nodes(node))
+
+
 def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
     """Return the line number of every localized dict with no zh-TW key."""
     out: list[int] = []
-    for node in ast.walk(tree):
+    for node in _table_nodes(tree):
         keys = _string_keys(node)
         if not keys:
             continue
@@ -140,7 +182,8 @@ def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
         if 1 <= lineno <= len(source_lines) and _has_noqa(source_lines[lineno - 1]):
             continue
         out.append(lineno)
-    return out
+    # _table_nodes walks depth-first off a stack, so restore source order.
+    return sorted(out)
 
 
 def _parse_source(source: str, origin: str) -> tuple[ast.Module | None, list[str]]:
@@ -179,7 +222,7 @@ def locate_touched(
         tree, lines = _parse_source(source, path)
         if tree is None:
             continue
-        by_line = {node.lineno: node for node in ast.walk(tree)
+        by_line = {node.lineno: node for node in _table_nodes(tree)
                    if _string_keys(node)}
         added = (touched or {}).get(path, set())
         for lineno in find_violations(tree, lines):
@@ -291,7 +334,15 @@ def _touched_lines(rev: str) -> dict[str, set[int]]:
             continue
         start = int(match.group(1))
         count = int(match.group(2)) if match.group(2) is not None else 1
-        touched.setdefault(current, set()).update(range(start, start + count))
+        if count == 0:
+            # Deletion-only hunk (`@@ -4 +3,0 @@`): nothing was added, so a plain
+            # range() is empty and a table that just *lost* its 'zh-TW' entry —
+            # a real way for the total to grow — would have no location at all.
+            # Record the lines flanking the deletion point so the enclosing table
+            # is still recognisable.
+            touched.setdefault(current, set()).update({max(1, start), start + 1})
+        else:
+            touched.setdefault(current, set()).update(range(start, start + count))
     return touched
 
 
