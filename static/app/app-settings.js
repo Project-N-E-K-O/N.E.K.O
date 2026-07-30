@@ -438,14 +438,19 @@
      * window that HAD merged the server value adopts it, mis-stamps its next
      * handshake, and POSTs the wrong value back on its next full sync.
      */
-    function _writeSharedSettings(snapshot, explicitKeys) {
+    function _writeSharedSettings(snapshot, explicitKeys, pendingRecovery) {
         const payload = Object.assign({}, snapshot);
         payload[_SHARED_WRITE_META_KEY] = {
             writeId: _nextSharedWriteId(),
             writerId: _SHARED_WRITER_ID,
             changedKeys: explicitKeys || [],
             hydrated: S.settingsHydrated === true,
-            asrAuthoritative: S.independentAsrAuthoritative === true
+            asrAuthoritative: S.independentAsrAuthoritative === true,
+            // A recovery write reasserts this window's pending values after it
+            // filtered an incidental copy from another full snapshot. Another
+            // pending window must not answer it with another recovery write,
+            // or conflicting snapshots can bounce through localStorage forever.
+            pendingRecovery: pendingRecovery === true
         };
         const ownMeta = payload[_SHARED_WRITE_META_KEY];
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
@@ -492,6 +497,7 @@
             // from that build still carries independentAsrEnabled in
             // changedKeys and keeps flowing through asrChangedByOtherWindow.
             asrAuthoritative: meta.asrAuthoritative === true,
+            pendingRecovery: meta.pendingRecovery === true,
             // Absent on previous-build snapshots and on writers with no
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
@@ -910,6 +916,7 @@
      * @param {{
      *   skipServerSync?: boolean,
      *   serverMerged?: boolean,
+     *   pendingRecovery?: boolean,
      *   explicitSharedKeys?: string[]
      * }} [options]
      *   传 skipServerSync 跳过 POST；
@@ -920,6 +927,7 @@
     function saveSettings(options) {
         const skipServerSync = !!(options && options.skipServerSync);
         const serverMerged = !!(options && options.serverMerged);
+        const pendingRecovery = !!(options && options.pendingRecovery);
         const explicitSharedKeys = options && Array.isArray(options.explicitSharedKeys)
             ? options.explicitSharedKeys
             : null;
@@ -1044,7 +1052,8 @@
             settings,
             explicitSharedKeys !== null
                 ? explicitSharedKeys
-                : (serverMerged ? [] : _collectExplicitSharedKeys(settings))
+                : (serverMerged ? [] : _collectExplicitSharedKeys(settings)),
+            pendingRecovery
         );
 
         // 同步回共享状态，保持一致性
@@ -1113,7 +1122,15 @@
                 if (bootMeta && bootMeta.writeId > _lastAppliedSharedWriteId) {
                     _lastAppliedSharedWriteId = bootMeta.writeId;
                 }
-                if (bootMeta && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
+                if (bootMeta && bootMeta.asrDecision
+                    && settings.independentAsrEnabled === bootMeta.asrDecision.value) {
+                    // A server-merge snapshot intentionally has no changedKeys:
+                    // it carries authority, not a fresh user action. Restore its
+                    // matching decision tuple anyway so reloads retain both the
+                    // ordering token and the floor for the next local choice.
+                    _adoptAsrDecisionTuple(bootMeta.asrDecision);
+                } else if (bootMeta
+                    && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
                     const bootDecision = bootMeta.asrDecision || bootMeta;
                     _noteAsrDecision(bootDecision.writeId, bootDecision.writerId, settings.independentAsrEnabled);
                 }
@@ -1655,16 +1672,18 @@
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();
             }
-            if (pendingKeysToReassert.length > 0) {
+            if (pendingKeysToReassert.length > 0 && !(meta && meta.pendingRecovery)) {
                 // A server-merge broadcast can have been built before this
                 // window's latest pending edit reached its sender. Restore the
-                // local full snapshot without claiming a NEW user edit: another
-                // window may already hold a newer pending choice for the same
-                // key, and must keep filtering this recovery broadcast. The
-                // already queued user sync remains the sole server writer.
+                // local full snapshot without claiming a NEW user edit. Mark it
+                // as a one-hop recovery: another pending window still filters
+                // its own values, but does not answer with another recovery and
+                // start a localStorage ping-pong. The already queued user sync
+                // remains the sole server writer.
                 saveSettings({
                     skipServerSync: true,
-                    serverMerged: true
+                    serverMerged: true,
+                    pendingRecovery: true
                 });
             }
         } catch (error) {

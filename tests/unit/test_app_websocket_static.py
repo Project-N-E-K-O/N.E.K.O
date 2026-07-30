@@ -2002,15 +2002,17 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     save_fn = _block_after(settings_source, "function saveSettings(options) {")
     assert "serverMerged ? [] : _collectExplicitSharedKeys(settings)" in save_fn
     assert "const serverMerged = !!(options && options.serverMerged);" in save_fn
+    assert "const pendingRecovery = !!(options && options.pendingRecovery);" in save_fn
     # The pre-hydration migration write is explicitly non-authoritative.
     assert "_writeSharedSettings(settings, []);" in settings_source
 
-    write_fn = settings_source.split("function _writeSharedSettings(snapshot, explicitKeys) {", 1)[
-        1
-    ].split("\n    }", 1)[0]
+    write_fn = settings_source.split(
+        "function _writeSharedSettings(snapshot, explicitKeys, pendingRecovery) {", 1
+    )[1].split("\n    }", 1)[0]
     assert "writeId: _nextSharedWriteId()," in write_fn
     assert "changedKeys: explicitKeys || []," in write_fn
     assert "hydrated: S.settingsHydrated === true" in write_fn
+    assert "pendingRecovery: pendingRecovery === true" in write_fn
     assert "localStorage.setItem('project_neko_settings', JSON.stringify(payload));" in write_fn
 
     # The write id must be strictly increasing within a window and comparable
@@ -2112,12 +2114,13 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           if (!cond) throw new Error('ASSERT: ' + msg);
         }
 
-        function makeContext() {
+        function makeContext(initialSettings) {
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
           const timers = [];
           const writes = [];
+          let savedShared = initialSettings ? JSON.stringify(initialSettings) : null;
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
             setInterval() { return 0; },
@@ -2129,8 +2132,13 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             },
             clearTimeout() {},
             localStorage: {
-              getItem() { return null; },
-              setItem(key, value) { writes.push({ key, value }); },
+              getItem(key) {
+                return key === 'project_neko_settings' ? savedShared : null;
+              },
+              setItem(key, value) {
+                if (key === 'project_neko_settings') savedShared = value;
+                writes.push({ key, value });
+              },
               removeItem() {},
             },
             document: { getElementById() { return null; } },
@@ -2162,6 +2170,9 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             S: sandbox.window.appState,
             win: sandbox.window,
             mod: sandbox.window.appSettings,
+            sharedWrites() {
+              return writes.filter((w) => w.key === 'project_neko_settings');
+            },
             lastSharedWrite() {
               const shared = writes.filter((w) => w.key === 'project_neko_settings');
               assert(shared.length > 0, 'the module must persist the shared settings snapshot');
@@ -2369,6 +2380,79 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             JSON.stringify(resharedMeta.asrDecision) === JSON.stringify(serverDecision),
             'an unrelated save must retain the accepted server decision tuple'
+          );
+
+          // ---- Scenario 7: a persisted server-merge tuple survives reload.
+          // changedKeys is intentionally empty because this is authority from
+          // the server, not a new browser user action.
+          const bootDecision = {
+            writeId: Date.now() + 1000,
+            writerId: 'server-ahead',
+            value: false,
+          };
+          const reloaded = makeContext({
+            independentAsrEnabled: false,
+            _sharedWriteMeta: {
+              writeId: bootDecision.writeId - 1,
+              writerId: 'merging-window',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              asrDecision: bootDecision,
+            },
+          });
+          reloaded.win.mergeMessagesEnabled = true;
+          reloaded.mod.saveSettings({ skipServerSync: true });
+          const afterReloadMeta = JSON.parse(reloaded.lastSharedWrite())._sharedWriteMeta;
+          assert(
+            JSON.stringify(afterReloadMeta.asrDecision) === JSON.stringify(bootDecision),
+            'reload must restore and retain a matching server-merge ASR tuple'
+          );
+          reloaded.S.independentAsrEnabled = true;
+          reloaded.mod.saveSettings({ skipServerSync: true });
+          const nextLocalDecision = JSON.parse(
+            reloaded.lastSharedWrite()
+          )._sharedWriteMeta.asrDecision;
+          assert(
+            nextLocalDecision.writeId > bootDecision.writeId,
+            'the first local toggle after reload must supersede the persisted server tuple'
+          );
+
+          // ---- Scenario 8: pending recovery writes terminate instead of
+          // bouncing between two windows with different pending keys.
+          const pendingA = makeContext();
+          pendingA.win.focusModeEnabled = true;
+          pendingA.mod.saveSettings();
+          const pendingAPayload = pendingA.lastSharedWrite();
+
+          const pendingB = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          pendingB.win.mergeMessagesEnabled = true;
+          pendingB.mod.saveSettings();
+          const pendingBPayload = pendingB.lastSharedWrite();
+
+          pendingA.fireStorage(pendingBPayload);
+          const recoveryPayload = pendingA.lastSharedWrite();
+          const recoveryMeta = JSON.parse(recoveryPayload)._sharedWriteMeta;
+          assert(
+            recoveryMeta.pendingRecovery === true,
+            'the reasserted full snapshot must be marked as pending recovery'
+          );
+          const writesBeforeRecovery = pendingB.sharedWrites().length;
+          pendingB.fireStorage(recoveryPayload);
+          assert(
+            pendingB.sharedWrites().length === writesBeforeRecovery,
+            'a pending window must not answer a recovery with another recovery write'
+          );
+          assert(
+            pendingB.S.mergeMessagesEnabled === true,
+            'the receiving window must still preserve its pending runtime value'
+          );
+          assert(
+            JSON.parse(pendingAPayload)._sharedWriteMeta.pendingRecovery !== true,
+            'ordinary user writes must not be marked as recovery'
           );
 
           console.log('HARNESS_OK');
@@ -3956,7 +4040,8 @@ def test_asr_decision_tuple_survives_unrelated_saves():
 
     # The write carries the id of the decision that produced the value...
     write_fn = _block_after(
-        settings_source, "function _writeSharedSettings(snapshot, explicitKeys) {"
+        settings_source,
+        "function _writeSharedSettings(snapshot, explicitKeys, pendingRecovery) {",
     )
     assert "ownMeta.asrDecision = {" in write_fn
     assert "_lastAsrDecision.value === snapshot.independentAsrEnabled" in write_fn
