@@ -233,13 +233,32 @@ def test_every_core_locale_round_trips():
         assert got == locale, f"{locale!r} -> {got!r}"
 
 
+LOCALE_PREFIXES = {"zh", "en", "ja", "ko", "ru", "es", "pt"}
+
+
+def _is_locale_prefix_literal(value: str) -> bool:
+    """Whether a startswith() literal looks like locale prefix-matching.
+
+    Keyed on the *primary* subtag so a region-qualified literal like "zh-tw"
+    counts — that form is how prompts_icebreaker._prompt_lang_from_data slipped
+    past an earlier, narrower version of this guard.
+    """
+    return value.lower().split("-")[0].strip() in LOCALE_PREFIXES
+
+
 def _locale_predicate_functions():
     """Yield (file, function) for prompt functions doing their own locale sniffing.
 
     Discovered from the AST rather than listed, so a newly hand-rolled
     normalizer is caught without editing this test.
+
+    Only startswith is inspected, deliberately. Normalizing a locale means
+    prefix-matching an arbitrary input; branching on an already-normalized
+    locale uses equality (e.g.
+    prompts_avatar_interaction._avatar_interaction_prompt_actor's
+    ``locale == "ko"`` for Korean subject particles, or the per-call-site zh-TW
+    collapse in prompts_memory). Those are legitimate and stay out.
     """
-    locale_prefixes = {"zh", "en", "ja", "ko", "ru", "es", "pt"}
     hits = []
     for path in sorted(PROMPTS_DIR.glob("*.py")):
         if path.name == "_locale.py":
@@ -256,11 +275,24 @@ def _locale_predicate_functions():
                     and inner.args
                     and isinstance(inner.args[0], ast.Constant)
                     and isinstance(inner.args[0].value, str)
-                    and inner.args[0].value.lower().rstrip("-") in locale_prefixes
+                    and _is_locale_prefix_literal(inner.args[0].value)
                 ):
                     hits.append((path.name, node.name, inner.args[0].value))
                     break
     return hits
+
+
+def test_guard_matches_region_qualified_locale_literals():
+    """The guard must not narrow back to bare primary subtags.
+
+    prompts_icebreaker._prompt_lang_from_data matched with
+    startswith("zh-tw") / ("zh-hk") / ("zh-hant") and went unnoticed while this
+    predicate only accepted "zh".
+    """
+    for literal in ("zh", "zh-tw", "zh-TW", "zh-hk", "zh-hant", "en", "pt-br"):
+        assert _is_locale_prefix_literal(literal), literal
+    for literal in ("hello", "http", "prompt", "topic_state", ""):
+        assert not _is_locale_prefix_literal(literal), literal
 
 
 def test_no_hand_rolled_locale_normalizers_return():
