@@ -87,6 +87,33 @@ def test_live2d_niri_physical_crop_mouse_tracking_splits_virtual_and_local_coord
     assert "isPointerNearFloatingButtons()" in source
 
 
+def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
+    source = _live2d_source()
+    assert "function isLive2DHostModelDragActive()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    assert "typeof api.isHostModelDragActive !== 'function'" in source
+    assert "return api.isHostModelDragActive() === true;" in source
+
+    drag_source = source.split(
+        "Live2DManager.prototype.setupDragAndDrop = function",
+        1,
+    )[1]
+    drag_end = drag_source.split("const onDragEnd = async (event) => {", 1)[1].split(
+        "const onDragMove = (event) => {",
+        1,
+    )[0]
+    drag_move = drag_source.split("const onDragMove = (event) => {", 1)[1].split(
+        "// 清理旧的监听器",
+        1,
+    )[0]
+
+    assert "if (isLive2DHostModelDragActive()) return;" in drag_end
+    assert "if (isLive2DHostModelDragActive()) return;" in drag_move
+    assert drag_move.index("if (isLive2DHostModelDragActive()) return;") < drag_move.index(
+        "model.x = x - dragStartPos.x;"
+    )
+
+
 def test_live2d_click_touch_set_logs_trigger_summary():
     source = _live2d_source()
     summary_logger = _js_block(source, "function logLive2DClickTriggerSummary")
