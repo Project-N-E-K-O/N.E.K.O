@@ -93,6 +93,8 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
     assert "window.__nekoNiriPetPhysicalCrop" in source
     host_state = _js_block(source, "function isLive2DHostModelDragActive")
     assert "if (!api) return false;" in host_state
+    assert "const ownershipVersion = Number(api.hostModelDragOwnershipVersion);" in host_state
+    assert "if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;" in host_state
     assert "if (typeof api.isHostModelDragActive !== 'function') return true;" in host_state
     assert "return api.isHostModelDragActive() !== false;" in host_state
     assert "catch (_) {\n        return true;" in host_state

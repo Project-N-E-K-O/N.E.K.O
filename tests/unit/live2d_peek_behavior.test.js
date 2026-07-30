@@ -292,7 +292,7 @@ function createCoreHarness({
     };
 }
 
-test('physical-crop drag ownership fails closed only after the host bridge exists', () => {
+test('physical-crop drag ownership fails closed only after the host declares support', () => {
     const {
         window,
         isLive2DHostModelDragActive,
@@ -300,7 +300,11 @@ test('physical-crop drag ownership fails closed only after the host bridge exist
 
     assert.equal(isLive2DHostModelDragActive(), false);
 
+    window.__nekoNiriPetPhysicalCrop = {};
+    assert.equal(isLive2DHostModelDragActive(), false);
+
     window.__nekoNiriPetPhysicalCrop = {
+        hostModelDragOwnershipVersion: 1,
         isHostModelDragActive: () => false,
     };
     assert.equal(isLive2DHostModelDragActive(), false);

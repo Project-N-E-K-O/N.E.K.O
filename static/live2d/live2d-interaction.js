@@ -59,12 +59,15 @@ function isLive2DHostModelDragActive() {
     // authoritative while the crop carrier is transitioning. api.isActive()
     // can briefly change during prepare/commit without ending that session.
     const api = typeof window !== 'undefined' ? window.__nekoNiriPetPhysicalCrop : null;
-    // No bridge object means the ordinary web/non-Niri path owns coordinates.
-    // Once the physical-crop bridge exists, however, an incompatible or
-    // failing ownership method must not re-enable the legacy writer: that
-    // would let renderer-local and host screen-coordinate paths move the same
-    // model concurrently.
+    // No bridge object, or a bridge predating the explicit ownership
+    // capability, means the ordinary web/legacy path owns coordinates. Once a
+    // bridge declares that capability, however, an incompatible or failing
+    // ownership method must not re-enable the legacy writer: that would let
+    // renderer-local and host screen-coordinate paths move the same model
+    // concurrently.
     if (!api) return false;
+    const ownershipVersion = Number(api.hostModelDragOwnershipVersion);
+    if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;
     if (typeof api.isHostModelDragActive !== 'function') return true;
     try {
         return api.isHostModelDragActive() !== false;
