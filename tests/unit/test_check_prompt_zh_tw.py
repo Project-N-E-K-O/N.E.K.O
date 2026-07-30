@@ -1236,3 +1236,52 @@ def test_failure_message_mentions_both_noqa_positions():
     """
     source = pathlib.Path(SCRIPT_PATH).read_text(encoding="utf-8")
     assert "opening or closing line if it genuinely does not need one" in source
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"zh-TW": "t"}\nT.update({"en": "e", "zh": "s"})',
+    'T = {"zh-TW": "t"}\nT |= {"en": "e", "zh": "s"}',
+    'OTHER.update({"en": "e", "zh": "s"})',
+])
+def test_mutation_payload_is_a_fragment(src):
+    """An `update()` / `|=` payload alone says nothing about the assembled table.
+
+    Whether the result has zh-TW depends on the target, which the payload
+    expression does not show — so judging it standalone reports tables that are
+    compliant at runtime.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT.update({"zh-TW": "t"})',
+    'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"',
+    'T = {"en": "e", "zh": "s"}\nT |= {"zh-TW": "t"}',
+])
+def test_table_backfilled_by_a_later_mutation_is_exempt(src):
+    """The other direction: a mutation that supplies zh-TW makes the table fine."""
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT["other"] = "x"',
+    'T = {"en": "e", "zh": "s"}\nT.update({"ja": "j"})',
+    'T = {"en": "e", "zh": "s"}\nT |= {"ja": "j"}',
+])
+def test_unrelated_mutation_does_not_exempt_the_table(src):
+    """Exemption is keyed on zh-TW actually being supplied.
+
+    Exempting on any mutation would let `T["other"] = x` excuse a real offender —
+    trading one rare false positive for a broad blind spot.
+    """
+    assert _violations(src) == [1]
+
+
+def test_backfill_exemption_is_per_name():
+    """Only the mutated name is exempt; a sibling table is still judged."""
+    src = (
+        'A = {"en": "e", "zh": "s"}\n'
+        'B = {"en": "x", "zh": "y"}\n'
+        'A["zh-TW"] = "t"'
+    )
+    assert MOD.find_violations(ast.parse(src), src.splitlines()) == [2]

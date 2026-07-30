@@ -56,6 +56,31 @@ and passes. That is a deliberate accept — the alternative is matching dicts
 across revisions by identity, and every candidate for that identity (position,
 key set, scheme) is what the three wrong turns above already tried.
 
+Scope: one expression at a time, plus one cross-statement exemption
+==================================================================
+A table assembled across statements is not judged::
+
+    T = {"en": "e"}
+    T["zh"] = "s"          # T now needs zh-TW, and this gate will not say so
+
+Judging that needs intra-procedural data flow — binding names to mapping state,
+then following subscript assignments, ``update()`` calls and ``|=`` through
+scopes, aliases, branches and loops. So mutation *payloads* are suppressed as
+fragments (alone they say nothing about the assembled table) and the assembled
+table goes unjudged. Same family as the "unknowable keys stay silent" rule.
+
+The one cross-statement case that *is* handled is the false-positive direction::
+
+    T = {"en": "e", "zh": "s"}
+    T.update({"zh-TW": "t"})    # or T["zh-TW"] = ..., or T |= {...}
+
+That table is compliant at runtime, so reporting it would be a false positive —
+and false positives are what get a gate worked around rather than satisfied. The
+exemption is deliberately keyed on the mutation *demonstrably supplying zh-TW*:
+exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a real
+offender, trading one rare false positive for a broad blind spot.
+
+
 Usage:
     python scripts/check_prompt_zh_tw.py [--base origin/main]
     python scripts/check_prompt_zh_tw.py --full     # list the whole backlog
@@ -314,7 +339,85 @@ def _merge_operands(node: ast.AST) -> list[ast.AST]:
         return list(node.args) + [kw.value for kw in node.keywords if kw.arg is None]
     if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         return [node.left, node.right]
+    if isinstance(node, ast.AugAssign) and isinstance(node.op, ast.BitOr):
+        return [node.value]  # `T |= {...}` — same merge, statement form
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "update"
+        and node.args
+    ):
+        # `T.update({...})` merges into T, so the payload is a fragment for the
+        # same reason a spread operand is: whether the assembled table has zh-TW
+        # depends on T, which this expression does not show. Suppressing it avoids
+        # reporting `T = {"zh-TW": ...}` / `T.update({"en": ..., "zh": ...})` —
+        # compliant at runtime — as an offender.
+        return [node.args[0]]
     return []
+
+
+def _backfilled_table_nodes(tree: ast.AST) -> set[int]:
+    """ids of tables that a later mutation gives ``'zh-TW'`` to.
+
+    Covers the one cross-statement shape worth handling::
+
+        T = {"en": "e", "zh": "s"}
+        T.update({"zh-TW": "t"})        # or T["zh-TW"] = ..., or T |= {...}
+
+    The table is compliant at runtime, so reporting it is a false positive — and
+    false positives are what get a gate worked around rather than satisfied.
+
+    Deliberately narrow: only a mutation that *demonstrably supplies zh-TW*
+    exempts its target. Suppressing on any mutation would let an unrelated
+    ``T["other"] = x`` excuse a real offender, trading one rare false positive for
+    a broad blind spot. Names are matched across the whole module rather than
+    per-scope: over-matching here can only exempt a table whose name is somewhere
+    given zh-TW, which is the safe direction.
+    """
+    backfilled: set[str] = set()
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Subscript)
+            and isinstance(node.targets[0].value, ast.Name)
+            and isinstance(node.targets[0].slice, ast.Constant)
+            and node.targets[0].slice.value == TRADITIONAL_KEY
+        ):
+            backfilled.add(node.targets[0].value.id)
+            continue
+        target: str | None = None
+        payload: ast.AST | None = None
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "update"
+            and isinstance(node.func.value, ast.Name)
+            and node.args
+        ):
+            target, payload = node.func.value.id, node.args[0]
+        elif (
+            isinstance(node, ast.AugAssign)
+            and isinstance(node.op, ast.BitOr)
+            and isinstance(node.target, ast.Name)
+        ):
+            target, payload = node.target.id, node.value
+        if target is None or payload is None:
+            continue
+        keys = resolve_keys(payload)
+        if keys and TRADITIONAL_KEY in keys:
+            backfilled.add(target)
+
+    if not backfilled:
+        return set()
+    return {
+        id(node.value)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and len(node.targets) == 1
+        and isinstance(node.targets[0], ast.Name)
+        and node.targets[0].id in backfilled
+    }
 
 
 def _table_nodes(tree: ast.AST) -> Iterator[tuple[ast.AST, set[str]]]:
@@ -338,7 +441,7 @@ def _table_nodes(tree: ast.AST) -> Iterator[tuple[ast.AST, set[str]]]:
     unresolvable one is not judged, but traversal continues through it so the
     independent tables it holds are still found.
     """
-    suppressed: set[int] = set()
+    suppressed: set[int] = _backfilled_table_nodes(tree)
     stack: list[ast.AST] = [tree]
     while stack:
         node = stack.pop()
