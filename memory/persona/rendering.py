@@ -431,7 +431,16 @@ class RenderingMixin:
         be recovered — a bulk card import on a subject that never renders
         would silently take another subject's character-card lines with
         it.
+
+        Entries with no renderable text are dropped before counting, for
+        the same reason: compose emits nothing for them, so letting them
+        occupy slots spends the allowance on blank lines. A hand-edited or
+        half-migrated persona.json is where they come from.
         """
+        protected_entries = [
+            (entity_key, entry) for entity_key, entry in protected_entries
+            if isinstance(entry, dict) and (entry.get('text') or '').strip()
+        ]
         if len(protected_entries) <= PERSONA_RENDER_PROTECTED_MAX_ENTRIES:
             return protected_entries
         logger.warning(

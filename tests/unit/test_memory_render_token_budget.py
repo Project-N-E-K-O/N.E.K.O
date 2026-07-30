@@ -987,6 +987,32 @@ async def test_suppressed_entries_are_capped_by_count_with_a_warning():
 
 
 @pytest.mark.asyncio
+async def test_blank_protected_entries_do_not_spend_the_count_cap():
+    """The cap counts lines that reach the prompt, not dict entries.
+
+    Compose skips an entry with no text, so letting one occupy a slot
+    spends the allowance on nothing — enough blanks in front and every
+    real character-card line disappears while the section renders empty.
+    Hand-edited or half-migrated persona.json is where blanks come from.
+    """
+    persona = {
+        'master': {'facts': [
+            _entry(f'blank{j}', '   ', protected=True) for j in range(4)
+        ] + [
+            _entry('card', '主人是一只猫娘的主人', protected=True),
+        ]},
+    }
+    harness = _RenderHarness(persona)
+
+    with patch('memory.persona.rendering.PERSONA_RENDER_PROTECTED_MAX_ENTRIES', 4):
+        rendered = await harness.arender_persona_markdown('小天')
+
+    assert '主人是一只猫娘的主人' in rendered, (
+        "空白 protected 条目占满了条数上限，真正的角色卡反而没渲染"
+    )
+
+
+@pytest.mark.asyncio
 async def test_protected_entries_still_bypass_the_token_budget():
     """The count cap must not turn into a token cap by accident — the
     exemption is the whole reason the split exists."""
