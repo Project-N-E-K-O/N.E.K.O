@@ -567,12 +567,25 @@ def test_run_flags_endpointing_layer_violations(
     [
         (
             "main_logic/asr_client/endpointing/__init__.py",
+            "",
+            "endpointing/__init__.py may contain only a package docstring",
+        ),
+        (
+            "main_logic/asr_client/endpointing/__init__.py",
             '"""package."""\nfrom .smart_turn_v3 import SmartTurnV3\n',
             "endpointing/__init__.py may contain only a package docstring",
         ),
         (
             "main_logic/asr_client/endpointing/onnx_runtime.py",
             "import onnxruntime\n",
+            "onnxruntime must remain a lazy function-local import",
+        ),
+        (
+            "main_logic/asr_client/endpointing/onnx_runtime.py",
+            "try:\n"
+            "    import onnxruntime\n"
+            "except ImportError:\n"
+            "    onnxruntime = None\n",
             "onnxruntime must remain a lazy function-local import",
         ),
     ],
@@ -600,6 +613,62 @@ def test_run_flags_endpointing_import_time_regressions(
     assert not any(
         violation.code == "CORE_FACADE_LAYOUT" for violation in violations
     )
+
+
+@pytest.mark.unit
+def test_endpointing_nonliteral_dynamic_import_is_reported_once(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = tmp_path / "main_logic" / "asr_client" / "endpointing" / "probe.py"
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "import importlib\n\n\n"
+        "def load(module_name):\n"
+        "    return importlib.import_module(module_name)\n",
+        encoding="utf-8",
+    )
+
+    violations = [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "non-literal module name" in violation.message
+    ]
+
+    assert len(violations) == 1
+
+
+@pytest.mark.unit
+def test_endpointing_allows_function_local_onnxruntime_import(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    probe = (
+        tmp_path
+        / "main_logic"
+        / "asr_client"
+        / "endpointing"
+        / "onnx_runtime.py"
+    )
+    probe.parent.mkdir(parents=True)
+    probe.write_text(
+        "def load_runtime():\n"
+        "    import onnxruntime\n"
+        "    return onnxruntime\n",
+        encoding="utf-8",
+    )
+
+    assert not [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "ASR_LAYERING"
+        and "onnxruntime must remain" in violation.message
+    ]
 
 
 @pytest.mark.unit

@@ -591,6 +591,7 @@ def _dynamic_import_violations(
     alias_paths: dict[str, str],
     forbidden_prefix: str | tuple[str, ...],
     where: str,
+    report_generic: bool = True,
 ) -> list["Violation"]:
     """ASR_LAYERING violations for dynamic imports in a guarded module.
 
@@ -614,30 +615,43 @@ def _dynamic_import_violations(
         if not dynamic:
             continue
         if targets is None:
-            out.append(Violation(
-                path, node.lineno, node.col_offset, "ASR_LAYERING",
-                f"dynamic import with a non-literal module name is not allowed in "
-                f"{where} — the layering gate cannot verify its target; use a "
-                f"static import or a string literal",
-            ))
-        else:
-            matched_prefix = next(
-                (
-                    prefix
-                    for target in targets
-                    for prefix in forbidden_prefixes
-                    if target == prefix
-                    or target.startswith(f"{prefix}.")
-                ),
-                None,
-            )
-            if matched_prefix is None:
-                continue
-            out.append(Violation(
-                path, node.lineno, node.col_offset, "ASR_LAYERING",
-                f"{where} must not import {matched_prefix} (dynamic import)",
-            ))
+            if report_generic:
+                out.append(Violation(
+                    path, node.lineno, node.col_offset, "ASR_LAYERING",
+                    f"dynamic import with a non-literal module name is not allowed in "
+                    f"{where} — the layering gate cannot verify its target; use a "
+                    f"static import or a string literal",
+                ))
+            continue
+        matched_prefix = next(
+            (
+                prefix
+                for target in targets
+                for prefix in forbidden_prefixes
+                if target == prefix
+                or target.startswith(f"{prefix}.")
+            ),
+            None,
+        )
+        if matched_prefix is None:
+            continue
+        out.append(Violation(
+            path, node.lineno, node.col_offset, "ASR_LAYERING",
+            f"{where} must not import {matched_prefix} (dynamic import)",
+        ))
     return out
+
+
+def _module_scope_nodes(tree: ast.Module):
+    """Yield nodes evaluated at module import time, excluding function bodies."""
+
+    stack = list(reversed(tree.body))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        stack.extend(reversed(list(ast.iter_child_nodes(node))))
 
 
 def _asr_runtime_alias_reads(fn: ast.AST, forbidden: set[str]) -> list[tuple[int, int, str]]:
@@ -1165,6 +1179,7 @@ def run(root: Path) -> list[Violation]:
                 path, tree, alias_paths,
                 ("main_logic.core", "main_logic.voice_input"),
                 "asr_client",
+                report_generic=not path.is_relative_to(endpointing_dir),
             ))
 
     if transcript_registry_dir.exists():
@@ -1238,7 +1253,6 @@ def run(root: Path) -> list[Violation]:
                         "dynamic imports are not allowed in voice_input "
                         f"(found {detail})",
                     ))
-
     if voice_turn_dir.exists():
         for path in sorted(voice_turn_dir.rglob("*.py")):
             tree = parse(path)
@@ -1305,7 +1319,11 @@ def run(root: Path) -> list[Violation]:
                 node = (
                     endpointing_init_tree.body[1]
                     if len(endpointing_init_tree.body) > 1
-                    else endpointing_init_tree.body[0]
+                    else (
+                        endpointing_init_tree.body[0]
+                        if endpointing_init_tree.body
+                        else None
+                    )
                 )
                 violations.append(Violation(
                     endpointing_init,
@@ -1356,23 +1374,24 @@ def run(root: Path) -> list[Violation]:
                         "ASR_LAYERING",
                         "endpointing must not import scripts",
                     ))
-            for forbidden, owner in (
+            for index, (forbidden, owner) in enumerate((
                 ("main_logic.core", "endpointing"),
                 ("main_logic.asr_client.workers", "endpointing"),
                 ("scripts", "endpointing"),
-            ):
+            )):
                 violations.extend(_dynamic_import_violations(
                     path,
                     tree,
                     alias_paths,
                     forbidden,
                     owner,
+                    report_generic=(index == 0),
                 ))
 
         onnx_runtime_path = endpointing_dir / "onnx_runtime.py"
         if onnx_runtime_path.exists():
             onnx_tree = parse(onnx_runtime_path)
-            for node in onnx_tree.body:
+            for node in _module_scope_nodes(onnx_tree):
                 imports_onnxruntime = (
                     isinstance(node, ast.Import)
                     and any(alias.name == "onnxruntime" for alias in node.names)

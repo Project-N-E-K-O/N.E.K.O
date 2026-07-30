@@ -114,6 +114,7 @@ def test_build_context_does_not_exclude_voice_turn_assets():
     # The runtime never downloads: .gitignore must keep the manifest (and the
     # notices file) reviewable in git while the weights stay untracked.
     gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert "/data/" in gitignore.splitlines()
     assert (
         "!/main_logic/asr_client/endpointing/models/manifest.json"
         in gitignore
