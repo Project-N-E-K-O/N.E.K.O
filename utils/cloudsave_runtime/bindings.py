@@ -98,13 +98,14 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
         if key != "model_path"
     }
     restored_setting_keys = set(filtered_settings) & _ALLOWED_CONVERSATION_SETTINGS
-    if restored_setting_keys:
+    if restored_setting_keys == _ALLOWED_CONVERSATION_SETTINGS:
         filtered_settings.pop(_CONVERSATION_SETTINGS_RESET_KEY, None)
     else:
-        # A revision-only entry preserves CAS ordering but cannot tell browsers
-        # that the archived absence is authoritative. Persist an explicit
-        # tombstone so clients reset missing fields instead of reposting stale
-        # localStorage values over the restore.
+        # The global entry is rebuilt solely from the archive, so every omitted
+        # conversation field is authoritative absence, not "leave the current
+        # value untouched". Persist a tombstone for empty and partial archives;
+        # clients materialize defaults plus the restored overrides before their
+        # first full CAS writeback.
         filtered_settings[_CONVERSATION_SETTINGS_RESET_KEY] = True
     current_revision = current_global.get(_CONVERSATION_SETTINGS_REVISION_KEY)
     imported_revision = filtered_settings.get(_CONVERSATION_SETTINGS_REVISION_KEY)
