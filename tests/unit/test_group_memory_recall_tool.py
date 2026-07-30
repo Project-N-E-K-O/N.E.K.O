@@ -1403,6 +1403,13 @@ async def test_resolver_appends_recent_other_speakers():
         # 合成事件（入群通知）：名义 sender 没有说话，最新也不占槽位。
         {"sender_id": "9005", "message_id": "welcome_7788_9005_7",
          "timestamp": 7, "synthetic_source": "group_join_notice"},
+        # 升级前的旧行：无 synthetic_source 字段，靠 "welcome_" id 前缀
+        # 兜底识别，同样不占槽位。
+        {"sender_id": "9006", "message_id": "welcome_7788_9006_8",
+         "timestamp": 8},
+        # 旧行 + 普通 message_id：字段缺失不等于合成，照常算发言人——
+        # 但它比 9004 还新，会顶掉最旧的 9001。
+        {"sender_id": "9007", "message_id": "m9", "timestamp": 9},
     ]
     plugin.backlog_store = SimpleNamespace(
         get_recent_group_messages=AsyncMock(return_value=timeline),
@@ -1414,15 +1421,16 @@ async def test_resolver_appends_recent_other_speakers():
     assert subjects == [
         QQMemoryBridge.group_subject("7788"),
         QQMemoryBridge.group_participant_subject("7788", "2046"),
-        # 新→旧：合成事件的 9005 被排除，然后 9004、9003、9001
-        # （跳过当前发言人 2046，9001 去重）。
+        # 新→旧：合成事件的 9005（带字段）与 9006（legacy 行按 welcome_
+        # 前缀兜底）被排除，然后 9007（legacy 普通行照常算）、9004、9003
+        # （跳过当前发言人 2046，9001 被更新的发言人顶出前 3）。
+        QQMemoryBridge.group_participant_subject("7788", "9007"),
         QQMemoryBridge.group_participant_subject("7788", "9004"),
         QQMemoryBridge.group_participant_subject("7788", "9003"),
-        QQMemoryBridge.group_participant_subject("7788", "9001"),
     ]
-    assert not any("9005" in s["subject_id"] for s in subjects), (
-        "合成事件的关联用户被当成了最近发言人"
-    )
+    assert not any(
+        s["subject_id"].endswith((":9005", ":9006")) for s in subjects
+    ), "合成事件的关联用户被当成了最近发言人"
     # 5 个 subject 在读端点 1..8 上限之内。
     assert len(subjects) <= 8
 

@@ -1049,6 +1049,14 @@ async def _process_scoped_history_segments(
             status_code=502,
             detail="scoped fact extraction failed; retry later",
         ) from exc
+    if len(segment_results) != len(parsed):
+        # 抽取层契约是「每段一个结果，按请求顺序」；不等长说明实现漂移，
+        # 下面的 zip 会静默截断尾段而调用方按位置消费。绝不猜——整批当
+        # 失败暴露，调用方保留全部桶重试。
+        raise HTTPException(
+            status_code=502,
+            detail="scoped fact extraction returned mismatched segments",
+        )
     return {
         "status": "processed",
         "segments": [

@@ -2560,6 +2560,20 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
             )
         assert excinfo.value.status_code == 502
 
+    # 抽取层结果数与请求段数不等（实现漂移）：绝不按位置 zip 截断，
+    # 整批 502 让调用方保留全部桶重试。
+    mismatched_store = MagicMock()
+    mismatched_store.extract_facts_batch = AsyncMock(return_value=[
+        {"status": "ok", "created": []},
+    ])
+    with patch.object(memory_routes.runtime, "fact_store", mismatched_store):
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko", ScopedHistoryRequest(segments=segments),
+            )
+        assert excinfo.value.status_code == 502
+        assert "mismatched" in excinfo.value.detail
+
 
 @pytest.mark.asyncio
 async def test_group_digest_default_label_is_not_stamped_as_provenance():
@@ -4627,6 +4641,10 @@ async def test_cross_group_section_removed_when_consent_revoked():
     assert "cross_group_section = self._append_cross_group_section(" in bundle_src
     assert "cross_group_section=cross_group_section" in bundle_src
     assert "used_member_subject=used_member_subject" in bundle_src
+    # member 判据的权威来源是 resolver 经 out-param 回传，不是调用方复刻
+    # 的影子条件（影子偏 False 的方向正是隐私回归）。
+    assert "used_member_subject_out=core_used_member" in bundle_src
+    assert "used_member_subject = bool(core_used_member)" in bundle_src
 
     # Post-await revocation: the node strips the exact section text.
     from plugin.plugins.qq_auto_reply.reply_context_node import (
@@ -4650,6 +4668,77 @@ async def test_cross_group_section_removed_when_consent_revoked():
     assert "烤肉" not in stripped
     assert "前段" in stripped and "后段" in stripped
 
+
+
+@pytest.mark.asyncio
+async def test_core_memory_section_reports_member_usage_via_out_param():
+    """member 判据经 out-param 从 resolver 回传（不是影子条件）：resolver
+    真带了 participant 域才置位；member 关掉时 resolver 只回群 subject，
+    out-param 保持空。钉住接线本身——helper 对了没人接线就是死代码。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = SimpleNamespace(
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        logger=MagicMock(),
+        memory_bridge=SimpleNamespace(
+            group_subject=QQMemoryBridge.group_subject,
+            group_participant_subject=QQMemoryBridge.group_participant_subject,
+            fetch_scoped_bootstrap_memory=AsyncMock(return_value="群规是不剧透"),
+        ),
+    )
+    service = QQSessionInstructionService(plugin)
+
+    flag: list = []
+    text = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="主人",
+        context_ready_template="{name}/{master}",
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+        used_member_subject_out=flag,
+    )
+    assert text and "群规是不剧透" in text
+    assert flag == [True]
+    sent_subjects = (
+        plugin.memory_bridge.fetch_scoped_bootstrap_memory
+        .await_args.kwargs["subjects"]
+    )
+    assert sent_subjects[0] == QQMemoryBridge.group_subject("7788")
+    assert (
+        QQMemoryBridge.group_participant_subject("7788", "2046")
+        in sent_subjects
+    )
+
+    # member 关掉：resolver 只回群 subject，out-param 不置位。
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    plugin.memory_bridge.fetch_scoped_bootstrap_memory.reset_mock()
+    flag_off: list = []
+    text = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="主人",
+        context_ready_template="{name}/{master}",
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+        used_member_subject_out=flag_off,
+    )
+    assert text
+    assert flag_off == []
+    sent_subjects = (
+        plugin.memory_bridge.fetch_scoped_bootstrap_memory
+        .await_args.kwargs["subjects"]
+    )
+    assert sent_subjects == [QQMemoryBridge.group_subject("7788")]
 
 
 @pytest.mark.asyncio

@@ -3149,6 +3149,114 @@ async def test_genai_nameless_fragment_round_fires_round_start_and_finalizes(
     )
 
 
+@pytest.mark.asyncio
+async def test_genai_cap_one_normal_recall_logs_info_not_warning(monkeypatch):
+    """genai 版三分支封顶日志的 cap=1 正常路（与 OpenAI 版对偶）：一次
+    成功执行的 tool 轮耗尽 cap=1 必须是 INFO 而非 WARNING——否则插件在
+    genai 线路上的每次正常召回都会打出 runaway 封顶信号。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+
+    class _Part:
+        def __init__(self, *, function_call=None, text=None):
+            self.text = text
+            self.function_call = function_call
+            self.thought = False
+
+    class _FunctionCall:
+        def __init__(self, name, args, id_=""):
+            self.name = name
+            self.args = args
+            self.id = id_
+
+    class _Content:
+        def __init__(self, parts): self.parts = parts
+
+    class _Candidate:
+        def __init__(self, content):
+            self.content = content
+            self.finish_reason = None
+
+    class _Chunk:
+        def __init__(self, candidates):
+            self.candidates = candidates
+            self.usage_metadata = None
+            self.prompt_feedback = None
+
+    def _wrap(gen):
+        class _StreamWrapper:
+            def __aiter__(self): return self
+            async def __anext__(self):
+                return await gen.__anext__()
+        return _StreamWrapper()
+
+    call_count = [0]
+    handler_calls: list = []
+
+    async def _round_1():
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(function_call=_FunctionCall("recall_memory", {"query": "x"}, id_="c1")),
+        ]))])
+
+    async def _finalize():
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(text="按群规是不剧透"),
+        ]))])
+
+    class _FakeAioClient:
+        class models:
+            @staticmethod
+            async def generate_content_stream(**_kw):
+                call_count[0] += 1
+                return _wrap(_round_1() if call_count[0] == 1 else _finalize())
+
+    class _FakeClient:
+        aio = _FakeAioClient()
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.model = "gemini-2.5-flash"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.has_tools = lambda: False
+    client.max_tool_iterations = 1
+    client._genai_client = _FakeClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client.on_tool_call = handler
+
+    streamed = ""
+    with _capture_ofc_logs() as records:
+        async for c in client._astream_genai_with_tools(
+            [{"role": "user", "content": "x"}]
+        ):
+            if getattr(c, "content", ""):
+                streamed += c.content
+
+    assert handler_calls == ["recall_memory"]
+    assert call_count[0] == 2
+    assert "按群规是不剧透" in streamed
+    assert any(
+        r.levelno == logging.INFO
+        and "single tool round budget spent" in r.getMessage()
+        for r in records
+    )
+    assert not any(
+        r.levelno >= logging.WARNING and "iteration cap" in r.getMessage()
+        for r in records
+    ), "genai cap=1 的正常召回轮不得打 runaway 封顶 WARNING"
+
+
 # ---------------------------------------------------------------------------
 # 4. OmniRealtimeClient wire-format helpers
 # ---------------------------------------------------------------------------

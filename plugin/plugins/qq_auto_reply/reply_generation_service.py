@@ -330,16 +330,19 @@ class QQReplyGenerationService:
                     # prompt_ephemeral 等）绝不能带着本轮的 subject 闭包
                     # 发起召回。
                     try:
-                        user_session.set_tools(None)
-                        user_session.set_tool_call_handler(None)
+                        # round-start 先清：它的闭包攥着本轮的 reply_chunks，
+                        # 越轮存活会清掉下一轮的出站缓冲，而且下一轮在
+                        # _arm_recall_tool 的早退路径（recall_via_tool 关闭、
+                        # 线路不支持 tool call）上不会覆盖这个槽位——排最前
+                        # 保证前两个卸载万一抛异常也连累不到它。
                         set_round_start = getattr(
                             user_session,
                             "set_tool_round_start_callback", None,
                         )
                         if callable(set_round_start):
-                            # 与挂载对偶：round-start 闭包攥着本轮的
-                            # reply_chunks，越轮存活会清掉下一轮的出站缓冲。
                             set_round_start(None)
+                        user_session.set_tools(None)
+                        user_session.set_tool_call_handler(None)
                     except Exception:
                         # 卸载失败不能连累收尾（下面还有历史清理与成员轮
                         # 记录），下一轮挂载会整体覆盖这两个槽位。

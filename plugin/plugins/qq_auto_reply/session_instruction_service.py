@@ -343,17 +343,11 @@ class QQSessionInstructionService:
         core_sender_id = (
             memory_sender_id if memory_sender_id is not None else sender_id
         )
-        # 该段是否会含 participant 域：调用方据此在后续 await 窗口里
-        # member 被关掉时撤除本段。判据与 _build_core_memory_section 内
-        # 的 subject 组装条件一致。
-        used_member_subject = bool(
-            is_group
-            and str(group_id or "").strip()
-            and str(core_sender_id or "").strip()
-            and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                "group_member_memory_enabled", False,
-            )
-        )
+        # 该段是否含 participant 域：调用方据此在后续 await 窗口里 member
+        # 被关掉时撤除本段。判据由 _build_core_memory_section 从 resolver
+        # 拿到后经 out-param 回传（同 used_member_subject_out 既有模式），
+        # 不在这里复刻一份会漂移的影子条件。
+        core_used_member: list = []
         core_memory_text = await self._build_core_memory_section(
             should_use_memory_context=should_use_memory_context,
             her_name=her_name,
@@ -363,7 +357,9 @@ class QQSessionInstructionService:
             group_id=group_id,
             sender_id=core_sender_id,
             locale=user_language,
+            used_member_subject_out=core_used_member,
         )
+        used_member_subject = bool(core_used_member)
         if core_memory_text:
             sections.append(core_memory_text)
         self._append_user_profile_section(
@@ -583,6 +579,7 @@ class QQSessionInstructionService:
         group_id: str | None = None,
         sender_id: str = "",
         locale: str = "",
+        used_member_subject_out: list | None = None,
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -605,11 +602,17 @@ class QQSessionInstructionService:
                 # 域，扩容（+最近发言人）也只在一处生效。
                 from .memory_tool_service import resolve_group_recall_subjects
 
-                subjects, _used_member = await resolve_group_recall_subjects(
+                subjects, used_member = await resolve_group_recall_subjects(
                     self.plugin,
                     group_id=group_id,
                     memory_sender_id=str(sender_id or "").strip(),
                 )
+                if used_member and used_member_subject_out is not None:
+                    # 权威判据来自 resolver（member 门控与最近发言人扩容
+                    # 都收口在它那一处）：调用方不再复刻一份会漂移的影子
+                    # 条件——影子偏 False 的方向正是隐私回归（member 已
+                    # 撤销而 participant 派生段留在 prompt 里）。
+                    used_member_subject_out.append(True)
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,

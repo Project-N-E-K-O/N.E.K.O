@@ -568,6 +568,20 @@ class _GenaiMixin:
                 # 迭代重试，而不是把这轮当成"模型不再调工具"直接 return——
                 # 直接 return 的话既无 forced-finalize 也无封顶日志，pre-tool
                 # 的"我查一下"就成了整条回复。
+                #
+                # leak filter 也按 tool 轮边界收尾（与 collected 分支及
+                # OpenAI 分支入口对偶）：不 finalize/reset 的话，挂起的
+                # 半截文本会跨迭代滞留在 filter 里。本轮没有 assistant
+                # turn 入史，tail 只需 yield 给用户，不进 text buffer。
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
+                    tool_leak_filter.reset()
                 continue
             if collected_tool_calls and self.on_tool_call is not None:
                 # Execute tools, append a unified assistant + tool history (dict shape
