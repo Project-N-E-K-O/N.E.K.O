@@ -705,7 +705,7 @@ test('CAT1 drag writes virtual coordinates without subtracting the crop offset t
     );
     assert.match(
         windowBlurSource,
-        /if \(isDragging &&[\s\S]*?\(dragReleasePending \|\|[\s\S]*?shouldUseGlobalCursorForMouseDrag\(\) \|\|[\s\S]*?return;[\s\S]*?cancelDragState\(\);/
+        /if \(isDragging &&[\s\S]*?\(dragCropHoldPending \|\|[\s\S]*?dragReleasePending \|\|[\s\S]*?shouldUseGlobalCursorForMouseDrag\(\) \|\|[\s\S]*?return;[\s\S]*?cancelDragState\(\);/
     );
     assert.match(
         cropStateAppliedSource,

@@ -1013,7 +1013,8 @@ Object.assign(AvatarButtonMixin.methods, {
                     // keep the verified drag session alive; mouseup, visibility
                     // and the existing safety paths still provide termination.
                     if (isDragging &&
-                        (dragReleasePending ||
+                        (dragCropHoldPending ||
+                            dragReleasePending ||
                             shouldUseGlobalCursorForMouseDrag() ||
                             (dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {
                         return;

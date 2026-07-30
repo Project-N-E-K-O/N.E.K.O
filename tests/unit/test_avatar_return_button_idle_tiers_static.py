@@ -2405,7 +2405,8 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         window_blur_block,
         "local return-ball window blur recovery",
         "if (isDragging &&",
-        "(dragReleasePending ||",
+        "(dragCropHoldPending ||",
+        "dragReleasePending ||",
         "shouldUseGlobalCursorForMouseDrag() ||",
         "(dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {",
         "return;",
@@ -3800,7 +3801,8 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_contains(
         source,
         "if (isDragging &&\n"
-        "                        (dragReleasePending ||\n"
+        "                        (dragCropHoldPending ||\n"
+        "                            dragReleasePending ||\n"
         "                            shouldUseGlobalCursorForMouseDrag() ||\n"
         "                            (dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {\n"
         "                        return;\n"
