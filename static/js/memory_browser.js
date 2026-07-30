@@ -3968,4 +3968,153 @@
     window.resetSelectedTutorial = resetSelectedTutorial;
     window.showTutorialResetNotice = showTutorialResetNotice;
 
+    // ── Memory Component Tabs ──
+
+    let _activeMemoryTab = 'recent';
+    let _componentDataCache = {};
+
+    function _renderMemoryFacts(container, data) {
+        container.innerHTML = '';
+        if (!Array.isArray(data) || !data.length) {
+            container.innerHTML = '<div class="memory-component-empty">无数据</div>';
+            return;
+        }
+        var sorted = data.slice().sort(function (a, b) {
+            return (b.created_at || '').localeCompare(a.created_at || '');
+        });
+        var list = document.createElement('div');
+        list.className = 'memory-component-list';
+        sorted.forEach(function (fact) {
+            var card = document.createElement('div');
+            card.className = 'memory-component-item';
+            var text = document.createElement('div');
+            text.className = 'memory-component-text';
+            text.textContent = fact.text || '(空)';
+            card.appendChild(text);
+            var meta = document.createElement('div');
+            meta.className = 'memory-component-meta';
+            var parts = [];
+            if (fact.created_at) parts.push(fact.created_at.replace('T', ' ').slice(0, 19));
+            if (fact.importance != null) parts.push('重要性: ' + fact.importance);
+            if (fact.source) parts.push('来源: ' + fact.source);
+            if (fact.entity) parts.push('实体: ' + fact.entity);
+            meta.textContent = parts.join(' | ');
+            card.appendChild(meta);
+            list.appendChild(card);
+        });
+        container.appendChild(list);
+    }
+
+    function _renderMemoryReflections(container, data) {
+        container.innerHTML = '';
+        if (!Array.isArray(data) || !data.length) {
+            container.innerHTML = '<div class="memory-component-empty">无数据</div>';
+            return;
+        }
+        var sorted = data.slice().sort(function (a, b) {
+            return (b.created_at || '').localeCompare(a.created_at || '');
+        });
+        var list = document.createElement('div');
+        list.className = 'memory-component-list';
+        sorted.forEach(function (ref) {
+            var card = document.createElement('div');
+            card.className = 'memory-component-item';
+            var text = document.createElement('div');
+            text.className = 'memory-component-text';
+            text.textContent = ref.text || '(空)';
+            card.appendChild(text);
+            var meta = document.createElement('div');
+            meta.className = 'memory-component-meta';
+            var parts = [];
+            if (ref.created_at) parts.push(ref.created_at.replace('T', ' ').slice(0, 19));
+            if (ref.importance != null) parts.push('重要性: ' + ref.importance);
+            if (ref.status) parts.push('状态: ' + ref.status);
+            if (ref.entity) parts.push('实体: ' + ref.entity);
+            meta.textContent = parts.join(' | ');
+            card.appendChild(meta);
+            list.appendChild(card);
+        });
+        container.appendChild(list);
+    }
+
+    function _loadComponentTab(container, name, type) {
+        container.innerHTML = '<div class="memory-component-loading">加载中...</div>';
+        fetch('/api/memory/component/' + encodeURIComponent(name) + '?type=' + encodeURIComponent(type))
+            .then(function (r) { return r.json(); })
+            .then(function (result) {
+                _componentDataCache[type] = result.data;
+                if (type === 'facts' || type === 'facts_archive') _renderMemoryFacts(container, result.data);
+                else if (type === 'reflections') _renderMemoryReflections(container, result.data);
+            })
+            .catch(function () {
+                container.innerHTML = '<div class="memory-component-empty">加载失败</div>';
+            });
+    }
+
+    function switchMemoryTab(tab) {
+        if (tab === _activeMemoryTab) return;
+        _activeMemoryTab = tab;
+
+        document.querySelectorAll('.memory-tab').forEach(function (btn) {
+            var isActive = btn.dataset.tab === tab;
+            btn.classList.toggle('is-active', isActive);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+
+        var container = document.getElementById('memory-chat-edit');
+        var saveRow = document.getElementById('save-row');
+        if (tab === 'recent') {
+            if (saveRow) saveRow.style.display = 'flex';
+            if (currentMemoryFile && currentCatName) {
+                _selectMemoryFileInternal(currentMemoryFile, null, currentCatName, { allowDuringImport: true });
+            } else {
+                container.innerHTML = '<div class="memory-component-empty">请先选择角色</div>';
+            }
+            return;
+        }
+
+        if (saveRow) saveRow.style.display = 'none';
+        if (!currentCatName) {
+            container.innerHTML = '<div class="memory-component-empty">请先选择角色</div>';
+            return;
+        }
+
+        _loadComponentTab(container, currentCatName, tab);
+    }
+
+    function initMemoryTabs() {
+        document.querySelectorAll('.memory-tab').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                switchMemoryTab(btn.dataset.tab);
+            });
+        });
+    }
+
+    // Internal helper: selectMemoryFile without tab-switch guard
+    async function _selectMemoryFileInternal(filename, li, catName, options) {
+        return selectMemoryFile(filename, li, catName, options);
+    }
+
+    // Override selectMemoryFile to always land on recent tab
+    var _selectMemoryFileOrig = selectMemoryFile;
+    selectMemoryFile = function (filename, li, catName, options) {
+        if (_activeMemoryTab !== 'recent') {
+            _activeMemoryTab = 'recent';
+            document.querySelectorAll('.memory-tab').forEach(function (btn) {
+                var isActive = btn.dataset.tab === 'recent';
+                btn.classList.toggle('is-active', isActive);
+                btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            });
+            var saveRow = document.getElementById('save-row');
+            if (saveRow) saveRow.style.display = 'flex';
+        }
+        return _selectMemoryFileOrig(filename, li, catName, options);
+    };
+
+    document.addEventListener('DOMContentLoaded', function () {
+        initMemoryTabs();
+    });
+
+    window.switchMemoryTab = switchMemoryTab;
+
 })();

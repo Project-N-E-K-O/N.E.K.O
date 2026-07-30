@@ -76,7 +76,7 @@
                 <img src="/static/icons/exclamation.png" alt="">
                 <div class="memory-tip-copy">
                     <span class="tip-text" data-i18n="memory.tip1">刚刚结束的对话内容要稍等片刻才会载入，可以重新点击猫娘名称刷新。</span>
-                    <span class="tip-text memory-tip-scope" data-i18n="memory.tip2">仅展示近期记忆；长期记忆已融入猫娘内核，无法浏览。</span>
+                    <span class="tip-text memory-tip-scope" data-i18n="memory.tip2">仅展示近期记忆；长期记忆已融入猫娘内核，可通过上方标签页浏览。</span>
                 </div>
             </div>
             <div class="main">
@@ -281,17 +281,22 @@
                     </div>
                     </div>
                 </section>
-                <div class="editor">
-                    <div class="memory-editor-header">
-                        <div class="memory-editor-context">
-                            <div class="editor-title" data-i18n="memory.chatHistory">聊天记录</div>
+                    <div class="editor">
+                        <div class="memory-editor-header">
+                            <div class="memory-editor-context">
+                                <div class="memory-tab-bar" role="tablist" aria-label="记忆组件">
+                                    <button class="memory-tab is-active" role="tab" aria-selected="true" data-tab="recent" data-i18n="memory.chatHistory">聊天记录</button>
+                                    <button class="memory-tab" role="tab" aria-selected="false" data-tab="facts" data-i18n="memory.facts">事实</button>
+                                    <button class="memory-tab" role="tab" aria-selected="false" data-tab="facts_archive" data-i18n="memory.factsArchive">事实归档</button>
+                                    <button class="memory-tab" role="tab" aria-selected="false" data-tab="reflections" data-i18n="memory.reflections">反思</button>
+                                </div>
+                            </div>
+                            <button type="button" id="memory-import-trigger" class="memory-editor-action" data-memory-panel-trigger="import" aria-controls="memory-import-panel" aria-expanded="false" disabled>
+                                <span data-i18n="memory.openExternalImport">导入记忆</span>
+                            </button>
                         </div>
-                        <button type="button" id="memory-import-trigger" class="memory-editor-action" data-memory-panel-trigger="import" aria-controls="memory-import-panel" aria-expanded="false" disabled>
-                            <span data-i18n="memory.openExternalImport">导入记忆</span>
-                        </button>
-                    </div>
-                    <div id="memory-chat-edit"></div>
-                    <div class="editor-actions" id="save-row" style="display:none;">
+                        <div id="memory-chat-edit"></div>
+                        <div class="editor-actions" id="save-row" style="display:none;">
                         <div id="save-status" role="status" aria-live="polite" aria-atomic="true" hidden>
                             <span class="memory-save-toast-icon" aria-hidden="true"></span>
                             <span class="memory-save-toast-message"></span>

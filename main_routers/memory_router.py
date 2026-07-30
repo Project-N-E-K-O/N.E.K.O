@@ -55,6 +55,17 @@ from memory.external_markdown_import import (
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
+_MEMORY_COMPONENT_FILES = {
+    'facts': 'facts.json',
+    'reflections': 'reflections.json',
+    'persona': 'persona.json',
+    'cursors': 'cursors.json',
+    'events': 'events.ndjson',
+    'outbox': 'outbox.ndjson',
+    'persona_corrections': 'persona_corrections.json',
+    'facts_archive': 'facts_archive.json',
+}
+
 # Pattern for valid recent file names: must start with "recent_", have content, and end with .json
 # Uses blacklist approach instead of whitelist to support CJK characters
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
@@ -1209,3 +1220,24 @@ async def purge_legacy_memory(request: Request):
         'removed': removed,
         'errors': errors,
     }
+
+
+@router.get('/component/{name}')
+async def get_memory_component(name: str, type: str = 'facts'):
+    """Read a memory component file for a given character."""
+    filename = _MEMORY_COMPONENT_FILES.get(type)
+    if not filename:
+        return JSONResponse({"error": f"未知组件类型: {type}"}, status_code=400)
+
+    from utils.config_manager import get_config_manager
+    cm = get_config_manager()
+    path = Path(cm.memory_dir) / name / filename
+
+    if not path.is_file():
+        return JSONResponse({"error": "文件不存在", "data": None}, status_code=200)
+
+    raw = await asyncio.to_thread(_read_text_file, str(path))
+    if filename.endswith('.ndjson'):
+        lines = [json.loads(l) for l in raw.strip().splitlines() if l.strip()]
+        return {"data": lines}
+    return {"data": json.loads(raw)}
