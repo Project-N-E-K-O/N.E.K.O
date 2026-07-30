@@ -356,8 +356,8 @@ def _merge_operands(node: ast.AST) -> list[ast.AST]:
     return []
 
 
-def _backfilled_table_nodes(tree: ast.AST) -> set[int]:
-    """ids of tables that a later mutation gives ``'zh-TW'`` to.
+def _exempt_table_nodes(tree: ast.AST) -> set[int]:
+    """ids of tables that must not be judged on their own.
 
     Covers the one cross-statement shape worth handling::
 
@@ -408,6 +408,16 @@ def _backfilled_table_nodes(tree: ast.AST) -> set[int]:
         if keys and TRADITIONAL_KEY in keys:
             backfilled.add(target)
 
+    # A name used as a merge operand is a fragment by the same argument as an
+    # inline one: `_FRAGMENT = {"en": .., "zh": ..}` / `T = {**_FRAGMENT, "zh-TW":
+    # ..}` assembles a compliant table, so reporting _FRAGMENT is a false
+    # positive. Costs a blind spot if the same name is also used as a whole table,
+    # which is the direction to err in.
+    for node in ast.walk(tree):
+        for operand in _merge_operands(node):
+            if isinstance(operand, ast.Name):
+                backfilled.add(operand.id)
+
     if not backfilled:
         return set()
     return {
@@ -441,7 +451,7 @@ def _table_nodes(tree: ast.AST) -> Iterator[tuple[ast.AST, set[str]]]:
     unresolvable one is not judged, but traversal continues through it so the
     independent tables it holds are still found.
     """
-    suppressed: set[int] = _backfilled_table_nodes(tree)
+    suppressed: set[int] = _exempt_table_nodes(tree)
     stack: list[ast.AST] = [tree]
     while stack:
         node = stack.pop()
@@ -506,22 +516,47 @@ def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
     return [lineno for _node, lineno, _end in _offending_nodes(tree, source_lines)]
 
 
+def _comment_lines(source: str) -> list[str]:
+    """Per-line comment text, indexed like the source's own lines.
+
+    Suppression must be read from comments only. A ``# noqa: PROMPT_ZH_TW``
+    appearing *inside* a string literal is template text, not a directive — and a
+    multiline template whose first line ends with that text would otherwise exempt
+    its own table.
+
+    Line splitting is `re.split` rather than ``str.splitlines()``: the latter also
+    breaks on \\x0b \\x0c \\x1c \\x1d \\x1e \\x85 U+2028 U+2029, none of which
+    CPython counts as a newline, so one inside a literal shifts every later line
+    and a noqa starts matching a neighbour. ``split("\\n")`` is wrong the other
+    way, collapsing a lone-CR file into one line.
+
+    On a tokenize failure every line comes back empty — no suppression rather than
+    wrong suppression, and ``ast.parse`` will have reported the syntax error.
+    """
+    blank = [""] * len(re.split(r"\r\n|\r|\n", source))
+    try:
+        for token in tokenize.generate_tokens(io.StringIO(source).readline):
+            if token.type == tokenize.COMMENT:
+                row = token.start[0]
+                if 1 <= row <= len(blank):
+                    blank[row - 1] += token.string
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return [""] * len(blank)
+    return blank
+
+
 def _parse_source(source: str, origin: str) -> tuple[ast.Module | None, list[str]]:
-    """Parse source and split it into lines that line up with AST line numbers.
+    """Parse source, returning the tree and each line's comment text.
 
-    Not ``str.splitlines()``: it also breaks on \\x0b \\x0c \\x1c \\x1d \\x1e
-    \\x85 U+2028 U+2029, none of which CPython treats as a line break. One of
-    those inside a string literal shifts every later line by one, so a noqa stops
-    matching its own table and starts matching a neighbour.
-
-    Not ``split("\\n")`` either — that collapses a lone-CR file into a single
-    line, which breaks noqa lookup wholesale.
+    The second element feeds noqa lookup only, so it carries comments rather than
+    raw lines — see ``_comment_lines``.
     """
     try:
-        return ast.parse(source), re.split(r"\r\n|\r|\n", source)
+        tree = ast.parse(source)
     except SyntaxError as exc:
         sys.stderr.write(f"{origin}: syntax error ({exc})\n")
         return None, []
+    return tree, _comment_lines(source)
 
 
 def count_offenders(sources: dict[str, str]) -> int:

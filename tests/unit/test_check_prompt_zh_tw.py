@@ -50,9 +50,11 @@ MOD = _load_script_module()
 
 
 def _violations(source: str):
+    """Run the real parse path so noqa comes from comments, not raw lines."""
     source = textwrap.dedent(source)
-    tree = ast.parse(source)
-    return MOD.find_violations(tree, source.splitlines())
+    tree, comments = MOD._parse_source(source, 'test.py')
+    assert tree is not None
+    return MOD.find_violations(tree, comments)
 
 
 def _grew(base: dict[str, str], head: dict[str, str]) -> int:
@@ -1285,3 +1287,66 @@ def test_backfill_exemption_is_per_name():
         'A["zh-TW"] = "t"'
     )
     assert MOD.find_violations(ast.parse(src), src.splitlines()) == [2]
+
+
+@pytest.mark.parametrize("src", [
+    '_FRAGMENT = {"en": "e", "zh": "s"}\nT = {**_FRAGMENT, "zh-TW": "t"}',
+    '_F = {"en": "e", "zh": "s"}\nT = _F | {"zh-TW": "t"}',
+    '_F = {"en": "e", "zh": "s"}\nT = dict(_F, **{"zh-TW": "t"})',
+])
+def test_named_merge_input_is_a_fragment(src):
+    """A name used as a merge operand is a fragment, same as an inline literal.
+
+    The assembled table is compliant, so reporting the named half is a false
+    positive — and false positives are what get a gate worked around.
+    """
+    assert _violations(src) == []
+
+
+def test_named_fragment_exemption_is_per_name():
+    """Only the name actually merged is exempt."""
+    src = (
+        'A = {"en": "e", "zh": "s"}\n'
+        'B = {"en": "x", "zh": "y"}\n'
+        'T = {**A, "zh-TW": "t"}'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [2]
+
+
+def test_noqa_inside_a_string_literal_is_not_a_directive():
+    """Template text that happens to read like a directive must not suppress.
+
+    A multiline value whose first line ends with `# noqa: PROMPT_ZH_TW` sits on
+    the dict's opening line, so a raw-line scan exempted the table it belongs to.
+    """
+    src = 'T = {"en": """# noqa: PROMPT_ZH_TW\nmore text""", "zh": "s"}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+def test_real_comment_still_suppresses_after_the_token_switch():
+    """The token-based lookup must not break ordinary suppression."""
+    for src in (
+        'T = {"en": "e", "zh": "s"}  # noqa: PROMPT_ZH_TW',
+        'T = {\n    "en": "e",\n    "zh": "s",\n}  # noqa: PROMPT_ZH_TW',
+        'T = {  # noqa: PROMPT_ZH_TW\n    "en": "e",\n    "zh": "s",\n}',
+    ):
+        tree, comments = MOD._parse_source(src, "t.py")
+        assert MOD.find_violations(tree, comments) == [], src
+
+
+def test_comment_lines_align_with_source_lines():
+    """The comment list is indexed by line, so lookups cannot drift."""
+    src = 'a = 1\nT = {"en": "e", "zh": "s"}  # noqa: PROMPT_ZH_TW\nb = 2  # other'
+    comments = MOD._comment_lines(src)
+    assert len(comments) == 3
+    assert comments[0] == ""
+    assert "PROMPT_ZH_TW" in comments[1]
+    assert comments[2] == "# other"
+
+
+def test_comment_lines_on_unparseable_source_suppresses_nothing():
+    """A tokenize failure must not hand back stale or wrong suppression."""
+    comments = MOD._comment_lines('T = {"en": "e"  # noqa: PROMPT_ZH_TW\n')
+    assert all(c == "" for c in comments), comments
