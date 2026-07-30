@@ -1317,6 +1317,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             win: sandbox.window,
             mod: sandbox.window.appSettings,
             postCalls,
+            store,
           };
         }
 
@@ -1402,6 +1403,19 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             }
           ));
           await syncPromise;
+          if (serverDecisionIsNewer) {
+            ctx.S.independentAsrEnabled = true;
+            ctx.mod.saveSettings({ skipServerSync: true });
+            const nextSharedSnapshot = JSON.parse(
+              ctx.store.get('project_neko_settings')
+            );
+            const nextDecision = nextSharedSnapshot._sharedWriteMeta.asrDecision;
+            assert(
+              nextDecision.writeId > serverDecision.writeId,
+              'the next explicit local toggle must supersede an adopted server decision'
+            );
+            assert(nextDecision.value === true, 'the superseding tuple carries the new choice');
+          }
         }
 
         async function main() {

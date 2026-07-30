@@ -131,6 +131,12 @@
         const decision = _serverAsrDecision(data);
         if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
         _lastAsrDecision = decision;
+        // The next explicit local choice must mint above every decision this
+        // window has accepted, including cloud/server decisions whose clock is
+        // ahead of this browser's Date.now().
+        if (decision.writeId > _lastAppliedSharedWriteId) {
+            _lastAppliedSharedWriteId = decision.writeId;
+        }
         const serverSettings = data && data.settings;
         if (serverSettings
             && typeof serverSettings.independentAsrEnabled === 'boolean'
