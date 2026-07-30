@@ -1555,7 +1555,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             reset.S.slopFilterEnabled === true
               && reset.S.proactiveVisionEnabled === resetVisionDefault
-              && reset.S.independentAsrEnabled === false
+              && reset.S.independentAsrEnabled === true
               && reset.S.voiceInputResourceOptimizationEnabled === true,
             'an empty authoritative restore must reset stale local values to defaults: '
               + JSON.stringify({
@@ -1573,7 +1573,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             ]
           );
           assert(
-            resetWritebackDecision.value === false
+            resetWritebackDecision.value === true
               && resetWritebackDecision.writeId
                 > resetPriorDecision.writeId,
             'a reset writeback must rebase the stale tuple onto the reset default'
@@ -1586,7 +1586,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             resetBody.slopFilterEnabled === true
               && resetBody.proactiveVisionEnabled === resetVisionDefault
-              && resetBody.independentAsrEnabled === false
+              && resetBody.independentAsrEnabled === true
               && resetBody.voiceInputResourceOptimizationEnabled === true,
             'the reset writeback must not repopulate the server with stale localStorage'
           );
@@ -1609,7 +1609,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             reset.store.get('project_neko_settings')
           );
           assert(
-            resetPersisted._sharedWriteMeta.asrDecision.value === false
+            resetPersisted._sharedWriteMeta.asrDecision.value === true
               && resetPersisted._sharedWriteMeta.serverRevision === 11,
             'a full-write success must adopt and rebroadcast the generated server ASR tuple'
           );
@@ -1633,7 +1633,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               'X-Conversation-Settings-ASR-Decision'
             ]
           );
-          resetRace.S.independentAsrEnabled = true;
+          resetRace.S.independentAsrEnabled = false;
           resetRace.mod.saveSettings({
             skipServerSync: true,
             explicitSharedKeys: ['independentAsrEnabled'],
@@ -1650,7 +1650,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             resetRace.store.get('project_neko_settings')
           )._sharedWriteMeta.asrDecision;
           assert(
-            resetToggleDecision.value === true
+            resetToggleDecision.value === false
               && resetToggleDecision.writeId
                 > resetRaceBaselineDecision.writeId,
             'a toggle during reset must mint above the rebased reset decision'
@@ -1662,7 +1662,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             {
               success: true,
               settings: {
-                independentAsrEnabled: false,
+                independentAsrEnabled: true,
                 slopFilterEnabled: true,
               },
               revision: 11,
@@ -1675,7 +1675,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           await tick();
           assert(
-            resetRace.S.independentAsrEnabled === true
+            resetRace.S.independentAsrEnabled === false
               && resetRace.postCalls.length === 2,
             'the older reset response must not overwrite the queued toggle'
           );
@@ -1686,7 +1686,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             ]
           );
           assert(
-            resetToggleBody.independentAsrEnabled === true
+            resetToggleBody.independentAsrEnabled === false
               && JSON.stringify(resetToggleHeader)
                 === JSON.stringify(resetToggleDecision),
             'the queued sync must persist the newer toggle tuple'
@@ -2681,7 +2681,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             ctx.S.focusModeEnabled === true
               && ctx.S.slopFilterEnabled === true
-              && ctx.S.independentAsrEnabled === false,
+              && ctx.S.independentAsrEnabled === true,
             'a partial reset response must materialize defaults without losing the edit'
           );
           const restoredLocal = JSON.parse(ctx.store.get('project_neko_settings'));
@@ -4317,6 +4317,27 @@ def test_unsynced_optimization_decision_survives_reload_until_posted_harness():
               },
             },
           };
+
+          // If the boot GET also fails, pre-merge sync must still retry the
+          // durable decision. `_pickDirtySettings()` reads only the pending
+          // set, so restoring just dirty membership would produce no POST.
+          const offline = makeContext(legacyPendingSnapshot);
+          offline.getCalls[0].resolve({ ok: false });
+          await tick();
+          await tick();
+          const offlineSync = offline.mod.syncSettingsToServer();
+          await tick();
+          assert(
+            offline.postCalls.length === 1,
+            'failed boot GET must not forget the pending optimization POST'
+          );
+          assert(
+            JSON.parse(offline.postCalls[0].body)[optimizationKey] === false,
+            'dirty-only retry must carry the durable optimization choice'
+          );
+          offline.postCalls[0].resolve(okPost);
+          await offlineSync;
+
           const ctx = makeContext(legacyPendingSnapshot);
           assert(ctx.S[optimizationKey] === false, 'boot must load the local choice');
           assert(ctx.S.settingsHydrated === true, 'pending choice must hydrate the handshake');

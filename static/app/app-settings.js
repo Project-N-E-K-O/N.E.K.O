@@ -1833,6 +1833,9 @@
                         _dirtySettingsKeys.add(
                             'voiceInputResourceOptimizationEnabled'
                         );
+                        _pendingSettingsKeys.add(
+                            'voiceInputResourceOptimizationEnabled'
+                        );
                         S.settingsHydrated = true;
                         S.voiceInputResourceOptimizationAuthoritative = true;
                     }
