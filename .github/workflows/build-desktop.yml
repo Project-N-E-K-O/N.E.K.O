@@ -1131,8 +1131,9 @@ jobs:
           set -euo pipefail
           VERSION="$RELEASE_VERSION"
           DATE=$(date +%Y-%m-%d)
-          SIGNING_NOTE="Unsigned"
-          if [[ "$REQUESTED_SKIP_SIGNING" != "true" ]]; then
+          if [[ "$REQUESTED_SKIP_SIGNING" == "true" ]]; then
+            SIGNING_NOTE="Unsigned"
+          else
             SIGNING_NOTE="Signed"
           fi
           if gh release view nightly >/dev/null 2>&1; then

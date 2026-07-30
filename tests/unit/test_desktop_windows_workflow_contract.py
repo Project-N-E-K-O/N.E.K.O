@@ -105,8 +105,13 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     assert windows_nightly["env"]["REQUESTED_SKIP_SIGNING"] == (
         "${{ inputs.skip_signing }}"
     )
-    assert 'SIGNING_NOTE="Unsigned"' in windows_nightly["run"]
-    assert 'SIGNING_NOTE="Signed"' in windows_nightly["run"]
+    assert (
+        'if [[ "$REQUESTED_SKIP_SIGNING" == "true" ]]; then\n'
+        '  SIGNING_NOTE="Unsigned"\n'
+        "else\n"
+        '  SIGNING_NOTE="Signed"\n'
+        "fi"
+    ) in windows_nightly["run"]
     assert '"${SIGNING_NOTE} Windows-only nightly build (${VERSION})."' in (
         windows_nightly["run"]
     )
