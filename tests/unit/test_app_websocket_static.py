@@ -1361,7 +1361,12 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
         }
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-        function makeContext(bootFails, bootData) {
+        function makeContext(
+          bootFails,
+          bootData,
+          initialProjectSettings,
+          failSharedStorageWrites
+        ) {
           let storageListener = null;
           const runtime = {
             stoppedSpeech: 0,
@@ -1370,7 +1375,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             scheduled: 0,
           };
           const store = new Map([
-            ['project_neko_settings', JSON.stringify({
+            ['project_neko_settings', JSON.stringify(initialProjectSettings || {
               independentAsrEnabled: false,
               proactiveVisionEnabled: true,
               slopFilterEnabled: false,
@@ -1392,7 +1397,12 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             clearTimeout,
             localStorage: {
               getItem(key) { return store.has(key) ? store.get(key) : null; },
-              setItem(key, value) { store.set(key, String(value)); },
+              setItem(key, value) {
+                if (failSharedStorageWrites && key === 'project_neko_settings') {
+                  throw new Error('shared localStorage unavailable');
+                }
+                store.set(key, String(value));
+              },
               removeItem(key) { store.delete(key); },
             },
             document: { getElementById() { return null; } },
@@ -1716,6 +1726,38 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             serverBroadcaster.S.proactiveVisionEnabled === false,
             'the broadcasting window must retain its own server-authority floor'
           );
+          assert(
+            serverSnapshot._sharedWriteMeta.knownKeyWrites
+              .proactiveVisionEnabled.confirmedRevision === 2,
+            'the server-authority floor must be serialized for reloads'
+          );
+          const reloadedServerWinner = makeContext(
+            true,
+            null,
+            serverSnapshot
+          );
+          await tick();
+          await tick();
+          reloadedServerWinner.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old-after-reload',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old-after-reload',
+                },
+              },
+            },
+          }));
+          assert(
+            reloadedServerWinner.S.proactiveVisionEnabled === false,
+            'reload must reconstruct the server floor before its boot GET succeeds'
+          );
 
           const receiver = makeContext(true);
           await tick();
@@ -1791,6 +1833,91 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             receiver.S.proactiveVisionEnabled === true,
             'a genuinely newer explicit event must still supersede the server floor'
           );
+
+          const subtitleReceiver = makeContext(true);
+          await tick();
+          await tick();
+          subtitleReceiver.fireStorage(JSON.stringify({
+            subtitleEnabled: false,
+            userLanguage: null,
+            _sharedWriteMeta: {
+              writeId: 700,
+              writerId: 'window-subtitle-editor',
+              changedKeys: ['subtitleEnabled', 'userLanguage'],
+              hydrated: true,
+              asrAuthoritative: false,
+              knownKeyWrites: {
+                subtitleEnabled: {
+                  writeId: 700,
+                  writerId: 'window-subtitle-editor',
+                },
+                userLanguage: {
+                  writeId: 700,
+                  writerId: 'window-subtitle-editor',
+                },
+              },
+            },
+          }));
+          subtitleReceiver.fireStorage(JSON.stringify({
+            subtitleEnabled: true,
+            userLanguage: 'ja',
+            _sharedWriteMeta: {
+              writeId: 800,
+              writerId: 'window-stale-server-reader',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: false,
+              serverRevision: 1,
+              serverAuthoritativeKeys: [
+                'subtitleEnabled',
+                'userLanguage',
+              ],
+              knownKeyWrites: {},
+            },
+          }));
+          assert(
+            subtitleReceiver.S.subtitleEnabled === false
+              && subtitleReceiver.S.userLanguage === null,
+            'same-value subtitle intent must enter per-key ordering and survive '
+              + 'a delayed stale server merge'
+          );
+
+          const noSharedStorage = makeContext(
+            false,
+            {
+              success: true,
+              settings: {},
+              revision: 0,
+              telemetryBranch: null,
+              decisions: {},
+            },
+            null,
+            true
+          );
+          await tick();
+          await tick();
+          noSharedStorage.S.noiseReductionEnabled = false;
+          noSharedStorage.mod.saveSettings();
+          await tick();
+          await tick();
+          assert(
+            noSharedStorage.postCalls.length === 1
+              && JSON.parse(
+                noSharedStorage.postCalls[0].opts.body
+              ).noiseReductionEnabled === false,
+            'a failed shared localStorage write must not suppress the noise CAS POST'
+          );
+          noSharedStorage.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: { noiseReductionEnabled: false },
+              revision: 1,
+              decisions: {},
+            }
+          ));
 
           const staleReceiver = makeContext(false, {
             success: true,

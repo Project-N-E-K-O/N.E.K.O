@@ -464,6 +464,8 @@
         'slopFilterEnabled',
         'proactiveChatInterval',
         'proactiveVisionInterval',
+        'subtitleEnabled',
+        'userLanguage',
         'textGuardMaxLength',
         'renderQuality',
         'targetFrameRate'
@@ -697,6 +699,16 @@
             ownMeta.serverRevision = _conversationSettingsRevision;
             ownMeta.serverAuthoritativeKeys =
                 serverAuthoritativeKeys.slice();
+            // Persist the authority floor inside knownKeyWrites as well as in
+            // memory. A reloaded window may have to reject a delayed explicit
+            // event before its boot GET returns (or when that GET is offline).
+            for (const key of ownMeta.serverAuthoritativeKeys) {
+                _knownSharedKeyWrites[key] = {
+                    writeId: ownMeta.writeId,
+                    writerId: ownMeta.writerId,
+                    confirmedRevision: ownMeta.serverRevision
+                };
+            }
         }
         ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
@@ -721,18 +733,13 @@
                 value: _lastAsrDecision.value
             };
         }
-        localStorage.setItem('project_neko_settings', JSON.stringify(payload));
-        // The server snapshot is now the local source of truth for these keys.
-        // Retain the broadcast envelope as a comparable browser-side floor so
-        // a delayed older explicit storage event cannot roll the accepted
-        // server value back. This marker is provenance only: changedKeys stays
-        // empty, so it is not advertised as fresh user intent.
-        for (const key of serverAuthoritativeKeys || []) {
-            _knownSharedKeyWrites[key] = {
-                writeId: ownMeta.writeId,
-                writerId: ownMeta.writerId,
-                confirmedRevision: ownMeta.serverRevision
-            };
+        try {
+            localStorage.setItem('project_neko_settings', JSON.stringify(payload));
+        } catch (error) {
+            // Local persistence/cross-window fan-out is best-effort. Do not
+            // abort saveSettings before its CAS sync can persist and apply the
+            // user's choice to the backend and active runtime.
+            console.warn('[app-settings] 本地设置持久化失败，继续服务器同步:', error);
         }
     }
 
@@ -1552,7 +1559,15 @@
                         _conversationSettingsEtag =
                             `"conversation-settings-${bootMeta.serverRevision}"`;
                         for (const key of bootMeta.serverAuthoritativeKeys) {
-                            delete _knownSharedKeyWrites[key];
+                            if (!Object.prototype.hasOwnProperty.call(
+                                settings,
+                                key
+                            )) continue;
+                            _rememberSharedKeyWrites([key], {
+                                writeId: bootMeta.writeId,
+                                writerId: bootMeta.writerId,
+                                confirmedRevision: bootMeta.serverRevision
+                            }, settings);
                         }
                     }
                 }

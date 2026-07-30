@@ -27,6 +27,7 @@ import portalocker
 from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.conversation_settings_constants import (
+    ALLOWED_CONVERSATION_SETTINGS as _ALLOWED_CONVERSATION_SETTINGS,
     ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
     CONVERSATION_SETTINGS_RESET_KEY,
     MAX_SAFE_ASR_WRITE_ID,
@@ -387,17 +388,6 @@ def _move_model_to_top_unlocked(model_path: str) -> bool:
 
 GLOBAL_CONVERSATION_KEY = "__global_conversation__"
 
-# 全局对话设置允许的字段（白名单）
-_ALLOWED_CONVERSATION_SETTINGS = {
-    'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
-    'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-    'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-    'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
-    'avatarReactionBubbleEnabled', 'slopFilterEnabled',
-    'proactiveChatInterval', 'proactiveVisionInterval', 'subtitleEnabled', 'userLanguage',
-    'textGuardMaxLength', 'noiseReductionEnabled', 'independentAsrEnabled',
-    'voiceInputResourceOptimizationEnabled'
-}
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _LEGACY_ASR_DECISION_WRITER_ID = "server-legacy"

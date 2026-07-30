@@ -14,6 +14,30 @@
 
 """Protocol constants shared by conversation-settings persistence paths."""
 
+ALLOWED_CONVERSATION_SETTINGS = frozenset({
+    "proactiveChatEnabled",
+    "proactiveVisionEnabled",
+    "proactiveVisionChatEnabled",
+    "proactiveNewsChatEnabled",
+    "proactiveVideoChatEnabled",
+    "proactivePersonalChatEnabled",
+    "proactiveMusicEnabled",
+    "proactiveMemeEnabled",
+    "proactiveMiniGameInviteEnabled",
+    "mergeMessagesEnabled",
+    "focusModeEnabled",
+    "focusCognitionEnabled",
+    "avatarReactionBubbleEnabled",
+    "slopFilterEnabled",
+    "proactiveChatInterval",
+    "proactiveVisionInterval",
+    "subtitleEnabled",
+    "userLanguage",
+    "textGuardMaxLength",
+    "noiseReductionEnabled",
+    "independentAsrEnabled",
+    "voiceInputResourceOptimizationEnabled",
+})
 MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
 MAX_SAFE_CONVERSATION_SETTINGS_REVISION = 9_007_199_254_740_991
 ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000

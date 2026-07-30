@@ -703,6 +703,40 @@ def test_cloud_restore_empty_settings_emits_reset_and_advances_revision(tmp_path
     assert snapshot.reset is True
 
 
+def test_cloud_restore_non_conversation_only_settings_still_emit_reset(tmp_path):
+    path = tmp_path / "user_preferences.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                    "focusModeEnabled": True,
+                    "_conversation_settings_revision": 9,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = cloudsave_bindings._build_runtime_preferences_payload(
+        _FakeConfigManager(path),
+        {"uiLanguage": "zh-CN"},
+    )
+    restored = next(
+        entry
+        for entry in payload
+        if entry.get("model_path") == preferences.GLOBAL_CONVERSATION_KEY
+    )
+
+    assert restored["uiLanguage"] == "zh-CN"
+    assert restored["_conversation_settings_revision"] == 10
+    assert restored["_conversation_settings_reset"] is True
+    snapshot = preferences._snapshot_from_preferences_data(payload)
+    assert snapshot.settings == {}
+    assert snapshot.revision == 10
+    assert snapshot.reset is True
+
+
 def test_partial_save_preserves_cloud_restore_reset_tombstone(monkeypatch, tmp_path):
     path = _use_preferences_file(
         monkeypatch,
