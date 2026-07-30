@@ -658,6 +658,11 @@ test('CAT1 drag writes virtual coordinates without subtracting the crop offset t
         "container.addEventListener('mousedown'"
     );
     const mouseMoveSource = readSection(source, "mouseMove: (e) => {", "mouseUp: handleEnd,");
+    const windowBlurSource = readSection(
+        source,
+        "windowBlur: () => {",
+        "visibilityChange: () => {"
+    );
     const cropStateAppliedSource = readSection(
         source,
         "cropStateApplied: (event) => {",
@@ -687,12 +692,20 @@ test('CAT1 drag writes virtual coordinates without subtracting the crop offset t
         /_getNekoIdleReturnDragGrabOffset\([\s\S]*?useLocalGrabAnchor \? localRect : rect,[\s\S]*?useLocalGrabAnchor \? 'local' : 'virtual'[\s\S]*?dragGrabOffsetX = grabOffset\.x;[\s\S]*?dragGrabOffsetY = grabOffset\.y;/
     );
     assert.match(
+        handleStartSource,
+        /const point = startPoint \|\| getDragPoint\(sourceEvent, clientX, clientY\);[\s\S]*?if \(!isUsableDragPoint\(point\)\) return;[\s\S]*?setReturnClickSuppressed\(true\);/
+    );
+    assert.match(
         mouseMoveSource,
         /mouseMove: \(e\) => \{[\s\S]*?if \(shouldUseGlobalCursorForMouseDrag\(\)\) return;[\s\S]*?!shouldIgnoreMissingMouseButtons\(\)[\s\S]*?handleMove\(point\.x, point\.y, e, point\);/
     );
     assert.match(
         handleEndSource,
         /if \(movedPastThreshold && dragCropHoldPending\)[\s\S]*?dragReleasePending = true[\s\S]*?finishDragState\(true, safetyToken, true\)/
+    );
+    assert.match(
+        windowBlurSource,
+        /if \(isDragging &&[\s\S]*?\(dragReleasePending \|\|[\s\S]*?shouldUseGlobalCursorForMouseDrag\(\) \|\|[\s\S]*?return;[\s\S]*?cancelDragState\(\);/
     );
     assert.match(
         cropStateAppliedSource,

@@ -2405,7 +2405,8 @@ def test_local_return_button_drag_recovers_lost_release_without_active_timeout()
         window_blur_block,
         "local return-ball window blur recovery",
         "if (isDragging &&",
-        "(shouldUseGlobalCursorForMouseDrag() ||",
+        "(dragReleasePending ||",
+        "shouldUseGlobalCursorForMouseDrag() ||",
         "(dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {",
         "return;",
         "cancelDragState();",
@@ -3799,12 +3800,20 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_contains(
         source,
         "if (isDragging &&\n"
-        "                        (shouldUseGlobalCursorForMouseDrag() ||\n"
+        "                        (dragReleasePending ||\n"
+        "                            shouldUseGlobalCursorForMouseDrag() ||\n"
         "                            (dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {\n"
         "                        return;\n"
         "                    }\n"
         "                    cancelDragState();",
         "niri return button drag blur guard",
+    )
+    _assert_source_order(
+        handle_start,
+        "invalid return button drag coordinates do not leave click suppression active",
+        "const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);",
+        "if (!isUsableDragPoint(point)) return;",
+        "setReturnClickSuppressed(true);",
     )
     _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
     _assert_source_contains(handle_end, "if (movedPastThreshold && dragCropHoldPending) {", "return button drag end handler")

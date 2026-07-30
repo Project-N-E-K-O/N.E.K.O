@@ -854,9 +854,9 @@ Object.assign(AvatarButtonMixin.methods, {
                 stopDragCursorPolling();
                 clearDragReleasePending();
                 clearDragCropHoldPending();
-                setReturnClickSuppressed(true);
                 const point = startPoint || getDragPoint(sourceEvent, clientX, clientY);
                 if (!isUsableDragPoint(point)) return;
+                setReturnClickSuppressed(true);
                 const rect = getDragContainerVirtualRect();
                 const localRect = container.getBoundingClientRect && container.getBoundingClientRect();
                 dragVisualWidth = Math.max(1, Number(container.offsetWidth) || Number(rect.width) || 64);
@@ -1013,7 +1013,8 @@ Object.assign(AvatarButtonMixin.methods, {
                     // keep the verified drag session alive; mouseup, visibility
                     // and the existing safety paths still provide termination.
                     if (isDragging &&
-                        (shouldUseGlobalCursorForMouseDrag() ||
+                        (dragReleasePending ||
+                            shouldUseGlobalCursorForMouseDrag() ||
                             (dragActiveDispatched && shouldIgnoreMissingMouseButtons()))) {
                         return;
                     }
