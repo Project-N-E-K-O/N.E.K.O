@@ -96,7 +96,7 @@ def test_workshop_utils_reexports_the_config_saver():
     was swallowed by the handler's `except Exception`, and the endpoint answered
     HTTP 200 with `{"success": false}` while never writing a single byte.
     """
-    import utils.workshop_utils as workshop_utils
+    from utils import workshop_utils
 
     assert hasattr(workshop_utils, "save_workshop_config"), (
         "save_workshop_config 必须能从 utils.workshop_utils 导入 —— "

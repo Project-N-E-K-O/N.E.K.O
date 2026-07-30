@@ -16,6 +16,7 @@ scorer + soft-hint prompt 注入。
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import json
 import os
 import threading
 from unittest.mock import MagicMock
@@ -577,7 +578,7 @@ async def test_arecord_output_persists_off_the_event_loop(tmp_path, monkeypatch)
     chunks. Asserting on the writing thread pins the property itself, not
     the mere presence of an asyncio.to_thread call.
     """
-    import memory.anti_repeat as anti_repeat_module
+    from memory import anti_repeat as anti_repeat_module
 
     store = _build_store(tmp_path)
     loop_thread = threading.get_ident()
@@ -609,7 +610,7 @@ async def test_arecord_output_stamps_time_at_the_call_site(tmp_path, monkeypatch
     side. Asserting on the *thread* that reads it is what distinguishes the
     two designs; asserting on the value alone cannot.
     """
-    import memory.anti_repeat as anti_repeat_module
+    from memory import anti_repeat as anti_repeat_module
 
     store = _build_store(tmp_path)
     loop_thread = threading.get_ident()
@@ -652,3 +653,79 @@ def test_the_per_turn_callers_use_the_async_twin():
         assert ".record_output(" not in source, (
             f"{rel} 回退到了同步 record_output —— 那会把 fsync 压在会话循环上"
         )
+
+
+def test_the_data_lock_is_never_held_across_the_disk_write(tmp_path):
+    """Scoring runs on the event loop and takes the same per-name lock.
+
+    ``arecord_output`` hands the whole record to a worker; if that worker held
+    the data lock across ``atomic_write_json`` (tail: an unbounded fsync), a
+    concurrent ``score_draft`` on the loop would block on the worker — exactly
+    the stall the off-loading exists to remove. So the write must happen with
+    the data lock released.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    store.record_output("妮可", LONG_TIGER, now=1.0)  # 建好锁与缓存
+    held_during_write: list[bool] = []
+    real_write = anti_repeat_module.atomic_write_json
+
+    def _spy(*args, **kwargs):
+        lock = store._get_lock("妮可")
+        acquired = lock.acquire(blocking=False)
+        held_during_write.append(not acquired)
+        if acquired:
+            lock.release()
+        return real_write(*args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(anti_repeat_module, "atomic_write_json", _spy)
+        store.record_output("妮可", LONG_FRUIT, now=2.0)
+    finally:
+        monkeypatch.undo()
+
+    assert held_during_write == [False], (
+        "落盘时数据锁还握着——事件循环上的 score_draft 会卡在这次 fsync 上"
+    )
+
+
+def test_a_stale_snapshot_never_overwrites_a_newer_one(tmp_path):
+    """Workers can reach the disk out of order; the older window must lose.
+
+    Writes no longer happen under the data lock, so two records can be staged
+    in caller order yet reach ``atomic_write_json`` in the opposite order. The
+    staged sequence number, not the winner of the write lock, decides.
+    """
+    store = _build_store(tmp_path)
+    store.record_output("妮可", LONG_TIGER, now=1.0)
+    store.record_output("妮可", LONG_FRUIT, now=2.0)
+
+    fresh = json.loads(
+        (tmp_path / "妮可" / "anti_repeat_corpus.json").read_text(encoding="utf-8")
+    )
+    newest_seq = store._staged_seq["妮可"]
+
+    # 一次「迟到的」旧快照：seq 比已落盘的小，必须被丢掉。
+    store._flush_snapshot("妮可", {"version": 1, "window": []}, newest_seq - 1)
+
+    after = json.loads(
+        (tmp_path / "妮可" / "anti_repeat_corpus.json").read_text(encoding="utf-8")
+    )
+    assert after == fresh, "陈旧快照把新窗口盖回去了"
+    assert len(after["window"]) == 2
+
+
+def test_entries_stay_ordered_by_timestamp(tmp_path):
+    """Out-of-order arrivals must not make an older reply look like the newest.
+
+    Scoring takes the trailing slice of the window as "the most recent
+    entries", so ordering has to hold even when workers land out of order.
+    """
+    store = _build_store(tmp_path)
+    store.record_output("妮可", LONG_FRUIT, now=200.0)
+    store.record_output("妮可", LONG_TIGER, now=100.0)  # 迟到的更早那条
+
+    window = store._load_unlocked("妮可")
+    assert [entry["ts"] for entry in window] == [100.0, 200.0]

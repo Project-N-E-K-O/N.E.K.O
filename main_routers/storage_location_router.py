@@ -86,6 +86,30 @@ router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
 logger = logging.getLogger(__name__)
 _storage_mutation_lock = asyncio.Lock()
 
+# _STORAGE_MUTATION_STAYS_ON_LOOP
+#
+# 本文件里所有写存储状态的调用**刻意**留在事件循环上（各处 noqa: ASYNC_BLOCK 指向
+# 这里）。落盘本身是同步的、带无上界的 fsync，按理该挪进 to_thread —— 但这里有两条
+# 独立的理由压过它，任缺其一都会造成比循环卡顿严重得多的后果。
+#
+# 一、这些写是**取消原子**的序列，而它们之间今天一个 await 都没有。
+#     典型形状：delete_storage_migration → save_storage_policy → set_root_mode。
+#     任何一处插进 await，请求超时或应用关闭产生的 CancelledError 就能落在中间：
+#     恢复检查点已删、策略已写，而 root mode 还是旧值。CancelledError 是
+#     BaseException，外层 `except Exception` 接不住，也就没人回滚 —— 用户会得到
+#     一个「恢复闸自相矛盾」的盘上状态。
+#
+# 二、root_state 有一个**不在锁里**的写者。
+#     build_storage_location_bootstrap_payload → _reconcile_legacy_cleanup_pending_
+#     root_state（utils/storage/location_bootstrap.py:191）会 save_root_state，它挂在
+#     GET /bootstrap、/status、/diagnostics、/retained-source 和 POST /exit 上，这些
+#     都不在 _storage_mutation_lock 覆盖下。今天让「GET 侧 reconcile」和「变更路由的
+#     写」互斥的不是锁，是**它们都跑在同一条事件循环线程上**。把任何一个 root_state
+#     写者挪进 worker，前端存储页每 500ms 的 /status 轮询就能把它整份盖掉。
+#
+# 真正的收口是给 root_state 一把真锁，并让 GET 路由别在读路径上写盘。在那之前，
+# 这个文件宁可让罕见的存储变更请求同步落盘。
+
 
 class StorageLocationSelectionRequest(BaseModel):
     selected_root: str = Field(..., min_length=1, max_length=4096)
@@ -1323,14 +1347,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
         updated_payload["retained_source_mode"] = "cleaned"
         updated_payload["updated_at"] = _utc_now_iso()
         updated_payload["cleanup_completed_at"] = _utc_now_iso()
-        # 调用方 post_storage_location_retained_source_cleanup 已持 _storage_mutation_lock，
-        # 读-改-写的读发生在上面几行，写是本段最后一步，让出点不会被别的写者插队。
-        await asyncio.to_thread(
-            save_storage_migration,
-            config_manager,
-            updated_payload,
-            anchor_root=anchor_root,
-        )
+        save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
 
     try:
         root_state = config_manager.load_root_state()
@@ -1430,8 +1447,7 @@ async def _post_storage_location_select_locked(
                 # 整个 _post_storage_location_select_locked 都跑在 _storage_mutation_lock 里，
                 # 下面紧跟着的 set_root_mode / 解除启动闸也已经是 await，多一个让出点不改变
                 # 「失败即整体回滚 state_snapshot」的语义。
-                policy_payload = await asyncio.to_thread(
-                    save_storage_policy,
+                policy_payload = save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
                     config_manager,
                     selected_root=current_root,
                     selection_source=payload.selection_source,
@@ -1466,8 +1482,7 @@ async def _post_storage_location_select_locked(
                 }
 
             state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-            policy_payload = await asyncio.to_thread(
-                save_storage_policy,
+            policy_payload = save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
                 config_manager,
                 selected_root=current_root,
                 selection_source=payload.selection_source,
@@ -1501,8 +1516,7 @@ async def _post_storage_location_select_locked(
                 "selection_source": policy_payload["selection_source"],
             }
         state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-        policy_payload = await asyncio.to_thread(
-            save_storage_policy,
+        policy_payload = save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
             config_manager,
             selected_root=current_root,
             selection_source=payload.selection_source,
@@ -1762,8 +1776,7 @@ async def _post_storage_location_restart_locked(
             delete_storage_migration(config_manager, anchor_root=anchor_root)
             # 同样在 _storage_mutation_lock 里；这一段本来就以 await _request_app_shutdown
             # 收尾，多出来的让出点仍被同一个 try/except 的 state_snapshot 回滚覆盖。
-            await asyncio.to_thread(
-                save_storage_policy,
+            save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
                 config_manager,
                 selected_root=normalized_selected_root,
                 selection_source=payload.selection_source,
@@ -1848,14 +1861,7 @@ async def _post_storage_location_restart_locked(
     except Exception as exc:
         try:
             if isinstance(previous_migration_payload, dict):
-                # 同上：关闭没起来才会走这条回滚分支，进程还活着；锁未释放，
-                # 让出期间不会有第二个存储变更请求进来抢写迁移检查点。
-                await asyncio.to_thread(
-                    save_storage_migration,
-                    config_manager,
-                    previous_migration_payload,
-                    anchor_root=anchor_root,
-                )
+                save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
             else:
                 delete_storage_migration(config_manager, anchor_root=anchor_root)
         except Exception:

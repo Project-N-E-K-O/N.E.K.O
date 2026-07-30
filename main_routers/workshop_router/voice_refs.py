@@ -35,20 +35,61 @@ from .voice_manifest import (
 
 import os
 import asyncio
+import threading
 import mimetypes
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
-from utils.file_utils import atomic_write_json_async
+from utils.file_utils import atomic_write_json
 from utils.workshop_utils import (
     get_workshop_path,
 )
 
 
-def _write_bytes(path: str, data: bytes) -> None:
-    """Write bytes to path, overwriting any existing file."""
-    with open(path, 'wb') as f:
-        f.write(data)
+# 按内容目录串行化整次替换。两次上传打到同一个目录时，它们各自的 swap 跑在不同的
+# worker 线程上，OS 层面会真交错：A 写音频、B 写音频、A 写 manifest —— 最终盘上是
+# B 的音频配 A 的 manifest（prefix / 语言 / display_name 全是另一次请求的）。改动前
+# 这两步都跑在事件循环线程上、中间没有 await，物理上交错不了；挪进线程就必须自己
+# 补上这个序列化。锁只在 worker 里被持有，事件循环从不去抢它。
+_VOICE_REFERENCE_LOCKS: dict[str, threading.Lock] = {}
+_VOICE_REFERENCE_LOCKS_GUARD = threading.Lock()
+
+
+def _voice_reference_lock(content_folder: str) -> threading.Lock:
+    key = os.path.normcase(os.path.abspath(content_folder))
+    with _VOICE_REFERENCE_LOCKS_GUARD:
+        lock = _VOICE_REFERENCE_LOCKS.get(key)
+        if lock is None:
+            lock = threading.Lock()
+            _VOICE_REFERENCE_LOCKS[key] = lock
+    return lock
+
+
+def _replace_voice_reference(
+    content_folder: str,
+    audio_path: str,
+    audio_bytes: bytes,
+    manifest_path: str,
+    manifest: dict,
+) -> None:
+    """Swap in a new reference-audio/manifest pair as one blocking unit.
+
+    Kept synchronous on purpose so the caller can hand the whole swap to a
+    single worker thread: the three steps have no await between them, so a
+    cancelled request can never observe a half-replaced pair. The per-folder
+    lock covers the other direction — two workers racing the same folder.
+    """
+    with _voice_reference_lock(content_folder):
+        _cleanup_workshop_voice_reference(content_folder)
+        with open(audio_path, 'wb') as f:
+            f.write(audio_bytes)
+        atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
+
+
+def _remove_voice_reference(content_folder: str) -> None:
+    """Drop the reference pair under the same per-folder lock as the swap."""
+    with _voice_reference_lock(content_folder):
+        _cleanup_workshop_voice_reference(content_folder)
 
 
 @router.post('/upload-reference-audio')
@@ -110,13 +151,7 @@ async def upload_reference_audio(request: Request):
         if provider_hint not in WORKSHOP_REFERENCE_PROVIDER_HINTS:
             provider_hint = 'cosyvoice'
 
-        _cleanup_workshop_voice_reference(content_folder)
-
         reference_audio_name = f'voice_sample{file_ext}'
-        reference_audio_path = os.path.join(content_folder, reference_audio_name)
-        # 上传的音频可能有几 MB，写盘挪到线程里，别压在事件循环上
-        await asyncio.to_thread(_write_bytes, reference_audio_path, await file.read())
-
         manifest = _normalize_workshop_voice_manifest({
             'version': 1,
             'reference_audio': reference_audio_name,
@@ -125,11 +160,27 @@ async def upload_reference_audio(request: Request):
             'display_name': display_name,
             'provider_hint': provider_hint,
         }, default_prefix=prefix, default_display_name=display_name)
-        await atomic_write_json_async(
+
+        # 先把整个请求体读完，再一次性把「删旧 → 写音频 → 写 manifest」交给一个
+        # 线程。这样做不只是为了别在循环上写几 MB：
+        #
+        # 这三步必须成对成套，而它们之间的任何一个 await 都是取消点 ——
+        # 客户端一断开，FastAPI 就取消 handler，CancelledError 是 BaseException，
+        # 下面那个 `except Exception` 接不住，也就没人回滚。改动前这里是
+        # 「删旧（同步）→ await file.read() → 写音频 → 写 manifest（同步）」，
+        # 取消落在那个 read 上就会留下「旧的删了、新的没写」。
+        #
+        # 收成一个 to_thread 单元之后，唯一的取消点落在任何写盘之前：线程一旦
+        # 启动，取消等待方并不会杀掉线程，三步照样跑完。中间态从此不可达 ——
+        # 比改动前更严格，不只是把新引入的那个窗口补回去。
+        audio_bytes = await file.read()
+        await asyncio.to_thread(
+            _replace_voice_reference,
+            content_folder,
+            os.path.join(content_folder, reference_audio_name),
+            audio_bytes,
             os.path.join(content_folder, WORKSHOP_VOICE_MANIFEST_NAME),
             manifest,
-            ensure_ascii=False,
-            indent=2,
         )
 
         return JSONResponse({
@@ -167,7 +218,10 @@ async def remove_reference_audio(request: Request):
             }, status_code=403)
 
         if os.path.exists(content_folder) and os.path.isdir(content_folder):
-            _cleanup_workshop_voice_reference(content_folder)
+            # 也走同一把 per-folder 锁：上传的 swap 现在跑在 worker 上，删除要是
+            # 留在事件循环上做，就能插进「写音频」和「写 manifest」之间，留下一个
+            # 指不到文件的 manifest。
+            await asyncio.to_thread(_remove_voice_reference, content_folder)
 
         return JSONResponse({
             "success": True,

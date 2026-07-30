@@ -293,6 +293,10 @@ class AntiRepeatCorpus:
         self._cache: Dict[str, List[Dict[str, Any]]] = {}
         self._locks: Dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
+        # 落盘用的第二把锁，和数据锁分开 —— 见 _flush_snapshot 的注释。
+        self._write_locks: Dict[str, threading.Lock] = {}
+        self._staged_seq: Dict[str, int] = {}
+        self._written_seq: Dict[str, int] = {}
 
     # ── path / lock ────────────────────────────────────────
 
@@ -309,6 +313,53 @@ class AntiRepeatCorpus:
                 if name not in self._locks:
                     self._locks[name] = threading.Lock()
         return self._locks[name]
+
+    def _get_write_lock(self, name: str) -> threading.Lock:
+        if name not in self._write_locks:
+            with self._locks_guard:
+                if name not in self._write_locks:
+                    self._write_locks[name] = threading.Lock()
+        return self._write_locks[name]
+
+    def _stage_snapshot_unlocked(self, name: str) -> Tuple[Dict[str, Any], int]:
+        """Take a numbered copy of the in-memory window. Caller holds the data lock."""
+        seq = self._staged_seq.get(name, 0) + 1
+        self._staged_seq[name] = seq
+        payload = {
+            "version": _SCHEMA_VERSION,
+            "window": list(self._cache.get(name, [])),
+        }
+        return payload, seq
+
+    def _flush_snapshot(self, name: str, payload: Dict[str, Any], seq: int) -> None:
+        """Write a staged snapshot to disk **without** holding the data lock.
+
+        The data lock must not be held across the write. ``arecord_output``
+        runs the whole record on a worker thread, while the scoring paths
+        (``score_draft`` / ``score_unanswered_proactive_draft`` /
+        ``top_recent_topics``) still take that lock synchronously on the event
+        loop. Holding it across ``atomic_write_json`` — whose tail is an
+        unbounded fsync — would make those readers block the loop waiting on a
+        worker, which is the exact stall this off-loading exists to remove.
+        Same shape as the RLock transitivity fixed in
+        ``main_routers/system_router/prompt_flows.py``.
+
+        Writers instead serialize on a second, writer-only lock. Ordering is
+        settled by the staged sequence number rather than by which worker wins
+        the lock: a snapshot older than what is already on disk is dropped, so
+        a late writer can never resurrect a stale window.
+        """
+        with self._get_write_lock(name):
+            if seq <= self._written_seq.get(name, 0):
+                return
+            try:
+                atomic_write_json(
+                    self._file_path(name), payload, indent=2, ensure_ascii=False,
+                )
+            except Exception as exc:
+                logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
+                return
+            self._written_seq[name] = seq
 
     # ── load / save (锁由调用方持有) ───────────────────────
 
@@ -342,17 +393,6 @@ class AntiRepeatCorpus:
             window = window[-ANTI_REPEAT_BG_WINDOW:]
         self._cache[name] = window
         return window
-
-    def _save_unlocked(self, name: str) -> None:
-        path = self._file_path(name)
-        payload = {
-            "version": _SCHEMA_VERSION,
-            "window": self._cache.get(name, []),
-        }
-        try:
-            atomic_write_json(path, payload, indent=2, ensure_ascii=False)
-        except Exception as exc:
-            logger.warning("[AntiRepeat] save failed for %s: %s", name, exc)
 
     # ── public API ─────────────────────────────────────────
 
@@ -396,12 +436,18 @@ class AntiRepeatCorpus:
         with self._get_lock(name):
             window = self._load_unlocked(name)
             window.append(entry)
-            # 滚动：超 BG_WINDOW 弹最老（按 ts 排序保险——理论上 append 时序就单调）
+            # 每次都按 ts 排序，不再只在超窗时排。原来「append 时序天然单调」的假设
+            # 靠的是调用方串行；arecord_output 把整次记录交给 worker 之后，两次记录
+            # 拿到锁的先后不再等于调用先后，而打分侧是拿尾部切片当「最近几条」的
+            # （_split_fg_bg），错序会让旧回复被当成更新的。窗口只有 ~100 条，
+            # 每次排一遍的代价可以忽略。
+            window.sort(key=lambda e: float(e.get("ts", 0)))
             if len(window) > ANTI_REPEAT_BG_WINDOW:
-                window.sort(key=lambda e: float(e.get("ts", 0)))
                 del window[: len(window) - ANTI_REPEAT_BG_WINDOW]
             self._cache[name] = window
-            self._save_unlocked(name)
+            payload, seq = self._stage_snapshot_unlocked(name)
+        # 落盘在数据锁**之外**——见 _flush_snapshot。
+        self._flush_snapshot(name, payload, seq)
 
     async def arecord_output(
         self,
@@ -635,7 +681,10 @@ class AntiRepeatCorpus:
         name = _resolve_name(name)
         with self._get_lock(name):
             self._cache[name] = []
-            self._save_unlocked(name)
+            payload, seq = self._stage_snapshot_unlocked(name)
+        # 与 record_output 同款：落盘不许在数据锁里做，否则事件循环上的打分调用
+        # 会卡在这次 fsync 上。清空也走 seq，免得它被一次在飞的旧快照写盖回去。
+        self._flush_snapshot(name, payload, seq)
 
 
 # ── 进程级单例 ─────────────────────────────────────────────
