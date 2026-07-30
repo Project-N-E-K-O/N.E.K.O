@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc
 
 # =====================================================================
@@ -1148,22 +1149,7 @@ PROFILE_RENAME_EVENT_TEXT_MASTER = {
 
 def _normalize_memory_prompt_lang(lang: str | None) -> str:
     """Normalize the memory-prompt localization key, keeping the Traditional Chinese branch."""
-    raw = str(lang or "").strip().lower()
-    if raw.startswith("zh"):
-        if "tw" in raw or "hant" in raw or "hk" in raw:
-            return "zh-TW"
-        return "zh"
-    if raw.startswith("ja"):
-        return "ja"
-    if raw.startswith("ko"):
-        return "ko"
-    if raw.startswith("ru"):
-        return "ru"
-    if raw.startswith("es"):
-        return "es"
-    if raw.startswith("pt"):
-        return "pt"
-    return "en"
+    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
 
 
 def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | None) -> str:
@@ -1177,6 +1163,12 @@ def _localized_fact_extraction_prompt(templates: dict[str, str], lang: str | Non
     lang_key = _normalize_memory_prompt_lang(lang)
     # Fact extraction predates a full Traditional-Chinese template. Reuse the
     # Chinese instructions for zh-TW.
+    #
+    # This collapse is per-call-site, not module-wide: the rename-event dicts
+    # below do carry 'zh-TW', so _normalize_memory_prompt_lang keeps it. Delete
+    # this line in the change that adds 'zh-TW' to FACT_EXTRACTION_PROMPT and
+    # FACT_EXTRACTION_AI_AWARE_PROMPT — fact text is persisted and indexed, so
+    # issue #2500 wants those templates first.
     template_key = "zh" if lang_key == "zh-TW" else lang_key
     return _loc(templates, template_key)
 

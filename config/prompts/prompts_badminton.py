@@ -19,10 +19,12 @@ from __future__ import annotations
 
 from typing import Any
 
+# Re-export, not dead weight: NEKO_CORE_LOCALES used to be defined in this
+# module and tests/unit/test_badminton_improvement_contract.py still reads it
+# off this namespace.
+from config.prompts._locale import NEKO_CORE_LOCALES  # noqa: F401
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_minigame_common import _localized_template, _normalize_prompt_lang
-
-
-NEKO_CORE_LOCALES = ("zh-CN", "zh-TW", "en", "ja", "ko", "ru", "es", "pt")
 
 BADMINTON_QUICK_LINE_KEYS = frozenset({
     "line_in", "net_touch", "zone_in", "out", "net",
@@ -30,52 +32,20 @@ BADMINTON_QUICK_LINE_KEYS = frozenset({
     "new_record", "streak_5", "streak_10", "streak_15", "streak_20",
 })
 
-_LANGUAGE_ALIASES = {
-    "zh": "zh-CN",
-    "zh-cn": "zh-CN",
-    "zh-hans": "zh-CN",
-    "schinese": "zh-CN",
-    "zh-tw": "zh-TW",
-    "zh-hk": "zh-TW",
-    "zh-hant": "zh-TW",
-    "tchinese": "zh-TW",
-    "en-us": "en",
-    "english": "en",
-    "ja-jp": "ja",
-    "japanese": "ja",
-    "ko-kr": "ko",
-    "korean": "ko",
-    "koreana": "ko",
-    "ru-ru": "ru",
-    "russian": "ru",
-    "es-es": "es",
-    "spanish": "es",
-    "latam": "es",
-    "pt-br": "pt",
-    "pt-pt": "pt",
-    "portuguese": "pt",
-    "brazilian": "pt",
-}
-
-
-# FULL-locale normalizer: keeps zh-CN and zh-TW apart (badminton quick-lines).
-# Deliberately NOT the same as prompts_minigame_common._normalize_prompt_lang,
-# which collapses every Chinese variant to zh. See docs/contributing/
-# developer-notes.md #7 and PR #2000 before unifying these.
 def normalize_badminton_prompt_locale(language: Any) -> str:
-    raw = str(language or "").strip().lower().replace("_", "-")
-    if not raw:
-        return "zh-CN"
-    if raw in _LANGUAGE_ALIASES:
-        return _LANGUAGE_ALIASES[raw]
-    if raw.startswith("zh"):
-        if "tw" in raw or "hk" in raw or "hant" in raw:
-            return "zh-TW"
-        return "zh-CN"
-    for locale in ("en", "ja", "ko", "ru", "es", "pt"):
-        if raw == locale or raw.startswith(f"{locale}-"):
-            return locale
-    return "en"
+    """Normalize a language code to a FULL badminton quick-lines key.
+
+    Keeps ``zh-CN`` and ``zh-TW`` apart, unlike
+    ``prompts_minigame_common._normalize_prompt_lang``, which collapses every
+    Chinese variant to ``zh``. Both schemes stay separate on purpose: this
+    module's quick-lines tables are keyed by full locale, and collapsing them
+    would regress the Traditional Chinese fallbacks that PR #2000 added.
+
+    See docs/contributing/developer-notes.md #7 and PR #2000.
+    """
+    return normalize_prompt_locale(
+        language, default="zh-CN", simplified="zh-CN", keep_traditional=True
+    )
 
 
 def _normalize_mode(mode: Any) -> str:
