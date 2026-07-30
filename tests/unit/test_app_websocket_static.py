@@ -2519,6 +2519,29 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             'a boot GET started before the cross-window edit must preserve that edit'
           );
 
+          // ---- Scenario 10: a late recovery envelope cannot roll back a
+          // newer explicit decision for the same key.
+          const newerEditor = makeContext(JSON.parse(explicitPayload));
+          newerEditor.win.focusModeEnabled = false;
+          newerEditor.mod.saveSettings({ skipServerSync: true });
+          const newerPayload = newerEditor.lastSharedWrite();
+          const newerMeta = JSON.parse(newerPayload)._sharedWriteMeta;
+          observer.fireStorage(newerPayload);
+          assert(observer.S.focusModeEnabled === false, 'observer accepts the newer edit');
+
+          const lateRecovery = JSON.parse(explicitPayload);
+          lateRecovery._sharedWriteMeta = {
+            ...lateRecovery._sharedWriteMeta,
+            writeId: newerMeta.writeId + 100,
+            changedKeys: [],
+            pendingRecovery: true,
+          };
+          observer.fireStorage(JSON.stringify(lateRecovery));
+          assert(
+            observer.S.focusModeEnabled === false,
+            'a fresh recovery envelope must not outrank its older per-key provenance'
+          );
+
           console.log('HARNESS_OK');
           // Every sandbox timer is harness-controlled, so the process exits
           // naturally once main() returns and piped stdout is fully flushed.

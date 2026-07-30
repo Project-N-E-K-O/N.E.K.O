@@ -1,5 +1,7 @@
+import asyncio
 import json
 import threading
+from types import SimpleNamespace
 
 import pytest
 from fastapi import Response
@@ -7,6 +9,8 @@ from fastapi import Response
 from main_routers.config_router import preferences as preferences_router
 from utils import preferences
 from utils import token_tracker
+from utils.cloudsave_runtime import bindings as cloudsave_bindings
+from tests.fake_clock import patch_module_clock
 
 
 class _FakeConfigManager:
@@ -381,3 +385,114 @@ async def test_conversation_settings_route_validates_contract_and_keeps_legacy_w
     assert legacy_write.status_code == 200
     payload = json.loads(legacy_write.body)
     assert payload["settings"]["focusModeEnabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_noise_reduction_runtime_updates_follow_persisted_revision(monkeypatch):
+    current = SimpleNamespace(
+        revision=1,
+        settings={"noiseReductionEnabled": True},
+    )
+    old_apply_started = asyncio.Event()
+    allow_old_apply = asyncio.Event()
+    calls = []
+
+    async def fake_snapshot():
+        return current
+
+    async def fake_apply(enabled):
+        calls.append(("start", enabled))
+        if enabled:
+            old_apply_started.set()
+            await allow_old_apply.wait()
+        calls.append(("end", enabled))
+
+    monkeypatch.setattr(
+        preferences_router,
+        "_NOISE_REDUCTION_APPLY_LOCK",
+        asyncio.Lock(),
+    )
+    monkeypatch.setattr(
+        preferences_router,
+        "aload_global_conversation_settings_snapshot",
+        fake_snapshot,
+    )
+    monkeypatch.setattr(
+        preferences_router,
+        "_apply_noise_reduction_to_active_sessions",
+        fake_apply,
+    )
+
+    old_apply = asyncio.create_task(
+        preferences_router._apply_noise_reduction_if_current(True, 1)
+    )
+    await old_apply_started.wait()
+    current = SimpleNamespace(
+        revision=2,
+        settings={"noiseReductionEnabled": False},
+    )
+    new_apply = asyncio.create_task(
+        preferences_router._apply_noise_reduction_if_current(False, 2)
+    )
+    await asyncio.sleep(0)
+    assert calls == [("start", True)]
+
+    allow_old_apply.set()
+    await asyncio.gather(old_apply, new_apply)
+    assert calls == [
+        ("start", True),
+        ("end", True),
+        ("start", False),
+        ("end", False),
+    ]
+
+    await preferences_router._apply_noise_reduction_if_current(True, 1)
+    assert calls[-1] == ("end", False)
+
+
+def test_cloud_restore_rebases_asr_decision_and_revision(monkeypatch, tmp_path):
+    path = tmp_path / "user_preferences.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                    "independentAsrEnabled": True,
+                    "_conversation_settings_revision": 9,
+                    "_independent_asr_decision": {
+                        "writeId": 200,
+                        "writerId": "window-before-restore",
+                        "value": True,
+                    },
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    manager = _FakeConfigManager(path)
+    patch_module_clock(
+        monkeypatch,
+        cloudsave_bindings,
+        time_ns=lambda: 150_000_000,
+    )
+
+    payload = cloudsave_bindings._build_runtime_preferences_payload(
+        manager,
+        {
+            "independentAsrEnabled": False,
+            "_conversation_settings_revision": 2,
+        },
+    )
+    restored = next(
+        entry
+        for entry in payload
+        if entry.get("model_path") == preferences.GLOBAL_CONVERSATION_KEY
+    )
+
+    assert restored["independentAsrEnabled"] is False
+    assert restored["_conversation_settings_revision"] == 10
+    assert restored["_independent_asr_decision"] == {
+        "writeId": 201,
+        "writerId": "server-cloud-restore",
+        "value": False,
+    }
