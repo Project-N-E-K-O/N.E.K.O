@@ -1560,9 +1560,7 @@
             }
             const serverMergePredatesLocalWrite = !!meta
                 && meta.changedKeys.length === 0
-                && (meta.writeId < _lastSharedWriteId
-                    || (meta.writeId === _lastSharedWriteId
-                        && meta.writerId < _SHARED_WRITER_ID));
+                && meta.writeId <= _lastSharedWriteId;
             if (serverMergePredatesLocalWrite) {
                 if (incoming === settings) incoming = Object.assign({}, settings);
                 // Non-ASR server-merge fields have no per-key decision token.

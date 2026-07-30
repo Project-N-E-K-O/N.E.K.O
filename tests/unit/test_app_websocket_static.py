@@ -1516,8 +1516,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           ctx.fireStorage(JSON.stringify({
             slopFilterEnabled: false,
             _sharedWriteMeta: {
-              writeId: acknowledgedLocal._sharedWriteMeta.writeId - 1,
-              writerId: 'window-a',
+              writeId: acknowledgedLocal._sharedWriteMeta.writeId,
+              writerId: 'zzzzzzzzzzzzzzzz',
               changedKeys: [],
               hydrated: true,
               asrAuthoritative: true,
@@ -1525,7 +1525,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           }));
           assert(
             ctx.S.slopFilterEnabled === true,
-            'a delayed older server merge must not roll back an acknowledged local edit'
+            'a delayed same-id server merge must not roll back an acknowledged local edit'
           );
 
           // A different local edit races a newer server revision. The earlier
