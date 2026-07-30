@@ -15,6 +15,8 @@
 
 import asyncio  # noqa: F401 - compatibility export and sibling dependency
 
+import os  # noqa: F401 - compatibility export and sibling dependency
+
 import uuid  # noqa: F401 - compatibility export and sibling dependency
 
 import websockets  # noqa: F401 - compatibility export and sibling dependency
@@ -76,3 +78,24 @@ _IMAGE_ANALYSIS_PENDING_DESCRIPTION = "[实时屏幕截图或相机画面正在�
 class TurnDetectionMode(Enum):
     SERVER_VAD = "server_vad"
     MANUAL = "manual"
+
+
+# Opt-in escape hatch for the response arbiter's escalation policy (issue
+# #2583). When a response lifecycle cannot reach a terminal state the arbiter
+# tears the realtime WebSocket down by default — safe, but a provider-side
+# event-timing quirk in the field would then present as repeated
+# disconnect-and-rebuild for the affected users, with no server-side switch to
+# reach them. Setting this makes the arbiter drop only the stuck turn and keep
+# the connection.
+#
+# An environment variable on purpose, not a settings-UI toggle: the support
+# path is "set this, restart, tell us if it helped". It is read once per client
+# construction, so a change needs a restart.
+_ARBITER_FAIL_OPEN_ENV_VAR = "NEKO_REALTIME_ARBITER_FAIL_OPEN"
+
+
+def response_arbiter_fail_open_enabled() -> bool:
+    """Read the arbiter fail-open escape hatch. Default off."""
+
+    raw = os.getenv(_ARBITER_FAIL_OPEN_ENV_VAR, "").strip().lower()
+    return raw in ("1", "true", "yes", "on")

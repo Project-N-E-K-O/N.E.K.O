@@ -5,6 +5,12 @@ pause lands while an item is being selected, that item is returned to the
 queue without consuming any fairness allowance. After resolving a ticket's
 ``sent`` future, the worker explicitly yields to its waiter before selecting
 more work so that an external-turn hand-off can restore a newer pause.
+
+A response lifecycle that cannot reach a terminal state escalates through the
+single ``_fail_stuck_lifecycle`` chokepoint. Its policy is chosen by the
+``fail_open`` constructor argument: the default tears the transport down,
+while the opt-in alternative drops only the stuck turn. This module reads no
+configuration of its own — the construction site decides.
 """
 
 from __future__ import annotations
@@ -128,9 +134,16 @@ class RealtimeResponseArbiter:
         send_event: SendEvent,
         *,
         abort_transport: AbortTransport | None = None,
+        fail_open: bool = False,
     ) -> None:
         self._send_event = send_event
         self._abort_transport = abort_transport
+        # Escalation policy for a response lifecycle that cannot reach a
+        # terminal state. Default (False) tears the transport down, which is
+        # what every release so far has shipped. True keeps the connection and
+        # drops only the stuck turn — an opt-in escape hatch, injected by the
+        # construction site so this module reads no configuration itself.
+        self._fail_open = fail_open
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
@@ -281,7 +294,7 @@ class RealtimeResponseArbiter:
             try:
                 await self.wait_until_idle(timeout)
             except asyncio.TimeoutError as original_timeout:
-                await self._fail_closed(
+                await self._fail_stuck_lifecycle(
                     "response cancellation terminal event timed out"
                 )
                 raise original_timeout
@@ -300,7 +313,7 @@ class RealtimeResponseArbiter:
         try:
             await asyncio.wait_for(asyncio.shield(current.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
-            await self._fail_closed("response cancellation terminal event timed out")
+            await self._fail_stuck_lifecycle("response cancellation terminal event timed out")
             raise original_timeout
 
     async def cancel_ticket(
@@ -341,7 +354,7 @@ class RealtimeResponseArbiter:
         try:
             await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
-            await self._fail_closed("targeted response cancellation timed out")
+            await self._fail_stuck_lifecycle("targeted response cancellation timed out")
             raise original_timeout
         return True
 
@@ -837,24 +850,87 @@ class RealtimeResponseArbiter:
                 queued.completed.set_result(None)
             self._queue.task_done()
 
-    async def _fail_closed(self, reason: str) -> None:
-        # This is the only chokepoint through which the arbiter tears down the
-        # transport, and to the rest of the system the result is
-        # indistinguishable from a provider-side disconnect (the receive loop
-        # errors first, then host cleanup runs). Log the initiator, the reason
-        # and the lane state here so a field disconnect can be attributed —
-        # see issue #2561, where the absence of exactly this line forced a
-        # build-provenance investigation to rule the arbiter out.
+    def _release_stuck_lifecycle(self, reason: str) -> None:
+        """Drop the stuck turn but keep the connection (the fail-open policy).
+
+        Deliberately narrower than ``_mark_connection_lost``, which exists for
+        a connection that is actually gone. Four things it must NOT do here:
+
+        - clear ``_connection_available``: the transport is still usable, and
+          clearing it would reject every later ``enqueue`` until a reconnect.
+        - bump ``_connection_generation`` / cancel pending cancel-sends: there
+          is no replacement connection, so those sends are still aimed at the
+          right one and still worth delivering.
+        - set ``_dispatch_allowed``: an external-ASR turn's pause must survive
+          an unrelated stuck response, or queued proactive work could win the
+          race against the user's own turn.
+        - fail the queue: everything behind this turn is still viable and
+          dispatches normally once the lane reopens.
+
+        What it does do is give up on the bookkeeping it just declared
+        untrustworthy. Leaving the owner or the remembered server response ids
+        in place would hold the lane closed waiting for terminals we have
+        stopped expecting — the exact wedge the caller escalated about.
+        """
+
+        exc = RuntimeError(reason)
+        owner = self._response_owner
+        current = self._current
+        seen: set[int] = set()
+        for target in (owner, current):
+            if target is None or id(target) in seen:
+                continue
+            seen.add(id(target))
+            # Waking the in-flight request unwinds ``_process`` now instead of
+            # letting it park until its own timeout escalates a second time.
+            target.interrupted = True
+            target.interrupt_event.set()
+            self._wake_current_with_error(target, exc)
+        self._response_owner = None
+        self._server_response_active = False
+        self._server_vad_response_pending = False
+        self._server_response_ids.clear()
+        self._cancel_server_vad_pending_timer()
+        self._cancel_stale_release_timer()
+        self._idle.set()
+
+    async def _fail_stuck_lifecycle(self, reason: str) -> None:
+        """Escalate a response lifecycle that cannot reach a terminal state.
+
+        Every escalation in this module funnels through here, and the policy is
+        chosen by ``fail_open`` at construction. Under the default the arbiter
+        tears the transport down, and to the rest of the system that is
+        indistinguishable from a provider-side disconnect (the receive loop
+        errors first, then host cleanup runs) — so the initiator, the reason
+        and the lane state are logged either way. See issue #2561, where the
+        absence of exactly this line forced a build-provenance investigation to
+        rule the arbiter out.
+        """
+
         current = self._current
         owner = self._response_owner
-        logger.warning(
-            "response arbiter failing closed: %s "
-            "(current=%s owner=%s queue_depth=%d server_vad_pending=%s)",
+        lane_state = (
             reason,
             current.source if current is not None else None,
             owner.source if owner is not None else None,
             self._queue.qsize(),
             self._server_vad_response_pending,
+        )
+        if self._fail_open:
+            # Wording differs on purpose: the fail-closed line below is the
+            # documented grep target for attributing a field disconnect, and
+            # this path did not disconnect anyone.
+            logger.warning(
+                "response arbiter failing open, transport kept: %s "
+                "(current=%s owner=%s queue_depth=%d server_vad_pending=%s)",
+                *lane_state,
+            )
+            self._release_stuck_lifecycle(reason)
+            return
+        logger.warning(
+            "response arbiter failing closed: %s "
+            "(current=%s owner=%s queue_depth=%d server_vad_pending=%s)",
+            *lane_state,
         )
         self._mark_connection_lost(reason, fail_current_tickets=False)
         if self._abort_transport is None:
@@ -952,7 +1028,7 @@ class RealtimeResponseArbiter:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                await self._fail_closed("realtime response idle wait timed out")
+                await self._fail_stuck_lifecycle("realtime response idle wait timed out")
                 raise asyncio.TimeoutError("realtime response idle wait timed out")
         finally:
             for waiter in waiters:
@@ -1053,7 +1129,7 @@ class RealtimeResponseArbiter:
                 except Exception:
                     if not queued.terminal.done():
                         queued.terminal.cancel()
-                    await self._fail_closed(
+                    await self._fail_stuck_lifecycle(
                         "interrupted response could not reach a terminal state"
                     )
                 raise RuntimeError("response dispatch interrupted")
@@ -1147,7 +1223,7 @@ class RealtimeResponseArbiter:
         except Exception:
             if queued.terminal is not None and not queued.terminal.done():
                 queued.terminal.cancel()
-            await self._fail_closed(
+            await self._fail_stuck_lifecycle(
                 "response lifecycle could not reach a terminal state"
             )
         raise original_timeout

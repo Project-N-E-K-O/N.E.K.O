@@ -175,11 +175,11 @@ async def test_native_turns_serialize_in_submission_order():
 @pytest.mark.unit
 @pytest.mark.asyncio
 async def test_a_working_native_turn_never_aborts_the_transport():
-    # _fail_closed() physically closes the websocket and latches
-    # _fatal_error_occurred. Before this PR no client-side timer could kill a
-    # realtime socket at all, so a spurious fire is a new and total failure
-    # mode for every native user. A turn that completes normally must not
-    # arm it.
+    # Under the default policy _fail_stuck_lifecycle() physically closes the
+    # websocket and latches _fatal_error_occurred. Before this PR no
+    # client-side timer could kill a realtime socket at all, so a spurious
+    # fire is a new and total failure mode for every native user. A turn that
+    # completes normally must not arm it.
     aborted: list[str] = []
 
     async def _send(event: dict) -> None:
@@ -958,11 +958,12 @@ async def test_queued_proactive_text_never_preempts_a_live_response():
 
 
 # ---------------------------------------------------------------------------
-# T7 — the fail-close chokepoint. All six _fail_closed call sites tear the
-# transport down through one function; that function now logs the initiator,
-# the reason and the lane state. Issue #2561 is the motivating incident: an
+# T7 — the escalation chokepoint. All six escalation sites funnel through
+# _fail_stuck_lifecycle, which logs the initiator, the reason and the lane
+# state before acting. Issue #2561 is the motivating incident: an
 # unattributable disconnect had to be ruled out via build provenance because
-# exactly this log line did not exist.
+# exactly this log line did not exist. The policy the chokepoint then applies
+# is covered by test_realtime_arbiter_fail_open.py (issue #2583).
 # ---------------------------------------------------------------------------
 
 
