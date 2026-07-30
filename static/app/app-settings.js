@@ -119,6 +119,15 @@
             decisions && decisions.independentAsrEnabled
         );
     }
+    function _adoptAsrDecisionTuple(value) {
+        const decision = _normalizeServerAsrDecision(value);
+        if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
+        _lastAsrDecision = decision;
+        if (decision.writeId > _lastAppliedSharedWriteId) {
+            _lastAppliedSharedWriteId = decision.writeId;
+        }
+        return true;
+    }
     function _responseEtag(response) {
         try {
             return response && response.headers && typeof response.headers.get === 'function'
@@ -130,14 +139,10 @@
     }
     function _adoptServerAsrDecision(data) {
         const decision = _serverAsrDecision(data);
-        if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
-        _lastAsrDecision = decision;
+        if (!_adoptAsrDecisionTuple(decision)) return false;
         // The next explicit local choice must mint above every decision this
         // window has accepted, including cloud/server decisions whose clock is
         // ahead of this browser's Date.now().
-        if (decision.writeId > _lastAppliedSharedWriteId) {
-            _lastAppliedSharedWriteId = decision.writeId;
-        }
         const serverSettings = data && data.settings;
         if (serverSettings
             && typeof serverSettings.independentAsrEnabled === 'boolean'
@@ -1524,6 +1529,14 @@
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
+            if (meta && meta.asrDecision
+                && Object.prototype.hasOwnProperty.call(
+                    incoming,
+                    'independentAsrEnabled'
+                )
+                && incoming.independentAsrEnabled === meta.asrDecision.value) {
+                _adoptAsrDecisionTuple(meta.asrDecision);
+            }
             // Roll the dirty-diff baseline for every key just adopted from
             // another window. _markUserDirtySettings diffs against this
             // baseline, so without the roll a value this window merely

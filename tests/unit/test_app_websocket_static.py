@@ -2198,6 +2198,41 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           );
           assert(legacy.postCalls.length === 0, 'legacy fallback still never POSTs from the listener');
 
+          // ---- Scenario 6: an authoritative server-merge broadcast updates
+          // the decision tuple even though changedKeys is intentionally empty.
+          const sibling = makeContext();
+          await hydrateFromServer(sibling, { independentAsrEnabled: false });
+          sibling.S.independentAsrEnabled = true;
+          sibling.mod.saveSettings({ skipServerSync: true });
+          const localToggleMeta = JSON.parse(sibling.lastSharedWrite())._sharedWriteMeta;
+          const serverDecision = {
+            writeId: localToggleMeta.asrDecision.writeId + 10,
+            writerId: 'server-legacy',
+            value: false,
+          };
+          sibling.fireStorage(JSON.stringify({
+            independentAsrEnabled: false,
+            _sharedWriteMeta: {
+              writeId: serverDecision.writeId,
+              writerId: 'server-window',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+              asrDecision: serverDecision,
+            },
+          }));
+          assert(
+            sibling.S.independentAsrEnabled === false,
+            'the authoritative server broadcast must replace the old local toggle'
+          );
+          sibling.win.mergeMessagesEnabled = true;
+          sibling.mod.saveSettings({ skipServerSync: true });
+          const resharedMeta = JSON.parse(sibling.lastSharedWrite())._sharedWriteMeta;
+          assert(
+            JSON.stringify(resharedMeta.asrDecision) === JSON.stringify(serverDecision),
+            'an unrelated save must retain the accepted server decision tuple'
+          );
+
           console.log('HARNESS_OK');
           // Every sandbox timer is harness-controlled, so the process exits
           // naturally once main() returns and piped stdout is fully flushed.
