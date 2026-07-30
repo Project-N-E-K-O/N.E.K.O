@@ -2020,6 +2020,53 @@ async def test_paused_precreated_proactive_yields_to_completed_user_turn():
 
 
 @pytest.mark.asyncio
+async def test_repause_after_dequeue_requeues_without_processing_or_bypass_charge():
+    async def send(_event):
+        raise AssertionError("paused work must not be sent")
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.pause_dispatch()
+    first = await arbiter.enqueue(source="proactive-1", priority=20)
+    second = await arbiter.enqueue(source="proactive-2", priority=20)
+    first_queued = arbiter._queued_by_ticket[id(first)]
+    second_queued = arbiter._queued_by_ticket[id(second)]
+
+    selection_ready = asyncio.Event()
+    return_selection = asyncio.Event()
+    original_next_queued = arbiter._next_queued
+
+    async def controlled_next_queued():
+        selected = await original_next_queued()
+        selection_ready.set()
+        await return_selection.wait()
+        return selected
+
+    arbiter._next_queued = controlled_next_queued
+    process = AsyncMock(wraps=arbiter._process)
+    arbiter._process = process
+
+    try:
+        arbiter.resume_dispatch()
+        await asyncio.wait_for(selection_ready.wait(), timeout=0.2)
+        arbiter.pause_dispatch()
+        return_selection.set()
+
+        for _ in range(20):
+            if arbiter._queue.qsize() == 2:
+                break
+            await asyncio.sleep(0)
+
+        assert arbiter._queue.qsize() == 2
+        process.assert_not_awaited()
+        assert first.sent.done() is False
+        assert second.sent.done() is False
+        assert first_queued.bypass_count == 0
+        assert second_queued.bypass_count == 0
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_external_text_turn_rejects_gemini_before_creating_arbiter():
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = True
@@ -2385,6 +2432,70 @@ async def test_old_external_text_turn_rearms_newer_pause_after_dispatch():
 
     await proactive.done
     assert sent[-1]["type"] == "response.create"
+    await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_old_external_text_turn_repauses_before_done_waits_can_skip_yield(
+    monkeypatch,
+):
+    original_wait_for = asyncio.wait_for
+
+    async def wait_for_without_done_future_yield(awaitable, timeout):
+        if isinstance(awaitable, asyncio.Future) and awaitable.done():
+            return awaitable.result()
+        return await original_wait_for(awaitable, timeout)
+
+    monkeypatch.setattr(
+        arbiter_module.asyncio,
+        "wait_for",
+        wait_for_without_done_future_yield,
+    )
+
+    arbiter = None
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_item_created(
+                {"item": {"id": event["item"]["id"], "role": "user"}}
+            )
+        elif event["type"] == "response.create":
+            arbiter.notify_response_created({})
+            arbiter.notify_response_terminal({})
+            # Complete the lifecycle while the transport send is suspended,
+            # matching the Python 3.12+ review reproduction.
+            await asyncio.sleep(0)
+
+    client = OmniRealtimeClient.__new__(OmniRealtimeClient)
+    client._is_gemini = False
+    arbiter = RealtimeResponseArbiter(send)
+    client._response_arbiter = arbiter
+    client._external_voice_turn_pause_id = "turn-new"
+    arbiter.pause_dispatch()
+    proactive = await arbiter.enqueue(
+        source="proactive",
+        response_event={"type": "response.create", "event_id": "proactive"},
+    )
+
+    ticket = await client.submit_external_text_turn("hello", turn_id="turn-old")
+    await ticket.done
+
+    response_event_ids = [
+        event["event_id"]
+        for event in sent
+        if event["type"] == "response.create"
+    ]
+    assert len(response_event_ids) == 1
+    assert response_event_ids[0].startswith("event_asr_response_")
+    assert "proactive" not in response_event_ids
+    assert proactive.sent.done() is False
+    assert not arbiter._dispatch_allowed.is_set()
+
+    client.abandon_external_voice_turn("turn-new")
+    await proactive.done
+    assert sent[-1]["event_id"] == "proactive"
     await arbiter.shutdown()
 
 

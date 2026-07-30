@@ -1,14 +1,10 @@
 """Serialize client-initiated realtime responses across their full lifecycle.
 
-CPython 3.11 only, and this module is why. The queue worker dequeues
-BEFORE re-checking ``_dispatch_allowed``, so a ``pause_dispatch()`` landing
-between those two points is only honored because of 3.11's task-yield
-ordering. On 3.12+ that ordering changes and proactive chat can jump the
-queue ahead of user speech. ``pyproject.toml`` pins ``requires-python`` to
-``==3.11.*`` for this reason and
-``tests/unit/test_realtime_arbiter_native_path.py`` fails if the pin is
-widened. The real fix is #2516: gate the dequeue on ``_dispatch_allowed``
-AFTER ``_next_queued`` and requeue. Do that before touching the pin.
+Dispatch permission is checked both before and after queue selection. If a
+pause lands while an item is being selected, that item is returned to the
+queue without consuming any fairness allowance. After resolving a ticket's
+``sent`` future, the worker explicitly yields to its waiter before selecting
+more work so that an external-turn hand-off can restore a newer pause.
 """
 
 from __future__ import annotations
@@ -853,8 +849,10 @@ class RealtimeResponseArbiter:
                 type(exc).__name__,
             )
 
-    async def _next_queued(self) -> _QueuedResponse:
-        """Select fairly: a lower-priority item may be bypassed at most 3 times."""
+    async def _next_queued(
+        self,
+    ) -> tuple[_QueuedResponse, tuple[_QueuedResponse, ...]]:
+        """Select fairly, deferring bypass accounting until dispatch is allowed."""
 
         candidates = [await self._queue.get()]
         while True:
@@ -868,13 +866,13 @@ class RealtimeResponseArbiter:
             selected = min(starved, key=lambda item: item.sequence)
         else:
             selected = min(candidates, key=lambda item: (item.priority, item.sequence))
-        for candidate in candidates:
-            if candidate is selected:
-                continue
-            candidate.bypass_count += 1
-            self._queue.task_done()
+        bypassed = tuple(
+            candidate for candidate in candidates if candidate is not selected
+        )
+        for candidate in bypassed:
             self._queue.put_nowait(candidate)
-        return selected
+            self._queue.task_done()
+        return selected, bypassed
 
     def _ensure_worker(self) -> None:
         if self._worker is None or self._worker.done():
@@ -887,11 +885,24 @@ class RealtimeResponseArbiter:
             await self._dispatch_allowed.wait()
             if not self._connection_available:
                 return
-            queued = await self._next_queued()
+            queued, bypassed = await self._next_queued()
+            if not self._dispatch_allowed.is_set():
+                self._queue.put_nowait(queued)
+                self._queue.task_done()
+                continue
+            for candidate in bypassed:
+                candidate.bypass_count += 1
             try:
                 await self._process(queued)
             finally:
                 self._queue.task_done()
+            if queued.ticket.sent.done():
+                # Resolving ``ticket.sent`` schedules callers that may need to
+                # restore a newer external-turn pause. ``sleep(0)`` always
+                # suspends the current task, unlike ``wait_for`` on an already
+                # completed future on Python 3.12+, so the waiter runs before
+                # this worker can select another queued response.
+                await asyncio.sleep(0)
 
     async def _wait_for_dispatch_or_interrupt(
         self,
