@@ -101,6 +101,13 @@
         // 「用户显式改过 ASR 开关」「跨窗口 ASR 翻转」这三种事件才让它变权威；
         // 在此之前 start_session 握手必须省略该字段，由后端持久化值兜底。
         independentAsrAuthoritative: false,
+        // 资源优化同样参与会话路由启动，必须独立证明该键来自 server merge、
+        // 本窗口显式修改或可信的跨窗口修改，不能用启动默认值覆盖持久化选择。
+        voiceInputResourceOptimizationAuthoritative: false,
+        // 跨 popup generation 保存「下次会话生效」状态与当前会话的实际 ASR
+        // route。否则跨窗口设置事件更新偏好后，重渲染会把偏好误报成当前 route。
+        voiceSettingsPendingUntilEpoch: null,
+        pendingVoiceRouteIndependentAsr: null,
         // 独立 ASR 已 fail-closed 的粘性标记：blocked 生命周期事件只发一次，
         // 而游戏 STT 网关持有麦克风时会跳过停麦，退出游戏的恢复路径必须据此
         // 拒绝把麦克风重新开到一条仍然关闭的路由上。

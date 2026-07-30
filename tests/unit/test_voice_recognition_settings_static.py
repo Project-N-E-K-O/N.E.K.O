@@ -17,6 +17,7 @@ def test_new_profile_voice_settings_default_enabled_without_becoming_authoritati
     assert "voiceInputResourceOptimizationEnabled: true" in state
     assert "settingsHydrated: false" in state
     assert "independentAsrAuthoritative: false" in state
+    assert "voiceInputResourceOptimizationAuthoritative: false" in state
 
 
 def test_voice_settings_preserve_explicit_false_during_boot_merge() -> None:
@@ -67,6 +68,21 @@ def test_voice_recognition_popover_has_explicit_portal_lifecycle() -> None:
     assert "asrContainer.addEventListener('mouseenter'" in source
     assert "asrContainer.addEventListener('focusin'" in source
     assert "asrContainer.addEventListener('pointerup'" in source
+
+
+def test_cross_window_voice_settings_publish_a_shared_pending_route_snapshot() -> None:
+    state = APP_STATE.read_text(encoding="utf-8")
+    settings = APP_SETTINGS.read_text(encoding="utf-8")
+    audio_capture = APP_AUDIO_CAPTURE.read_text(encoding="utf-8")
+
+    assert "voiceSettingsPendingUntilEpoch: null" in state
+    assert "pendingVoiceRouteIndependentAsr: null" in state
+    assert "S.voiceSettingsPendingUntilEpoch" in settings
+    assert "S.pendingVoiceRouteIndependentAsr" in settings
+    assert "neko:voice-settings-pending-changed" in settings
+    assert "S.voiceSettingsPendingUntilEpoch" in audio_capture
+    assert "S.pendingVoiceRouteIndependentAsr" in audio_capture
+    assert "neko:voice-settings-pending-changed" in audio_capture
 
 
 def test_voice_recognition_copy_keeps_native_and_fail_closed_routes_distinct() -> None:

@@ -76,6 +76,9 @@ class _ProtocolManager:
     def set_independent_asr_handshake(self, value) -> None:
         self.calls.append(("asr_handshake", value))
 
+    def set_voice_input_resource_optimization_handshake(self, value) -> None:
+        self.calls.append(("resource_optimization_handshake", value))
+
     def start_session(self, *_args, **_kwargs):
         self.calls.append(("start_session", None))
 
@@ -344,6 +347,7 @@ async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
                 "action": "start_session",
                 "input_type": "audio",
                 "independent_asr_enabled": True,
+                "voice_input_resource_optimization_enabled": False,
             },
             {"action": "start_session", "input_type": "audio"},
         ]
@@ -362,8 +366,17 @@ async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
     assert [
         payload for name, payload in manager.calls if name == "asr_handshake"
     ] == [True, None]
+    assert [
+        payload
+        for name, payload in manager.calls
+        if name == "resource_optimization_handshake"
+    ] == [False, None]
     call_names = [name for name, _payload in manager.calls]
     assert call_names.index("asr_handshake") < call_names.index("start_session")
+    assert (
+        call_names.index("resource_optimization_handshake")
+        < call_names.index("start_session")
+    )
 
 
 @pytest.mark.asyncio

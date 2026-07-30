@@ -2910,17 +2910,23 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 S.pendingSettingsSyncPromise = syncPromise;
             }
 
-            var voiceSettingsPendingUntilEpoch = null;
-            var pendingVoiceRouteIndependentAsr = null;
-            function markVoiceSettingsPending() {
-                voiceSettingsPendingUntilEpoch = (
-                    Number(S.voiceSessionStartEpoch) || 0
-                ) + 1;
+            function markVoiceSettingsPending(activeRouteSnapshot) {
+                var targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
+                if (
+                    activeRouteSnapshot !== undefined
+                    && (
+                        S.voiceSettingsPendingUntilEpoch !== targetEpoch
+                        || S.pendingVoiceRouteIndependentAsr === null
+                    )
+                ) {
+                    S.pendingVoiceRouteIndependentAsr = activeRouteSnapshot;
+                }
+                S.voiceSettingsPendingUntilEpoch = targetEpoch;
             }
             var asrToggle = createVoiceSettingToggle(
                 S.independentAsrEnabled === true,
                 function (enabled) {
-                    pendingVoiceRouteIndependentAsr = S.voiceChatActive === true
+                    var activeRouteSnapshot = S.voiceChatActive === true
                         ? (
                             S.independentAsrActive === true
                             || (
@@ -2930,7 +2936,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                         )
                         : null;
                     S.independentAsrEnabled = enabled;
-                    markVoiceSettingsPending();
+                    markVoiceSettingsPending(activeRouteSnapshot);
                     updateVoiceRecognitionUi();
                     persistVoiceSettingChange();
                 }
@@ -3139,6 +3145,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     'neko:voice-session-started',
                     onVoiceSessionStarted
                 );
+                window.addEventListener(
+                    'neko:voice-settings-pending-changed',
+                    onVoiceSettingsPendingChanged
+                );
                 voicePopupObserver = new MutationObserver(function () {
                     if (!isPopupAvailable()) destroyVoicePanel();
                 });
@@ -3159,10 +3169,18 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function updateVoiceRecognitionUi() {
                 var enabled = S.independentAsrEnabled === true;
+                if (
+                    S.voiceSettingsPendingUntilEpoch !== null
+                    && (Number(S.voiceSessionStartEpoch) || 0)
+                        >= S.voiceSettingsPendingUntilEpoch
+                ) {
+                    S.voiceSettingsPendingUntilEpoch = null;
+                    S.pendingVoiceRouteIndependentAsr = null;
+                }
                 var summaryUsesIndependentAsr =
-                    voiceSettingsPendingUntilEpoch !== null
-                    && pendingVoiceRouteIndependentAsr !== null
-                        ? pendingVoiceRouteIndependentAsr
+                    S.voiceSettingsPendingUntilEpoch !== null
+                    && S.pendingVoiceRouteIndependentAsr !== null
+                        ? S.pendingVoiceRouteIndependentAsr
                         : enabled;
                 var provider = providerDisplayName(S.independentAsrProvider);
                 var blocked = S.voiceInputLifecycleState === 'blocked';
@@ -3188,7 +3206,7 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 // independent-ASR and Omni-native routes.
                 noiseToggle.setDisabled(false);
                 optimizationToggle.setDisabled(!enabled);
-                if (voiceSettingsPendingUntilEpoch !== null) {
+                if (S.voiceSettingsPendingUntilEpoch !== null) {
                     voiceStatus.textContent = window.t
                         ? window.t('microphone.voiceRecognitionSettingsPending')
                         : '◐ 设置将在下次语音会话生效';
@@ -3333,6 +3351,10 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                     'neko:voice-session-started',
                     onVoiceSessionStarted
                 );
+                window.removeEventListener(
+                    'neko:voice-settings-pending-changed',
+                    onVoiceSettingsPendingChanged
+                );
                 if (voicePanel) voicePanel.remove();
                 if (voiceBridge) voiceBridge.remove();
                 voicePanel = null;
@@ -3397,12 +3419,16 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
 
             function onVoiceSessionStarted() {
                 if (
-                    voiceSettingsPendingUntilEpoch === null
+                    S.voiceSettingsPendingUntilEpoch === null
                     || (Number(S.voiceSessionStartEpoch) || 0)
-                        < voiceSettingsPendingUntilEpoch
+                        < S.voiceSettingsPendingUntilEpoch
                 ) return;
-                voiceSettingsPendingUntilEpoch = null;
-                pendingVoiceRouteIndependentAsr = null;
+                S.voiceSettingsPendingUntilEpoch = null;
+                S.pendingVoiceRouteIndependentAsr = null;
+                updateVoiceRecognitionUi();
+            }
+
+            function onVoiceSettingsPendingChanged() {
                 updateVoiceRecognitionUi();
             }
 
@@ -3955,6 +3981,9 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
                 || !isPopupAvailable()
             ) return false;
             console.error('渲染麦克风列表失败:', error);
+            if (disposeVoiceRecognitionPopover) {
+                disposeVoiceRecognitionPopover();
+            }
             micPopup.innerHTML = '';
             var errorItem = document.createElement('div');
             errorItem.textContent = window.t ? window.t('microphone.loadFailed') : '获取麦克风列表失败';

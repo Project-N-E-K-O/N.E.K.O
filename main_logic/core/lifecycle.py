@@ -704,6 +704,11 @@ class LifecycleMixin:
         session_handshake_override = getattr(
             self, "_independent_asr_handshake_override", None
         )
+        session_resource_optimization_handshake_override = getattr(
+            self,
+            "_voice_input_resource_optimization_handshake_override",
+            None,
+        )
         self._start_session_seed_turn_language()
         # 重置防刷屏标志
         self.session_closed_by_server = False
@@ -810,6 +815,9 @@ class LifecycleMixin:
                     llm_result,
                     _diag_start,
                     handshake_override=session_handshake_override,
+                    resource_optimization_override=(
+                        session_resource_optimization_handshake_override
+                    ),
                 )
             else:
                 raise Exception("Session not initialized")
@@ -1518,6 +1526,7 @@ class LifecycleMixin:
         diag_start,
         *,
         handshake_override=...,
+        resource_optimization_override=...,
     ):
         """Post-connect activation: flip the active flags, start the message
         handler, reset the failure circuit, ack the frontend, and open the
@@ -1542,6 +1551,7 @@ class LifecycleMixin:
         await self._start_independent_asr_if_enabled(
             input_mode,
             handshake_override=handshake_override,
+            resource_optimization_override=resource_optimization_override,
         )
 
         # 启动成功，重置失败计数器和熔断

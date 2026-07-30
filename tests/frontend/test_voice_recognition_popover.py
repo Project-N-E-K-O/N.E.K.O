@@ -91,6 +91,9 @@ def _install_voice_popover_harness(
         voiceInputResourceOptimizationEnabled: true,
         voiceInputLifecycleState: 'active',
         voiceSessionStartEpoch: 10,
+        voiceSettingsPendingUntilEpoch: null,
+        pendingVoiceRouteIndependentAsr: null,
+        voiceChatActive: false,
         noiseReductionEnabled: true,
         microphoneGainDb: 0,
         micGainNode: null,
@@ -121,7 +124,12 @@ def _install_voice_popover_harness(
     function saveNoiseReductionSetting() {}
     function saveMicGainSetting() {}
     async function selectMicrophone() {}
-    function startMicVolumeVisualization() {}
+    let failMicVolumeVisualization = false;
+    function startMicVolumeVisualization() {
+        if (failMicVolumeVisualization) {
+            throw new Error('forced mic visualization failure');
+        }
+    }
     function ensureMicPopupScrollbarStyle() {}
     function attachTransientMicPopupScrollbar() { return () => {}; }
     function createScreenShareToggleButton() {
@@ -152,6 +160,9 @@ def _install_voice_popover_harness(
             mediaResolvers.splice(index, 1)[0].reject(
                 new Error('permission rejected')
             );
+        },
+        failMicVolumeVisualization() {
+            failMicVolumeVisualization = true;
         },
         pendingPermissions: () => mediaResolvers.length,
         popup: () => document.getElementById('live2d-popup-mic'),
@@ -253,6 +264,40 @@ def test_stale_voice_popover_failure_cannot_clear_new_render(page: Page) -> None
         "markupPreserved": True,
         "errors": [],
     }
+
+
+@pytest.mark.frontend
+def test_current_voice_popover_failure_disposes_owned_portal(page: Page) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = window.__voicePopoverTest.popup();
+            window.__voicePopoverTest.failMicVolumeVisualization();
+            const rendered = await window.renderFloatingMicList(popup);
+            return {
+                rendered,
+                panels: window.__voicePopoverTest.panels(),
+                errorText: popup.textContent,
+                listenerBalance: {
+                    ...window.__voicePopoverTest.listenerBalance,
+                },
+            };
+        }"""
+    )
+
+    assert result["rendered"] is True
+    assert result["panels"] == 0
+    assert result["errorText"] == "microphone.loadFailed"
+    for key in (
+        "document:pointerdown",
+        "document:keydown",
+        "window:resize",
+        "window:scroll",
+        "window:voice-input-lifecycle-changed",
+        "window:neko:voice-session-started",
+    ):
+        assert result["listenerBalance"].get(key) == 0
 
 
 @pytest.mark.frontend
@@ -462,6 +507,47 @@ def test_voice_popover_keeps_active_route_and_keyboard_access(
         "optimizationDisabled": True,
         "panelOpen": "true",
         "focusedNoise": True,
+    }
+
+
+@pytest.mark.frontend
+def test_voice_popover_preserves_cross_window_active_route_across_rerender(
+    page: Page,
+) -> None:
+    _install_voice_popover_harness(page, deferred_permission=False)
+
+    result = page.evaluate(
+        """async () => {
+            const popup = window.__voicePopoverTest.popup();
+            const state = window.__voicePopoverTest.state;
+            await window.renderFloatingMicList(popup);
+
+            // app-settings applies the other window's new preference to S, but
+            // the current session remains on the route captured before that
+            // preference changed. The shared pending snapshot must survive the
+            // popup's owned-disposer rerender.
+            state.voiceChatActive = true;
+            state.independentAsrActive = true;
+            state.pendingVoiceRouteIndependentAsr = true;
+            state.voiceSettingsPendingUntilEpoch = 11;
+            state.independentAsrEnabled = false;
+            await window.renderFloatingMicList(popup);
+
+            const panel = window.__voicePopoverTest.panel();
+            const container = document.querySelector(
+                '[aria-controls="' + panel.id + '"]'
+            );
+            return {
+                summary: container.firstElementChild
+                    .firstElementChild.lastElementChild.textContent,
+                status: panel.lastElementChild.textContent,
+            };
+        }"""
+    )
+
+    assert result == {
+        "summary": "microphone.independentAsrSummary",
+        "status": "microphone.voiceRecognitionSettingsPending",
     }
 
 

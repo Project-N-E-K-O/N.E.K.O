@@ -491,12 +491,23 @@ class AsrRuntimeMixin:
             value if isinstance(value, bool) else None
         )
 
+    def set_voice_input_resource_optimization_handshake(
+        self,
+        value: object,
+    ) -> None:
+        """Pin one session's authoritative resource-optimization preference."""
+        self._ensure_asr_runtime_state()
+        self._voice_input_resource_optimization_handshake_override = (
+            value if isinstance(value, bool) else None
+        )
+
     async def _start_independent_asr_if_enabled(
         self,
         input_mode: str,
         *,
         preserve_hot_swap_audio: bool = False,
         handshake_override=...,
+        resource_optimization_override=...,
     ) -> None:
         """Resolve the microphone route for one session start.
 
@@ -648,9 +659,19 @@ class AsrRuntimeMixin:
             enabled = handshake_enabled
         else:
             enabled = bool(settings.get("independentAsrEnabled", True))
-        optimization_value = settings.get(
-            "voiceInputResourceOptimizationEnabled",
-            True,
+        optimization_handshake = (
+            getattr(
+                self,
+                "_voice_input_resource_optimization_handshake_override",
+                None,
+            )
+            if resource_optimization_override is ...
+            else resource_optimization_override
+        )
+        optimization_value = (
+            optimization_handshake
+            if optimization_handshake is not None
+            else settings.get("voiceInputResourceOptimizationEnabled", True)
         )
         if not enabled:
             self._set_microphone_route("native")

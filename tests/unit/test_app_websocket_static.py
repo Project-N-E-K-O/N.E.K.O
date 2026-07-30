@@ -488,7 +488,7 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
 
     persist_block = capture_source.split(
         "function persistVoiceSettingChange() {", 1
-    )[1].split("var voiceSettingsPendingUntilEpoch", 1)[0]
+    )[1].split("function markVoiceSettingsPending", 1)[0]
     toggle_block = capture_source.split(
         "var asrToggle = createVoiceSettingToggle(", 1
     )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
@@ -584,6 +584,28 @@ def test_start_session_payload_carries_independent_asr_handshake():
     assert 0 < attach_index - creation_index < 200
 
 
+def test_start_session_payload_carries_resource_optimization_handshake():
+    websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
+    state_source = APP_STATE_PATH.read_text(encoding="utf-8")
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    wrapper = websocket_source.split(
+        "function attachStartSessionHandshake(ws)",
+        1,
+    )[1].split("function connectWebSocket()", 1)[0]
+
+    assert "voiceInputResourceOptimizationAuthoritative: false," in state_source
+    assert "S.voiceInputResourceOptimizationAuthoritative === true" in wrapper
+    assert (
+        "msg.voice_input_resource_optimization_enabled = "
+        "S.voiceInputResourceOptimizationEnabled !== false;"
+    ) in wrapper
+    assert (
+        "_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')"
+        in settings_source
+    )
+    assert "S.voiceInputResourceOptimizationAuthoritative = true;" in settings_source
+
+
 def test_start_session_handshake_omitted_until_settings_hydrated():
     # On a fresh browser profile — or while the async conversation-settings
     # GET is still pending — S.independentAsrEnabled is only the boot default
@@ -677,7 +699,7 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
     persist_block = capture_source.split(
         "function persistVoiceSettingChange() {", 1
-    )[1].split("var voiceSettingsPendingUntilEpoch", 1)[0]
+    )[1].split("function markVoiceSettingsPending", 1)[0]
     assert "S.independentAsrEnabled = enabled;" in toggle_handler
     assert "persistVoiceSettingChange();" in toggle_handler
     assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
@@ -762,7 +784,7 @@ def test_user_toggle_during_get_failure_marks_hydration_posts_and_stamps():
     )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
     persist_block = capture_source.split(
         "function persistVoiceSettingChange() {", 1
-    )[1].split("var voiceSettingsPendingUntilEpoch", 1)[0]
+    )[1].split("function markVoiceSettingsPending", 1)[0]
     assert "persistVoiceSettingChange();" in toggle_block
     assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
@@ -1053,7 +1075,12 @@ def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
     )[0]
     assert "S.settingsHydrated = true;" in flip_gate
     assert "_dirtySettingsKeys.add('independentAsrEnabled');" in flip_gate
-    assert listener_block.count("S.settingsHydrated = true;") == 1
+    optimization_gate = listener_block.split(
+        "if (optimizationChangedByOtherWindow) {",
+        1,
+    )[1].split("}", 1)[0]
+    assert "S.settingsHydrated = true;" in optimization_gate
+    assert listener_block.count("S.settingsHydrated = true;") == 2
     assert listener_block.count("_dirtySettingsKeys.add('independentAsrEnabled');") == 1
 
     # No POST from the receiving window: the originating window owns
@@ -2807,8 +2834,12 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           const postCalls = [];
           const getCalls = [];
           const listeners = [];
+          const dispatchedEvents = [];
           const sandbox = {
             console: { log() {}, warn() {}, error() {} },
+            CustomEvent: class {
+              constructor(type) { this.type = type; }
+            },
             setInterval() { return 0; },
             clearInterval() {},
             setTimeout(fn, ms) {
@@ -2832,11 +2863,21 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
             },
           };
           sandbox.window = {
-            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appState: {
+              independentAsrEnabled: false,
+              independentAsrActive: true,
+              voiceChatActive: true,
+              voiceInputLifecycleState: 'active',
+              voiceSessionStartEpoch: 10,
+              voiceSettingsPendingUntilEpoch: null,
+              pendingVoiceRouteIndependentAsr: null,
+              settingsHydrated: false,
+            },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
             addEventListener(type, fn) { listeners.push({ type, fn }); },
             removeEventListener() {},
+            dispatchEvent(event) { dispatchedEvents.push(event.type); },
           };
           vm.createContext(sandbox);
           vm.runInContext(source, sandbox);
@@ -2845,6 +2886,7 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           return {
             postCalls,
             getCalls,
+            dispatchedEvents,
             S: sandbox.window.appState,
             fireStorage(newValue) {
               storage[0].fn({ key: 'project_neko_settings', newValue });
@@ -2864,6 +2906,12 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx.fireStorage(JSON.stringify({ independentAsrEnabled: true }));
           assert(ctx.S.independentAsrEnabled === true, 'the flip must be applied to S');
           assert(ctx.S.settingsHydrated === true, 'the flip must arm the start_session handshake stamp');
+          assert(ctx.S.voiceSettingsPendingUntilEpoch === 11, 'the flip must target the next voice-session epoch');
+          assert(ctx.S.pendingVoiceRouteIndependentAsr === true, 'the pending summary must preserve the active route');
+          assert(
+            ctx.dispatchedEvents.includes('neko:voice-settings-pending-changed'),
+            'the flip must notify an already-open microphone popover'
+          );
           assert(ctx.postCalls.length === 0, 'the receiving window must not POST (originating window owns persistence)');
 
           // The GET now resolves with the server value read BEFORE the other
@@ -2885,6 +2933,8 @@ def test_cross_window_asr_flip_authoritative_over_pending_get_harness():
           ctx2.fireStorage(JSON.stringify({ independentAsrEnabled: false, mergeMessagesEnabled: true }));
           assert(ctx2.S.mergeMessagesEnabled === true, 'other shared keys must still sync across windows');
           assert(ctx2.S.settingsHydrated === false, 'no ASR flip means no hydration mark');
+          assert(ctx2.S.voiceSettingsPendingUntilEpoch === null, 'no flip means no pending voice-session marker');
+          assert(ctx2.dispatchedEvents.length === 0, 'no flip means no popover notification');
           assert(ctx2.postCalls.length === 0, 'a non-flip storage event must not POST either');
 
           ctx2.getCalls[0].resolve({

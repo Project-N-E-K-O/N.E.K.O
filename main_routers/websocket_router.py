@@ -777,6 +777,15 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 )
                 if callable(handshake_setter):
                     handshake_setter(message.get("independent_asr_enabled"))
+                optimization_handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_voice_input_resource_optimization_handshake",
+                    None,
+                )
+                if callable(optimization_handshake_setter):
+                    optimization_handshake_setter(
+                        message.get("voice_input_resource_optimization_enabled")
+                    )
                 input_type = message.get("input_type", "audio")
                 if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):

@@ -4675,6 +4675,66 @@ async def test_start_session_handshake_false_overrides_persisted_enabled(
     assert runtime._asr_route_mode == "native"
 
 
+async def test_resource_optimization_handshake_false_overrides_persisted_enabled(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voiceInputResourceOptimizationEnabled": True,
+            }
+        ),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_voice_input_resource_optimization_handshake(False)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is False
+
+
+@pytest.mark.parametrize("malformed", ["false", 0, 1, [False], {"enabled": False}])
+async def test_resource_optimization_handshake_malformed_falls_back_to_persisted(
+    monkeypatch,
+    malformed,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voiceInputResourceOptimizationEnabled": True,
+            }
+        ),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_voice_input_resource_optimization_handshake(malformed)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is True
+
+
 async def test_start_session_handshake_missing_falls_back_to_persisted(
     monkeypatch,
 ) -> None:

@@ -1283,6 +1283,9 @@
             // touched the ASR key, synchronously before any await so the very
             // next start_session already carries it.
             if (_dirtySettingsKeys.has('independentAsrEnabled')) S.independentAsrAuthoritative = true;
+            if (_dirtySettingsKeys.has('voiceInputResourceOptimizationEnabled')) {
+                S.voiceInputResourceOptimizationAuthoritative = true;
+            }
         }
         // Serialize the POST behind any in-flight sync (Codex P2): the
         // settings snapshot is built inside runSync, at SEND time — after the
@@ -2000,6 +2003,7 @@
                 // now holds either server truth or a user change the field-level
                 // merge preserved — authoritative for the handshake either way.
                 S.independentAsrAuthoritative = true;
+                S.voiceInputResourceOptimizationAuthoritative = true;
                 // Distinct from the hydration mark above (which a user action
                 // also sets, because a user choice is authoritative for the
                 // handshake even before any GET): THIS flag means server values
@@ -2307,6 +2311,15 @@
                     && optimizationOutranksLocalChoice
                 )
                 : optimizationValueDiffers;
+            const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
+                ? (
+                    S.independentAsrActive === true
+                    || (
+                        S.voiceInputLifecycleState === 'blocked'
+                        && S.independentAsrEnabled === true
+                    )
+                )
+                : null;
             // Drop the key from the apply set when the snapshot's ASR value
             // carries neither user intent nor trustworthy server truth: an
             // already-superseded write, or one made before its own window
@@ -2565,6 +2578,8 @@
                 // Preserve a genuine cross-window toggle across this window's
                 // still-pending server merge without granting unrelated fields
                 // handshake authority or emitting a duplicate POST.
+                S.settingsHydrated = true;
+                S.voiceInputResourceOptimizationAuthoritative = true;
                 _dirtySettingsKeys.add(optimizationKey);
                 if (meta) {
                     const adopted = meta.optimizationDecision || meta;
@@ -2574,6 +2589,23 @@
                         settings[optimizationKey]
                     );
                 }
+            }
+            if (asrChangedByOtherWindow || optimizationChangedByOtherWindow) {
+                const targetEpoch = (Number(S.voiceSessionStartEpoch) || 0) + 1;
+                if (
+                    asrChangedByOtherWindow
+                    && (
+                        S.voiceSettingsPendingUntilEpoch !== targetEpoch
+                        || S.pendingVoiceRouteIndependentAsr === null
+                    )
+                ) {
+                    S.pendingVoiceRouteIndependentAsr =
+                        activeRouteBeforeSharedVoiceChange;
+                }
+                S.voiceSettingsPendingUntilEpoch = targetEpoch;
+                window.dispatchEvent(new CustomEvent(
+                    'neko:voice-settings-pending-changed'
+                ));
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {

@@ -2480,6 +2480,51 @@ def test_start_session_snapshots_the_handshake_and_hands_it_down():
     )
 
 
+def test_start_session_snapshots_resource_optimization_handshake_before_await():
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[2] / "main_logic" / "core" / "lifecycle.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    start_session = functions["start_session"]
+    snapshot_name = "session_resource_optimization_handshake_override"
+    snapshot_lines = [
+        node.lineno
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Name)
+        and node.id == snapshot_name
+        and isinstance(node.ctx, ast.Store)
+    ]
+    await_lines = [
+        node.lineno for node in ast.walk(start_session) if isinstance(node, ast.Await)
+    ]
+
+    assert snapshot_lines
+    assert min(snapshot_lines) < min(await_lines)
+
+    def passes_override(fn, keyword_value):
+        return any(
+            kw.arg == "resource_optimization_override"
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == keyword_value
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+        )
+
+    assert passes_override(start_session, snapshot_name)
+    assert passes_override(
+        functions["_start_session_activate"],
+        "resource_optimization_override",
+    )
+
+
 async def test_start_without_a_snapshot_still_reads_the_shared_handshake():
     # Non-vacuity, and the contract for the internal re-entry paths (hot swap,
     # device change): with no snapshot supplied the shared field still decides.

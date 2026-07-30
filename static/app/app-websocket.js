@@ -1583,8 +1583,16 @@
             if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
                 try {
                     var msg = JSON.parse(data);
+                    var handshakeStamped = false;
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
+                        msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
+                        handshakeStamped = true;
+                    }
+                    if (handshakeStamped) {
                         data = JSON.stringify(msg);
                     }
                 } catch (e) {
