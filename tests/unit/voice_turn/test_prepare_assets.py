@@ -8,9 +8,11 @@ from pathlib import Path
 import pytest
 
 import main_logic.voice_turn.asset_manifest as asset_manifest
-import scripts.prepare_voice_turn_assets as preparer
 from main_logic.voice_turn.asset_manifest import AssetManifestError
-from scripts.prepare_voice_turn_assets import prepare_assets
+from scripts.prepare_voice_turn_assets import (
+    AssetManifestError as PreparerAssetManifestError,
+    prepare_assets,
+)
 
 
 SCRIPT_PATH = Path(__file__).resolve().parents[3] / "scripts" / "prepare_voice_turn_assets.py"
@@ -117,7 +119,7 @@ def test_preparer_exception_identity_matches_package_module():
     # The script loads asset_manifest by file path; the sys.modules
     # registration must keep a single class identity so AssetManifestError
     # raised by the script is catchable via the package import.
-    assert preparer.AssetManifestError is asset_manifest.AssetManifestError
+    assert PreparerAssetManifestError is asset_manifest.AssetManifestError
     assert sys.modules["main_logic.voice_turn.asset_manifest"] is asset_manifest
 
 
