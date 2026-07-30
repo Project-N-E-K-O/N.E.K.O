@@ -56,4 +56,19 @@ describe('Market API transport', () => {
       params: { page: 1, page_size: 20 },
     })
   })
+
+  it('uses the local catalog bridge when Market status is unavailable', async () => {
+    mocks.statusGet.mockRejectedValueOnce(new Error('status unavailable'))
+
+    await fetchMarketPlugins({ page: 2 })
+
+    expect(mocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        baseURL: '/market/catalog/api/v1',
+      }),
+    )
+    expect(mocks.marketGet).toHaveBeenCalledWith('/plugins', {
+      params: { page: 2 },
+    })
+  })
 })

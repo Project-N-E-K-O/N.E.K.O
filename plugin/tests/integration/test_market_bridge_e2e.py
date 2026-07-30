@@ -1879,6 +1879,12 @@ async def test_oauth_status_resolves_a_pending_auth_subject(
                 "client_id": "neko-desktop",
                 "scope": "openid email profile offline",
                 "refresh_generation": 0,
+                "user": {
+                    "auth_user_id": "resolved-auth-subject",
+                    "username": "cached-user",
+                },
+                "market_api_url_last_verified": "https://market.test",
+                "market_user_verified_at": time.time(),
             }
         ),
         encoding="utf-8",
@@ -1894,9 +1900,32 @@ async def test_oauth_status_resolves_a_pending_auth_subject(
     assert response.status_code == 200
     assert response.json()["authenticated"] is True
     assert response.json()["auth_state"] == "ready"
+    assert response.json()["market_state"] == "ready"
     saved = json.loads(token_file.read_text(encoding="utf-8"))
     assert saved["subject"] == "resolved-auth-subject"
     assert saved["subject_pending"] is False
+
+
+@pytest.mark.parametrize(
+    ("accept_language", "expected"),
+    [
+        ("en-GB,zh-TW;q=0.1", "en"),
+        ("fr-FR,ja-JP;q=0.9,zh-CN;q=0.8", "ja"),
+        ("zh-TW;q=0.7,ja;q=0.7", "zh-CN"),
+        ("fr-FR,*;q=0.5,ja;q=0.4", "en"),
+        ("zh;q=0,ja;q=invalid", "en"),
+    ],
+)
+def test_oauth_callback_locale_prefers_supported_weighted_language(
+    accept_language: str,
+    expected: str,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    assert (
+        market_bridge_module._preferred_oauth_callback_locale(accept_language)
+        == expected
+    )
 
 
 @pytest.mark.asyncio

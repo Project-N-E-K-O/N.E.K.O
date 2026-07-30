@@ -55,6 +55,8 @@
                 v-if="marketUrl && marketAuth.auth_state === 'pending'"
                 class="market-auth-trigger"
                 :loading="true"
+                disabled
+                aria-live="polite"
                 plain
               >
                 <el-icon><User /></el-icon>

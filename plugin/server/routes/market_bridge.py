@@ -877,6 +877,36 @@ async def market_oauth_start(
     return MarketOAuthStartResponse(auth_url=auth_url, state=state)
 
 
+def _preferred_oauth_callback_locale(accept_language: str) -> str:
+    """Select the highest-priority supported callback locale."""
+
+    supported = {"zh": "zh-CN", "ja": "ja", "en": "en", "*": "en"}
+    candidates: list[tuple[float, int, str]] = []
+    for index, raw_entry in enumerate(accept_language.lower().split(",")):
+        parts = [part.strip() for part in raw_entry.split(";")]
+        tag = parts[0]
+        if not tag:
+            continue
+        quality = 1.0
+        for parameter in parts[1:]:
+            key, separator, value = parameter.partition("=")
+            if separator and key.strip() == "q":
+                try:
+                    quality = float(value.strip())
+                except ValueError:
+                    quality = 0.0
+                break
+        primary_tag = tag.split("-", 1)[0]
+        locale = supported.get(primary_tag)
+        if locale is None or not 0.0 < quality <= 1.0:
+            continue
+        candidates.append((-quality, index, locale))
+    if not candidates:
+        return "en"
+    candidates.sort()
+    return candidates[0][2]
+
+
 @router.get("/oauth/callback", response_class=HTMLResponse)
 async def market_oauth_callback(
     request: Request,
@@ -904,8 +934,9 @@ async def market_oauth_callback(
         _OAUTH_CALLBACK_FILE,
         {"code": code, "state": state, "timestamp": time.time()},
     )
-    accept_language = request.headers.get("accept-language", "").lower()
-    locale = "zh-CN" if "zh" in accept_language else "ja" if "ja" in accept_language else "en"
+    locale = _preferred_oauth_callback_locale(
+        request.headers.get("accept-language", "")
+    )
     copy = {
         "zh-CN": {
             "title": "N.E.K.O 浏览器授权已返回",
@@ -1005,6 +1036,13 @@ async def market_oauth_status(
             token_data["subject"] = subject
             token_data["subject_pending"] = False
             token_data["auth_state"] = "ready"
+            token_data["updated_at"] = time.time()
+            if not _write_oauth_token_if_matches(token_snapshot, token_data):
+                return MarketOAuthStatusResponse(
+                    authenticated=False,
+                    market_web_url=MARKET_WEB_URL,
+                )
+            token_snapshot = dict(token_data)
         else:
             token_data["auth_state"] = "pending"
             token_data["updated_at"] = time.time()
@@ -1972,24 +2010,16 @@ async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
             )
             if res.status_code != 200:
                 headers = getattr(res, "headers", {})
-                logger.warning(
-                    "[market-auth] Auth userinfo verification failed "
-                    "category={} status={} request_id={} elapsed_ms={} origin={}",
-                    (
-                        "credential_rejected"
-                        if res.status_code in {401, 403}
-                        else "auth_unavailable"
-                        if res.status_code >= 500
-                        else "unexpected_status"
-                    ),
-                    res.status_code,
-                    _safe_market_request_id(
+                _log_auth_oauth_failure(
+                    "userinfo",
+                    category=_auth_oauth_http_failure_category(res.status_code),
+                    status=res.status_code,
+                    request_id=(
                         headers.get("x-request-id")
                         if hasattr(headers, "get")
                         else None
                     ),
-                    max(0, round((time.monotonic() - started_at) * 1000)),
-                    _safe_url_log_origin(NEKO_AUTH_URL),
+                    started_at=started_at,
                 )
             if res.status_code in {401, 403}:
                 raise _OAuthAccessTokenRejected
@@ -1998,28 +2028,25 @@ async def _fetch_auth_userinfo(access_token: Any) -> dict[str, Any] | None:
             try:
                 data = res.json()
             except (TypeError, ValueError):
-                logger.warning(
-                    "[market-auth] Auth userinfo verification failed "
-                    "category=invalid_response status={} request_id={} "
-                    "elapsed_ms={} origin={}",
-                    res.status_code,
-                    _safe_market_request_id(
+                _log_auth_oauth_failure(
+                    "userinfo",
+                    category="invalid_response",
+                    status=res.status_code,
+                    request_id=(
                         res.headers.get("x-request-id")
                         if hasattr(res.headers, "get")
                         else None
                     ),
-                    max(0, round((time.monotonic() - started_at) * 1000)),
-                    _safe_url_log_origin(NEKO_AUTH_URL),
+                    started_at=started_at,
                 )
                 return None
     except httpx.HTTPError as exc:
-        logger.warning(
-            "[market-auth] Auth userinfo verification failed "
-            "category={} status=unavailable request_id=unavailable "
-            "elapsed_ms={} origin={}",
-            _market_auth_network_failure_category(exc),
-            max(0, round((time.monotonic() - started_at) * 1000)),
-            _safe_url_log_origin(NEKO_AUTH_URL),
+        _log_auth_oauth_failure(
+            "userinfo",
+            category=_market_auth_network_failure_category(exc),
+            status="unavailable",
+            request_id=None,
+            started_at=started_at,
         )
         return None
     return data if isinstance(data, dict) else None

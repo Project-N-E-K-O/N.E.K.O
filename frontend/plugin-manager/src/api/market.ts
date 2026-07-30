@@ -244,8 +244,9 @@ async function getMarketWebBaseUrl(): Promise<string | null> {
 async function getClient(): Promise<AxiosInstance | null> {
   if (_marketClient) return _marketClient
 
-  const configuredMarketUrl = await getMarketBaseUrl()
-  if (!configuredMarketUrl) return null
+  // Warm the web-link cache without making the local catalog bridge depend on
+  // the separate status request succeeding.
+  void getMarketBaseUrl()
 
   _marketClient = axios.create({
     // Keep catalog traffic same-origin. The local bridge forwards only the
