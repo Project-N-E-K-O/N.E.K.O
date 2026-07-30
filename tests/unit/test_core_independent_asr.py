@@ -1471,13 +1471,8 @@ async def test_registry_cancelled_prepare_releases_keyed_external_turn_pause() -
     )
 
 
-async def test_final_transcript_submits_to_the_session_it_was_validated_against() -> None:
-    # Codex P2. _dispatch_core_asr_transcript validates `self.session is
-    # session_ref`, then awaits _restore_core_asr_preview_after_final -- a
-    # websocket send. _submit_core_voice_turn used to re-read self.session after
-    # that await, discarding the validation: a hot swap promoting a replacement
-    # session inside the window made it inject this conversation's transcript
-    # into the next one, producing a reply in the wrong conversation.
+async def test_final_transcript_drops_new_conversation_swap_mid_restore() -> None:
+    """A real conversation transition still invalidates the prepared final."""
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)
     runtime.session.abandon_external_voice_turn = MagicMock()
@@ -1489,6 +1484,7 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
     replacement.abandon_external_voice_turn = MagicMock()
 
     async def _hot_swap_mid_restore(*_args, **_kwargs) -> None:
+        runtime._voice_input_transition_generation += 1
         runtime.session = replacement
 
     runtime._restore_core_asr_preview_after_final = _hot_swap_mid_restore
@@ -1504,23 +1500,23 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
     # assertions below would pass while modelling an ordinary final with no hot
     # swap at all. Pin that the swap really happened first.
     assert runtime.session is replacement
-    # The turn lands on the session that produced it...
-    timed_session.create_response.assert_awaited_once_with("hello")
-    # ...and never touches the one that replaced it.
+    timed_session.create_response.assert_not_awaited()
     replacement.create_response.assert_not_awaited()
     replacement.submit_external_voice_turn.assert_not_awaited()
 
 
-async def test_pre_dispatch_session_swap_keeps_prepared_turn_on_pinned_session() -> None:
-    """A same-route hot swap must not discard an already-prepared utterance."""
+async def test_pre_dispatch_hot_swap_reprepares_turn_on_promoted_session() -> None:
+    """A same-route hot swap transfers the final off the closed old arbiter."""
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)
     runtime.session.abandon_external_voice_turn = MagicMock()
     prepared_session = runtime.session
+    prepared_session.create_response.side_effect = RuntimeError("closed arbiter")
 
     replacement = type("Omni", (), {})()
     replacement.create_response = AsyncMock()
     replacement.submit_external_voice_turn = AsyncMock()
+    replacement.prepare_external_voice_turn = AsyncMock()
     replacement.abandon_external_voice_turn = MagicMock()
 
     token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
@@ -1530,9 +1526,14 @@ async def test_pre_dispatch_session_swap_keeps_prepared_turn_on_pinned_session()
         session_ref=prepared_session,
     )
 
-    prepared_session.create_response.assert_awaited_once_with("prepared")
-    replacement.create_response.assert_not_awaited()
-    replacement.submit_external_voice_turn.assert_not_awaited()
+    prepared_session.create_response.assert_not_awaited()
+    replacement.prepare_external_voice_turn.assert_awaited_once_with(
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+    replacement.submit_external_voice_turn.assert_awaited_once_with(
+        "prepared",
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
 
 
 async def test_final_transcript_is_dropped_when_the_route_leaves_core_mid_restore() -> None:
@@ -5940,10 +5941,20 @@ async def test_injection_failure_is_reported_once_without_provider_body() -> Non
     runtime.session.create_response.assert_awaited_once_with("hello")
 
 
-async def test_session_swap_during_transcript_drops_old_final_injection() -> None:
+async def test_session_swap_during_transcript_reprepares_promoted_final() -> None:
     runtime = _Runtime()
     old_session = runtime.session
-    new_session = type("Omni", (), {"create_response": AsyncMock()})()
+    old_session.create_response.side_effect = RuntimeError("closed arbiter")
+    new_session = type(
+        "Omni",
+        (),
+        {
+            "create_response": AsyncMock(),
+            "prepare_external_voice_turn": AsyncMock(),
+            "submit_external_voice_turn": AsyncMock(),
+            "abandon_external_voice_turn": MagicMock(),
+        },
+    )()
 
     async def swap_session(*_args, **_kwargs) -> bool:
         runtime.session = new_session
@@ -5959,11 +5970,10 @@ async def test_session_swap_during_transcript_drops_old_final_injection() -> Non
     )
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    # The registry already prepared this turn against old_session. A same-route
-    # hot swap deliberately keeps the ingress token and utterance live, so the
-    # final must finish on that pinned session instead of being dropped.
-    old_session.create_response.assert_awaited_once_with("belongs to old role")
+    old_session.create_response.assert_not_awaited()
     new_session.create_response.assert_not_awaited()
+    new_session.prepare_external_voice_turn.assert_awaited_once()
+    new_session.submit_external_voice_turn.assert_awaited_once()
 
 
 async def test_game_takeover_during_transcript_drops_stale_core_final() -> None:

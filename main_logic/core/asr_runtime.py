@@ -2421,11 +2421,40 @@ class AsrRuntimeMixin:
             # order _fail_closed_voice_route owns.
             if not route_still_core():
                 return
-            # Submit through the session validated above, not whatever
-            # self.session happens to be now: the preview restore awaited a
-            # websocket send, and a hot swap promoting a new session inside that
-            # await would otherwise land this transcript in the wrong
-            # conversation.
+            # A same-conversation hot swap keeps the ingress and transition
+            # identities live, but closes the prepared Core session before
+            # promoting its replacement. Wait for that barrier so a final
+            # cannot target the closed response arbiter in the close->promote
+            # window. asyncio.wait observes completion without propagating a
+            # handled swap-task exception into transcript dispatch.
+            swap_task = getattr(self, "final_swap_task", None)
+            if (
+                bool(getattr(self, "is_hot_swap_imminent", False))
+                and isinstance(swap_task, asyncio.Task)
+                and swap_task is not asyncio.current_task()
+                and not swap_task.done()
+            ):
+                await asyncio.wait((swap_task,))
+                if not route_still_core():
+                    return
+
+            # Re-read only after the route identity has survived every await.
+            # An unchanged transition/ingress means a replacement session is
+            # the promoted endpoint for this same conversation, not an
+            # unrelated start. Re-prepare the external turn there so its
+            # response arbiter owns the pause before the priority-0 final is
+            # submitted. A real conversation/lease transition bumps one of the
+            # fences above and is still dropped fail-closed.
+            target_session = getattr(self, "session", None)
+            if target_session is None:
+                return
+            if target_session is not session_ref:
+                session_ref = target_session
+                prepare = getattr(session_ref, "prepare_external_voice_turn", None)
+                if callable(prepare):
+                    await prepare(turn_id=external_turn_id)
+                if not route_still_core() or self.session is not session_ref:
+                    return
             await self._submit_core_voice_turn(
                 event.text,
                 turn_id=external_turn_id,
