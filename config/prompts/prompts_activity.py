@@ -1886,6 +1886,46 @@ WORK_BREAK_REMINDER_PROMPT: dict[str, str] = {
 }
 
 
+# Rewrite request used when a direct break reminder matches repeatedly ignored
+# proactive output. Placeholder: {terms}.
+BREAK_REMINDER_REGEN_INSTRUCTION: dict[str, str] = {
+    "zh": (
+        "【改写】对方已经多次没有回应类似提醒。请避开这些重复表达：{terms}。"
+        "换一种说法和内容角度，只输出最终提醒；想不到真正不同的提醒就只输出 [PASS]。"
+    ),
+    "en": (
+        "[Rewrite] The other person has repeatedly not responded to similar reminders. "
+        "Avoid these repeated expressions: {terms}. Use genuinely different wording "
+        "and an angle; output only the final reminder, or only [PASS] if none works."
+    ),
+    "ja": (
+        "【書き直し】相手は似たリマインダーに何度も反応していません。"
+        "次の繰り返し表現を避けてください：{terms}。言い方と切り口を変え、"
+        "最終的なリマインダーだけを出力してください。十分に変えられなければ [PASS] だけを出力してください。"
+    ),
+    "ko": (
+        "【다시 쓰기】상대가 비슷한 알림에 여러 번 반응하지 않았습니다. "
+        "다음 반복 표현을 피하세요: {terms}. 표현과 관점을 확실히 바꾸고 최종 알림만 "
+        "출력하세요. 충분히 다르게 쓸 수 없다면 [PASS]만 출력하세요."
+    ),
+    "ru": (
+        "[Перепиши] Собеседник уже несколько раз не ответил на похожие напоминания. "
+        "Избегай этих повторяющихся выражений: {terms}. Смени формулировку и подход; "
+        "выведи только итоговое напоминание или только [PASS], если нового варианта нет."
+    ),
+    "es": (
+        "[Reescribe] La otra persona no ha respondido varias veces a recordatorios "
+        "parecidos. Evita estas expresiones repetidas: {terms}. Cambia de verdad la "
+        "redacción y el enfoque; devuelve solo el recordatorio final o solo [PASS]."
+    ),
+    "pt": (
+        "[Reescreva] A outra pessoa não respondeu várias vezes a lembretes parecidos. "
+        "Evite estas expressões repetidas: {terms}. Mude de verdade a redação e o "
+        "ângulo; retorne apenas o lembrete final ou apenas [PASS]."
+    ),
+}
+
+
 # Anti-slack (just-left-focused-work) Phase 2 system prompt.
 # Placeholders: {master} {prev_app} {new_app} {minutes}
 # No seed slot — single behaviour, variation comes from app names +

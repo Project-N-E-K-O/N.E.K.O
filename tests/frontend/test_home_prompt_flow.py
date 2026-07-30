@@ -5534,17 +5534,19 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
 
 
 @pytest.mark.frontend
-def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_without_variant(mock_page: Page):
+def test_externalized_chat_capsule_input_spotlight_aligns_only_for_wayland_workarea_carrier(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
             window.history.pushState({}, '', '/chat');
             window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
             window.__externalChatOverlayUpdates = [];
+            window.__waylandWorkAreaCarrier = true;
             window.nekoTutorialOverlay = {
                 getWindowMetricsSync: () => ({
                     bounds: { x: 100, y: 50, width: 1200, height: 800 },
                     contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
+                    waylandWorkAreaCarrier: window.__waylandWorkAreaCarrier,
                     zoomFactor: 1,
                 }),
                 update: (payload) => {
@@ -5568,7 +5570,7 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_withou
                         <button
                             class="compact-chat-capsule-button"
                             data-compact-hit-region-id="capsule:text"
-                            style="position:fixed; left:780px; top:408px; width:180px; height:38px;"
+                            style="position:fixed; left:650px; top:408px; width:310px; height:38px;"
                         ></button>
                     </div>
                 </div>
@@ -5580,27 +5582,40 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_withou
     result = mock_page.evaluate(
         """
         async () => {
-            window.postMessage({
+            const sendSpotlight = (timestamp) => window.postMessage({
                 __nekoTutorialOverlayRelay: true,
                 payload: {
                     action: 'yui_guide_set_chat_spotlight',
                     kind: 'capsule-input',
-                    timestamp: Date.now(),
+                    timestamp,
                     tutorialRunId: 'test-run',
                 },
             }, '*');
+            const timestamp = Date.now();
+            sendSpotlight(timestamp);
             await new Promise((resolve) => setTimeout(resolve, 160));
-            const updates = window.__externalChatOverlayUpdates || [];
-            return updates.filter((entry) => entry.payload && entry.payload.spotlights);
+            const waylandUpdates = (window.__externalChatOverlayUpdates || [])
+                .filter((entry) => entry.payload && entry.payload.spotlights);
+            const waylandSpotlight = waylandUpdates[waylandUpdates.length - 1].payload.spotlights[0];
+
+            window.__waylandWorkAreaCarrier = false;
+            sendSpotlight(timestamp + 1);
+            await new Promise((resolve) => setTimeout(resolve, 160));
+            const x11Updates = (window.__externalChatOverlayUpdates || [])
+                .filter((entry) => entry.payload && entry.payload.spotlights);
+            const x11Spotlight = x11Updates[x11Updates.length - 1].payload.spotlights[0];
+            return { waylandSpotlight, x11Spotlight };
         }
         """
     )
 
     assert result
-    spotlight = result[-1]["payload"]["spotlights"][0]
-    assert spotlight["id"] == "external-chat-capsule-input"
-    assert spotlight["x"] == 692
-    assert spotlight["width"] == 446
+    assert result["waylandSpotlight"]["id"] == "external-chat-capsule-input"
+    assert result["waylandSpotlight"]["x"] == 722
+    assert result["waylandSpotlight"]["width"] == 446
+    assert result["x11Spotlight"]["x"] == 692
+    assert result["x11Spotlight"]["width"] == 446
+    assert result["waylandSpotlight"]["width"] == result["x11Spotlight"]["width"]
 
 
 @pytest.mark.frontend
@@ -13118,7 +13133,7 @@ def test_day1_screen_entry_starts_from_intro_basic_voice_anchor(mock_page: Page)
         setup_js="""
             window.history.pushState({}, '', '/');
             document.body.innerHTML = `
-                <button id="live2d-btn-screen" style="position:absolute; left:320px; top:180px; width:44px; height:44px;"></button>
+                <button id="live2d-btn-mic" style="position:absolute; left:320px; top:180px; width:44px; height:44px;"></button>
             `;
         """,
         script_names=("tutorial/yui-guide/overlay.js", *_YUI_DIRECTOR_SCRIPTS),
@@ -13128,11 +13143,14 @@ def test_day1_screen_entry_starts_from_intro_basic_voice_anchor(mock_page: Page)
         """
         () => {
             const director = window.createYuiGuideDirector({ page: 'home' });
-            director.avatarFloatingSceneCursorAnchorPoints.day1_intro_basic_voice = { x: 242, y: 202 };
-            const screenButton = document.getElementById('live2d-btn-screen');
+            director.rememberAvatarFloatingSceneCursorAnchorPoint(
+                'day1_intro_basic_voice',
+                { x: 242, y: 202 }
+            );
+            const micButton = document.getElementById('live2d-btn-mic');
             return director.resolveAvatarFloatingCursorStartPoint(
                 { id: 'day1_screen_entry' },
-                [screenButton],
+                [micButton],
                 'day1_intro_basic_voice'
             );
         }

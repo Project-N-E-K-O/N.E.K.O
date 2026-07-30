@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build all frontend projects.
+# Build frontend projects shipped with production distributions.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -77,4 +77,4 @@ fi
 echo "[build_frontend] react-neko-chat done: $RC_DIST"
 
 echo ""
-echo "[build_frontend] all frontend projects built successfully."
+echo "[build_frontend] all production frontend projects built successfully."

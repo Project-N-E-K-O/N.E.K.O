@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+import asyncio
+
 from datetime import datetime
 from typing import Any, Optional
 
-from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT
+from config.prompts.prompts_sys import (
+    SESSION_INIT_PROMPT,
+    get_context_summary_ready,
+)
 from main_logic.core import apply_role_placeholders
 from utils.language_utils import get_global_language
 from .pipeline_models import QQInstructionBundle
@@ -47,13 +52,21 @@ class QQSessionInstructionService:
         {"id": "time",                  "i18n_key": "time_prompt_section",   "required_placeholders": ["{time_str}"],                   "format_after": True},
         {"id": "detail",                "i18n_key": "detail_constraints_section", "required_placeholders": [],                          "format_after": False},
         {"id": "output",                "i18n_key": "output_prompt_section", "required_placeholders": [],                               "format_after": False},
-        {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
+        # kira_unified 是纯软指令，模板本身一个占位符都没有（见
+        # scene_prompt_templates.SCENE_KIRA_UNIFIED_GROUP）。声明成必需会让
+        # 护栏对每一份 i18n bundle 都判"缺占位符"，把非中文用户的这一段整个
+        # 换回中文默认常量，还每轮打一条 warning。要求必须以模板实际内容为准。
+        {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": [], "format_after": True},
         {"id": "scene_group_collective","i18n_key": "prompts.group.collective", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
         {"id": "scene_group_shared",    "i18n_key": "prompts.group.shared_session", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
-        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}", "{group_id}"], "format_after": True},
+        # directed 的加固默认模板本身不含 {group_id}（身份边界只点名发言人
+        # 与主人/管理员），把它声明成必需就是一条**永远无法满足**的判据，
+        # 再完整的翻译也会被判缺占位符。其余四个是真正的身份边界，保留。
+        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "scene_private",         "i18n_key": "prompts.private.body",  "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "naming_with_title",     "i18n_key": "prompts.group.naming_with_title", "required_placeholders": ["{user_title}"],       "format_after": False},
         {"id": "naming_without_title",  "i18n_key": "prompts.group.naming_without_title", "required_placeholders": [],                "format_after": False},
+        {"id": "core_memory_section",   "i18n_key": "core_memory_section",    "required_placeholders": ["{memory_context}", "{context_ready}"], "format_after": True},
         # === 运行时层（只读，不参与覆盖） ===
         {"id": "accounts",              "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
         {"id": "sessions",              "i18n_key": "__runtime__",            "required_placeholders": [], "runtime": True},
@@ -94,9 +107,34 @@ class QQSessionInstructionService:
                     if isinstance(override_val, str) and override_val.strip():
                         base_text = override_val
                         break
+        # 必需占位符护栏：身份边界等安全层的 required_placeholders 在
+        # _PROMPT_LAYERS 里声明；覆盖文本（bundle 或用户）缺任一占位符
+        # 说明它丢掉了模板承载的身份/场景约束（例如 shared_session 的
+        # 弱两行覆盖会让群成员被当成主人）→ 回退到加固默认模板。
+        required = self._required_placeholders_by_key().get(i18n_key, ())
+        if required and base_text is not default_template:
+            missing = [p for p in required if p not in base_text]
+            if missing:
+                self.plugin.logger.warning(
+                    f"提示词层 {i18n_key} 的覆盖缺少必需占位符 {missing}，"
+                    f"回退默认模板"
+                )
+                base_text = default_template
         if format_kwargs:
             return base_text.format(**format_kwargs)
         return base_text
+
+    @classmethod
+    def _required_placeholders_by_key(cls) -> dict[str, tuple[str, ...]]:
+        cached = getattr(cls, "_required_by_key_cache", None)
+        if cached is None:
+            cached = {
+                layer["i18n_key"]: tuple(layer.get("required_placeholders") or ())
+                for layer in cls._PROMPT_LAYERS
+                if layer.get("i18n_key") and layer["i18n_key"] != "__runtime__"
+            }
+            cls._required_by_key_cache = cached
+        return cached
 
     def _resolve_init_template(self, locale: str) -> str:
         """初始化模板来自 SESSION_INIT_PROMPT 多语言 map，与普通 i18n 不同。"""
@@ -116,8 +154,33 @@ class QQSessionInstructionService:
 
     def _discard_all_sessions_for_prompt_change(self) -> None:
         """提示词覆盖变更后，清空所有现有 session，下次回复生效。"""
+        # discard_session 是协程——此前直接调用从未执行（协程被丢弃，
+        # session 根本没清）。改为 create_task 并持强引用防 GC。
+        tasks = getattr(self.plugin, "_prompt_change_discard_tasks", None)
+        if tasks is None:
+            tasks = set()
+            self.plugin._prompt_change_discard_tasks = tasks
         for session_key in list(getattr(self.plugin, "_user_sessions", {}).keys()):
-            self.plugin.session_runtime_service.discard_session(session_key, reason="prompt_override_changed")
+            # 经 per-session 锁串行化：正在生成的群轮要么完整收尾（成员轮
+            # 落 bucket）要么一致地被排除，绝不在 stream_text 改写历史时
+            # 中途弹出会话。
+            async def _locked_discard(key: str = session_key) -> None:
+                discarded = await self.plugin.session_runtime_service.discard_session(
+                    key, reason="prompt_override_changed",
+                )
+                if discarded is False:
+                    # 结算失败被有意保留：不打粘性标记的话，持续活跃的
+                    # 会话会无限期沿用旧 system prompt（活跃阻止 idle
+                    # finalizer 替换它）。下轮 bootstrap 先重试 discard。
+                    kept = self.plugin._user_sessions.get(key)
+                    if kept is not None:
+                        kept["pending_identity_discard"] = True
+
+            task = asyncio.create_task(
+                self.plugin._run_with_session_lock(session_key, _locked_discard)
+            )
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
         self.plugin._emit_log("INFO", "提示词覆盖已更新，所有现有会话已清除")
 
     # ==========================================
@@ -176,6 +239,7 @@ class QQSessionInstructionService:
         permission_level: str,
         sender_id: str,
         user_title: str,
+        memory_sender_id: str | None = None,
         is_group: bool = False,
         group_id: Optional[str] = None,
         use_memory_context: Optional[bool] = None,
@@ -202,9 +266,10 @@ class QQSessionInstructionService:
             short_language,
             SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
         )
-        context_ready_template = CONTEXT_SUMMARY_READY.get(
-            short_language,
-            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["zh"]),
+        # QQ 永远是文字；群里没有那个固定的一对一对象，群变体连
+        # {master} 槽都没有（否则等于把私聊对象的名字写进群 prompt）。
+        context_ready_template = get_context_summary_ready(
+            short_language, input_mode="text", is_group=is_group,
         )
 
         master_title = master_name if master_name else self.plugin.i18n.t("prompts.default_master", default="主人")
@@ -235,6 +300,20 @@ class QQSessionInstructionService:
                 sticker_catalog=self._load_sticker_catalog(),
             )
 
+        sessions_section = self._build_sessions_section(
+            is_group=is_group, group_id=group_id, sender_id=sender_id,
+        )
+        # 这段在跨群授权打开时会列出其他会话的 ID / 称谓 / 权限：它和话题段
+        # 一样是跨群内容，必须同样进授权依赖，否则生成或缓冲期间关掉开关，
+        # 一条被其他会话元数据影响的回复照样发得出去（私聊轮的话题段恒为
+        # 空，那条路径此前完全没有依赖可撤）。
+        cross_session_section = (
+            sessions_section
+            if self._sessions_section_discloses_others(
+                is_group=is_group, group_id=group_id, sender_id=sender_id,
+            )
+            else ""
+        )
         sections = [
             self._resolve_init_template(user_language).format(name=her_name),
             self._resolve_static_layer("role_prompt_section", ROLE_PROMPT_SECTION, user_language),
@@ -246,7 +325,7 @@ class QQSessionInstructionService:
                 login_self_id=login_self_id,
                 login_nickname=login_nickname,
             ),
-            self._build_sessions_section(),
+            sessions_section,
             self._resolve_static_layer("character_prompt_section", CHARACTER_PROMPT_SECTION, user_language, character_prompt=base_prompt),
             self._resolve_time_section(user_language),
             self._build_chat_environment_section(
@@ -261,11 +340,29 @@ class QQSessionInstructionService:
                 login_nickname=login_nickname,
             ),
         ]
+        core_sender_id = (
+            memory_sender_id if memory_sender_id is not None else sender_id
+        )
+        # 该段是否会含 participant 域：调用方据此在后续 await 窗口里
+        # member 被关掉时撤除本段。判据与 _build_core_memory_section 内
+        # 的 subject 组装条件一致。
+        used_member_subject = bool(
+            is_group
+            and str(group_id or "").strip()
+            and str(core_sender_id or "").strip()
+            and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            )
+        )
         core_memory_text = await self._build_core_memory_section(
             should_use_memory_context=should_use_memory_context,
             her_name=her_name,
             master_name=master_name,
             context_ready_template=context_ready_template,
+            is_group=is_group,
+            group_id=group_id,
+            sender_id=core_sender_id,
+            locale=user_language,
         )
         if core_memory_text:
             sections.append(core_memory_text)
@@ -298,7 +395,9 @@ class QQSessionInstructionService:
         )
         self._append_blacklist_section(sections)
         self._append_group_custom_prompt_section(sections, group_id, is_group)
-        self._append_cross_group_section(sections, group_id, is_group)
+        cross_group_section = self._append_cross_group_section(
+            sections, group_id, is_group,
+        )
         self._append_fatigue_section(sections, sender_id, is_group, group_id)
         self._append_attention_context_section(sections, group_id, is_group)
         sections.append(self._resolve_static_layer("detail_constraints_section", DETAIL_CONSTRAINTS_SECTION, user_language))
@@ -319,6 +418,9 @@ class QQSessionInstructionService:
             memory_context_used=bool(core_memory_text),
             core_memory_text=core_memory_text,
             scene_mode=scene_mode,
+            cross_group_section=cross_group_section,
+            cross_session_section=cross_session_section,
+            used_member_subject=used_member_subject and bool(core_memory_text),
         )
 
     def _compose_sections(self, sections: list[str]) -> str:
@@ -346,8 +448,59 @@ class QQSessionInstructionService:
         ]
         return ACCOUNTS_PROMPT_SECTION.format(accounts="\n".join(account_lines))
 
-    def _build_sessions_section(self) -> str:
+    def _sessions_section_discloses_others(
+        self, *, is_group: bool, group_id: str | None, sender_id: str,
+    ) -> bool:
+        """True when the rendered list names a conversation other than this
+        one — the judgement the consent dependency needs."""
+        if not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "allow_cross_group_context", False,
+            )
+        ):
+            return False
+        current_group = str(group_id or "").strip()
+        current_sender = str(sender_id or "").strip()
+        for item in list(getattr(self.plugin, "_user_sessions", {}).values())[:10]:
+            if bool(item.get("is_group")) != bool(is_group):
+                return True
+            if is_group:
+                if str(item.get("group_id") or "").strip() != current_group:
+                    return True
+            elif str(item.get("sender_id") or "").strip() != current_sender:
+                return True
+        return False
+
+    def _build_sessions_section(
+        self, *, is_group: bool = False, group_id: str | None = None,
+        sender_id: str = "",
+    ) -> str:
+        """List active sessions — other conversations only with consent.
+
+        This section names other groups' ids and private contacts' titles
+        and permission levels. Leaving it ungated made
+        allow_cross_group_context a half-promise: the topic block was
+        withheld while the metadata of every other conversation still went
+        into each reply's prompt."""
         sessions = list(getattr(self.plugin, "_user_sessions", {}).values())[:10]
+        if not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "allow_cross_group_context", False,
+            )
+        ):
+            current_group = str(group_id or "").strip()
+            current_sender = str(sender_id or "").strip()
+            sessions = [
+                item for item in sessions
+                if (
+                    bool(item.get("is_group")) == bool(is_group)
+                    and (
+                        str(item.get("group_id") or "").strip() == current_group
+                        if is_group
+                        else str(item.get("sender_id") or "").strip() == current_sender
+                    )
+                )
+            ]
         if not sessions:
             return SESSIONS_PROMPT_SECTION.format(sessions="- 当前没有其他活跃 QQ 会话。")
         lines = []
@@ -426,17 +579,77 @@ class QQSessionInstructionService:
         her_name: str,
         master_name: str,
         context_ready_template: str,
+        is_group: bool = False,
+        group_id: str | None = None,
+        sender_id: str = "",
+        locale: str = "",
     ) -> str:
         if not should_use_memory_context:
             return ""
+        if is_group and not bool(
+            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_memory_enabled", False,
+            )
+        ):
+            # 读点前复检实时策略（对偶 _build_recalled_memory_text）：构建
+            # 期间 opt-out 的群，不得再拉 scoped bootstrap 上下文。
+            return ""
+        group_id = str(group_id or "").strip()
+        if is_group and not group_id:
+            return ""
         try:
-            memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
+            if is_group:
+                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
+                member_sender = str(sender_id or "").strip()
+                if member_sender and bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "group_member_memory_enabled", False,
+                    )
+                ):
+                    # 对偶 _build_recalled_memory_text：成员开关同时门控读，
+                    # sender 规范化与写侧一致。
+                    subjects.append(
+                        self.plugin.memory_bridge.group_participant_subject(
+                            group_id, member_sender,
+                        )
+                    )
+                memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
+                    her_name,
+                    subjects=subjects,
+                )
+                if not bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "group_memory_enabled", False,
+                    )
+                ):
+                    # 读后复检（对偶 _build_recalled_memory_text）：opt-out
+                    # 落在 fetch 飞行期间时丢弃已读回的数据。
+                    return ""
+            else:
+                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
             if not memory_context:
                 return ""
-            return CORE_MEMORY_SECTION.format(
-                memory_context=memory_context,
-                context_ready=context_ready_template.format(name=her_name, master=master_name),
+            # 走本地化静态层（与其余 prompt 段同一条解析路径）：裸 format
+            # 会让 bundle 里的翻译永远读不到，也吃不到必需占位符护栏。
+            context_ready = context_ready_template.format(
+                name=her_name, master=master_name,
             )
+            try:
+                return self._resolve_static_layer(
+                    "core_memory_section", CORE_MEMORY_SECTION, locale,
+                    memory_context=memory_context,
+                    context_ready=context_ready,
+                )
+            except Exception as render_error:
+                # 翻译/覆盖里多写一个未知占位符会让 format 抛 KeyError，而
+                # 外层的 except 会把整段记忆静默吞掉。宁可回退中文默认模板
+                # 也不能让长期记忆凭空消失。
+                self.plugin.logger.warning(
+                    f"core_memory_section 模板渲染失败，回退默认模板: {render_error}"
+                )
+                return CORE_MEMORY_SECTION.format(
+                    memory_context=memory_context, context_ready=context_ready,
+                )
         except Exception as e:
             self.plugin.logger.warning(f"读取 Memory Server 上下文失败: {e}")
             return ""
@@ -452,10 +665,22 @@ class QQSessionInstructionService:
             return "shared_group"
         return "directed_group"
 
-    def _append_cross_group_section(self, sections: list[str], current_group_id: str | None, is_group: bool) -> None:
-        """群聊时注入其他群的最新话题摘要（跨群共享记忆）"""
-        if not is_group or not current_group_id:
-            return
+    def _append_cross_group_section(self, sections: list[str], current_group_id: str | None, is_group: bool) -> str:
+        """群聊时注入其他群的最新话题摘要（跨群共享记忆）。
+
+        Returns the injected section text (empty when nothing was added) so
+        the caller can strip it if the opt-in is revoked while later
+        context-building awaits are still running."""
+        # 群号一律 strip 后比较（与本文件其余路径同一口径）：不规范化的话
+        # " 7788 " 匹配不上存下来的 "7788"，当前群自己的话题会被当成"其他
+        # 群"注入；而 "   " 这种全空白也会被当成有效群号放行。
+        current_group = str(current_group_id or "").strip()
+        if not is_group or not current_group:
+            return ""
+        if not bool((getattr(self.plugin, "_qq_settings", {}) or {}).get(
+            "allow_cross_group_context", False,
+        )):
+            return ""
         sessions = getattr(self.plugin, "_user_sessions", {}) or {}
         lines: list[str] = []
         for key, s in sessions.items():
@@ -463,8 +688,8 @@ class QQSessionInstructionService:
                 continue
             if not s.get("is_group"):
                 continue
-            gid = str(s.get("group_id") or "")
-            if gid == str(current_group_id or ""):
+            gid = str(s.get("group_id") or "").strip()
+            if gid == current_group:
                 continue  # 跳过当前群
             title = s.get("user_title") or gid
             last_msg = ""
@@ -495,12 +720,15 @@ class QQSessionInstructionService:
                 lines.append(f"- 群 {gid} 最近在聊: {last_msg}")
             else:
                 lines.append(f"- 群 {gid} 有活跃对话")
-        if lines:
-            sections.append(
-                self.plugin.i18n.t("prompts.cross_group",
-                    default="## 其他群聊动态（Cross-Group Context）\n以下是其他群最近的话题，如果相关可以在回复中少量自然提及，但不要生硬插入：\n")
-                + "\n".join(lines[:5])
-            )
+        if not lines:
+            return ""
+        section = (
+            self.plugin.i18n.t("prompts.cross_group",
+                default="## 其他群聊动态（Cross-Group Context）\n以下是其他群最近的话题，如果相关可以在回复中少量自然提及，但不要生硬插入：\n")
+            + "\n".join(lines[:5])
+        )
+        sections.append(section)
+        return section
 
     def _append_blacklist_section(self, sections: list[str]) -> None:
         """追加黑名单词汇，告诉 LLM 不要在回复中使用"""

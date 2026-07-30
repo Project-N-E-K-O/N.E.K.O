@@ -50,6 +50,7 @@ VRMManager.prototype.setupFloatingButtons = function() {
     const prefix = this._avatarPrefix;
 
     const applyResponsiveFloatingLayout = () => {
+        this.syncResponsiveButtonVisibility(buttonsContainer);
         if (isYuiGuideFloatingToolbarSuppressed()) {
             buttonsContainer.style.display = 'none';
             buttonsContainer.style.visibility = 'hidden';
@@ -192,6 +193,11 @@ VRMManager.prototype.setupFloatingButtons = function() {
             }
             else if (config.id === 'goodbye') {
                 window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                return;
+            }
+            else if (config.id === 'social') {
+                // 与 Live2D 共用 opener（app-ui.js 监听 live2d-social-click）
+                window.dispatchEvent(new CustomEvent('live2d-social-click'));
                 return;
             }
 
@@ -367,6 +373,7 @@ VRMManager.prototype.setupFloatingButtons = function() {
             triggerImg: (config.hasPopup && config.separatePopupTrigger && !window.isMobileWidth()) ? triggerImg : null
         };
     });
+    applyResponsiveFloatingLayout();
 
     // 处理"请她离开"事件
     // 注意：返回按钮的位置、显示、以及浮动按钮的隐藏均由 app-ui 统一处理，
@@ -525,7 +532,8 @@ VRMManager.prototype._startUIUpdateLoop = function() {
 
     const getVisibleButtonCount = () => {
         const mobile = window.isMobileWidth && window.isMobileWidth();
-        return [{ id: 'mic' }, { id: 'screen' }, { id: 'agent' }, { id: 'settings' }, { id: 'goodbye' }]
+        return [{ id: 'mic' }, { id: 'screen', mobileOnly: true }, { id: 'agent' }, { id: 'social' }, { id: 'settings' }, { id: 'goodbye' }]
+            .filter(c => !(c.mobileOnly && !mobile))
             .filter(c => !(mobile && (c.id === 'agent' || c.id === 'goodbye'))).length;
     };
     const baseButtonSize = 48;

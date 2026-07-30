@@ -19,6 +19,7 @@ caches, queues, flags); the domain mixins contribute methods only.
 
 import asyncio
 import re
+import time
 from collections import OrderedDict, deque
 from typing import Any, Awaitable, Callable, Optional
 from utils.frontend_utils import TtsStreamNormalizer, TtsBracketStripper, TtsMarkdownStripper
@@ -40,6 +41,7 @@ from .tool_calling import ToolCallingMixin
 from .lifecycle import LifecycleMixin
 from .proactive import ProactiveMixin
 from .greeting import GreetingMixin
+from .asr_runtime import AsrRuntimeMixin
 from .streaming import StreamingMixin
 from .notify import NotifyMixin
 
@@ -54,6 +56,7 @@ class LLMSessionManager(
     LifecycleMixin,
     ProactiveMixin,
     GreetingMixin,
+    AsrRuntimeMixin,
     StreamingMixin,
     NotifyMixin,
 ):
@@ -68,6 +71,7 @@ class LLMSessionManager(
         self.websocket = None
         self.sync_message_queue = sync_message_queue
         self.session = None
+        self._init_asr_runtime_state()
         self.last_time = None
         self.is_active = False
         self.active_session_is_idle = False
@@ -76,6 +80,11 @@ class LLMSessionManager(
         self.tts_response_queue = Queue()  # TTS response (线程队列)
         self.tts_thread = None  # TTS线程
         self._tts_runtime_key = None
+        # Runtime fallback excludes only providers that failed in this session;
+        # the remaining dispatcher order is never rewritten.
+        # 运行时保底只排除本场失败的 provider，其余调度顺序保持不变。
+        self._tts_active_provider_key: Optional[str] = None
+        self._tts_excluded_provider_keys: frozenset[str] = frozenset()
         # 跨 chunk 规范化器：Gemini Live 输出转录会在中文 token 之间插入 ASCII
         # 空格，让 MiniMax / CosyVoice 等 streaming TTS 把中文读断。normalizer
         # 按 replace_blank 的语义剔除空格，同时延后处理 chunk 尾部空格以保证边界正确。
@@ -104,17 +113,12 @@ class LLMSessionManager(
         self._speech_output_total = 0  # diagnostic: chunks actually sent to frontend playback
         self._last_speech_output_time = 0.0
         self._last_speech_output_bytes = 0
-        self._audio_stream_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=300)
-        self._audio_stream_worker_task: Optional[asyncio.Task] = None
-        self._audio_stream_dropped_total = 0
-        self._audio_stream_epoch = 0
         # 只在「用户/前端主动结束启动」时递增（end_session 的 not by_server +
         # reset_starting_count 路径），用于跨模式重启守卫区分"用户已放弃"与
         # "内部 cleanup / in-flight 启动失败"。不能复用 _audio_stream_epoch——
         # 它在所有 end_session cleanup（含 by_server=True 的 in-flight 失败收口）
         # 里都会涨，会把用户仍在等待的 audio 请求误判为已放弃（CodeRabbit）。
         self._user_session_abandon_epoch = 0
-        self._last_audio_stream_backlog_log_time = 0.0
         self.emoji_pattern = re.compile(r'[^\w\u4e00-\u9fff\s>][^\w\u4e00-\u9fff\s]{2,}[^\w\u4e00-\u9fff\s<]', flags=re.UNICODE)
         self.emoji_pattern2 = re.compile("["
         u"\U0001F600-\U0001F64F"  # emoticons
@@ -281,6 +285,21 @@ class LLMSessionManager(
         self._tts_retry_notify_count: int = 0  # TTS 重试通知计数，前3次不通知前端
         self._tts_done_queued_for_turn: bool = False  # 防止同一轮次多次排入 TTS 结束信号
         self._tts_done_pending_until_ready: bool = False  # TTS未就绪时延迟到 flush 后再排入结束信号
+        # Keep one utterance ledger so a replacement worker can replay consumed text.
+        # 已送入当前 worker 的原始文本账本。配置型 provider 运行时失败时，
+        # 用它把本轮文本与 done 信号交给替代 worker，避免整段回复静音。
+        self._tts_replay_speech_id: Optional[str] = None
+        self._tts_replay_chunks: list[tuple[Optional[str], str]] = []
+        # HTTP 分句 worker 回报已完成/失败的句界后，只保留尚未播出的规范化文本。
+        self._tts_replay_sent_chunks: list[tuple[Optional[str], str]] = []
+        self._tts_replay_done: bool = False
+        self._tts_replay_audio_emitted: bool = False
+        self._tts_replay_sentence_audio_emitted: bool = False
+        self._tts_replay_progress_supported: bool = False
+        # A failed configured preset must not leak its identity into legacy clone routing.
+        # 配置型 preset 失败后，本会话保留角色配置，但替代 worker 使用默认音色，
+        # 防止把该 Voice ID 和自定义凭证误送给 CosyVoice 等无关 provider。
+        self._tts_fallback_uses_default_voice: bool = False
         self._active_text_request_id: Optional[str] = None
         self._magic_command_image_drop_request_ids: set[str] = set()
         self._magic_command_image_drop_request_order: deque[str] = deque()
@@ -295,12 +314,6 @@ class LLMSessionManager(
         self._require_context_append_current_delivery = False
         self.input_cache_lock = asyncio.Lock()  # 保护输入缓存的锁
         
-        # 热切换音频缓存机制：确保热切换期间的用户输入语音不丢失
-        self.hot_swap_audio_cache = []  # 热切换期间缓存的音频数据: [bytes, ...]
-        self.hot_swap_cache_lock = asyncio.Lock()  # 保护热切换音频缓存的锁
-        self.is_flushing_hot_swap_cache = False  # 是否正在推送热切换缓存（推送期间新音频继续缓存）
-        self.HOT_SWAP_FLUSH_CHUNK_MULTIPLIER = 5  # 热切换后发送的chunk大小倍数(节流)
-        
         # 用户活动时间戳：用于主动搭话检测最近是否有用户输入
         self.last_user_activity_time = None  # float timestamp or None
 
@@ -311,6 +324,14 @@ class LLMSessionManager(
         # 隐式 dismiss 在用户还没点按钮前就把 pending 邀请清掉、按钮撤走，用户随后
         # 点「现在不想玩」落到 expired、真正的 decline 冷却起不来、邀请反复重来。
         self.last_user_message_time = None  # float timestamp or None
+        # 用户真实互动时间戳：覆盖真实文本/语音，以及不产生消息的显式 UI
+        # 回应（例如 mini-game 邀请按钮）。仅供主动搭话的“持续无回应”窗口
+        # 使用；与 last_user_message_time 的邀请状态机语义保持分离。
+        self.last_user_engagement_time = None  # float timestamp or None
+        # 长窗口主动搭话反馈的本进程观察起点。anti-repeat corpus 会跨重启持久化，
+        # 但用户真实消息时间戳不会；用 manager 创建时刻兜底，避免重启后把上一次
+        # 运行里可能已经得到回应的旧搭话误算成「持续无互动」。
+        self.proactive_engagement_observation_started_at = time.time()
 
         # 用户静默 ≥ IDLE_SESSION_RESET_THRESHOLD_SECONDS 时主动断 session 的
         # 后台 loop。lazily 在首次 start_session 时启动，永久存活（per-manager

@@ -657,7 +657,7 @@ class MemoryRecallReranker:
         )
 
         set_call_type("memory_recall_rerank")
-        api_config = config_manager.get_model_api_config('summary')
+        api_config = await config_manager.aget_model_api_config('summary')
         # timeout=8: recall 在 query_memory 请求路径上，上游 plugin/core/context.py
         # 默认 5s 截断；本地 8s 给 connect + 一次失败裕度。超时即抛
         # APITimeoutError，外层 try/except 已会降级到 coarse rank。

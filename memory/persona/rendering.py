@@ -45,6 +45,61 @@ from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
 
 class RenderingMixin:
     @staticmethod
+    def _persona_view_for_subjects(
+        persona: dict,
+        subjects=None,
+        *,
+        include_legacy_private: bool | None = None,
+    ) -> dict:
+        """Return a shallow, scope-authorized persona view for rendering."""
+        from memory.scopes import (
+            SCOPED_PERSONA_PREFIX,
+            normalize_subjects,
+            persona_subject_from_section,
+        )
+        allowed = normalize_subjects(subjects)
+        if include_legacy_private is None:
+            include_legacy_private = not allowed
+        allowed_keys = {(subject.key, subject.scope) for subject in allowed}
+        view: dict = {}
+        for section_key, section in persona.items():
+            if not isinstance(section, dict):
+                continue
+            scoped_subject = persona_subject_from_section(section_key, section)
+            if scoped_subject is None:
+                if isinstance(section_key, str) and section_key.startswith(SCOPED_PERSONA_PREFIX):
+                    # A malformed scoped section is never reclassified as
+                    # legacy-private; fail closed so corrupt metadata cannot leak.
+                    continue
+                if include_legacy_private:
+                    view[section_key] = section
+                continue
+            # 逐条授权而非按 section metadata 整段放行：section key 只含
+            # kind:subject_id 不含 scope，同 kind/id 不同自定义 scope 的两个
+            # 隔离域共享同一个 section，metadata 是"最后写入者"的 scope——
+            # 按它放行会把 A 域条目渲染给 B（泄漏），按它拒绝会让 A 自己的
+            # 条目随最后写入者隐身（对称翻转）。entry 写入时都带 subject 戳，
+            # 以戳为准；无戳/损坏条目 fail-closed 掉队。metadata 仅保留上面
+            # persona_subject_from_section 的损坏检查职责。
+            if not allowed_keys:
+                continue
+            from memory.scopes import filter_entries_for_subjects
+
+            facts = section.get('facts')
+            if isinstance(facts, list):
+                scoped_facts = filter_entries_for_subjects(
+                    facts, allowed, include_legacy_private=False,
+                )
+                if not scoped_facts:
+                    continue
+                filtered = dict(section)
+                filtered['facts'] = scoped_facts
+                view[section_key] = filtered
+            elif (scoped_subject.key, scoped_subject.scope) in allowed_keys:
+                view[section_key] = section
+        return view
+
+    @staticmethod
     def _text_fingerprint(text: str) -> str:
         """sha256 hex digest of `text` used as the cache key. Same
         encoding as the `rewrite_text_sha256` payload in amerge_into so
@@ -298,13 +353,20 @@ class RenderingMixin:
     def _filter_reflections_for_render(
         reflections: list[dict] | None, persona: dict,
         suppressed_text_set: set[str],
+        subjects=None,
+        include_legacy_private: bool | None = None,
     ) -> list[dict]:
         """Drop reflections whose text matches a suppressed persona entry
         (existing semantic — see `_is_suppressed_text` callers below)."""
         if not reflections:
             return []
+        from memory.scopes import filter_entries_for_subjects
         out = []
-        for r in reflections:
+        for r in filter_entries_for_subjects(
+            reflections,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        ):
             if not isinstance(r, dict):
                 continue
             text = r.get('text', '')
@@ -315,6 +377,21 @@ class RenderingMixin:
             out.append(r)
         return out
 
+    @staticmethod
+    def _renders_scoped_only(subjects=None, include_legacy_private=None) -> bool:
+        """True when this render may only show scoped subjects.
+
+        Same derivation as `filter_entries_for_subjects` /
+        `_persona_view_for_subjects`, kept in one place so the rendered
+        prose can't disagree with what the filters actually let through:
+        subjects supplied and legacy-private rows excluded."""
+        from memory.scopes import normalize_subjects
+
+        allowed = normalize_subjects(subjects)
+        if include_legacy_private is None:
+            include_legacy_private = not allowed
+        return bool(allowed) and not include_legacy_private
+
     def _compose_markdown_from_trimmed(
         self, name: str, persona: dict, name_mapping: dict,
         protected_entries: list[tuple[str, dict]],
@@ -322,6 +399,8 @@ class RenderingMixin:
         non_protected_entity_index: dict[int, str],
         trimmed_pending_reflections: list[dict],
         trimmed_confirmed_reflections: list[dict],
+        *,
+        scoped_only: bool = False,
     ) -> str:
         """Phase 3 (RFC §3.6.2): emit markdown sections in stable order.
 
@@ -375,7 +454,21 @@ class RenderingMixin:
                 if text:
                     lines.append(f"- {text}")
             if lines:
-                header = _headers.get(entity_key, entity_key)
+                section_meta = persona.get(entity_key, {})
+                subject_kind = section_meta.get('subject_kind')
+                subject_id = section_meta.get('subject_id')
+                if subject_kind in (
+                    'group_chat', 'participant', 'group_participant',
+                ):
+                    from config.prompts.prompts_memory import (
+                        get_scoped_persona_section_header,
+                    )
+                    from utils.language_utils import get_global_language
+                    header = get_scoped_persona_section_header(
+                        subject_kind, subject_id, get_global_language(),
+                    )
+                else:
+                    header = _headers.get(entity_key, entity_key)
                 sections.append(f"### {header}\n" + "\n".join(lines))
 
         if trimmed_pending_reflections:
@@ -435,6 +528,9 @@ class RenderingMixin:
                     ai_name=ai_name,
                     master_name=master_name,
                     items_text="\n".join(past_lines),
+                    # 群/成员 subject 的渲染里点名私聊对象是双重错误：名字
+                    # 泄漏进群 prompt，指令对象也不是群里的人。
+                    scoped_only=scoped_only,
                 )
             )
 
@@ -459,10 +555,17 @@ class RenderingMixin:
         self, name: str, persona: dict, name_mapping: dict,
         pending_reflections: list[dict] | None,
         confirmed_reflections: list[dict] | None,
+        subjects=None,
+        include_legacy_private: bool | None = None,
     ) -> str:
         """Sync 3-phase render path. Used by `render_persona_markdown` and
         any test/migration caller that doesn't have an event loop."""
         now = datetime.now()
+        persona = self._persona_view_for_subjects(
+            persona,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
         protected_entries, non_protected_by_entity = (
             self._split_persona_for_render(persona)
@@ -487,6 +590,8 @@ class RenderingMixin:
             self._filter_reflections_for_render(
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
+                subjects,
+                include_legacy_private,
             ),
             REFLECTION_RENDER_MAX_TOKENS, now,
             # Reflections have no `_personas`-style in-memory view — they're
@@ -511,6 +616,9 @@ class RenderingMixin:
             protected_entries, trimmed_non_protected,
             non_protected_entity_index,
             trimmed_pending, trimmed_confirmed,
+            scoped_only=self._renders_scoped_only(
+                subjects, include_legacy_private,
+            ),
         )
 
     @staticmethod
@@ -542,7 +650,9 @@ class RenderingMixin:
         return trimmed_pending, trimmed_confirmed
 
     def render_persona_markdown(self, name: str, pending_reflections: list[dict] | None = None,
-                                   confirmed_reflections: list[dict] | None = None) -> str:
+                                   confirmed_reflections: list[dict] | None = None,
+                                   *, subjects=None,
+                                   include_legacy_private: bool | None = None) -> str:
         """Render persona as markdown for LLM context injection.
 
         Suppressed entries are rendered in a separate "暂不主动提及" ("not
@@ -555,12 +665,16 @@ class RenderingMixin:
         _, _, _, _, name_mapping, _, _, _, _ = self._config_manager.get_character_data()
         return self._compose_persona_markdown(
             name, persona, name_mapping, pending_reflections, confirmed_reflections,
+            subjects, include_legacy_private,
         )
 
     async def arender_persona_markdown(
         self, name: str,
         pending_reflections: list[dict] | None = None,
         confirmed_reflections: list[dict] | None = None,
+        *,
+        subjects=None,
+        include_legacy_private: bool | None = None,
     ) -> str:
         """Async 3-phase render path. Production hot path — uses
         `acount_tokens` so the event loop doesn't stall on tiktoken IO."""
@@ -568,6 +682,11 @@ class RenderingMixin:
         persona = await self.aensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         now = datetime.now()
+        persona = self._persona_view_for_subjects(
+            persona,
+            subjects,
+            include_legacy_private=include_legacy_private,
+        )
 
         protected_entries, non_protected_by_entity = (
             self._split_persona_for_render(persona)
@@ -589,6 +708,8 @@ class RenderingMixin:
             self._filter_reflections_for_render(
                 (pending_reflections or []) + (confirmed_reflections or []),
                 persona, suppressed_text_set,
+                subjects,
+                include_legacy_private,
             ),
             REFLECTION_RENDER_MAX_TOKENS, now,
             # See sync twin: reflections have no `_personas`-style
@@ -608,6 +729,9 @@ class RenderingMixin:
             protected_entries, trimmed_non_protected,
             non_protected_entity_index,
             trimmed_pending, trimmed_confirmed,
+            scoped_only=self._renders_scoped_only(
+                subjects, include_legacy_private,
+            ),
         )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:

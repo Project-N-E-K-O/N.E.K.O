@@ -923,6 +923,22 @@ class BiliDMPlugin(NekoPluginBase):
 
             config_manager = get_config_manager()
 
+            # 会话 key 提前算：只有「要新建会话」时才需要等区域落定，已有会话的线路
+            # 早就冻好了，再等只会给每条消息平白加最多 1.5 秒。
+            session_key = self._build_session_key(sender_uid)
+
+            # 新会话的线路会连 base_url 一起冻进 OmniOfflineClient 并缓存整场，所以
+            # 先给仍在飞的区域探测一个收尾窗口（与 core/lifecycle、游戏会话池对偶）。
+            # 已落定时零开销；自配 API 用户不会因此发起探测。fail-open：插件不该因
+            # 区域探测本身出错而起不了会话。
+            # 必须在下面读角色数据**之前**等：等待期间用户可能切换当前角色，等完再
+            # 读才不会把切换前的人格冻进整场会话（与游戏会话池等待后重读对偶）。
+            if session_key not in self._user_sessions:
+                try:
+                    await config_manager.aensure_region_resolved()
+                except Exception as _geo_err:
+                    self.logger.warning(f"[GeoIP] 插件会话区域落定失败，退化到当前配置继续: {_geo_err}")
+
             # 获取角色数据
             master_name, her_name, _, catgirl_data, _, lanlan_prompt_map, _, _, _ = (
                 config_manager.get_character_data()
@@ -979,9 +995,7 @@ class BiliDMPlugin(NekoPluginBase):
                 should_use_memory if persist_memory is None else bool(persist_memory)
             )
 
-            # 会话管理
-            session_key = self._build_session_key(sender_uid)
-
+            # 会话管理（session_key 已在上面为区域落定判断算过）
             if session_key not in self._user_sessions:
                 self.logger.info(f"为 B站用户 {sender_uid} 创建新的 AI 会话")
 
@@ -1145,13 +1159,14 @@ class BiliDMPlugin(NekoPluginBase):
                     if response.is_success:
                         memory_context = response.text.strip()
                         if memory_context:
-                            from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY
+                            from config.prompts.prompts_sys import (
+                                get_context_summary_ready,
+                            )
 
-                            context_ready_template = CONTEXT_SUMMARY_READY.get(
-                                short_language,
-                                CONTEXT_SUMMARY_READY.get(
-                                    user_language, CONTEXT_SUMMARY_READY["en"]
-                                ),
+                            # B站私聊是文字一对一，不是语音（与 QQ 插件、
+                            # 桌面 text 模式同一口径）。
+                            context_ready_template = get_context_summary_ready(
+                                short_language, input_mode="text",
                             )
                             system_prompt_parts.append(
                                 memory_context

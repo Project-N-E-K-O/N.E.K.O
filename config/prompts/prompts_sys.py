@@ -269,7 +269,14 @@ AGENT_TASKS_NOTICE = {
     'pt': '\nNota: as tarefas acima estão sendo executadas em segundo plano. Você pode informar ao usuário que elas estão sendo processadas, mas nunca deve fabricar nem adivinhar resultados. Você também pode esperar em silêncio até terminarem. O sistema avisará os resultados reais ao final.\n',
 }
 
-# ---------- 前情概要 + 语音就绪 ----------
+# ---------- 前情概要 + 就绪（按会话形态选变体） ----------
+# 三份变体对应三种会话形态，别再有第四处裸拼：
+#   CONTEXT_SUMMARY_READY        —— 语音一对一（realtime / audio）
+#   CONTEXT_SUMMARY_READY_TEXT   —— 文字一对一（桌面 text 模式、私聊类插件）
+#   CONTEXT_SUMMARY_READY_GROUP  —— 群聊（文字，且没有固定的单一对话对象）
+# 统一入口 get_context_summary_ready()。{master} 只在一对一变体里出现，
+# 群变体不指认任何具体的人——群里没有那个固定对象，写进去既是错的指令
+# 又把私聊对象的名字泄漏进群 prompt。
 CONTEXT_SUMMARY_READY = {
     'zh': '======以上为前情概要。现在请{name}准备，即将开始用语音与{master}继续对话。======\n',
     'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} via voice.======\n',
@@ -279,6 +286,42 @@ CONTEXT_SUMMARY_READY = {
     'es': '======Fin del resumen de contexto. {name}, prepárate: estás por continuar la conversación con {master} por voz.======\n',
     'pt': '======Fim do resumo de contexto. {name}, prepare-se: você está prestes a continuar a conversa com {master} por voz.======\n',
 }
+
+CONTEXT_SUMMARY_READY_TEXT = {
+    'zh': '======以上为前情概要。现在请{name}准备，即将开始用文字与{master}继续对话。======\n',
+    'en': '======End of context summary. {name}, please get ready — you are about to continue the conversation with {master} in text.======\n',
+    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これより{master}とのテキスト会話を再開します。======\n',
+    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 {master}와 문자로 대화를 이어갑니다.======\n',
+    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите переписку с {master}.======\n',
+    'es': '======Fin del resumen de contexto. {name}, prepárate: estás por continuar la conversación con {master} por texto.======\n',
+    'pt': '======Fim do resumo de contexto. {name}, prepare-se: você está prestes a continuar a conversa com {master} por texto.======\n',
+}
+
+CONTEXT_SUMMARY_READY_GROUP = {
+    'zh': '======以上为前情概要。现在请{name}准备，即将开始在群聊里用文字继续对话。======\n',
+    'en': '======End of context summary. {name}, please get ready — you are about to continue in the group chat, in text.======\n',
+    'ja': '======以上が前回までのあらすじです。{name}、準備してください。これよりグループチャットでテキストでの会話を再開します。======\n',
+    'ko': '======이상이 이전 대화 요약입니다. {name}，준비하세요 — 곧 그룹 채팅에서 문자로 대화를 이어갑니다.======\n',
+    'ru': '======Конец краткого содержания. {name}, приготовьтесь — вы скоро продолжите переписку в групповом чате.======\n',
+    'es': '======Fin del resumen de contexto. {name}, prepárate: estás por continuar en el chat grupal, por texto.======\n',
+    'pt': '======Fim do resumo de contexto. {name}, prepare-se: você está prestes a continuar no chat em grupo, por texto.======\n',
+}
+
+
+def get_context_summary_ready(
+    lang: str, *, input_mode: str = 'audio', is_group: bool = False,
+) -> str:
+    """Pick the closing line that matches this session's actual shape.
+
+    ``input_mode`` uses the same vocabulary as the session lifecycle
+    ('audio' / 'text'); chat-platform plugins are always 'text'. Callers
+    still ``.format(name=..., master=...)`` the result — the group variant
+    simply has no ``{master}`` slot to fill."""
+    if is_group:
+        return _loc(CONTEXT_SUMMARY_READY_GROUP, lang)
+    if str(input_mode or '').strip() == 'text':
+        return _loc(CONTEXT_SUMMARY_READY_TEXT, lang)
+    return _loc(CONTEXT_SUMMARY_READY, lang)
 
 # ---------- 来源描述符（agent_task_callback 渲染时按 user_language 动态拼装）----------
 # source_kind → 模板，``{name}`` 由 callback.source_name 填入。kind 缺失或未识别时

@@ -224,6 +224,7 @@ def analyze_situation(map_objects: list[Any], map_info: Any) -> dict[str, Any]:
             "distance_m": None,
             "bearing_deg": None,
             "relative_deg": None,
+            "clock": None,
         }
         if px is not None:
             dist = distance_m(px, py, t.x, t.y, map_info)
@@ -232,6 +233,7 @@ def analyze_situation(map_objects: list[Any], map_info: Any) -> dict[str, Any]:
             item["distance_m"] = round(dist) if dist is not None else None
             item["bearing_deg"] = round(brg, 1)
             item["relative_deg"] = round(rel, 1) if rel is not None else None
+            item["clock"] = clock_position(rel)
         targets.append(item)
     # 有距离的按距离升序
     targets.sort(key=lambda d: (d["distance_m"] is None, d["distance_m"] or 0))
@@ -247,6 +249,10 @@ def analyze_situation(map_objects: list[Any], map_info: Any) -> dict[str, Any]:
         rel = relative_bearing(brg, own_heading)
         e_type = getattr(e, "type", "unknown")
         e_icon = getattr(e, "icon", "none")
+        enemy_heading = heading_from_vector(
+            getattr(e, "dx", None), getattr(e, "dy", None)
+        )
+        nose_to_player = relative_bearing((brg + 180.0) % 360.0, enemy_heading)
         entries.append({
             "icon": e_icon,
             "type": e_type,
@@ -255,9 +261,13 @@ def analyze_situation(map_objects: list[Any], map_info: Any) -> dict[str, Any]:
             "distance_m": round(dist) if dist is not None else None,
             "bearing_deg": round(brg, 1),
             "relative_deg": round(rel, 1) if rel is not None else None,
-            "heading_deg": (
-                lambda h: round(h, 1) if h is not None else None
-            )(heading_from_vector(getattr(e, "dx", None), getattr(e, "dy", None))),
+            "clock": clock_position(rel),
+            "heading_deg": round(enemy_heading, 1) if enemy_heading is not None else None,
+            # Signed 2D angle from the contact's nose to the player. Near zero
+            # means the contact is pointed toward us; altitude is not inferred.
+            "nose_to_player_deg": (
+                round(nose_to_player, 1) if nose_to_player is not None else None
+            ),
         })
 
     # 有距离的排前面并按距离升序

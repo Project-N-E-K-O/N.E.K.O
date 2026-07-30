@@ -92,7 +92,7 @@ async def storage_limited_mode_guard(request: Request, call_next):
     if blocking_reason or _memory_storage_blocked_after_init:
         blocking_reason = blocking_reason or "storage_startup_blocked_after_init"
         logger.info(
-            "[Memory] limited-mode blocks request path=%s reason=%s",
+            "[Memory] limited-mode blocks request path=%r reason=%s",
             request.url.path,
             blocking_reason,
         )
@@ -108,7 +108,7 @@ async def storage_limited_mode_guard(request: Request, call_next):
         )
     runtime_blocking_reason = "runtime_initializing"
     logger.info(
-        "[Memory] limited-mode blocks request path=%s reason=%s",
+        "[Memory] limited-mode blocks request path=%r reason=%s",
         request.url.path,
         runtime_blocking_reason,
     )
@@ -512,6 +512,17 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             TokenTracker.get_instance().record_app_start(process="memory_server")
         except Exception as e:
             logger.warning(f"[Memory] Token tracker init failed: {e}")
+
+        # GeoIP 预热：memory_server 是独立进程，主进程的预热只暖主进程的类级缓存。
+        # 不预热的话，下面 outbox 补跑 / 首个记忆更新的免费路由 LLM 调用会读到临时
+        # 大陆快照（本进程的探测那时才刚起）。放在 cloudsave bootstrap 之后——与
+        # main_server 同一时序原则：配置成型后再预热。自配 API 用户零等待（不起探
+        # 测，快照无区域敏感 URL 时直接返回 True）。
+        try:
+            if not await _config_manager.awarmup_region_check():
+                logger.info("[GeoIP] memory_server 预热未拿到区域结论，后续调用按退避重试")
+        except Exception:
+            logger.debug("[GeoIP] memory_server 预热失败，留给后续调用重试", exc_info=True)
 
         await gates._aload_maint_state()
 

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "assets": [
+    {
+      "filename": "silero_vad.onnx",
+      "version": "v6.2.1",
+      "source": "https://raw.githubusercontent.com/snakers4/silero-vad/v6.2.1/src/silero_vad/data/silero_vad.onnx",
+      "license": "MIT",
+      "sha256": "1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
+      "input_contract": "input:float32[batch,576],state:float32[2,batch,128],sr:int64[]",
+      "output_contract": "probability:float32[batch,1],state:float32[2,batch,128]"
+    },
+    {
+      "filename": "smart_turn_v3.onnx",
+      "version": "v3.2-cpu@f766f81d3cfdf7737ac64aad813d91bbfd56bf93",
+      "source": "https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx?download=true",
+      "license": "BSD-2-Clause",
+      "sha256": "2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
+      "input_contract": "input_features:float32[batch,80,800]",
+      "output_contract": "probability:float32[batch,1]"
+    }
+  ]
+}

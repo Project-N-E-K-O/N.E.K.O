@@ -12,6 +12,15 @@ tests/test_inputs/
 *.log
 /logs/
 /data/
+# Voice-turn assets are prepared from a pinned, checksummed manifest. Keep the
+# manifest/notices reviewable while preventing downloaded weights or stray data
+# from being added accidentally.
+!/data/
+/data/*
+!/data/vad_models/
+/data/vad_models/*
+!/data/vad_models/manifest.json
+!/data/vad_models/THIRD_PARTY_NOTICES.md
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe
@@ -24,6 +33,10 @@ debug_audio/*
 *.lo
 *.loT
 *.stackdump
+pkgbuild/src/
+pkgbuild/pkg/
+pkgbuild/*.tar.gz
+pkgbuild/*.zst
 
 # 忽略 memory/store 下所有内容（含子目录和文件）
 memory/store/*
@@ -53,6 +66,7 @@ __pycache__/
 .idea/
 .cursor/
 .pytest_cache/
+/.pytest_tmp*/
 .DS_Store
 .codex
 .venv

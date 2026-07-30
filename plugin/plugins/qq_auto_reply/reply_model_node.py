@@ -38,6 +38,11 @@ class QQReplyModelNode:
             )
         )
         if fallback_reply:
+            # 生产管线的 fallback 成功路径：与 legacy generate_from_context
+            # 对偶，跑同一份 scoped 记忆钩子（成员 bucket / mention 计数）。
+            await self.plugin.reply_generation_service.run_fallback_memory_hooks(
+                context, fallback_reply,
+            )
             return QQModelResult(
                 reply_text=fallback_reply,
                 source="direct_llm_fallback",

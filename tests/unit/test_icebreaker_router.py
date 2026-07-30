@@ -1,5 +1,4 @@
 import json
-import logging
 from types import SimpleNamespace
 
 import pytest
@@ -18,6 +17,7 @@ from config._runtime import register_truncate_to_tokens
 from config.prompts.prompts_icebreaker import build_icebreaker_free_text_prompts
 from main_routers import icebreaker_router, system_router
 from main_routers.system_router import AUTOSTART_CSRF_TOKEN
+from tests.fake_clock import patch_module_clock
 from utils.icebreaker_free_text import parse_icebreaker_free_text_decision
 from utils import icebreaker_route_state
 from utils.game_route_state import _get_active_game_route_state
@@ -45,6 +45,8 @@ class _FakeAppendContextManager:
     def __init__(self, result=None, error=None, speech_error=None):
         self.calls = []
         self.spoken = []
+        self.engagement_calls = 0
+        self.engagement_times = []
         self.language_updates = []
         self.user_language = "zh-CN"
         self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
@@ -54,6 +56,10 @@ class _FakeAppendContextManager:
     def set_user_language(self, language):
         self.language_updates.append(language)
         self.user_language = language
+
+    def note_user_engagement(self, *, at=None):
+        self.engagement_calls += 1
+        self.engagement_times.append(at)
 
     async def append_context(self, **kwargs):
         self.calls.append(kwargs)
@@ -74,6 +80,9 @@ class _FakeConfigManager:
 
     def load_characters(self):
         return self._characters
+
+    async def aget_model_api_config(self, model_type, *, core_config=None):
+        return self.get_model_api_config(model_type)
 
     def get_model_api_config(self, model_type):
         assert model_type == "emotion"
@@ -200,6 +209,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
         "role": "assistant",
         "text": "教程看完啦？",
     }]
+    assert mgr.engagement_calls == 0
 
 
 @pytest.mark.asyncio
@@ -233,12 +243,142 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
         "role": "user",
         "text": "可以，多陪一会儿",
     }]
+    assert mgr.engagement_calls == 1
 
 
 @pytest.mark.asyncio
-async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch, caplog):
+async def test_icebreaker_context_preserves_user_request_ingress_time(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    clock = {"now": 100.0}
+
+    class _DelayedJsonRequest(_FakeRequest):
+        async def json(self):
+            clock["now"] = 200.0
+            return self._payload
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    # 取入口时刻的 request_arrival_time = time.time() 就写在 icebreaker_context 里。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
+
+    async def fake_cache_memory(**_kwargs):
+        return True, ""
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "_cache_icebreaker_context_memory",
+        fake_cache_memory,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _DelayedJsonRequest(
+            {
+                "lanlan_name": "Lan",
+                "role": "user",
+                "text": "可以，多陪一会儿",
+                "session_id": "icebreaker-day1-test",
+            }
+        )
+    )
+
+    assert result["ok"] is True
+    assert mgr.engagement_times == [100.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_choice_records_user_engagement(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    clock = {"now": 100.0}
+
+    class _DelayedJsonRequest(_FakeRequest):
+        async def json(self):
+            clock["now"] = 150.0
+            return self._payload
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    # choice_arrival_time = time.time() 同样在 icebreaker_choice 函数体内。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: clock["now"])
+
+    def record_choice(payload):
+        clock["now"] = 200.0
+        return {
+            "ok": True,
+            "lanlan_name": payload["lanlan_name"],
+            "day": payload["day"],
+        }
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        record_choice,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_choice(
+        _DelayedJsonRequest(
+            {
+                "lanlan_name": "Lan",
+                "session_id": "icebreaker-day1-test",
+                "day": "day1",
+                "node_id": "welcome",
+                "choice": "stay",
+            },
+            path="/api/icebreaker/choice",
+        )
+    )
+
+    assert result["ok"] is True
+    assert mgr.engagement_calls == 1
+    assert mgr.engagement_times == [100.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_choice_write_failure_still_records_user_engagement(
+    monkeypatch,
+):
+    mgr = _FakeAppendContextManager()
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    # 同上：读时钟的是 icebreaker_choice 自己。
+    patch_module_clock(monkeypatch, icebreaker_router, time=lambda: 123.0)
+
+    def fail_record_choice(_payload):
+        raise OSError("state unavailable")
+
+    monkeypatch.setattr(
+        icebreaker_router,
+        "record_tutorial_choice",
+        fail_record_choice,
+    )
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_choice(
+        _FakeRequest(
+            {
+                "lanlan_name": "Lan",
+                "session_id": "icebreaker-day1-test",
+                "day": "day1",
+                "node_id": "welcome",
+                "choice": "stay",
+            },
+            path="/api/icebreaker/choice",
+        )
+    )
+
+    assert result["ok"] is False
+    assert result["reason"] == "choice_write_failed"
+    assert mgr.engagement_calls == 1
+    assert mgr.engagement_times == [123.0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypatch):
     mgr = _FakeAppendContextManager()
     memory_cache_calls = []
+    warning_calls = []
 
     async def fake_cache_memory(**kwargs):
         memory_cache_calls.append(kwargs)
@@ -247,20 +387,8 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
     monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
     monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
     monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    monkeypatch.setattr(icebreaker_router.logger, "warning", lambda *args: warning_calls.append(args))
     icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
-
-    # icebreaker_router.logger is built via get_module_logger with propagate=False,
-    # and the app-root logger (N.E.K.O) also gets propagate=False once another test
-    # in the suite initializes the app logging config — either break stops the record
-    # before it reaches caplog's root handler. Re-enable propagation along the whole
-    # ancestor chain (monkeypatch auto-reverts) so caplog observes the warning
-    # regardless of test ordering.
-    _lg = icebreaker_router.logger
-    _root = logging.getLogger()
-    while _lg is not None and _lg is not _root:
-        monkeypatch.setattr(_lg, "propagate", True)
-        _lg = _lg.parent
-    caplog.set_level(logging.WARNING, logger=icebreaker_router.logger.name)
 
     result = await icebreaker_router.icebreaker_context(
         _FakeRequest({
@@ -280,7 +408,8 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
         "role": "assistant",
         "text": "教程看完啦？",
     }]
-    assert "icebreaker memory cache failed" in caplog.text
+    assert warning_calls
+    assert "icebreaker memory cache failed" in warning_calls[0][0]
 
 
 @pytest.mark.asyncio

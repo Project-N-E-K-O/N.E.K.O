@@ -102,10 +102,16 @@ class VoiceStorageMixin:
         core_url = str(core_cfg.get("CORE_URL") or "")
         overseas = is_free_lanlan_app_route("free", core_url)
         if not overseas:
-            try:
-                overseas = bool(self._check_non_mainland())
-            except Exception:
-                overseas = False
+            # 兜底问地理前先过 needs_region 门：livestream 已把全部免费端点派生掉
+            # 时线路是确定的，而 _check_non_mainland 内部会起探测——不该为迁移一个
+            # 音色把这类用户的 IP 发给 ip-api.com（不变量 #2）。与 ensure_default
+            # 的门同源；ADJUSTED 因为这里读的是组装后快照。
+            from utils.config_manager import ConfigManager
+            if ConfigManager._config_needs_region(core_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
+                try:
+                    overseas = bool(self._check_non_mainland())
+                except Exception:
+                    overseas = False
         if overseas:
             return voice_id
 
@@ -872,9 +878,26 @@ class VoiceStorageMixin:
                 logger.warning("hosted preset voice 归一化异常，按非预制处理", exc_info=True)
                 return None
 
+        def _preferred_configured_preset_provider(ref):
+            """Return an exact configured preset owner before clone lookup."""
+            # Explicit configuration wins only for dynamic configured presets;
+            # static hosted catalogs keep their existing clone-first behavior.
+            # 仅动态配置音色优先于同名克隆；静态厂商目录仍保持原有优先级。
+            provider_key = _hosted_preset_provider(ref)
+            if not provider_key:
+                return None
+            try:
+                from utils.tts import provider_registry
+                if provider_registry.uses_configured_preset_voice(provider_key):
+                    return provider_key
+            except Exception:
+                logger.warning("configured preset voice 归一化异常，按普通优先级处理", exc_info=True)
+            return None
+
         return normalize_voice_id(
             voice_id,
             vllm_selected=self._is_vllm_omni_tts_selected(self.get_core_config()),
+            preferred_preset_provider=_preferred_configured_preset_provider,
             clone_provider_lookup=_clone_lookup,
             is_native=lambda ref: is_saveable_native_voice(self, ref),
             native_provider=get_active_realtime_native_provider(self) or '',
@@ -914,6 +937,52 @@ class VoiceStorageMixin:
             return s
         return vc.to_dict()
 
+    def _region_verdict_is_provisional(self, cfg=None) -> bool:
+        """Whether voice validity would currently be judged on a guessed region.
+
+        Only free routes are region-dependent, so a custom/paid config is never
+        provisional here. On a free route it is provisional until the IP probe has
+        landed: ``_check_non_mainland`` falls back to Steam (deliberately uncached)
+        or to the mainland default, and neither is a verdict to delete data on.
+
+        ``cfg`` lets an async caller pass an already assembled snapshot so the
+        predicate stays pure in-memory; without it the config is read here —
+        a sync open()+json.load(), fine on worker threads but not on the shared
+        event loop.
+        """
+        from utils.config_manager import ConfigManager, core_config as _core_config_mod
+
+        try:
+            # 调试开关强制区域 = 结论确定非猜测（_check_non_mainland 恒返回强制
+            # 值），不认它会让 override 下的免费路由永久禁用清理与默认音色绑定。
+            # 经模块属性读取而非 from-import，保证测试对 core_config 的 monkeypatch
+            # 在这里同样可见。
+            if _core_config_mod.GEOIP_FORCE_NON_MAINLAND is not None:
+                return False
+            if ConfigManager._region_cache is not None:
+                return False
+            if cfg is None:
+                cfg = self.get_core_config() or {}
+            # 判「是不是免费路由」必须用**不受区域改写影响**的路由选择字段：
+            # get_core_config() 返回的是已改写快照，Steam 临时判海外时 URL 已经变成
+            # lanlan.app，按 URL host 判会得出「这是自配线路」而放行清理——恰好在这个
+            # 守卫最该生效的场景下失效。
+            if not (cfg.get('CORE_API_TYPE') or cfg.get('coreApi') or cfg.get('assistApi')):
+                # 读不到任何路由选择（配置残缺）：这是要删用户数据的路径，宁可不删。
+                # 正常 get_core_config() 一定带这些字段，所以不会平白推迟清理。
+                return True
+            # 两个条件都要：选了免费路由，**且**确实还有 URL 依赖区域判定。
+            # 只看前者会把「livestream 已把所有免费端点派生掉」的用户永远判成未落定
+            # ——那种配置根本不起探测，_region_cache 永不落定，于是清理与默认音色
+            # 绑定被永久禁用。后者（用 ADJUSTED，认得改写后的 .app）正好排除这种。
+            return (
+                ConfigManager._any_free_provider(cfg)
+                and self._config_needs_region(cfg, ConfigManager._REGION_HOSTS_ADJUSTED)
+            )
+        except Exception:
+            logger.debug("[GeoIP] 区域落定状态判断失败，保守视为未落定", exc_info=True)
+            return True         # 判断不了就别删——保守方向是不动用户数据
+
     def cleanup_invalid_voice_ids(self):
         """Clean up invalid voice_ids in characters.json.
         
@@ -926,9 +995,21 @@ class VoiceStorageMixin:
         and silently dropped to the generic default voice due to the YUI voice ID change.
         A migration hit also triggers a save.
 
+        Skipped entirely while the region verdict is still provisional on a free
+        route. Validity there is route-dependent: an overseas-only voice such as
+        ``yui`` is absent from the mainland ``free`` catalog, so running this during
+        the transient mainland fallback would clear it from characters.json — and
+        that write is permanent. The IP verdict landing a moment later fixes the
+        endpoint but cannot bring the user's voice choice back. Waiting one session
+        costs nothing; clearing on a guess costs data.
+
         Returns:
             (cleaned_count, legacy_cosyvoice_names): total cleaned, and the list of character names still using legacy CosyVoice voices
         """
+        if self._region_verdict_is_provisional():
+            logger.info("[GeoIP] 区域判定尚未落定，跳过本轮无效 voice_id 清理，避免误删海外音色")
+            return 0, []
+
         character_data = self.load_characters()
         cleaned_count = 0
         migrated_count = 0

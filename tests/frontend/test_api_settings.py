@@ -79,7 +79,7 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
     styles = mock_page.evaluate("""
         () => {
             document.getElementById('custom-api-options').style.display = 'block';
-            document.getElementById('custom-api-container').style.display = 'block';
+            document.getElementById('custom-api-container').style.display = 'grid';
             const container = document.querySelector('.model-config-container');
             const header = container.querySelector(':scope > .model-header');
 
@@ -122,10 +122,302 @@ def test_custom_model_headers_own_their_capsule_shape(mock_page: Page, running_s
     """)
 
     assert expanded_styles == {
-        "borderWidth": "1px",
+        "borderWidth": "3px",
         "borderRadius": "24px",
         "marginTop": "8px",
     }
+
+
+@pytest.mark.frontend
+def test_custom_model_grid_uses_two_columns_and_full_width_expansion(
+    mock_page: Page, running_server: str
+):
+    """Cards follow the requested order and retain their paired two-column behavior."""
+    mock_page.set_viewport_size({"width": 1280, "height": 1000})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('custom-api-options').style.display = 'block';
+    }""")
+
+    desktop = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container');
+        const cards = Array.from(grid.querySelectorAll(':scope > .model-config-container'));
+        const rect = element => {
+            const box = element.getBoundingClientRect();
+            return {
+                left: Math.round(box.left),
+                top: Math.round(box.top),
+                width: Math.round(box.width),
+            };
+        };
+
+        return {
+            display: getComputedStyle(grid).display,
+            columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+            grid: rect(grid),
+            contentIds: cards.map(card => card.querySelector(':scope > .model-content')?.id),
+            titleKeys: cards.map(card => card.querySelector(':scope > .model-header [data-i18n]')?.dataset.i18n),
+            summaryTypes: Array.from(document.querySelectorAll(
+                '#customApiSummaryLights .connectivity-summary-light'
+            )).map(light => light.dataset.modelType),
+            rowPairs: { ...MODEL_CONFIG_ROW_PAIRS },
+            conversation: rect(cards[0]),
+            vision: rect(cards[1]),
+            summary: rect(cards[2]),
+            correction: rect(cards[3]),
+            emotion: rect(cards[4]),
+            omni: rect(cards[5]),
+            agent: rect(cards[6]),
+            tts: rect(cards[7]),
+            game: rect(cards[8]),
+        };
+    }""")
+
+    assert desktop["display"] == "grid"
+    assert desktop["columns"] == 2
+    assert desktop["contentIds"] == [
+        "conversation-model-content",
+        "vision-model-content",
+        "summary-model-content",
+        "correction-model-content",
+        "emotion-model-content",
+        "omni-model-content",
+        "agent-model-content",
+        "tts-model-content",
+        "game-model-content",
+    ]
+    assert desktop["titleKeys"] == [
+        "api.conversationModelConfig",
+        "api.visionModelConfig",
+        "api.summaryModelConfig",
+        "api.correctionModelConfig",
+        "api.emotionModelConfig",
+        "api.realtimeModelConfig",
+        "api.agentApiConfigTitle",
+        "api.ttsModelConfig",
+        "api.gameModelsConfig",
+    ]
+    assert desktop["summaryTypes"] == [
+        "conversation",
+        "vision",
+        "summary",
+        "correction",
+        "emotion",
+        "omni",
+        "agent",
+        "tts",
+        "gameMain",
+        "gameSummary",
+    ]
+    assert desktop["rowPairs"] == {
+        "conversation": "vision",
+        "vision": "conversation",
+        "summary": "correction",
+        "correction": "summary",
+        "emotion": "omni",
+        "omni": "emotion",
+        "agent": "tts",
+        "tts": "agent",
+    }
+    assert desktop["conversation"]["top"] == desktop["vision"]["top"]
+    assert desktop["conversation"]["left"] < desktop["vision"]["left"]
+    assert abs(desktop["conversation"]["width"] - desktop["vision"]["width"]) <= 1
+    assert desktop["summary"]["top"] == desktop["correction"]["top"]
+    assert desktop["summary"]["left"] < desktop["correction"]["left"]
+    assert abs(desktop["summary"]["width"] - desktop["correction"]["width"]) <= 1
+    assert desktop["emotion"]["top"] == desktop["omni"]["top"]
+    assert desktop["agent"]["top"] == desktop["tts"]["top"]
+    assert desktop["game"]["top"] > desktop["agent"]["top"]
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(350)
+
+    expanded = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container').getBoundingClientRect();
+        const content = document.getElementById('conversation-model-content');
+        const card = content.closest('.model-config-container').getBoundingClientRect();
+        const partner = document.getElementById('vision-model-content')
+            .closest('.model-config-container').getBoundingClientRect();
+        const contentRect = content.getBoundingClientRect();
+        const header = content.previousElementSibling;
+        const partnerHeader = document.getElementById('vision-model-content').previousElementSibling;
+        const summaryHeader = document.getElementById('summary-model-content').previousElementSibling;
+        const headerStyle = getComputedStyle(header);
+        return {
+            cardWidth: Math.round(card.width),
+            gridWidth: Math.round(grid.width),
+            contentLeft: Math.round(contentRect.left),
+            contentWidth: Math.round(contentRect.width),
+            gridLeft: Math.round(grid.left),
+            cardTop: Math.round(card.top),
+            partnerTop: Math.round(partner.top),
+            labelCount: content.querySelectorAll(':scope > .model-content-label').length,
+            headerExpanded: header?.getAttribute('aria-expanded'),
+            headerShadow: headerStyle.boxShadow,
+            headerOpacity: headerStyle.opacity,
+            headerTransform: headerStyle.transform,
+            headerBackground: headerStyle.backgroundImage,
+            partnerOpacity: getComputedStyle(partnerHeader).opacity,
+            summaryOpacity: getComputedStyle(summaryHeader).opacity,
+            contentBorderTopWidth: getComputedStyle(content).borderTopWidth,
+            contentBorderTopColor: getComputedStyle(content).borderTopColor,
+        };
+    }""")
+
+    assert abs(expanded["cardWidth"] - desktop["conversation"]["width"]) <= 1
+    assert abs(expanded["contentWidth"] - expanded["gridWidth"]) <= 1
+    assert abs(expanded["contentLeft"] - expanded["gridLeft"]) <= 1
+    assert expanded["cardTop"] == expanded["partnerTop"]
+    assert expanded["labelCount"] == 0
+    assert expanded["headerExpanded"] == "true"
+    assert expanded["headerShadow"] != "none"
+    assert expanded["headerOpacity"] == "1"
+    assert expanded["headerTransform"] != "none"
+    assert "linear-gradient" in expanded["headerBackground"]
+    assert float(expanded["partnerOpacity"]) < 1
+    assert expanded["summaryOpacity"] == "1"
+    assert expanded["contentBorderTopWidth"] == "3px"
+    assert expanded["contentBorderTopColor"] == "rgb(64, 197, 241)"
+
+    mock_page.evaluate("""() => {
+        toggleModelConfig('conversation');
+        toggleModelConfig('vision');
+    }""")
+    mock_page.wait_for_timeout(650)
+
+    right_expanded = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container').getBoundingClientRect();
+        const content = document.getElementById('vision-model-content').getBoundingClientRect();
+        return {
+            gridLeft: Math.round(grid.left),
+            gridWidth: Math.round(grid.width),
+            contentLeft: Math.round(content.left),
+            contentWidth: Math.round(content.width),
+        };
+    }""")
+
+    assert abs(right_expanded["contentLeft"] - right_expanded["gridLeft"]) <= 1
+    assert abs(right_expanded["contentWidth"] - right_expanded["gridWidth"]) <= 1
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(350)
+    paired_expansion = mock_page.evaluate("""() => {
+        const left = document.getElementById('conversation-model-content').getBoundingClientRect();
+        const right = document.getElementById('vision-model-content').getBoundingClientRect();
+        return {
+            leftWidth: Math.round(left.width),
+            leftRight: Math.round(left.right),
+            rightLeft: Math.round(right.left),
+            rightWidth: Math.round(right.width),
+        };
+    }""")
+
+    assert abs(paired_expansion["leftWidth"] - desktop["conversation"]["width"]) <= 1
+    assert abs(paired_expansion["rightWidth"] - desktop["vision"]["width"]) <= 1
+    assert paired_expansion["leftRight"] < paired_expansion["rightLeft"]
+
+    mock_page.evaluate("toggleModelConfig('conversation')")
+    mock_page.wait_for_timeout(80)
+    collapsing_pair = mock_page.evaluate("""() => {
+        const left = document.getElementById('conversation-model-content');
+        const right = document.getElementById('vision-model-content');
+        const leftRect = left.getBoundingClientRect();
+        const rightRect = right.getBoundingClientRect();
+        return {
+            leftHeight: Math.round(leftRect.height),
+            leftRight: Math.round(leftRect.right),
+            rightLeft: Math.round(rightRect.left),
+            isCollapsing: left.classList.contains('is-collapsing'),
+            rightWidth: Math.round(rightRect.width),
+        };
+    }""")
+
+    assert collapsing_pair["leftHeight"] > 0
+    assert collapsing_pair["isCollapsing"] is True
+    assert collapsing_pair["leftRight"] < collapsing_pair["rightLeft"]
+    assert abs(collapsing_pair["rightWidth"] - desktop["vision"]["width"]) <= 1
+
+    mock_page.wait_for_timeout(600)
+    settled_pair = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container').getBoundingClientRect();
+        const left = document.getElementById('conversation-model-content');
+        const right = document.getElementById('vision-model-content');
+        const rightRect = right.getBoundingClientRect();
+        return {
+            gridLeft: Math.round(grid.left),
+            gridWidth: Math.round(grid.width),
+            leftHeight: Math.round(left.getBoundingClientRect().height),
+            isCollapsing: left.classList.contains('is-collapsing'),
+            isReflowing: right.classList.contains('is-reflowing'),
+            rightLeft: Math.round(rightRect.left),
+            rightWidth: Math.round(rightRect.width),
+        };
+    }""")
+
+    assert settled_pair["leftHeight"] == 0
+    assert settled_pair["isCollapsing"] is False
+    assert settled_pair["isReflowing"] is False
+    assert abs(settled_pair["rightLeft"] - settled_pair["gridLeft"]) <= 1
+    assert abs(settled_pair["rightWidth"] - settled_pair["gridWidth"]) <= 1
+
+    mock_page.set_viewport_size({"width": 760, "height": 1000})
+    mobile = mock_page.evaluate("""() => {
+        const grid = document.getElementById('custom-api-container');
+        const cards = Array.from(grid.querySelectorAll(':scope > .model-config-container'));
+        const first = cards[0].getBoundingClientRect();
+        const second = cards[1].getBoundingClientRect();
+        return {
+            columns: getComputedStyle(grid).gridTemplateColumns.split(' ').length,
+            gridWidth: Math.round(grid.getBoundingClientRect().width),
+            firstWidth: Math.round(first.width),
+            firstTop: Math.round(first.top),
+            secondTop: Math.round(second.top),
+        };
+    }""")
+
+    assert mobile["columns"] == 1
+    assert abs(mobile["firstWidth"] - mobile["gridWidth"]) <= 1
+    assert mobile["secondTop"] > mobile["firstTop"]
+
+
+@pytest.mark.frontend
+def test_nested_game_headers_skip_top_level_active_highlight(
+    mock_page: Page, running_server: str
+):
+    """Nested mini-game panels should not inherit the top-level selected treatment."""
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('game');
+        toggleModelConfig('game-main');
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    styles = mock_page.evaluate("""() => {
+        const topLevel = document.getElementById('game-model-content').previousElementSibling;
+        const nested = document.getElementById('game-main-model-content').previousElementSibling;
+        const topLevelStyle = getComputedStyle(topLevel);
+        const nestedStyle = getComputedStyle(nested);
+        return {
+            topLevelShadow: topLevelStyle.boxShadow,
+            nestedShadow: nestedStyle.boxShadow,
+            nestedTransform: nestedStyle.transform,
+        };
+    }""")
+
+    assert styles["topLevelShadow"] != "none"
+    assert styles["nestedShadow"] == "none"
+    assert styles["nestedTransform"] == "none"
 
 
 @pytest.mark.frontend
@@ -192,6 +484,51 @@ def test_key_book_shortcut_centers_and_selects_provider_input(
         "selectionStart": 0,
         "selectionEnd": len("sk-qwen-shortcut-test"),
     }
+
+
+@pytest.mark.frontend
+def test_realtime_key_book_shortcut_stays_in_api_key_row(
+    mock_page: Page, running_server: str
+):
+    """Realtime fields keep their localized label and aligned key-book shortcut."""
+    mock_page.set_viewport_size({"width": 1280, "height": 1000})
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=10000)
+    mock_page.evaluate("""() => {
+        const enableCustomApi = document.getElementById('enableCustomApi');
+        enableCustomApi.checked = true;
+        enableCustomApi.dispatchEvent(new Event('change', { bubbles: true }));
+        document.getElementById('custom-api-options').style.display = 'block';
+        toggleModelConfig('omni');
+    }""")
+    mock_page.wait_for_timeout(350)
+
+    state = mock_page.evaluate("""() => {
+        const input = document.getElementById('omniModelApiKey');
+        const row = input.parentElement;
+        const shortcut = document.querySelector(
+            '#omni-model-content .key-book-shortcut'
+        );
+        const inputBox = input.getBoundingClientRect();
+        const shortcutBox = shortcut.getBoundingClientRect();
+
+        return {
+            rowClass: row.className,
+            shortcutSharesRow: shortcut.parentElement === row,
+            inputCenter: Math.round(inputBox.top + inputBox.height / 2),
+            shortcutCenter: Math.round(shortcutBox.top + shortcutBox.height / 2),
+            urlLabelKey: document.querySelector(
+                'label[for="omniModelUrl"] [data-i18n]'
+            )?.dataset.i18n,
+        };
+    }""")
+
+    assert state["rowClass"] == "connectivity-input-row"
+    assert state["shortcutSharesRow"] is True
+    assert abs(state["inputCenter"] - state["shortcutCenter"]) <= 1
+    assert state["urlLabelKey"] == "api.apiUrl"
 
 
 @pytest.mark.frontend
@@ -939,6 +1276,49 @@ def test_explicit_mimo_tts_provider_is_saved_for_runtime_routing(mock_page: Page
     assert payload["assistApi"] == "qwen"
     assert payload["ttsModelProvider"] == "mimo"
     assert payload["ttsProvider"] == "mimo"
+
+
+@pytest.mark.frontend
+def test_custom_tts_uses_openai_speech_probe_and_protocol_hint(mock_page: Page, running_server: str):
+    mock_page.add_init_script("window.localStorage.setItem('neko_tutorial_settings', 'seen')")
+    mock_page.goto(f"{running_server}/api_key")
+    expect(mock_page.locator("#loading-overlay")).to_be_hidden(timeout=15000)
+    mock_page.wait_for_selector("#ttsModelProvider option[value='custom']", state="attached", timeout=10000)
+
+    result = mock_page.evaluate("""
+        () => {
+            const provider = document.getElementById('ttsModelProvider');
+            provider.value = 'custom';
+            provider.dispatchEvent(new Event('change', { bubbles: true }));
+            document.getElementById('ttsModelUrl').value = 'https://speech.example.com/v1';
+            document.getElementById('ttsModelId').value = 'vendor-tts';
+            setMaskedInput(document.getElementById('ttsModelApiKey'), 'sk-speech');
+            document.getElementById('ttsVoiceId').value = 'vendor-voice';
+            const resolved = ConnectivityManager.resolveEffectiveKey({
+                type: 'custom',
+                modelType: 'tts'
+            });
+            const hint = document.getElementById('tts-protocol-hint');
+            return {
+                resolved,
+                customOptionCount: provider.querySelectorAll("option[value='custom']").length,
+                hintVisible: hint.style.display !== 'none',
+                hintKey: hint.getAttribute('data-i18n'),
+                hintText: hint.textContent,
+            };
+        }
+    """)
+
+    assert result["customOptionCount"] == 1
+    assert result["resolved"]["url"] == "https://speech.example.com/v1"
+    assert result["resolved"]["key"] == "sk-speech"
+    assert result["resolved"]["model"] == "vendor-tts"
+    assert result["resolved"]["voiceId"] == "vendor-voice"
+    assert result["resolved"]["providerType"] == "tts"
+    assert result["resolved"]["subType"] == "openai_tts"
+    assert result["hintVisible"] is True
+    assert result["hintKey"] == "api.ttsProtocolHintOpenAI"
+    assert "/v1/audio/speech" in result["hintText"]
 
 
 @pytest.mark.frontend

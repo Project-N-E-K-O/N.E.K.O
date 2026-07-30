@@ -6,17 +6,17 @@ seoSchemaType: WebPage
 
 # 分析统计与 Cookie 说明
 
-最后更新：2026 年 7 月 21 日。
+最后更新：2026 年 7 月 23 日。
 
 本说明适用于 `project-neko.online` 上的 Project N.E.K.O. 文档站。
 
 ## 在你作出选择之前
 
-网站不会加载 Google Analytics，也不会向 Google Analytics 发送请求。在你点击**同意分析统计**或**拒绝**之前，同意面板不会保存选择。
+网站不会加载 Google Analytics，也不会向 Google Analytics 发送请求。在你点击**允许**或**拒绝**之前，同意横幅不会保存选择。
 
 ## 同意分析统计后
 
-网站会使用 Measurement ID `G-N4QZK4PHE3` 加载 Google Analytics 4，并发送页面浏览事件，以便了解哪些文档更有帮助以及访问者如何找到文档站。
+网站会使用 Measurement ID `G-N4QZK4PHE3` 加载 Google Analytics 4，并发送页面浏览事件，以便了解哪些文档更有帮助以及访问者如何找到文档站。当访客点击前往 N.E.K.O. Steam 页面的链接时，网站还会发送 `steam_cta_click` 事件，其中包含目标网址、链接文字、CTA 位置、当前页面网址和页面标题。
 
 Google Analytics 可能处理页面网址和标题、来源页面、浏览器与设备信息及大致地理位置等信息。本站配置会关闭广告存储、广告用户数据、广告个性化、Google Signals 和广告个性化信号。
 
@@ -36,6 +36,6 @@ Google Analytics 可能处理页面网址和标题、来源页面、浏览器与
 
 ## 修改或撤回选择
 
-使用任意文档页面底部的**分析统计设置**按钮，即可随时同意或拒绝。拒绝分析统计不会影响文档的正常使用。
+使用任意文档页面页脚中的 **Cookie 设置**按钮，即可随时允许或拒绝。拒绝分析统计不会影响文档的正常使用。
 
 如对本说明有疑问，请通过 [Project N.E.K.O. GitHub 仓库](https://github.com/Project-N-E-K-O/N.E.K.O/issues)联系项目。

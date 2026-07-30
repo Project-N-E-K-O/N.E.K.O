@@ -12,6 +12,15 @@ Project N.E.K.O. is an open-source AI companion platform with avatar rendering, 
 - Electron desktop distribution built from N.E.K.O.-PC plus this packaged backend
 - Container deployment under `docker/`
 
+## Evaluate N.E.K.O. before setup
+
+| Question | Buyer guide |
+| --- | --- |
+| Is the app free, and what can AI services cost? | [Cost and providers](./cost-and-providers) |
+| Can it run completely offline? | [Local and offline boundaries](./local-and-offline) |
+| Where can conversations and memory be sent? | [Technical data flow and privacy controls](./data-and-privacy) |
+| Which installation channel should I choose? | [Steam, GitHub Releases, or source](./install-options) |
+
 ## Start here
 
 | Goal | Page |

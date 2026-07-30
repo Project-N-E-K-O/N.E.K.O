@@ -12,7 +12,7 @@ test_persona_version_history.py does."""
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -446,6 +446,7 @@ async def test_aretrieve_invokes_llm_when_pool_exceeds_budget():
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     obs = [
         _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0]) for i in range(8)
     ]
@@ -472,6 +473,7 @@ async def test_aretrieve_normalises_blank_query_texts_before_llm_rerank():
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     obs = [
         _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i) for i in range(8)
     ]
@@ -496,6 +498,7 @@ async def test_aretrieve_drops_hallucinated_ids_from_llm():
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     obs = [
         _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0]) for i in range(8)
     ]
@@ -520,6 +523,7 @@ async def test_aretrieve_tops_up_when_llm_returns_fewer_than_budget():
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     obs = [
         _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i)
         for i in range(8)
@@ -549,6 +553,7 @@ async def test_aretrieve_falls_back_to_coarse_on_llm_error():
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     obs = [
         _obs(f"o{i}", f"t{i}", embedding=[1.0, 0.0], score=10 - i)
         for i in range(8)
@@ -700,6 +705,7 @@ async def test_aload_signal_targets_carries_reflection_suppress_flag(tmp_path):
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     with patch("memory.facts.get_config_manager", return_value=cm):
         fs = FactStore()
         fs._config_manager = cm
@@ -774,6 +780,7 @@ async def test_aload_signal_targets_suppress_filter_applies_when_vectors_disable
     cm.get_model_api_config = MagicMock(return_value={
         "model": "fake", "base_url": "http://fake", "api_key": "sk-fake",
     })
+    cm.aget_model_api_config = AsyncMock(side_effect=lambda mt, **_: cm.get_model_api_config(mt))
     with patch("memory.facts.get_config_manager", return_value=cm):
         fs = FactStore()
         fs._config_manager = cm

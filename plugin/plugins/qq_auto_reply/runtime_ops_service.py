@@ -14,6 +14,28 @@ class QQRuntimeOpsService:
         self.plugin = plugin
 
     async def start_auto_reply(self):
+        housekeeping = getattr(self.plugin, "_session_housekeeping_task", None)
+        if housekeeping is None or housekeeping.done():
+            # 交互式 stop 会取消 housekeeping；重启必须把它拉起来，否则
+            # idle flush/attention decay 全部停摆直到进程重启。覆盖引用前
+            # 先读取旧任务的异常，避免"exception never retrieved"且让
+            # 失败可观测。
+            if housekeeping is not None and housekeeping.done():
+                if housekeeping.cancelled():
+                    pass
+                else:
+                    exc = housekeeping.exception()
+                    if exc is not None:
+                        self.plugin.logger.error(
+                            f"housekeeping 循环曾异常退出: {exc}"
+                        )
+            # 只登记"需要重建"，真正创建推迟到连接成功之后：连接失败时
+            # _running=False 且没有消息任务，后续 stop_auto_reply 走
+            # not_running 早退，永远不会取消它——idle flush / attention
+            # decay 会在"已停止"状态下继续跑。
+            needs_housekeeping = True
+        else:
+            needs_housekeeping = False
         if self.plugin._running:
             return Ok({"status": "already_running"})
         # 确保连接类型与当前配置一致
@@ -38,6 +60,10 @@ class QQRuntimeOpsService:
             self.plugin._startup_error = None
             self.plugin._running = True
             self.plugin._message_task = asyncio.create_task(self.plugin._process_messages())
+            if needs_housekeeping:
+                self.plugin._session_housekeeping_task = asyncio.create_task(
+                    self.plugin._session_housekeeping_loop()
+                )
             return Ok({"status": "started"})
         except Exception as e:
             self.plugin._emit_log("ERROR", f"启动失败: {e}")
@@ -62,6 +88,22 @@ class QQRuntimeOpsService:
             await self.plugin.attention_service.stop_decay_loop()
         if self.plugin.attention_gate_service:
             await self.plugin.attention_gate_service.stop_proactive_loop()
+        housekeeping = getattr(self.plugin, "_session_housekeeping_task", None)
+        if housekeeping:
+            # housekeeping 循环可能正处在 idle finalize 内：先取消并等它
+            # 退出，否则下面判定无 straggler、清锁表后，旧 finalizer 会与
+            # 重启后的新 handler 各持一把锁并发改写同一会话。被打断的
+            # settle 走 fail-closed（缓冲保留、下次重试）。
+            housekeeping.cancel()
+            try:
+                await housekeeping
+            except asyncio.CancelledError:
+                pass
+            except Exception as exc:
+                # 循环早先因普通异常死亡：await 会重抛——不能让它跳过
+                # 后续的 handler 取消 / 断连 / 锁表决策。
+                self.plugin.logger.error(f"housekeeping 循环异常退出: {exc}")
+            self.plugin._session_housekeeping_task = None
         if self.plugin._message_task:
             self.plugin._message_task.cancel()
             try:
@@ -85,7 +127,54 @@ class QQRuntimeOpsService:
             await self.plugin.qq_client.disconnect()
         if stop_napcat:
             await self.plugin.napcat_service.stop_managed_napcat()
-        self.plugin._session_locks.clear()
+        # 清锁表前 join 隐私关键的后台任务（开关转变结算 + prompt 变更
+        # discard，限 1s）：否则 stop→立刻 start 会给同一会话建新锁，旧
+        # 任务与新 handler 并发改写、甚至中途弹掉活跃会话。
+        gate = getattr(self.plugin, "attention_gate_service", None)
+        buffer_service = getattr(self.plugin, "reply_buffer_service", None)
+        buffer_tasks = []
+        if buffer_service is not None:
+            # 延迟投递不该活过 stop：client 已断开，任务醒来只能发送失败，
+            # 或在重启后把停机前的陈旧回复送/并进新运行。显式取消并定局
+            # （草稿保持未投递、解除游标屏障、清 pending 表），join 列表
+            # 仍等这些任务把 cancellation 走完。
+            for key in list(getattr(buffer_service, "_pending", {}) or {}):
+                task = buffer_service.cancel_pending(
+                    key,
+                    (getattr(self.plugin, "_user_sessions", {}) or {}).get(key),
+                )
+                if task is not None:
+                    buffer_tasks.append(task)
+        pending_tasks = (
+            list(getattr(self.plugin, "_group_memory_sync_tasks", ()) or ())
+            + list(getattr(self.plugin, "_prompt_change_discard_tasks", ()) or ())
+            + list(getattr(gate, "_digest_tasks", ()) or ())
+            + list(getattr(gate, "_retro_tasks", ()) or ())
+            + buffer_tasks
+        )
+        stragglers: set = set()
+        if pending_tasks:
+            # asyncio.wait 不取消未完成任务（wait_for(gather) 超时会取消，
+            # 等于把结算杀在半路）；straggler 继续跑完自己的锁临界区。
+            _done, stragglers = await asyncio.wait(pending_tasks, timeout=1.0)
+            for finished in _done:
+                # 消费异常：不取出的话失败静默（仅事件循环析构时告警）。
+                # 已取消的任务 exception() 会抛 CancelledError——先跳过。
+                if finished.cancelled():
+                    self.plugin.logger.warning("记忆同步任务被外部取消")
+                    continue
+                exc = finished.exception()
+                if exc is not None:
+                    self.plugin.logger.error(f"记忆同步任务异常结束: {exc}")
+        if stragglers:
+            # 有任务仍在锁内：不清锁表——清了之后新 handler 会为同一
+            # 会话铸新锁与旧任务并发。留旧表让新旧共用同一把锁。
+            self.plugin.logger.warning(
+                f"停止时仍有 {len(stragglers)} 个记忆同步任务未完成，"
+                f"保留会话锁表以维持隔离"
+            )
+        else:
+            self.plugin._session_locks.clear()
 
 
 class QQProactiveMessageService:

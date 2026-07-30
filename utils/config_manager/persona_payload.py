@@ -23,7 +23,6 @@ import re
 from copy import deepcopy
 
 from config.prompts.prompts_chara import get_lanlan_prompt, is_default_prompt
-from utils.tts.native_voice_registry import is_free_lanlan_app_route
 from utils.persona_presets import PERSONA_OVERRIDE_FIELDS
 from utils.voice_config import read_legacy_voice_id
 
@@ -114,6 +113,77 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
     if (core_cfg.get("coreApi") or core_cfg.get("CORE_API_TYPE")) != "free":
         return False
 
+    # 组装快照只读一次（offload 过的 aget），后面的 provisional 守卫、免费路由复查、
+    # overseas 判定全用这一份——既保证一份快照一判定，也让 provisional 谓词走纯内存
+    # 分支（它自读配置是同步 open()+json.load()，本函数的调用方全在事件循环上）。
+    try:
+        assembled_cfg = await config_manager.aget_core_config() or {}
+    except Exception:
+        logger.debug("[GeoIP] 读取组装后的核心配置失败，跳过本轮默认音色绑定", exc_info=True)
+        return False
+
+    # 区域判定还没落定时不要绑：国内绑 yui_cn、海外绑字面量 "yui"，两者不通用，而
+    # 本函数一旦写入非空 voice_id 就不会再覆盖——猜错了，稍后拿到的权威结论也纠正
+    # 不回来。等下一次（判定落定后）再绑，代价只是晚一轮。
+    try:
+        if config_manager._region_verdict_is_provisional(assembled_cfg):
+            logger.info("[GeoIP] 区域判定尚未落定，暂不绑定默认 YUI 音色，等落定后再绑")
+            return False
+    except Exception:
+        logger.debug("[GeoIP] 区域落定状态判断失败，跳过本轮默认音色绑定", exc_info=True)
+        return False
+
+    # 组装快照才是权威：调用方快照过了上面的免费门后，用户可能恰在这个 await 期间
+    # 把 coreApi 从 free 切到付费——不复查就会拿 overseas=False 给付费配置绑上
+    # free 专属的 yui_cn（写入非空后本函数不再纠正）。
+    if (assembled_cfg.get("coreApi") or assembled_cfg.get("CORE_API_TYPE")) != "free":
+        return False
+
+    # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
+    # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
+    #
+    # 区域结论直接问权威源，**不从 URL 反推**。从 URL 反推曾是这里的做法，也是它
+    # 出错的原因：两个调用方传进来的快照语义根本不同——保存路径传刚写盘的 raw 配置
+    # （CORE_URL 仍是 lanlan.tech），会话路径传更早组装的已改写快照。后者要命：Steam
+    # 临时判海外时快照已是 .app，而权威 IP 结论随后可能判大陆，照 URL 反推就会把
+    # "yui" 永久写进大陆用户的角色卡（本函数不覆盖非空 voice_id），而 free 与
+    # free_intl 两套目录不相交——这是「yui 必须配国外、国内音色必须配国内」那条不许
+    # 出意外的线。改问 _check_non_mainland 后，两个调用方拿到的是同一个结论。
+    #
+    # needs_region 那道门有两个作用：
+    #  - livestream 已派生掉全部免费端点的用户线路是确定的、不需要区域判定，而
+    #    _check_non_mainland 内部会 _ensure_ip_probe_started——不该为绑个音色把他们
+    #    的 IP 发给 ip-api.com（不变量 #2）。他们绑国内 free 音色，正确：派生出来的
+    #    就是 lanlan.tech 那套路径结构的等价物。
+    #  - 门放行时，上面的 provisional 守卫已保证 _region_cache 必已落定，所以这次
+    #    _check_non_mainland 是纯读缓存，不会真的起探测。
+    #
+    # 走 classmethod 而不是 config_manager 实例：这是个纯判据，从实例上取只会白白
+    # 要求每个调用方（含测试替身）都实现它。
+    from utils.config_manager import ConfigManager
+
+    # needs_region 这道门必须拿**组装后**的配置判（函数开头读的那份 assembled_cfg），
+    # 不能拿调用方传进来的那份：保存路径传的是持久化的 raw 配置，里面只有
+    # coreApi / assistApi 这类选择字段，压根没有 *_URL（URL 是 get_core_config 按
+    # profile 组装时才填的）。拿 raw 判会恒为 False，于是跳过区域判定、把**所有**
+    # 海外免费用户永久绑成大陆 yui_cn——正好是这个函数最不能出错的地方。
+    # provisional 守卫用的也是同一份组装配置，两边就此一致。
+    overseas = False
+    if ConfigManager._config_needs_region(assembled_cfg, ConfigManager._REGION_HOSTS_ADJUSTED):
+        try:
+            overseas = bool(config_manager._check_non_mainland())
+        except Exception:
+            overseas = False
+
+    yui_voice_id = "yui" if overseas else _get_default_yui_free_voice_id()
+    if not yui_voice_id:
+        return False
+
+    # 角色数据放到**最后**才读：load 与 save 之间隔的 await 越多，与并发角色编辑
+    # 互相覆盖（本函数是全量 load→save，last-writer-wins）的窗口越大。区域/配置
+    # 判定全部就绪后再 load，改写是纯内存操作、紧跟着 save，窗口缩到最小。彻底
+    # 消除竞态需要 characters 写路径统一的原子更新原语——所有 save_characters
+    # 调用点共有的问题，不在本函数单点修。
     characters = await config_manager.aload_characters()
     if not isinstance(characters, dict):
         return False
@@ -134,23 +204,6 @@ async def ensure_default_yui_voice_for_free_api(config_manager, core_cfg: dict |
         legacy_keys=("voice_id",),
     ))
     if current_voice_id:
-        return False
-
-    # 海外免费（free + *.lanlan.app）：默认音色是品牌 yui（free_intl 的 default_voice），
-    # 下发字面量 "yui"。国内免费（lanlan.tech）仍按语言绑定 free_voices 里的 yui 音色。
-    #
-    # 注意：update_core_config 传进来的 raw core_cfg 里 CORE_URL 还是 lanlan.tech，
-    # get_core_config() 才会按非大陆改写成 lanlan.app，直接判 URL 会漏判海外。
-    # 故 URL 命中 lanlan.app 走快路，否则用 _check_non_mainland 兜底判海外。
-    core_url = str((core_cfg or {}).get("CORE_URL") or "")
-    overseas = is_free_lanlan_app_route("free", core_url)
-    if not overseas:
-        try:
-            overseas = bool(config_manager._check_non_mainland())
-        except Exception:
-            overseas = False
-    yui_voice_id = "yui" if overseas else _get_default_yui_free_voice_id()
-    if not yui_voice_id:
         return False
 
     changed = set_reserved(current_character, "voice_id", yui_voice_id)

@@ -1,5 +1,5 @@
 /**
- * app-screen.js — Screen sharing, video streaming, and Electron source selector
+ * app-screen.js — Screen sharing, video streaming, and desktop source selector
  *
  * Extracted from the monolithic app.js.
  * Follows the IIFE + window global pattern used by all app-*.js modules.
@@ -19,6 +19,20 @@
     const C = window.appConst;
     const safeT = window.safeT;
     const isMobile = window.appUtils.isMobile;
+
+    function resolveDesktopCaptureProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
+    function isNativeFrameProvider(provider) {
+        return !!(provider && provider.nativeFrameCapture
+            && typeof provider.captureSourceAsDataUrl === 'function');
+    }
+
+    var nativeCaptureGeneration = 0;
+    var activeNativeCaptureSourceId = null;
 
     // ======================== DOM refs (lazy, filled on first use) ========================
     function dom(id) {
@@ -49,8 +63,9 @@
      */
     function pushSelectedSourceToMain(sourceId) {
         try {
-            if (window.electronDesktopCapturer && typeof window.electronDesktopCapturer.setSelectedSource === 'function') {
-                Promise.resolve(window.electronDesktopCapturer.setSelectedSource(sourceId || null))
+            var provider = resolveDesktopCaptureProvider();
+            if (provider && typeof provider.setSelectedSource === 'function') {
+                Promise.resolve(provider.setSelectedSource(sourceId || null))
                     .catch(function (e) { console.warn('[屏幕源] 同步选中源到主进程失败:', e); });
             }
         } catch (e) {
@@ -119,34 +134,29 @@
                 updateScreenSourceListSelection();
             }
         } catch (_) { }
-        // 源切换时释放本窗口缓存的旧流（若有），强制下次用新源
-        if (S.screenCaptureStream && oldId !== newId) {
+        // 源切换时释放本窗口缓存的旧流或原生帧发送循环，强制下次用新源。
+        if ((S.screenCaptureStream || activeNativeCaptureSourceId) && oldId !== newId) {
             // 先停掉可能仍在跑的发送循环，否则 startScreenVideoStreaming 创建的临时
             // <video> 会保留在旧流上，interval 继续向 WebSocket 推送冻结帧；tracks 停止
             // 后 UI 和后端都会收到"还在分享但画面不动"的矛盾状态。
             stopScreening();
-            try {
-                if (typeof S.screenCaptureStream.getTracks === 'function') {
-                    S.screenCaptureStream.getTracks().forEach(function (track) {
-                        try { track.stop(); } catch (_) { }
-                    });
-                }
-            } catch (_) { }
+            if (S.screenCaptureStream) {
+                try {
+                    if (typeof S.screenCaptureStream.getTracks === 'function') {
+                        S.screenCaptureStream.getTracks().forEach(function (track) {
+                            try { track.stop(); } catch (_) { }
+                        });
+                    }
+                } catch (_) { }
+            }
             S.screenCaptureStream = null;
             S.screenCaptureStreamLastUsed = null;
             if (S.screenCaptureStreamIdleTimer) {
                 clearTimeout(S.screenCaptureStreamIdleTimer);
                 S.screenCaptureStreamIdleTimer = null;
             }
-            // 若本窗口正显示"分享中"状态，按钮/悬浮按钮需要同步回未分享态，
-            // 否则用户看到的是激活样式但实际已经停止推流。
-            try {
-                var sbtn = screenButton();
-                if (sbtn && sbtn.classList.contains('active')) {
-                    sbtn.classList.remove('active');
-                    syncFloatingScreenButtonState(false);
-                }
-            } catch (_) { }
+            // 旧源已停止推流，所有分享控件也必须回到未分享状态。
+            resetScreenSharingControls();
         }
         console.log('[屏幕源] 从其它窗口同步了新选择:', newId);
         // 不要再写 localStorage 或 pushSelectedSourceToMain —— 源窗口已经做过了，
@@ -351,15 +361,18 @@
             S.screenCaptureStreamLastUsed = null;
         }
 
-        // 2. Electron selectedScreenSourceId → getUserMedia(chromeMediaSource)
+        // 2. Electron selectedScreenSourceId → getUserMedia(chromeMediaSource).
+        // Native-frame providers such as Tauri do not expose a MediaStream and
+        // must skip this Chromium-only branch.
         var selectedSourceId = S.selectedScreenSourceId;
-        if (selectedSourceId && window.electronDesktopCapturer) {
+        var desktopProvider = resolveDesktopCaptureProvider();
+        if (selectedSourceId && desktopProvider && !isNativeFrameProvider(desktopProvider)) {
             try {
                 var timedOut = false;
                 var newStream = await Promise.race([
                     (async function () {
                         // 验证源存在
-                        var currentSources = await window.electronDesktopCapturer.getSources({
+                        var currentSources = await desktopProvider.getSources({
                             types: ['window', 'screen'],
                             thumbnailSize: { width: 1, height: 1 }
                         });
@@ -433,8 +446,9 @@
             }
         }
 
-        // 3. getDisplayMedia（仅 allowPrompt && !screenCaptureAutoPromptFailed）
-        if (opts.allowPrompt && !S.screenCaptureAutoPromptFailed &&
+        // 3. getDisplayMedia（仅 web/Electron 流 provider；Tauri 原生帧不支持 Chromium picker）
+        if (opts.allowPrompt && !isNativeFrameProvider(desktopProvider)
+            && !S.screenCaptureAutoPromptFailed &&
             navigator.mediaDevices && navigator.mediaDevices.getDisplayMedia) {
             try {
                 var displayStream = await navigator.mediaDevices.getDisplayMedia({
@@ -632,8 +646,11 @@
 
     // ======================== stopScreening ========================
     function stopScreening() {
+        nativeCaptureGeneration += 1;
+        activeNativeCaptureSourceId = null;
         if (S.videoSenderInterval) {
             clearInterval(S.videoSenderInterval);
+            clearTimeout(S.videoSenderInterval);
             S.videoSenderInterval = null;
         }
     }
@@ -666,22 +683,43 @@
     }
     mod.syncFloatingScreenButtonState = syncFloatingScreenButtonState;
 
+    function resetScreenSharingControls() {
+        var mic = micButton();
+        var mute = muteButton();
+        var screen = screenButton();
+        var stop = stopButton();
+        var reset = resetSessionButton();
+
+        if (S.isRecording) {
+            if (mic) mic.disabled = true;
+            if (mute) mute.disabled = false;
+            if (screen) screen.disabled = false;
+            if (stop) stop.disabled = true;
+            if (reset) reset.disabled = false;
+        }
+        if (screen) screen.classList.remove('active');
+        syncFloatingScreenButtonState(false);
+    }
+
     // ======================== buildStreamDataMessage ========================
     /**
      * 构造屏幕/相机分享的 stream_data 消息，并在适用时附带 Avatar 位置元数据。
      * 与主动搭话截图（app-proactive.js）口径保持一致：仅桌面/全屏分享叠加注解，
      * 窗口分享 / 移动相机不含 Avatar（captureType 为 null → 不附带）。
      */
-    function buildStreamDataMessage(dataUrl, input_type) {
+    function buildStreamDataMessage(dataUrl, input_type, sourceId) {
         var msg = { action: 'stream_data', data: dataUrl, input_type: input_type };
         // 仅屏幕分享可能包含 Avatar；移动相机拍的是现实画面，无 Avatar
         if (input_type === 'screen') {
-            // 有前端流时按流/源判定；无前端流即 pyautogui 全屏兜底（后端截整屏），
+            // 原生帧按显式源判定；有前端流时按流/已选源判定。
+            // 两者都没有即 pyautogui 全屏兜底（后端截整屏），
             // 此时忽略可能残留的 selectedScreenSourceId（窗口源捕获失败才会进兜底，
             // 若仍读旧的 window:* 源会被判为 null 而漏标）
-            var captureType = S.screenCaptureStream
-                ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
-                : 'screen';
+            var captureType = sourceId
+                ? detectScreenshotCaptureType(null, sourceId)
+                : (S.screenCaptureStream
+                    ? detectScreenshotCaptureType(S.screenCaptureStream, S.selectedScreenSourceId)
+                    : 'screen');
             var avatarPos = getAvatarScreenPosition(captureType);
             if (avatarPos) {
                 msg.avatar_position = avatarPos;
@@ -773,6 +811,115 @@
     }
     mod.startScreenVideoStreaming = startScreenVideoStreaming;
 
+    async function startNativeScreenStreaming(provider, sourceId, inputType) {
+        stopScreening();
+        var generation = nativeCaptureGeneration;
+        var captureSocket = S.socket;
+        activeNativeCaptureSourceId = sourceId;
+
+        function isCurrentNativeCapture() {
+            return generation === nativeCaptureGeneration
+                && activeNativeCaptureSourceId === sourceId;
+        }
+
+        function isCaptureSocketOpen() {
+            return !!(captureSocket
+                && captureSocket === S.socket
+                && captureSocket.readyState === WebSocket.OPEN);
+        }
+
+        async function captureAndSend() {
+            if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
+                return false;
+            }
+            if (await stopLiveVisionStreamIfBlocked(inputType)) {
+                return false;
+            }
+            if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
+                return false;
+            }
+            var result = await window.captureDesktopSourceWithTimeout(
+                provider,
+                'captureSourceAsDataUrl',
+                sourceId,
+                {
+                    maxWidth: C.MAX_SCREENSHOT_WIDTH || 1280,
+                    quality: 80
+                }
+            );
+            // stop/restart/source-switch may happen while native capture awaits.
+            // Never let that obsolete frame reach the replacement session.
+            if (!isCurrentNativeCapture()) return false;
+            if (!isCaptureSocketOpen()) {
+                await stopScreenSharing(true);
+                return false;
+            }
+            if (!result || !result.success || !result.dataUrl) {
+                var errorMessage = result && result.error ? result.error : 'Screen capture failed';
+                if (errorMessage === 'Source not found') {
+                    clearSelectedScreenSource('原生屏幕捕获源已失效');
+                }
+                throw new Error(errorMessage);
+            }
+            if (canSendLiveVisionStreamFrame(inputType) && isCaptureSocketOpen()) {
+                captureSocket.send(JSON.stringify(
+                    buildStreamDataMessage(result.dataUrl, inputType, sourceId)
+                ));
+            } else if (isCurrentNativeCapture()) {
+                stopScreening();
+                return false;
+            }
+            return true;
+        }
+
+        // Wait for the first frame so permission and stale-source failures are
+        // reported by the user-initiated start action.
+        var firstFrameSent;
+        try {
+            firstFrameSent = await captureAndSend();
+        } catch (error) {
+            if (isCurrentNativeCapture()) {
+                stopScreening();
+            }
+            throw error;
+        }
+        if (!firstFrameSent) {
+            return false;
+        }
+
+        async function scheduleNextFrame() {
+            if (generation !== nativeCaptureGeneration) return;
+            try {
+                var shouldContinue = await captureAndSend();
+                if (!shouldContinue) return;
+            } catch (error) {
+                console.warn('[屏幕源] 原生帧捕获失败:', error);
+                if (generation === nativeCaptureGeneration) {
+                    await stopScreenSharing(true);
+                    window.showStatusToast(
+                        safeT(
+                            'app.screenSource.captureFailed',
+                            '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                        ),
+                        5000
+                    );
+                }
+                return;
+            }
+            if (generation === nativeCaptureGeneration) {
+                S.videoSenderInterval = setTimeout(scheduleNextFrame, 1000);
+            }
+        }
+
+        S.videoSenderInterval = setTimeout(scheduleNextFrame, 1000);
+        return true;
+    }
+    mod.startNativeScreenStreaming = startNativeScreenStreaming;
+
     // ======================== getMobileCameraStream ========================
     async function getMobileCameraStream() {
         var makeConstraints = function (facing) {
@@ -820,6 +967,8 @@
         }
 
         try {
+            var nativeCapture = null;
+
             // 初始化音频播放上下文
             if (window.showCurrentModel) await window.showCurrentModel(); // 智能显示当前模型
             if (!S.audioPlayerContext) {
@@ -845,13 +994,30 @@
                 } else {
 
                     // Desktop/laptop: capture the user's chosen screen / window / tab.
-                    // 检查是否有选中的特定屏幕源（仅Electron环境）
                     var selectedSourceId = window.getSelectedScreenSourceId ? window.getSelectedScreenSourceId() : null;
+                    var desktopProvider = resolveDesktopCaptureProvider();
 
-                    if (selectedSourceId && window.electronDesktopCapturer) {
+                    // Native-frame shells do not expose Chromium's picker.
+                    // Default to the first monitor when no source is persisted.
+                    if (!selectedSourceId && isNativeFrameProvider(desktopProvider)) {
+                        try {
+                            var initialScreens = await desktopProvider.getSources({ types: ['screen'] });
+                            if (initialScreens && initialScreens.length > 0) {
+                                selectedSourceId = initialScreens[0].id;
+                                S.selectedScreenSourceId = selectedSourceId;
+                                try { localStorage.setItem('selectedScreenSourceId', selectedSourceId); } catch (e) { }
+                                updateScreenSourceListSelection();
+                            }
+                        } catch (initialSourceError) {
+                            console.warn('[屏幕源] 无法取得原生默认屏幕源:', initialSourceError);
+                        }
+                    }
+
+                    if (selectedSourceId && desktopProvider
+                        && typeof desktopProvider.getSources === 'function') {
                         // 验证选中的源是否仍然存在（窗口可能已关闭）
                         try {
-                            var currentSources = await window.electronDesktopCapturer.getSources({
+                            var currentSources = await desktopProvider.getSources({
                                 types: ['window', 'screen'],
                                 thumbnailSize: { width: 1, height: 1 }
                             });
@@ -884,8 +1050,14 @@
                         }
                     }
 
-                    if (selectedSourceId && window.electronDesktopCapturer) {
-                        // 在Electron中使用选中的特定屏幕/窗口源
+                    if (selectedSourceId && isNativeFrameProvider(desktopProvider)) {
+                        nativeCapture = {
+                            provider: desktopProvider,
+                            sourceId: selectedSourceId
+                        };
+                        console.log('[屏幕源] 使用原生帧捕获源:', selectedSourceId);
+                    } else if (selectedSourceId && desktopProvider) {
+                        // Electron uses the selected Chromium desktop source.
                         try {
                             S.screenCaptureStream = await navigator.mediaDevices.getUserMedia({
                                 audio: false,
@@ -903,7 +1075,7 @@
 
                             // 回退策略1: 尝试其他全屏源（chromeMediaSource 方式）
                             try {
-                                var fallbackSources = await window.electronDesktopCapturer.getSources({
+                                var fallbackSources = await desktopProvider.getSources({
                                     types: ['screen'],
                                     thumbnailSize: { width: 1, height: 1 }
                                 });
@@ -955,7 +1127,7 @@
                         if (S.screenCaptureStream) {
                             console.log(window.t('console.screenShareUsingSource'), selectedSourceId);
                         }
-                    } else {
+                    } else if (!isNativeFrameProvider(desktopProvider)) {
                         // 使用标准的getDisplayMedia（显示系统选择器）
                         try {
                             S.screenCaptureStream = await navigator.mediaDevices.getDisplayMedia({
@@ -974,7 +1146,16 @@
                 }
             }
 
-            if (S.screenCaptureStream) {
+            if (nativeCapture) {
+                var nativeStreamStarted = await startNativeScreenStreaming(
+                    nativeCapture.provider,
+                    nativeCapture.sourceId,
+                    'screen'
+                );
+                if (!nativeStreamStarted) {
+                    return;
+                }
+            } else if (S.screenCaptureStream) {
                 // 用户手势成功获取了流，重置自动弹窗失败标记
                 S.screenCaptureAutoPromptFailed = false;
                 // 正常流模式
@@ -1088,6 +1269,12 @@
                         : '摄像头被其它应用占用？关闭扫码/拍照应用后重试';
                     break;
             }
+            if (!hint && isDesktop && isNativeFrameProvider(resolveDesktopCaptureProvider())) {
+                hint = safeT(
+                    'app.screenSource.captureFailed',
+                    '屏幕捕获已停止，请检查系统权限或重新选择来源'
+                );
+            }
             window.showStatusToast(err.name + ': ' + err.message + (hint ? '\n' + hint : ''), 5000);
         }
     }
@@ -1134,22 +1321,8 @@
             console.log('[屏幕分享] 主动视觉仍活跃，保留缓存流');
         }
 
-        // 仅在主动录像/语音连接分享时更新 UI 状态，防止闲置释放导致 UI 错误锁定
-        if (S.isRecording) {
-            micButton().disabled = true;
-            muteButton().disabled = false;
-            screenButton().disabled = false;
-            stopButton().disabled = true;
-            resetSessionButton().disabled = false;
-
-            // 移除active类
-            screenButton().classList.remove('active');
-            syncFloatingScreenButtonState(false);
-        } else {
-            // 即使未录音，也确保按钮重置为正常状态
-            screenButton().classList.remove('active');
-            syncFloatingScreenButtonState(false);
-        }
+        // 仅在主动录像/语音连接分享时更新禁用状态；任何情况下都移除分享样式。
+        resetScreenSharingControls();
 
         // 停止手动屏幕共享后，如果满足条件则恢复语音期间主动视觉定时
         try {
@@ -1270,7 +1443,12 @@
 
         // 智能刷新：如果当前正在屏幕分享中，自动重启以应用新的屏幕源
         var stopBtn = document.getElementById('stopButton');
-        var isScreenSharingActive = stopBtn && !stopBtn.disabled;
+        // Native first-frame startup has already claimed a source, but the Stop
+        // button is enabled only after that awaited frame returns. Treat this
+        // pending interval as active so switching sources invalidates the old
+        // generation before its late frame can be accepted.
+        var isNativeCaptureActive = activeNativeCaptureSourceId !== null;
+        var isScreenSharingActive = isNativeCaptureActive || !!(stopBtn && !stopBtn.disabled);
 
         if (isScreenSharingActive && window.switchScreenSharing) {
             console.log('[屏幕源] 检测到正在屏幕分享中，将自动重启以应用新源');
@@ -1287,8 +1465,16 @@
     // ======================== updateScreenSourceListSelection ========================
     function updateScreenSourceListSelection() {
         var popupIds = ['live2d-popup-screen', 'vrm-popup-screen', 'mmd-popup-screen'];
+        var screenPopups = [];
         popupIds.forEach(function (popupId) {
             var screenPopup = document.getElementById(popupId);
+            if (screenPopup) screenPopups.push(screenPopup);
+        });
+        document.querySelectorAll('.neko-mic-popup-screen-sources').forEach(function (screenPopup) {
+            screenPopups.push(screenPopup);
+        });
+
+        screenPopups.forEach(function (screenPopup) {
             if (!screenPopup) return;
 
             var options = screenPopup.querySelectorAll('.screen-source-option');
@@ -1311,15 +1497,26 @@
     mod.updateScreenSourceListSelection = updateScreenSourceListSelection;
 
     // ======================== renderFloatingScreenSourceList ========================
-    window.renderFloatingScreenSourceList = async function () {
-        var screenPopup = document.getElementById('live2d-popup-screen');
+    window.renderFloatingScreenSourceList = async function (popupArg, renderOptions) {
+        var screenPopup = popupArg || document.getElementById('live2d-popup-screen');
+        renderOptions = renderOptions || {};
         if (!screenPopup) {
             console.warn('[屏幕源] 弹出框不存在');
             return false;
         }
 
-        // 检查是否在Electron环境
-        if (!window.electronDesktopCapturer || !window.electronDesktopCapturer.getSources) {
+        var popupId = screenPopup.id;
+        var requireVisible = renderOptions.requireVisible !== false;
+        var isPopupAvailable = function () {
+            if (!screenPopup || !screenPopup.isConnected) return false;
+            if (popupId && document.getElementById(popupId) !== screenPopup) return false;
+            if (!requireVisible) return true;
+            return screenPopup.style.display === 'flex' && screenPopup.style.opacity !== '0';
+        };
+        if (!isPopupAvailable()) return false;
+
+        var desktopProvider = resolveDesktopCaptureProvider();
+        if (!desktopProvider || typeof desktopProvider.getSources !== 'function') {
             screenPopup.innerHTML = '';
             var notAvailableItem = document.createElement('div');
             notAvailableItem.textContent = window.t ? window.t('app.screenSource.notAvailable') : '仅在桌面版可用';
@@ -1343,10 +1540,12 @@
             screenPopup.appendChild(loadingItem);
 
             // 获取屏幕源
-            var sources = await window.electronDesktopCapturer.getSources({
+            var sources = await desktopProvider.getSources({
                 types: ['window', 'screen'],
                 thumbnailSize: { width: 160, height: 100 }
             });
+
+            if (!isPopupAvailable()) return false;
 
             screenPopup.innerHTML = '';
 
@@ -1543,6 +1742,7 @@
 
             return true;
         } catch (error) {
+            if (!isPopupAvailable()) return false;
             console.error('[屏幕源] 获取屏幕源失败:', error);
             screenPopup.innerHTML = '';
             var errorItem = document.createElement('div');

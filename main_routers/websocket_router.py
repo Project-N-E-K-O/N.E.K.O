@@ -28,8 +28,11 @@ same no-trailing-slash rule as HTTP routes. See
 enforced by ``scripts/check_api_trailing_slash.py``.
 """
 
+import array
 import json
 import math
+import struct
+import sys
 import uuid
 import asyncio
 import time
@@ -49,6 +52,53 @@ from utils.icebreaker_route_state import (
     get_active_icebreaker_route_session_id,
 )
 
+
+_VOICE_BINARY_MAGIC = b"NEKO"
+_VOICE_BINARY_HEADER_BYTES = 8
+# The browser worklet emits one fixed buffer per frame: 480 samples at 48 kHz
+# (10 ms) or 512 at 16 kHz (32 ms) -- see ``bufferSize`` in
+# static/audio-processor.js and the 1:1 wrap in static/app/app-audio-capture.js.
+# The resampling branch is bounded by the same buffer size, so 120 ms leaves
+# ~4x headroom over the binding 16 kHz frame. It is a drift gate, not a DoS
+# control: the sibling JSON branch below carries the same materialization and
+# is bounded separately (MIC_PCM_FRAME_TOO_LONG in the Core bridge).
+_VOICE_BINARY_MAX_DURATION_MS = 120
+
+
+def _decode_binary_audio_frame(payload: bytes) -> dict[str, object]:
+    """Decode and validate a frontend binary PCM frame."""
+
+    if len(payload) <= _VOICE_BINARY_HEADER_BYTES:
+        raise ValueError("VOICE_BINARY_FRAME_INVALID: frame is too short")
+    magic, sample_rate_hz = struct.unpack_from("<4sI", payload)
+    pcm = payload[_VOICE_BINARY_HEADER_BYTES:]
+    if (
+        magic != _VOICE_BINARY_MAGIC
+        or sample_rate_hz not in {16_000, 48_000}
+        or len(pcm) % 2
+    ):
+        raise ValueError("VOICE_BINARY_FRAME_INVALID: invalid header or PCM")
+    max_pcm_bytes = sample_rate_hz * 2 * _VOICE_BINARY_MAX_DURATION_MS // 1_000
+    if len(pcm) > max_pcm_bytes:
+        raise ValueError("VOICE_BINARY_FRAME_INVALID: frame is too large")
+    # The int-list materialization cannot be deferred past this point: the
+    # Core ASR bridge's lease check runs downstream of stream_data and its
+    # consumers require ``data`` to be a real ``list`` of PCM16 ints (see
+    # main_logic/core/asr_runtime.py _QueuedMicFrame.from_message and the
+    # hot-swap repack). array('h').tolist() builds the identical list ~20%
+    # cheaper than list(struct.unpack(...)) for the worst-case 48k-sample
+    # frame; the wire format is little-endian, so byteswap on big-endian.
+    samples_array = array.array("h", pcm)
+    if sys.byteorder == "big":
+        samples_array.byteswap()
+    samples = samples_array.tolist()
+    return {
+        "action": "stream_data",
+        "input_type": "audio",
+        "sample_rate_hz": sample_rate_hz,
+        "data": samples,
+    }
+
 router = APIRouter(tags=["websocket"])
 logger = get_module_logger(__name__, "Main")
 
@@ -57,6 +107,12 @@ _lock = asyncio.Lock()
 
 # 防止 fire-and-forget 任务被 Python 3.11+ GC 回收
 _ws_bg_tasks: set = set()
+# A character can have more than one WebSocket at a time (for example the
+# main page and /chat_full).  Each one sends its own greeting_check, so the
+# router must coalesce the *scheduled* greeting before the core state machine
+# is reached.  The state machine only protects an in-progress delivery; by
+# then two tasks may already have independently completed their gap checks.
+_greeting_tasks: dict[str, asyncio.Task] = {}
 _SESSION_INPUT_TYPES = frozenset({"audio", "screen", "camera", "text", "avatar_drop_image", "user_image"})
 _TEXT_SESSION_INPUT_TYPES = frozenset({"text", "avatar_drop_image", "user_image"})
 _ORDERED_STREAM_INPUT_TYPES = frozenset({"audio", "avatar_drop_image", "user_image"})
@@ -72,6 +128,117 @@ def _fire_task(coro):
     _ws_bg_tasks.add(task)
     task.add_done_callback(_ws_bg_tasks.discard)
     return task
+
+
+def _is_voice_path_message(message: dict) -> bool:
+    """True for messages gated by the voice connection identity.
+
+    Exactly the message classes MicLease owns: lease control events, PCM
+    (JSON stream_data with audio input_type, or a decoded binary frame), and
+    the recorder's own ``pause_session`` stop. Everything else — including an
+    audio-mode start_session — stays on the newest-socket-wins global session
+    identity.
+
+    ``pause_session`` is here because it is the tail of ``stopRecording()``:
+    the frontend emits the lease release and then the pause from the SAME
+    socket. Classifying only the first half as voice-path left the second half
+    to the global-identity check, which reads a superseded recorder as a
+    character switch — closing the socket whose microphone the user just
+    stopped, and losing the ``end_session`` the pause was carrying. The
+    server-initiated teardowns dodge this with ``notifyServer: false``
+    (app-websocket.js), but an ordinary user-initiated stop cannot.
+    """
+    action = message.get("action")
+    if action in {"voice_input_control", "pause_session"}:
+        return True
+    return action == "stream_data" and message.get("input_type") == "audio"
+
+
+def _stamp_user_input_ingress(message: dict) -> dict:
+    """Stamp genuine user input before fire-and-forget task dispatch."""
+    if (
+        message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES
+        and message.get("action") != "avatar_interaction"
+    ):
+        return message
+    # This is a client trust boundary: never preserve a JSON-supplied private
+    # timestamp. A future-dated value would suppress idle/proactive behavior.
+    # Downstream internal dispatch preserves this server-owned stamp.
+    return {
+        **message,
+        "_user_input_ingress_time": time.time(),
+    }
+
+
+def _reserve_avatar_interaction_ingress(
+    manager,
+    message: dict,
+    *,
+    lanlan_name: str,
+) -> bool:
+    """Keep defensive ingress failures inside the current WS message."""
+    try:
+        return bool(manager.note_avatar_interaction_ingress(message))
+    except Exception as exc:
+        logger.warning(
+            "[%s] note_avatar_interaction_ingress failed: %s",
+            lanlan_name,
+            exc,
+        )
+        return False
+
+
+def _record_stream_engagement_ingress(
+    manager,
+    message: dict,
+    *,
+    lanlan_name: str,
+) -> bool:
+    """Expose genuine one-shot text/image engagement before stream routing."""
+    if message.get("input_type") not in _TEXT_SESSION_INPUT_TYPES:
+        return False
+    try:
+        return bool(manager.note_stream_input_ingress(message))
+    except Exception as exc:
+        logger.warning(
+            "[%s] text/image ingress engagement failed: %s",
+            lanlan_name,
+            exc,
+        )
+        return False
+
+
+def _schedule_greeting_task(lanlan_name: str, kind: str, coro_factory) -> bool:
+    """Start at most one greeting-like task per character at a time.
+
+    All greeting sources share this gate: ordinary reconnect/switch greetings,
+    first-appearance greetings, and cat-return greetings.  Passing a factory
+    rather than a ready coroutine is important: a coalesced request must not
+    construct an unawaited coroutine merely to discard it.
+    """
+    existing = _greeting_tasks.get(lanlan_name)
+    if existing is not None and not existing.done():
+        logger.info(
+            "[%s] %s greeting request coalesced: another greeting task is in flight",
+            lanlan_name,
+            kind,
+        )
+        return False
+
+    task = _fire_task(coro_factory())
+    # Unit-test task shims can intentionally return None after closing the
+    # coroutine.  Production _fire_task always returns asyncio.Task.
+    if task is None:
+        return True
+
+    _greeting_tasks[lanlan_name] = task
+
+    def _clear_if_current(completed_task):
+        if _greeting_tasks.get(lanlan_name) is completed_task:
+            _greeting_tasks.pop(lanlan_name, None)
+
+    task.add_done_callback(_clear_if_current)
+    return True
 
 
 def _normalize_cat_greeting_check(message: dict) -> tuple[float, str, bool, dict | None]:
@@ -149,6 +316,15 @@ _ws_disconnect_time: dict[str, float] = {}
 # greeting_check 是不是"真·新会话"：并发开第二个窗口时不能算新会话（否则会重置
 # 主动搭话预算被刷新/多窗口 farm）。单事件循环内 inc/dec 无 await 间隙，天然原子。
 _ws_active_count: dict[str, int] = {}
+# Per-character registry of the socket that last claimed the manager-wide
+# voice connection identity: lanlan_name -> (session uuid, websocket). Used
+# at disconnect time so a departing current socket can hand the global
+# identity (and the manager websocket) back to a still-open recording socket
+# instead of tearing the shared session down under it. The owning socket
+# removes its own entry in its finally block, so an entry can never outlive
+# its socket; entries are additionally validated against the manager's
+# _voice_lease_connection_id before any handover.
+_voice_connection_sockets: dict[str, tuple[uuid.UUID, WebSocket]] = {}
 
 # ---- Telemetry helpers ----
 
@@ -302,6 +478,187 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
     mgr.websocket = websocket
     logger.info(f"✅ 已设置 {lanlan_name} 的WebSocket连接")
 
+    # Engagement-deferred voice-input claim. Claiming the manager-wide voice
+    # connection identity at accept time would let a second socket for the
+    # same character (the separate chat window, or a reconnect overlap) kill
+    # an ongoing recording merely by opening: _begin_voice_input_connection
+    # resets the lease owner to "none", drops queued PCM and suppresses
+    # ingress. Instead the identity is claimed only when THIS socket first
+    # engages voice input (voice_input_control — incl. the lease_sync the
+    # frontend force-sends on open, unless it is stamped engaged: false as
+    # a passive idle snapshot —, an audio-mode start_session, or audio
+    # stream_data / a binary PCM frame). Until then the previous voice
+    # socket's session continues undisturbed. Once a newer socket engages,
+    # the takeover semantics are unchanged: newest engaging connection wins
+    # and the superseded socket is closed on its next message by the
+    # session-id check below. The two identities are deliberately separate:
+    # the global session_id is the NON-VOICE identity (text sessions, UI
+    # actions — newest socket always wins those), while voice-path messages
+    # are gated against the voice connection identity, so a socket that lost
+    # session_id but still holds the voice claim keeps its recording alive.
+    voice_input_claimed = False
+
+    def _claim_voice_input_connection() -> None:
+        nonlocal voice_input_claimed
+        if voice_input_claimed:
+            return
+        voice_input_claimed = True
+        begin_voice_input = getattr(
+            session_manager[lanlan_name],
+            "_begin_voice_input_connection",
+            None,
+        )
+        if callable(begin_voice_input):
+            begin_voice_input(str(this_session_id))
+            _voice_connection_sockets[lanlan_name] = (this_session_id, websocket)
+            # Hand the socket to the manager too. mgr.websocket is reassigned
+            # to every newly accepted socket, so it is the DISPLAY plane; the
+            # microphone control plane (lifecycle/blocked/lease-resync notices,
+            # and a text session_started) has to follow the lease instead, or a
+            # recorder superseded by a newer chat window never hears that its
+            # route died and keeps the hardware mic open.
+            set_voice_ws = getattr(
+                session_manager[lanlan_name],
+                "_set_voice_input_websocket",
+                None,
+            )
+            if callable(set_voice_ws):
+                set_voice_ws(str(this_session_id), websocket)
+
+    def _owns_voice_connection() -> bool:
+        """True while this socket still holds the manager voice identity.
+
+        Requires both that THIS socket engaged voice input and that no newer
+        socket has re-claimed the identity since (a takeover moves
+        _voice_lease_connection_id, immediately failing this check).
+        Managers without the MicLease mixin never grant ownership.
+        """
+        if not voice_input_claimed:
+            return False
+        lease_connection_id = getattr(
+            session_manager[lanlan_name],
+            "_voice_lease_connection_id",
+            None,
+        )
+        return lease_connection_id == str(this_session_id)
+
+    def _voice_identity_vacated() -> bool:
+        """True when this socket held voice and the lease is now unowned.
+
+        Distinct from losing the identity to a NEWER claim, where
+        newest-wins and closing this socket is the intended behaviour: here
+        the lease id is empty because the backend revoked it on purpose.
+        """
+        if not voice_input_claimed:
+            return False
+        lease_connection_id = getattr(
+            session_manager[lanlan_name],
+            "_voice_lease_connection_id",
+            None,
+        )
+        return lease_connection_id == ""
+
+    async def _dispatch_voice_message_while_superseded(message: dict) -> None:
+        """Dispatch one voice-path message for the superseded voice socket.
+
+        Deliberately narrower than the main dispatch loop: no engagement
+        claim, no ingress stamping, no avatar-position writes and no manager
+        state that belongs to the newer session_id owner — only MicLease
+        control, PCM, and the recorder's own stop keep flowing.
+
+        The stop is the one global write here, and deliberately so: the live
+        session is the audio session THIS socket's microphone feeds, so ending
+        it on the owner's stop is exactly the non-superseded behaviour. A
+        newer socket that started its own text session would have revoked this
+        lease, which routes the same message to the vacated-identity drop
+        instead of here — but NOT promptly enough to rely on alone; see the
+        input_mode fence below.
+        """
+        voice_mgr = session_manager[lanlan_name]
+        if message.get("action") == "pause_session":
+            # Codex P2. Lease ownership alone does not prove the live session is
+            # still ours. A newer socket's text start installs ``self.session``
+            # (lifecycle.py start_session) well BEFORE
+            # _start_independent_asr_if_enabled revokes this lease, so a pause
+            # arriving inside that window still satisfies
+            # _owns_voice_connection() and would fire an UNGATED end_session()
+            # against the text session that was just installed — the exact
+            # CHARACTER_LEFT teardown 7b56afa9 removed from the frontend.
+            #
+            # ``input_mode`` is the signal that moves early enough to close it:
+            # start_session sets it in its first prepare phase, ahead of both
+            # the session install and the revoke. Refusing to CALL end_session
+            # matters more than any argument to it -- the call bumps
+            # _user_session_abandon_epoch before its own stale-session guard
+            # runs, and that bump alone can make an in-flight cross-mode restart
+            # consider itself abandoned.
+            #
+            # Cost of the fence when it misfires (a text start that set the mode
+            # and then failed): this recorder's audio session lingers to its
+            # silence timeout instead of ending now. Strictly better than
+            # tearing down a session that is not ours.
+            if str(getattr(voice_mgr, "input_mode", "audio") or "audio").lower() != "audio":
+                logger.info(
+                    "[%s] superseded recorder pause dropped: the live session is no longer audio",
+                    lanlan_name,
+                )
+                return
+            voice_mgr.active_session_is_idle = True
+            # expected_session pins the identity for the gap between this check
+            # and the fired task actually running. getattr-guarded like the rest
+            # of this helper: narrow manager doubles do not carry every field.
+            _fire_task(
+                voice_mgr.end_session(
+                    expected_session=getattr(voice_mgr, "session", None)
+                )
+            )
+            return
+        if message.get("action") == "voice_input_control":
+            handle_voice_input_control = getattr(
+                voice_mgr,
+                "_handle_voice_input_control",
+                None,
+            )
+            if not callable(handle_voice_input_control):
+                return
+            control_applied = await handle_voice_input_control(
+                message.get("event", ""),
+                message.get("lease_generation", -1),
+                owner=message.get("owner"),
+                hard_muted=message.get("hard_muted"),
+                focus_suppressed=message.get("focus_suppressed"),
+            )
+            if not control_applied:
+                # manager.send_status targets manager.websocket, which the
+                # newer socket now owns; the rejection belongs to THIS
+                # socket, so send the same status envelope directly.
+                # Best-effort like send_status.
+                try:
+                    await websocket.send_text(
+                        json.dumps(
+                            {
+                                "type": "status",
+                                "message": json.dumps(
+                                    {
+                                        "code": "VOICE_INPUT_CONTROL_REJECTED",
+                                        "details": {
+                                            "reason": "invalid_or_stale_control"
+                                        },
+                                    }
+                                ),
+                            }
+                        )
+                    )
+                except Exception:
+                    pass
+            return
+        if is_game_route_active(lanlan_name):
+            await route_external_stream_message(
+                lanlan_name,
+                {"input_type": "audio", "stt_provider": "realtime"},
+            )
+        await voice_mgr.stream_data(message)
+
     if mgr.pending_agent_callbacks:
         logger.info(f"[{lanlan_name}] websocket reconnect: {len(mgr.pending_agent_callbacks)} pending callbacks, scheduling delivery")
         _fire_task(mgr.trigger_agent_callbacks())
@@ -314,17 +671,64 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         # 「并发开第二个窗口」的情形。
         _ws_active_count[lanlan_name] = _ws_active_count.get(lanlan_name, 0) + 1
         while True:
-            data = await websocket.receive_text()
+            receive = getattr(websocket, "receive", None)
+            if callable(receive):
+                ws_event = await receive()
+                if ws_event.get("type") == "websocket.disconnect":
+                    raise WebSocketDisconnect(ws_event.get("code", 1000))
+                binary_payload = ws_event.get("bytes")
+                if binary_payload is not None:
+                    try:
+                        message = _decode_binary_audio_frame(binary_payload)
+                    except ValueError as exc:
+                        logger.warning(
+                            "[%s] dropping malformed binary audio frame: %s",
+                            lanlan_name,
+                            exc,
+                        )
+                        continue
+                else:
+                    data = ws_event.get("text")
+                    if not isinstance(data, str):
+                        raise ValueError("WEBSOCKET_MESSAGE_INVALID")
+                    message = json.loads(data)
+            else:
+                # 兼容只实现 receive_text 的测试 double。
+                data = await websocket.receive_text()
+                message = json.loads(data)
             # 安全检查：如果角色已被重命名或删除，lanlan_name 可能不再存在
-            if lanlan_name not in session_id or lanlan_name not in session_manager:
+            if lanlan_name not in session_manager:
                 logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
                 await websocket.close()
                 break
-            if session_id[lanlan_name] != this_session_id:
+            if session_id.get(lanlan_name) != this_session_id:
+                # Separate connection identities: losing the global session_id
+                # (a newer window opened, or the newer window since closed and
+                # popped it) must not terminate an ongoing recording. While
+                # this socket still owns the voice connection, its voice-path
+                # messages keep dispatching through the narrow helper above;
+                # any non-voice message from it, or any message once a newer
+                # socket re-claims voice, closes it exactly as before.
+                if _is_voice_path_message(message) and _owns_voice_connection():
+                    await _dispatch_voice_message_while_superseded(message)
+                    continue
+                if _is_voice_path_message(message) and _voice_identity_vacated():
+                    # This socket held voice and the backend deliberately
+                    # revoked the lease (fail-closed route, or a text session
+                    # took over). One PCM frame already in flight across that
+                    # teardown must not be treated as a character switch: the
+                    # close below would amputate the socket, and its 3 s
+                    # auto-reconnect would then re-steal currency from the
+                    # window that legitimately owns it. Drop the frame; the
+                    # teardown notice is already on its way to this socket.
+                    continue
+                if lanlan_name not in session_id:
+                    logger.info(f"角色 {lanlan_name} 已被重命名或删除，关闭旧连接")
+                    await websocket.close()
+                    break
                 await session_manager[lanlan_name].send_status(json.dumps({"code": "CHARACTER_SWITCHING_TERMINAL", "details": {"name": lanlan_name}}))
                 await websocket.close()
                 break
-            message = json.loads(data)
             action = message.get("action")
 
             # 处理语言设置（可以在任何消息中携带）
@@ -359,6 +763,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
+                # Handshake: the frontend rides its authoritative independent-ASR
+                # toggle along on every start_session so the route decision cannot
+                # use a stale persisted value (settings POST failed or still in
+                # flight). Forward the raw field on every start_session — the
+                # setter strictly type-checks (bool only) and an absent or
+                # malformed field clears the override, keeping older frontends on
+                # the persisted-setting behavior.
+                handshake_setter = getattr(
+                    session_manager[lanlan_name],
+                    "set_independent_asr_handshake",
+                    None,
+                )
+                if callable(handshake_setter):
+                    handshake_setter(message.get("independent_asr_enabled"))
                 input_type = message.get("input_type", "audio")
                 if input_type in _SESSION_INPUT_TYPES:
                     if is_game_route_active(lanlan_name):
@@ -368,6 +786,7 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             continue
                         if input_type == "audio":
                             logger.info("[%s] game route active: starting ordinary realtime as STT provider for game voice", lanlan_name)
+                            _claim_voice_input_connection()
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
@@ -376,6 +795,31 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
                     mode = 'text' if input_type in _TEXT_SESSION_INPUT_TYPES else 'audio'
+                    if mode == "audio":
+                        _claim_voice_input_connection()
+                        ensure_voice_input_authorized = getattr(
+                            session_manager[lanlan_name],
+                            "_ensure_voice_input_session_authorized",
+                            None,
+                        )
+                        if callable(ensure_voice_input_authorized):
+                            authorized = await ensure_voice_input_authorized(
+                                str(this_session_id)
+                            )
+                            if not authorized:
+                                await session_manager[lanlan_name].send_status(
+                                    json.dumps(
+                                        {
+                                            "code": "VOICE_INPUT_LEASE_REQUIRED",
+                                            "details": {
+                                                "reason": (
+                                                    "voice_input_control_required"
+                                                )
+                                            },
+                                        }
+                                    )
+                                )
+                                continue
                     # 用户显式 start_session（刷新页面 / 点重试）= 清熔断。
                     # 内部 recovery 路径不会走到这里，熔断只能从这条路被清。
                     # 但要避开"上一轮 start_session 还在跑"的 race：那时清零会让
@@ -390,6 +834,22 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
 
             elif action == "stream_data":
                 input_type = message.get("input_type")
+                if input_type == "audio":
+                    # PCM (JSON or decoded binary frame) is a voice engagement:
+                    # first audio frame on this socket claims the voice input
+                    # connection identity.
+                    _claim_voice_input_connection()
+                # Plain text is dispatched with create_task below. Stamp the
+                # server-arrival time before yielding so an earlier user input
+                # can never look newer than a proactive commit merely because
+                # its task started later.
+                message = _stamp_user_input_ingress(message)
+                stream_mgr = session_manager[lanlan_name]
+                _record_stream_engagement_ingress(
+                    stream_mgr,
+                    message,
+                    lanlan_name=lanlan_name,
+                )
                 if is_game_route_active(lanlan_name):
                     if input_type == "audio":
                         await route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"})
@@ -415,12 +875,27 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 else:
                     session_manager[lanlan_name]._avatar_position = None
                 if input_type in _ORDERED_STREAM_INPUT_TYPES:
-                    await session_manager[lanlan_name].stream_data(message)
+                    await stream_mgr.stream_data(message)
                 else:
-                    _fire_task(session_manager[lanlan_name].stream_data(message))
+                    _fire_task(stream_mgr.stream_data(message))
 
             elif action == "avatar_interaction":
-                _fire_task(session_manager[lanlan_name].handle_avatar_interaction(message))
+                message = _stamp_user_input_ingress(message)
+                avatar_mgr = session_manager[lanlan_name]
+                # Validate and expose genuine engagement synchronously, before
+                # the background handler can lose a scheduling race to a ready
+                # proactive commit. Reserve the interaction ID in that same
+                # synchronous step so rapid retransmits cannot reset silence.
+                reserved = _reserve_avatar_interaction_ingress(
+                    avatar_mgr,
+                    message,
+                    lanlan_name=lanlan_name,
+                )
+                message = {
+                    **message,
+                    "_avatar_interaction_ingress_reserved": reserved,
+                }
+                _fire_task(avatar_mgr.handle_avatar_interaction(message))
 
             elif action == "end_session":
                 session_manager[lanlan_name].active_session_is_idle = False
@@ -432,6 +907,60 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             elif action == "pause_session":
                 session_manager[lanlan_name].active_session_is_idle = True
                 _fire_task(session_manager[lanlan_name].end_session())
+
+            elif action == "voice_input_control":
+                # Any MicLease control message engages voice input for this
+                # socket — except a provably-idle snapshot. The frontend
+                # force-sends lease_sync on socket open even from a window
+                # that merely opened (a second /chat_full window); such a
+                # snapshot stamps engaged: false, and claiming on it would
+                # let that auxiliary window reset the recording socket's
+                # lease (invalidating the active ASR start and dropping
+                # queued PCM). Absent or non-false `engaged` keeps the
+                # historical claim-on-first-control behavior: older
+                # frontends and mid-recording reconnects (engaged: true)
+                # still claim the identity here immediately.
+                if message.get("engaged") is not False:
+                    _claim_voice_input_connection()
+                if not voice_input_claimed:
+                    # Never-engaged socket: applying its idle snapshot
+                    # against the lease scope (owned by another socket, or
+                    # by nobody) could still supersede the owner's
+                    # generation and tear the recording down with owner
+                    # "none", so drop it entirely. Once this socket
+                    # engages, its later engaged: false controls (stopping
+                    # its own recording) dispatch normally below.
+                    continue
+                # MicLease 是音频路由的后端权威控制面；按 websocket 消息顺序
+                # 同步处理，避免控制事件之后的 PCM 抢先进入旧 turn。
+                # getattr 守卫与 _begin_voice_input_connection /
+                # _ensure_voice_input_session_authorized 对齐：没有 mixin 的
+                # manager double 应 no-op 而不是抛出 SERVER_ERROR。
+                handle_voice_input_control = getattr(
+                    session_manager[lanlan_name],
+                    "_handle_voice_input_control",
+                    None,
+                )
+                if not callable(handle_voice_input_control):
+                    continue
+                control_applied = await handle_voice_input_control(
+                    message.get("event", ""),
+                    message.get("lease_generation", -1),
+                    owner=message.get("owner"),
+                    hard_muted=message.get("hard_muted"),
+                    focus_suppressed=message.get("focus_suppressed"),
+                )
+                if not control_applied:
+                    await session_manager[lanlan_name].send_status(
+                        json.dumps(
+                            {
+                                "code": "VOICE_INPUT_CONTROL_REJECTED",
+                                "details": {
+                                    "reason": "invalid_or_stale_control"
+                                },
+                            }
+                        )
+                    )
 
             elif action == "capture_bridge_status":
                 from utils.capture_bridge import mark_capture_client
@@ -486,10 +1015,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                 if new_session:
                     if await has_new_character_greeting_pending(_config_manager, lanlan_name):
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → new character greeting")
-                        _fire_task(session_manager[lanlan_name].trigger_new_character_greeting())
+                        _schedule_greeting_task(
+                            lanlan_name,
+                            "new-character",
+                            session_manager[lanlan_name].trigger_new_character_greeting,
+                        )
                     else:
                         logger.info(f"[{lanlan_name}] greeting_check: is_switch={is_switch} since_disconnect={since_disconnect:.1f}s reason={greeting_reason or '-'} → triggering")
-                        _fire_task(session_manager[lanlan_name].trigger_greeting())
+                        _schedule_greeting_task(
+                            lanlan_name,
+                            "ordinary",
+                            session_manager[lanlan_name].trigger_greeting,
+                        )
                 else:
                     logger.info(f"[{lanlan_name}] greeting_check: since_disconnect={since_disconnect:.1f}s ≤15s reason={greeting_reason or '-'} → skip (refresh/reconnect)")
 
@@ -521,12 +1058,16 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     isinstance(raw_episode, dict),
                     episode or "-",
                 )
-                _fire_task(session_manager[lanlan_name].trigger_cat_greeting(
-                    cat_duration,
-                    cat_tier,
-                    cat_was_auto,
-                    episode=episode,
-                ))
+                _schedule_greeting_task(
+                    lanlan_name,
+                    "cat-return",
+                    lambda: session_manager[lanlan_name].trigger_cat_greeting(
+                        cat_duration,
+                        cat_tier,
+                        cat_was_auto,
+                        episode=episode,
+                    ),
+                )
 
             elif action == "ping":
                 # 心跳保活消息，回复pong
@@ -605,11 +1146,51 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
         async with _lock:
             session_id = get_session_id()
             is_current = session_id.get(lanlan_name) == this_session_id
+            # Drop this socket's own voice registration first: teardown must
+            # never be deferred to the very socket that is disconnecting.
+            registered_voice = _voice_connection_sockets.get(lanlan_name)
+            departed_voice_owner = False
+            if registered_voice is not None and registered_voice[0] == this_session_id:
+                _voice_connection_sockets.pop(lanlan_name, None)
+                registered_voice = None
+                departed_voice_owner = True
+                if lanlan_name in session_manager:
+                    clear_voice_ws = getattr(
+                        session_manager[lanlan_name],
+                        "_clear_voice_input_websocket",
+                        None,
+                    )
+                    if callable(clear_voice_ws):
+                        clear_voice_ws()
+            # Current-socket disconnect while a DIFFERENT still-open socket
+            # owns the manager voice connection (closing the chat window while
+            # the pet window records): the manager-wide cleanup below would
+            # end the very session the recording runs on. Hand the global
+            # identity back to the voice-owning socket and defer teardown to
+            # that socket's own disconnect. Validated against the manager
+            # lease so a socket that already lost the voice identity (or a
+            # manager without the MicLease mixin) never receives the handover.
+            voice_handover = None
+            if is_current and registered_voice is not None and lanlan_name in session_manager:
+                manager_lease_id = getattr(
+                    session_manager[lanlan_name],
+                    "_voice_lease_connection_id",
+                    None,
+                )
+                if manager_lease_id == str(registered_voice[0]):
+                    voice_handover = registered_voice
             icebreaker_session_id = ""
-            if is_current:
+            if is_current and voice_handover is None:
                 icebreaker_session_id = get_active_icebreaker_route_session_id(lanlan_name)
             if is_current:
-                session_id.pop(lanlan_name, None)
+                if voice_handover is not None:
+                    # The voice-owning socket becomes the current socket: its
+                    # later disconnect then performs the full teardown, and
+                    # its non-voice messages work again (it is the only
+                    # remaining window for this character).
+                    session_id[lanlan_name] = voice_handover[0]
+                else:
+                    session_id.pop(lanlan_name, None)
 
         if is_current and icebreaker_session_id:
             try:
@@ -621,5 +1202,59 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[icebreaker] finalize on ws disconnect failed: %s", exc)
 
+        # A superseded socket that still held the manager voice identity (the
+        # recording window is killed while a newer chat window is current):
+        # nobody else will ever revoke that lease. Every branch below is gated
+        # on is_current, and the current socket's own cleanup would end the
+        # shared session. Left alone, the dead socket's turn keeps an armed
+        # realtime dispatch pause (prepare_external_voice_turn -> arbiter
+        # pause_dispatch, released only by that turn's final, which can no
+        # longer arrive) and the arbiter worker parks before dequeuing with no
+        # timeout, so every later response on the surviving session hangs; the
+        # independent-ASR provider transport also stays connected mid-turn.
+        # Release just the voice lease here -- abort the ASR turn and park the
+        # lease at owner "none" -- and leave the shared session to the socket
+        # that owns it. The manager re-validates the connection id, so a socket
+        # that already lost the identity to a newer claim never clears the
+        # winner's lease, and managers without the MicLease mixin no-op.
+        if not is_current and departed_voice_owner and lanlan_name in session_manager:
+            revoke_voice_connection = getattr(
+                session_manager[lanlan_name],
+                "_revoke_voice_input_connection",
+                None,
+            )
+            if callable(revoke_voice_connection):
+                try:
+                    await revoke_voice_connection(str(this_session_id))
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[%s] voice lease revoke on disconnect failed: %s",
+                        lanlan_name,
+                        exc,
+                    )
+
         if is_current and lanlan_name in session_manager:
-            await session_manager[lanlan_name].cleanup(expected_websocket=websocket)
+            if voice_handover is not None:
+                # Deferred teardown: keep the session/ASR alive for the
+                # recorder and repoint the manager websocket at it so
+                # statuses and responses reach the only remaining window.
+                # Guarded so a newer socket that already re-claimed the
+                # manager reference is never clobbered (mirrors cleanup's
+                # expected_websocket race protection).
+                voice_mgr = session_manager[lanlan_name]
+                owner_websocket = voice_handover[1]
+                websocket_lock = getattr(voice_mgr, "websocket_lock", None)
+                if websocket_lock:
+                    async with websocket_lock:
+                        if voice_mgr.websocket is websocket or voice_mgr.websocket is None:
+                            voice_mgr.websocket = owner_websocket
+                elif voice_mgr.websocket is websocket or voice_mgr.websocket is None:
+                    voice_mgr.websocket = owner_websocket
+                logger.info(
+                    "[%s] current socket closed while another socket owns the "
+                    "voice connection: deferring session teardown to the "
+                    "voice-owning socket",
+                    lanlan_name,
+                )
+            else:
+                await session_manager[lanlan_name].cleanup(expected_websocket=websocket)

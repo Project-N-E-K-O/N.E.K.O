@@ -15,6 +15,7 @@
 
 from ._shared import (
     Any,
+    Callable,
     Dict,
     IMAGE_IDLE_RATE_MULTIPLIER,
     List,
@@ -35,8 +36,16 @@ from ._shared import (
     np,
     parse_arguments_json,
     time,
+    uuid,
     websockets,
 )
+
+
+_ATTACHED_TRANSPORT = object()
+
+
+class RealtimeImagePayloadTooLargeError(RuntimeError):
+    """A callback image cannot fit the provider's WebSocket frame limit."""
 
 
 
@@ -65,6 +74,7 @@ class _TransportMixin:
         # Gemini uses google-genai SDK, not raw WebSocket
         if self._is_gemini:
             await self._connect_gemini(instructions, native_audio)
+            self._response_arbiter.reset_connection_state()
             return
 
         # 确保开始新连接时状态完全重置
@@ -92,6 +102,9 @@ class _TransportMixin:
         # end_session 协程挂住数百毫秒~数秒（Qwen 回 CLOSE 帧偶尔很慢），
         # 超时后 websockets 内部会 transport.abort() 强制关闭。
         self.ws = await websockets.connect(url, additional_headers=headers, close_timeout=0.5)
+        # Do not reopen the arbiter until the replacement transport exists.
+        # A failed reconnect must leave the prior shutdown state intact.
+        self._response_arbiter.reset_connection_state()
         # Clear fatal flag so send_event/update_session work on this new
         # connection (flag may be leftover from a previous failed session
         # when the same OmniRealtimeClient instance is reused).
@@ -374,7 +387,7 @@ class _TransportMixin:
             logger.warning("⚠️ 图片重压缩失败 type=%s: %s — 丢弃帧", etype, e)
             return None
 
-    async def send_event(self, event) -> None:
+    async def send_event(self, event, *, raise_on_oversize: bool = False) -> None:
         # 检查是否已发生致命错误，直接跳过发送
         if self._fatal_error_occurred:
             return
@@ -422,6 +435,10 @@ class _TransportMixin:
                         self._try_shrink_image_payload, event, payload
                     )
                     if payload is None:
+                        if raise_on_oversize:
+                            raise RealtimeImagePayloadTooLargeError(
+                                "image payload exceeds realtime WebSocket frame limit"
+                            )
                         return
                 await self.ws.send(payload)
             except Exception as e:
@@ -528,7 +545,7 @@ class _TransportMixin:
                 if audio_processor.speech_probability > 0.4:
                     # B: 单帧 RNNoise 判定为语音就立即打点，独立于 sustain。
                     # _client_vad_active 仍需 500ms sustain，_user_recent_activity
-                    # 只看"最近是否发声"，fudge guard 用它兜住首 500ms 和停顿缝隙。
+                    # 只看"最近是否发声"，主动搭话 guard 用它兜住首 500ms 和停顿缝隙。
                     self._user_recent_activity_time = current_time
                     if self._speech_detect_start == 0.0:
                         self._speech_detect_start = current_time
@@ -549,10 +566,6 @@ class _TransportMixin:
                         # RMS 是唯一信号，也喂给 B 兜底。阈值已经是 500（较高），
                         # 一般环境噪音达不到。
                         self._user_recent_activity_time = current_time
-
-        # Suppress mic → server during proactive nudge injection (VAD above still updates)
-        if self._proactive_injecting:
-            return
 
         # 静音清 buffer：有 RNNoise 以 RNNoise 为准，否则 VAD + 连续本地静音（见 _should_clear_audio_buffer_on_silence）
         if self._should_clear_audio_buffer_on_silence(current_time, use_rnnoise_path):
@@ -579,8 +592,18 @@ class _TransportMixin:
         }
         await self.send_event(append_event)
 
-    async def _analyze_image_with_vision_model(self, image_b64: str) -> str:
-        """Use VISION_MODEL to analyze image and return description."""
+    async def _analyze_image_with_vision_model(
+        self,
+        image_b64: str,
+        *,
+        update_turn_state: bool = True,
+    ) -> str:
+        """Use VISION_MODEL to analyze an image and return its description.
+
+        Callback-owned images pass ``update_turn_state=False`` because their
+        description is delivered in the callback's exact arbiter ticket. They
+        must not overwrite or consume the ambient screen/camera snapshot state.
+        """
         try:
             # 使用统一的视觉分析函数
             from utils.screenshot_utils import analyze_image_with_vision_model
@@ -591,24 +614,29 @@ class _TransportMixin:
             )
 
             if description:
-                self._image_description = f"[实时屏幕截图或相机画面]: {description}"
+                if update_turn_state:
+                    self._image_description = (
+                        f"[实时屏幕截图或相机画面]: {description}"
+                    )
+                    self._image_recognized_this_turn = True
                 logger.info("✅ Image analysis complete.")
-                self._image_recognized_this_turn = True
                 return description
             else:
                 logger.warning("VISION_MODEL not configured or analysis failed")
-                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-                self._image_recognized_this_turn = False
-                self._latest_image_b64 = None
-                self._proactive_image_consumed = True
+                if update_turn_state:
+                    self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                    self._image_recognized_this_turn = False
+                    self._latest_image_b64 = None
+                    self._proactive_image_consumed = True
                 return ""
 
         except Exception as e:
             logger.error(f"Error analyzing image with vision model: {e}")
-            self._image_recognized_this_turn = False
-            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-            self._latest_image_b64 = None
-            self._proactive_image_consumed = True
+            if update_turn_state:
+                self._image_recognized_this_turn = False
+                self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+                self._latest_image_b64 = None
+                self._proactive_image_consumed = True
             # 检测内容审查错误并发送中文提示到前端（不关闭session）
             error_str = str(e)
             if 'censorship' in error_str:
@@ -616,9 +644,18 @@ class _TransportMixin:
                     await self.on_status_message(json.dumps({"code": "IMAGE_BLOCKED"}))
             return ""
         finally:
-            self._image_being_analyzed = False
+            if update_turn_state:
+                self._image_being_analyzed = False
 
-    async def stream_image(self, image_b64: str, *, bypass_rate_limit: bool = False) -> None:
+    async def stream_image(
+        self,
+        image_b64: str,
+        *,
+        bypass_rate_limit: bool = False,
+        cache_latest: bool = True,
+        event_id: str | None = None,
+        on_rejected: Optional[Callable[[str], None]] = None,
+    ) -> str | None:
         """Stream raw image data to the API.
 
         ``bypass_rate_limit=True`` skips the native-vision frame-rate throttle
@@ -626,21 +663,67 @@ class _TransportMixin:
         screenshot) so it isn't silently dropped just because a high-frequency
         screen/camera frame was streamed within NATIVE_IMAGE_MIN_INTERVAL
         (Codex P2). It's one intentional image, not a stream, so it won't flood.
-        """
-        # Cache latest frame for proactive injection
-        self._latest_image_b64 = image_b64
-        self._proactive_image_consumed = False
 
+        WebSocket-native callback images may pass ``on_rejected`` to correlate
+        a later provider ``error.event_id`` with the callback delivery that
+        owns the image. The handler is registered before send so an immediate
+        asynchronous rejection cannot outrun it.
+
+        ``cache_latest=False`` sends an already-cached proactive snapshot
+        without treating that resend as a newly captured frame generation.
+        For a non-native callback image it returns the callback-owned
+        VISION_MODEL description instead, without changing ambient frame state.
+        """
+        rejection_event_id: str | None = None
         try:
-            # Models without native vision (step, free on lanlan.tech) — first frame triggers VISION_MODEL analysis
+            if not self._supports_native_image and not cache_latest:
+                return await self._analyze_image_with_vision_model(
+                    image_b64,
+                    update_turn_state=False,
+                )
+
+            # Standard StepFun is the only realtime provider without native
+            # vision; its first frame triggers VISION_MODEL analysis.
             if '实时屏幕截图或相机画面正在分析中' in self._image_description and not self._supports_native_image:
                 # 非原生视觉后端只需要本轮第一帧做分析；后续高频帧直接丢弃，避免并发刷爆 VISION_MODEL。
                 async with self._image_lock:
                     if self._image_recognized_this_turn or self._image_being_analyzed:
                         return
                     self._image_being_analyzed = True
+                if cache_latest:
+                    # Bind the cached generation to the frame that actually
+                    # owns this analysis. Concurrent frames rejected by the
+                    # gate above must not replace it and later receive the
+                    # first frame's description.
+                    self._latest_image_generation = (
+                        getattr(self, "_latest_image_generation", 0) + 1
+                    )
+                    self._latest_image_b64 = image_b64
+                    self._proactive_image_consumed = False
                 await self._analyze_image_with_vision_model(image_b64)
                 return
+
+            preserve_cached_step_frame = (
+                cache_latest
+                and not self._supports_native_image
+                and self._image_recognized_this_turn
+                and self._latest_image_b64 is not None
+                and not self._proactive_image_consumed
+            )
+            # A completed Step annotation remains bound to its still-pending
+            # cached frame. Do not replace that generation with a newer frame
+            # carrying no matching analysis. Still continue so an active user
+            # turn can receive the completed description through the normal
+            # _image_sent_this_turn path.
+
+            if cache_latest and not preserve_cached_step_frame:
+                # A monotonic generation distinguishes separately captured frames
+                # even when their JPEG payloads are byte-for-byte identical.
+                self._latest_image_generation = (
+                    getattr(self, "_latest_image_generation", 0) + 1
+                )
+                self._latest_image_b64 = image_b64
+                self._proactive_image_consumed = False
 
             # Rate limiting for native image input (with VAD-based throttling).
             # A deliberate cue image (bypass_rate_limit) skips the interval check
@@ -672,17 +755,31 @@ class _TransportMixin:
                         logger.error(f"Error sending image to Gemini: {e}")
                         if "closed" in str(e).lower():
                             self._fatal_error_occurred = True
+                        raise
                 return
 
-            if self._is_free_proxy:
+            if on_rejected is not None and self._supports_native_image:
+                event_id = event_id or f"event_callback_image_{uuid.uuid4().hex}"
+                rejection_event_id = event_id
+                self._inject_rejection_handlers[event_id] = on_rejected
+                self._fire_task(
+                    self._expire_inject_rejection_handler(event_id, 60.0)
+                )
+
+            if self._is_free_provider:
                 append_event = {
                     "type": "input_image_buffer.append" ,
                     "image": image_b64
                 }
-                await self.send_event(append_event)
+                if event_id is not None:
+                    append_event["event_id"] = event_id
+                await self.send_event(
+                    append_event,
+                    raise_on_oversize=bypass_rate_limit,
+                )
                 return
 
-            if self._audio_in_buffer:
+            if self._audio_in_buffer or bypass_rate_limit:
                 if "qwen" in self._model_lower:
                     append_event = {
                         "type": "input_image_buffer.append" ,
@@ -749,8 +846,20 @@ class _TransportMixin:
                             await self.send_event(text_event)
                     return
 
-                await self.send_event(append_event)
+                if event_id is not None:
+                    append_event["event_id"] = event_id
+                await self.send_event(
+                    append_event,
+                    raise_on_oversize=bypass_rate_limit,
+                )
+            return None
+        except asyncio.CancelledError:
+            if rejection_event_id is not None:
+                self._inject_rejection_handlers.pop(rejection_event_id, None)
+            raise
         except Exception as e:
+            if rejection_event_id is not None:
+                self._inject_rejection_handlers.pop(rejection_event_id, None)
             logger.error(f"Error streaming image: {e}")
             raise e
 
@@ -802,7 +911,9 @@ class _TransportMixin:
             await self.cancel_response()
 
         self._is_responding = False
-        self._current_response_id = None
+        # Keep the cancelled response identity until its terminal event arrives.
+        # Clearing it here makes the stale-event filter drop that response.done,
+        # leaving the arbiter busy until a later response happens to complete.
         self._current_item_id = None
         # 清空转录buffer和重置标志，防止打断后的错位
         self._output_transcript_buffer = ""
@@ -842,6 +953,7 @@ class _TransportMixin:
                     err_obj = event.get('error') if isinstance(event.get('error'), dict) else {}
                     err_event_id = err_obj.get('event_id') or event.get('event_id')
                     self._route_inject_rejection(err_event_id, error_msg)
+                    self._response_arbiter.notify_error(err_event_id, error_msg)
 
                     # 检测503过载错误，触发backpressure节流
                     if '503' in error_msg or 'overloaded' in error_msg.lower():
@@ -871,6 +983,40 @@ class _TransportMixin:
                             await self.on_connection_error(error_msg)
                         await self.close()
                     continue
+
+                # A cancelled response can still emit buffered events after a
+                # replacement response has become current.  Providers that
+                # include response identity let us reject those late events
+                # without changing the legacy behaviour of id-less proxies.
+                if event_type != "response.created":
+                    event_response_id = event.get("response_id")
+                    if event_type == "response.done" and not event_response_id:
+                        response = event.get("response")
+                        if isinstance(response, dict):
+                            event_response_id = response.get("id")
+                    if (
+                        event_response_id
+                        and event_response_id != self._current_response_id
+                    ):
+                        if event_type == "response.done":
+                            # A terminal event must reach the arbiter even when
+                            # a newer response has become current (crossed
+                            # response.created events): the arbiter tracks every
+                            # live server response id, and an undelivered
+                            # terminal would hold the lane closed until its
+                            # staleness timer. The arbiter attributes terminals
+                            # by response id, so a mismatched id releases only
+                            # that response and never completes the current
+                            # owner. Content of the stale response stays
+                            # filtered below.
+                            self._response_arbiter.notify_response_terminal(event)
+                        logger.info(
+                            "Dropping stale response event type=%s response_id=%s current_response_id=%s",
+                            event_type,
+                            event_response_id,
+                            self._current_response_id,
+                        )
+                        continue
                 # ── Tool calling events ────────────────────────────
                 # Three providers, three flavours of the same idea:
                 #   - OpenAI Realtime (gpt): the canonical event is the
@@ -887,7 +1033,7 @@ class _TransportMixin:
                 # All three return results via conversation.item.create
                 # of type function_call_output + response.create, handled
                 # by ``_send_tool_result_openai_realtime``.
-                elif event_type == "response.function_call_arguments.delta":
+                if event_type == "response.function_call_arguments.delta":
                     call_id = event.get("call_id") or ""
                     if call_id:
                         slot = self._inflight_tool_args.setdefault(call_id, {
@@ -945,17 +1091,15 @@ class _TransportMixin:
                             result = await self._execute_tool_call(call)
                             await self._send_tool_result_openai_realtime(result)
                         self._fire_task(_run_tool())
+                elif event_type == "conversation.item.created":
+                    self._response_arbiter.notify_item_created(event)
                 elif event_type == "response.done":
+                    self._response_arbiter.notify_response_terminal(event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
-                    # Lifecycle cleanup of proactive inject rejection handlers
-                    # (see _sweep_inject_rejection_handlers): any pending
-                    # rejection has already fired by now, so the remaining
-                    # entries belong to injects that succeeded — reap them.
-                    self._sweep_inject_rejection_handlers()
+                    resp_data = event.get("response", {})
                     # 解析实时 API 返回的 token 用量
                     try:
-                        resp_data = event.get("response", {})
                         _rt_usage = resp_data.get("usage")
                         if _rt_usage:
                             from utils.token_tracker import TokenTracker
@@ -1014,7 +1158,18 @@ class _TransportMixin:
                     # 确保 buffer 被清空
                     self._output_transcript_buffer = ""
                     self._print_input_transcript = False
-                    self._image_recognized_this_turn = False
+                    if self._supports_native_image:
+                        self._image_recognized_this_turn = False
+                    elif (
+                        self._latest_image_b64 is None
+                        or self._proactive_image_consumed
+                    ):
+                        # Standard StepFun analyzes only while this sentinel is
+                        # present. Rearm after a consumed/absent frame, but keep
+                        # a completed annotation generation-bound to an
+                        # unconsumed cached frame across unrelated responses.
+                        self._image_recognized_this_turn = False
+                        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
                     self._image_sent_this_turn = False
                     if self.on_response_done:
                         await self.on_response_done()
@@ -1032,14 +1187,9 @@ class _TransportMixin:
                     if not self._has_server_vad and self.on_sid_rotate:
                         await self.on_sid_rotate()
                 elif event_type == "response.created":
+                    self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
                     self._last_response_created_time = time.time()
-                    # A response started — our proactive inject's response.create
-                    # was either accepted (this IS its response) or a different
-                    # response is now active; either way close the no-id
-                    # content-fallback window so a later unrelated no-id
-                    # conflict can't fire a lingering (accepted) inject handler.
-                    self._proactive_inject_awaiting_outcome = False
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._interrupted = False  # Clear interruption flag on new response
@@ -1057,6 +1207,7 @@ class _TransportMixin:
                 elif event_type == "input_audio_buffer.speech_started":
                     self._speech_started_total += 1
                     logger.info("Speech detected")
+                    self._response_arbiter.notify_server_vad_started()
                     self._audio_in_buffer = True
                     # 重置静默计时器
                     self._last_speech_time = time.time()
@@ -1064,28 +1215,34 @@ class _TransportMixin:
                     self._client_vad_active = True
                     self._client_vad_last_speech_time = self._last_speech_time
                     # B: server-VAD 也喂给 _user_recent_activity，保持各 VAD 源对称。
-                    # 但 fudge 注入期间 server 会对我们自己 append 的 fudge 音频
-                    # 回 speech_started —— 这不是真用户活动，若打点 prompt_ephemeral
-                    # 循环会检测到 _user_recent_activity_time > _inject_start 而自 abort，
-                    # 并在之后 8s 内阻塞下一次 fudge（入口 guard 一起被污染）。
-                    if not self._proactive_injecting:
-                        self._user_recent_activity_time = self._last_speech_time
+                    self._user_recent_activity_time = self._last_speech_time
                     if self._is_responding:
                         logger.info("Handling interruption")
                         await self.handle_interruption()
                 elif event_type == "input_audio_buffer.speech_stopped":
                     self._speech_stopped_total += 1
                     logger.info("Speech ended")
-                    if self.on_new_message:
-                        await self.on_new_message()
+                    # Only an ended utterance can causally create the automatic
+                    # server-VAD response.  Marking this at speech_started can
+                    # steal an explicit response.created whose create was
+                    # already accepted but whose echo is still in flight.
+                    self._response_arbiter.notify_server_vad_response_pending(
+                        arm_timeout=False
+                    )
+                    try:
+                        if self.on_new_message:
+                            await self.on_new_message()
+                    finally:
+                        # response.created cannot be observed while this receive
+                        # loop is blocked in on_new_message. Start the missing-
+                        # created backstop only after the loop can read again,
+                        # so a slow callback cannot release a real VAD response.
+                        self._response_arbiter.arm_server_vad_response_pending_timeout()
                     self._audio_in_buffer = False
                     # Update timestamp so grace period starts from speech end
                     _now = time.time()
                     self._client_vad_last_speech_time = _now
-                    # 同 speech_started：fudge 自己的音频结束时 server 也会 emit
-                    # speech_stopped，不能当成真用户活动打点。
-                    if not self._proactive_injecting:
-                        self._user_recent_activity_time = _now
+                    self._user_recent_activity_time = _now
                 elif event_type == "conversation.item.input_audio_transcription.completed":
                     self._print_input_transcript = True
                     transcript = event.get("transcript", "")
@@ -1166,28 +1323,64 @@ class _TransportMixin:
                                 self._skip_until_next_response, self._interrupted, self._current_response_id
                             )
 
+            await self._close_failed_transport("realtime message stream ended")
         except websockets.exceptions.ConnectionClosedOK:
+            await self._close_failed_transport("realtime connection closed")
             logger.info("Connection closed as expected")
-            self._fatal_error_occurred = True
-            self.ws = None
         except websockets.exceptions.ConnectionClosedError as e:
             error_msg = str(e)
+            await self._close_failed_transport(error_msg)
             logger.error(f"Connection closed with error: {error_msg}")
-            self._fatal_error_occurred = True
-            self.ws = None
             if self.on_connection_error:
                 await self.on_connection_error(error_msg)
         except asyncio.TimeoutError:
-            if self.ws:
-                await self.ws.close()
+            await self._close_failed_transport("realtime connection timeout")
             if self.on_connection_error:
                 await self.on_connection_error(json.dumps({"code": "CONNECTION_TIMEOUT"}))
         except Exception as e:
+            await self._close_failed_transport(
+                f"realtime message handling failed: {type(e).__name__}"
+            )
             logger.error(f"Error in message handling: {str(e)}")
-            raise e
+            raise
+
+    async def _close_failed_transport(self, reason: str) -> None:
+        """Fail response tickets and atomically detach the failed socket."""
+
+        self._fatal_error_occurred = True
+        ws, self.ws = self.ws, None
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None:
+            await response_arbiter.shutdown(reason)
+        await self._abort_failed_transport(reason, ws)
+
+    async def _abort_failed_transport(
+        self,
+        reason: str,
+        ws=_ATTACHED_TRANSPORT,
+    ) -> None:
+        """Detach, when needed, and physically close a failed raw WebSocket."""
+
+        self._fatal_error_occurred = True
+        if ws is _ATTACHED_TRANSPORT:
+            ws, self.ws = self.ws, None
+        if ws is not None:
+            try:
+                await ws.close()
+            except Exception as exc:
+                logger.debug(
+                    "failed transport close also failed (%s): %s",
+                    reason,
+                    type(exc).__name__,
+                )
 
     async def close(self) -> None:
         """Close the WebSocket connection."""
+        ws, self.ws = self.ws, None
+        response_arbiter = getattr(self, "_response_arbiter", None)
+        if response_arbiter is not None:
+            await response_arbiter.shutdown("realtime client closed")
+
         # 取消静默检测任务
         if self._silence_check_task:
             self._silence_check_task.cancel()
@@ -1222,16 +1415,15 @@ class _TransportMixin:
             await self._close_gemini()
             return
 
-        if self.ws:
+        if ws:
             try:
                 # 连接时已设 close_timeout=0.5s：远端超时未回 CLOSE 帧时，
                 # websockets 内部会自行 abort transport 强制关闭，
                 # 保证 end_session 快速返回、主事件循环心跳不受影响。
-                await self.ws.close()
+                await ws.close()
             except Exception as e:
                 logger.error(f"Error closing websocket: {e}")
             finally:
-                self.ws = None  # 清空引用，防止后续误用
                 logger.info("WebSocket connection closed")
         else:
             logger.warning("WebSocket connection is already closed or None")

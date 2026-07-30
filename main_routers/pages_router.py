@@ -88,18 +88,24 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/live2d/live2d-interaction.js",
     _PROJECT_ROOT / "static/live2d/live2d-init.js",
     _PROJECT_ROOT / "static/live2d/live2d-ui-buttons.js",
-    _PROJECT_ROOT / "static/vrm/vrm-ui-buttons.js",
+    *sorted(_PROJECT_ROOT.glob("static/vrm/*.js")),
     _PROJECT_ROOT / "static/mmd/mmd-ui-buttons.js",
     _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app/app-widget-mode.js",
+    _PROJECT_ROOT / "static/app/app-widget-interaction.js",
     _PROJECT_ROOT / "static/app/app-cat-mind.js",
     _PROJECT_ROOT / "static/app/app-cat-mind-debug.js",
     *_PROJECT_ROOT.glob("static/app/app-interpage/*.js"),
     *_PROJECT_ROOT.glob("static/app/app-ui/*.js"),
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
+    _PROJECT_ROOT / "static/jukebox/music_ui.js",
+    _PROJECT_ROOT / "static/css/music_ui.css",
+    _PROJECT_ROOT / "static/assets/music/music-cover-placeholder.png",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.css",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js",
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-export.js",
     *_AVATAR_UI_BUTTON_ASSET_PATHS,
@@ -265,6 +271,7 @@ async def soccer_demo(request: Request):
     return templates.TemplateResponse("templates/soccer_demo.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 

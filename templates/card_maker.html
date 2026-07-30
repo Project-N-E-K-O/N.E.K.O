@@ -16,6 +16,11 @@
     </script>
     <script src="/static/i18n-i18next.js"></script>
     <script src="/static/common_dialogs.js"></script>
+    <script>
+        if (new URLSearchParams(window.location.search).get('mode') === 'embed') {
+            document.documentElement.classList.add('card-maker-embed');
+        }
+    </script>
     <link rel="stylesheet" href="/static/css/base.css">
     <link rel="stylesheet" href="/static/css/card_maker.css?v={{ static_asset_version | default('0') }}">
     <link rel="stylesheet" href="/static/css/window_controls.css">

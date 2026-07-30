@@ -8,6 +8,7 @@ import pytest
 
 from plugin.plugins.study_companion import _event_bus as event_bus_module
 from plugin.plugins.study_companion._event_bus import StudyEvent, StudyEventBus
+from tests.fake_clock import patch_module_clock
 
 
 pytestmark = pytest.mark.unit
@@ -122,7 +123,9 @@ async def test_emit_answer_respond_cooldown_starts_after_async_push(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     current = 100.0
-    monkeypatch.setattr(event_bus_module.time, "monotonic", lambda: current)
+    # 冷却时间戳的两次读取——emit() 里的 now 和 _commit_emit() 里的 committed_at
+    # ——都在 _event_bus 模块内，所以假时钟只需绑到这个模块上。
+    patch_module_clock(monkeypatch, event_bus_module, monotonic=lambda: current)
 
     class _SlowCtx(_Ctx):
         async def push_message(self, **kwargs):
@@ -144,6 +147,8 @@ async def test_emit_answer_respond_cooldown_starts_after_async_push(
     )
 
     await bus.emit(event)
+    # 冷却起点必须是 push 返回后的时钟(140.0)，不是 push 之前的 100.0。
+    assert bus._last_respond_at == 140.0
     current = 140.1
     await bus.emit(event)
 
@@ -384,7 +389,8 @@ async def test_emit_failure_does_not_consume_answer_respond_cooldown() -> None:
 @pytest.mark.asyncio
 async def test_throttle_ttl_cleanup(monkeypatch: pytest.MonkeyPatch) -> None:
     now = 10_000.0
-    monkeypatch.setattr(event_bus_module.time, "monotonic", lambda: now)
+    # 过期清理读的是 emit() 里的 time.monotonic()，同样在 _event_bus 模块内。
+    patch_module_clock(monkeypatch, event_bus_module, monotonic=lambda: now)
     bus = StudyEventBus(plugin_ctx=_Ctx())
     bus._throttle["old"] = now - bus._THROTTLE_TTL - 1
     bus._throttle["fresh"] = now
