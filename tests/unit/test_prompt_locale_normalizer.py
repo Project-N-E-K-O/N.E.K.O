@@ -58,6 +58,12 @@ TRADITIONAL_AWARE_PEERS = (
     _avatar_interaction_locale,
 )
 
+# _avatar_interaction_locale resolves empty input through
+# resolve_global_language() instead of its own default, so on these inputs it
+# answers whatever the app's language is and cannot be held to the column.
+# test_avatar_empty_input_falls_back_to_global_language pins that path instead.
+AVATAR_RESOLVER_INPUTS = {"", None}
+
 # input -> (proactive, minigame, traditional_aware, badminton)
 EXPECTED = {
     # The eight runtime locales.
@@ -137,10 +143,50 @@ def test_traditional_aware_column_members_agree(raw):
     """memory and avatar_interaction stay in lockstep with the chara column."""
     expected = MODULE_NORMALIZERS["traditional_aware"](raw)
     for fn in TRADITIONAL_AWARE_PEERS:
+        if fn is _avatar_interaction_locale and raw in AVATAR_RESOLVER_INPUTS:
+            continue
         got = fn(raw)
         assert got == expected, (
             f"{fn.__module__}.{fn.__name__}: {raw!r} -> {got!r}, expected {expected!r}"
         )
+
+
+@pytest.fixture
+def global_language(monkeypatch):
+    """Bind config._runtime's global-language resolver for one test."""
+    from config import _runtime
+
+    def _set(value):
+        monkeypatch.setattr(
+            _runtime, "_global_language_resolver", lambda: value, raising=False
+        )
+
+    return _set
+
+
+def test_avatar_empty_input_falls_back_to_global_language(global_language):
+    """Empty input reaches resolve_global_language(), not the module default.
+
+    This is why avatar_interaction sits out the column assertion on empty
+    input: with a resolver bound it answers the app's language, so asserting
+    chara's "en" here would pass or fail depending on the host's locale and on
+    whether an earlier test happened to bind a resolver.
+    """
+    global_language("zh-TW")
+    assert _avatar_interaction_locale("") == "zh-TW"
+    assert _avatar_interaction_locale(None) == "zh-TW"
+    # Whitespace does NOT take that path: "   " is truthy, so it never reaches
+    # the resolver and strips to empty, landing on the module default instead.
+    assert _avatar_interaction_locale("   ") == "en"
+    # chara has no resolver fallback at all.
+    assert _normalize_lang("") == "en"
+
+
+def test_avatar_matches_column_when_resolver_is_english(global_language):
+    """With an English resolver the column assertion holds on empty input too."""
+    global_language("en")
+    for raw in AVATAR_RESOLVER_INPUTS:
+        assert _avatar_interaction_locale(raw) == _normalize_lang(raw)
 
 
 def test_none_takes_module_default():
