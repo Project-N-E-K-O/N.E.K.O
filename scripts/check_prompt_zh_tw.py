@@ -88,7 +88,26 @@ ANCHOR_KEY = "en"
 
 
 def _has_noqa(line: str) -> bool:
-    return bool(re.search(rf"#\s*noqa:\s*{CODE}\b", line))
+    """True if `line` carries `# noqa` (bare) or `# noqa: ...,PROMPT_ZH_TW,...`.
+
+    Same implementation as the sibling gates (check_docstring_no_cjk.py,
+    check_prompt_hygiene.py, check_llm_budget.py) and therefore the same
+    behaviour as ruff/flake8. An earlier version anchored the code immediately
+    after ``noqa:``, which silently rejected a bare ``# noqa`` and any list where
+    this code was not first — so an author following the convention the other four
+    gates use would find their suppression ignored.
+
+    Tolerates a trailing explanatory comment, but it must start with ``#``
+    (``# noqa: CODE  # rationale``): the codes block stops only at the next ``#``
+    or end-of-line.
+    """
+    m = re.search(r"#\s*noqa\b(?:\s*:\s*([A-Za-z0-9_,\s]+?))?(?=#|$)", line)
+    if not m:
+        return False
+    raw = m.group(1)
+    if raw is None or not raw.strip():
+        return True
+    return CODE in {c.strip() for c in raw.split(",") if c.strip()}
 
 
 def resolve_keys(node: ast.AST) -> set[str] | None:
@@ -324,9 +343,19 @@ def _offending_nodes(
         if not is_offender(keys):
             continue
         lineno = node.lineno
-        if 1 <= lineno <= len(source_lines) and _has_noqa(source_lines[lineno - 1]):
-            continue
         end = getattr(node, "end_lineno", lineno) or lineno
+        # Opening *or* closing line: a suppression comment on the closing brace
+        # is a natural place to put it, and for a merge expression the node's own
+        # lineno is the left operand's line rather than the line the author would
+        # think of as the table's start. (The directive is not spelled out here —
+        # ruff would read it as a real one and warn about the bare code name.)
+        exempt = any(
+            _has_noqa(source_lines[ln - 1])
+            for ln in {lineno, end}
+            if 1 <= ln <= len(source_lines)
+        )
+        if exempt:
+            continue
         found.append((node, lineno, end))
     # _table_nodes walks depth-first off a stack, so restore source order.
     found.sort(key=lambda item: (item[1], item[2]))
@@ -339,8 +368,18 @@ def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
 
 
 def _parse_source(source: str, origin: str) -> tuple[ast.Module | None, list[str]]:
+    """Parse source and split it into lines that line up with AST line numbers.
+
+    Not ``str.splitlines()``: it also breaks on \\x0b \\x0c \\x1c \\x1d \\x1e
+    \\x85 U+2028 U+2029, none of which CPython treats as a line break. One of
+    those inside a string literal shifts every later line by one, so a noqa stops
+    matching its own table and starts matching a neighbour.
+
+    Not ``split("\\n")`` either — that collapses a lone-CR file into a single
+    line, which breaks noqa lookup wholesale.
+    """
     try:
-        return ast.parse(source), source.splitlines()
+        return ast.parse(source), re.split(r"\r\n|\r|\n", source)
     except SyntaxError as exc:
         sys.stderr.write(f"{origin}: syntax error ({exc})\n")
         return None, []
@@ -522,6 +561,28 @@ def _touched_lines(rev: str) -> dict[str, set[int]]:
     return touched
 
 
+def _git_visible_prompt_files() -> set[str] | None:
+    """Prompt paths git knows about: tracked plus untracked-not-ignored.
+
+    ``None`` when git cannot answer (no repo, git missing), in which case the disk
+    scan is used unfiltered — ``--count`` and ``--full`` are useful outside a
+    checkout, and the ratchet itself already needs git for its base side.
+    """
+    result = subprocess.run(
+        ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard",
+         "--", PROMPTS_SUBDIR],
+        cwd=REPO_ROOT, capture_output=True, check=False,
+    )
+    if result.returncode != 0:
+        return None
+    out = result.stdout.decode("utf-8", errors="replace")
+    return {
+        entry.replace("\\", "/")
+        for entry in out.split("\0")
+        if entry.endswith(".py")
+    }
+
+
 def _sources_on_disk() -> dict[str, str]:
     """Read every prompt module off disk, decoding per PEP 263.
 
@@ -529,9 +590,18 @@ def _sources_on_disk() -> dict[str, str]:
     uses, so a module with a coding declaration is checked rather than skipped and
     an unreadable one is reported rather than fatal.
     """
+    known = _git_visible_prompt_files()
     sources: dict[str, str] = {}
     for path in sorted(PROMPTS_DIR.rglob("*.py")):
         rel = path.relative_to(REPO_ROOT).as_posix()
+        if known is not None and rel not in known:
+            # Both sides must draw from the same set of files. The base side comes
+            # from `git ls-tree`, so a file git does not know about — a gitignored
+            # scratch module, a build artifact — would exist only on this side and
+            # count as pure growth, failing the gate over something no PR
+            # introduced. Untracked-but-not-ignored files stay in, so a
+            # work-in-progress module is still checked locally.
+            continue
         if path.is_symlink():
             # Must match _prompt_files_at, which skips mode 120000. Reading here
             # would follow the link and scan its target, while `git show` on the

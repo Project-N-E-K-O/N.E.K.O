@@ -404,6 +404,80 @@ def test_noqa_for_a_different_code_does_not_suppress():
     assert len(_violations(src)) == 1
 
 
+def _has_noqa_under_test(line: str) -> bool:
+    return MOD._has_noqa(line)
+
+
+def _sibling_has_noqa(line: str) -> bool:
+    """The shared noqa implementation, loaded from a sibling gate."""
+    spec = importlib.util.spec_from_file_location(
+        "check_docstring_no_cjk", PROJECT_ROOT / "scripts" / "check_docstring_no_cjk.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module._has_noqa(line, "PROMPT_ZH_TW")
+
+
+@pytest.mark.parametrize("line", [
+    "# noqa: PROMPT_ZH_TW",
+    "# noqa: PROMPT_ZH_TW, DOCSTRING_CJK",
+    # This code not first in the list, and a bare noqa: both were silently
+    # rejected by an implementation that anchored the code right after `noqa:`.
+    "# noqa: DOCSTRING_CJK, PROMPT_ZH_TW",
+    "# noqa: E501,PROMPT_ZH_TW",
+    "# noqa",
+    "# noqa: PROMPT_ZH_TW  # rationale",
+    "# noqa: PROMPT_ZH_TW_EXTRA",
+    "# noqa: OTHER",
+    "no comment at all",
+])
+def test_noqa_matches_the_sibling_gates(line):
+    """Suppression must behave exactly like the other four gates (and ruff).
+
+    An author who writes the form the rest of the repo uses would otherwise find
+    their suppression ignored here and nowhere else.
+    """
+    assert _has_noqa_under_test(line) == _sibling_has_noqa(line), line
+
+
+def test_noqa_on_the_closing_line_suppresses():
+    """`}  # noqa: PROMPT_ZH_TW` is a natural place to put it.
+
+    It also matters for merge expressions, whose node lineno is the left operand's
+    line rather than what an author would call the table's start.
+    """
+    assert _violations('T = {\n    "en": "e",\n    "zh": "s",\n}  # noqa: PROMPT_ZH_TW') == []
+    assert _violations('T = {\n    "en": "e",\n    "zh": "s",\n}') == [1]
+
+
+@pytest.mark.parametrize("marker", [" ", " ", "\x0c", "\x0b", ""])
+def test_line_split_matches_ast_line_numbers(marker):
+    """`str.splitlines()` breaks on characters CPython does not count as newlines.
+
+    One inside a string literal shifted every later line by one, so a noqa stopped
+    matching its own table and started matching a neighbour — here the suppressed
+    table would be reported and the real offender missed.
+    """
+    src = (
+        'A = {"en": "x' + marker + 'y", "ja": "z"}\n'
+        'B = {"en": 1, "zh": 2}  # noqa: PROMPT_ZH_TW\n'
+        'C = {"en": 1, "zh": 3}'
+    )
+    tree, lines = MOD._parse_source(src, "probe.py")
+    assert MOD.find_violations(tree, lines) == [3]
+
+
+@pytest.mark.parametrize("newline", ["\n", "\r\n", "\r"])
+def test_line_split_handles_every_python_line_ending(newline):
+    """Including a lone CR — `split("\\n")` would collapse that to one line."""
+    src = newline.join([
+        'A = {"en": 1, "zh": 2}  # noqa: PROMPT_ZH_TW',
+        'B = {"en": 1, "zh": 3}',
+    ])
+    tree, lines = MOD._parse_source(src, "probe.py")
+    assert MOD.find_violations(tree, lines) == [2]
+
+
 def test_noqa_on_an_inner_line_does_not_suppress():
     """Suppression is anchored to the dict's opening line, not any member."""
     src = '''
@@ -993,3 +1067,66 @@ def test_cli_count_reports_a_nonempty_backlog():
     assert "missing 'zh-TW'" in result.stdout
     count = int(result.stdout.strip().rsplit(":", 1)[1])
     assert count > 0, "scanner found nothing; detection likely broke"
+
+
+def test_disk_side_excludes_files_git_does_not_know(tmp_path, monkeypatch):
+    """Both sides must draw from the same file set.
+
+    The base side comes from `git ls-tree`, so a gitignored scratch module would
+    exist only on the disk side and count as pure growth — failing the gate over
+    something no PR introduced.
+    """
+    (tmp_path / "tracked.py").write_text('T = {"en": "a", "zh": "b"}', encoding="utf-8")
+    (tmp_path / "ignored.py").write_text('I = {"en": "c", "zh": "d"}', encoding="utf-8")
+    monkeypatch.setattr(MOD, "PROMPTS_DIR", tmp_path)
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(MOD, "_git_visible_prompt_files", lambda: {"tracked.py"})
+
+    sources = MOD._sources_on_disk()
+    assert set(sources) == {"tracked.py"}
+    assert MOD.count_offenders(sources) == 1
+
+
+def test_disk_side_unfiltered_when_git_cannot_answer(tmp_path, monkeypatch):
+    """Outside a checkout the scan still works — --count/--full are useful there."""
+    (tmp_path / "a.py").write_text('T = {"en": "a", "zh": "b"}', encoding="utf-8")
+    monkeypatch.setattr(MOD, "PROMPTS_DIR", tmp_path)
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    monkeypatch.setattr(MOD, "_git_visible_prompt_files", lambda: None)
+    assert set(MOD._sources_on_disk()) == {"a.py"}
+
+
+def test_git_visible_prompt_files_asks_for_untracked_but_not_ignored(monkeypatch):
+    """A work-in-progress module must stay visible; an ignored one must not.
+
+    `--others --exclude-standard` is what draws that line, so losing either flag
+    changes which files the gate checks locally.
+    """
+    seen: list[list[str]] = []
+
+    class _Result:
+        returncode = 0
+        stdout = b"config/prompts/a.py\0"
+        stderr = b""
+
+    def fake_run(cmd, **_kwargs):
+        seen.append(cmd)
+        return _Result()
+
+    monkeypatch.setattr(MOD.subprocess, "run", fake_run)
+    assert MOD._git_visible_prompt_files() == {"config/prompts/a.py"}
+    argv = seen[0]
+    assert "ls-files" in argv
+    assert "--cached" in argv
+    assert "--others" in argv
+    assert "--exclude-standard" in argv
+
+
+def test_git_visible_prompt_files_returns_none_on_git_failure(monkeypatch):
+    class _Result:
+        returncode = 128
+        stdout = b""
+        stderr = b"not a git repository"
+
+    monkeypatch.setattr(MOD.subprocess, "run", lambda cmd, **kw: _Result())
+    assert MOD._git_visible_prompt_files() is None
