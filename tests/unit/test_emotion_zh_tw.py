@@ -810,3 +810,80 @@ def test_postposed_negation_after_descriptive_text(label, confidence):
 def test_every_suffix_occurrence_is_examined(label, expected, confidence):
     """Stopping at the first marker read the label as the emotion it denies."""
     assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "我今天開心不起來", "開心不起來", "我今天开心不起来", "生氣不起來",
+])
+def test_degraded_heuristic_reads_postposed_negation(text):
+    """Chinese negates from behind, and the heuristic reads the same user text.
+
+    The label parser learned this first; leaving the heuristic without it meant
+    the newly added Traditional keyword scored the emotion its sentence denies.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] is None
+
+
+def test_postposed_marker_must_touch_the_keyword():
+    """A marker further along belongs to some later phrase, not to this hit."""
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text("我今天好開心，只是笑不出來")[0] == "happy"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "沒有真的生氣", "不會真的開心", "我並沒有真正開心", "沒有真生氣",
+])
+def test_negation_reaches_across_the_really_intensifiers(label, confidence):
+    """The "really" family sits between the negation and the emotion word.
+
+    They behave like any other degree adverb there, and were simply missing from
+    the table.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # a label naming two emotions: the named one outranks `neutral`
+    ("中性但開心", "happy"), ("普通但開心", "happy"),
+    ("平靜但生氣", "angry"), ("中性但難過", "sad"),
+    # two named emotions: earliest in the text wins, deterministically
+    ("開心但有點難過", "happy"),
+])
+def test_a_label_naming_two_emotions_is_resolved_by_the_text(label, expected, confidence):
+    """Returning on the first alias found made the answer depend on dict order.
+
+    Two labels of the same shape came back with different emotions, and nothing
+    about the text decided which — only which alias the iteration reached first.
+    """
+    assert _label(label, confidence) == expected
+
+
+def test_single_emotion_labels_are_unchanged_by_the_ranking():
+    """The rule only arbitrates between matches; one match still wins outright."""
+    for label, expected in [
+        ("開心", "happy"), ("生氣", "angry"), ("平靜", "neutral"),
+        ("neutral", "neutral"), ("happy", "happy"),
+    ]:
+        for confidence in CONFIDENCES:
+            assert _label(label, confidence) == expected
+
+
+def test_same_position_ties_prefer_the_longer_alias(monkeypatch):
+    """The tie-break that keeps the ranking total rather than merely partial.
+
+    No two aliases in the shipped table are a prefix of each other with different
+    canonicals, so only an injected pair separates this from "whatever sorted
+    first" — and that is exactly the non-determinism the ranking replaced.
+    """
+    from main_routers.system_router import emotion as R
+
+    # The injected canonical sorts BEFORE the real one, so a rank that falls back
+    # to comparing canonicals would pick it; only the length keeps them ordered.
+    monkeypatch.setitem(R._EMOTION_COMPACT_ALIAS_LOOKUP, "難", "angry")
+    monkeypatch.setitem(R._EMOTION_NORMALIZED_ALIAS_LOOKUP, "難", "angry")
+    assert R._normalize_emotion_label("他難過") == "sad"

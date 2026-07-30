@@ -318,6 +318,11 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         key=lambda item: len(item[0]),
         reverse=True
     )
+    # Every un-negated match, then one rule to pick between them. Returning on the
+    # first alias found made the answer depend on dict order rather than on the
+    # text: `中性但開心` and `平靜但生氣` are the same shape yet came back neutral
+    # and angry respectively.
+    matches: list[tuple[int, int, str]] = []
     for alias, canonical in alias_items:
         if not alias:
             continue
@@ -325,7 +330,7 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             pattern = r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])"
             for match in re.finditer(pattern, normalized_text):
                 if not _is_negated_ascii_match(match.start()):
-                    return canonical
+                    matches.append((match.start(), -len(alias), canonical))
             continue
 
         compact_alias = re.sub(r"[\W_]+", "", alias, flags=re.UNICODE)
@@ -337,8 +342,16 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             if match_start < 0:
                 break
             if not _is_negated_compact_match(match_start):
-                return canonical
+                matches.append((match_start, -len(compact_alias), canonical))
             search_start = match_start + len(compact_alias)
+
+    if matches:
+        # A named emotion outranks `neutral`: a label saying both (`中性但開心`)
+        # is hedging, and the named half is the one worth showing. Within a rank,
+        # earliest in the text, longest alias first — so the answer is a property
+        # of the label, not of iteration order.
+        named = [m for m in matches if m[2] != "neutral"] or matches
+        return min(named)[2]
 
     fuzzy_alias_match = difflib.get_close_matches(
         normalized_text,
@@ -493,6 +506,19 @@ def _is_ascii_word_keyword(keyword):
     return all(c.isascii() and (c.isalpha() or c in " '") for c in keyword)
 
 
+def _has_heuristic_negation_after(text_value, position):
+    """Whether a postposed negation marker follows the keyword that ended here.
+
+    Chinese negates from behind too — the label parser learned this first, and
+    the heuristic reads the same user text. Anchored right after the keyword: a
+    marker further along belongs to some later phrase.
+    """
+    return any(
+        text_value.startswith(marker, position)
+        for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+    )
+
+
 def _count_keyword_hits(text_value, keyword):
     if not keyword or not text_value:
         return 0
@@ -512,7 +538,9 @@ def _count_keyword_hits(text_value, keyword):
         pos = text_value.find(keyword, search_start)
         if pos < 0:
             break
-        if not _has_heuristic_negation_before(text_value, pos):
+        if not _has_heuristic_negation_before(text_value, pos) and not (
+            _has_heuristic_negation_after(text_value, pos + len(keyword))
+        ):
             hits += 1
         search_start = pos + len(keyword)
     return hits
