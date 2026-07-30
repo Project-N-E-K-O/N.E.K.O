@@ -1633,6 +1633,26 @@ async def test_abort_bumps_generation_before_waiting_for_registry_cancel() -> No
     assert order == ["abort", "invalidate", "wait_idle"]
 
 
+async def test_suspend_advances_runtime_barrier_before_waiting_for_registry_cancel() -> (
+    None
+):
+    runtime = _Runtime()
+    order: list[str] = []
+    runtime._invalidate_voice_pcm_sync = MagicMock(
+        side_effect=lambda _reason: order.append("invalidate")
+    )
+    runtime._asr_runtime.suspend = AsyncMock(
+        side_effect=lambda _reason: order.append("suspend")
+    )
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=lambda: order.append("wait_idle")
+    )
+
+    await runtime._suspend_independent_asr("game_takeover")
+
+    assert order == ["invalidate", "suspend", "wait_idle"]
+
+
 @pytest.mark.parametrize(
     ("previous_owner", "owner", "reason", "barrier_method"),
     [
