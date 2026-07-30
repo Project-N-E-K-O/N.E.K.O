@@ -1563,13 +1563,14 @@ Live2DManager.prototype.setupDragAndDrop = function (model) {
     const onDragEnd = async (event) => {
         // A physical-crop host owns its drag from the primed pointerdown through
         // final snap/save settlement. The legacy client-coordinate writer must
-        // stay idle while the host uses a stable screen-coordinate anchor.
-        if (isLive2DHostModelDragActive()) return;
+        // not settle coordinates, but local pointer/UI state still needs its
+        // ordinary pointerup cleanup.
         if (this._isDraggingModel) {
             this._isDraggingModel = false;
             document.getElementById('live2d-canvas').style.cursor = '';
             restoreButtonPointerEvents();
             dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;
+            if (isLive2DHostModelDragActive()) return;
 
             if (!this._isModelReadyForInteraction) return;
 

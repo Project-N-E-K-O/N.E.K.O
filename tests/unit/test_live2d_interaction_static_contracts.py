@@ -107,7 +107,22 @@ def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
         1,
     )[0]
 
-    assert "if (isLive2DHostModelDragActive()) return;" in drag_end
+    host_guard = "if (isLive2DHostModelDragActive()) return;"
+    assert host_guard in drag_end
+    for cleanup in (
+        "this._isDraggingModel = false;",
+        "document.getElementById('live2d-canvas').style.cursor = '';",
+        "restoreButtonPointerEvents();",
+        "dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;",
+    ):
+        assert drag_end.index(cleanup) < drag_end.index(host_guard)
+    for settlement in (
+        "const displaySwitched = await this._checkAndSwitchDisplay(model);",
+        "await this._checkAndPerformSnap(model)",
+        "await this._savePositionAfterInteraction();",
+        "await this._tryApplyLive2DPeek(model);",
+    ):
+        assert drag_end.index(host_guard) < drag_end.index(settlement)
     assert "if (isLive2DHostModelDragActive()) return;" in drag_move
     assert drag_move.index("if (isLive2DHostModelDragActive()) return;") < drag_move.index(
         "model.x = x - dragStartPos.x;"
