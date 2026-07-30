@@ -1034,3 +1034,151 @@ def test_portuguese_spanish_and_contracted_english_negation(label, confidence):
     neither half was ever a negation.
     """
     assert _label(label, confidence) == "neutral"
+
+
+# --- 否定识别的三处反转（来自主动扫描，逐条对 origin/main 复核过） ---
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("個別難過", "sad"),
+    ("个别难过", "sad"),
+    ("區別開心", "happy"),
+    ("区别开心", "happy"),
+    ("分別很開心", "happy"),
+    ("特別開心", "happy"),
+    ("差別很大很開心", "happy"),
+    ("送別難過", "sad"),
+])
+def test_a_negation_syllable_inside_a_word_is_not_a_negation(label, expected, confidence):
+    """The imperative negator is also the second half of a dozen common words.
+
+    The adjacency test could not tell them apart, so a label built out of one of
+    those words came back as the denial of the emotion it was asserting -- the
+    worst answer available. The heuristic side already kept a blocklist for
+    exactly this; both sides read it now.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", ["別難過", "別太開心", "不特別開心", "别难过"])
+def test_the_bare_imperative_negation_still_negates(label, confidence):
+    """The other half of the above: removing the blocklist word must not remove
+    a negation that was really there."""
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("難過哭不出來", "sad"),
+    ("难过哭不出来", "sad"),
+    ("傷心哭不出來", "sad"),
+    ("難過到笑不出來", "sad"),
+])
+def test_a_postposed_marker_denies_the_word_it_sits_against(label, expected, confidence):
+    """"So sad I can't even cry" is sad, and the marker is about the crying.
+
+    The whole-label veto fuzzy-matched the entire run before the marker as one
+    misspelt emotion word, which at the confidence the endpoint passes scored
+    high enough to answer neutral. Only reachable at high confidence, which is
+    why the parameterisation over confidences is not decorative.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "開心不起來", "我難過不起來", "我笑不起來，其實真的開心不起來", "开心不起来",
+])
+def test_a_postposed_marker_still_vetoes_the_word_it_does_sit_against(label, confidence):
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("text", [
+    "sino que estoy feliz",
+    "estoy muy bueno y feliz",
+    "casino night, I am happy",
+    "not only happy",
+])
+def test_a_latin_word_that_ends_in_a_negation_is_not_a_negation(text):
+    """The Latin entries pad themselves with a space to fake a word boundary.
+
+    That only guards one side, so every Spanish or Portuguese word ending in
+    those two letters -- sino, bueno, uno -- silently swallowed the writer's
+    emotion. Real boundaries on the Latin entries; the CJK ones stay on the
+    substring path, where there are no boundaries to find.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] is not None
+
+
+@pytest.mark.parametrize("text", [
+    "no estoy feliz", "nunca feliz", "nao estou feliz", "I am not happy",
+    "cannot be happy", "I don't feel happy", "not angry at all",
+])
+def test_latin_negations_still_negate(text):
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] is None
+
+
+# --- 否定的作用域：小句边界与日语丁宁体 ---
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "興奮していません", "憤怒していません", "傷心していません",
+    "興奮しておりません", "興奮してません", "興奮しません",
+    "興奮していない", "興奮してない", "興奮しない",
+    "興奮ではありません", "興奮じゃありません", "嬉しくありません",
+])
+def test_japanese_polite_negation_is_recognised(label, confidence):
+    """The polite forms put three or four kana between the word and the ending.
+
+    The per-match test anchors the marker to the end of the alias, so a table
+    holding only the tail matched nothing at all -- the label came back as the
+    emotion it was denying. Composed forms go in whole.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("não triste, feliz", "happy"),
+    ("não triste mas feliz", "happy"),
+    ("no triste, feliz", "happy"),
+    ("no triste pero feliz", "happy"),
+    ("not sad, happy", "happy"),
+    ("not sad but happy", "happy"),
+])
+def test_a_negation_does_not_reach_past_a_clause_break(label, expected, confidence):
+    """These name the emotion they assert, right after the one they deny.
+
+    Three branches each read the label as one run and answered neutral, so the
+    asserted half was thrown away. Punctuation and a contrast conjunction mark
+    the same boundary and both have to stop it.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "não estou feliz", "no estoy feliz", "not happy", "não triste", "not sad.",
+    "nunca feliz", "jamas feliz",
+])
+def test_a_negation_inside_one_clause_still_negates(label, confidence):
+    """The other half: scoping must not cost the ordinary single-clause case."""
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+def test_a_postposed_veto_still_crosses_a_clause_break(confidence):
+    """The postposed loop is scoped by what follows the marker, not by clauses.
+
+    That is deliberate and sharper: this label has a comma and its last clause
+    is still a denial, so a blanket clause guard there would answer sad.
+    """
+    assert _label("我笑不起來，其實真的開心不起來", confidence) == "neutral"
+    assert _label("我難過不起來但很開心", confidence) == "happy"

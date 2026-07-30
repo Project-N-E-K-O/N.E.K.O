@@ -191,6 +191,19 @@ def _looks_like_emotion_compact_candidate(candidate, cutoff):
     ))
 
 
+def _strip_negation_blocklist(text):
+    """Drop the words that merely *contain* a negation character.
+
+    Removed rather than blanked: both callers compare against the end of a
+    fixed-width window, so leaving spaces behind pushes a real negation out of
+    it -- `別特別開心` would become `別  ` and read as un-negated.
+    """
+    for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
+        if phrase and phrase in text:
+            text = text.replace(phrase, '')
+    return text
+
+
 def _alias_after(compact_text, position):
     """Whether any emotion alias appears at or after `position`.
 
@@ -203,9 +216,49 @@ def _alias_after(compact_text, position):
     return any(alias and alias in tail for alias in _EMOTION_COMPACT_ALIAS_LOOKUP)
 
 
+def _marker_attaches_to_head(head):
+    """Whether a postposed negation is denying the emotion word right before it.
+
+    `難過哭不出來` is sad: the marker denies the crying, and the sadness is the
+    reason. The fuzzy test alone read the whole of `難過哭` as one misspelt
+    emotion word and answered the opposite. So when the head does contain an
+    emotion word, that word has to be the thing the marker sits against; a head
+    with none is still handed to the fuzzy test, which is what it was for.
+    """
+    present = [alias for alias in _EMOTION_COMPACT_ALIAS_LOOKUP if alias and alias in head]
+    return any(head.endswith(alias) for alias in present) if present else True
+
+
+def _last_clause_cut(head):
+    """Index of the last thing in `head` that ends a clause, or -1 for none.
+
+    Punctuation or a contrast conjunction, whichever comes later. Both mark the
+    same thing for our purposes: what precedes it is being left behind.
+    """
+    cut = max((head.rfind(delim) for delim in _HEURISTIC_CLAUSE_DELIMITERS), default=-1)
+    for conjunction in _HEURISTIC_CONTRAST_CONJUNCTIONS:
+        found = head.rfind(conjunction)
+        if found >= 0:
+            cut = max(cut, found + len(conjunction) - 1)
+    return cut
+
+
 def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
     tokens = [token for token in _EMOTION_TOKEN_RE.findall(normalized_text) if token]
-    if tokens and any(token in _EMOTION_NEGATION_WORDS for token in tokens):
+    # The two branches below answer for the WHOLE label off a single negation at
+    # its front, so they may only speak for a label that *is* one clause. Both
+    # read `não triste, feliz` as one run -- the negation dropped and the rest
+    # glued into `tristefeliz`, which scores close enough to `triste` at the
+    # confidence the endpoint passes -- and returned neutral, so the label named
+    # the emotion it was asserting and got nothing. Past a clause break the
+    # per-match scan is the one that can answer; it looks at each alias on its
+    # own. (The postposed loop further down is scoped by `_alias_after` instead,
+    # which is sharper: `我笑不起來，其實真的開心不起來` has a comma and still has
+    # to be vetoed.)
+    single_clause = _last_clause_cut(normalized_text) < 0
+    if tokens and single_clause and any(
+        token in _EMOTION_NEGATION_WORDS for token in tokens
+    ):
         remaining_compact = re.sub(
             r"[\W_]+",
             "",
@@ -216,7 +269,7 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
             return True
 
     for negation in _EMOTION_NEGATION_COMPACT_PREFIXES:
-        if not compact_text.startswith(negation):
+        if not single_clause or not compact_text.startswith(negation):
             continue
         rest = compact_text[len(negation):]
         if len(negation) == 1:
@@ -243,7 +296,7 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
             # emotion and asserts the second, and vetoing here would report the
             # denial as the answer. A marker that negates one word among several
             # is handled per match in the alias scan below instead.
-            if _looks_like_emotion_compact_candidate(
+            if _marker_attaches_to_head(head) and _looks_like_emotion_compact_candidate(
                 head, fuzzy_compact_cutoff
             ) and not _alias_after(compact_text, marker_index + len(negation)):
                 return True
@@ -285,7 +338,14 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         return "neutral"
 
     def _is_negated_ascii_match(match_start):
-        prefix_tokens = _EMOTION_TOKEN_RE.findall(normalized_text[:match_start])
+        # Three tokens of lookback is generous enough to cross a clause: `não
+        # triste, feliz` and `not sad but happy` both name the emotion they are
+        # asserting *after* the one they deny, and the denial reached forward and
+        # cancelled it. So stop at whichever comes last — punctuation or a
+        # contrast conjunction. The compact path already scopes this way; the
+        # ASCII one never did.
+        head = normalized_text[:match_start]
+        prefix_tokens = _EMOTION_TOKEN_RE.findall(head[_last_clause_cut(head) + 1:])
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
 
     # Where each compact character came from, so a clause boundary can be found in
@@ -315,7 +375,11 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         return prefix[len(prefix) - min(len(prefix), kept):]
 
     def _is_negated_compact_match(match_start):
-        prefix = _current_clause(match_start)
+        # The blocklist goes first, before anything measures this window: `別` is
+        # a negation on its own but only a syllable inside `個別` / `區別`, and the
+        # adjacency test below cannot tell them apart -- it read `個別難過` as
+        # "don't be sad" and answered neutral.
+        prefix = _strip_negation_blocklist(_current_clause(match_start))
         peeled = _strip_degree_adverbs(prefix)
         adverbs = len(prefix) - len(peeled)
         # A negation adjacent to the alias still counts, as long as it reaches
@@ -456,6 +520,23 @@ def _coerce_emotion_confidence(raw_confidence, default=0.5):
 _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 
 
+# The Latin entries in that table carry padding spaces to fake a word boundary,
+# which only works on one side: `no ` also matches inside `sino ` / `bueno ` /
+# `uno `, so `sino que estoy feliz` came back with no emotion at all. Match those
+# on real boundaries instead and leave the CJK entries on the substring path,
+# where there are no word boundaries to find.
+_HEURISTIC_ASCII_NEGATION_RE = re.compile(
+    r"\b(?:%s)\b" % "|".join(
+        re.escape(token.strip())
+        for token in sorted(_HEURISTIC_NEGATION_TOKENS, key=len, reverse=True)
+        if token.strip() and token.isascii()
+    )
+)
+_HEURISTIC_CJK_NEGATION_TOKENS = tuple(
+    token for token in _HEURISTIC_NEGATION_TOKENS if not token.isascii()
+)
+
+
 _HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
 
 
@@ -517,7 +598,9 @@ def _has_heuristic_negation_before(text_value, position):
             # `別特別開心` would become `別  ` and read as un-negated.
             sanitized = sanitized.replace(phrase, '')
     # 5) 多字否定 token（宽 lookback）
-    if any(token in sanitized for token in _HEURISTIC_NEGATION_TOKENS):
+    if any(token in sanitized for token in _HEURISTIC_CJK_NEGATION_TOKENS):
+        return True
+    if _HEURISTIC_ASCII_NEGATION_RE.search(sanitized):
         return True
     # 5.5) 情态复合否定（`不會 / 不算 / 不再 / 未必`）：这些词只有紧贴情绪词时
     #      才是在否定它 —— 放进上面那张宽回看表会否定同一小句里**另一个**谓语
