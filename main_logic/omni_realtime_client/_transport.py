@@ -896,6 +896,35 @@ class _TransportMixin:
 
         return False
 
+    def _on_arbiter_stuck_release(self, reason: str) -> None:
+        """Drop the client-side "a response is in progress" flag after fail-open.
+
+        ``_is_responding`` is set on ``response.created`` and cleared only by
+        that response's own ``response.done`` or by an interruption. When the
+        arbiter gives up on a turn whose terminal never arrived, nothing else
+        will ever clear it, and ``is_active_response()`` then reports busy for
+        the rest of the session — silencing proactive chat on a connection the
+        escape hatch just kept alive.
+
+        Deliberately narrow. It does NOT touch:
+
+        - ``_skip_until_next_response``: only ``response.done`` clears it, so
+          setting it here would mute the whole NEXT turn's text and audio.
+        - ``_interrupted``: the AI-activity timestamps are recorded inside the
+          same guard it gates, and proactive delivery leans on those to avoid
+          talking over audio the provider is still streaming.
+        - ``_current_response_id``: kept for terminal attribution, same reason
+          ``handle_interruption`` keeps it.
+        """
+
+        if not self._is_responding:
+            return
+        logger.info(
+            "Clearing client response state after arbiter fail-open release: %s",
+            reason,
+        )
+        self._is_responding = False
+
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
         if not self._is_responding:

@@ -25,6 +25,7 @@ from typing import Any, Awaitable, Callable
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
+OnStuckRelease = Callable[[str], None]
 logger = logging.getLogger(__name__)
 
 # Server-initiated response ids are remembered so their terminal events are
@@ -135,15 +136,27 @@ class RealtimeResponseArbiter:
         *,
         abort_transport: AbortTransport | None = None,
         fail_open: bool = False,
+        on_stuck_release: OnStuckRelease | None = None,
     ) -> None:
         self._send_event = send_event
         self._abort_transport = abort_transport
+        # Notified after a fail-open release, so the host can drop whatever
+        # parallel response state it keeps. Dual to ``abort_transport``: the
+        # arbiter still holds no project-internal reference of its own, and a
+        # default of None keeps bare constructions working.
+        self._on_stuck_release = on_stuck_release
         # Escalation policy for a response lifecycle that cannot reach a
         # terminal state. Default (False) tears the transport down, which is
         # what every release so far has shipped. True keeps the connection and
         # drops only the stuck turn — an opt-in escape hatch, injected by the
         # construction site so this module reads no configuration itself.
         self._fail_open = fail_open
+        # True while the queue consumer is suspended inside a transport write.
+        # Only the worker's own sends set it; sends issued from caller tasks
+        # do not, because those cannot block the consumer. See
+        # _fail_stuck_lifecycle for why fail-open refuses to apply in that
+        # state.
+        self._worker_send_in_flight = False
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
@@ -850,6 +863,24 @@ class RealtimeResponseArbiter:
                 queued.completed.set_result(None)
             self._queue.task_done()
 
+    async def _worker_send(self, event: dict[str, Any]) -> None:
+        """Send from the queue consumer, flagged for the duration of the write.
+
+        Interrupt flags and failed futures do not unwind an await that is
+        parked inside the transport, and ``_run`` is the only consumer — so a
+        write that never returns wedges every later request no matter what the
+        escalation path does to the arbiter's own state. The flag lets
+        ``_fail_stuck_lifecycle`` notice that situation; only sends issued by
+        the worker itself qualify, since a caller-task send blocking hurts
+        only that caller.
+        """
+
+        self._worker_send_in_flight = True
+        try:
+            await self._send_event(event)
+        finally:
+            self._worker_send_in_flight = False
+
     def _release_stuck_lifecycle(self, reason: str) -> None:
         """Drop the stuck turn but keep the connection (the fail-open policy).
 
@@ -893,6 +924,21 @@ class RealtimeResponseArbiter:
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         self._idle.set()
+        # Last, because it is the only step that hands control to project code.
+        # The host keeps its own view of "a response is in progress" that only
+        # this connection's own terminal events normally clear, and the turn
+        # whose terminal we just gave up on is exactly the one that would have
+        # cleared it. Leaving it set would spend the connection we just saved:
+        # the host would treat the session as busy and hold back the work
+        # fail-open exists to keep serving.
+        if self._on_stuck_release is not None:
+            try:
+                self._on_stuck_release(reason)
+            except Exception as exc:
+                logger.debug(
+                    "stuck-release host notification failed: %s",
+                    type(exc).__name__,
+                )
 
     async def _fail_stuck_lifecycle(self, reason: str) -> None:
         """Escalate a response lifecycle that cannot reach a terminal state.
@@ -915,21 +961,33 @@ class RealtimeResponseArbiter:
             owner.source if owner is not None else None,
             self._queue.qsize(),
             self._server_vad_response_pending,
+            self._worker_send_in_flight,
         )
-        if self._fail_open:
+        # Fail-open rests on one premise: the transport is still usable. A
+        # queue consumer parked inside a transport write is that premise being
+        # falsified — and nothing this function does to the arbiter's own
+        # state can unwind that await, so keeping the connection would leave
+        # the sole consumer wedged while telling every later caller the lane
+        # had recovered. Tearing the transport down is what unblocks the write
+        # (the transport's close wakes its drain waiter), so in that state the
+        # escape hatch deliberately declines to apply. Worst case is exactly
+        # today's shipped default, never worse.
+        if self._fail_open and not self._worker_send_in_flight:
             # Wording differs on purpose: the fail-closed line below is the
             # documented grep target for attributing a field disconnect, and
             # this path did not disconnect anyone.
             logger.warning(
                 "response arbiter failing open, transport kept: %s "
-                "(current=%s owner=%s queue_depth=%d server_vad_pending=%s)",
+                "(current=%s owner=%s queue_depth=%d server_vad_pending=%s "
+                "worker_send_in_flight=%s)",
                 *lane_state,
             )
             self._release_stuck_lifecycle(reason)
             return
         logger.warning(
             "response arbiter failing closed: %s "
-            "(current=%s owner=%s queue_depth=%d server_vad_pending=%s)",
+            "(current=%s owner=%s queue_depth=%d server_vad_pending=%s "
+            "worker_send_in_flight=%s)",
             *lane_state,
         )
         self._mark_connection_lost(reason, fail_current_tickets=False)
@@ -1062,7 +1120,7 @@ class RealtimeResponseArbiter:
             for event in queued.events_before_response:
                 if queued.interrupted:
                     raise RuntimeError("response dispatch interrupted")
-                await self._send_event(event)
+                await self._worker_send(event)
 
             if queued.item_ack is not None:
                 try:
@@ -1092,7 +1150,7 @@ class RealtimeResponseArbiter:
             self._response_owner = queued
             queued.response_send_started = True
             try:
-                await self._send_event(queued.response_event)
+                await self._worker_send(queued.response_event)
             except Exception:
                 if self._response_owner is queued:
                     self._response_owner = None
@@ -1121,7 +1179,7 @@ class RealtimeResponseArbiter:
                     "response dispatch interrupted by pending server VAD response"
                 )
             if queued.interrupted:
-                await self._send_event({"type": "response.cancel"})
+                await self._worker_send({"type": "response.cancel"})
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(queued.terminal), queued.cancel_timeout
@@ -1215,7 +1273,7 @@ class RealtimeResponseArbiter:
         self, queued: _QueuedResponse, original_timeout: asyncio.TimeoutError
     ) -> None:
         try:
-            await self._send_event({"type": "response.cancel"})
+            await self._worker_send({"type": "response.cancel"})
             assert queued.terminal is not None
             await asyncio.wait_for(
                 asyncio.shield(queued.terminal), queued.cancel_timeout

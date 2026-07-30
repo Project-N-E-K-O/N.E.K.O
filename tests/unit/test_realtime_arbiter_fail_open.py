@@ -120,16 +120,21 @@ async def make_harness():
         await harness.arbiter.shutdown("test teardown")
 
 
-async def _stick_a_cancel(harness: _Harness) -> BaseException | None:
+async def _stick_a_cancel(harness: _Harness) -> Exception | None:
     """Cancel the live response whose terminal never arrives; return the raise.
 
     This drives the ``cancel_current`` escalation site, which is the one a
-    barge-in reaches in production.
+    barge-in reaches in production. Catching ``Exception`` rather than
+    ``BaseException`` is deliberate and sufficient: the expected raise is
+    ``asyncio.TimeoutError``, which is the builtin ``TimeoutError`` on 3.11 and
+    therefore an ``Exception``. A ``CancelledError`` here would mean the test
+    itself was cancelled, which should propagate rather than be reported as
+    the escalation's result.
     """
 
     try:
         await harness.arbiter.cancel_current(timeout=0.05)
-    except BaseException as exc:  # noqa: BLE001 - the raise itself is asserted
+    except Exception as exc:  # noqa: BLE001 - the raise itself is asserted
         return exc
     return None
 
@@ -387,6 +392,129 @@ async def test_fail_open_clears_the_bookkeeping_it_gave_up_on(make_harness):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_late_created_after_fail_open_closes_the_lane_on_purpose(make_harness):
+    # Greptile P1 on PR #2592: after fail-open drops the abandoned ids, a
+    # delayed response.created is recorded as a server-initiated response and
+    # closes the lane again.
+    #
+    # That is deliberate, and the alternative is the defect the arbiter exists
+    # to prevent: the provider has just said a response IS live, so dispatching
+    # the next response.create would collide with it (response_already_active).
+    # Abandoning our own ticket never made the server's response go away.
+    #
+    # What must hold is that it is a PAUSE, not a wedge — its terminal reopens
+    # the lane normally. The no-terminal case is the test below.
+    harness = make_harness(fail_open=True)
+    await harness.own_a_live_response("resp-abandoned")
+
+    raised = await _stick_a_cancel(harness)
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+    assert harness.arbiter.is_busy is False
+
+    # The abandoned response finally announces itself, THEN the next turn is
+    # submitted — that ordering is the one Greptile's scenario is about.
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-abandoned"}}
+    )
+    await _settle()
+    assert harness.arbiter.is_busy is True, (
+        "a live provider response must hold the lane even though we gave up "
+        "on our own ticket for it"
+    )
+
+    dispatched_before = harness.dispatch_count
+    queued = await harness.arbiter.enqueue(source="native-next")
+    await _settle()
+    assert harness.dispatch_count == dispatched_before, (
+        "dispatching under a live provider response is exactly the "
+        "response_already_active collision the arbiter exists to prevent"
+    )
+
+    # Its terminal releases the lane through the ordinary path — no second
+    # escalation, no teardown.
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-abandoned"}}
+    )
+    await _settle()
+    assert harness.dispatch_count == dispatched_before + 1
+    assert harness.aborted == []
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-next"}}
+    )
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-next"}}
+    )
+    await asyncio.wait_for(queued.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_late_created_with_no_terminal_reopens_on_the_staleness_bound(
+    make_harness, caplog
+):
+    # The other half of the Greptile P1: if that late response's terminal never
+    # arrives either, recovery must NOT require a second escalation. Recording
+    # the id arms the staleness timer (_remember_server_response_id ->
+    # _arm_stale_release_timer), and that timer reopens the lane on its own.
+    harness = make_harness(fail_open=True)
+    await harness.own_a_live_response("resp-abandoned")
+
+    raised = await _stick_a_cancel(harness)
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    # Shrink the bound BEFORE the id is recorded: the timer's deadline is
+    # computed from the value in force at that moment. Deliberately nothing is
+    # enqueued while the timer runs — ``enqueue`` ratchets
+    # ``_server_response_max_age`` up to the ticket's own
+    # ``response_done_timeout`` (60s by default), which would push the deadline
+    # back out of unit-test range. That ratchet is by design and is what makes
+    # the staleness release beat a later ticket's own idle-wait timeout: the
+    # timer is armed from the created timestamp, the ticket's deadline only
+    # starts once it reaches the idle wait, so the release always lands first.
+    harness.arbiter._server_response_max_age = 0.05
+    caplog.clear()
+    with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+        harness.arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-abandoned"}}
+        )
+        await _settle()
+        assert harness.arbiter.is_busy is True
+        assert harness.arbiter._stale_release_handle is not None, (
+            "recording a server response id must arm the staleness timer — "
+            "that timer IS the recovery path when its terminal never comes"
+        )
+
+        # No terminal ever comes for the late response.
+        await asyncio.sleep(0.2)
+        await _settle()
+
+    assert harness.arbiter._server_response_ids == {}
+    assert harness.arbiter.is_busy is False, (
+        "the staleness bound must reopen the lane by itself"
+    )
+    assert harness.aborted == [], "recovery must not cost the connection"
+    assert not any(
+        "failing open" in record.getMessage()
+        or "failing closed" in record.getMessage()
+        for record in caplog.records
+    ), "recovery must not need a second escalation"
+
+    # And the reopened lane really serves the next turn.
+    revived = await harness.arbiter.enqueue(source="native-next")
+    await asyncio.wait_for(revived.sent, timeout=1)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-next"}}
+    )
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-next"}}
+    )
+    await asyncio.wait_for(revived.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_fail_open_survives_a_stuck_idle_wait_and_serves_the_next_turn(make_harness):
     # The idle-wait site is the most valuable fail-open case: a queued request
     # waited out its whole allowance for a lane held by bookkeeping that never
@@ -445,6 +573,254 @@ async def test_default_policy_kills_the_connection_on_the_same_stuck_idle_wait(m
     dead = await harness.arbiter.enqueue(source="native-after")
     with pytest.raises(ConnectionError):
         await asyncio.wait_for(dead.sent, timeout=1)
+
+
+# ---------------------------------------------------------------------------
+# The host's own response state has to be released too (Codex P2 on PR #2592).
+#
+# ``_is_responding`` lives on the client, is set on response.created, and is
+# cleared only by that response's own response.done or an interruption. The
+# turn fail-open abandons is precisely the one whose terminal never comes — so
+# without a notification the client reports busy forever and the proactive
+# gates hold back exactly the work the kept-alive connection was for.
+#
+# These use a REAL client on purpose: _Harness has no _is_responding at all,
+# which is why every other case in this file is blind to the defect.
+# ---------------------------------------------------------------------------
+
+
+class _ClientRig:
+    """A real OmniRealtimeClient whose arbiter can be driven to escalate."""
+
+    def __init__(self) -> None:
+        from main_logic.omni_realtime_client import OmniRealtimeClient
+
+        self.sent: list[dict] = []
+        self.client = OmniRealtimeClient(
+            "wss://example.invalid/realtime",
+            "test-key",
+            model="free-model",
+            api_type="free",
+        )
+
+        async def _send(event: dict) -> None:
+            self.sent.append(event)
+
+        # Replace the transport write, not the arbiter: the point is to drive
+        # the production arbiter the client built for itself. A non-suspending
+        # stub is required — a stalling one would trip the worker-send guard
+        # above and make the policy stand down instead of releasing.
+        self.client._response_arbiter._send_event = _send
+
+    @property
+    def arbiter(self):
+        return self.client._response_arbiter
+
+    async def drive_to_escalation(self) -> Exception | None:
+        ticket = await self.arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        # Go through the transport's own handler so _is_responding is set the
+        # way production sets it, not by assignment.
+        self.client._response_arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        self.client._current_response_id = "resp-1"
+        self.client._is_responding = True
+        try:
+            await self.arbiter.cancel_current(timeout=0.05)
+        except Exception as exc:  # noqa: BLE001 - the raise itself is asserted
+            return exc
+        return None
+
+
+@pytest.fixture
+async def client_rig(monkeypatch):
+    monkeypatch.setenv(FAIL_OPEN_ENV_VAR, "1")
+    rig = _ClientRig()
+    yield rig
+    await rig.arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_fail_open_release_clears_the_clients_response_state(client_rig):
+    assert client_rig.arbiter._fail_open is True
+    raised = await client_rig.drive_to_escalation()
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    assert client_rig.arbiter.is_busy is False
+    assert client_rig.client._is_responding is False, (
+        "the host must stop reporting a response in progress, or the "
+        "connection fail-open kept alive is useless to proactive chat"
+    )
+    assert client_rig.client.is_active_response() is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_lazily_built_arbiter_gets_the_same_notification(client_rig):
+    # _responses.py builds an arbiter on demand when one is missing. That is a
+    # second, independent injection point; wiring only the eager one leaves the
+    # lazy path silently unnotified.
+    del client_rig.client._response_arbiter
+    rebuilt = client_rig.client._ensure_response_arbiter()
+
+    async def _send(event: dict) -> None:
+        client_rig.sent.append(event)
+
+    rebuilt._send_event = _send
+    assert rebuilt._on_stuck_release is not None, (
+        "the lazy construction point must inject the host notification too"
+    )
+
+    raised = await client_rig.drive_to_escalation()
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+    assert client_rig.client._is_responding is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_notification_touches_nothing_else(client_rig):
+    # Both of these would be tempting to reset here and both would be wrong:
+    # _skip_until_next_response is cleared only by response.done, so setting it
+    # would mute the entire next turn; _interrupted gates the AI-activity
+    # timestamps that proactive delivery uses to avoid talking over audio the
+    # provider is still streaming.
+    client_rig.client._skip_until_next_response = False
+    client_rig.client._interrupted = False
+
+    raised = await client_rig.drive_to_escalation()
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    assert client_rig.client._is_responding is False
+    assert client_rig.client._skip_until_next_response is False, (
+        "setting this would silence the next turn's text and audio entirely"
+    )
+    assert client_rig.client._interrupted is False, (
+        "setting this would suppress the AI-activity timestamps proactive "
+        "delivery depends on"
+    )
+    assert client_rig.client._current_response_id == "resp-1", (
+        "response identity is kept for terminal attribution, same as "
+        "handle_interruption keeps it"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Fail-open declines to apply while the queue consumer is parked inside a
+# transport write (Codex P2 on PR #2592). Fail-open's whole premise is "the
+# transport is still usable"; a write that never returns IS that premise being
+# falsified. Nothing the escalation does to the arbiter's own state unwinds
+# that await, and _run is the only consumer — so keeping the connection would
+# wedge every later request while reporting the lane recovered. Tearing the
+# transport down is what unblocks the write, so the hatch stands down.
+# ---------------------------------------------------------------------------
+
+
+class _StallingHarness(_Harness):
+    """Harness whose response.create write parks until the test releases it."""
+
+    def __init__(self, *, fail_open: bool) -> None:
+        super().__init__(fail_open=fail_open)
+        self.gate = asyncio.Event()
+
+    async def _send(self, event: dict) -> None:
+        self.sent.append(event)
+        if event.get("type") == "response.create":
+            await self.gate.wait()
+
+
+@pytest.fixture
+async def make_stalling_harness():
+    built: list[_StallingHarness] = []
+
+    def _factory(*, fail_open: bool) -> _StallingHarness:
+        harness = _StallingHarness(fail_open=fail_open)
+        built.append(harness)
+        return harness
+
+    yield _factory
+
+    for harness in built:
+        # Open the gate BEFORE shutdown: the worker is parked inside the write,
+        # and shutdown awaits it. Reaping without releasing reproduces the very
+        # hang this test is about, in the teardown.
+        harness.gate.set()
+        await harness.arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_stalled_worker_send_makes_fail_open_stand_down(
+    make_stalling_harness, caplog
+):
+    harness = make_stalling_harness(fail_open=True)
+    stuck = await harness.arbiter.enqueue(source="native")
+    await _settle()
+    # The worker is now parked inside the response.create write.
+    assert harness.types == ["response.create"]
+    assert not stuck.sent.done()
+    assert harness.arbiter._worker_send_in_flight is True
+
+    with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+        raised = await _stick_a_cancel(harness)
+
+    assert isinstance(raised, asyncio.TimeoutError)
+    # (a) it tore the transport down after all...
+    assert harness.aborted == [
+        "response cancellation terminal event timed out"
+    ], "fail-open must decline while the only consumer is stuck in a write"
+    # (b) ...and latched the connection shut, which is what unblocks the write
+    assert harness.arbiter._connection_available is False
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("failing closed" in message for message in messages)
+    assert any("worker_send_in_flight=True" in message for message in messages), (
+        "the log must say WHY an opted-in session failed closed anyway, or the "
+        "field cannot tell this apart from a plain fail-closed session"
+    )
+
+    # (c) later work fails fast instead of queueing behind a wedged consumer
+    later = await harness.arbiter.enqueue(source="native-after")
+    with pytest.raises(ConnectionError):
+        await asyncio.wait_for(later.sent, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_stalled_send_outcome_is_identical_under_both_policies(
+    make_stalling_harness,
+):
+    # The dual: having stood down, fail-open converges on exactly the default
+    # terminal state. That equivalence is the argument that the stand-down can
+    # never be worse than what ships today.
+    outcomes = {}
+    for fail_open in (False, True):
+        harness = make_stalling_harness(fail_open=fail_open)
+        stuck = await harness.arbiter.enqueue(source="native")
+        await _settle()
+        assert not stuck.sent.done()
+
+        raised = await _stick_a_cancel(harness)
+        later = await harness.arbiter.enqueue(source="native-after")
+        later_error = None
+        try:
+            await asyncio.wait_for(later.sent, timeout=1)
+        except Exception as exc:  # noqa: BLE001 - the type is the assertion
+            later_error = type(exc).__name__
+
+        outcomes[fail_open] = (
+            type(raised).__name__,
+            tuple(harness.aborted),
+            harness.arbiter._connection_available,
+            later_error,
+        )
+
+    assert outcomes[True] == outcomes[False], (
+        f"stalled-send terminal state must not depend on the policy: {outcomes}"
+    )
 
 
 @pytest.mark.unit
