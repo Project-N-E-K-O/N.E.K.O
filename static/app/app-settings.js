@@ -579,6 +579,7 @@
             focusCognitionEnabled: true,
             noiseReductionEnabled: true,
             independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
             avatarReactionBubbleEnabled: true,
             slopFilterEnabled: true,
             proactiveChatInterval: Number.isFinite(C.DEFAULT_PROACTIVE_CHAT_INTERVAL)

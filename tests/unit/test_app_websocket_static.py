@@ -1555,13 +1555,15 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             reset.S.slopFilterEnabled === true
               && reset.S.proactiveVisionEnabled === resetVisionDefault
-              && reset.S.independentAsrEnabled === false,
+              && reset.S.independentAsrEnabled === false
+              && reset.S.voiceInputResourceOptimizationEnabled === true,
             'an empty authoritative restore must reset stale local values to defaults: '
               + JSON.stringify({
                 slop: reset.S.slopFilterEnabled,
                 vision: reset.S.proactiveVisionEnabled,
                 visionDefault: resetVisionDefault,
                 asr: reset.S.independentAsrEnabled,
+                optimization: reset.S.voiceInputResourceOptimizationEnabled,
               })
           );
           assert(reset.postCalls.length === 1, 'the reset defaults must be written back once');
@@ -1584,7 +1586,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             resetBody.slopFilterEnabled === true
               && resetBody.proactiveVisionEnabled === resetVisionDefault
-              && resetBody.independentAsrEnabled === false,
+              && resetBody.independentAsrEnabled === false
+              && resetBody.voiceInputResourceOptimizationEnabled === true,
             'the reset writeback must not repopulate the server with stale localStorage'
           );
           reset.postCalls[0].resolve(response(

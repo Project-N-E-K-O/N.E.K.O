@@ -247,6 +247,7 @@ class AsrRuntimeMixin:
         self._independent_asr_route_key: str | None = None
         self._independent_asr_handshake_override: bool | None = None
         self._voice_input_resource_optimization_handshake_override: bool | None = None
+        self._voice_input_resource_optimization_session_value: bool | None = None
         self._voice_input_noise_reduction_enabled = True
         self._voice_input_audio_pipeline = VoiceInputAudioPipeline(
             nr_enabled=self._voice_input_noise_reduction_enabled,
@@ -340,6 +341,11 @@ class AsrRuntimeMixin:
             "_voice_input_resource_optimization_handshake_override",
         ):
             self._voice_input_resource_optimization_handshake_override = None
+        if not hasattr(
+            self,
+            "_voice_input_resource_optimization_session_value",
+        ):
+            self._voice_input_resource_optimization_session_value = None
         if not hasattr(self, "_core_asr_preview_turn_id"):
             self._core_asr_preview_turn_id = ""
         if not hasattr(self, "_core_asr_preview_text"):
@@ -523,9 +529,8 @@ class AsrRuntimeMixin:
         ``handshake_override`` carries the start_session handshake belonging to
         THIS start operation, snapshotted by ``start_session`` before its first
         await. Ellipsis means "not supplied" — the internal re-entry paths
-        (hot-swap, device change) have no request of their own and fall back to
-        the shared field, which is correct for them: they inherit whatever the
-        live session was started with.
+        (hot-swap, device change) have no request of their own and reuse the
+        accepted live session's optimization choice.
         """
         self._ensure_asr_runtime_state()
         operation_generation = self._begin_asr_route_operation()
@@ -668,20 +673,33 @@ class AsrRuntimeMixin:
             enabled = handshake_enabled
         else:
             enabled = bool(settings.get("independentAsrEnabled", True))
-        optimization_handshake = (
-            getattr(
+        optimization_handshake = resource_optimization_override
+        if resource_optimization_override is ...:
+            optimization_handshake = getattr(
                 self,
-                "_voice_input_resource_optimization_handshake_override",
+                "_voice_input_resource_optimization_session_value",
                 None,
             )
-            if resource_optimization_override is ...
-            else resource_optimization_override
-        )
+            if optimization_handshake is None:
+                optimization_handshake = getattr(
+                    self,
+                    "_voice_input_resource_optimization_handshake_override",
+                    None,
+                )
         optimization_value = (
             optimization_handshake
             if optimization_handshake is not None
             else settings.get("voiceInputResourceOptimizationEnabled", True)
         )
+        resolved_optimization_value = optimization_value is not False
+        if resource_optimization_override is not ...:
+            # Only an accepted start_session call supplies this argument.
+            # Losing/deduplicated requests may still overwrite the manager-level
+            # handshake field, so internal provider restarts must use this
+            # session-owned snapshot instead.
+            self._voice_input_resource_optimization_session_value = (
+                resolved_optimization_value
+            )
         if not enabled:
             self._set_microphone_route("native")
             await self._send_core_asr_status(
@@ -694,7 +712,7 @@ class AsrRuntimeMixin:
             return
         result = await self._asr_runtime.start(
             route_key=core_type,
-            resource_optimization_enabled=optimization_value is not False,
+            resource_optimization_enabled=resolved_optimization_value,
             # Session language follows the Core-tracked user language; the
             # asr_client factory maps it per provider and falls back to
             # automatic detection when it is unset or unsupported.

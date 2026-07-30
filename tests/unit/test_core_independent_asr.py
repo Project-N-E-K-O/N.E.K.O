@@ -1790,13 +1790,16 @@ async def test_runtime_state_initializes_and_backfills_phase4a_fields() -> None:
     runtime = _Runtime()
 
     assert runtime._voice_input_resource_optimization_handshake_override is None
+    assert runtime._voice_input_resource_optimization_session_value is None
     assert runtime._core_asr_preview_turn_token is None
 
     del runtime._voice_input_resource_optimization_handshake_override
+    del runtime._voice_input_resource_optimization_session_value
     del runtime._core_asr_preview_turn_token
     runtime._ensure_asr_runtime_state()
 
     assert runtime._voice_input_resource_optimization_handshake_override is None
+    assert runtime._voice_input_resource_optimization_session_value is None
     assert runtime._core_asr_preview_turn_token is None
 
 
@@ -4838,6 +4841,50 @@ async def test_resource_optimization_handshake_false_overrides_persisted_enabled
     await runtime._start_independent_asr_if_enabled("audio")
 
     assert start_mock.await_args.kwargs["resource_optimization_enabled"] is False
+
+
+async def test_provider_restart_reuses_accepted_session_optimization(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voiceInputResourceOptimizationEnabled": True,
+            }
+        ),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=0,
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        resource_optimization_override=False,
+    )
+    assert runtime._voice_input_resource_optimization_session_value is False
+
+    # A losing/deduplicated request may overwrite the shared handshake, but a
+    # provider-changing restart still belongs to the already accepted session.
+    runtime.set_voice_input_resource_optimization_handshake(True)
+    runtime.core_api_type = "openai"
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    assert start_mock.await_count == 2
+    assert all(
+        call.kwargs["resource_optimization_enabled"] is False
+        for call in start_mock.await_args_list
+    )
 
 
 @pytest.mark.parametrize("malformed", ["false", 0, 1, [False], {"enabled": False}])

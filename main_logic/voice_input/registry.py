@@ -144,7 +144,15 @@ class VoiceInputRegistry:
 
     async def prepare_utterance(self, token: VoiceTurnToken) -> bool:
         route = self._live_utterance(token)
-        if route is None or not self._route_is_available(route):
+        if route is None:
+            return False
+        if not self._route_is_available(route):
+            consumed = self._consume_route(token)
+            if consumed is route:
+                await self._notify_cancelled(
+                    consumed,
+                    "consumer_unavailable",
+                )
             return False
         route.pending_prepare_callbacks += 1
         route.prepare_callbacks_idle.clear()

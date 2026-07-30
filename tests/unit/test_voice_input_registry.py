@@ -289,6 +289,27 @@ async def test_unavailable_consumer_keeps_input_fail_closed() -> None:
     assert registry.begin_utterance(_turn()) is False
 
 
+async def test_consumer_becoming_unavailable_before_prepare_consumes_route() -> None:
+    registry = VoiceInputRegistry()
+    game = _consumer()
+    registration = registry.register_builtin(
+        BuiltinVoiceInputConsumer.GAME,
+        game,
+    )
+    registry.activate(registration.handle)
+    turn = _turn()
+
+    assert registry.begin_utterance(turn) is True
+    game.is_available = lambda: False
+
+    assert await registry.prepare_utterance(turn) is False
+    game.prepare_turn.assert_not_awaited()
+    game.on_cancelled.assert_awaited_once_with(turn, "consumer_unavailable")
+
+    game.is_available = lambda: True
+    assert registry.begin_utterance(turn) is True
+
+
 async def test_availability_error_keeps_input_fail_closed() -> None:
     registry = VoiceInputRegistry()
     game = _consumer()
