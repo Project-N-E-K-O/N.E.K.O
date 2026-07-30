@@ -387,14 +387,25 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     """
     assignments: dict[str, list[tuple[int, int]]] = {}
     for node in ast.walk(tree):
+        name: str | None = None
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
         ):
-            assignments.setdefault(node.targets[0].id, []).append(
-                (node.lineno, id(node.value))
-            )
+            name = node.targets[0].id
+        elif (
+            # `T: dict[str, str] = {...}` — an annotated binding is still a
+            # binding, and typed prompt constants are ordinary style. Missing them
+            # left the table unexempted and reported despite being compliant.
+            isinstance(node, ast.AnnAssign)
+            and isinstance(node.target, ast.Name)
+            and node.value is not None
+        ):
+            name = node.target.id
+        if name is None:
+            continue
+        assignments.setdefault(name, []).append((node.lineno, id(node.value)))
     for bindings in assignments.values():
         bindings.sort()
 

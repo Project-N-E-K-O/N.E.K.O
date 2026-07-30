@@ -1415,3 +1415,29 @@ def test_exemption_covers_a_binding_mutated_on_the_same_line():
     src = 'T = {"en": "e", "zh": "s"}; T["zh-TW"] = "t"'
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == []
+
+
+@pytest.mark.parametrize("src", [
+    'T: dict[str, str] = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"',
+    'T: dict = {"en": "e", "zh": "s"}\nT.update({"zh-TW": "t"})',
+    '_F: dict[str, str] = {"en": "e", "zh": "s"}\nT = {**_F, "zh-TW": "t"}',
+])
+def test_annotated_binding_is_exempt_too(src):
+    """An annotated assignment is still a binding.
+
+    Typed prompt constants are ordinary style; collecting only ast.Assign left
+    their tables unexempted and reported despite being compliant at runtime.
+    """
+    assert _violations(src) == []
+
+
+def test_annotated_binding_without_a_value_is_ignored():
+    """A bare `T: dict` declares nothing to exempt and must not crash."""
+    src = 'T: dict\nT2 = {"en": "e", "zh": "s"}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [2]
+
+
+def test_annotated_offender_is_still_reported():
+    """The exemption is about mutations, not about annotations."""
+    assert _violations('T: dict[str, str] = {"en": "e", "zh": "s"}') == [1]
