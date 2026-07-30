@@ -709,8 +709,8 @@ def test_an_intensifier_against_the_alias_is_not_a_negation(label, expected, con
 @pytest.mark.parametrize("text", [
     # a real negation sitting in front of a blocklisted intensifier
     "別特別開心", "别特别生气", "不要特別開心",
-    # compound negations, which the heuristic had no entry for
-    "不會真的開心", "不再那麼難過", "不算很開心", "未必開心",
+    # a compound already in the wide table before this PR
+    "不算很開心",
 ])
 def test_degraded_heuristic_keeps_these_negated(text):
     """Blanking a blocklisted phrase with spaces pushed a real negation out of
@@ -718,3 +718,38 @@ def test_degraded_heuristic_keeps_these_negated(text):
     from main_routers.system_router.emotion import _infer_emotion_from_text
 
     assert _infer_emotion_from_text(text)[0] is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    # the wide lookback fires on the whole 14-character span, so a modal negation
+    # would swallow an unrelated predicate in the same punctuation-free clause
+    ("我不会唱歌也很开心", "happy"),
+    ("他不会来所以我很难过", "sad"),
+])
+def test_modal_negations_stay_out_of_the_wide_lookback(text, expected):
+    """They belong to the label parser's table, which tests adjacency instead.
+
+    Adding them here suppressed the emotion of a different clause entirely — the
+    two tables look alike but admit words on different terms.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] == expected
+
+
+@pytest.mark.parametrize("text,expected", [
+    # a negation separated from the keyword by a degree word: the single
+    # character falls outside the two-character tight window
+    ("不要那麼難過", "sad"), ("不要那么难过", "sad"),
+    ("不要太開心", "happy"), ("我沒有必要生氣", "angry"),
+])
+def test_documented_gap_negation_across_a_degree_word(text, expected):
+    """Pinned so a change here is deliberate, not accidental.
+
+    Both orthographies behave the same, on main as here — closing it means
+    carrying a negation across intervening words in the heuristic, which is a
+    different mechanism from either table and out of scope for a backfill.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] == expected
