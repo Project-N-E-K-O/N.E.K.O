@@ -73,8 +73,22 @@ def _clear_review_output_exhaustion_state(state: dict) -> bool:
     return changed
 
 
-def _mutate_clear_output_exhaustion(state: dict) -> tuple[bool, None]:
-    """Mutator: clear the output-exhaustion breaker (Gate 6a recovery)."""
+def _mutate_clear_output_exhaustion(
+    state: dict, *, seen_attempts: int, seen_min_tokens: int
+) -> tuple[bool, None]:
+    """Mutator: clear the output-exhaustion breaker, unless a newer failure was armed."""
+    # Gate 6a 的恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以
+    # 锁内要复查它依赖的那份输入还在不在：另一个后台 review 可能在那次 await 期间刚写下
+    # 一次**新的**输出耗尽失败（带着新的 attempts / min_context_tokens）。无条件清零会把
+    # 刚 armed 的断路器抹掉，于是那条已经证明压不动的 context 又会被放行重烧一轮。
+    # 与 _mutate_reset_review_fail_backoff 的锁内复查同构。
+    try:
+        current_min = int(state.get('review_output_exhaustion_min_context_tokens') or 0)
+    except (TypeError, ValueError):
+        current_min = 0
+    current_attempts = state.get('review_output_exhaustion_attempts', 0) or 0
+    if current_min != seen_min_tokens or current_attempts != seen_attempts:
+        return False, None
     return _clear_review_output_exhaustion_state(state), None
 
 
@@ -190,7 +204,14 @@ async def maybe_spawn_review(name: str) -> None:
                     f"失败最小值 {failed_min_tokens})，跳过本轮"
                 )
                 return
-            await gates._amutate_maint_state(name, _mutate_clear_output_exhaustion)
+            await gates._amutate_maint_state(
+                name,
+                functools.partial(
+                    _mutate_clear_output_exhaustion,
+                    seen_attempts=exhaustion_attempts,
+                    seen_min_tokens=failed_min_tokens,
+                ),
+            )
             logger.info(
                 f"[Review/spawn] {name}: context 已缩短 "
                 f"({current_tokens} < {failed_min_tokens})，恢复历史审阅"

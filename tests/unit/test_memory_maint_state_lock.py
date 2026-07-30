@@ -692,3 +692,65 @@ async def test_persist_failure_is_swallowed_and_memory_state_still_updated(clean
         "落盘失败被完全静默——吞异常的前提是至少留一条告警"
     )
     assert not gates._maint_state_lock.locked(), "落盘抛异常后锁没释放"
+
+
+# ── Gate 6a recovery: the in-lock recheck ───────────────────────────────
+# 恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以锁内要复查它依赖的
+# 那份输入还在不在。否则另一个后台 review 在那次 await 期间刚 armed 的新断路器会被抹掉，
+# 那条已经证明压不动的 context 又被放行重烧一轮。
+
+
+@pytest.mark.unit
+def test_gate6a_recovery_clears_when_the_observed_breaker_is_still_current() -> None:
+    """The Gate 6a mutator clears the breaker when nobody armed a newer one."""
+    state = {
+        'review_output_exhaustion_attempts': 2,
+        'review_output_exhaustion_min_context_tokens': 1000,
+        'review_output_exhaustion_blocked': True,
+    }
+
+    dirty, value = review._mutate_clear_output_exhaustion(
+        state, seen_attempts=2, seen_min_tokens=1000
+    )
+
+    assert (dirty, value) == (True, None)
+    assert state['review_output_exhaustion_attempts'] == 0
+    assert state['review_output_exhaustion_min_context_tokens'] is None
+    assert state['review_output_exhaustion_blocked'] is False
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("newer_state", "what_changed"),
+    [
+        (
+            {
+                'review_output_exhaustion_attempts': 2,
+                'review_output_exhaustion_min_context_tokens': 4000,
+                'review_output_exhaustion_blocked': True,
+            },
+            "min_context_tokens",
+        ),
+        (
+            {
+                'review_output_exhaustion_attempts': 3,
+                'review_output_exhaustion_min_context_tokens': 1000,
+                'review_output_exhaustion_blocked': True,
+            },
+            "attempts",
+        ),
+    ],
+    ids=["newer-min-tokens", "newer-attempts"],
+)
+def test_gate6a_recovery_keeps_a_breaker_armed_by_a_concurrent_writer(
+    newer_state: dict, what_changed: str
+) -> None:
+    """A breaker armed while the async token count ran must survive the recovery clear."""
+    before = dict(newer_state)
+
+    dirty, value = review._mutate_clear_output_exhaustion(
+        newer_state, seen_attempts=2, seen_min_tokens=1000
+    )
+
+    assert (dirty, value) == (False, None), f"{what_changed} 变了就不该清零"
+    assert newer_state == before, "复查失败时一个字段都不许动"
