@@ -21,9 +21,6 @@ param(
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')]
     [string]$Product = 'N.E.K.O',
 
-    [ValidateSet('stable', 'nightly')]
-    [string]$Channel = 'stable',
-
     [ValidatePattern('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')]
     [string]$MirrorId = 'aliyun',
 
@@ -56,6 +53,43 @@ function Invoke-Checked {
     }
 }
 
+function Get-Sha256 {
+    param([Parameter(Mandatory = $true)] [string]$Path)
+    return (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+
+function Test-OssObjectExists {
+    param([Parameter(Mandatory = $true)] [string]$ObjectUrl)
+    $null = & ossutil stat $ObjectUrl 2>$null
+    return $LASTEXITCODE -eq 0
+}
+
+function Invoke-UpdateMirrorSync {
+    param(
+        [Parameter(Mandatory = $true)] [string]$Endpoint,
+        [Parameter(Mandatory = $true)] [hashtable]$Headers,
+        [Parameter(Mandatory = $true)] [string]$Body
+    )
+    for ($attempt = 1; $attempt -le 3; $attempt++) {
+        try {
+            Invoke-RestMethod -Method Post -Uri $Endpoint -Headers $Headers -ContentType 'application/json' -Body $Body -TimeoutSec 30 | Out-Null
+            return
+        }
+        catch {
+            $statusCode = $null
+            if ($_.Exception.Response) {
+                $statusCode = [int]$_.Exception.Response.StatusCode
+            }
+            $retryable = $null -eq $statusCode -or $statusCode -eq 408 -or $statusCode -eq 429 -or $statusCode -ge 500
+            if (-not $retryable -or $attempt -eq 3) {
+                throw
+            }
+            Write-Warning "Mirror registration attempt $attempt failed; retrying."
+            Start-Sleep -Seconds (2 * $attempt)
+        }
+    }
+}
+
 foreach ($command in @('gh', 'ossutil', 'curl.exe')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
         throw "Required local command was not found: $command"
@@ -82,6 +116,23 @@ $duplicateNames = @($assets | Group-Object Name | Where-Object { $_.Count -gt 1 
 if ($duplicateNames.Count -gt 0) {
     throw "Duplicate staged asset names: $($duplicateNames.Name -join ', ')"
 }
+$assetHashes = @{}
+$assetNameSet = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+foreach ($asset in $assets) {
+    $assetHashes[$asset.Name] = Get-Sha256 -Path $asset.FullName
+    [void]$assetNameSet.Add($asset.Name)
+}
+foreach ($manifest in @($assets | Where-Object { $_.Name.EndsWith('_manifest.json', [System.StringComparison]::Ordinal) })) {
+    if (-not $assetNameSet.Contains("$($manifest.Name).sig")) {
+        throw "Portable manifest is missing its signature asset: $($manifest.Name).sig"
+    }
+}
+foreach ($signature in @($assets | Where-Object { $_.Name.EndsWith('.sig', [System.StringComparison]::Ordinal) })) {
+    $manifestName = $signature.Name.Substring(0, $signature.Name.Length - 4)
+    if (-not $assetNameSet.Contains($manifestName)) {
+        throw "Portable signature has no matching manifest: $($signature.Name)"
+    }
+}
 
 $remoteAssetNames = @(& gh release view $Tag '--repo' $Repository '--json' 'assets' '--jq' '.assets[].name')
 if ($LASTEXITCODE -ne 0) {
@@ -100,23 +151,42 @@ if ($LASTEXITCODE -ne 0 -or $latestTag -ne $Tag) {
 
 $ossRoot = $OssReleaseRoot.TrimEnd('/')
 $cdnRoot = $CdnBaseUrl.TrimEnd('/')
-foreach ($asset in $assets) {
-    Write-Host "Uploading staged asset $($asset.Name)"
-    $objectUrl = '{0}/{1}/{2}/{3}' -f $ossRoot, $Product, $version, $asset.Name
-    Invoke-Checked ossutil 'cp' $asset.FullName $objectUrl '-f' '--meta' 'Cache-Control:public, max-age=31536000, immutable'
-}
+$verificationDirectory = Join-Path ([System.IO.Path]::GetTempPath()) ("neko-release-verify-" + [Guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $verificationDirectory | Out-Null
+try {
+    foreach ($asset in $assets) {
+        $objectUrl = '{0}/{1}/{2}/{3}' -f $ossRoot, $Product, $version, $asset.Name
+        if (Test-OssObjectExists -ObjectUrl $objectUrl) {
+            $existingObject = Join-Path $verificationDirectory ("oss-" + $asset.Name)
+            Invoke-Checked -FilePath ossutil -Arguments @('cp', $objectUrl, $existingObject)
+            if ((Get-Sha256 -Path $existingObject) -ne $assetHashes[$asset.Name]) {
+                throw "Refusing to overwrite immutable OSS object with different content: $objectUrl"
+            }
+            Write-Host "Existing OSS asset already matches staged content: $($asset.Name)"
+            continue
+        }
 
-foreach ($asset in $assets) {
-    $cdnUrl = '{0}/releases/{1}/{2}/{3}' -f $cdnRoot, [Uri]::EscapeDataString($Product), [Uri]::EscapeDataString($version), [Uri]::EscapeDataString($asset.Name)
-    Write-Host "Verifying CDN asset $($asset.Name)"
-    Invoke-Checked curl.exe '--fail' '--location' '--retry' '12' '--retry-all-errors' '--retry-delay' '5' `
-        '--connect-timeout' '10' '--max-time' '60' '--range' '0-0' '--output' 'NUL' $cdnUrl
-}
+        Write-Host "Uploading staged asset $($asset.Name)"
+        Invoke-Checked -FilePath ossutil -Arguments @('cp', $asset.FullName, $objectUrl, '--meta', 'Cache-Control:public, max-age=31536000, immutable')
+    }
 
-$escapedProduct = [Uri]::EscapeDataString($Product)
-$escapedChannel = [Uri]::EscapeDataString($Channel)
-$endpoint = '{0}/v1/admin/{1}/{2}/sync' -f $ServiceUrl.TrimEnd('/'), $escapedProduct, $escapedChannel
-$headers = @{ Authorization = "Bearer $adminToken" }
-$body = @{ version = $version; mirror_ids = @($MirrorId) } | ConvertTo-Json -Compress
-Invoke-RestMethod -Method Post -Uri $endpoint -Headers $headers -ContentType 'application/json' -Body $body | Out-Null
+    foreach ($asset in $assets) {
+        $cdnUrl = '{0}/releases/{1}/{2}/{3}' -f $cdnRoot, [Uri]::EscapeDataString($Product), [Uri]::EscapeDataString($version), [Uri]::EscapeDataString($asset.Name)
+        $downloadedAsset = Join-Path $verificationDirectory ("cdn-" + $asset.Name)
+        Write-Host "Verifying CDN asset bytes $($asset.Name)"
+        Invoke-Checked -FilePath curl.exe -Arguments @('--fail', '--location', '--retry', '12', '--retry-all-errors', '--retry-delay', '5', '--connect-timeout', '10', '--max-time', '1800', '--output', $downloadedAsset, $cdnUrl)
+        if ((Get-Sha256 -Path $downloadedAsset) -ne $assetHashes[$asset.Name]) {
+            throw "CDN returned different content for $cdnUrl"
+        }
+    }
+
+    $escapedProduct = [Uri]::EscapeDataString($Product)
+    $endpoint = '{0}/v1/admin/{1}/stable/sync' -f $ServiceUrl.TrimEnd('/'), $escapedProduct
+    $headers = @{ Authorization = "Bearer $adminToken" }
+    $body = @{ version = $version; mirror_ids = @($MirrorId) } | ConvertTo-Json -Compress
+    Invoke-UpdateMirrorSync -Endpoint $endpoint -Headers $headers -Body $body
+}
+finally {
+    Remove-Item -LiteralPath $verificationDirectory -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Host "Registered mirror '$MirrorId' for $Product $Tag after CDN verification."

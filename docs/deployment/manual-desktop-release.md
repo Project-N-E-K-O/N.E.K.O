@@ -8,7 +8,7 @@ description: Build, sign, test, and publish stable desktop assets without a tag-
 Stable desktop packages are built and signed on their native build hosts. Pushing
 `v*` tags does not start a cloud build. The only automatic stable-release action
 starts after a maintainer publishes a GitHub Release: it validates the required
-Portable assets and syncs metadata to the update service.
+Portable assets only.
 
 Run `scripts/build-desktop-release.ps1` once on each target host. It signs the
 Portable manifests, stages the resulting assets under `release-assets/<version>/`,
@@ -58,9 +58,12 @@ $env:NEKO_UPDATE_ADMIN_TOKEN = '<secret>'
   -ServiceUrl 'https://update.project-neko.cn'
 ```
 
-The script uploads the already staged build artifacts directly; it never
-downloads them from GitHub. Before upload it verifies that the staged filenames
-exactly match the published Release, then verifies each CDN URL and registers the
-`aliyun` mirror. OSS credentials, endpoints, and Bucket names stay exclusively
-in the local ossutil configuration and are never added to GitHub Actions,
-repository variables, or repository files.
+The script supports stable releases only. It uploads the already staged build
+artifacts directly and never downloads them from GitHub. Before upload it verifies
+that staged filenames exactly match the published Release and that every Portable
+manifest has its matching `.sig` file. Existing immutable OSS objects are never
+overwritten: a rerun is allowed only when their SHA-256 matches the staged asset.
+Before registering the `aliyun` mirror, the script downloads every CDN asset and
+compares its SHA-256 with the staged asset. OSS credentials, endpoints, and Bucket
+names stay exclusively in the local ossutil configuration and are never added to
+GitHub Actions, repository variables, or repository files.

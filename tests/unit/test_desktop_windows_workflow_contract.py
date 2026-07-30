@@ -116,6 +116,11 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     assert '"${SIGNING_NOTE} Windows-only nightly build (${VERSION})."' in (
         windows_nightly["run"]
     )
+    full_nightly = nightly_steps["Create nightly release"]
+    assert full_nightly["env"]["REQUESTED_SKIP_SIGNING"] == "${{ inputs.skip_signing }}"
+    assert 'SIGNING_NOTE="unsigned"' in full_nightly["run"]
+    assert "N.E.K.O_*_win.zip" in full_nightly["run"]
+    assert "N.E.K.O.exe" not in full_nightly["run"]
 
 
 def test_workflow_values_are_passed_to_shell_through_environment_variables() -> None:
@@ -207,8 +212,18 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     assert "release-assets" in script
     assert "Get-ChildItem -LiteralPath $AssetsDirectory -Recurse -File" in script
     assert "gh release download" not in script
-    assert "ossutil 'cp' $asset.FullName" in script
     assert "Compare-Object -ReferenceObject" in script
+    assert "function Test-OssObjectExists" in script
+    assert "function Get-Sha256" in script
+    assert "Get-FileHash -LiteralPath $Path -Algorithm SHA256" in script
+    assert "Portable manifest is missing its signature asset" in script
+    assert "Portable signature has no matching manifest" in script
+    assert "Refusing to overwrite immutable OSS object" in script
+    assert "--max-time', '1800'" in script
+    assert "Invoke-UpdateMirrorSync" in script
+    assert "-TimeoutSec 30" in script
+    assert "ValidateSet('stable', 'nightly')" not in script
+    assert "/stable/sync" in script
     assert "NEKO_UPDATE_ADMIN_TOKEN" in script
 
 

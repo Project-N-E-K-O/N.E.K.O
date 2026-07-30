@@ -1082,9 +1082,15 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          REQUESTED_SKIP_SIGNING: ${{ inputs.skip_signing }}
         run: |
           VERSION="$RELEASE_VERSION"
           DATE=$(date +%Y-%m-%d)
+          if [[ "$REQUESTED_SKIP_SIGNING" == "true" || "$GITHUB_EVENT_NAME" == "schedule" ]]; then
+            SIGNING_NOTE="unsigned"
+          else
+            SIGNING_NOTE="signed"
+          fi
 
           gh release create nightly release/* \
             --title "Nightly Build ${DATE}" \
@@ -1093,7 +1099,7 @@ jobs:
             --notes "$(cat <<NOTES
           ## Nightly Build ${DATE} (${VERSION})
 
-          > ⚠️ This is an **unsigned** nightly build for testing purposes.
+          > ⚠️ This is a **${SIGNING_NOTE}** nightly build for testing purposes.
           >
           > 🍎 **macOS users:** If you see *"N.E.K.O is damaged and can't be opened"*, run this in Terminal:
           > \`\`\`bash
@@ -1103,7 +1109,7 @@ jobs:
           ### Desktop App (Electron + Python backend)
           | Platform | File |
           |----------|------|
-          | Windows x64 | \`N.E.K.O.exe\` (Portable) |
+          | Windows x64 | \`N.E.K.O_*_win.zip\` (Portable) |
           | macOS Intel | \`N.E.K.O-*.dmg\` / \`.zip\` |
           | macOS Apple Silicon | \`N.E.K.O-*-arm64.dmg\` / \`.zip\` |
           | Linux x64 | \`N.E.K.O-*.AppImage\` / \`.deb\` / \`.tar.gz\` |
