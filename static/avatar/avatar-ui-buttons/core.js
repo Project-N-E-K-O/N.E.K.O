@@ -97,7 +97,9 @@ function _getNekoDesktopVirtualViewportSize() {
         const cropState = cropApi && typeof cropApi.getState === 'function'
             ? cropApi.getState()
             : null;
-        const virtualBounds = cropState && cropState.virtualBounds;
+        const virtualBounds = cropState && cropState.enabled === true
+            ? cropState.virtualBounds
+            : null;
         const width = Number(virtualBounds && virtualBounds.width);
         const height = Number(virtualBounds && virtualBounds.height);
         if (Number.isFinite(width) && width > 0 &&

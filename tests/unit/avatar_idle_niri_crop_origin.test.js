@@ -271,6 +271,32 @@ test('CAT1 drag keeps using the virtual desktop size while the Pet window is cro
     assert.deepEqual(JSON.parse(JSON.stringify(size)), { width: 1706, height: 1066 });
 });
 
+test('CAT1 drag ignores stale virtual bounds after the Pet crop is disabled', () => {
+    const context = {
+        window: {
+            innerWidth: 360,
+            innerHeight: 408,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: false,
+                        virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 }
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/avatar/avatar-ui-buttons/core.js', '_getNekoDesktopVirtualViewportSize'),
+        context
+    );
+
+    const size = vm.runInContext('_getNekoDesktopVirtualViewportSize()', context);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(size)), { width: 360, height: 408 });
+});
+
 test('CAT1 automatic targets clamp against the virtual desktop instead of the Pet crop', () => {
     const context = {
         window: {
