@@ -76,7 +76,7 @@ export function useMarketAuth() {
   let marketAuthPollTimer: number | null = null
   let marketReadinessRetryTimer: number | null = null
   let marketReadinessRetryAttempts = 0
-  let marketReadinessNotifyOnReady = false
+  let marketReadinessUserInitiated = false
   let marketAuthStatusGeneration = 0
   let accountSummaryGeneration = 0
   // Sticky stop flag for the recursive setTimeout poll loop. Read by
@@ -156,13 +156,13 @@ export function useMarketAuth() {
   }
 
   async function loadMarketAuthStatus(
-    options: { notifyOnReady?: boolean } = {}
+    options: { userInitiated?: boolean } = {}
   ): Promise<boolean> {
     const generation = ++marketAuthStatusGeneration
     const token = await ensureBridgeToken({ forceRefresh: true })
     if (!token || generation !== marketAuthStatusGeneration) {
       if (generation === marketAuthStatusGeneration) {
-        finishMarketReadinessRetry(options.notifyOnReady)
+        finishMarketReadinessRetry(options.userInitiated)
       }
       return false
     }
@@ -170,9 +170,9 @@ export function useMarketAuth() {
       const res = await authedFetch('/market/oauth/status')
       if (!res.ok || generation !== marketAuthStatusGeneration) {
         if (res.status >= 500 && generation === marketAuthStatusGeneration) {
-          scheduleMarketReadinessRetry(options.notifyOnReady)
+          scheduleMarketReadinessRetry(options.userInitiated)
         } else if (generation === marketAuthStatusGeneration) {
-          finishMarketReadinessRetry(options.notifyOnReady)
+          finishMarketReadinessRetry(options.userInitiated)
         }
         return false
       }
@@ -180,7 +180,7 @@ export function useMarketAuth() {
       if (generation !== marketAuthStatusGeneration) return false
       marketAuth.value = status
       if (status.retryable) {
-        scheduleMarketReadinessRetry(options.notifyOnReady)
+        scheduleMarketReadinessRetry(options.userInitiated)
       } else {
         resetMarketReadinessRetryState()
       }
@@ -188,7 +188,7 @@ export function useMarketAuth() {
     } catch {
       // 登录态只是增强能力，失败不影响 Market 浏览和安装。
       if (generation === marketAuthStatusGeneration) {
-        scheduleMarketReadinessRetry(options.notifyOnReady)
+        scheduleMarketReadinessRetry(options.userInitiated)
       }
       return false
     }
@@ -265,7 +265,7 @@ export function useMarketAuth() {
   function resetMarketReadinessRetryState(): void {
     clearMarketReadinessRetryTimer()
     marketReadinessRetryAttempts = 0
-    marketReadinessNotifyOnReady = false
+    marketReadinessUserInitiated = false
   }
 
   function stopMarketReadinessRetry(): void {
@@ -273,11 +273,11 @@ export function useMarketAuth() {
     resetMarketReadinessRetryState()
   }
 
-  function finishMarketReadinessRetry(notifyOnFailure = false): void {
+  function finishMarketReadinessRetry(userInitiated = false): void {
     const authWasPending = marketAuth.value.auth_state === 'pending'
     const shouldNotify = (
       authWasPending
-      && (marketReadinessNotifyOnReady || notifyOnFailure)
+      && (marketReadinessUserInitiated || userInitiated)
     )
     resetMarketReadinessRetryState()
     marketAuthBusy.value = false
@@ -292,9 +292,9 @@ export function useMarketAuth() {
     }
   }
 
-  function scheduleMarketReadinessRetry(notifyOnReady = false): void {
+  function scheduleMarketReadinessRetry(userInitiated = false): void {
     clearMarketReadinessRetryTimer()
-    marketReadinessNotifyOnReady ||= notifyOnReady
+    marketReadinessUserInitiated ||= userInitiated
     if (marketReadinessRetryAttempts >= MARKET_READINESS_MAX_RETRIES) {
       finishMarketReadinessRetry()
       return
@@ -306,8 +306,10 @@ export function useMarketAuth() {
     )
     marketReadinessRetryTimer = window.setTimeout(async () => {
       marketReadinessRetryTimer = null
-      const notifyOnReady = marketReadinessNotifyOnReady
-      const applied = await loadMarketAuthStatus({ notifyOnReady })
+      const retryWasUserInitiated = marketReadinessUserInitiated
+      const applied = await loadMarketAuthStatus({
+        userInitiated: retryWasUserInitiated,
+      })
       if (!applied) return
       if (marketAuth.value.auth_state === 'pending') {
         marketAuthBusy.value = true
@@ -322,7 +324,7 @@ export function useMarketAuth() {
           appliedGeneration !== marketAuthStatusGeneration
           || !marketAuth.value.authenticated
         ) return
-        if (notifyOnReady) {
+        if (retryWasUserInitiated) {
           ElMessage.success(t('market.loginSuccess'))
         }
         return
@@ -402,7 +404,7 @@ export function useMarketAuth() {
           stopMarketAuthPolling()
           marketAuthBusy.value = false
           marketAuth.value = data
-          const statusApplied = await loadMarketAuthStatus({ notifyOnReady: true })
+          const statusApplied = await loadMarketAuthStatus({ userInitiated: true })
           if (!statusApplied) return
           if (marketAuth.value.auth_state === 'pending') {
             marketAuthBusy.value = true
