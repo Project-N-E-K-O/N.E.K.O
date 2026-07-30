@@ -19,6 +19,7 @@ import json
 import os
 from pathlib import Path
 import threading
+import time
 from typing import Dict, Any, Optional, List
 
 import portalocker
@@ -393,6 +394,7 @@ _ALLOWED_CONVERSATION_SETTINGS = {
 }
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
+_LEGACY_ASR_DECISION_WRITER_ID = "server-legacy"
 
 
 @dataclass(frozen=True)
@@ -440,6 +442,18 @@ def _normalize_asr_decision(value: Any) -> Optional[Dict[str, Any]]:
 
 def _asr_decision_key(decision: Dict[str, Any]) -> tuple[int, str]:
     return decision["writeId"], decision["writerId"]
+
+
+def _next_legacy_asr_decision(
+    current: Optional[Dict[str, Any]],
+    value: bool,
+) -> Dict[str, Any]:
+    current_write_id = current["writeId"] if current is not None else -1
+    return {
+        "writeId": max(time.time_ns() // 1_000_000, current_write_id + 1),
+        "writerId": _LEGACY_ASR_DECISION_WRITER_ID,
+        "value": value,
+    }
 
 
 def _snapshot_from_preferences_data(data: Any) -> ConversationSettingsSnapshot:
@@ -683,9 +697,16 @@ def save_global_conversation_settings_versioned(
                         changed = True
                     global_pref[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = incoming_decision
                 elif previous_asr_value != validated["independentAsrEnabled"]:
-                    if _CONVERSATION_SETTINGS_ASR_DECISION_KEY in global_pref:
+                    legacy_decision = _next_legacy_asr_decision(
+                        current.asr_decision,
+                        validated["independentAsrEnabled"],
+                    )
+                    if (
+                        global_pref.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
+                        != legacy_decision
+                    ):
                         changed = True
-                        global_pref.pop(_CONVERSATION_SETTINGS_ASR_DECISION_KEY, None)
+                    global_pref[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = legacy_decision
 
             global_pref["model_path"] = GLOBAL_CONVERSATION_KEY
             if changed:

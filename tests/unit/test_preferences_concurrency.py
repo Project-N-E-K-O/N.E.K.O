@@ -74,6 +74,42 @@ def test_versioned_save_rejects_stale_revision_and_asr_decision(monkeypatch, tmp
     assert stale_decision.snapshot.asr_decision == newer
 
 
+def test_legacy_asr_change_mints_decision_after_modern_token(monkeypatch, tmp_path):
+    _use_preferences_file(monkeypatch, tmp_path)
+    modern = {
+        "writeId": 20,
+        "writerId": "window-b",
+        "value": True,
+    }
+    first = preferences.save_global_conversation_settings_versioned(
+        {"independentAsrEnabled": True},
+        expected_revision=0,
+        asr_decision=modern,
+    )
+    assert first.success is True
+
+    legacy = preferences.save_global_conversation_settings_versioned(
+        {"independentAsrEnabled": False},
+        expected_revision=1,
+    )
+    assert legacy.success is True
+    assert legacy.snapshot.revision == 2
+    assert legacy.snapshot.asr_decision is not None
+    assert legacy.snapshot.asr_decision["value"] is False
+    assert preferences._asr_decision_key(
+        legacy.snapshot.asr_decision
+    ) > preferences._asr_decision_key(modern)
+
+    stale_modern = preferences.save_global_conversation_settings_versioned(
+        {"independentAsrEnabled": True},
+        expected_revision=2,
+        asr_decision=modern,
+    )
+    assert stale_modern.conflict is True
+    assert stale_modern.snapshot.settings["independentAsrEnabled"] is False
+    assert stale_modern.snapshot.asr_decision == legacy.snapshot.asr_decision
+
+
 def test_locked_partial_writes_preserve_both_concurrent_changes(monkeypatch, tmp_path):
     path = _use_preferences_file(
         monkeypatch,
