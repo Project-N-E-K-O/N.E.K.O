@@ -289,13 +289,22 @@ class ToolCallingMixin:
         # 发生时间 event_end_at → event_start_at → created_at（与 persona
         # 过时 block / temporal _past_anchor 同口径），让模型看到的是"事件
         # 什么时候发生"而不是"记忆什么时候写下"；再附一个本地化相对标签。
+        # 预算：与插件侧 memory_bridge.render_relevant_memory 对偶——单条按
+        # token 截断（不丢弃），整段过同一个 take_lines_within_token_budget。
+        # 这边条数由 hybrid_recall 的融合上限决定，比插件侧的 limit=5 松，
+        # 总闸更容易真的绑定。
+        from config import (
+            RECALL_RENDER_ENTRY_MAX_TOKENS,
+            RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
         from config.prompts.prompts_memory import render_recall_entry_tag
         from memory.temporal import (
             time_since_label as _time_label,
             _parse_iso_safe,
             to_naive_local,
         )
-        lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
+        from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
+        entry_lines: list[str] = []
         for i, r in enumerate(results, start=1):
             tag = render_recall_entry_tag(r.get("tier"), r.get("entity"), _lang)
             # str() coerce 防 malformed memory entry：facts/reflections.json
@@ -304,7 +313,10 @@ class ToolCallingMixin:
             # truthy non-string（时间戳尤其常见，老数据可能存 epoch int）。
             # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
             # tool call 翻 is_error，模型反而不能正常走。
-            text = str(r.get("text") or "").strip()
+            text = truncate_to_tokens(
+                str(r.get("text") or "").strip(),
+                RECALL_RENDER_ENTRY_MAX_TOKENS,
+            )
             # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
             # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
             # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
@@ -328,8 +340,19 @@ class ToolCallingMixin:
                 time_suffix = f"  ({date_part})"
             else:
                 time_suffix = ""
-            lines.append(f"{i}. {tag} {text}{time_suffix}")
-        return "\n".join(lines)
+            entry_lines.append(f"{i}. {tag} {text}{time_suffix}")
+        kept, dropped = take_lines_within_token_budget(
+            entry_lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
+        if dropped:
+            logger.info(
+                "[recall_memory] rendered block over %d tok budget; dropped "
+                "trailing %d entries", RECALL_RENDER_TOTAL_MAX_TOKENS, dropped,
+            )
+        # 首行 i18n 总览按**实际渲染出去的条数**算：报 n=8 却只列 5 条会让
+        # 模型以为剩下三条被自己漏掉了，追着再调一次工具。
+        header = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(kept))
+        return "\n".join([header] + kept)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """Sync the registry's current state to all active clients.

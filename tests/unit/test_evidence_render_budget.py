@@ -7,7 +7,9 @@ Covers:
   - PersonaManager._score_trim_entries / _ascore_trim_entries:
       * preserves protected entries regardless of budget (S12)
       * sorts by (evidence_score, importance) DESC
-      * stops at first overflow (kept text token sum ≤ budget)
+      * keeps the token sum within budget, skipping what does not fit
+        (the skip-don't-stop rule itself lives in
+        tests/unit/test_memory_render_token_budget.py)
   - 3-phase render: persona budget independent from reflection budget (S11)
 """
 from __future__ import annotations
@@ -17,6 +19,8 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from utils.tokenize import count_tokens
 
 
 # ── utils.tokenize ──────────────────────────────────────────────────
@@ -172,10 +176,14 @@ def _entry(eid: str, text: str, *, rein: float = 0.0, disp: float = 0.0,
     }
 
 
-def test_score_trim_breaks_at_budget():
-    """Sorted by (score, importance) DESC, stop at first entry whose
-    cumulative tokens would exceed budget. Lower-score entries are
-    silently dropped — they don't sneak in via fallback."""
+def test_score_trim_stays_within_budget():
+    """Sorted by (score, importance) DESC; the accumulated token count
+    never crosses the cap. Lower-score entries that don't fit are dropped
+    — they don't sneak in via fallback.
+
+    (An entry that doesn't fit is skipped rather than ending the loop; the
+    same-size fixture here can't tell the two apart, so that rule has its
+    own guard in `test_memory_render_token_budget.py`.)"""
     pm = _persona_manager()
     now = datetime.now()
     entries = [
@@ -185,7 +193,7 @@ def test_score_trim_breaks_at_budget():
         _entry('e4', 'D' * 40, rein=0.0),
     ]
     # tiny budget that fits ~1.5 entries given the all-latin text
-    kept = pm._score_trim_entries(entries, budget=15, now=now)
+    kept, used = pm._score_trim_entries(entries, budget=15, now=now)
 
     # At minimum the highest-score entry survives; nothing past the budget
     assert kept, "expected at least one entry under non-zero budget"
@@ -194,6 +202,11 @@ def test_score_trim_breaks_at_budget():
     )
     assert all(k['id'] != 'e4' for k in kept), (
         "lowest-score entry must be dropped under tight budget"
+    )
+    assert used <= 15, "kept token sum must respect the cap it was given"
+    assert used == sum(count_tokens(k['text']) for k in kept), (
+        "reported usage must match what the kept entries actually cost — "
+        "the per-subject allocator hands the remainder to the next subject"
     )
 
 
@@ -205,7 +218,7 @@ def test_score_trim_importance_breaks_score_ties():
         _entry('b', 'short', rein=2.0, importance=9),  # higher importance
         _entry('c', 'short', rein=2.0, importance=5),
     ]
-    kept = pm._score_trim_entries(entries, budget=10**6, now=now)
+    kept, _used = pm._score_trim_entries(entries, budget=10**6, now=now)
     # All fit; ordering must be by importance DESC inside the same score
     assert [k['id'] for k in kept] == ['b', 'c', 'a']
 

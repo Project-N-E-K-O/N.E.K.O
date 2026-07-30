@@ -147,8 +147,18 @@ class QQMemoryBridge:
         # tier / entity 是内部枚举（scoped 条目的 entity 恒等于 subject.kind），
         # 裸拼会让 `[fact/group_chat]` 出现在中文 prompt 里。与本体侧
         # main_logic/core/tool_calling.py 的召回渲染同一张标签表。
+        #
+        # 预算：这段此前只有"取前 5 条"，单条零上限——一条被合并出来的超长
+        # reflection 就能把召回段撑到几千 token。单条按 token 截断（不丢弃：
+        # 召回按相关度排，命中的那条留半段也比整条消失有用），整段按
+        # take_lines_within_token_budget 收口，与本体侧同一个 helper。
+        from config import (
+            RECALL_RENDER_ENTRY_MAX_TOKENS,
+            RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
         from config.prompts.prompts_memory import render_recall_entry_tag
         from utils.language_utils import get_global_language
+        from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
 
         lang = get_global_language()
         lines: list[str] = []
@@ -156,6 +166,7 @@ class QQMemoryBridge:
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
+            text = truncate_to_tokens(text, RECALL_RENDER_ENTRY_MAX_TOKENS)
             tag = render_recall_entry_tag(
                 item.get("tier"), item.get("entity"), lang,
             )
@@ -167,7 +178,15 @@ class QQMemoryBridge:
             ).strip()
             suffix = f" ({anchor[:10]})" if anchor else ""
             lines.append(f"{index}. {tag} {text}{suffix}")
-        return "\n".join(lines)
+        kept, dropped = take_lines_within_token_budget(
+            lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
+        if dropped:
+            self.plugin.logger.info(
+                f"QQ 长期记忆召回段超出 {RECALL_RENDER_TOTAL_MAX_TOKENS} tok 预算，"
+                f"丢弃末尾 {dropped} 条"
+            )
+        return "\n".join(kept)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
         client = self._client()

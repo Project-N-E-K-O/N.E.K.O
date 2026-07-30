@@ -266,8 +266,82 @@ async def test_failed_drain_returns_buckets_ahead_of_newer_turns():
     # 调度器已经把 due 标消费掉了，失败必须重新举起来。
     assert user_data["member_flush_due"] is True
     assert "member_drain_in_flight" not in user_data
-    # label 也要回到 live 映射，否则下一轮的 speaker_label 会退化成 QQ 号。
-    assert user_data["group_member_memory_labels"]["2046"] == "阿离(2046)"
+    # label 归还由下面两条专门的用例覆盖：这里的 record_group_member_turn
+    # 本身就会写回逐字相同的 "阿离(2046)"，在这条用例里断言它等于什么都
+    # 没测（删掉归还逻辑照样绿）。
+
+
+@pytest.mark.asyncio
+async def test_failed_drain_returns_the_label_of_a_sender_who_stayed_silent():
+    """The snapshot owns the display name while the bucket is in flight.
+
+    ``_take_snapshot`` pops the label out of the live map, so a bucket that
+    fails has to bring its name back — otherwise the next sweep's
+    ``speaker_label`` degrades to a bare QQ number and the extraction
+    prompt loses who was speaking. The sender under test says nothing
+    mid-flight; someone else does. A mid-flight turn from the SAME sender
+    re-creates a byte-identical label and hides whether the restore ran at
+    all.
+    """
+    in_flight = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    other_speaker = SimpleNamespace(
+        is_group=True, sender_id="3057", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="别人在冲刷期间说的话",
+        user_nickname="小北",
+    )
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    service.record_group_member_turn(user_data, other_speaker)
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    labels = user_data["group_member_memory_labels"]
+    assert labels.get("2046") == "阿离(2046)", (
+        "沉默的失败桶没把自己的展示名带回来，下一轮 speaker_label 会退化成 QQ 号"
+    )
+    assert labels.get("3057") == "小北(3057)"
+
+
+@pytest.mark.asyncio
+async def test_returned_label_does_not_clobber_a_newer_display_name():
+    """The other half of the same line: a speaker who changed nickname
+    mid-flight keeps the new one. Restoring unconditionally would roll the
+    live map back to a name the group no longer sees."""
+    in_flight = asyncio.Event()
+    released = asyncio.Event()
+
+    async def _post_scoped(her_name, messages, **kwargs):
+        in_flight.set()
+        await released.wait()
+        return {"status": "error", "message": "memory server down"}
+
+    service, plugin, user_data, _locks = _group_drain_harness(_post_scoped)
+    renamed = SimpleNamespace(
+        is_group=True, sender_id="2046", member_memory_enabled=True,
+        source_kind="incoming_group", group_facing=False,
+        group_scene_mode="", message="改名之后说的话",
+        user_nickname="阿离酱",
+    )
+
+    drain = asyncio.create_task(service._drain_member_buckets("group:7788"))
+    await asyncio.wait_for(in_flight.wait(), timeout=2.0)
+    service.record_group_member_turn(user_data, renamed)
+    released.set()
+    await asyncio.wait_for(drain, timeout=2.0)
+
+    assert user_data["group_member_memory_labels"]["2046"] == "阿离酱(2046)", (
+        "快照里的旧展示名覆盖了冲刷期间的新展示名"
+    )
 
 
 @pytest.mark.asyncio
@@ -995,6 +1069,11 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
     """
     attempts: list[str] = []
     lock_holders: list[str] = []
+    # 锁深度只在 fake 里**采样**，断言留到协程外面：
+    # _flush_one_member 用 `except Exception` 包着这次 await，而
+    # AssertionError 是 Exception 的子类——写在里面的断言会被吞成一次
+    # "请求失败"，然后被当作失败桶重试，测试照样绿。
+    lock_depth_at_attempt: list[int] = []
     released = asyncio.Event()
     in_flight = asyncio.Event()
 
@@ -1012,13 +1091,11 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
 
     async def _post_scoped(her_name, messages, **kwargs):
         attempts.append((kwargs.get("subject") or {}).get("subject_id", ""))
+        lock_depth_at_attempt.append(len(lock_holders))
         if len(attempts) == 1:
             in_flight.set()
             await released.wait()
             return {"status": "error", "message": "memory server hiccup"}
-        # 末次重试必须在锁外发：会话已经没了，占着这把锁只会挡住同 key
-        # 建起来的新会话。
-        assert not lock_holders, "末次重试是在会话锁里发的"
         return {"status": "ok"}
 
     plugin.memory_bridge.post_scoped_memory_history = _post_scoped
@@ -1032,6 +1109,11 @@ async def test_orphaned_buckets_get_one_last_try_while_consent_holds():
 
     assert attempts == ["qq:7788:2046", "qq:7788:2046"], (
         "会话没了但授权还在，失败的桶应当再试一次"
+    )
+    # 两次都必须在锁外：会话已经没了，占着这把锁只会挡住同 key 建起来的
+    # 新会话。把重试挪回 _return_snapshot（锁内）时这里会变成 [0, 1]。
+    assert lock_depth_at_attempt == [0, 0], (
+        f"scoped POST 是在会话锁里发的：锁深度 {lock_depth_at_attempt}"
     )
 
 

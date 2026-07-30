@@ -114,9 +114,53 @@ MAX_KNOWN_POOL_FACTS = 30
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
-PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算
-REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和）
+# 私聊 / 本体（legacy，subjects 为空）时这两条各是一个全局池；scoped 渲染
+# （群聊，subjects 非空）时改为**每个 subject 各一份**，再由下面的
+# SCOPED_RENDER_TOTAL_MAX_TOKENS 总闸兜底。改前群 subject 与成员 subject 抢
+# 的是同一个 2000，成员越多群自己的人设越薄。
+PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算（per subject）
+REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和，per subject）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# ── scoped（群聊）L10 核心记忆的整块总闸 ─────────────────────────────────
+# per-subject 预算解决了"互抢"，但没解决"人多了总量爆炸"：一次渲染带 5 个
+# subject 就是 5 × 4000 = 20k，光核心记忆就吃掉大半个上下文窗口。这里是那
+# 一整块的硬顶，按调用方给的 subjects 顺序先到先得。
+# 选 16000：4 个 subject 各拿满 (2000 persona + 2000 reflection) 的量。当前
+# 调用方传 [群, 当前发言人]，后续 PR 扩到 [群, 当前发言人, 最近说话的另外
+# 3 人] 共 5 个——最后一个会分到剩量，正是这条常量该起作用的地方。
+SCOPED_RENDER_TOTAL_MAX_TOKENS = 16000
+
+# 群 subject 的保底额度：无论前面排了多少成员 subject，只要后面还有群
+# subject 没渲染，前面每个人能用的量都要先扣掉这一份。群的沉淀（群规、
+# 群里在聊什么）是所有成员共享的上下文，被成员挤掉的代价最大。
+# 选 4000 = 一个 subject 拿满 persona + reflection 的量。
+SCOPED_RENDER_GROUP_RESERVED_TOKENS = 4000
+
+# 单个 subject 的最小可用额度：总闸剩不到这个数就整段跳过该 subject，而不
+# 是塞进一两条。半截的 persona 比没有更糟——模型会拿残缺的人设当完整的用
+# （"这个人只有一条偏好"），而缺席至少是诚实的空白。
+SCOPED_RENDER_SUBJECT_MIN_TOKENS = 200
+
+# ── 特权段的条数上限（protected / suppressed） ───────────────────────────
+# 这两段刻意不吃 token 预算：protected 是角色卡来源（evidence_score 返回
+# inf），被裁掉等于人格破裂；suppressed 是"记得但别主动提"，整段的意义就在
+# 于完整。但"不吃预算"不等于"可以无限膨胀"——一次导入把角色卡灌进几百条，
+# 或 suppress 冷却期堆积，都会让这两段悄悄把上下文吃光。所以给条数上限，
+# 超限截断并打 warning（token 上限会切断单条，条数上限只丢整条）。
+PERSONA_RENDER_PROTECTED_MAX_ENTRIES = 80
+PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES = 40
+
+# ── L21 长期记忆召回段（/query_memory → prompt）的预算 ───────────────────
+# 召回段此前只有"取前 5 条"，单条文本零上限：一条被 LLM 合并出来的超长
+# reflection 就能把整段撑到几千 token。两条常量分别管"单条"和"整段"。
+# 单条 400：够放一条完整的 fact / reflection（典型 30-80 token）加上被
+# 合并过的长条目，又不至于让一条吃掉整段。超出的**截断**不丢弃——召回是
+# 按相关度排的，命中的那条哪怕只剩前半段也比整条消失有用。
+RECALL_RENDER_ENTRY_MAX_TOKENS = 400
+# 整段 2000：与单个 subject 的 persona 预算同档。当前 limit=5 × 400 上限
+# 正好卡在 2000，总闸暂时不会绑定；后续 PR 放大 limit 时它才是真正的闸。
+RECALL_RENDER_TOTAL_MAX_TOKENS = 2000
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +

@@ -217,7 +217,7 @@ async def test_first_render_populates_cache_async():
 
     entries = [_entry('m1', '这是第一条事实' * 3, rein=3.0),
                _entry('m2', 'another latin fact entry goes here', rein=2.0)]
-    kept = await PersonaManager._ascore_trim_entries(
+    kept, _used = await PersonaManager._ascore_trim_entries(
         entries, budget=10_000, now=datetime.now(),
     )
     from utils.tokenize import tokenizer_identity
@@ -248,7 +248,7 @@ async def test_second_render_uses_cache_async():
         )
 
     with patch('memory.persona.rendering.acount_tokens', side_effect=_boom):
-        kept = await PersonaManager._ascore_trim_entries(
+        kept, _used = await PersonaManager._ascore_trim_entries(
             entries, budget=10_000, now=datetime.now(),
         )
 
@@ -424,7 +424,7 @@ async def test_cache_survives_persona_save_reload_roundtrip(tmp_path):
         )
 
     with patch('memory.persona.rendering.acount_tokens', side_effect=_boom):
-        kept = await PersonaManager._ascore_trim_entries(
+        kept, _used = await PersonaManager._ascore_trim_entries(
             reloaded_entries, budget=10_000, now=datetime.now(),
         )
     assert len(kept) == 2
@@ -479,7 +479,7 @@ async def test_reflection_render_does_not_pollute_cache_fields(tmp_path):
     ]
 
     # Run the trim under the reflection-render contract.
-    kept = await PersonaManager._ascore_trim_entries(
+    kept, _used = await PersonaManager._ascore_trim_entries(
         reflections, budget=10_000, now=datetime.now(),
         cache_writeback=False,
     )

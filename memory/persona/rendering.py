@@ -27,20 +27,53 @@ from collections import defaultdict
 
 from datetime import datetime
 
+from typing import NamedTuple
+
 from config import (
     PERSONA_RENDER_MAX_TOKENS,
+    PERSONA_RENDER_PROTECTED_MAX_ENTRIES,
+    PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES,
     REFLECTION_RENDER_MAX_TOKENS,
+    SCOPED_RENDER_GROUP_RESERVED_TOKENS,
+    SCOPED_RENDER_SUBJECT_MIN_TOKENS,
+    SCOPED_RENDER_TOTAL_MAX_TOKENS,
 )
 
 from memory.evidence import evidence_score
 
-
+from ._shared import logger
 
 
 
 
 
 from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
+
+
+class _RenderPrep(NamedTuple):
+    """Everything the sync and async render paths derive identically.
+
+    Both paths used to inline the same eight statements; the async one is
+    the production hot path and the sync one is what tests and migrations
+    reach for, so a fix applied to only one of them silently missed
+    whichever half the reviewer wasn't looking at. Only the token-counting
+    step genuinely differs between them, so everything before and after it
+    lives here (built once by ``_prepare_render``, consumed by
+    ``_compose_from_prep``).
+
+    ``subject_slots`` is the allocation order for scoped rendering: one
+    entry per authorized subject, in the order the CALLER supplied, plus a
+    trailing ``None`` slot when legacy-private rows are also allowed in.
+    Empty means legacy mode — one shared pool, pre-existing behaviour.
+    """
+
+    persona_view: dict
+    protected_entries: list
+    non_protected_entity_index: dict
+    flat_non_protected: list
+    reflections: list
+    suppressed_text_set: set
+    subject_slots: tuple
 
 
 class RenderingMixin:
@@ -237,18 +270,38 @@ class RenderingMixin:
         entry['embedding_text_sha256'] = None
         entry['embedding_model_id'] = None
 
+    @staticmethod
+    def _score_trim_sort(entries: list, now: datetime) -> list:
+        """The (evidence_score, importance) DESC ordering both twins use."""
+        return sorted(
+            entries,
+            key=lambda e: (
+                evidence_score(e, now),
+                float(e.get('importance', 0) or 0),
+            ),
+            reverse=True,
+        )
+
     @classmethod
     def _score_trim_entries(
         cls, entries: list, budget: int, now: datetime,
         *, cache_writeback: bool = True,
-    ) -> list:
+    ) -> tuple[list, int]:
         """Sync score-trim: sort by (evidence_score, importance) DESC, keep
-        entries whose accumulated `count_tokens(text)` ≤ `budget`. Stops at
-        the first entry that would push past the cap (lower-score remainder
-        is dropped — see §3.6.3).
+        entries whose accumulated `count_tokens(text)` ≤ `budget`.
+
+        An entry that does not fit is SKIPPED, not treated as a stop sign.
+        The loop used to `break` there, which turned "the top-ranked entry
+        is longer than the whole budget" into "the entire section
+        disappears" — not a shortened persona, an absent one. A single
+        over-long merged entry at rank 1 was enough to do it, and the
+        lower-ranked entries that would have fitted never got a look.
 
         `entries` is a list of dicts (no entity tagging — caller sorts/keys
-        as needed). Returns the kept subset preserving the score-DESC order.
+        as needed). Returns `(kept, tokens_used)`, the kept subset
+        preserving the score-DESC order plus the tokens it consumed — the
+        per-subject allocator needs the usage to hand what is left of the
+        overall gate to the next subject.
 
         `cache_writeback`: default True writes `token_count` fields back
         onto each entry for across-render reuse (persona path — entries
@@ -257,49 +310,34 @@ class RenderingMixin:
         view to cache against; writing cache fields there would be
         misleading and pollute reflection.json on the next save.
         """
-        sorted_entries = sorted(
-            entries,
-            key=lambda e: (
-                evidence_score(e, now),
-                float(e.get('importance', 0) or 0),
-            ),
-            reverse=True,
-        )
         kept = []
         total = 0
-        for e in sorted_entries:
+        for e in cls._score_trim_sort(entries, now):
             t = cls._get_cached_token_count(e, writeback=cache_writeback)
             if total + t > budget:
-                break
+                continue
             kept.append(e)
             total += t
-        return kept
+        return kept, total
 
     @classmethod
     async def _ascore_trim_entries(
         cls, entries: list, budget: int, now: datetime,
         *, cache_writeback: bool = True,
-    ) -> list:
+    ) -> tuple[list, int]:
         """Async twin of `_score_trim_entries`. Identical math; the only
         difference is `acount_tokens` (worker-thread tiktoken). See the
-        sync twin for the `cache_writeback` contract."""
-        sorted_entries = sorted(
-            entries,
-            key=lambda e: (
-                evidence_score(e, now),
-                float(e.get('importance', 0) or 0),
-            ),
-            reverse=True,
-        )
+        sync twin for the skip-don't-stop rule, the `(kept, tokens_used)`
+        return and the `cache_writeback` contract."""
         kept = []
         total = 0
-        for e in sorted_entries:
+        for e in cls._score_trim_sort(entries, now):
             t = await cls._aget_cached_token_count(e, writeback=cache_writeback)
             if total + t > budget:
-                break
+                continue
             kept.append(e)
             total += t
-        return kept
+        return kept, total
 
     def _split_persona_for_render(
         self, persona: dict,
@@ -311,6 +349,13 @@ class RenderingMixin:
             score-trim candidate pool (suppressed entries excluded; they go
             to the dedicated "暂不主动提及" ("not proactively mentioned for
             now") section in compose).
+
+        Protected entries deliberately bypass the token budget (trimming a
+        character-card line is a personality break, which is worse than
+        losing a memory), but "exempt from the budget" must not mean
+        "unbounded": a bulk card import or a runaway migration could plant
+        hundreds. They get a count cap instead, and going over it is
+        logged rather than swallowed.
         """  # noqa: DOCSTRING_CJK
         protected_entries: list[tuple[str, dict]] = []
         non_protected_by_entity: dict[str, list[dict]] = defaultdict(list)
@@ -347,6 +392,16 @@ class RenderingMixin:
                     protected_entries.append((entity_key, entry))
                 else:
                     non_protected_by_entity[entity_key].append(entry)
+        if len(protected_entries) > PERSONA_RENDER_PROTECTED_MAX_ENTRIES:
+            logger.warning(
+                f"[Persona] protected 条目 {len(protected_entries)} 条超过渲染"
+                f"上限 {PERSONA_RENDER_PROTECTED_MAX_ENTRIES}，尾部 "
+                f"{len(protected_entries) - PERSONA_RENDER_PROTECTED_MAX_ENTRIES}"
+                f" 条本轮不渲染（protected 不吃 token 预算，只能按条数封顶）"
+            )
+            protected_entries = protected_entries[
+                :PERSONA_RENDER_PROTECTED_MAX_ENTRIES
+            ]
         return protected_entries, dict(non_protected_by_entity)
 
     @staticmethod
@@ -418,14 +473,28 @@ class RenderingMixin:
             'relationship': "关系动态",
         }
 
-        # Suppressed entries always render (small + the whole point is "AI
-        # remembers but won't volunteer it"); not budget-counted.
+        # Suppressed entries always render (the whole point is "AI
+        # remembers but won't volunteer it", and a half-listed do-not-
+        # mention list is worse than none); not budget-counted. Capped by
+        # COUNT so "exempt from the token budget" can't become "unbounded"
+        # — a long suppression cooldown on a chatty character otherwise
+        # grows this section without any ceiling at all.
         suppressed_lines: list[str] = []
+        suppressed_total = 0
         for entry in self._collect_all_entries(persona):
             if isinstance(entry, dict) and entry.get('suppress'):
                 text = entry.get('text', '')
                 if text:
-                    suppressed_lines.append(f"- {text}")
+                    suppressed_total += 1
+                    if len(suppressed_lines) < PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES:
+                        suppressed_lines.append(f"- {text}")
+        if suppressed_total > PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES:
+            logger.warning(
+                f"[Persona] suppressed 条目 {suppressed_total} 条超过渲染上限 "
+                f"{PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES}，尾部 "
+                f"{suppressed_total - PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES} 条"
+                f"本轮不渲染（suppressed 不吃 token 预算，只能按条数封顶）"
+            )
 
         # Group kept entries by entity_key so each section is contiguous.
         # `non_protected_entity_index[id(entry)]` was populated by caller
@@ -551,6 +620,267 @@ class RenderingMixin:
                     out.add(t)
         return out
 
+    # ------------------------------------------------------------------
+    # Budget allocation across subjects (§3.6 + group-memory PR-2)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _subject_render_slots(
+        subjects=None, include_legacy_private: bool | None = None,
+    ) -> tuple:
+        """Allocation order for a scoped render, or `()` for legacy mode.
+
+        The order is the CALLER's, verbatim. The plugin currently sends
+        `[group, current speaker]` and a later PR widens it to
+        `[group, current speaker, the last three other speakers]`; deciding
+        here who matters would silently override the only layer that knows.
+
+        A trailing `None` slot carries legacy-private rows whenever the
+        caller opted them in alongside subjects — without it those rows
+        would be filtered INTO the view and then dropped by an allocator
+        that has no bucket for them.
+        """
+        from memory.scopes import normalize_subjects
+
+        allowed = normalize_subjects(subjects)
+        if not allowed:
+            # Legacy: one shared pool, exactly as before scoped memory.
+            return ()
+        if include_legacy_private is None:
+            include_legacy_private = not allowed
+        slots = list(allowed)
+        if include_legacy_private:
+            slots.append(None)
+        return tuple(slots)
+
+    @staticmethod
+    def _subject_bucket_marker(subject):
+        """`(key, scope)` for a subject slot; `None` for the legacy slot.
+
+        Mirrors what `filter_entries_for_subjects` matches on, so an entry
+        lands in the same bucket the authorization check used.
+        """
+        return None if subject is None else (subject.key, subject.scope)
+
+    @classmethod
+    def _bucket_entries_by_subject(cls, entries) -> dict:
+        """Group already-authorized entries by the stamp on the entry.
+
+        Bucketing on the entry's own subject rather than on its persona
+        section key matters: a section key is only `kind:subject_id`, so
+        two subjects that share a kind/id but sit in different custom
+        scopes share one section. Keying by section would merge their
+        budgets back together — the very thing this split exists to stop.
+        """
+        from memory.scopes import subject_from_entry
+
+        buckets: dict = defaultdict(list)
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            subject = subject_from_entry(entry)
+            marker = (
+                None if subject is None else (subject.key, subject.scope)
+            )
+            buckets[marker].append(entry)
+        return buckets
+
+    @staticmethod
+    def _subject_available_budget(slots: tuple, index: int, remaining: int) -> int:
+        """What slot `index` may spend out of the overall `remaining` gate.
+
+        Any group subject still queued behind this one keeps a reserved
+        slice out of reach. The group's persona is the context every member
+        of the conversation shares, so it is the worst thing to lose to
+        whoever happened to be listed first — and the caller's order is not
+        ours to reshuffle (see `_subject_render_slots`).
+        """
+        from memory.scopes import SUBJECT_GROUP_CHAT
+
+        reserved = 0
+        for later in slots[index + 1:]:
+            if later is not None and later.kind == SUBJECT_GROUP_CHAT:
+                reserved = SCOPED_RENDER_GROUP_RESERVED_TOKENS
+                break
+        return max(0, remaining - reserved)
+
+    @classmethod
+    def _log_skipped_subject(cls, subject, available: int) -> None:
+        label = "legacy" if subject is None else subject.key
+        logger.warning(
+            f"[Persona] scoped 渲染总闸剩余 {available} tok 低于单 subject 下限 "
+            f"{SCOPED_RENDER_SUBJECT_MIN_TOKENS}，subject {label} 整段跳过"
+            f"（半截的人设比缺席更糟）"
+        )
+
+    @classmethod
+    def _log_unslotted_buckets(cls, slots: tuple, *bucket_maps) -> None:
+        """Loudly report entries that passed authorization but got no slot.
+
+        Should be unreachable: everything in the view matched one of the
+        caller's subjects. If it ever fires, memories are vanishing between
+        the filter and the allocator, and a silent drop is exactly the kind
+        of thing that only surfaces as "the character forgot things".
+        """
+        known = {cls._subject_bucket_marker(s) for s in slots}
+        for buckets in bucket_maps:
+            for marker, entries in buckets.items():
+                if marker not in known and entries:
+                    logger.warning(
+                        f"[Persona] scoped 渲染有 {len(entries)} 条已授权条目"
+                        f"没有对应 subject 槽位（marker={marker}），本轮丢失"
+                    )
+
+    @classmethod
+    def _trim_scoped_by_subject(
+        cls, prep: _RenderPrep, now: datetime,
+    ) -> tuple[list, list]:
+        """Sync per-subject allocation under the overall scoped gate.
+
+        Each subject gets its own `PERSONA_RENDER_MAX_TOKENS` /
+        `REFLECTION_RENDER_MAX_TOKENS` instead of every subject in the
+        render fighting over one shared pair, and the sum is held down by
+        `SCOPED_RENDER_TOTAL_MAX_TOKENS`. Whatever a subject leaves unspent
+        rolls forward to the next one.
+        """
+        persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
+        reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
+        kept_persona: list = []
+        kept_reflections: list = []
+        remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
+        for index, subject in enumerate(prep.subject_slots):
+            marker = cls._subject_bucket_marker(subject)
+            available = cls._subject_available_budget(
+                prep.subject_slots, index, remaining,
+            )
+            if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
+                cls._log_skipped_subject(subject, available)
+                continue
+            persona_kept, persona_used = cls._score_trim_entries(
+                persona_buckets.get(marker, ()),
+                min(PERSONA_RENDER_MAX_TOKENS, available), now,
+            )
+            remaining -= persona_used
+            available -= persona_used
+            reflection_kept, reflection_used = cls._score_trim_entries(
+                reflection_buckets.get(marker, ()),
+                min(REFLECTION_RENDER_MAX_TOKENS, available), now,
+                cache_writeback=False,
+            )
+            remaining -= reflection_used
+            kept_persona.extend(persona_kept)
+            kept_reflections.extend(reflection_kept)
+        cls._log_unslotted_buckets(
+            prep.subject_slots, persona_buckets, reflection_buckets,
+        )
+        return kept_persona, kept_reflections
+
+    @classmethod
+    async def _atrim_scoped_by_subject(
+        cls, prep: _RenderPrep, now: datetime,
+    ) -> tuple[list, list]:
+        """Async twin of `_trim_scoped_by_subject` — same allocation, only
+        the token counter differs (worker-thread tiktoken)."""
+        persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
+        reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
+        kept_persona: list = []
+        kept_reflections: list = []
+        remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
+        for index, subject in enumerate(prep.subject_slots):
+            marker = cls._subject_bucket_marker(subject)
+            available = cls._subject_available_budget(
+                prep.subject_slots, index, remaining,
+            )
+            if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
+                cls._log_skipped_subject(subject, available)
+                continue
+            persona_kept, persona_used = await cls._ascore_trim_entries(
+                persona_buckets.get(marker, ()),
+                min(PERSONA_RENDER_MAX_TOKENS, available), now,
+            )
+            remaining -= persona_used
+            available -= persona_used
+            reflection_kept, reflection_used = await cls._ascore_trim_entries(
+                reflection_buckets.get(marker, ()),
+                min(REFLECTION_RENDER_MAX_TOKENS, available), now,
+                cache_writeback=False,
+            )
+            remaining -= reflection_used
+            kept_persona.extend(persona_kept)
+            kept_reflections.extend(reflection_kept)
+        cls._log_unslotted_buckets(
+            prep.subject_slots, persona_buckets, reflection_buckets,
+        )
+        return kept_persona, kept_reflections
+
+    def _prepare_render(
+        self, persona: dict,
+        pending_reflections: list[dict] | None,
+        confirmed_reflections: list[dict] | None,
+        subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> _RenderPrep:
+        """Phase 1+2 shared by both render paths — see `_RenderPrep`."""
+        persona_view = self._persona_view_for_subjects(
+            persona, subjects, include_legacy_private=include_legacy_private,
+        )
+        protected_entries, non_protected_by_entity = (
+            self._split_persona_for_render(persona_view)
+        )
+        # Build entity-index by id() so we can regroup after the (entity-
+        # blind) score-trim. Using id() is safe because we never mutate
+        # entries during render — they're the same objects throughout.
+        non_protected_entity_index: dict[int, str] = {}
+        flat_non_protected: list[dict] = []
+        for ek, entries in non_protected_by_entity.items():
+            for e in entries:
+                non_protected_entity_index[id(e)] = ek
+                flat_non_protected.append(e)
+        suppressed_text_set = self._suppressed_text_set(persona_view)
+        reflections = self._filter_reflections_for_render(
+            (pending_reflections or []) + (confirmed_reflections or []),
+            persona_view, suppressed_text_set,
+            subjects,
+            include_legacy_private,
+        )
+        return _RenderPrep(
+            persona_view=persona_view,
+            protected_entries=protected_entries,
+            non_protected_entity_index=non_protected_entity_index,
+            flat_non_protected=flat_non_protected,
+            reflections=reflections,
+            suppressed_text_set=suppressed_text_set,
+            subject_slots=self._subject_render_slots(
+                subjects, include_legacy_private,
+            ),
+        )
+
+    def _compose_from_prep(
+        self, name: str, prep: _RenderPrep, name_mapping: dict,
+        trimmed_non_protected: list[dict],
+        trimmed_reflections: list[dict],
+        pending_reflections: list[dict] | None,
+        subjects=None,
+        include_legacy_private: bool | None = None,
+    ) -> str:
+        """Phase 3 shared by both render paths."""
+        # Preserve the score-DESC order produced by the trim. The original
+        # implementation filtered the SOURCE lists by id-membership, which
+        # lost the sort order and emitted reflections in caller-supplied
+        # order (CodeRabbit PR #936 round-4 Minor).
+        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
+            trimmed_reflections, pending_reflections, prep.suppressed_text_set,
+        )
+        return self._compose_markdown_from_trimmed(
+            name, prep.persona_view, name_mapping,
+            prep.protected_entries, trimmed_non_protected,
+            prep.non_protected_entity_index,
+            trimmed_pending, trimmed_confirmed,
+            scoped_only=self._renders_scoped_only(
+                subjects, include_legacy_private,
+            ),
+        )
+
     def _compose_persona_markdown(
         self, name: str, persona: dict, name_mapping: dict,
         pending_reflections: list[dict] | None,
@@ -561,64 +891,31 @@ class RenderingMixin:
         """Sync 3-phase render path. Used by `render_persona_markdown` and
         any test/migration caller that doesn't have an event loop."""
         now = datetime.now()
-        persona = self._persona_view_for_subjects(
-            persona,
-            subjects,
-            include_legacy_private=include_legacy_private,
+        prep = self._prepare_render(
+            persona, pending_reflections, confirmed_reflections,
+            subjects, include_legacy_private,
         )
-
-        protected_entries, non_protected_by_entity = (
-            self._split_persona_for_render(persona)
-        )
-
-        # Build entity-index by id() so we can regroup after the (entity-
-        # blind) score-trim. Using id() is safe because we never mutate
-        # entries during render — they're the same objects throughout.
-        non_protected_entity_index: dict[int, str] = {}
-        flat_non_protected: list[dict] = []
-        for ek, entries in non_protected_by_entity.items():
-            for e in entries:
-                non_protected_entity_index[id(e)] = ek
-                flat_non_protected.append(e)
-
-        trimmed_non_protected = self._score_trim_entries(
-            flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
-        )
-
-        suppressed_text_set = self._suppressed_text_set(persona)
-        trimmed_reflections_combined = self._score_trim_entries(
-            self._filter_reflections_for_render(
-                (pending_reflections or []) + (confirmed_reflections or []),
-                persona, suppressed_text_set,
-                subjects,
-                include_legacy_private,
-            ),
-            REFLECTION_RENDER_MAX_TOKENS, now,
-            # Reflections have no `_personas`-style in-memory view — they're
-            # always loaded fresh from disk. Writing cache fields onto the
-            # transient dicts would be garbage-collected on render exit and
-            # could only pollute reflection.json on the next save.
-            cache_writeback=False,
-        )
-        # Preserve the score-DESC order produced by _score_trim_entries.
-        # The previous implementation filtered the ORIGINAL source lists by
-        # id-membership in `trimmed_reflections_combined`, which lost the
-        # sort order and emitted reflections in caller-supplied order. Fix:
-        # iterate the already-sorted `trimmed_reflections_combined` and
-        # split back into pending/confirmed by source-list membership
-        # (CodeRabbit PR #936 round-4 Minor).
-        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
-            trimmed_reflections_combined, pending_reflections, suppressed_text_set,
-        )
-
-        return self._compose_markdown_from_trimmed(
-            name, persona, name_mapping,
-            protected_entries, trimmed_non_protected,
-            non_protected_entity_index,
-            trimmed_pending, trimmed_confirmed,
-            scoped_only=self._renders_scoped_only(
-                subjects, include_legacy_private,
-            ),
+        if prep.subject_slots:
+            trimmed_non_protected, trimmed_reflections = (
+                self._trim_scoped_by_subject(prep, now)
+            )
+        else:
+            trimmed_non_protected, _ = self._score_trim_entries(
+                prep.flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
+            )
+            trimmed_reflections, _ = self._score_trim_entries(
+                prep.reflections, REFLECTION_RENDER_MAX_TOKENS, now,
+                # Reflections have no `_personas`-style in-memory view —
+                # they're always loaded fresh from disk. Writing cache
+                # fields onto the transient dicts would be collected on
+                # render exit and could only pollute reflection.json on
+                # the next save.
+                cache_writeback=False,
+            )
+        return self._compose_from_prep(
+            name, prep, name_mapping,
+            trimmed_non_protected, trimmed_reflections,
+            pending_reflections, subjects, include_legacy_private,
         )
 
     @staticmethod
@@ -677,61 +974,39 @@ class RenderingMixin:
         include_legacy_private: bool | None = None,
     ) -> str:
         """Async 3-phase render path. Production hot path — uses
-        `acount_tokens` so the event loop doesn't stall on tiktoken IO."""
+        `acount_tokens` so the event loop doesn't stall on tiktoken IO.
+
+        Structurally the twin of `_compose_persona_markdown`: everything
+        that is not token counting lives in `_prepare_render` /
+        `_compose_from_prep`, so the two paths cannot drift on the parts
+        that have nothing to do with sync-vs-async."""
         await self.aupdate_suppressions(name)
         persona = await self.aensure_persona(name)
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         now = datetime.now()
-        persona = self._persona_view_for_subjects(
-            persona,
-            subjects,
-            include_legacy_private=include_legacy_private,
+        prep = self._prepare_render(
+            persona, pending_reflections, confirmed_reflections,
+            subjects, include_legacy_private,
         )
-
-        protected_entries, non_protected_by_entity = (
-            self._split_persona_for_render(persona)
-        )
-
-        non_protected_entity_index: dict[int, str] = {}
-        flat_non_protected: list[dict] = []
-        for ek, entries in non_protected_by_entity.items():
-            for e in entries:
-                non_protected_entity_index[id(e)] = ek
-                flat_non_protected.append(e)
-
-        trimmed_non_protected = await self._ascore_trim_entries(
-            flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
-        )
-
-        suppressed_text_set = self._suppressed_text_set(persona)
-        trimmed_reflections_combined = await self._ascore_trim_entries(
-            self._filter_reflections_for_render(
-                (pending_reflections or []) + (confirmed_reflections or []),
-                persona, suppressed_text_set,
-                subjects,
-                include_legacy_private,
-            ),
-            REFLECTION_RENDER_MAX_TOKENS, now,
-            # See sync twin: reflections have no `_personas`-style
-            # in-memory view, so we compute fresh every render without
-            # writing cache fields back onto the transient dicts.
-            cache_writeback=False,
-        )
-        # Preserve score-DESC order from _ascore_trim_entries — mirror of
-        # the sync path fix in _compose_persona_markdown (CodeRabbit PR
-        # #936 round-4 Minor).
-        trimmed_pending, trimmed_confirmed = self._partition_trimmed_reflections(
-            trimmed_reflections_combined, pending_reflections, suppressed_text_set,
-        )
-
-        return self._compose_markdown_from_trimmed(
-            name, persona, name_mapping,
-            protected_entries, trimmed_non_protected,
-            non_protected_entity_index,
-            trimmed_pending, trimmed_confirmed,
-            scoped_only=self._renders_scoped_only(
-                subjects, include_legacy_private,
-            ),
+        if prep.subject_slots:
+            trimmed_non_protected, trimmed_reflections = (
+                await self._atrim_scoped_by_subject(prep, now)
+            )
+        else:
+            trimmed_non_protected, _ = await self._ascore_trim_entries(
+                prep.flat_non_protected, PERSONA_RENDER_MAX_TOKENS, now,
+            )
+            trimmed_reflections, _ = await self._ascore_trim_entries(
+                prep.reflections, REFLECTION_RENDER_MAX_TOKENS, now,
+                # See sync twin: reflections have no `_personas`-style
+                # in-memory view, so we compute fresh every render without
+                # writing cache fields back onto the transient dicts.
+                cache_writeback=False,
+            )
+        return self._compose_from_prep(
+            name, prep, name_mapping,
+            trimmed_non_protected, trimmed_reflections,
+            pending_reflections, subjects, include_legacy_private,
         )
 
     def _is_suppressed_text(self, persona: dict, text: str) -> bool:

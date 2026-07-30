@@ -183,6 +183,41 @@ async def atruncate_to_tokens(
     return await asyncio.to_thread(truncate_to_tokens, text, max_tokens, encoding)
 
 
+def take_lines_within_token_budget(
+    lines: list[str],
+    max_tokens: int,
+    encoding: str = PERSONA_RENDER_ENCODING,
+) -> tuple[list[str], int]:
+    """Greedy prefix of ``lines`` whose token sum stays within budget.
+
+    Returns ``(kept, dropped_count)``. Always keeps the first line even
+    when it alone exceeds the budget, so a caller that ranked its input by
+    relevance still emits its single best item instead of an empty block
+    (same forward-progress rule as
+    ``main_logic.core.callback_render._select_callbacks_within_token_budget``);
+    per-item truncation is the caller's job and is what actually bounds
+    that first line.
+
+    Prefix, not skip-and-continue: unlike the persona score-trim, the
+    callers here hand over a relevance-ranked list where a line that does
+    not fit means the budget is spent, and letting a shorter lower-ranked
+    line jump the queue would reorder recall results by length.
+
+    Shared by the two recall renderers (the QQ plugin's
+    ``render_relevant_memory`` and the main app's ``recall_memory`` tool
+    handler) so their budgets cannot drift apart.
+    """
+    kept: list[str] = []
+    used = 0
+    for index, line in enumerate(lines):
+        cost = count_tokens(line, encoding)
+        if kept and used + cost > max_tokens:
+            return kept, len(lines) - index
+        kept.append(line)
+        used += cost
+    return kept, 0
+
+
 _SENTENCE_END_CHARS = '.!?。！？…\n'
 """Sentence-final terminators for `truncate_to_last_sentence_end`. Commas
 and other mid-sentence punctuation are intentionally excluded — keeping
