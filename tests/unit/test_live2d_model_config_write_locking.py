@@ -225,6 +225,54 @@ async def test_concurrent_model_config_posts_do_not_lose_each_others_edits(
 
 
 @pytest.mark.asyncio
+async def test_cancelling_a_post_does_not_release_the_lock_before_the_write_ends(
+    monkeypatch, tmp_path
+) -> None:
+    """A cancelled POST must keep the per-file lock until its in-flight write finishes."""
+    # atomic_write_json_async 内部是 asyncio.to_thread，交出去就取消不掉：线程会一直跑到
+    # os.replace 结束。如果 async with 在 CancelledError 穿过的一刻就放锁（直接 await 就是
+    # 这样），第二个 handler 会在第一次 replace 还在飞的时候进临界区 —— 正是本 PR 要修的
+    # 那个并发 replace。请求被客户端断开或超时中间件取消是常态，不是边角情况。
+    model_dir = _make_model_dir(tmp_path)
+    model_json = model_dir / "m.model3.json"
+    monkeypatch.setattr(
+        live2d_router, "find_model_directory", lambda name: (str(model_dir), "/user_live2d/m")
+    )
+
+    write_started = asyncio.Event()
+    let_write_finish = asyncio.Event()
+
+    async def blocked_write(path, data, **kwargs):
+        write_started.set()
+        await let_write_finish.wait()
+
+    monkeypatch.setattr(live2d_router, "atomic_write_json_async", blocked_write)
+
+    task = asyncio.create_task(
+        live2d_router.update_model_config(
+            "m",
+            _FakeRequest(
+                {"FileReferences": {"Expressions": [{"Name": "x", "File": "e.exp3.json"}]}}
+            ),
+        )
+    )
+    await asyncio.wait_for(write_started.wait(), timeout=5)
+
+    lock = live2d_router._model_config_write_lock(model_json)
+    assert lock.locked(), "前置条件：写在飞的时候锁是持有状态"
+
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert lock.locked(), "写还在飞，锁不许因为取消就提前放掉"
+
+    let_write_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not lock.locked(), "写收尾之后锁必须放掉"
+
+
+@pytest.mark.asyncio
 async def test_by_name_and_by_id_posts_share_one_lock(monkeypatch, tmp_path) -> None:
     """by-name and by-id hitting the same file must share one lock."""
     # 按入参（model_name / model_id）分桶就会漏：两条路由可以落到同一个文件上。

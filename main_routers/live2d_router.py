@@ -77,6 +77,23 @@ logger = get_module_logger(__name__, "Main")
 _MODEL_CONFIG_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
 
 
+async def _persist_model_config(model_json_path, config, *, indent: int) -> None:
+    """Write the config out without letting cancellation release the caller's lock early."""
+    # to_thread 一旦交出去就取消不掉 —— 线程会一直跑到 os.replace 结束。直接 await 的话，
+    # 这个请求被 cancel（客户端断开、超时中间件）时 async with 会在 CancelledError 穿过的
+    # 一刻就把 per-file 锁放掉，而那次 os.replace 还在飞：两个 handler 就又可能同时
+    # replace 同一个目标（Windows 上互相 WinError 5），也就是这个 PR 要修的东西本身。
+    # shield 让取消落在外层、写盘任务照跑，再显式等它收尾之后才让 CancelledError 上浮。
+    writer = asyncio.ensure_future(
+        atomic_write_json_async(model_json_path, config, ensure_ascii=False, indent=indent)
+    )
+    try:
+        await asyncio.shield(writer)
+    except asyncio.CancelledError:
+        await asyncio.wait({writer})
+        raise
+
+
 def _model_config_write_lock(model_json_path: str | os.PathLike) -> asyncio.Lock:
     """Return the per-file write lock for a resolved ``.model3.json``."""
     # realpath 折掉 junction/symlink 与 "." 之类的写法差异，normcase 折掉 Windows 的大小写，
@@ -462,7 +479,7 @@ async def update_model_config(model_name: str, request: Request):
             if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
                 file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-            await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 保持格式
 
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
@@ -633,7 +650,7 @@ async def update_emotion_mapping(model_name: str, request: Request):
             config_data['EmotionMapping'] = data
 
             # 保存配置到文件
-            await atomic_write_json_async(model_json_path, config_data, ensure_ascii=False, indent=2)
+            await _persist_model_config(model_json_path, config_data, indent=2)
 
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
@@ -939,7 +956,7 @@ async def update_model_config_by_id(model_id: str, request: Request):
             if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
                 file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-            await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+            await _persist_model_config(model_json_path, current_config, indent=4)  # indent=4 保持格式
 
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:

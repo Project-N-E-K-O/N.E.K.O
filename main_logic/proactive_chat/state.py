@@ -195,7 +195,19 @@ async def _record_source_used(
         # 这是个跨角色的单文件，多个投递并发时锁只盖内存不盖落盘等于没盖。
         # 写本身仍在 to_thread 里跑（atomic_write_json_async 内部），持的是 asyncio.Lock
         # 不是 threading.Lock，所以事件循环在等待期间照样服务别的请求。
-        await _persist_source_history_unlocked(memory_dir=memory_dir)
+        #
+        # to_thread 一旦交出去就取消不掉 —— 线程会一直跑到 os.replace 结束。所以不能直接
+        # await：这里被 cancel（退出时最常见）时 async with 会在 CancelledError 穿过的
+        # 一刻就把锁放掉，而那次 os.replace 还在飞，「写在锁内」的不变量就破了。shield 让
+        # 取消落在外层、写盘任务照跑；再显式等它收尾之后才让 CancelledError 继续往上走。
+        writer = asyncio.ensure_future(
+            _persist_source_history_unlocked(memory_dir=memory_dir)
+        )
+        try:
+            await asyncio.shield(writer)
+        except asyncio.CancelledError:
+            await asyncio.wait({writer})
+            raise
 
 
 # --- 主动搭话近期记录暂存区 ---

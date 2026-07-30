@@ -90,6 +90,42 @@ async def test_concurrent_source_records_serialize_and_never_reorder(
     assert len(landed[-1]) == 5
 
 
+@pytest.mark.asyncio
+async def test_cancelling_a_record_does_not_release_the_lock_before_the_write_ends(
+    monkeypatch, tmp_path
+) -> None:
+    """A cancelled _record_source_used must keep the lock until its in-flight write finishes."""
+    # atomic_write_json_async 内部是 asyncio.to_thread，交出去就取消不掉。直接 await 的话，
+    # 退出时的 cancel 会让 async with 在 CancelledError 穿过的一刻放锁，而那次 os.replace
+    # 还在飞 —— 另一个投递就能进临界区并发 replace 同一个目标。
+    write_started = asyncio.Event()
+    let_write_finish = asyncio.Event()
+
+    async def blocked_write(path, payload, **kwargs):
+        write_started.set()
+        await let_write_finish.wait()
+
+    monkeypatch.setattr(state, "atomic_write_json_async", blocked_write)
+
+    task = asyncio.create_task(
+        state._record_source_used(
+            url="https://example.test/a", kind="web", title="a", memory_dir=tmp_path
+        )
+    )
+    await asyncio.wait_for(write_started.wait(), timeout=5)
+    assert state._source_history_lock.locked(), "前置条件：写在飞的时候锁是持有状态"
+
+    task.cancel()
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert state._source_history_lock.locked(), "写还在飞，锁不许因为取消就提前放掉"
+
+    let_write_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert not state._source_history_lock.locked(), "写收尾之后锁必须放掉"
+
+
 def test_source_history_persist_helper_takes_its_own_snapshot() -> None:
     """The persist helper takes no snapshot argument: snapshot and write are inseparable."""
     # 一旦有人给它加回 snapshot 形参，调用方就又能在锁内取快照、到锁外去写，顺序反转
