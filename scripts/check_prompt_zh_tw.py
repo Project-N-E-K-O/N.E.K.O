@@ -149,6 +149,67 @@ def resolve_keys(node: ast.AST) -> set[str] | None:
         if left is None or right is None:
             return None
         return left | right
+    if isinstance(node, ast.DictComp):
+        return _comprehension_keys(node)
+    return None
+
+
+def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
+    """Keys of a dict comprehension over an inline literal, or None.
+
+    Resolves the two shapes whose keys are fully determined by the source::
+
+        {loc: build(loc) for loc in ("en", "zh", "ja")}
+        {k: v for k, v in (("en", "hello"), ("zh", "你好"))}
+
+    The first is a realistic way to write a localized table — one template per
+    locale off a literal locale list — so leaving it unresolved would be a real
+    blind spot, not a theoretical one.
+
+    Deliberately does NOT follow a name to its definition. `{lang: build(lang)
+    for lang in _L10N}` stays unresolved: chasing the symbol would mean judging
+    derived structures whose keys are a language list rather than templates, and
+    the three comprehensions that exist under config/prompts today are all of
+    that kind.
+    """
+    if len(node.generators) != 1:
+        return None
+    gen = node.generators[0]
+    if gen.ifs or gen.is_async:
+        return None
+    if not isinstance(node.key, ast.Name):
+        return None
+    if not isinstance(gen.iter, (ast.Tuple, ast.List, ast.Set)):
+        return None
+
+    if isinstance(gen.target, ast.Name):
+        if gen.target.id != node.key.id:
+            return None
+        keys: set[str] = set()
+        for element in gen.iter.elts:
+            if not (isinstance(element, ast.Constant)
+                    and isinstance(element.value, str)):
+                return None
+            keys.add(element.value)
+        return keys
+
+    if isinstance(gen.target, ast.Tuple):
+        names = [e.id for e in gen.target.elts if isinstance(e, ast.Name)]
+        if len(names) != len(gen.target.elts) or node.key.id not in names:
+            return None
+        index = names.index(node.key.id)
+        keys = set()
+        for element in gen.iter.elts:
+            if not isinstance(element, (ast.Tuple, ast.List)):
+                return None
+            if index >= len(element.elts):
+                return None
+            item = element.elts[index]
+            if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+                return None
+            keys.add(item.value)
+        return keys
+
     return None
 
 

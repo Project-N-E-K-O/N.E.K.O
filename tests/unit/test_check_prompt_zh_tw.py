@@ -597,6 +597,59 @@ def test_merge_resolving_to_an_offender_is_reported(src):
 
 
 @pytest.mark.parametrize("src", [
+    # One template per locale off a literal locale list — a realistic way to
+    # write a localized table, so leaving it unresolved was a real blind spot.
+    'T = {loc: f"hi {loc}" for loc in ("en", "zh", "ja")}',
+    'T = {loc: 1 for loc in ["en", "zh"]}',
+    'T = {k: v for k, v in (("en", "hello"), ("zh", "你好"))}',
+])
+def test_resolvable_comprehension_is_judged(src):
+    """A comprehension over an inline literal has statically known keys."""
+    assert len(_violations(src)) == 1
+
+
+@pytest.mark.parametrize("src", [
+    'T = {loc: 1 for loc in ("en", "zh", "zh-TW")}',
+    'T = {k: v for k, v in (("en", "a"), ("zh", "b"), ("zh-TW", "c"))}',
+])
+def test_resolvable_comprehension_with_traditional_is_silent(src):
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    # Following a name to its definition is deliberately out of scope: all three
+    # comprehensions under config/prompts today are of this shape, and their keys
+    # are a language list rather than templates.
+    'T = {lang: build(lang) for lang in _L10N}',
+    'T = {k: v for k, v in D.items()}',
+    # Filters, extra generators, a computed key, or a key bound to the value slot
+    # all make the key set something other than the literals in the iterable.
+    'T = {loc: 1 for loc in ("en", "zh") if loc}',
+    'T = {loc: 1 for loc in ("en", "zh") for x in y}',
+    'T = {loc.lower(): 1 for loc in ("en", "zh")}',
+    'T = {v: k for k, v in (("en", "a"), ("zh", "b"))}',
+    # The key is a free variable, not the loop target, so the literals in the
+    # iterable say nothing about the resulting key set.
+    'T = {other: 1 for loc in ("en", "zh")}',
+    'T = {other: v for k, v in (("en", "a"), ("zh", "b"))}',
+])
+def test_unresolvable_comprehension_is_not_judged(src):
+    assert _violations(src) == []
+
+
+def test_comprehension_over_a_non_sequence_iterable_does_not_crash():
+    """Restricting the iterable to literal sequences is what keeps .elts safe.
+
+    Without the type check, a name or call in the iterable position would reach
+    `gen.iter.elts` and raise AttributeError, taking the whole gate down.
+    """
+    for src in ('T = {loc: 1 for loc in SOME_NAME}',
+                'T = {loc: 1 for loc in get_locales()}',
+                'T = {loc: 1 for loc in "enzh"}'):
+        assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
     'T = dict(BASE, en="e", zh="s")',
     'T = {**BASE, "en": "e", "zh": "s"}',
     'T = BASE | {"en": "e", "zh": "s"}',
