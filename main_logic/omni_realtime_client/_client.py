@@ -64,6 +64,13 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         on_audio_delta (Callable[[bytes], Awaitable[None]]):
             Callback for audio delta events.
             Takes in bytes and returns an awaitable.
+        on_audio_done (Callable[[], Awaitable[None]]):
+            Callback for the provider closing this response's audio stream.
+            Awaited strictly after the last audio delta of that response has
+            been awaited, so downstream consumers can treat it as the
+            authoritative end of playback for the current speech id.
+            Only wired on the OpenAI-schema websocket loop; see
+            ``_gemini_support`` for why Gemini deliberately never fires it.
         on_input_transcript (Callable[[str], Awaitable[None]]):
             Callback for input transcript events.
             Takes in a string and returns an awaitable.
@@ -86,6 +93,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         turn_detection_mode: TurnDetectionMode = TurnDetectionMode.SERVER_VAD,
         on_text_delta: Optional[Callable[[str, bool], Awaitable[None]]] = None,
         on_audio_delta: Optional[Callable[[bytes], Awaitable[None]]] = None,
+        on_audio_done: Optional[Callable[[], Awaitable[None]]] = None,
         on_new_message: Optional[Callable[[], Awaitable[None]]] = None,
         on_sid_rotate: Optional[Callable[[], Awaitable[None]]] = None,
         on_input_transcript: Optional[Callable[[str], Awaitable[None]]] = None,
@@ -111,6 +119,7 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self.instructions = None
         self.on_text_delta = on_text_delta
         self.on_audio_delta = on_audio_delta
+        self.on_audio_done = on_audio_done
         self.on_new_message = on_new_message
         self.on_sid_rotate = on_sid_rotate
         self.on_input_transcript = on_input_transcript

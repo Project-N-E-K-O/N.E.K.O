@@ -26,6 +26,7 @@ from utils.config_manager import _as_bool
 from utils.gptsovits_config import redact_url_for_log
 
 from .._infra import (
+    AudioDoneEmitter,
     TTS_SHUTDOWN_SENTINEL,
     _enqueue_error,
     _resample_audio,
@@ -186,6 +187,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
         }
         pending_text: list[str] = []
         pending_text_sid: str | None = None
+        # session.done = 整个 utterance 的音频流关闭（audio.done 是逐句事件，
+        # 带 sentence_index，不能当轮次收尾用）。
+        audio_done = AudioDoneEmitter(response_queue)
 
         async def _connect_and_config() -> bool:
             """Open the WS connection and send session.config; return success.
@@ -275,6 +279,9 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                             )
                             # 修复 PR #1764 review #3：标记会话结束 + 清重采样器
                             # 主循环在下次 input.text 前会重建连接并重发 session.config
+                            # PCM 帧是同一条接收循环里同步 put 的，走到这里说明本轮
+                            # 音频已全部投递；先取 sid 再清状态。
+                            audio_done.emit(session_state.get("speech_id"))
                             session_state["active"] = False
                             session_state["awaiting_done"] = False
                             session_state["speech_id"] = None
@@ -289,7 +296,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                                 event.get("sentence_text", "")[:40],
                             )
                         elif event_type == "audio.done":
-                            pass  # 静默
+                            pass  # 逐句完成事件，轮次收尾看 session.done
                         elif event_type == "error":
                             # Provider events may echo signed URLs or input text.
                             # 服务端 error 事件只转换为稳定错误码，不记录原始 payload。
@@ -379,6 +386,7 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
             session_state["active"] = True
             session_state["awaiting_done"] = False
             session_state["speech_id"] = None
+            audio_done.reset()  # 新会话重置 audio_done 去重标记
             receive_task = asyncio.create_task(_receive_loop())
             return True
 
@@ -428,32 +436,40 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                 # 修复 PR #1764 review 第二轮 #3：打断时只销毁当前连接、把 session 标记失效，
                 # 不立刻重连——避免上游短暂不可用时一次失败就把整个 worker 退出。
                 # 实际重连延迟到下一条输入到来时由活跃性检查（while 循环下方）处理。
-                if receive_task is not None and not receive_task.done():
-                    receive_task.cancel()
-                    try:
-                        await receive_task
-                    except asyncio.CancelledError:
-                        pass
-                    except Exception:
-                        pass
-                receive_task = None
-                if ws is not None:
-                    try:
-                        await ws.close()
-                    except Exception:
-                        pass
-                    ws = None
+                audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                # try/finally 与 step/qwen/grok/elevenlabs/gptsovits 对偶：拆卸段里
+                # 任何意外抛出都不能把 emitter 永久停在 interrupted 上，否则本会话
+                # 之后所有轮都静默漏发 audio_done。
                 try:
-                    resampler.clear()
-                except Exception:
-                    pass
-                session_state["active"] = False
-                session_state["awaiting_done"] = False
-                # 与其他失效路径（_receive_loop / _rebuild_session / _fail_pending_flush /
-                # sid 切换）对齐，同步清理 speech_id，避免中断后残留旧 utterance id。
-                session_state["speech_id"] = None
-                pending_text.clear()
-                pending_text_sid = None
+                    if receive_task is not None and not receive_task.done():
+                        receive_task.cancel()
+                        try:
+                            await receive_task
+                        except asyncio.CancelledError:
+                            pass
+                        except Exception:
+                            pass
+                    receive_task = None
+                    if ws is not None:
+                        try:
+                            await ws.close()
+                        except Exception:
+                            pass
+                        ws = None
+                    try:
+                        resampler.clear()
+                    except Exception:
+                        pass
+                    session_state["active"] = False
+                    session_state["awaiting_done"] = False
+                    # 与其他失效路径（_receive_loop / _rebuild_session / _fail_pending_flush /
+                    # sid 切换）对齐，同步清理 speech_id，避免中断后残留旧 utterance id。
+                    session_state["speech_id"] = None
+                    pending_text.clear()
+                    pending_text_sid = None
+                    audio_done.reset()
+                finally:
+                    audio_done.end_interrupt()
                 continue
 
             if sid is None:
