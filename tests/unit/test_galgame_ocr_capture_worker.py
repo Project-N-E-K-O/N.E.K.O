@@ -609,6 +609,132 @@ def test_close_gives_up_on_stuck_capture_after_bounded_wait(
         running_future.result(timeout=5.0)
 
 
+_ASYNC_SHUTDOWN_STEPS = (
+    "_stop_foreground_advance_monitor",
+    "_shutdown_capture_worker",
+    "_drain_inflight_capture_workers",
+    "_release_rapidocr_backend",
+)
+
+
+def _async_shutdown_manager() -> tuple[OcrReaderManager, dict]:
+    manager = object.__new__(OcrReaderManager)
+    manager._logger = _NullLogger()
+    observed: dict = {"closed_classifier": [], "ended_sessions": []}
+
+    class _Classifier:
+        def close(self) -> None:
+            observed["closed_classifier"].append(True)
+
+    manager.vision_classifier = _Classifier()
+    manager._writer = types.SimpleNamespace(
+        session_id="session-1",
+        end_session=lambda ts: observed["ended_sessions"].append(ts),
+    )
+    manager._ocr_lang_detector = types.SimpleNamespace(reset=lambda **_kwargs: None)
+    manager._time_fn = lambda: 0.0
+    manager._attached_window = object()
+    return manager, observed
+
+
+@pytest.mark.parametrize("exploding_step", list(_ASYNC_SHUTDOWN_STEPS))
+def test_async_shutdown_releases_every_resource_despite_one_failure(
+    exploding_step: str,
+) -> None:
+    """Plugin unload is the production teardown path; one bad step must not skip the rest."""
+    manager, observed = _async_shutdown_manager()
+    done: list[str] = []
+    still_running: Future[OcrExtractionResult] = Future()
+
+    def _step(name: str):
+        def _run(self, *_args, **_kwargs):
+            del self
+            done.append(name)
+            if name == exploding_step:
+                raise RuntimeError(f"{name} exploded")
+            if name == "_shutdown_capture_worker":
+                return [still_running]
+            return []
+        return _run
+
+    for name in _ASYNC_SHUTDOWN_STEPS:
+        setattr(manager, name, types.MethodType(_step(name), manager))
+
+    asyncio.run(manager.shutdown())
+
+    expected = list(_ASYNC_SHUTDOWN_STEPS)
+    if exploding_step == "_shutdown_capture_worker":
+        # 拿不到在飞清单就没有东西可等，跳过 drain 是对的；其余步骤照跑。
+        expected.remove("_drain_inflight_capture_workers")
+    assert done == expected, f"{exploding_step} 抛错后其余步骤仍必须跑到"
+    assert observed["closed_classifier"] == [True], "classifier 必须被关掉"
+    assert manager.vision_classifier is None, "classifier 引用必须摘掉"
+    assert len(observed["ended_sessions"]) == 1, "writer session 必须收掉"
+    assert manager._attached_window is None
+
+    still_running.cancel()
+
+
+def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
+    """Cancelling the unload during the drain must not strand the heavy deps."""
+    manager, observed = _async_shutdown_manager()
+    released: list[str] = []
+    drain_entered = threading.Event()
+    still_running: Future[OcrExtractionResult] = Future()
+
+    manager._stop_foreground_advance_monitor = types.MethodType(
+        lambda self, **_kwargs: None,
+        manager,
+    )
+    manager._shutdown_capture_worker = types.MethodType(
+        lambda self: [still_running],
+        manager,
+    )
+
+    def _slow_drain(self, _futures, **_kwargs) -> list:
+        del self
+        drain_entered.set()
+        time.sleep(0.3)
+        return []
+
+    manager._drain_inflight_capture_workers = types.MethodType(_slow_drain, manager)
+    manager._release_rapidocr_backend = types.MethodType(
+        lambda self: released.append("backend"),
+        manager,
+    )
+
+    async def _cancel_during_drain() -> None:
+        task = asyncio.create_task(manager.shutdown())
+        await asyncio.to_thread(drain_entered.wait, 2.0)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    asyncio.run(_cancel_during_drain())
+
+    assert released == ["backend"], "取消发生在 drain 期间，重依赖仍然必须被释放"
+    assert observed["closed_classifier"] == [True]
+    assert manager.vision_classifier is None
+    assert len(observed["ended_sessions"]) == 1
+    assert manager._attached_window is None
+
+    still_running.cancel()
+
+
+def test_drain_timeout_leaves_room_for_the_rest_of_plugin_shutdown() -> None:
+    """The host joins the child on the same budget; eating it trades cleanup for a kill."""
+    from plugin.plugins.galgame_plugin import ocr_runtime_types as runtime_types
+
+    drain_timeout = runtime_types._OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS
+    host_budget = runtime_types._PLUGIN_SHUTDOWN_TIMEOUT
+
+    assert drain_timeout > 0.0
+    assert drain_timeout <= host_budget * 0.5, (
+        f"drain 上限 {drain_timeout}s 吃掉了宿主优雅关闭预算 {host_budget}s 的一半以上，"
+        "backend / classifier / writer 的收尾会来不及跑就被 terminate"
+    )
+
+
 def test_drain_inflight_capture_workers_skips_wait_when_nothing_is_running() -> None:
     manager = _teardown_manager(_FakeRapidOcrBackend())
     finished: Future[OcrExtractionResult] = Future()

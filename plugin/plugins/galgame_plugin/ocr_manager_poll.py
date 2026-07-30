@@ -209,22 +209,52 @@ class PollMixin:
 
 
     async def shutdown(self) -> None:
-        self._stop_foreground_advance_monitor()
         # 顺序与 OcrReaderManager.close() 对偶：停线程/线程池 → 等在飞 capture
         # 跑完 → 再释放它可能仍在用的重依赖。中间这一等是有界的，跑到点就放行。
-        inflight = self._shutdown_capture_worker() or []
+        #
+        # 各步独立守卫，理由与 close() 那边同一条：合并后任一步抛错都会把后面
+        # 的释放连带跳过，而调用方（plugin_core.shutdown）只会记一条 warning
+        # 且不重试，资源就这么留下了。这条是生产卸载路径，比 close() 更要紧。
+        try:
+            self._stop_foreground_advance_monitor()
+        except Exception as exc:
+            self._log_warning("ocr_reader foreground advance monitor shutdown failed: {}", exc)
+        inflight: list[Future[OcrExtractionResult]] = []
+        try:
+            inflight = self._shutdown_capture_worker() or []
+        except Exception as exc:
+            self._log_warning("ocr_reader capture worker shutdown failed: {}", exc)
+        # 这是本函数唯一的 await 点，也就是唯一能被取消打断的地方。被打断同样
+        # 不能让下面的释放落空：先把取消记下来，收尾跑完再原样抛出去。
+        cancelled: asyncio.CancelledError | None = None
         if inflight:
-            await asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
-        self._release_rapidocr_backend()
+            try:
+                await asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
+            except asyncio.CancelledError as exc:
+                cancelled = exc
+            except Exception as exc:
+                self._log_warning("ocr_reader in-flight capture drain failed: {}", exc)
+        try:
+            self._release_rapidocr_backend()
+        except Exception as exc:
+            self._log_warning("ocr_reader rapidocr backend release failed: {}", exc)
         classifier = self.vision_classifier
         self.vision_classifier = None
         close_classifier = getattr(classifier, "close", None)
         if callable(close_classifier):
-            close_classifier()
-        if self._writer.session_id:
-            self._writer.end_session(ts=utc_now_iso(self._time_fn()))
-            self._ocr_lang_detector.reset(clear_switch_time=True)
+            try:
+                close_classifier()
+            except Exception as exc:
+                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
+        try:
+            if self._writer.session_id:
+                self._writer.end_session(ts=utc_now_iso(self._time_fn()))
+                self._ocr_lang_detector.reset(clear_switch_time=True)
+        except Exception as exc:
+            self._log_warning("ocr_reader writer session close failed: {}", exc)
         self._attached_window = None
+        if cancelled is not None:
+            raise cancelled
 
 
     async def _tick_preflight(

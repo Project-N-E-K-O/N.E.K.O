@@ -83,6 +83,12 @@ from plugin.plugins._shared.rapidocr.rapidocr_support import (
     inspect_rapidocr_installation,
     load_rapidocr_runtime,
 )
+
+try:
+    from plugin.settings import PLUGIN_SHUTDOWN_TIMEOUT as _PLUGIN_SHUTDOWN_TIMEOUT
+except Exception:  # pragma: no cover - plugin may run without the framework settings module.
+    _PLUGIN_SHUTDOWN_TIMEOUT = 1.5
+
 from .reader import normalize_text
 from .screen_classifier import (
     ScreenClassification,
@@ -196,6 +202,7 @@ __all__ = [
     "_OCR_PREPARE_MAX_LONG_EDGE",
     "_OCR_PREPARE_TARGET_LONG_EDGE",
     "_OCR_PREPARE_UPSCALE_SOURCE_LONG_EDGE",
+    "_OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE",
     "_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS",
     "_OCR_STABILITY_IGNORED_CHARS_RE",
     "_OCR_TRAILING_GARBAGE_AFTER_BRACKET_RE",
@@ -206,6 +213,7 @@ __all__ = [
     "_OVERLAY_PROCESS_NAME_SUBSTRINGS",
     "_OVERLAY_WINDOW_TITLE_SUBSTRINGS",
     "_PENDING_VISUAL_SCENE_MAX_SECONDS",
+    "_PLUGIN_SHUTDOWN_TIMEOUT",
     "_PUNCTUATION_CONFUSION_FIXES",
     "_RAPIDOCR_INFERENCE_LOCK",
     "_RAPIDOCR_RUNTIME_CACHE",
@@ -332,12 +340,22 @@ _KEYBOARD_ADVANCE_VK_CODES = frozenset({
 _OCR_FOLLOWUP_CONFIRM_DELAY_SECONDS = 0.18
 _OCR_CAPTURE_TIMEOUT_SECONDS = 12.0
 _OCR_MAX_ABANDONED_CAPTURE_WORKERS = 1
-# 收尾时等在飞 capture 跑完的上限。不复用上面那 12s：worker 拖住的只是
-# RapidOCR runtime 的回收时机（capture 线程栈上还攥着 runtime 引用，重依赖
-# 要等它退栈才真落地），代价是「内存晚几秒吐出来 + 一条 OCR warning」，拿
-# 插件卸载卡十几秒来换不划算。而且 Python 杀不掉跑飞的线程：真卡死的 worker
-# 多等十几秒同样等不到，只能记 warning 放它去。
-_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS = 1.5
+# 收尾时等在飞 capture 跑完的上限。
+#
+# 必须远小于宿主给单个插件的优雅关闭预算（PLUGIN_SHUTDOWN_TIMEOUT，默认 1.5s）：
+# 宿主用同一份预算 join 子进程，到点直接 terminate。drain 若把预算吃光，它后面
+# 的 backend / classifier / writer 收尾根本轮不到跑 —— 那比不等还糟，等于用一次
+# 强杀换来什么都没释放。所以只取预算的一小段，剩下的留给后续收尾。
+#
+# 也不复用上面那 12s 的 capture 超时：worker 拖住的只是 RapidOCR runtime 的回收
+# 时机（capture 线程栈上还攥着 runtime 引用，重依赖要等它退栈才真落地），代价是
+# 内存晚一会儿吐出来外加一条 warning。而且 Python 杀不掉跑飞的线程，真卡死的
+# worker 等多久都等不到，只能记 warning 放它去。
+_OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE = 0.2
+_OCR_SHUTDOWN_CAPTURE_DRAIN_TIMEOUT_SECONDS = min(
+    0.3,
+    max(0.05, float(_PLUGIN_SHUTDOWN_TIMEOUT) * _OCR_SHUTDOWN_CAPTURE_DRAIN_BUDGET_SHARE),
+)
 class _CaptureStillRunning(TimeoutError):
     """Backpressure: previous capture worker has not finished yet."""
 
