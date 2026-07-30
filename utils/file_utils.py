@@ -506,9 +506,12 @@ def robust_json_loads(raw: str) -> Any:
 # 的目标），而且一个「再也不会被写第二次」的目标（写完就沉底的老分片）留下的残留
 # 永远扫不到。
 #
-# 按目录扫就得靠形状而不是靠目标名来认自己的 tmp。mkstemp 产出的形状是
-# `.<目标名>.<8 个 [a-z0-9_]>.tmp`（前缀由本模块给，随机段由 tempfile 给，长度和字符集
-# 固定）。形状不匹配时的方向是安全的：少删，不会误删。
+# 按目录扫就不能再靠目标名来认自己的 tmp，而"形状 + mtime"证明不了所有权：别的程序、
+# 插件或用户在同一个目录里放的旧文件只要撞上同一个形状就会被永久删掉（Greptile P1）。
+# 所以给自己的 tmp 名里嵌一个所有权标记 `_TMP_OWNER_TAG`，只清带这个标记的文件 ——
+# 这是可证明的所有权，不是概率论。install_source 的 `plugins.lock.json.<pid>.<uuid>.tmp`
+# 是同一个思路。代价：本次改动之前的旧版留下的 tmp 没有标记，永远扫不到；宁可漏清，
+# 也不能删自己证明不了归属的文件。
 #
 # 记账允许有界重试：瞬时失败（目录被短暂锁住、某个 tmp 一时删不掉）不该把这个目录的
 # 唯一机会用掉，但也不能每次写都重扫——永久性失败（只读文件、ACL）会变成每次写盘都
@@ -521,7 +524,10 @@ def robust_json_loads(raw: str) -> Any:
 #   - POSIX 上 unlink 会成功，但后果是那次写的 os.replace 抛 FileNotFoundError，
 #     一个诚实的异常，不是静默损坏。门槛取 24h 是让这个场景（写盘中途被冻结一整天）
 #     退到不现实的量级；代价是崩溃残留最多多留一天才被清掉。
-_STALE_TMP_RE = re.compile(r"^\..+\.[a-z0-9_]{8}\.tmp$")
+# 只有本模块产出的 tmp 会带这个标记。带了标记之后随机段的长度和字符集就不重要了，
+# 不必再依赖 tempfile._RandomNameSequence 的实现细节（8 位 [a-z0-9_]）。
+_TMP_OWNER_TAG = "nkatmp"
+_STALE_TMP_RE = re.compile(rf"^\..+\.{_TMP_OWNER_TAG}[a-z0-9_]+\.tmp$")
 _STALE_TMP_MIN_AGE_S = 86400.0
 _STALE_TMP_SWEEP_ATTEMPTS = 3
 _swept_tmp_dirs: dict[str, int] = {}
@@ -594,7 +600,8 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
     _sweep_stale_tmp_once(target_path)
 
     fd, temp_path = tempfile.mkstemp(
-        prefix=f".{target_path.name}.",
+        # 前缀里带所有权标记：清扫器靠它证明这个 tmp 是本模块产的，而不是靠猜形状。
+        prefix=f".{target_path.name}.{_TMP_OWNER_TAG}",
         suffix=".tmp",
         dir=str(target_path.parent),
     )

@@ -46,6 +46,11 @@ def _tmp_siblings(target: Path) -> list[Path]:
     )
 
 
+def _abandoned_tmp(target: Path, rand: str = "deadbeef") -> Path:
+    """A temp file shaped exactly like the ones this module leaves behind."""
+    return target.parent / f".{target.name}.{file_utils._TMP_OWNER_TAG}{rand}.tmp"
+
+
 def _age(path: Path, seconds: float) -> None:
     stamp = time.time() - seconds
     os.utime(path, (stamp, stamp))
@@ -190,7 +195,7 @@ def test_unserializable_payload_never_touches_the_target(tmp_path):
 
 def test_stale_temp_from_a_hard_kill_is_swept(tmp_path):
     target = tmp_path / "state.json"
-    leftover = tmp_path / f".{target.name}.deadbeef.tmp"
+    leftover = _abandoned_tmp(target)
     leftover.write_text("half-written garbage", encoding="utf-8")
     _age(leftover, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
@@ -204,7 +209,7 @@ def test_temp_file_of_a_live_writer_is_not_swept(tmp_path):
     # 另一个进程正在写同一个目标时，它的 tmp 只有几毫秒岁数；扫掉就等于把
     # 别人写了一半的数据删了。年龄门槛就是为了这个。
     target = tmp_path / "state.json"
-    inflight = tmp_path / f".{target.name}.inflight.tmp"
+    inflight = _abandoned_tmp(target, "inflight")
     inflight.write_text("someone else is mid-write", encoding="utf-8")
 
     atomic_write_json(target, {"v": 1})
@@ -217,7 +222,7 @@ def test_sweep_also_clears_other_targets_abandoned_temps(tmp_path):
     # 垃圾。按目标记账会漏掉「写完就沉底、再也不会被写第二次」的目标（归档分片就是
     # 这种），那些残留永远扫不到。
     target = tmp_path / "state.json"
-    other_target_tmp = tmp_path / ".other.json.deadbeef.tmp"
+    other_target_tmp = _abandoned_tmp(tmp_path / "other.json")
     other_target_tmp.write_text("garbage from a crash", encoding="utf-8")
     _age(other_target_tmp, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
@@ -226,17 +231,19 @@ def test_sweep_also_clears_other_targets_abandoned_temps(tmp_path):
     assert not other_target_tmp.exists()
 
 
-def test_sweep_only_matches_the_shape_this_module_creates(tmp_path):
-    # 按目录扫就得靠形状认自己的 tmp：mkstemp 产出的是
-    # `.<目标名>.<8 个 [a-z0-9_]>.tmp`。形状不匹配一律不碰 —— 方向是少删不误删。
+def test_sweep_only_touches_files_it_can_prove_it_owns(tmp_path):
+    # 按目录扫的前提是能**证明**所有权：光靠「形状像 + 够老」会把别的程序、插件或
+    # 用户放在同一个目录里的旧文件永久删掉。所以自己的 tmp 名里嵌了所有权标记，
+    # 没有这个标记的一律不碰 —— 包括本模块早先版本留下的无标记 tmp（宁可漏清）。
     target = tmp_path / "state.json"
+    tag = file_utils._TMP_OWNER_TAG
     keepers = [
-        tmp_path / f".{target.name}.deadbeef.bak",   # 不是 .tmp
-        tmp_path / f"{target.name}.deadbeef.tmp",    # 没有前导点
-        tmp_path / ".state.json.short.tmp",          # 随机段不是 8 位
-        tmp_path / ".state.json.deadbeefx.tmp",      # 随机段是 9 位
-        tmp_path / ".state.json.DEADBEEF.tmp",       # 随机段字符集不对（大写）
-        tmp_path / ".notes.tmp",                     # 用户自己的文件
+        tmp_path / f".{target.name}.{tag}deadbeef.bak",  # 不是 .tmp
+        tmp_path / f"{target.name}.{tag}deadbeef.tmp",   # 没有前导点
+        tmp_path / f".{target.name}.deadbeef.tmp",       # 没有所有权标记（旧版残留）
+        tmp_path / f".{target.name}.{tag.upper()}deadbeef.tmp",  # 标记大小写不对
+        tmp_path / ".rsync-ish.abcdef.tmp",              # 别的工具的临时文件
+        tmp_path / ".notes.tmp",                         # 用户自己的文件
     ]
     for path in keepers:
         path.write_text("keep me", encoding="utf-8")
@@ -247,13 +254,33 @@ def test_sweep_only_matches_the_shape_this_module_creates(tmp_path):
     assert [p.name for p in keepers if not p.exists()] == []
 
 
+def test_the_temp_files_this_module_creates_carry_the_owner_tag(tmp_path, monkeypatch):
+    # 所有权标记只有在**创建**时也带上才有意义：只改清扫器的正则、不改 mkstemp 的
+    # 前缀，就会变成「以后再也扫不到任何东西」的静默失效。
+    target = tmp_path / "state.json"
+    seen = {}
+    real_mkstemp = tempfile.mkstemp
+
+    def spy(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        seen["name"] = Path(path).name
+        return fd, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", spy)
+    atomic_write_json(target, {"v": 1})
+
+    assert file_utils._STALE_TMP_RE.match(seen["name"]), (
+        f"创建出来的 tmp 名 {seen['name']!r} 不被清扫器的所有权正则认领"
+    )
+
+
 def test_sweep_is_amortised_per_directory(tmp_path):
     # 摊销是有意的：残留由崩溃产生，而崩溃结束了那个进程，所以长寿进程反复扫目录
     # 没有意义。这条把「扫干净之后就不再扫」钉下来，免得后来有人改成每次写都扫。
     target = tmp_path / "state.json"
     atomic_write_json(target, {"v": 1})
 
-    appeared_later = tmp_path / f".{target.name}.deadbeef.tmp"
+    appeared_later = _abandoned_tmp(target)
     appeared_later.write_text("garbage", encoding="utf-8")
     _age(appeared_later, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
@@ -279,7 +306,7 @@ def test_a_failed_scan_does_not_consume_every_attempt(tmp_path, monkeypatch):
     # 瞬时 OSError（目录被短暂锁住、网络盘抖动）不该把这个目录的机会一次用光，
     # 否则残留会一直留到进程退出。
     target = tmp_path / "state.json"
-    leftover = tmp_path / f".{target.name}.deadbeef.tmp"
+    leftover = _abandoned_tmp(target)
     leftover.write_text("garbage", encoding="utf-8")
     _age(leftover, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
@@ -415,7 +442,7 @@ def test_a_temp_file_that_cannot_be_removed_leaves_a_retry(tmp_path, monkeypatch
     # 删不掉一个 tmp 不代表整个目录扫过了：Windows 上活写者的句柄还开着就会撞这个，
     # 句柄一放开就该能扫掉。所以「没扫干净」不记成完成，留给后续写盘重试。
     target = tmp_path / "state.json"
-    leftover = tmp_path / f".{target.name}.deadbeef.tmp"
+    leftover = _abandoned_tmp(target)
     leftover.write_text("garbage", encoding="utf-8")
     _age(leftover, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
@@ -458,7 +485,7 @@ def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
 
 def test_sweep_survives_a_temp_file_that_cannot_be_removed(tmp_path, monkeypatch):
     target = tmp_path / "state.json"
-    leftover = tmp_path / f".{target.name}.deadbeef.tmp"
+    leftover = _abandoned_tmp(target)
     leftover.write_text("garbage", encoding="utf-8")
     _age(leftover, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
