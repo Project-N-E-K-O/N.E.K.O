@@ -50,7 +50,6 @@ from config.prompts.prompts_emotion import (
     get_emotion_negation_words_flat,
     get_emotion_negation_suffixes_flat,
     get_emotion_negation_degree_adverbs_flat,
-    get_emotion_degree_adverb_blocklist_flat,
 )
 from utils.language_utils import detect_prompt_language
 
@@ -116,6 +115,9 @@ _EMOTION_NEGATION_COMPACT_SUFFIXES = tuple(sorted({
 }, key=len, reverse=True))
 
 
+_EMOTION_NEGATION_COMPACT_PREFIX_SET = frozenset(_EMOTION_NEGATION_COMPACT_PREFIXES)
+
+
 _EMOTION_NEGATION_CONTEXT_WINDOW = max(
     (len(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES),
     default=6,
@@ -131,13 +133,6 @@ _EMOTION_DEGREE_ADVERBS = tuple(sorted(
     key=len,
     reverse=True,
 ))
-
-
-_EMOTION_DEGREE_ADVERB_BLOCKLIST = tuple(
-    re.sub(r"[\W_]+", "", str(phrase).strip().lower(), flags=re.UNICODE)
-    for phrase in get_emotion_degree_adverb_blocklist_flat()
-    if str(phrase).strip()
-)
 
 
 def _strip_degree_adverbs(text):
@@ -158,10 +153,6 @@ def _strip_degree_adverbs(text):
     # `不是很特別開心` 要连剥 `特別` 和 `很` 两次。
     previous = None
     while text and text != previous:
-        # Stop at a fixed phrase that merely contains an adverb: peeling into one
-        # exposes a negation that was never there.
-        if any(text.endswith(phrase) for phrase in _EMOTION_DEGREE_ADVERB_BLOCKLIST):
-            break
         previous = text
         for adverb in _EMOTION_DEGREE_ADVERBS:
             if text.endswith(adverb):
@@ -198,7 +189,17 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
     for negation in _EMOTION_NEGATION_COMPACT_PREFIXES:
         if not compact_text.startswith(negation):
             continue
-        if _looks_like_emotion_compact_candidate(compact_text[len(negation):], fuzzy_compact_cutoff):
+        rest = compact_text[len(negation):]
+        if len(negation) == 1:
+            # A single character is as likely to be the first half of a word as a
+            # negation, so it only counts when what follows is an alias outright.
+            # Fuzzy-matching past it read `非常生氣` as "not 生氣" (`常生氣` scores
+            # 0.8 against `生氣`) and answered neutral at the confidence the
+            # endpoint actually passes -- the emotion word itself never won.
+            if rest in _EMOTION_COMPACT_ALIAS_LOOKUP:
+                return True
+            continue
+        if _looks_like_emotion_compact_candidate(rest, fuzzy_compact_cutoff):
             return True
 
     for negation in _EMOTION_NEGATION_COMPACT_SUFFIXES:
@@ -247,12 +248,31 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         prefix_tokens = _EMOTION_TOKEN_RE.findall(normalized_text[:match_start])
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
 
+    # Whether the label is a single clause. A degree adverb only counts as
+    # "between the negation and the emotion word" within one clause: punctuation
+    # is stripped out of compact_text, so `不是，非常开心` looks contiguous there
+    # and the reach would cross the comma into an unrelated clause.
+    single_clause = not any(
+        delim in emotion_text for delim in _HEURISTIC_CLAUSE_DELIMITERS
+    )
+
     def _is_negated_compact_match(match_start):
         prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
-        # `沒有很生氣`: the window before the alias is `沒有很`, so testing it as-is
-        # finds no negation and the label comes back as the emotion itself.
-        prefix = _strip_degree_adverbs(prefix)
-        return any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES)
+        whole_opening = len(prefix) == match_start
+        if whole_opening and not _strip_degree_adverbs(prefix):
+            # Nothing but intensifiers ahead of the alias, so the single character
+            # one of them ends with is part of that adverb, not a negation.
+            return False
+        if any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES):
+            return True
+        # `沒有很生氣`: the window ends with the adverb, so the negation before it is
+        # invisible. Peeling reveals it — but only count that reading when what is
+        # uncovered *is* the label's whole opening and is itself a negation.
+        # Anything weaker reaches into ordinary words: `分别很开心` would peel to
+        # `分别`, whose last character is a negation only by coincidence.
+        if not (whole_opening and single_clause):
+            return False
+        return _strip_degree_adverbs(prefix) in _EMOTION_NEGATION_COMPACT_PREFIX_SET
 
     alias_items = sorted(
         _EMOTION_NORMALIZED_ALIAS_LOOKUP.items(),

@@ -471,58 +471,131 @@ def test_module_builds_the_adverb_list_longest_first():
     assert lengths == sorted(lengths, reverse=True), R._EMOTION_DEGREE_ADVERBS
 
 
+# The endpoint calls `_normalize_emotion_label(raw_emotion, raw_confidence)`, and
+# the confidence lowers the fuzzy cutoffs (0.9/0.88 -> 0.74/0.72). A test that
+# omits it exercises the strict path only and can pass on a label the running
+# system gets wrong, so every label below is checked in both regimes. The prompt
+# itself asks for a high confidence when the emotion is clear, so 0.9 is the
+# ordinary case, not the exotic one.
+CONFIDENCES = [None, 0.9]
+
+
+def _label(text, confidence):
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    if confidence is None:
+        return _normalize_emotion_label(text)
+    return _normalize_emotion_label(text, confidence)
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "不怎麼開心", "不怎么开心", "沒有很生氣", "没有很生气",
+    "不是很開心", "不很開心", "並不怎麼開心", "不是很特別開心",
+    "沒有那麼驚訝", "没有那么惊讶", "沒有非常生氣",
+])
+def test_negation_survives_a_degree_adverb(label, confidence):
+    """A negated label with a degree adverb in it must not report the emotion.
+
+    English never had this problem -- its scan runs over the last three *tokens*,
+    and a compact CJK window has no token boundaries to count, so the adverb sat
+    between the negation and the alias and the endswith test simply failed.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
 @pytest.mark.parametrize("label,expected", [
-    ("差不多開心", "happy"), ("差不多开心", "happy"),
+    # an ordinary word that happens to end in a negation character, then an
+    # adverb, then the emotion: peeling must not turn its last character into a
+    # negation it never was
+    ("分别很开心", "happy"), ("分別很開心", "happy"),
+    ("个别很生气", "angry"), ("個別很生氣", "angry"),
+    ("告别很难过", "sad"), ("告別很難過", "sad"),
+    ("除非很开心", "happy"), ("除非很開心", "happy"),
+    # the adverb is inside a fixed phrase
+    ("差不多开心", "happy"), ("差不多開心", "happy"),
     ("差不多難過", "sad"), ("差不多生氣", "angry"),
 ])
-def test_a_fixed_phrase_is_not_peeled_into(label, expected):
-    """Peeling into a word that merely contains an adverb exposes a false negation.
+def test_peeling_does_not_reach_into_ordinary_words(label, expected, confidence):
+    """The uncovered text has to BE a negation, not merely end with one.
 
-    The blocklist is the same mechanism the keyword heuristic already uses for
-    the same reason, so this stays one concept rather than two.
+    Reaching further left is only safe when what it uncovers is the label's whole
+    opening; otherwise every word ending in one of the single-character negations
+    reads as one.
     """
-    from main_routers.system_router.emotion import _normalize_emotion_label
-
-    assert _normalize_emotion_label(label) == expected
+    assert _label(label, confidence) == expected
 
 
+@pytest.mark.parametrize("confidence", CONFIDENCES)
 @pytest.mark.parametrize("label,expected", [
-    # the words the blocklist must NOT swallow: peeling these is correct
-    ("不多開心", "neutral"), ("沒多開心", "neutral"),
-    ("許多開心", "happy"), ("好多開心", "happy"),
+    ("不是，非常开心", "happy"),
+    ("不是，有点难过", "sad"),
+    ("没，太开心了", "happy"),
 ])
-def test_blocklist_does_not_disable_ordinary_peeling(label, expected):
-    from main_routers.system_router.emotion import _normalize_emotion_label
+def test_peeling_stops_at_a_clause_boundary(label, expected, confidence):
+    """Punctuation is stripped out of the compact text, so the window would
+    otherwise reach straight through a comma into an unrelated clause.
 
-    assert _normalize_emotion_label(label) == expected
-
-
-def test_degree_adverb_blocklist_pairs_across_scripts():
-    """Kept per-language because it tracks the adverb table, which does differ."""
-    table = P.EMOTION_DEGREE_ADVERB_BLOCKLIST_BY_LANG
-    assert set(table) == {"zh", "zh-TW"}
-    assert len(table["zh"]) == len(table["zh-TW"])
-
-
-def test_blocklist_matches_at_the_end_of_the_window():
-    """The phrase has to be the part adjacent to the emotion word.
-
-    Anchoring at the START of the window instead misses it as soon as anything
-    precedes the phrase. (Anchoring anywhere in the window is not distinguishable
-    on any input worth writing down, so this only pins the end-anchor.)
+    The keyword heuristic has had `_HEURISTIC_CLAUSE_DELIMITERS` for this all
+    along; the label parser had no notion of a clause, which is why extending its
+    reach needed one.
     """
-    from main_routers.system_router.emotion import _normalize_emotion_label
-
-    assert _normalize_emotion_label("真差不多開心") == "happy"
+    assert _label(label, confidence) == expected
 
 
-def test_blocked_window_is_returned_unpeeled_not_emptied(monkeypatch):
-    """Stopping means "leave it alone", not "there was no window".
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # intensified but NOT negated
+    ("很開心", "happy"), ("非常生氣", "angry"), ("非常開心", "happy"),
+    ("非常難過", "sad"), ("非常驚訝", "surprised"),
+    ("十分驚訝", "surprised"), ("超級開心", "happy"), ("最難過", "sad"),
+    ("有點難過", "sad"), ("太開心", "happy"), ("更開心", "happy"),
+    ("特別開心", "happy"), ("特别开心", "happy"), ("特別難過", "sad"),
+    ("無比開心", "happy"), ("許多開心", "happy"), ("好多開心", "happy"),
+    ("開心", "happy"), ("生氣", "angry"), ("驚訝", "surprised"), ("難過", "sad"),
+])
+def test_intensifiers_are_not_read_as_negations(label, expected, confidence):
+    """The other direction: reaching further left must not invent a negation.
 
-    Nothing in today's blocklist ends in a negation, so only this separates the
-    two; a future entry that does would otherwise silently lose its negation.
+    `非常生氣` is the one that matters most — it is the most ordinary way for a
+    model to answer, and a single leading character (`非`) used to be enough to
+    fuzzy-match the rest against the alias and call the whole thing negated.
     """
-    from main_routers.system_router import emotion as R
+    assert _label(label, confidence) == expected
 
-    monkeypatch.setattr(R, "_EMOTION_DEGREE_ADVERB_BLOCKLIST", ("好不",))
-    assert R._strip_degree_adverbs("好不") == "好不"
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    # adjacent negation — the behaviour that was already there and must not move
+    "沒有生氣", "没有生气", "並不開心", "很不開心", "不太開心", "沒那麼難過",
+    "不開心", "不生氣", "没开心", "無驚訝", "別生氣",
+    "not happy", "not very happy", "never happy",
+    "슬프지 않아", "не злюсь", "no estoy feliz",
+])
+def test_adjacent_and_non_chinese_negation_is_unchanged(label, confidence):
+    assert _label(label, confidence) == "neutral"
+
+
+def test_stacked_degree_adverbs_are_all_peeled():
+    """Adverbs stack, so one pass is not enough.
+
+    Both have to come off before the window ends in a negation.
+    """
+    for confidence in CONFIDENCES:
+        assert _label("不是很特別開心", confidence) == "neutral"
+        assert _label("沒有非常生氣", confidence) == "neutral"
+
+
+def test_peeling_needs_to_see_the_whole_opening():
+    """A truncated window cannot say the negation opens the label.
+
+    The lookback is capped at the longest negation (7 characters), so a longer
+    label only ever shows its tail. Synthetic input, because a real label never
+    stacks this much in front of the emotion word — but without the check the
+    peeled reading would fire on whatever the cap happened to leave visible.
+    """
+    for confidence in CONFIDENCES:
+        assert _label("真不是怎麼特別很開心", confidence) == "happy"
+        # the same opening, now short enough for the window to reach its start
+        assert _label("不是怎麼特別很開心", confidence) == "neutral"
