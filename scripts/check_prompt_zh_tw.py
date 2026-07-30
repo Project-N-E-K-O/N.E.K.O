@@ -378,6 +378,33 @@ def _generator_pair_keys(node: ast.GeneratorExp) -> set[str] | None:
     )
 
 
+def _source_position(node: ast.AST) -> tuple[int, int]:
+    """``(line, column)`` of a node, for ordering bindings against uses.
+
+    Lines alone are not an order: ``T = {}; T["zh-TW"] = "t"; T = {"en": ..}``
+    puts three statements on one, and a line-only comparison read the last of
+    them as preceding the mutation in the middle.
+    """
+    return getattr(node, "lineno", 0), getattr(node, "col_offset", 0)
+
+
+def _assignment_slots(targets: list[ast.AST]) -> list[ast.AST]:
+    """Assignment targets, flattened through tuple / list / starred unpacking.
+
+    ``T["zh-TW"], flag = t, True`` puts the subscript inside an ``ast.Tuple``, so
+    a top-level-only scan missed the backfill and reported the completed table.
+    """
+    slots: list[ast.AST] = []
+    for target in targets:
+        if isinstance(target, (ast.Tuple, ast.List)):
+            slots.extend(_assignment_slots(list(target.elts)))
+        elif isinstance(target, ast.Starred):
+            slots.extend(_assignment_slots([target.value]))
+        else:
+            slots.append(target)
+    return slots
+
+
 def _operand_branches(node: ast.AST) -> list[ast.AST]:
     """An operand, or — when it is conditional — the branches it picks between.
 
@@ -528,11 +555,11 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
 
       would have its later table exempted too.
 
-    No scope analysis: line order is enough here because a mutation and the
+    No scope analysis: source order is enough here because a mutation and the
     binding it mutates sit in the same scope in practice, and picking the nearest
     preceding binding is right in either nesting direction.
     """
-    assignments: dict[str, list[tuple[int, int]]] = {}
+    assignments: dict[str, list[tuple[tuple[int, int], ast.AST]]] = {}
     for node in ast.walk(tree):
         name: str | None = None
         if isinstance(node, ast.Assign):
@@ -541,7 +568,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             for target in node.targets:
                 if isinstance(target, ast.Name):
                     assignments.setdefault(target.id, []).append(
-                        (node.lineno, node.value)
+                        (_source_position(node.value), node.value)
                     )
             continue
         if (
@@ -555,7 +582,9 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             name = node.target.id
         if name is None:
             continue
-        assignments.setdefault(name, []).append((node.lineno, node.value))
+        assignments.setdefault(name, []).append(
+            (_source_position(node.value), node.value)
+        )
     for bindings in assignments.values():
         bindings.sort(key=lambda item: item[0])
 
@@ -576,29 +605,33 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     exempt: set[int] = set()
 
     def _binding_before(
-        name: str, lineno: int, exclude: ast.AST | None = None
-    ) -> tuple[int, ast.AST] | None:
-        """The value bound to `name` most recently at or before `lineno`.
+        name: str, at: tuple[int, int], strict: bool = False
+    ) -> tuple[tuple[int, int], ast.AST] | None:
+        """The value bound to `name` most recently at or before source position `at`.
 
-        Returns the binding's own line along with it, because a hop through an
-        alias has to continue searching from where the alias was bound rather than
-        from the far-away line that reads it.
+        Positions are ``(line, column)``, not lines: ``T = {}; T["zh-TW"] = "t";
+        T = {"en": .., "zh": ..}`` puts three statements on one line, and a
+        line-only search picked the *last* of them for a mutation that runs before
+        it — exempting a table that really does end up missing zh-TW.
 
-        ``exclude`` skips one candidate: for a self-rebinding merge like
-        ``T = T | {...}`` the new assignment registers on the same line as the
-        merge, so an inclusive line search would pick the merge's own result
-        instead of the binding its right-hand side actually reads.
+        ``strict`` excludes a binding at exactly `at`, which is what descending
+        into a binding's own right-hand side needs: the ``TW`` inside
+        ``TW = dict(TW)`` reads the binding *before* this one. It also makes every
+        hop move strictly earlier in the file, so alias chains terminate on source
+        order rather than on a visited-name set — and a set was wrong here, since
+        a name legitimately reappears inside its own rebinding.
+
+        Returns the binding's own position along with the value, because the next
+        hop has to continue from there rather than from the far-away use site.
         """
-        for ln, value in reversed(assignments.get(name, [])):
-            if ln > lineno:
+        for pos, value in reversed(assignments.get(name, [])):
+            if pos > at or (strict and pos == at):
                 continue
-            if exclude is not None and value is exclude:
-                continue
-            return ln, value
+            return pos, value
         return None
 
     def _exempt_binding_before(
-        name: str, lineno: int, exclude: ast.AST | None = None
+        name: str, at: tuple[int, int], strict: bool = False
     ) -> None:
         """Exempt what `name` holds, down through aliases and nested merges.
 
@@ -607,10 +640,10 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         bare ``Name``, so ``F``'s literal — the node actually judged — stayed
         subject to the rule and a compliant table still grew the count.
         """
-        pending, walked = [(name, lineno, exclude)], set()
+        pending, walked = [(name, at, strict)], set()
         while pending:
-            current, at, skip = pending.pop()
-            found = _binding_before(current, at, skip)
+            current, pos, skip_self = pending.pop()
+            found = _binding_before(current, pos, skip_self)
             if found is None:
                 continue
             bound_at, value = found
@@ -620,7 +653,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             exempt.add(id(value))
             for part in _fragment_parts(value):
                 if isinstance(part, ast.Name):
-                    pending.append((part.id, bound_at, None))
+                    pending.append((part.id, bound_at, True))
 
     def _fragment_parts(node: ast.AST) -> list[ast.AST]:
         """The sub-expressions that stand in for `node` — aliases and operands.
@@ -634,7 +667,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         return _merge_operands(node)
 
     def _mapping_keys(
-        node: ast.AST | None, at: int, _seen: frozenset[str] = frozenset()
+        node: ast.AST | None, at: tuple[int, int], strict: bool = False
     ) -> set[str]:
         """Keys a mapping expression supplies, following names to their bindings.
 
@@ -644,20 +677,18 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         second hop through ``TW2 = dict(TW)``), and every gap read as "no zh-TW
         here", i.e. a table reported despite being compliant at runtime.
 
-        ``_seen`` guards the name hops, so mutual or self-referential bindings
-        terminate instead of recursing forever.
+        ``at``/``strict`` say where names inside `node` are resolved from. Each hop
+        moves strictly earlier in the file, which is what terminates the recursion.
         """
         if node is None:
             return set()
         if isinstance(node, ast.Name):
-            if node.id in _seen:
-                return set()
-            return _name_keys(node.id, at, _seen=_seen)
+            return _name_keys(node.id, at, strict)
         if isinstance(node, ast.IfExp):
             # `T |= TW if flag else {"zh-TW": t}` — either branch may carry it, and
             # a conditional supply counts, same as in `_directly_visible_keys`.
-            return _mapping_keys(node.body, at, _seen) | _mapping_keys(
-                node.orelse, at, _seen
+            return _mapping_keys(node.body, at, strict) | _mapping_keys(
+                node.orelse, at, strict
             )
         keys = resolve_keys(node)
         if keys is None:
@@ -669,29 +700,28 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             if operands:
                 keys = _directly_visible_keys(node)
                 for operand in operands:
-                    keys |= _mapping_keys(operand, at, _seen)
+                    keys |= _mapping_keys(operand, at, strict)
         return keys or set()
 
     def _name_keys(
-        name: str,
-        at: int,
-        exclude: ast.AST | None = None,
-        _seen: frozenset[str] = frozenset(),
+        name: str, at: tuple[int, int], strict: bool = False
     ) -> set[str]:
         """Keys of the mapping `name` is bound to just before `at`.
 
-        The hop moves the search position back to that binding's own line. Keeping
-        the original `at` through every hop read an alias against a *later*
-        rebinding of its source: in ``ALIAS = P`` / ``P = {"zh-TW": t}`` / ``T.
-        update(ALIAS)``, ALIAS still holds the earlier object at runtime, so
-        resolving P at the update line would exempt a table that really is missing
-        zh-TW.
+        The hop moves the search position back to that binding's own, and descends
+        `strict`ly from there. Keeping the original `at` through every hop read an
+        alias against a *later* rebinding of its source: in ``ALIAS = P`` /
+        ``P = {"zh-TW": t}`` / ``T.update(ALIAS)``, ALIAS still holds the earlier
+        object at runtime, so resolving P at the update site would exempt a table
+        that really is missing zh-TW. Descending strictly is the other half: the
+        ``TW`` inside ``TW = dict(TW)`` reads the binding before that one, and
+        resolving it against the binding being descended into found nothing.
         """
-        found = _binding_before(name, at, exclude)
+        found = _binding_before(name, at, strict)
         if found is None:
             return set()
         bound_at, value = found
-        return _mapping_keys(value, bound_at, _seen | {name})
+        return _mapping_keys(value, bound_at, strict=True)
 
     for node in ast.walk(tree):
         # `T["zh-TW"] = t`, and its annotated form `T["zh-TW"]: str = t`.
@@ -699,9 +729,12 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         # needs its own unpacking even though the shape being matched is identical.
         subscripts: list[ast.AST] = []
         if isinstance(node, ast.Assign):
-            subscripts = list(node.targets)
+            # Through tuple/list/starred targets too: `T["zh-TW"], flag = t, True`
+            # puts the subscript inside an ast.Tuple, and looking only at top-level
+            # targets left the completed table reported.
+            subscripts = _assignment_slots(node.targets)
         elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            subscripts = [node.target]
+            subscripts = _assignment_slots([node.target])
         matched = False
         for slot in subscripts:
             if (
@@ -710,7 +743,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 and isinstance(slot.slice, ast.Constant)
                 and slot.slice.value == TRADITIONAL_KEY
             ):
-                _exempt_binding_before(slot.value.id, node.lineno)
+                _exempt_binding_before(slot.value.id, _source_position(node))
                 matched = True
         if matched:
             continue
@@ -730,7 +763,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                     isinstance(first, ast.Constant)
                     and first.value == TRADITIONAL_KEY
                 ):
-                    _exempt_binding_before(target, node.lineno)
+                    _exempt_binding_before(target, _source_position(node))
                 continue
             # Every payload, not just the first: `update({...}, **{...})` is legal
             # and so is more than one `**`. Named keywords are deliberately not
@@ -749,10 +782,10 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             continue
 
         if any(
-            TRADITIONAL_KEY in _mapping_keys(payload, node.lineno)
+            TRADITIONAL_KEY in _mapping_keys(payload, _source_position(node))
             for payload in payloads
         ):
-            _exempt_binding_before(target, node.lineno)
+            _exempt_binding_before(target, _source_position(node))
 
     # A name merged into a construction that *demonstrably supplies zh-TW* is a
     # fragment of a compliant table: `_F = {"en": .., "zh": ..}` /
@@ -767,17 +800,24 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if not operands:
             continue
 
-        # The whole bound expression, not this merge node: `T = (T | {"zh-TW": t})
-        # if flag else ...` registers the IfExp as T's new binding, so excluding
-        # the merge by identity left each `T` resolving to the assignment being
-        # evaluated instead of the table it reads.
+        # Names inside a merge resolve from the position of the *whole bound
+        # expression* it sits in, strictly — `T = (T | {"zh-TW": t}) if flag else
+        # ...` registers the IfExp as T's new binding, and anything less than "the
+        # binding being evaluated, excluded" left each `T` resolving to that new
+        # binding instead of the table it actually reads.
         enclosing = bound_expression.get(id(node), node)
+        origin = _source_position(enclosing)
+        inside_binding = enclosing is not node or id(node) in bound_expression
 
         # `_TW = {"zh-TW": t}` / `T = {**_F, **_TW}` supplies zh-TW as plainly as an
         # inline literal. Following the name only ever *adds* visible keys, so
         # `U = dict(T)` still sees {en, zh} and leaves T subject to the rule.
-        def _named_keys(name: str, _at: int = node.lineno, _self: ast.AST = enclosing) -> set[str]:
-            return _name_keys(name, _at, exclude=_self)
+        def _named_keys(
+            name: str,
+            _at: tuple[int, int] = origin,
+            _strict: bool = inside_binding,
+        ) -> set[str]:
+            return _name_keys(name, _at, _strict)
 
         if TRADITIONAL_KEY not in _directly_visible_keys(node, _named_keys):
             continue
@@ -792,7 +832,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 continue
             walked.add(id(operand))
             if isinstance(operand, ast.Name):
-                _exempt_binding_before(operand.id, node.lineno, exclude=enclosing)
+                _exempt_binding_before(operand.id, origin, inside_binding)
             else:
                 pending.extend(_merge_operands(operand))
 

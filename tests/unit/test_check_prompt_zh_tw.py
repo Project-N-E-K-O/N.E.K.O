@@ -1971,3 +1971,68 @@ def test_rebinding_that_does_not_supply_zh_tw_still_reports():
     src = 'T = {"en": "e", "zh": "s"}\nT = T | {"ja": "j"}'
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src,expected", [
+    # the rebinding runs AFTER the backfill, so the final table really lacks zh-TW
+    ('T = {}; T["zh-TW"] = "t"; T = {"en": "e", "zh": "s"}', [1]),
+    # …and the same three statements in the compliant order must stay silent
+    ('T = {"en": "e", "zh": "s"}; T["zh-TW"] = "t"', []),
+    ('T = {}; T = {"en": "e", "zh": "s"}; T["zh-TW"] = "t"', []),
+])
+def test_bindings_are_ordered_by_column_not_only_by_line(src, expected):
+    """Semicolons put several statements on one line, so a line is not an order.
+
+    Searching by line alone picked the *last* binding on the line for a mutation
+    that runs before it, exempting a table that really does end up missing zh-TW.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    'TW = {"zh-TW": "t"}\nTW = dict(TW)\nT = {"en": "e", "zh": "s"}\nT.update(TW)',
+    'TW = {"zh-TW": "t"}\nTW = TW | {}\nT = {"en": "e", "zh": "s"}\nT |= TW',
+    'TW = {"zh-TW": "t"}\nTW = dict(TW)\nF = {"en": "e", "zh": "s"}\nT = {**F, **TW}',
+])
+def test_a_supplier_may_rebind_itself_before_being_used(src):
+    """The `TW` inside `TW = dict(TW)` reads the binding *before* that one.
+
+    Resolving it against the binding being descended into found nothing, so a
+    supplier that had merely been rebound looked empty and its target was reported.
+    """
+    assert _violations(src) == []
+
+
+def test_self_rebinding_supplier_that_drops_zh_tw_still_reports():
+    src = (
+        'TW = {"zh-TW": "t"}\n'
+        'TW = {"ja": "j"}\n'
+        'T = {"en": "e", "zh": "s"}\n'
+        "T.update(TW)"
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [3]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT["zh-TW"], marker = "t", True',
+    'T = {"en": "e", "zh": "s"}\n(a, (T["zh-TW"], b)) = (1, ("t", 2))',
+    'T = {"en": "e", "zh": "s"}\nT["zh-TW"], *rest = "t", 1, 2',
+    # the starred slot may itself be the subscript — the key still ends up set
+    # (to a list), which is what verifying this against CPython showed
+    'T = {"en": "e", "zh": "s"}\n*T["zh-TW"], b = "t", 1',
+])
+def test_backfill_through_an_unpacking_target(src):
+    """`T["zh-TW"], flag = t, True` puts the subscript inside an ast.Tuple.
+
+    Scanning only top-level targets missed the backfill and reported a table that
+    is compliant at runtime.
+    """
+    assert _violations(src) == []
+
+
+def test_unpacking_target_for_another_key_still_reports():
+    src = 'T = {"en": "e", "zh": "s"}\nT["ja"], marker = "j", True'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
