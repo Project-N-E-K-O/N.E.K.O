@@ -487,7 +487,7 @@ class FactStore:
 
         段首标记 ``[SEGMENT n | speaker: label]`` 是 locale 无关的固定形状，
         批模板（FACT_EXTRACTION_BATCH_PROMPT）按原样向模型解释它；段内每行
-        以该段的 speaker label 开头，与单发路径的 'role | content' 同构。"""
+        以该段的 speaker label 开头，与单发路径的 'role | content' 同构。"""  # noqa: DOCSTRING_CJK
         blocks = []
         for index, segment in enumerate(segments, start=1):
             label = str(segment.get('speaker_label') or '').strip()
@@ -666,7 +666,7 @@ class FactStore:
         fail-closed 的 scoped_history 路由，没有"宽容当空"的模式。
 
         占位符替换顺序刻意 {LANLAN_NAME} 在前、{SEGMENTS} 在后：消息正文
-        里出现字面 "{LANLAN_NAME}" 时不得被二次替换。"""
+        里出现字面 "{LANLAN_NAME}" 时不得被二次替换。"""  # noqa: DOCSTRING_CJK
         prompt = (
             get_fact_extraction_batch_prompt(get_global_language_full())
             .replace('{LANLAN_NAME}', lanlan_name)
@@ -694,7 +694,7 @@ class FactStore:
         归属标记无法解析 / 指向不存在的段时**必须丢弃而不是猜**——A 的
         事实挂到 B 头上比丢一条严重得多（错误归属会进 B 的 persona 且
         无人能发现）。接受 int 与纯数字字符串（模型输出 "1" 的常见形态），
-        bool 显式排除（True 是 int 子类）。"""
+        bool 显式排除（True 是 int 子类）。"""  # noqa: DOCSTRING_CJK
         if not isinstance(fact, dict):
             return None
         text = fact.get('text')
@@ -721,7 +721,7 @@ class FactStore:
 
         只落字段不接消费（发言人信赖度阶段一）：speaker_label = 谁说的，
         speaker_trust = 调用方按权限等级派生的 0..1 初值。永远来自请求段，
-        绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""
+        绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""  # noqa: DOCSTRING_CJK
         prov: dict = {}
         label = str(segment.get('speaker_label') or '').strip()
         if label:
@@ -757,7 +757,7 @@ class FactStore:
           全丢会让调用方 pop 掉从未入库的桶（与单发路径"畸形整批可重试"
           同一防线）；
         - 某段 persist 失败 → 只该段 ``failed``，其余段不连累重来。
-        """
+        """  # noqa: DOCSTRING_CJK
         if not segments:
             return []
         if len(segments) == 1:
@@ -916,7 +916,7 @@ class FactStore:
         trust'} 子集），盖在本批每条**新建** fact 上。只落字段不接消费
         （信赖度阶段一）；来自调用方（scoped_history 请求段），绝不读
         extracted 元素里的同名键——LLM 输出无法伪造它。
-        """
+        """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
         memory_subject = coerce_subject(subject)
@@ -1773,7 +1773,7 @@ class FactStore:
         后者影响 prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——
         那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
         决定是否给本参数。
-        """
+        """  # noqa: DOCSTRING_CJK
         extracted = await self._allm_extract_facts(
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,

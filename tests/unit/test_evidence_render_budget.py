@@ -284,7 +284,7 @@ def test_split_promotes_legacy_string_facts(tmp_path):
 def test_split_drops_whitespace_only_string_facts(tmp_path):
     """裸字符串半边的空白闸（#2578 只修了 dict entry 那半）：'   ' 对
     truthiness 为真，promote 之后跳过了 dict 路径的 _renderable_text
-    检查，一路渲成空 bullet。判据必须与 dict 路径同口径（strip）。"""
+    检查，一路渲成空 bullet。判据必须与 dict 路径同口径（strip）。"""  # noqa: DOCSTRING_CJK
     pm = _persona_manager()
     persona = {
         'master': {'facts': [
@@ -307,7 +307,7 @@ def test_split_drops_whitespace_only_string_facts(tmp_path):
 def test_compose_skips_blank_dict_entries_even_if_split_missed_them():
     """compose 半边的独立护栏：split 侧已挡住空白条目，但 compose 的判据
     必须自成一道（走 _renderable_text 而非 truthiness）——否则上游不变量
-    一松动，'- ' 空 bullet 就直接进 prompt。绕过 split 直调 compose。"""
+    一松动，'- ' 空 bullet 就直接进 prompt。绕过 split 直调 compose。"""  # noqa: DOCSTRING_CJK
     pm = _persona_manager()
     blank = _entry('b1', '   ')
     good = _entry('g1', '主人喜欢辣条', rein=1.0)
@@ -332,7 +332,7 @@ def test_compose_skips_blank_dict_entries_even_if_split_missed_them():
 async def test_render_emits_no_blank_bullets_for_legacy_blank_strings(tmp_path):
     """端到端：facts 列表混入纯空格裸字符串（pre-PR-1 遗留数据形态）时，
     渲染出的 markdown 不得含空 bullet 行。compose 侧的判据同样要走
-    _renderable_text，不能靠 truthiness。"""
+    _renderable_text，不能靠 truthiness。"""  # noqa: DOCSTRING_CJK
     from memory.persona import PersonaManager
 
     cm = MagicMock()

@@ -775,7 +775,7 @@ async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
     没到，collect_tool_calls 全部丢弃，handler 一次都不调——真实客户端
     此时仍会触发 on_tool_round_start（进入 tool 轮的最早信号）。清理只挂
     handler 入口的话，这条路径上永远清不掉，pre-tool 的"我查一下"会连着
-    forced-finalize 的最终文本一起外发（审计实跑复现过）。"""
+    forced-finalize 的最终文本一起外发（审计实跑复现过）。"""  # noqa: DOCSTRING_CJK
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
@@ -819,7 +819,7 @@ async def test_tool_rows_stripped_even_when_generation_raises():
     正常返回路径 strip"，全部既有用例仍绿。这里让 stream_text 中途抛异常，
     断言 tool dict 行仍被清出共享历史：异常路径下含 scoped 记忆原文的
     tool result 永久留在群历史里，会进 digest、进后续每一轮的上下文，
-    member 撤销后也无法再摘除。"""
+    member 撤销后也无法再摘除。"""  # noqa: DOCSTRING_CJK
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
@@ -908,7 +908,7 @@ def test_plugin_session_clients_cap_tool_iterations_to_one():
     AST 而非源码字面量计数：旧写法比较两个字符串的出现次数，任何后续
     PR 在注释/docstring 里写下 "OmniOfflineClient(" 或
     "max_tool_iterations=1" 都会无谓变红。这里找到真正的构造 Call 节点，
-    逐个检查 keyword。"""
+    逐个检查 keyword。"""  # noqa: DOCSTRING_CJK
     import ast
     import inspect
 
@@ -1371,7 +1371,7 @@ async def test_fallback_recall_shares_the_subject_resolver():
 @pytest.mark.asyncio
 async def test_resolver_appends_recent_other_speakers():
     """读侧扩容：群 + 当前发言人 + 最近说过话的另外 3 人（新→旧、去重、
-    排除当前发言人），群恒在最前（subjects 顺序 = 预算分配顺序）。"""
+    排除当前发言人），群恒在最前（subjects 顺序 = 预算分配顺序）。"""  # noqa: DOCSTRING_CJK
     plugin = _tool_plugin()
     timeline = [
         # backlog 升序（旧→新）；有重复发言与当前发言人自己的消息。
@@ -1425,7 +1425,7 @@ async def test_resolver_appends_recent_other_speakers():
 
 @pytest.mark.asyncio
 async def test_resolver_degrades_when_backlog_read_fails():
-    """backlog 读挂了只降级（[群, 当前发言人]），不把整个召回搞挂。"""
+    """backlog 读挂了只降级（[群, 当前发言人]），不把整个召回搞挂。"""  # noqa: DOCSTRING_CJK
     plugin = _tool_plugin()
     plugin.backlog_store = SimpleNamespace(
         get_recent_group_messages=AsyncMock(

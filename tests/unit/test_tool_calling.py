@@ -2837,7 +2837,7 @@ def _capture_ofc_logs():
 
     该 logger 经 utils/logger_config 配置为 propagate=False，caplog 的
     root-handler 抓不到它——挂一个临时 handler 到 logger 本体上，测试
-    结束移除并还原 level。"""
+    结束移除并还原 level。"""  # noqa: DOCSTRING_CJK
     import logging
 
     from main_logic.omni_offline_client import _shared as _ofc_shared
@@ -2870,7 +2870,7 @@ async def test_openai_nameless_fragment_round_fires_round_start_and_finalizes():
        history"，此时为假——发了会让这段文本从历史里彻底消失）；
     3) 仍走到 forced-finalize 给出最终文本；
     4) 封顶日志单列"0 executed"形态（最值得排查的故障不得伪装成普通
-       封顶日志）。"""
+       封顶日志）。"""  # noqa: DOCSTRING_CJK
     import logging
 
     from utils.llm_client import LLMStreamChunk
@@ -2934,7 +2934,7 @@ async def test_openai_nameless_fragment_round_fires_round_start_and_finalizes():
 async def test_openai_cap_one_normal_recall_logs_info_not_warning():
     """P3-1：cap=1 是插件的设计内单轮预算，一次成功的召回轮必然耗尽循环。
     此前的无条件 WARNING 让每次正常召回都打出主程序的 runaway 封顶信号，
-    真正的封顶被淹没。cap=1 且真的执行过 tool 时降为 INFO。"""
+    真正的封顶被淹没。cap=1 且真的执行过 tool 时降为 INFO。"""  # noqa: DOCSTRING_CJK
     import logging
 
     from utils.llm_client import LLMStreamChunk
@@ -2985,7 +2985,7 @@ async def test_openai_cap_one_normal_recall_logs_info_not_warning():
 @pytest.mark.asyncio
 async def test_openai_cap_multi_runaway_still_warns():
     """三分支封顶日志的第三路：cap>1 且执行过 tool 的真 runaway 保持
-    WARNING 原文——主程序（cap=3）的封顶信号不因 P3-1 降级而丢失。"""
+    WARNING 原文——主程序（cap=3）的封顶信号不因 P3-1 降级而丢失。"""  # noqa: DOCSTRING_CJK
     import logging
 
     from utils.llm_client import LLMStreamChunk
@@ -3038,7 +3038,7 @@ async def test_genai_nameless_fragment_round_fires_round_start_and_finalizes(
     return：没有 sentinel、没有 forced-finalize、没有封顶日志，pre-tool
     的"我查一下"直接成为整条外发回复。现在：round-start 照常触发（缓冲
     型调用方靠它丢弃 pre-tool 文本），该轮消耗一次迭代，封顶后 forced-
-    finalize 给出最终文本。"""
+    finalize 给出最终文本。"""  # noqa: DOCSTRING_CJK
     import logging
 
     from main_logic.omni_offline_client import OmniOfflineClient

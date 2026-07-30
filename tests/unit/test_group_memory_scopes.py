@@ -2146,7 +2146,7 @@ def _batch_segment(group_id, sender_id, label, texts, *, trust=None):
 async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
     """批抽取最大的质量风险：A 的事实挂到 B 头上——错误归属会进 B 的
     persona 且没有任何下游能发现。构造内容明显可区分的多段批次，断言每
-    条事实落到正确的 subject、且信赖度字段随段落盘。"""
+    条事实落到正确的 subject、且信赖度字段随段落盘。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2204,7 +2204,7 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
 @pytest.mark.asyncio
 async def test_batch_extraction_drops_unattributable_facts(tmp_path):
     """归属 fail-closed：段号缺失/非法/越界/布尔的输出必须丢弃而不是猜
-    一个段——只要有一条被猜错，就是把 A 的事实写进 B 的记忆。"""
+    一个段——只要有一条被猜错，就是把 A 的事实写进 B 的记忆。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2251,7 +2251,7 @@ async def test_batch_extraction_drops_unattributable_facts(tmp_path):
 async def test_batch_extraction_fails_closed_when_nothing_attributable(tmp_path):
     """输出非空但零条可归属 = 模型没理解任务：整批 raise 让调用方保留
     缓冲重试。静默全丢会让调用方 pop 掉从未入库的桶。终止失败与非数组
-    输出同样整批 502。"""
+    输出同样整批 502。"""  # noqa: DOCSTRING_CJK
     from memory.facts import FactExtractionFailed
 
     mock_cm = _build_scope_mock_cm(str(tmp_path))
@@ -2297,7 +2297,7 @@ async def test_batch_extraction_fails_closed_when_nothing_attributable(tmp_path)
 @pytest.mark.asyncio
 async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
     """一段 persist 失败不得连累其他段重来（fail_closed 改 per-段的核心
-    语义）：失败段报 failed（调用方保留那个桶），成功段正常 ok。"""
+    语义）：失败段报 failed（调用方保留那个桶），成功段正常 ok。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2333,7 +2333,7 @@ async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
 @pytest.mark.asyncio
 async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_path):
     """单段批次没有归属风险：走成熟的单发抽取管线（speaker_label 渲染 +
-    整批 malformed 判定），不用带段标记的批 prompt。"""
+    整批 malformed 判定），不用带段标记的批 prompt。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2366,7 +2366,7 @@ async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_pa
 async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
     """speaker_label / speaker_trust 永远来自请求段：模型在输出元素里伪造
     同名键不得被采纳（provenance 是权限派生的信任基线，被模型改写等于让
-    不可信输入给自己提权）。"""
+    不可信输入给自己提权）。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2396,7 +2396,7 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
 @pytest.mark.asyncio
 async def test_scoped_history_batch_route_validation():
     """批形态的入口校验：与 legacy 字段互斥、段数 1..8、总消息 ≤200、
-    speaker_label 必填且 ≤64。"""
+    speaker_label 必填且 ≤64。"""  # noqa: DOCSTRING_CJK
     import json as _json
 
     from fastapi import HTTPException
@@ -2491,7 +2491,7 @@ async def test_scoped_history_batch_route_validation():
 @pytest.mark.asyncio
 async def test_scoped_history_batch_route_reports_per_segment_results():
     """路由把 extract_facts_batch 的逐段结果按请求顺序透传；整批抽取失败
-    仍是 502（调用方整批保留重试）。"""
+    仍是 502（调用方整批保留重试）。"""  # noqa: DOCSTRING_CJK
     import json as _json
 
     from fastapi import HTTPException
@@ -2561,7 +2561,7 @@ async def test_scoped_history_batch_route_reports_per_segment_results():
 @pytest.mark.asyncio
 async def test_group_digest_default_label_is_not_stamped_as_provenance():
     """legacy 单发路径：群 digest 的集体描述符缺省 label 不是发言人，不得
-    作为 speaker provenance 落到 fact 上；调用方真给的 label 才落。"""
+    作为 speaker provenance 落到 fact 上；调用方真给的 label 才落。"""  # noqa: DOCSTRING_CJK
     import json as _json
 
     from app.memory_server import routes as memory_routes
@@ -9859,7 +9859,7 @@ async def test_member_flush_success_pops_bucket_and_label():
 
 def test_pack_member_batches_shapes():
     """贪心打包：小桶合批（调用数不再随发言人数线性涨）、总消息 200 一
-    刀、段数 8 一刀、空桶跳过；单桶 ≤150 永远不用跨批拆。"""
+    刀、段数 8 一刀、空桶跳过；单桶 ≤150 永远不用跨批拆。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -9886,7 +9886,7 @@ def test_pack_member_batches_shapes():
 @pytest.mark.asyncio
 async def test_member_flush_packs_small_buckets_into_one_request():
     """批抽取的成本主张本体：8 个小桶 = 1 次 HTTP / 1 次 LLM 抽取，段序
-    与桶序一致。改前是 8 次。"""
+    与桶序一致。改前是 8 次。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -9929,7 +9929,7 @@ async def test_member_flush_packs_small_buckets_into_one_request():
 async def test_member_flush_malformed_batch_response_keeps_all_buckets():
     """响应段数与请求对不上时绝不按位置乱猜：整批按失败保留重试。按位置
     消费一个错位的响应，会把失败段的桶当成功弹掉（数据永久丢失）或把成
-    功段留下重发（重复抽取）。"""
+    功段留下重发（重复抽取）。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -9962,7 +9962,7 @@ async def test_member_flush_malformed_batch_response_keeps_all_buckets():
 @pytest.mark.asyncio
 async def test_speaker_trust_derived_from_permission_level():
     """信赖度初值按权限等级派生（阶段一只落字段）：admin/trusted/normal/
-    none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""
+    none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""  # noqa: DOCSTRING_CJK
     from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

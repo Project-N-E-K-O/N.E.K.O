@@ -114,7 +114,7 @@ def _group_drain_harness(post_scoped):
     计数）。桥上装一个真实转发层：把每批逐段扇回 per-member stub——
     调用时动态读 ``post_scoped_memory_history``（不少用例事后重绑它），
     stub 抛异常或返回 {"status": "error"} 都翻译成该段 failed，与服务端
-    per-段结果的消费语义一致。"""
+    per-段结果的消费语义一致。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )

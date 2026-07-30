@@ -416,7 +416,7 @@ async def test_five_subjects_all_over_budget_skip_the_tail_whole(twin):
     reflection 双双超额），总闸只够前 4 个拿满配额，第 5 个必须整段跳过
     ——绝不是每个 subject 各渲染半截。分配是 caller order 先到先得，群排
     最前，这是调用方唯一的优先级旋钮；按比例摊薄的"等价"实现会让第 5
-    个 subject 渲染出内容、且前 4 个渲染不满，两头都会红。"""
+    个 subject 渲染出内容、且前 4 个渲染不满，两头都会红。"""  # noqa: DOCSTRING_CJK
     from memory.scopes import MemorySubject
 
     subjects = [MemorySubject.group_chat("qq", "7788")] + [
