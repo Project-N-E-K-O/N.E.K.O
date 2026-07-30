@@ -566,18 +566,47 @@ def test_dict_call_with_positional_base_is_not_judged():
     'T = dict({"en": "e", "zh": "s"}, **{"zh-TW": "t"})',
     'T = {**{"en": "e", "zh": "s"}, **{"zh-TW": "t"}}',
     'T = {"en": "e", "zh": "s"} | {"zh-TW": "t"}',
-    # Positional base only, no `**`: the sole thing marking this as a merge is
-    # the positional arg, so this case is what proves that half of
-    # _is_merged_construction is load-bearing for pruning.
-    'T = dict({"en": "e", "zh": "s"}, note="x")',
     'T = dict({"en": "e", "zh": "s"}, {"zh-TW": "t"})',
 ])
-def test_merged_construction_fragments_are_not_judged(src):
-    """A table assembled from several mappings must not report its fragments.
+def test_merge_resolving_to_a_compliant_table_is_silent(src):
+    """A merge whose *result* carries zh-TW must not report its fragments.
 
-    Skipping the outer node is not enough: a plain ast.walk still descends into
-    the inner `{en, zh}` literal and flags it, even though the assembled mapping
-    does carry zh-TW. The whole subtree has to be pruned.
+    Plain ast.walk judges each half on its own and flags the `{en, zh}` literal,
+    even though the assembled mapping is compliant.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    # Neither half is a localized table; only the union is, and it lacks zh-TW.
+    'T = {"en": "e"} | {"zh": "s"}',
+    # A complete offender unioned with an empty dict.
+    'T = {"en": "e", "zh": "s"} | {}',
+    # Positional base carrying en/zh, merged with an unrelated keyword.
+    'T = dict({"en": "e", "zh": "s"}, note="x")',
+    'T = dict({"en": "e", "zh": "s"}, **{"note": "x"})',
+])
+def test_merge_resolving_to_an_offender_is_reported(src):
+    """A merge whose *result* lacks zh-TW must be caught.
+
+    Suppressing the operands without resolving the merge let these through
+    entirely: both halves were suppressed as fragments, and the enclosing BinOp is
+    not a dict node, so nothing got judged at all.
+    """
+    assert len(_violations(src)) == 1
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict(BASE, en="e", zh="s")',
+    'T = {**BASE, "en": "e", "zh": "s"}',
+    'T = BASE | {"en": "e", "zh": "s"}',
+    'T = {"en": "e", "zh": "s", DYNAMIC_KEY: "x"}',
+])
+def test_unresolvable_mapping_is_not_judged(src):
+    """When any part of the key set is unknowable, stay silent.
+
+    The unknown part is exactly where a zh-TW entry could be hiding, and a gate
+    that cries wolf gets worked around rather than satisfied.
     """
     assert _violations(src) == []
 
@@ -598,14 +627,19 @@ def test_independent_tables_inside_a_merged_container_are_still_judged(src):
 
 
 def test_merge_fragment_and_independent_table_side_by_side():
-    """Only the independent table is reported when both live in one container."""
+    """The container and the independent table are each judged; the fragment isn't.
+
+    The container resolves to `{en, zh, ind}` — a localized table in its own right
+    that lacks zh-TW — so line 2 is a real offender, not the fragment on line 3
+    being double-counted. Line 4 is the independently keyed table.
+    """
     src = '''
     P = {
         **{"en": "f", "zh": "g"},
         "ind": {"en": "x", "zh": "y"},
     }
     '''
-    assert _violations(src) == [4]
+    assert _violations(src) == [2, 4]
 
 
 def test_ordinary_nesting_is_still_judged_in_source_order():
@@ -733,12 +767,53 @@ def test_prompt_files_at_reads_nul_separated_paths(monkeypatch):
 
     def fake_git(*args: str) -> str:
         captured.append(args)
-        return "config/prompts/a.py\0config/prompts/中文.py\0config/prompts/notes.txt\0"
+        return (
+            "100644 blob aaa\tconfig/prompts/a.py\0"
+            "100644 blob bbb\tconfig/prompts/中文.py\0"
+            "100644 blob ccc\tconfig/prompts/notes.txt\0"
+        )
 
     monkeypatch.setattr(MOD, "_git", fake_git)
     files = MOD._prompt_files_at("REV")
     assert files == ["config/prompts/a.py", "config/prompts/中文.py"]
     assert "-z" in captured[0], captured[0]
+    # Modes are needed to spot symlinks, so --name-only must not come back.
+    assert "--name-only" not in captured[0], captured[0]
+
+
+def test_prompt_files_at_skips_symlinks(monkeypatch, capsys):
+    """Symlinked modules are excluded on the base side.
+
+    `git show` on a symlink yields the link's *target path* as blob content, while
+    the disk side would follow the link and scan real source. Counting one and not
+    the other makes the two sides disagree about the same path forever, so every
+    later PR fails on a difference no PR introduced.
+    """
+    monkeypatch.setattr(MOD, "_git", lambda *_a: (
+        "100644 blob aaa\tconfig/prompts/real.py\0"
+        "120000 blob bbb\tconfig/prompts/linked.py\0"
+    ))
+    files = MOD._prompt_files_at("REV")
+    assert files == ["config/prompts/real.py"]
+    assert "linked.py" in capsys.readouterr().err
+
+
+def test_sources_on_disk_skips_symlinks(tmp_path, monkeypatch, capsys):
+    """The disk side must skip symlinks too — the dual of the base side."""
+    (tmp_path / "real.py").write_text('T = {"en": "a", "zh": "b"}', encoding="utf-8")
+    target = tmp_path / "target.txt"
+    target.write_text('T = {"en": "c", "zh": "d"}', encoding="utf-8")
+    link = tmp_path / "linked.py"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("symlink creation not permitted in this environment")
+
+    monkeypatch.setattr(MOD, "PROMPTS_DIR", tmp_path)
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+    sources = MOD._sources_on_disk()
+    assert set(sources) == {"real.py"}
+    assert "linked.py" in capsys.readouterr().err
 
 
 def test_touched_lines_asks_git_for_rename_detection(monkeypatch):

@@ -91,37 +91,65 @@ def _has_noqa(line: str) -> bool:
     return bool(re.search(rf"#\s*noqa:\s*{CODE}\b", line))
 
 
-def _string_keys(node: ast.AST) -> set[str]:
-    """String keys of a dict literal, or of a ``dict(en=..., zh=...)`` call.
+def resolve_keys(node: ast.AST) -> set[str] | None:
+    """Statically resolve a mapping expression's key set, or None if unknowable.
 
-    The call form cannot express ``zh-CN`` or ``zh-TW`` as keywords (neither is
-    an identifier), but it can express ``zh``, so a table written that way is
-    still subject to the rule.
+    Merges are resolved *through*, not skipped: ``{"en": ...} | {"zh": ...}``
+    resolves to ``{en, zh}``, so the assembled table is judged even though neither
+    half is a table on its own. That is what stops a compliant
+    ``{"en", "zh"} | {"zh-TW"}`` from being reported as two fragments, and equally
+    stops a non-compliant ``{"en"} | {"zh"}`` from slipping through as neither.
 
-    Returns empty — i.e. "not a table I can judge" — for a call carrying ``**``,
-    since the unpacked mapping is exactly where such a table would have to put
-    its ``'zh-TW'`` entry. Reporting it would be a false positive, and a gate
-    that cries wolf gets worked around rather than satisfied.
+    ``None`` means some part is not statically knowable — a spread of a name, a
+    non-constant key, ``dict()`` over a variable. The gate stays silent on those
+    rather than guessing, because the unknowable part is exactly where a
+    ``'zh-TW'`` entry could be hiding, and a gate that cries wolf gets worked
+    around rather than satisfied.
+
+    Note the ``dict(...)`` call form cannot express ``zh-CN`` or ``zh-TW`` as
+    keywords (neither is an identifier), but it can express ``zh``, so a table
+    written that way is still subject to the rule.
     """
     if isinstance(node, ast.Dict):
-        if any(k is None for k in node.keys):
-            return set()  # `{**other}` — same unknowable-keys problem
-        return {
-            k.value
-            for k in node.keys
-            if isinstance(k, ast.Constant) and isinstance(k.value, str)
-        }
+        keys: set[str] = set()
+        for key, value in zip(node.keys, node.values):
+            if key is None:
+                inner = resolve_keys(value)
+                if inner is None:
+                    return None
+                keys |= inner
+            elif isinstance(key, ast.Constant) and isinstance(key.value, str):
+                keys.add(key.value)
+            else:
+                return None
+        return keys
     if (
         isinstance(node, ast.Call)
         and isinstance(node.func, ast.Name)
         and node.func.id == "dict"
     ):
-        # A positional arg is a base mapping (`dict(BASE, zh=...)`) and is just
-        # as unknowable as `**`: either could be where zh-TW comes from.
-        if node.args or any(kw.arg is None for kw in node.keywords):
-            return set()
-        return {kw.arg for kw in node.keywords if kw.arg is not None}
-    return set()
+        keys = set()
+        for arg in node.args:
+            inner = resolve_keys(arg)
+            if inner is None:
+                return None
+            keys |= inner
+        for kw in node.keywords:
+            if kw.arg is None:
+                inner = resolve_keys(kw.value)
+                if inner is None:
+                    return None
+                keys |= inner
+            else:
+                keys.add(kw.arg)
+        return keys
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        left = resolve_keys(node.left)
+        right = resolve_keys(node.right)
+        if left is None or right is None:
+            return None
+        return left | right
+    return None
 
 
 def _merge_operands(node: ast.AST) -> list[ast.AST]:
@@ -148,10 +176,11 @@ def _merge_operands(node: ast.AST) -> list[ast.AST]:
     return []
 
 
-def _table_nodes(tree: ast.AST) -> Iterator[ast.AST]:
-    """Yield dict-shaped nodes, suppressing merge fragments.
+def _table_nodes(tree: ast.AST) -> Iterator[tuple[ast.AST, set[str]]]:
+    """Yield ``(node, keys)`` for every mapping expression with knowable keys.
 
-    Two failure modes to thread between:
+    Three failure modes this threads between, each of which was shipped and then
+    reported:
 
       * Plain ``ast.walk`` judges each operand of a merge on its own, so
         ``{**{"en": ..., "zh": ...}, **{"zh-TW": ...}}`` reports the first half as
@@ -159,16 +188,29 @@ def _table_nodes(tree: ast.AST) -> Iterator[ast.AST]:
       * Pruning a merge's whole subtree instead loses the independent tables
         inside it — ``{**COMMON, "new": {"en": ..., "zh": ...}}`` would never
         check ``"new"``.
+      * Suppressing operands without resolving the merge lets the *result* escape:
+        ``{"en": ...} | {"zh": ...}`` has both halves suppressed and the enclosing
+        BinOp is not a dict node, so nothing was judged at all.
 
-    So operand roots are suppressed (not yielded) while traversal continues
-    through them and through everything else the container holds.
+    So: a resolvable expression is judged as a whole, and its merge operands are
+    then suppressed as fragments of something already accounted for. An
+    unresolvable one is not judged, but traversal continues through it so the
+    independent tables it holds are still found.
     """
     suppressed: set[int] = set()
     stack: list[ast.AST] = [tree]
     while stack:
         node = stack.pop()
-        if isinstance(node, (ast.Dict, ast.Call)) and id(node) not in suppressed:
-            yield node
+        if id(node) not in suppressed:
+            keys = resolve_keys(node)
+            if keys is not None:
+                yield node, keys
+        # Suppress operands whether or not the merge resolved. An operand is a
+        # fragment by definition, so judging it alone is wrong either way: if the
+        # merge resolved, the operand's keys are already counted in the result; if
+        # it did not (`BASE | {"en": ..., "zh": ...}`), the unknown side is exactly
+        # where zh-TW could be. Unconditional also handles nesting — the operands
+        # of a suppressed operand are deeper fragments still.
         for operand in _merge_operands(node):
             suppressed.add(id(operand))
         stack.extend(ast.iter_child_nodes(node))
@@ -177,10 +219,7 @@ def _table_nodes(tree: ast.AST) -> Iterator[ast.AST]:
 def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
     """Return the line number of every localized dict with no zh-TW key."""
     out: list[int] = []
-    for node in _table_nodes(tree):
-        keys = _string_keys(node)
-        if not keys:
-            continue
+    for node, keys in _table_nodes(tree):
         if ANCHOR_KEY not in keys:
             continue
         if not any(k in keys for k in SIMPLIFIED_KEYS):
@@ -231,8 +270,7 @@ def locate_touched(
         tree, lines = _parse_source(source, path)
         if tree is None:
             continue
-        by_line = {node.lineno: node for node in _table_nodes(tree)
-                   if _string_keys(node)}
+        by_line = {node.lineno: node for node, _keys in _table_nodes(tree)}
         added = (touched or {}).get(path, set())
         for lineno in find_violations(tree, lines):
             node = by_line.get(lineno)
@@ -294,16 +332,30 @@ def _merge_base(base: str) -> str:
     return _git("merge-base", base, "HEAD").strip()
 
 
+SYMLINK_MODE = "120000"
+
+
 def _prompt_files_at(rev: str) -> list[str]:
-    """Prompt modules present at `rev`, including any in subpackages."""
-    # -z: NUL-separated and unquoted. Without it git wraps non-ASCII paths in
-    # quotes and octal-escapes the bytes, which would not resolve as a path.
-    out = _git("ls-tree", "-r", "-z", "--name-only", rev, "--", PROMPTS_SUBDIR)
-    return [
-        entry.replace("\\", "/")
-        for entry in out.split("\0")
-        if entry.endswith(".py")
-    ]
+    """Prompt modules present at `rev`: recursive, subpackages included, no symlinks.
+
+    ``-z`` keeps paths verbatim; without it git wraps non-ASCII paths in quotes and
+    octal-escapes the bytes, which would not resolve as a path. Modes are read
+    rather than using ``--name-only`` so symlinks can be excluded — see
+    ``_sources_on_disk`` for why both sides must agree on that.
+    """
+    out = _git("ls-tree", "-r", "-z", rev, "--", PROMPTS_SUBDIR)
+    paths: list[str] = []
+    for entry in out.split("\0"):
+        if not entry:
+            continue
+        meta, _tab, path = entry.partition("\t")
+        if not path.endswith(".py"):
+            continue
+        if meta.split(" ", 1)[0] == SYMLINK_MODE:
+            sys.stderr.write(f"{rev}:{path}: symlink, not scanned\n")
+            continue
+        paths.append(path.replace("\\", "/"))
+    return paths
 
 
 def _sources_at(rev: str) -> dict[str, str]:
@@ -365,6 +417,14 @@ def _sources_on_disk() -> dict[str, str]:
     sources: dict[str, str] = {}
     for path in sorted(PROMPTS_DIR.rglob("*.py")):
         rel = path.relative_to(REPO_ROOT).as_posix()
+        if path.is_symlink():
+            # Must match _prompt_files_at, which skips mode 120000. Reading here
+            # would follow the link and scan its target, while `git show` on the
+            # base side yields the link's target *path* as blob content — the two
+            # sides would then disagree about the same path forever, and every
+            # later PR would fail on a difference no PR introduced.
+            sys.stderr.write(f"{rel}: symlink, not scanned\n")
+            continue
         try:
             raw = path.read_bytes()
         except OSError as exc:
