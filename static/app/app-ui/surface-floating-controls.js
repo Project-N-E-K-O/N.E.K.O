@@ -289,7 +289,14 @@
                 return false;
             };
             const openElectronSocialWindow = (targetUrl) => {
-                const socialWin = window.open(String(targetUrl), 'neko-social');
+                // frameName=neko-social：NEKO-PC setWindowOpenHandler 靠名字识别社区窗，
+                // 强制 frame/thickFrame + 原生最小/最大/关（尤其 Windows 右上角）。
+                // features 为兜底提示；最终以主进程 overrideBrowserWindowOptions 为准。
+                const socialWin = window.open(
+                    String(targetUrl),
+                    'neko-social',
+                    'popup=yes,width=1200,height=800,resizable=yes'
+                );
                 if (!socialWin) {
                     return false;
                 }
