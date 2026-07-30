@@ -3972,11 +3972,12 @@
 
     let _activeMemoryTab = 'recent';
     let _componentDataCache = {};
+    let _componentRequestId = 0;
 
     function _renderMemoryFacts(container, data) {
         container.innerHTML = '';
         if (!Array.isArray(data) || !data.length) {
-            container.innerHTML = '<div class="memory-component-empty">无数据</div>';
+            container.innerHTML = '<div class="memory-component-empty">' + translate('memory.componentEmpty', 'No data') + '</div>';
             return;
         }
         var sorted = data.slice().sort(function (a, b) {
@@ -3989,15 +3990,15 @@
             card.className = 'memory-component-item';
             var text = document.createElement('div');
             text.className = 'memory-component-text';
-            text.textContent = fact.text || '(空)';
+            text.textContent = fact.text || translate('memory.empty', '(empty)');
             card.appendChild(text);
             var meta = document.createElement('div');
             meta.className = 'memory-component-meta';
             var parts = [];
             if (fact.created_at) parts.push(fact.created_at.replace('T', ' ').slice(0, 19));
-            if (fact.importance != null) parts.push('重要性: ' + fact.importance);
-            if (fact.source) parts.push('来源: ' + fact.source);
-            if (fact.entity) parts.push('实体: ' + fact.entity);
+            if (fact.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + fact.importance);
+            if (fact.source) parts.push(translate('memory.source', 'Source') + ': ' + fact.source);
+            if (fact.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + fact.entity);
             meta.textContent = parts.join(' | ');
             card.appendChild(meta);
             list.appendChild(card);
@@ -4008,7 +4009,7 @@
     function _renderMemoryReflections(container, data) {
         container.innerHTML = '';
         if (!Array.isArray(data) || !data.length) {
-            container.innerHTML = '<div class="memory-component-empty">无数据</div>';
+            container.innerHTML = '<div class="memory-component-empty">' + translate('memory.componentEmpty', 'No data') + '</div>';
             return;
         }
         var sorted = data.slice().sort(function (a, b) {
@@ -4021,15 +4022,15 @@
             card.className = 'memory-component-item';
             var text = document.createElement('div');
             text.className = 'memory-component-text';
-            text.textContent = ref.text || '(空)';
+            text.textContent = ref.text || translate('memory.empty', '(empty)');
             card.appendChild(text);
             var meta = document.createElement('div');
             meta.className = 'memory-component-meta';
             var parts = [];
             if (ref.created_at) parts.push(ref.created_at.replace('T', ' ').slice(0, 19));
-            if (ref.importance != null) parts.push('重要性: ' + ref.importance);
-            if (ref.status) parts.push('状态: ' + ref.status);
-            if (ref.entity) parts.push('实体: ' + ref.entity);
+            if (ref.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + ref.importance);
+            if (ref.status) parts.push(translate('memory.status', 'Status') + ': ' + ref.status);
+            if (ref.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + ref.entity);
             meta.textContent = parts.join(' | ');
             card.appendChild(meta);
             list.appendChild(card);
@@ -4038,21 +4039,35 @@
     }
 
     function _loadComponentTab(container, name, type) {
-        container.innerHTML = '<div class="memory-component-loading">加载中...</div>';
+        var requestId = ++_componentRequestId;
+        container.innerHTML = '<div class="memory-component-loading">' + translate('memory.loading', 'Loading...') + '</div>';
         fetch('/api/memory/component/' + encodeURIComponent(name) + '?type=' + encodeURIComponent(type))
-            .then(function (r) { return r.json(); })
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
             .then(function (result) {
+                if (requestId !== _componentRequestId) return;
+                if (result.error) throw new Error(result.error);
                 _componentDataCache[type] = result.data;
                 if (type === 'facts' || type === 'facts_archive') _renderMemoryFacts(container, result.data);
                 else if (type === 'reflections') _renderMemoryReflections(container, result.data);
             })
-            .catch(function () {
-                container.innerHTML = '<div class="memory-component-empty">加载失败</div>';
+            .catch(function (err) {
+                if (requestId !== _componentRequestId) return;
+                if (console && console.warn) console.warn('Memory component load failed:', err);
+                container.innerHTML = '<div class="memory-component-empty">' + translate('memory.loadFailed', 'Load failed') + '</div>';
             });
     }
 
     function switchMemoryTab(tab) {
         if (tab === _activeMemoryTab) return;
+
+        // Preserve unsaved edits when switching away from recent tab
+        if (_activeMemoryTab === 'recent' && memoryHasUnsavedChanges) {
+            saveCurrentMemory();
+        }
+
         _activeMemoryTab = tab;
 
         document.querySelectorAll('.memory-tab').forEach(function (btn) {
@@ -4066,16 +4081,17 @@
         if (tab === 'recent') {
             if (saveRow) saveRow.style.display = 'flex';
             if (currentMemoryFile && currentCatName) {
-                _selectMemoryFileInternal(currentMemoryFile, null, currentCatName, { allowDuringImport: true });
+                var li = findMemoryRoleListItem(currentMemoryFile);
+                _selectMemoryFileInternal(currentMemoryFile, li, currentCatName, { allowDuringImport: true });
             } else {
-                container.innerHTML = '<div class="memory-component-empty">请先选择角色</div>';
+                container.innerHTML = '<div class="memory-component-empty">' + translate('memory.selectCharacterFirst', 'Select a character first') + '</div>';
             }
             return;
         }
 
         if (saveRow) saveRow.style.display = 'none';
         if (!currentCatName) {
-            container.innerHTML = '<div class="memory-component-empty">请先选择角色</div>';
+            container.innerHTML = '<div class="memory-component-empty">' + translate('memory.selectCharacterFirst', 'Select a character first') + '</div>';
             return;
         }
 
@@ -4099,6 +4115,7 @@
     var _selectMemoryFileOrig = selectMemoryFile;
     selectMemoryFile = function (filename, li, catName, options) {
         if (_activeMemoryTab !== 'recent') {
+            _componentRequestId++;
             _activeMemoryTab = 'recent';
             document.querySelectorAll('.memory-tab').forEach(function (btn) {
                 var isActive = btn.dataset.tab === 'recent';

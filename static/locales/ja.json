@@ -1826,7 +1826,7 @@
         "externalImportTooLargeToFuse": "取り込む記憶が多すぎて一度に統合できません。ワークスペースを小さなファイルに分割して個別に取り込んでください。",
         "chatHistory": "チャット履歴",
         "facts": "事実",
-        "reflections": "反省",
+        "reflections": "考察",
         "factsArchive": "事実アーカイブ",
         "save": "保存",
         "clear": "クリア",

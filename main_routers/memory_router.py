@@ -1231,13 +1231,26 @@ async def get_memory_component(name: str, type: str = 'facts'):
 
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
-    path = Path(cm.memory_dir) / name / filename
+    memory_dir = Path(cm.memory_dir).resolve()
+    candidate = (memory_dir / name / filename).resolve()
+    if not str(candidate).startswith(str(memory_dir) + os.sep):
+        return JSONResponse({"error": "无效的角色名称"}, status_code=400)
 
-    if not path.is_file():
+    if not candidate.is_file():
         return JSONResponse({"error": "文件不存在", "data": None}, status_code=200)
 
-    raw = await asyncio.to_thread(_read_text_file, str(path))
-    if filename.endswith('.ndjson'):
-        lines = [json.loads(l) for l in raw.strip().splitlines() if l.strip()]
-        return {"data": lines}
-    return {"data": json.loads(raw)}
+    raw = await asyncio.to_thread(_read_text_file, str(candidate))
+    try:
+        if filename.endswith('.ndjson'):
+            lines = []
+            for l in raw.strip().splitlines():
+                if not l.strip():
+                    continue
+                try:
+                    lines.append(json.loads(l))
+                except json.JSONDecodeError:
+                    continue
+            return {"data": lines}
+        return {"data": json.loads(raw)}
+    except json.JSONDecodeError:
+        return JSONResponse({"error": "文件解析失败", "data": None}, status_code=200)
