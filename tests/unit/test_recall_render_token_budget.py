@@ -630,15 +630,95 @@ def _called_function_names(node: ast.AST) -> set[str]:
     Seed from ``node.body``: the statements that actually execute when the
     renderer is called.
 
+    Statically dead statements. ``if False:`` / ``if 0:`` /
+    ``if TYPE_CHECKING:`` bodies, ``while False:`` bodies, and anything
+    after an unconditional ``return`` / ``raise`` / ``break`` / ``continue``
+    never run, so a budget call parked in one of them is the nested-helper
+    trick again without the helper.
+
     Comprehensions are NOT skipped: they carry their own scope at runtime
     but a call inside one is genuinely on this function's execution path.
+
+    ⚠️ This is constant-folding, NOT reachability analysis, and the
+    difference is worth stating because this docstring has already been
+    wrong once. A branch on a module-level flag, a call after
+    ``sys.exit()``, an ``except`` clause that cannot fire — all still
+    count. The backstop for what static inference cannot see is
+    ``test_the_known_recall_renderers_are_exactly_these_two``: a renderer
+    this file has never seen trips a loud failure demanding behavioural
+    budget tests, rather than being waved through on the shape of its
+    source. Adversarial fixtures for every shape above live in
+    ``test_call_scan_ignores_names_that_never_run``.
     """
-    names = set()
-    body = getattr(node, 'body', [])
-    stack = list(body) if isinstance(body, list) else [body]
+    names: set[str] = set()
+    _collect_calls_in_block(getattr(node, 'body', []) or [], names)
+    return names
+
+
+_TERMINATORS = (ast.Return, ast.Raise, ast.Break, ast.Continue)
+
+
+def _constant_truth(test: ast.AST) -> bool | None:
+    """`True`/`False` when `test` is decidable at parse time, else `None`.
+
+    ``TYPE_CHECKING`` counts as False: it is True only for type checkers,
+    and never when the renderer actually runs.
+    """
+    if isinstance(test, ast.Constant):
+        try:
+            return bool(test.value)
+        except Exception:  # pragma: no cover — exotic __bool__ in a literal
+            return None
+    if isinstance(test, ast.UnaryOp) and isinstance(test.op, ast.Not):
+        inner = _constant_truth(test.operand)
+        return None if inner is None else (not inner)
+    if isinstance(test, ast.Name) and test.id == "TYPE_CHECKING":
+        return False
+    if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
+        return False
+    return None
+
+
+def _collect_calls_in_block(body: list, names: set[str]) -> None:
+    """Walk a statement list, skipping branches that cannot execute."""
+    for stmt in body:
+        if isinstance(stmt, _NESTED_SCOPES):
+            continue
+        if isinstance(stmt, ast.If):
+            truth = _constant_truth(stmt.test)
+            if truth is True:
+                _collect_calls_in_block(stmt.body, names)
+                continue
+            if truth is False:
+                _collect_calls_in_block(stmt.orelse, names)
+                continue
+        if isinstance(stmt, ast.While) and _constant_truth(stmt.test) is False:
+            _collect_calls_in_block(stmt.orelse, names)
+            continue
+        for value in ast.iter_child_nodes(stmt):
+            if isinstance(value, ast.stmt):
+                _collect_calls_in_block([value], names)
+            else:
+                _collect_calls_in_expr(value, names)
+        if isinstance(stmt, _TERMINATORS):
+            return
+
+
+def _collect_calls_in_expr(node: ast.AST, names: set[str]) -> None:
+    """Collect call names from an expression subtree.
+
+    Recurses back into `_collect_calls_in_block` for any statement it meets
+    (a statement can hang off an expression field only via constructs the
+    caller already unpacked, but going through the same door keeps the two
+    halves from drifting).
+    """
+    stack = [node]
     while stack:
         child = stack.pop()
         if isinstance(child, _NESTED_SCOPES):
+            continue
+        if isinstance(child, ast.stmt):
+            _collect_calls_in_block([child], names)
             continue
         if isinstance(child, ast.Call):
             func = child.func
@@ -647,7 +727,6 @@ def _called_function_names(node: ast.AST) -> set[str]:
             elif isinstance(func, ast.Attribute):
                 names.add(func.attr)
         stack.extend(ast.iter_child_nodes(child))
-    return names
 
 
 def _recall_render_functions(source: str) -> list[ast.AST]:
@@ -746,4 +825,207 @@ def test_every_recall_renderer_goes_through_the_shared_budget_helper():
     ]
     assert hand_rolled == [], (
         f"{hand_rolled} 没走共享预算 helper，会独自漂移"
+    )
+
+
+_KNOWN_RECALL_RENDERERS = {
+    "plugin/plugins/qq_auto_reply/memory_bridge.py",
+    "main_logic/core/tool_calling.py",
+}
+
+
+def test_the_known_recall_renderers_are_exactly_these_two():
+    """The backstop for everything static inference cannot see.
+
+    The two guards above infer "this is budgeted" from the SHAPE of the
+    source, and that inference has now been defeated five times running —
+    substring match, module-wide AST walk, a dead helper nested in the
+    renderer, a budget call in a return annotation, a budget call in an
+    ``if False:`` branch. Each fix was correct and each one was followed by
+    a new way in, because "does this call run" is undecidable in general
+    and every approximation of it has an edge.
+
+    The two renderers this repo actually ships do not depend on that
+    inference: they have behavioural budget tests in this file that render
+    oversized input and measure the result. What has no behavioural test is
+    a renderer nobody has written yet — which is exactly the case the
+    discovery scan exists for, and exactly where a source-shape guess is
+    weakest.
+
+    So this pins the set. A third renderer does not get waved through on
+    the strength of an AST guess; it turns this red and the message says
+    what to do about it.
+    """
+    found = set(_discovered_recall_renderers())
+    assert found == _KNOWN_RECALL_RENDERERS, (
+        f"召回渲染点集合变了：新增 {sorted(found - _KNOWN_RECALL_RENDERERS)}，"
+        f"消失 {sorted(_KNOWN_RECALL_RENDERERS - found)}。\n"
+        f"新增渲染点请补**行为**预算测试（喂超长输入、量渲染结果的 token 数），"
+        f"再把它加进 _KNOWN_RECALL_RENDERERS——上面两条护栏只能从源码形状推断"
+        f"「调了预算」，那个推断已经被绕过五次，不足以单独担保一个新渲染点。"
+    )
+
+
+# ── the call scan's own adversarial fixtures ─────────────────────────
+#
+# Every shape below defeated this guard at some point. They are checked
+# against the helper directly, so the next round of hardening cannot
+# silently give one of them back.
+
+_BUDGET_CALLS = {"truncate_to_tokens", "take_lines_within_token_budget"}
+
+_DEAD_SHAPES = [
+    ("nested-def", '''
+def render(results):
+    def _unused():
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("return-annotation", '''
+def render(results) -> truncate_to_tokens(take_lines_within_token_budget([], 1), 1):
+    return "".join(results)
+'''),
+    ("param-default", '''
+def render(results, _x=truncate_to_tokens("", 1), *, _y=take_lines_within_token_budget([], 1)):
+    return "".join(results)
+'''),
+    ("decorator", '''
+@register(truncate_to_tokens("", 1), take_lines_within_token_budget([], 1))
+def render(results):
+    return "".join(results)
+'''),
+    ("if-False", '''
+def render(results):
+    if False:
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("if-zero", '''
+def render(results):
+    if 0:
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("if-TYPE_CHECKING", '''
+def render(results):
+    if TYPE_CHECKING:
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("else-of-if-True", '''
+def render(results):
+    if True:
+        pass
+    else:
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("while-False", '''
+def render(results):
+    while False:
+        truncate_to_tokens("", 1)
+        take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("after-return", '''
+def render(results):
+    return "".join(results)
+    truncate_to_tokens("", 1)
+    take_lines_within_token_budget([], 1)
+'''),
+    ("nested-if-False-inside-live-branch", '''
+def render(results, flag):
+    if flag:
+        if False:
+            truncate_to_tokens("", 1)
+            take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+    ("class-body", '''
+def render(results):
+    class _Unused:
+        x = truncate_to_tokens("", 1)
+        y = take_lines_within_token_budget([], 1)
+    return "".join(results)
+'''),
+]
+
+_LIVE_SHAPES = [
+    ("straight-line", '''
+def render(results):
+    lines = [truncate_to_tokens(r, 400) for r in results]
+    kept, _ = take_lines_within_token_budget(lines, 2204)
+    return "\\n".join(kept)
+'''),
+    ("inside-a-real-branch", '''
+def render(results, flag):
+    if flag:
+        lines = [truncate_to_tokens(r, 400) for r in results]
+        kept, _ = take_lines_within_token_budget(lines, 2204)
+        return "\\n".join(kept)
+    return ""
+'''),
+    ("inside-try-except", '''
+def render(results):
+    try:
+        lines = [truncate_to_tokens(r, 400) for r in results]
+        kept, _ = take_lines_within_token_budget(lines, 2204)
+    except ValueError:
+        return ""
+    return "\\n".join(kept)
+'''),
+    ("else-of-if-False", '''
+def render(results):
+    if False:
+        pass
+    else:
+        lines = [truncate_to_tokens(r, 400) for r in results]
+        kept, _ = take_lines_within_token_budget(lines, 2204)
+    return "\\n".join(kept)
+'''),
+    ("inside-a-real-loop", '''
+def render(results):
+    out = []
+    for r in results:
+        out.append(truncate_to_tokens(r, 400))
+    kept, _ = take_lines_within_token_budget(out, 2204)
+    return "\\n".join(kept)
+'''),
+]
+
+
+@pytest.mark.parametrize("name,source", _DEAD_SHAPES, ids=[s[0] for s in _DEAD_SHAPES])
+def test_call_scan_ignores_names_that_never_run(name, source):
+    """A budget call that cannot execute must not count as budgeting.
+
+    Each of these is a way the guard was defeated (or could be): the render
+    path is a bare join with no ceiling, while both budget names appear
+    somewhere the interpreter never reaches.
+    """
+    fn = ast.parse(source).body[0]
+    assert isinstance(fn, ast.FunctionDef), f"夹具失效：{name} 没解析出函数"
+    seen = _called_function_names(fn)
+    assert not (_BUDGET_CALLS & seen), (
+        f"[{name}] 永远不会执行的预算调用被算成了「调过预算」：{sorted(_BUDGET_CALLS & seen)}"
+    )
+
+
+@pytest.mark.parametrize("name,source", _LIVE_SHAPES, ids=[s[0] for s in _LIVE_SHAPES])
+def test_call_scan_still_sees_budget_calls_that_do_run(name, source):
+    """The strict dual — and the half that keeps the tightening honest.
+
+    A scan that returned nothing would pass every test above while being
+    useless; each round of hardening has to keep real, reachable budget
+    calls visible or the guard degrades into a permanent red that someone
+    eventually deletes.
+    """
+    fn = ast.parse(source).body[0]
+    seen = _called_function_names(fn)
+    assert _BUDGET_CALLS <= seen, (
+        f"[{name}] 真实执行路径上的预算调用没被看见：缺 {sorted(_BUDGET_CALLS - seen)}"
     )
