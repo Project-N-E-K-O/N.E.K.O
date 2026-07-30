@@ -933,9 +933,9 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
 
 def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
-    sync_fn = settings_source.split(
-        "async function syncSettingsToServer(options)", 1
-    )[1].split("function startPeriodicSync()", 1)[0]
+    sync_fn = _block_after(
+        settings_source, "async function syncSettingsToServer(options) {"
+    )
 
     assert "let _conversationSettingsEtag = null;" in settings_source
     assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
@@ -1094,9 +1094,14 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
             },
           };
           sandbox.window = {
-            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appState: {
+              independentAsrEnabled: false,
+              slopFilterEnabled: false,
+              settingsHydrated: false,
+            },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            slopFilterEnabled: false,
             addEventListener() {},
             removeEventListener() {},
           };
@@ -1309,6 +1314,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           vm.runInContext(source, sandbox);
           return {
             S: sandbox.window.appState,
+            win: sandbox.window,
             mod: sandbox.window.appSettings,
             postCalls,
           };
@@ -1349,13 +1355,18 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             '"conversation-settings-1"',
             {
               success: false,
-              settings: { independentAsrEnabled: false },
+              settings: { independentAsrEnabled: false, slopFilterEnabled: true },
               revision: 1,
               decisions: { independentAsrEnabled: serverDecision },
             }
           ));
           await tick();
           await tick();
+          assert(ctx.S.slopFilterEnabled === true, 'conflict merge must adopt the server field');
+          assert(
+            ctx.win.slopFilterEnabled === true,
+            'conflict merge must synchronize the window mirror'
+          );
           assert(ctx.postCalls.length === 2, 'a CAS conflict must retry once');
           const retry = ctx.postCalls[1];
           const retryBody = JSON.parse(retry.opts.body);
@@ -1366,6 +1377,10 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             retryBody.independentAsrEnabled === !serverDecisionIsNewer,
             'retry body must use the winning decision value'
+          );
+          assert(
+            retryBody.slopFilterEnabled === true,
+            'retry must not roll the conflict-merged value back from a stale window mirror'
           );
           const retryDecision =
             JSON.parse(retry.opts.headers['X-Conversation-Settings-ASR-Decision']);

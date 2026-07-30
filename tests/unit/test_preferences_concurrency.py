@@ -202,18 +202,26 @@ def test_model_update_and_conversation_write_share_one_rmw_lock(monkeypatch, tmp
 
 
 class _Request:
-    def __init__(self, body, if_match=None, asr_decision=None):
+    def __init__(
+        self,
+        body,
+        if_match=None,
+        asr_decision=None,
+        raw_asr_decision=None,
+    ):
         self._body = body
         self.headers = {}
         if if_match is not None:
             self.headers["if-match"] = if_match
-        if asr_decision is not None:
+        if raw_asr_decision is not None:
+            self.headers["x-conversation-settings-asr-decision"] = raw_asr_decision
+        elif asr_decision is not None:
             self.headers["x-conversation-settings-asr-decision"] = json.dumps(
                 asr_decision
             )
 
     async def json(self):
-        return dict(self._body)
+        return dict(self._body) if isinstance(self._body, dict) else self._body
 
 
 @pytest.mark.asyncio
@@ -280,3 +288,36 @@ async def test_set_preferred_model_offloads_locked_write(monkeypatch):
     assert result["success"] is True
     assert calls[0] == ("to_thread", fake_move_model_to_top, ("model-a",))
     assert calls[1] == ("move", "model-a")
+
+
+@pytest.mark.asyncio
+async def test_conversation_settings_route_validates_contract_and_keeps_legacy_write(
+    monkeypatch,
+    tmp_path,
+):
+    _use_preferences_file(monkeypatch, tmp_path)
+
+    non_object = await preferences_router.save_conversation_settings(
+        _Request(["not", "an", "object"])
+    )
+    assert non_object.status_code == 400
+
+    malformed_if_match = await preferences_router.save_conversation_settings(
+        _Request({"focusModeEnabled": True}, if_match='"wrong-etag"')
+    )
+    assert malformed_if_match.status_code == 400
+
+    malformed_decision = await preferences_router.save_conversation_settings(
+        _Request(
+            {"independentAsrEnabled": True},
+            raw_asr_decision="{not-json",
+        )
+    )
+    assert malformed_decision.status_code == 400
+
+    legacy_write = await preferences_router.save_conversation_settings(
+        _Request({"focusModeEnabled": True})
+    )
+    assert legacy_write.status_code == 200
+    payload = json.loads(legacy_write.body)
+    assert payload["settings"]["focusModeEnabled"] is True

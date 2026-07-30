@@ -477,18 +477,12 @@ def _validate_conversation_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
         for key, value in settings.items()
         if key in _ALLOWED_CONVERSATION_SETTINGS
     }
-    bool_fields = {
-        'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
-        'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
-        'avatarReactionBubbleEnabled', 'slopFilterEnabled', 'subtitleEnabled',
-        'noiseReductionEnabled', 'independentAsrEnabled',
-        'voiceInputResourceOptimizationEnabled'
-    }
     int_interval_fields = {'proactiveChatInterval', 'proactiveVisionInterval'}
     string_fields = {'userLanguage'}
     int_limit_fields = {'textGuardMaxLength'}
+    bool_fields = _ALLOWED_CONVERSATION_SETTINGS - (
+        int_interval_fields | string_fields | int_limit_fields
+    )
 
     validated = {}
     for key, value in filtered_settings.items():

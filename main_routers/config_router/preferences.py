@@ -237,7 +237,10 @@ async def save_conversation_settings(request: Request):
     try:
         data = await request.json()
         if not isinstance(data, dict):
-            return {"success": False, "error": "请求体必须为对象"}
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": "请求体必须为对象"},
+            )
 
         asr_decision = None
         raw_asr_decision = request.headers.get(

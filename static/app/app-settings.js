@@ -149,10 +149,28 @@
         const adoptedAsr = _adoptServerAsrDecision(data);
         const serverSettings = data && data.settings;
         if (!serverSettings || typeof serverSettings !== 'object') return;
+        const serverAsrDecision = _serverAsrDecision(data);
+        const preserveLocalAsrDecision = !!(_lastAsrDecision
+            && (!serverAsrDecision
+                || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
+        const acceptedSettings = {};
         for (const key of Object.keys(serverSettings)) {
-            if (key === 'independentAsrEnabled' && adoptedAsr) continue;
+            if (key === 'independentAsrEnabled'
+                && (adoptedAsr || preserveLocalAsrDecision)) continue;
             if (_dirtySettingsKeys.has(key)) continue;
-            if (serverSettings[key] !== undefined) S[key] = serverSettings[key];
+            if (serverSettings[key] !== undefined) {
+                acceptedSettings[key] = serverSettings[key];
+            }
+        }
+        applySharedRuntimeSettings(acceptedSettings);
+        // Preserve server-only conversation keys that are intentionally not in
+        // the cross-window shared-settings list.
+        for (const key of Object.keys(acceptedSettings)) {
+            if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1 || key === 'userLanguage') continue;
+            S[key] = acceptedSettings[key];
+            if (Object.prototype.hasOwnProperty.call(window, key)) {
+                window[key] = S[key];
+            }
         }
         _settingsMergedFromServer = true;
         if (_settingsBaseline) {
@@ -483,6 +501,12 @@
                 S[key] = settings[key];
                 changed = true;
             }
+            // saveSettings() prefers several window.* mirrors over S. Keep every
+            // mirror already present on this window aligned with the accepted
+            // shared value so a later save cannot roll the merge back.
+            if (Object.prototype.hasOwnProperty.call(window, key)) {
+                window[key] = S[key];
+            }
         });
         if (
             Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
@@ -490,13 +514,6 @@
         ) {
             S.userLanguage = settings.userLanguage;
             changed = true;
-        }
-        // saveSettings() builds currentSlopFilter from window.slopFilterEnabled ?? S,
-        // so a cross-window storage sync that only touched S would let a later save in
-        // this tab revert the switch from a stale window value. Mirror it here.
-        // (The other shared bool keys carry the same latent gap — pre-existing.)
-        if (Object.prototype.hasOwnProperty.call(settings, 'slopFilterEnabled')) {
-            window.slopFilterEnabled = S.slopFilterEnabled;
         }
         if (changed && S.renderQuality) {
             window.cursorFollowPerformanceLevel = U.mapRenderQualityToFollowPerf(S.renderQuality);
