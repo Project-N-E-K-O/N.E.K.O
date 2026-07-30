@@ -828,7 +828,9 @@ async def test_the_release_resets_per_turn_transport_state(client_rig):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_a_slow_host_callback_cannot_wedge_the_queue_consumer(caplog):
+async def test_a_slow_host_callback_cannot_wedge_the_queue_consumer(
+    caplog, monkeypatch
+):
     # Codex P2 on PR #2592, and a defect this PR introduced in its previous
     # round: making the release notification awaitable put it on the sole
     # queue consumer for escalations raised inside _process. An unbounded host
@@ -850,11 +852,11 @@ async def test_a_slow_host_callback_cannot_wedge_the_queue_consumer(caplog):
         fail_open=True,
         on_stuck_release=_never_returns,
     )
-    monkeypatched = 0.05
-    import main_logic.omni_realtime_client._response_arbiter as arbiter_module
-
-    original = arbiter_module._STUCK_RELEASE_NOTIFY_TIMEOUT
-    arbiter_module._STUCK_RELEASE_NOTIFY_TIMEOUT = monkeypatched
+    monkeypatch.setattr(
+        "main_logic.omni_realtime_client._response_arbiter"
+        "._STUCK_RELEASE_NOTIFY_TIMEOUT",
+        0.05,
+    )
     try:
         # response_started_timeout drives the _process-side escalation, so the
         # notification really does run on the consumer.
@@ -880,7 +882,8 @@ async def test_a_slow_host_callback_cannot_wedge_the_queue_consumer(caplog):
         await asyncio.wait_for(follow_up.sent, timeout=1)
         assert sent[-1]["type"] == "response.create"
     finally:
-        arbiter_module._STUCK_RELEASE_NOTIFY_TIMEOUT = original
+        # Release the hanging callback BEFORE shutdown: it is still awaiting
+        # this event, and shutdown reaps the worker.
         released.set()
         await arbiter.shutdown("test teardown")
 
