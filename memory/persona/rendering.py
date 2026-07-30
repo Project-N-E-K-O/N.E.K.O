@@ -678,10 +678,11 @@ class RenderingMixin:
         for entry in entries:
             if not isinstance(entry, dict):
                 continue
-            subject = subject_from_entry(entry)
-            marker = (
-                None if subject is None else (subject.key, subject.scope)
-            )
+            # Through the shared helper, not a second copy of the same
+            # expression: `_log_unslotted_buckets` builds its `known` set
+            # from that helper, so two spellings that drift apart would
+            # make every entry look unslotted (or hide a real drop).
+            marker = cls._subject_bucket_marker(subject_from_entry(entry))
             buckets[marker].append(entry)
         return buckets
 
@@ -699,11 +700,21 @@ class RenderingMixin:
         groups in the same render, a single flat slice covers only the last
         of them, and the earlier group ends up donating to the later one
         and starving itself — the exact outcome the reserve exists to
-        prevent. A group's own reserve is not deducted from itself; only
-        groups after it count.
+        prevent.
+
+        A group never reserves against another group. Groups are peers;
+        between peers the caller's order decides, and the reserve exists
+        only to stop MEMBERS from eating a group that is queued behind
+        them. Charging a group for the groups after it inverts the very
+        thing it protects: with five groups in one render the first one
+        would owe four reserves, come out with nothing, and the request
+        would render its LAST four subjects instead of its first four.
         """
         from memory.scopes import SUBJECT_GROUP_CHAT
 
+        current = slots[index] if index < len(slots) else None
+        if current is not None and current.kind == SUBJECT_GROUP_CHAT:
+            return max(0, remaining)
         groups_ahead = sum(
             1 for later in slots[index + 1:]
             if later is not None and later.kind == SUBJECT_GROUP_CHAT

@@ -414,6 +414,47 @@ async def test_reserve_covers_every_group_still_queued_not_just_one():
 
 
 @pytest.mark.asyncio
+async def test_a_group_never_reserves_against_another_group():
+    """Groups are peers; between peers the caller's order decides.
+
+    The reserve exists to stop MEMBERS from eating a group queued behind
+    them. Charging a group for the groups after it inverts what it
+    protects: with five groups the first owes four reserves, comes out
+    with nothing, and the request renders its LAST four subjects instead
+    of its first four — caller order backwards.
+    """
+    from memory.scopes import MemorySubject
+
+    groups = [MemorySubject.group_chat("qq", str(7000 + i)) for i in range(5)]
+    persona = {
+        s.persona_section_key: _scoped_section(s, [
+            _entry(f'g{i}', f'群{i}的群规是不许剧透而且要按时报名', rein=5.0, subject=s),
+        ])
+        for i, s in enumerate(groups)
+    }
+    harness = _RenderHarness(persona)
+    per_group = count_tokens('群0的群规是不许剧透而且要按时报名')
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
+               per_group), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
+            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS',
+                  per_group * 3):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=groups, include_legacy_private=False,
+        )
+
+    for i in range(3):
+        assert f'群{i}的群规是不许剧透而且要按时报名' in rendered, (
+            f"群{i} 排在前面却被跳过了——保底额度把 caller order 倒了过来"
+        )
+    for i in (3, 4):
+        assert f'群{i}的群规是不许剧透而且要按时报名' not in rendered, (
+            "总闸打满时该丢队尾，不是队首"
+        )
+
+
+@pytest.mark.asyncio
 async def test_allocation_follows_the_caller_subject_order():
     """Order is the caller's call. It sends [group, current speaker] today
     and grows to [group, speaker, three recent speakers] next; ranking the

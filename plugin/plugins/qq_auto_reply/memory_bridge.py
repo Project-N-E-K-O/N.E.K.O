@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -130,7 +131,15 @@ class QQMemoryBridge:
         response_payload = response.json()
         results = response_payload.get("results") if isinstance(response_payload, dict) else None
         memory_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
-        rendered = self.render_relevant_memory(memory_items[:limit])
+        # 整段渲染扔进 worker 线程：render_relevant_memory 里的
+        # truncate_to_tokens 编码的是**截断前**的原文，而这条链路存在的
+        # 理由正是"上游可能返回一条超长的合并 reflection"。tiktoken 对
+        # 切不开的超长 chunk 是二次退化，同步跑在事件循环上会连带卡住这
+        # 个进程里其它群的回复。渲染函数本身保持同步（本体侧同构、测试
+        # 直调），offload 放在唯一的 async 调用点。
+        rendered = await asyncio.to_thread(
+            self.render_relevant_memory, memory_items[:limit],
+        )
         elapsed_ms = response_payload.get("elapsed_ms", 0.0) if isinstance(response_payload, dict) else 0.0
         try:
             normalized_elapsed = float(elapsed_ms or 0.0)
@@ -154,6 +163,7 @@ class QQMemoryBridge:
         # take_lines_within_token_budget 收口，与本体侧同一个 helper。
         from config import (
             RECALL_RENDER_ENTRY_MAX_TOKENS,
+            RECALL_RENDER_LINE_OVERHEAD_TOKENS,
             RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
         from config.prompts.prompts_memory import render_recall_entry_tag
@@ -177,7 +187,15 @@ class QQMemoryBridge:
                 or ""
             ).strip()
             suffix = f" ({anchor[:10]})" if anchor else ""
-            lines.append(f"{index}. {tag} {text}{suffix}")
+            # 整行再兜一次底。截断只管 text，而 tag 里的 tier / entity 是
+            # 未知枚举原样透出的（见 render_recall_entry_tag），手改过的
+            # facts.json 能塞进任意长的 entity——而整段预算的"至少留一条"
+            # 规则会无条件留下第一行。行上限用「单条 + 行装饰」的口径，
+            # 正常条目够不着，只有畸形数据会被它切。
+            lines.append(truncate_to_tokens(
+                f"{index}. {tag} {text}{suffix}",
+                RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS,
+            ))
         kept, dropped = take_lines_within_token_budget(
             lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
         )

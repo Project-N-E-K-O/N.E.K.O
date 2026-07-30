@@ -385,6 +385,103 @@ async def test_tool_recall_header_count_matches_what_was_actually_rendered():
     ), f"首行总览与实际条数不符：{lines[0]!r} vs {len(listed)} 条"
 
 
+# ── nothing on a rendered line is unbounded ──────────────────────────
+
+
+_LONG_TAG_RESULT = {
+    "text": "群里在聊露营",
+    "tier": "fact",
+    # `render_recall_entry_tag` echoes unknown enums verbatim, and a
+    # hand-edited facts.json can hold anything here. The per-entry cap
+    # only trims `text`, so without a line-level cap this rides straight
+    # into the prompt — and the block's always-keep-one rule guarantees
+    # it is never the entry that gets dropped.
+    "entity": "损坏的超长 entity 值" * 500,
+}
+
+
+def test_plugin_recall_bounds_a_line_whose_tag_is_corrupt():
+    with patch("utils.language_utils.get_global_language", return_value="zh"):
+        rendered = _bridge().render_relevant_memory([_LONG_TAG_RESULT])
+
+    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
+        f"畸形 entity 让整段涨到 {count_tokens(rendered)} tok，越过了 "
+        f"{RECALL_RENDER_TOTAL_MAX_TOKENS} 的安全上限"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_recall_bounds_a_line_whose_tag_is_corrupt():
+    """Main-app twin of the same hole."""
+    rendered = await _call_tool([_LONG_TAG_RESULT])
+
+    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS
+
+
+# ── recall tokenization stays off the event loop ─────────────────────
+
+
+def _thread_recording_truncate():
+    """A ``truncate_to_tokens`` stand-in that records where it ran."""
+    import threading
+
+    import utils.tokenize as tok
+
+    real = tok.truncate_to_tokens
+    threads: list[int] = []
+
+    def _recording(*args, **kwargs):
+        threads.append(threading.get_ident())
+        return real(*args, **kwargs)
+
+    return _recording, threads
+
+
+@pytest.mark.asyncio
+async def test_plugin_recall_render_runs_off_the_event_loop():
+    """``truncate_to_tokens`` encodes the text BEFORE truncation, and the
+    whole reason this budget exists is that upstream can return an
+    enormous merged reflection. tiktoken degrades quadratically on a chunk
+    the pretokenizer cannot split, so running it inline would stall every
+    other session in the process."""
+    import threading
+
+    recording, threads = _thread_recording_truncate()
+    payload = {"results": [_result("露营的细节" * 200)], "elapsed_ms": 1.0}
+    response = SimpleNamespace(
+        status_code=200, text="", json=lambda: payload,
+        raise_for_status=lambda: None,
+    )
+    client = SimpleNamespace(post=AsyncMock(return_value=response))
+    bridge = _bridge()
+
+    with patch.object(bridge, "_client", return_value=client), \
+            patch("utils.tokenize.truncate_to_tokens", recording), \
+            patch("utils.language_utils.get_global_language", return_value="zh"):
+        await bridge.query_relevant_memory("Neko", "露营")
+
+    assert threads, "夹具失效：渲染根本没调用 truncate_to_tokens"
+    assert all(t != threading.get_ident() for t in threads), (
+        "召回渲染在事件循环线程上跑 tiktoken，超长条目会卡住整个进程"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_recall_render_runs_off_the_event_loop():
+    """Main-app twin — this one is on the voice path, where a stall is
+    immediately audible."""
+    import threading
+
+    recording, threads = _thread_recording_truncate()
+    with patch("utils.tokenize.truncate_to_tokens", recording):
+        await _call_tool([_result("露营的细节" * 200)])
+
+    assert threads, "夹具失效：渲染根本没调用 truncate_to_tokens"
+    assert all(t != threading.get_ident() for t in threads), (
+        "recall_memory 工具在事件循环线程上跑 tiktoken"
+    )
+
+
 # ── discovery guard: no un-budgeted third renderer ───────────────────
 
 
