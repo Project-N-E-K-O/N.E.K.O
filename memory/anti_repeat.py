@@ -67,6 +67,7 @@ Not extracted
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
 import json
 import math
 import os
@@ -401,6 +402,40 @@ class AntiRepeatCorpus:
                 del window[: len(window) - ANTI_REPEAT_BG_WINDOW]
             self._cache[name] = window
             self._save_unlocked(name)
+
+    async def arecord_output(
+        self,
+        name: str,
+        text: str,
+        *,
+        is_proactive: bool = False,
+        now: Optional[float] = None,
+    ) -> None:
+        """Off-loop twin of ``record_output`` for callers inside a coroutine.
+
+        ``record_output`` ends in an ``atomic_write_json``, which runs mkdir,
+        a stale-temp directory scan, mkstemp, write and an unbounded
+        ``os.fsync`` on the calling thread. This corpus is written on EVERY
+        committed assistant reply, so on the realtime session's loop that
+        physical flush lands between audio chunks.
+
+        The whole call is handed to a worker thread rather than only the
+        write: the read-modify-write runs under ``_get_lock(name)``, and a
+        ``threading.Lock`` serializes the loop thread against workers just as
+        well as it serializes workers against each other. Splitting the
+        critical section across the thread boundary would be the only way to
+        break that.
+        """
+        # now 在这里定好而不是留给 worker：两次 arecord_output 之间的线程调度
+        # 顺序不保证，时间戳必须钉在调用发生的那一刻。
+        stamped = float(now if now is not None else _now())
+        await asyncio.to_thread(
+            self.record_output,
+            name,
+            text,
+            is_proactive=is_proactive,
+            now=stamped,
+        )
 
     @staticmethod
     def _split_fg_bg(

@@ -85,3 +85,34 @@ def test_workshop_tombstone_write_still_saves_when_cloudsave_is_enabled(monkeypa
     assert saved_payloads == [{"version": 1, "tombstones": [{"character_name": "恢复角色"}]}]
     assert _session_deleted_names == {"恢复角色"}
     _session_deleted_names.clear()
+
+
+def test_workshop_utils_reexports_the_config_saver():
+    """POST /api/steam/workshop/config imports its saver from utils.workshop_utils.
+
+    That module re-exports the config_manager helpers, and `save_workshop_config`
+    was missing from the list — so the handler's own `from utils.workshop_utils
+    import ... save_workshop_config ...` raised ImportError on every request,
+    was swallowed by the handler's `except Exception`, and the endpoint answered
+    HTTP 200 with `{"success": false}` while never writing a single byte.
+    """
+    import utils.workshop_utils as workshop_utils
+
+    assert hasattr(workshop_utils, "save_workshop_config"), (
+        "save_workshop_config 必须能从 utils.workshop_utils 导入 —— "
+        "保存 workshop 配置的接口就是从这里拿它的"
+    )
+
+
+def test_the_workshop_config_route_can_import_what_it_uses():
+    """The route's own import line must actually resolve.
+
+    Pinned as the route writes it (a local import inside the handler), so a
+    future re-shuffle of utils.workshop_utils breaks this test instead of
+    silently turning the endpoint into a no-op again.
+    """
+    from utils.workshop_utils import (  # noqa: F401
+        ensure_workshop_folder_exists,
+        load_workshop_config,
+        save_workshop_config,
+    )

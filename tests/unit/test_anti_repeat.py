@@ -17,6 +17,7 @@ scorer + soft-hint prompt 注入。
 from __future__ import annotations
 
 import os
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -561,3 +562,93 @@ def test_recent_topics_block_falls_back_to_en():
     """未支持的 lang 走 en 回退；返回不空字符串即可。"""
     out = render_recent_topics_block(["foo"], "und")
     assert "foo" in out
+
+
+# ── 8. arecord_output：落盘必须离开事件循环 ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_arecord_output_persists_off_the_event_loop(tmp_path, monkeypatch):
+    """The corpus write must not run on the caller's event loop thread.
+
+    record_output ends in atomic_write_json, whose tail is an unbounded
+    os.fsync. This corpus is written on EVERY committed assistant reply, so
+    on the realtime session's loop that physical flush lands between audio
+    chunks. Asserting on the writing thread pins the property itself, not
+    the mere presence of an asyncio.to_thread call.
+    """
+    import memory.anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    loop_thread = threading.get_ident()
+    write_threads: list[int] = []
+    real_write = anti_repeat_module.atomic_write_json
+
+    def _spy(*args, **kwargs):
+        write_threads.append(threading.get_ident())
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(anti_repeat_module, "atomic_write_json", _spy)
+
+    await store.arecord_output("妮可", LONG_TIGER, is_proactive=False)
+
+    assert write_threads, "arecord_output 必须真的落盘"
+    assert loop_thread not in write_threads, (
+        "落盘跑在了事件循环线程上——fsync 会掐住音频"
+    )
+    assert store._load_unlocked("妮可"), "内容必须真的进了 corpus"
+
+
+@pytest.mark.asyncio
+async def test_arecord_output_stamps_time_at_the_call_site(tmp_path, monkeypatch):
+    """The timestamp is read when the coroutine is called, not whenever the
+    worker thread happens to get scheduled.
+
+    Two back-to-back records can reach the pool in either order, and the
+    window is trimmed by ts — so the clock has to be read on the caller's
+    side. Asserting on the *thread* that reads it is what distinguishes the
+    two designs; asserting on the value alone cannot.
+    """
+    import memory.anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    loop_thread = threading.get_ident()
+    clock_threads: list[int] = []
+
+    def _clock() -> float:
+        clock_threads.append(threading.get_ident())
+        return 1234.5
+
+    monkeypatch.setattr(anti_repeat_module, "_now", _clock)
+
+    await store.arecord_output("妮可", LONG_TIGER, is_proactive=True)
+
+    assert clock_threads, "时间戳必须真的取过"
+    assert clock_threads[0] == loop_thread, (
+        "时间戳在 worker 线程里取的——两次投递的先后顺序就不再可信"
+    )
+    window = store._load_unlocked("妮可")
+    assert [entry["ts"] for entry in window] == [1234.5]
+    assert window[0]["is_proactive"] is True
+
+
+def test_the_per_turn_callers_use_the_async_twin():
+    """The two per-turn call sites must not fall back to the sync writer.
+
+    Both run inside a coroutine on the realtime session's loop; a plain
+    record_output there puts an unbounded fsync on that loop. The guard in
+    scripts/check_async_blocking.py cannot see this pair (its documented
+    depth-1 limit stops one hop short), so it is pinned here instead.
+    """
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    for rel in (
+        "main_logic/omni_offline_client/_lifecycle.py",
+        "main_logic/core/proactive.py",
+    ):
+        source = (repo_root / rel).read_text(encoding="utf-8")
+        assert "arecord_output(" in source, f"{rel} 应当调用 async 孪生"
+        assert ".record_output(" not in source, (
+            f"{rel} 回退到了同步 record_output —— 那会把 fsync 压在会话循环上"
+        )

@@ -62,7 +62,9 @@ async def save_workshop_config_api(config_data: dict):
             workshop_config_data['user_mod_folder'] = config_data['user_mod_folder']
         
         # 保存配置到文件，传递完整的配置数据作为参数
-        save_workshop_config(workshop_config_data)
+        # 整份配置由 atomic_write_json 整体替换；加载配置那步（上面）本来就是 await，
+        # 「读—改—写」之间早已存在让出点，这里挪到线程里不会新增竞态窗口。
+        await asyncio.to_thread(save_workshop_config, workshop_config_data)
         
         # 如果启用了自动创建文件夹且提供了路径，则确保文件夹存在
         if workshop_config_data.get('auto_create_folder', True):

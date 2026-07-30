@@ -33,6 +33,7 @@ logger = get_module_logger(__name__)
 # 从config_manager导入workshop配置相关功能
 from utils.config_manager import (
     load_workshop_config,
+    save_workshop_config,
     save_workshop_path,
     persist_user_workshop_folder,
     get_workshop_path

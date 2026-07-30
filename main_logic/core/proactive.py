@@ -490,7 +490,9 @@ class ProactiveMixin:
                 if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
-                        get_anti_repeat_corpus().record_output(
+                        # 落盘走 async 孪生：同步版尾部是 atomic_write_json
+                        # （含无上界的 fsync），压在会话循环上就是掐音频。
+                        await get_anti_repeat_corpus().arecord_output(
                             self.lanlan_name,
                             full_text,
                             is_proactive=True,

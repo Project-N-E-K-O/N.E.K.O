@@ -234,7 +234,23 @@ async def _release_storage_startup_barrier_or_rollback(
         await _release_storage_startup_barrier_if_needed(reason=reason)
     except Exception:
         try:
-            _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)
+            # 这一处**刻意**留在事件循环上。_restore_storage_mutation_state 的最后
+            # 一步是 config_manager.save_root_state()，而 root_state 还有另一个写者：
+            # build_storage_location_bootstrap_payload → _reconcile_legacy_cleanup_
+            # pending_root_state（utils/storage/location_bootstrap.py:191）也会
+            # save_root_state，它挂在 GET /bootstrap、/status、/diagnostics、
+            # /retained-source 和 POST /exit 上 —— 这几条**都不在
+            # _storage_mutation_lock 覆盖下**（锁只包 cleanup / select / restart 三条）。
+            #
+            # 今天让这两个「读 root_state — 改 — 写回」互斥的，不是锁，而是「它们都跑在
+            # 同一条事件循环线程上」。把回滚搬进 worker 就恰好打破这个不变量：前端存储页
+            # 每 500ms 轮询 /status，回滚写 root_state 的同时那边正拿着读到的旧 dict 往
+            # 回写，回滚会被整份盖掉 —— 迁移检查点和策略回滚了、root_state 没有，下次启动
+            # recovery_required 直接算成 False，恢复闸被跳过。
+            #
+            # 正确的收口是给 root_state 一把真锁、并让 GET 路由别在读路径上写盘，那是
+            # 独立的一份工作。在那之前，宁可让这条罕见的回滚路径同步落盘。
+            _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 末步 save_root_state 与无锁 GET 路由的 root_state 读改写互斥，只靠「同在循环线程」保证
         except Exception:
             logger.exception(
                 "failed to rollback storage mutation state after startup barrier release failed",
@@ -1307,7 +1323,14 @@ async def _post_storage_location_retained_source_cleanup_locked(
         updated_payload["retained_source_mode"] = "cleaned"
         updated_payload["updated_at"] = _utc_now_iso()
         updated_payload["cleanup_completed_at"] = _utc_now_iso()
-        save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
+        # 调用方 post_storage_location_retained_source_cleanup 已持 _storage_mutation_lock，
+        # 读-改-写的读发生在上面几行，写是本段最后一步，让出点不会被别的写者插队。
+        await asyncio.to_thread(
+            save_storage_migration,
+            config_manager,
+            updated_payload,
+            anchor_root=anchor_root,
+        )
 
     try:
         root_state = config_manager.load_root_state()
@@ -1404,7 +1427,11 @@ async def _post_storage_location_select_locked(
 
                 state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
                 delete_storage_migration(config_manager, anchor_root=anchor_root)
-                policy_payload = save_storage_policy(
+                # 整个 _post_storage_location_select_locked 都跑在 _storage_mutation_lock 里，
+                # 下面紧跟着的 set_root_mode / 解除启动闸也已经是 await，多一个让出点不改变
+                # 「失败即整体回滚 state_snapshot」的语义。
+                policy_payload = await asyncio.to_thread(
+                    save_storage_policy,
                     config_manager,
                     selected_root=current_root,
                     selection_source=payload.selection_source,
@@ -1439,7 +1466,8 @@ async def _post_storage_location_select_locked(
                 }
 
             state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-            policy_payload = save_storage_policy(
+            policy_payload = await asyncio.to_thread(
+                save_storage_policy,
                 config_manager,
                 selected_root=current_root,
                 selection_source=payload.selection_source,
@@ -1473,7 +1501,8 @@ async def _post_storage_location_select_locked(
                 "selection_source": policy_payload["selection_source"],
             }
         state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-        policy_payload = save_storage_policy(
+        policy_payload = await asyncio.to_thread(
+            save_storage_policy,
             config_manager,
             selected_root=current_root,
             selection_source=payload.selection_source,
@@ -1731,7 +1760,10 @@ async def _post_storage_location_restart_locked(
         state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
         try:
             delete_storage_migration(config_manager, anchor_root=anchor_root)
-            save_storage_policy(
+            # 同样在 _storage_mutation_lock 里；这一段本来就以 await _request_app_shutdown
+            # 收尾，多出来的让出点仍被同一个 try/except 的 state_snapshot 回滚覆盖。
+            await asyncio.to_thread(
+                save_storage_policy,
                 config_manager,
                 selected_root=normalized_selected_root,
                 selection_source=payload.selection_source,
@@ -1746,7 +1778,10 @@ async def _post_storage_location_restart_locked(
             await _request_app_shutdown(request_app_shutdown)
         except Exception as exc:
             try:
-                _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
+                # 与 _release_storage_startup_barrier_or_rollback 里那处同因同治：
+                # 这个 helper 末步 save_root_state，而无锁的 GET 路由也在事件循环上
+                # 读改写同一份 root_state，两者今天只靠「同在循环线程」互斥。详见那处注释。
+                _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 同上：root_state 读改写的互斥依赖「同在循环线程」
             except Exception:
                 logger.exception(
                     "failed to rollback storage mutation state after restart scheduling failed",
@@ -1813,7 +1848,14 @@ async def _post_storage_location_restart_locked(
     except Exception as exc:
         try:
             if isinstance(previous_migration_payload, dict):
-                save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)
+                # 同上：关闭没起来才会走这条回滚分支，进程还活着；锁未释放，
+                # 让出期间不会有第二个存储变更请求进来抢写迁移检查点。
+                await asyncio.to_thread(
+                    save_storage_migration,
+                    config_manager,
+                    previous_migration_payload,
+                    anchor_root=anchor_root,
+                )
             else:
                 delete_storage_migration(config_manager, anchor_root=anchor_root)
         except Exception:

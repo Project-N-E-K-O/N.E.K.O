@@ -438,7 +438,10 @@ class _LifecycleMixin:
                 if completion_mode == "response":
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
-                        get_anti_repeat_corpus().record_output(
+                        # 落盘走 async 孪生：同步版尾部是 atomic_write_json
+                        # （含无上界的 fsync），而这条路径每条 assistant 回复都
+                        # 走一次，压在会话循环上就是掐音频。
+                        await get_anti_repeat_corpus().arecord_output(
                             self.lanlan_name, committed_text, is_proactive=False,
                         )
                     except Exception as _exc:  # pragma: no cover

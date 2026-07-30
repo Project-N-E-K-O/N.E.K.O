@@ -39,10 +39,16 @@ import mimetypes
 from urllib.parse import unquote
 from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json_async
 from utils.workshop_utils import (
     get_workshop_path,
 )
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    """Write bytes to path, overwriting any existing file."""
+    with open(path, 'wb') as f:
+        f.write(data)
 
 
 @router.post('/upload-reference-audio')
@@ -108,8 +114,8 @@ async def upload_reference_audio(request: Request):
 
         reference_audio_name = f'voice_sample{file_ext}'
         reference_audio_path = os.path.join(content_folder, reference_audio_name)
-        with open(reference_audio_path, 'wb') as f:
-            f.write(await file.read())
+        # 上传的音频可能有几 MB，写盘挪到线程里，别压在事件循环上
+        await asyncio.to_thread(_write_bytes, reference_audio_path, await file.read())
 
         manifest = _normalize_workshop_voice_manifest({
             'version': 1,
@@ -119,7 +125,7 @@ async def upload_reference_audio(request: Request):
             'display_name': display_name,
             'provider_hint': provider_hint,
         }, default_prefix=prefix, default_display_name=display_name)
-        atomic_write_json(
+        await atomic_write_json_async(
             os.path.join(content_folder, WORKSHOP_VOICE_MANIFEST_NAME),
             manifest,
             ensure_ascii=False,

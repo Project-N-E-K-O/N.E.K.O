@@ -47,7 +47,11 @@ our model). A second pass addresses exactly that class:
    recognised blocking stdlib call (``PIL.Image.open``, Fernet
    encrypt/decrypt, ``shutil.*``, ``time.sleep``, ``requests.*``,
    ``subprocess.run``/``call``/``check_*``, ``urllib.request.urlopen``,
-   plus the queue/thread/socket tail-name heuristics above).
+   ``utils.file_utils.atomic_write_text`` / ``atomic_write_json``, plus
+   the queue/thread/socket tail-name heuristics above). Helpers whose
+   own name is too generic to identify by name alone (``save``,
+   ``load``, ``run``, …) are deliberately NOT indexed — see
+   ``GENERIC_HELPER_NAMES``.
 2. Walk every ``async def`` body again, and for each bare ``foo(...)``
    or ``obj.foo(...)`` call match the tail name against the risky index.
    A hit is reported as: *blocking sync helper '<name>' ... called
@@ -193,7 +197,33 @@ RISKY_BARE_CALLS: dict[str, str] = {
     # is an attribute call (``asyncio.sleep``) so it won't be confused with
     # this bare ``sleep`` form.
     "sleep": "time.sleep",
+    # utils/file_utils 的原子落盘。名字够独特，不会跟别的东西撞。一次
+    # atomic_write 在调用线程上串着 mkdir、崩后残留 tmp 的整目录 scandir、
+    # mkstemp、write，以及**没有上界**的 os.fsync —— 放在事件循环上就是拿一次
+    # 物理刷盘的时间去堵住所有别的协程。异步孪生 atomic_write_json_async /
+    # atomic_write_text_async 早就存在（asyncio.to_thread 包一层），非测试代码里
+    # 已有 77 处在用；缺的从来不是异步安全层，是调用点纪律。
+    "atomic_write_text": "utils.file_utils.atomic_write_text",
+    "atomic_write_json": "utils.file_utils.atomic_write_json",
 }
+
+# 太通用、不足以靠名字认人的 helper 名，不进 depth-1 风险索引。
+#
+# 索引是按**名字**匹配的：pass 1 记下「某个同步 def 的体内有阻塞调用」，pass 2 在
+# async def 里看到同名调用就报。名字够独特时这招很准（save_storage_policy 只可能是
+# 那一个），名字是个通用动词时就全是噪声 —— 实测把 atomic_write_* 加进来之后，一个
+# 叫 `save` 的 helper 让 `img.save(png_path)`（PIL）和
+# `TokenTracker.get_instance().save()` 全部中招，而它们跟那个 helper 毫无关系。
+#
+# 这跟本文件对 queue/thread/socket 接收者尾名的既有取舍是同一条原则：名字太泛的
+# 一律不猜，宁可漏报也不制造假阳性。代价是漏掉真的叫 `save` 的阻塞 helper —— 那类
+# 只能靠 review 或者以后引入类型推断。
+GENERIC_HELPER_NAMES = frozenset({
+    "save", "load", "read", "write", "flush", "close", "open", "dump",
+    "update", "apply", "run", "start", "stop", "reset", "clear", "sync",
+    "commit", "persist", "get", "set", "add", "append", "remove", "delete",
+    "copy", "move", "send", "put", "wait", "join", "process", "handle",
+})
 
 
 def _tail_matches(tail: str, exact: set[str], suffix: tuple[str, ...]) -> bool:
@@ -281,6 +311,9 @@ class RiskySyncDefIndexer(ast.NodeVisitor):
                         self._consider_def(item, path)
 
     def _consider_def(self, node: ast.FunctionDef, path: Path) -> None:
+        if node.name in GENERIC_HELPER_NAMES:
+            # 名字太泛，认不出人——见 GENERIC_HELPER_NAMES 的注释。
+            return
         reason = _sync_body_has_blocking_call(node)
         if reason is None:
             return
@@ -396,6 +429,12 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         lineno = getattr(node, "lineno", 0)
         col = getattr(node, "col_offset", 0) + 1
         if self._line_has_noqa(lineno):
+            return
+        # 同一个调用点只报一次。直接规则和 depth-1 传递规则会在同一处双双命中
+        # （`atomic_write_json(...)` 既是已知阻塞调用，本身又是一个体内含
+        # atomic_write_text 的同步 def），报两条只是噪声——留下先命中的那条，
+        # 也就是更精确的直接规则。
+        if any(pos == (lineno, col) for pos in ((v[0], v[1]) for v in self.violations)):
             return
         self.violations.append((lineno, col, message))
 

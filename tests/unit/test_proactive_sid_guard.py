@@ -391,7 +391,10 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     mgr.last_user_engagement_time = None
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
+    # arecord_output 必须是 AsyncMock：调用点 await 它，而 MagicMock 的返回值
+    # 不可 await —— 那会被调用点的 except 吞掉，这条用例就变成永远绿的空断言。
     corpus = MagicMock()
+    corpus.arecord_output = AsyncMock()
     monkeypatch.setattr(
         anti_repeat,
         "get_anti_repeat_corpus",
@@ -413,12 +416,13 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     )
 
     assert result is True
-    corpus.record_output.assert_called_once_with(
+    corpus.arecord_output.assert_awaited_once_with(
         "Test",
         "delivered before immediate reply",
         is_proactive=True,
         now=100.0,
     )
+    corpus.record_output.assert_not_called()
 
 
 async def test_finish_proactive_delivery_sid_mismatch_skips_all_writes():
