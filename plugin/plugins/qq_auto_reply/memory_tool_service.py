@@ -99,6 +99,12 @@ async def _recent_other_speakers(
     for item in reversed(recent or []):
         if not isinstance(item, dict):
             continue
+        if str(item.get("synthetic_source") or "").strip():
+            # 合成事件（入群通知等）的名义 sender 没有真的说话：不占
+            # "最近发言人"槽位，也不把事件关联用户的 participant 记忆
+            # 注入别人的回复上下文。与写侧同判据——这些行同样进不了
+            # 成员桶（is_synthetic_source 门）。
+            continue
         sender = str(item.get("sender_id") or "").strip()
         if not sender or sender in seen:
             continue

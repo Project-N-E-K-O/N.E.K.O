@@ -1400,6 +1400,9 @@ async def test_resolver_appends_recent_other_speakers():
         {"sender_id": "2046", "message_id": "m4", "timestamp": 4},
         {"sender_id": "9003", "message_id": "m5", "timestamp": 5},
         {"sender_id": "9004", "message_id": "m6", "timestamp": 6},
+        # 合成事件（入群通知）：名义 sender 没有说话，最新也不占槽位。
+        {"sender_id": "9005", "message_id": "welcome_7788_9005_7",
+         "timestamp": 7, "synthetic_source": "group_join_notice"},
     ]
     plugin.backlog_store = SimpleNamespace(
         get_recent_group_messages=AsyncMock(return_value=timeline),
@@ -1411,11 +1414,15 @@ async def test_resolver_appends_recent_other_speakers():
     assert subjects == [
         QQMemoryBridge.group_subject("7788"),
         QQMemoryBridge.group_participant_subject("7788", "2046"),
-        # 新→旧：9004、9003，然后 9001（跳过当前发言人 2046，9001 去重）。
+        # 新→旧：合成事件的 9005 被排除，然后 9004、9003、9001
+        # （跳过当前发言人 2046，9001 去重）。
         QQMemoryBridge.group_participant_subject("7788", "9004"),
         QQMemoryBridge.group_participant_subject("7788", "9003"),
         QQMemoryBridge.group_participant_subject("7788", "9001"),
     ]
+    assert not any("9005" in s["subject_id"] for s in subjects), (
+        "合成事件的关联用户被当成了最近发言人"
+    )
     # 5 个 subject 在读端点 1..8 上限之内。
     assert len(subjects) <= 8
 
@@ -1440,6 +1447,49 @@ async def test_resolver_appends_recent_other_speakers():
     )
     assert subjects == [QQMemoryBridge.group_subject("7788")]
     assert used_member is False
+
+
+@pytest.mark.asyncio
+async def test_record_message_persists_synthetic_source():
+    """resolver 的合成事件过滤读的是 backlog 行上的 synthetic_source——
+    这条测试钉住写入侧真的把 pipeline 的 _synthetic_source 落了盘，否则
+    过滤读的是一个没人写的字段（形同虚设）。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.backlog_service import QQBacklogService
+
+    captured: list = []
+
+    async def _append(msg, **kwargs):
+        captured.append(msg)
+
+    plugin = SimpleNamespace(
+        _sanitize_message_text=lambda text, is_reply_to_bot=False: text,
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda s: "normal",
+            get_nickname=lambda s: None,
+        ),
+        group_permission_mgr=SimpleNamespace(get_group_level=lambda g: "open"),
+        backlog_store=SimpleNamespace(append_message=_append),
+        _build_backlog_conversation_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}:{sender_id}"
+        ),
+        _qq_settings={},
+        logger=MagicMock(),
+    )
+    service = QQBacklogService(plugin)
+
+    await service.record_message({
+        "message_type": "group", "user_id": "9005", "group_id": "7788",
+        "content": "[系统] 新成员 9005 加入了群聊",
+        "message_id": "welcome_7788_9005_1", "timestamp": 1,
+        "_synthetic_source": "group_join_notice",
+    })
+    await service.record_message({
+        "message_type": "group", "user_id": "9001", "group_id": "7788",
+        "content": "我真的说了话", "message_id": "m1", "timestamp": 2,
+    })
+    assert [m.synthetic_source for m in captured] == [
+        "group_join_notice", "",
+    ]
 
 
 @pytest.mark.asyncio
