@@ -43,7 +43,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import get_config_manager
 from .workshop_router import get_subscribed_workshop_items
-from utils.file_utils import atomic_write_json, atomic_write_json_async, read_json_async
+from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_models, find_model_directory, find_workshop_item_by_id
 from utils.logger_config import get_module_logger
 from utils.url_utils import encode_url_path
@@ -51,6 +51,42 @@ from utils.workshop_utils import get_workshop_path
 
 router = APIRouter(prefix="/api/live2d", tags=["live2d"])
 logger = get_module_logger(__name__, "Main")
+
+
+# 同一个 .model3.json 会被三个 POST 改写：/model_config/{name}、
+# /model_config_by_id/{id}、/emotion_mapping/{name}。三者都是「读盘→改→整覆盖」，
+# 不做 merge，所以无锁并发时后写者会静默丢掉前写者的整段编辑；而且 Windows 上
+# 两个并发 os.replace 打同一个目标会互相 PermissionError(WinError 5)。
+# 因此临界区必须从「读」之前开始 —— 只把写包起来是没用的，丢写窗口是读到写的整段。
+#
+# 按「解析后的文件路径」分桶而不是按 model_name / model_id：by-name 与 by-id
+# 两条路由可以落到同一个文件上，按入参分桶等于没互斥。
+#
+# 为什么这里用 asyncio.Lock 而不是 threading.Lock（本仓库另几处同型修复选的是后者）：
+# 判据是「所有写者是否都在事件循环上」。这里成立 —— 三个写者全是 async 端点，而两个
+# 同步 GET（跑在 anyio 线程池里）已经不再落盘。反过来说，只要 GET 还要写盘，就必须整体
+# 切到 threading.Lock + asyncio.to_thread：在 worker 线程里 acquire 一把 asyncio.Lock
+# 是不允许的（它不是线程安全的），混用两种锁是伪修复。
+# ⚠️ 代价：模块级 asyncio.Lock 一旦被争用就绑死在当时的事件循环上。生产上只有一个
+# 循环（merged 单进程），但测试要制造争用就必须在用例之间清掉这个字典，否则
+# function-scope 的 loop 换掉之后第二个用例会 RuntimeError。
+#
+# 锁活在模块级而不是挂在 router 实例上：模块只 import 一次，重建 APIRouter /
+# 重新 include_router 都不会造出第二套互斥域。字典只在事件循环线程上被读写，
+# 从查找到插入之间没有 await，所以 get-or-create 是原子的，不需要额外 guard 锁。
+_MODEL_CONFIG_WRITE_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _model_config_write_lock(model_json_path: str | os.PathLike) -> asyncio.Lock:
+    """Return the per-file write lock for a resolved ``.model3.json``."""
+    # realpath 折掉 junction/symlink 与 "." 之类的写法差异，normcase 折掉 Windows 的大小写，
+    # 让同一个文件的不同拼法落到同一把锁上。
+    key = os.path.normcase(os.path.realpath(os.fspath(model_json_path)))
+    lock = _MODEL_CONFIG_WRITE_LOCKS.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        _MODEL_CONFIG_WRITE_LOCKS[key] = lock
+    return lock
 
 
 def _normalize_model_path(path: str) -> str:
@@ -370,31 +406,19 @@ def get_model_config(model_name: str):
         with open(model_json_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
         
-        # 检查并自动添加缺失的配置
-        config_updated = False
-        
-        # 确保FileReferences存在
-        if 'FileReferences' not in config_data:
-            config_data['FileReferences'] = {}
-            config_updated = True
-        
-        # 确保Motions存在
-        if 'Motions' not in config_data['FileReferences']:
-            config_data['FileReferences']['Motions'] = {}
-            config_updated = True
-        
-        # 确保Expressions存在
-        if 'Expressions' not in config_data['FileReferences']:
-            config_data['FileReferences']['Expressions'] = []
-            config_updated = True
-        
-        # 如果配置有更新，保存到文件（写入失败时不影响读取结果）
-        if config_updated:
-            try:
-                atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=4)
-                logger.info(f"已为模型 {model_name} 自动添加缺失的配置项")
-            except Exception as write_err:
-                logger.warning(f"无法写回模型配置（可能受Windows安全策略/反勒索防护保护）: {write_err}")
+        # 检查并自动添加缺失的配置。只补在内存里、随 response 返回，不写盘。
+        #
+        # 这个端点是同步 def，跑在 anyio 线程池里；在这儿落盘就等于让读流量变成写流量，
+        # 而且它和三个 POST 的 asyncio 锁不在同一个互斥域里（asyncio.Lock 非线程安全，
+        # worker 线程不能碰）。两个窗口同时首次拉同一个老模型，就是两个线程 os.replace
+        # 同一个目标 → Windows 上互相 PermissionError(WinError 5)。落盘归 POST。
+        #
+        # 补的全是空默认值，仓库里每个消费者都已按可缺省读取（本文件 get_emotion_mapping、
+        # app/monitor.py 的 `.get('FileReferences', {}) or {}`、三个 POST 的 setdefault），
+        # 没有任何一处依赖它们在盘上存在；docs/api/rest/live2d.md 也把本端点写成只读。
+        file_refs = config_data.setdefault('FileReferences', {})
+        file_refs.setdefault('Motions', {})
+        file_refs.setdefault('Expressions', [])
 
         return {"success": True, "config": config_data}
     except Exception as e:
@@ -425,17 +449,20 @@ async def update_model_config(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
-        # 为了安全，只允许修改 Motions 和 Expressions
-        current_config = await read_json_async(model_json_path)
+        # 为了安全，只允许修改 Motions 和 Expressions。
+        # 读→改→写整段在锁内：只把写包起来，两个并发请求照样读到同一份底稿，
+        # 后写者整篇覆盖、静默丢掉前写者的编辑。
+        async with _model_config_write_lock(model_json_path):
+            current_config = await read_json_async(model_json_path)
 
-        file_refs = current_config.setdefault("FileReferences", {})
-        if 'FileReferences' in data and 'Motions' in data['FileReferences']:
-            file_refs['Motions'] = data['FileReferences']['Motions']
-            
-        if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
-            file_refs['Expressions'] = data['FileReferences']['Expressions']
+            file_refs = current_config.setdefault("FileReferences", {})
+            if 'FileReferences' in data and 'Motions' in data['FileReferences']:
+                file_refs['Motions'] = data['FileReferences']['Motions']
 
-        await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+            if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
+                file_refs['Expressions'] = data['FileReferences']['Expressions']
+
+            await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
 
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:
@@ -538,72 +565,75 @@ async def update_emotion_mapping(model_name: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
 
-        config_data = await read_json_async(model_json_path)
+        # 读→改→写整段在锁内，同 update_model_config。下面那段 Cubism 结构变换是纯 CPU、
+        # 内部没有 await，整块套进锁不改变任何逻辑（评审用 git diff -w 看，是纯缩进）。
+        async with _model_config_write_lock(model_json_path):
+            config_data = await read_json_async(model_json_path)
 
-        # 统一写入到标准 Cubism 结构（FileReferences.Motions / FileReferences.Expressions）
-        file_refs = config_data.setdefault('FileReferences', {})
+            # 统一写入到标准 Cubism 结构（FileReferences.Motions / FileReferences.Expressions）
+            file_refs = config_data.setdefault('FileReferences', {})
 
-        # 处理 motions: data 结构为 { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }
-        motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
-        motions_output = {}
-        for group_name, files in motions_input.items():
-            # 禁止在"常驻"组配置任何motion
-            if group_name == '常驻':
-                logger.info("忽略常驻组中的motion配置（只允许expression）")
-                continue
-            items = []
-            for file_path in files or []:
-                if not isinstance(file_path, str):
+            # 处理 motions: data 结构为 { motions: { emotion: ["motions/xxx.motion3.json", ...] }, expressions: {...} }
+            motions_input = (data.get('motions') if isinstance(data, dict) else None) or {}
+            motions_output = {}
+            for group_name, files in motions_input.items():
+                # 禁止在"常驻"组配置任何motion
+                if group_name == '常驻':
+                    logger.info("忽略常驻组中的motion配置（只允许expression）")
                     continue
-                normalized = file_path.replace('\\', '/')
-                p = pathlib.PurePosixPath(normalized)
-                if p.is_absolute() or ".." in p.parts:
-                    continue
-                normalized = str(p)
+                items = []
+                for file_path in files or []:
+                    if not isinstance(file_path, str):
+                        continue
+                    normalized = file_path.replace('\\', '/')
+                    p = pathlib.PurePosixPath(normalized)
+                    if p.is_absolute() or ".." in p.parts:
+                        continue
+                    normalized = str(p)
 
-                items.append({"File": normalized})
-            motions_output[group_name] = items
-        file_refs['Motions'] = motions_output
+                    items.append({"File": normalized})
+                motions_output[group_name] = items
+            file_refs['Motions'] = motions_output
 
-        # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
-        expressions_input = (data.get('expressions') if isinstance(data, dict) else None) or {}
+            # 处理 expressions: 将按 emotion 前缀生成扁平列表，Name 采用 "{emotion}_{basename}" 的约定
+            expressions_input = (data.get('expressions') if isinstance(data, dict) else None) or {}
 
-        # 先保留不属于我们情感前缀的原始表达（避免覆盖用户自定义）
-        existing_expressions = file_refs.get('Expressions', []) or []
-        emotion_prefixes = set(expressions_input.keys())
-        preserved_expressions = []
-        for item in existing_expressions:
-            try:
-                name = (item.get('Name') or '') if isinstance(item, dict) else ''
-                prefix = name.split('_', 1)[0] if '_' in name else None
-                if not prefix or prefix not in emotion_prefixes:
+            # 先保留不属于我们情感前缀的原始表达（避免覆盖用户自定义）
+            existing_expressions = file_refs.get('Expressions', []) or []
+            emotion_prefixes = set(expressions_input.keys())
+            preserved_expressions = []
+            for item in existing_expressions:
+                try:
+                    name = (item.get('Name') or '') if isinstance(item, dict) else ''
+                    prefix = name.split('_', 1)[0] if '_' in name else None
+                    if not prefix or prefix not in emotion_prefixes:
+                        preserved_expressions.append(item)
+                except Exception:
                     preserved_expressions.append(item)
-            except Exception:
-                preserved_expressions.append(item)
 
-        new_expressions = []
-        for emotion, files in expressions_input.items():
-            for file_path in files or []:
-                if not isinstance(file_path, str):
-                    continue
-                normalized = file_path.replace('\\', '/')
-                p = pathlib.PurePosixPath(normalized)
-                if p.is_absolute() or ".." in p.parts:
-                    continue
-                normalized = str(p)
+            new_expressions = []
+            for emotion, files in expressions_input.items():
+                for file_path in files or []:
+                    if not isinstance(file_path, str):
+                        continue
+                    normalized = file_path.replace('\\', '/')
+                    p = pathlib.PurePosixPath(normalized)
+                    if p.is_absolute() or ".." in p.parts:
+                        continue
+                    normalized = str(p)
 
-                base = os.path.basename(normalized)
-                base_no_ext = base.replace('.exp3.json', '')
-                name = f"{emotion}_{base_no_ext}"
-                new_expressions.append({"Name": name, "File": normalized})
+                    base = os.path.basename(normalized)
+                    base_no_ext = base.replace('.exp3.json', '')
+                    name = f"{emotion}_{base_no_ext}"
+                    new_expressions.append({"Name": name, "File": normalized})
 
-        file_refs['Expressions'] = preserved_expressions + new_expressions
+            file_refs['Expressions'] = preserved_expressions + new_expressions
 
-        # 同时保留一份 EmotionMapping（供管理器读取与向后兼容）
-        config_data['EmotionMapping'] = data
+            # 同时保留一份 EmotionMapping（供管理器读取与向后兼容）
+            config_data['EmotionMapping'] = data
 
-        # 保存配置到文件
-        await atomic_write_json_async(model_json_path, config_data, ensure_ascii=False, indent=2)
+            # 保存配置到文件
+            await atomic_write_json_async(model_json_path, config_data, ensure_ascii=False, indent=2)
 
         logger.info(f"模型 {model_name} 的情绪映射配置已更新（已同步到 FileReferences）")
         return {"success": True, "message": "情绪映射配置已保存"}
@@ -848,29 +878,13 @@ def get_model_config_by_id(model_id: str):
         with open(model_json_path, 'r', encoding='utf-8') as f:
             config_data = json.load(f)
         
-        # 检查并自动添加缺失的配置
-        config_updated = False
-        
-        # 确保FileReferences存在
-        if 'FileReferences' not in config_data:
-            config_data['FileReferences'] = {}
-            config_updated = True
-        
-        # 确保Motions存在
-        if 'Motions' not in config_data['FileReferences']:
-            config_data['FileReferences']['Motions'] = {}
-            config_updated = True
-        
-        # 确保Expressions存在
-        if 'Expressions' not in config_data['FileReferences']:
-            config_data['FileReferences']['Expressions'] = []
-            config_updated = True
-        
-        # 如果配置有更新，保存到文件
-        if config_updated:
-            atomic_write_json(model_json_path, config_data, ensure_ascii=False, indent=4)
-            logger.info(f"已为模型 {model_id} 自动添加缺失的配置项")
-            
+        # 检查并自动添加缺失的配置。只补在内存里、随 response 返回，不写盘，理由同
+        # get_model_config。这条尤其急：它原先连 try/except 都没有，创意工坊安装目录只读
+        # 或被反勒索防护挡住时，一个「读」端点会因为写不进去而整个 500。
+        file_refs = config_data.setdefault('FileReferences', {})
+        file_refs.setdefault('Motions', {})
+        file_refs.setdefault('Expressions', [])
+
         return {"success": True, "config": config_data}
     except Exception as e:
         logger.error(f"获取模型配置失败: {e}")
@@ -912,17 +926,20 @@ async def update_model_config_by_id(model_id: str, request: Request):
         if not model_json_path or not os.path.exists(model_json_path):
             return JSONResponse(status_code=404, content={"success": False, "error": "模型配置文件不存在"})
         
-        # 为了安全，只允许修改 Motions 和 Expressions
-        current_config = await read_json_async(model_json_path)
+        # 为了安全，只允许修改 Motions 和 Expressions。读→改→写整段在锁内，
+        # 与 update_model_config 对偶；锁键是解析后的文件路径，所以 by-name 与 by-id
+        # 打到同一个创意工坊模型时共用同一把锁。
+        async with _model_config_write_lock(model_json_path):
+            current_config = await read_json_async(model_json_path)
 
-        file_refs = current_config.setdefault("FileReferences", {})
-        if 'FileReferences' in data and 'Motions' in data['FileReferences']:
-            file_refs['Motions'] = data['FileReferences']['Motions']
+            file_refs = current_config.setdefault("FileReferences", {})
+            if 'FileReferences' in data and 'Motions' in data['FileReferences']:
+                file_refs['Motions'] = data['FileReferences']['Motions']
 
-        if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
-            file_refs['Expressions'] = data['FileReferences']['Expressions']
+            if 'FileReferences' in data and 'Expressions' in data['FileReferences']:
+                file_refs['Expressions'] = data['FileReferences']['Expressions']
 
-        await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
+            await atomic_write_json_async(model_json_path, current_config, ensure_ascii=False, indent=4)  # 使用 indent=4 保持格式
 
         return {"success": True, "message": "模型配置已更新"}
     except Exception as e:

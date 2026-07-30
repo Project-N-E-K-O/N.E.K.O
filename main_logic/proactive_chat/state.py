@@ -137,6 +137,31 @@ async def _ensure_source_history_loaded(
         _source_history_loaded_path = path
 
 
+async def _persist_source_history_unlocked(
+    *, memory_dir: str | Path | None = None
+) -> None:
+    """Persist the in-memory source history. The caller must hold _source_history_lock."""
+    # 快照故意在这里、在锁内自己取，而不是由调用方传进来：调用方取完快照再到锁外落盘，
+    # 两次投递抵达 os.replace 的顺序可以和取快照的顺序反过来，把新历史写回旧值；
+    # Windows 上两个并发 os.replace 打同一个目标还会互相 PermissionError(WinError 5)。
+    # 不接 snapshot 参数，这个反转窗口就从代码里消失，而不是靠调用约定维持。
+    try:
+        await atomic_write_json_async(
+            _source_history_path(memory_dir=memory_dir),
+            {
+                "v": _SOURCE_HISTORY_SCHEMA_VERSION,
+                "entries": dict(_source_history),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "落盘 %s 失败: %s: %s",
+            _SOURCE_HISTORY_FILENAME,
+            type(exc).__name__,
+            exc,
+        )
+
+
 async def _record_source_used(
     *,
     url: str,
@@ -166,21 +191,11 @@ async def _record_source_used(
         ]
         for existing_hash in forgotten:
             _source_history.pop(existing_hash, None)
-        snapshot = {
-            "v": _SOURCE_HISTORY_SCHEMA_VERSION,
-            "entries": dict(_source_history),
-        }
-    try:
-        await atomic_write_json_async(
-            _source_history_path(memory_dir=memory_dir), snapshot
-        )
-    except Exception as exc:
-        logger.warning(
-            "落盘 %s 失败: %s: %s",
-            _SOURCE_HISTORY_FILENAME,
-            type(exc).__name__,
-            exc,
-        )
+        # 落盘也在锁内，对偶于 _increment_proactive_chat_total 调 _persist_totals_unlocked：
+        # 这是个跨角色的单文件，多个投递并发时锁只盖内存不盖落盘等于没盖。
+        # 写本身仍在 to_thread 里跑（atomic_write_json_async 内部），持的是 asyncio.Lock
+        # 不是 threading.Lock，所以事件循环在等待期间照样服务别的请求。
+        await _persist_source_history_unlocked(memory_dir=memory_dir)
 
 
 # --- 主动搭话近期记录暂存区 ---
