@@ -163,6 +163,7 @@ const report = {};
 {
   const h = createHarness();
   h.primeSpeakingTurn('T1');
+  h.mod.rememberAssistantAudioSpeechTurn('sid-1', 'T1');
   h.turnEnd('T1');
   report.gap_speech_ends = h.speechEnds();
   report.gap_armed_timer = h.pendingTimers() > 0;
@@ -250,6 +251,7 @@ const report = {};
 {
   const h = createHarness();
   h.primeSpeakingTurn('T9');
+  h.mod.rememberAssistantAudioSpeechTurn('sid-9', 'T9');
   h.turnEnd('T9');
   h.mod.noteAssistantAudioStreamClosed('sid-9');
   report.settled_id = h.S.assistantTurnSettledId;
@@ -267,6 +269,20 @@ const report = {};
   h.win.dispatchEvent(new CustomEventLike('neko-assistant-turn-start', { detail: {} }));
   report.turn_start_cleared_mark = h.S.assistantAudioStreamClosedTurnId;
   report.turn_start_cleared_map = Object.keys(h.S.assistantAudioTurnBySpeechId || {}).length;
+}
+
+// 从没播过音频的 sid 发来的 audio_done：跟正在说话的那一轮无关，必须忽略。
+// 后端确实有零音频也发信号的轮（整轮 TTS 文本被标点过滤成空）。
+{
+  const h = createHarness();
+  h.primeSpeakingTurn('TB');
+  h.mod.rememberAssistantAudioSpeechTurn('sid-b', 'TB');
+  h.turnEnd('TB');
+  h.mod.noteAssistantAudioStreamClosed('sid-never-played');
+  report.unknown_sid_speech_ends = h.speechEnds();
+  report.unknown_sid_closed_turn = h.S.assistantAudioStreamClosedTurnId;
+  h.mod.noteAssistantAudioStreamClosed('sid-b');
+  report.unknown_sid_then_real = h.speechEnds();
 }
 
 console.log(JSON.stringify(report));
@@ -356,3 +372,10 @@ def test_turn_start_clears_previous_close_mark(report):
     """A new turn must not inherit the previous turn's stream-closed mark."""
     assert report["turn_start_cleared_mark"] is None
     assert report["turn_start_cleared_map"] == 0
+
+
+def test_audio_done_for_never_played_speech_is_ignored(report):
+    """A signal for audio this client never played says nothing about this turn."""
+    assert report["unknown_sid_speech_ends"] == []
+    assert report["unknown_sid_closed_turn"] is None
+    assert report["unknown_sid_then_real"] == ["TB"]

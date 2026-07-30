@@ -523,9 +523,13 @@
         var mapped = (sid && S.assistantAudioTurnBySpeechId)
             ? S.assistantAudioTurnBySpeechId[sid]
             : null;
-        var turnId = normalizeAssistantTurnId(mapped) || resolveAssistantAudioTurnId(null, sid);
+        var turnId = normalizeAssistantTurnId(mapped);
         if (!turnId) {
-            logAudioLifecycle('noteAssistantAudioStreamClosed:skip_no_turn', {
+            // 没见过这个 sid 的音频头 = 本机从没播过它的音频，这条信号跟当前
+            // 正在放的那一轮毫无关系。回落到"当前轮"会把别人的结束信号安到
+            // 正在说话的轮头上，重造一次提前收尾——后端确实存在零音频也发信号
+            // 的轮（整轮 TTS 文本被标点过滤成空）。宁可忽略走 give-up。
+            logAudioLifecycle('noteAssistantAudioStreamClosed:skip_unknown_speech', {
                 speechId: sid
             });
             return false;
