@@ -4323,6 +4323,29 @@ async def test_start_session_handshake_missing_falls_back_to_persisted(
     start_mock.assert_awaited_once()
 
 
+async def test_missing_independent_asr_setting_defaults_enabled(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is True
+    assert runtime._asr_route_mode != "native"
+
+
 @pytest.mark.parametrize("malformed", ["true", 1, 0, [True], {"enabled": True}])
 async def test_start_session_handshake_malformed_value_is_ignored(
     monkeypatch,
@@ -6534,11 +6557,8 @@ async def test_start_resolves_selection_off_event_loop(monkeypatch) -> None:
         "_create_asr_session_from_selection",
         lambda _core_type, **_kwargs: session,
     )
-    monkeypatch.setattr(
-        runtime_module,
-        "DetectorRuntime",
-        MagicMock(return_value=_ReadyDetector()),
-    )
+    detector_factory = MagicMock(return_value=_ReadyDetector())
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", detector_factory)
 
     result = await runtime._asr_runtime.start(
         route_key="qwen",
@@ -6548,6 +6568,9 @@ async def test_start_resolves_selection_off_event_loop(monkeypatch) -> None:
     assert result.status is AsrStartStatus.READY
     assert len(resolver_threads) == 1
     assert resolver_threads[0] is not threading.main_thread()
+    assert (
+        detector_factory.call_args.kwargs["resource_optimization_enabled"] is False
+    )
 
 
 async def test_teardown_routines_share_one_turn_state_reset() -> None:

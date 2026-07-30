@@ -631,7 +631,7 @@ class AsrRuntimeMixin:
             # settings POST failed or was still in flight at session start.
             enabled = handshake_enabled
         else:
-            enabled = bool(settings.get("independentAsrEnabled", False))
+            enabled = bool(settings.get("independentAsrEnabled", True))
         optimization_value = settings.get(
             "voiceInputResourceOptimizationEnabled",
             True,

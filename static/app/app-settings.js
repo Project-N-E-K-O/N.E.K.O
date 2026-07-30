@@ -484,6 +484,7 @@
         'focusCognitionEnabled',
         'noiseReductionEnabled',
         'independentAsrEnabled',
+        'voiceInputResourceOptimizationEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
         'proactiveChatInterval',
@@ -569,6 +570,7 @@
             focusCognitionEnabled: S.focusCognitionEnabled,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: S.independentAsrEnabled,
+            voiceInputResourceOptimizationEnabled: S.voiceInputResourceOptimizationEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -1447,6 +1449,8 @@
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
         const currentIndependentAsr = S.independentAsrEnabled === true;
+        const currentVoiceResourceOptimization =
+            S.voiceInputResourceOptimizationEnabled !== false;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -1520,6 +1524,7 @@
             focusCognitionEnabled: currentFocusCognition,
             noiseReductionEnabled: S.noiseReductionEnabled,
             independentAsrEnabled: currentIndependentAsr,
+            voiceInputResourceOptimizationEnabled: currentVoiceResourceOptimization,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -1561,6 +1566,7 @@
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
         S.independentAsrEnabled = currentIndependentAsr;
+        S.voiceInputResourceOptimizationEnabled = currentVoiceResourceOptimization;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -1707,7 +1713,9 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
-                S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
+                S.independentAsrEnabled = settings.independentAsrEnabled ?? true;
+                S.voiceInputResourceOptimizationEnabled =
+                    settings.voiceInputResourceOptimizationEnabled ?? true;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -2152,6 +2160,29 @@
                 ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer
                     && asrOutranksLocalChoice)
                 : asrValueDiffers;
+            const optimizationKey = 'voiceInputResourceOptimizationEnabled';
+            const optimizationValueDiffers =
+                Object.prototype.hasOwnProperty.call(settings, optimizationKey)
+                && S[optimizationKey] !== settings[optimizationKey];
+            const optimizationMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf(optimizationKey) !== -1;
+            const optimizationWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (
+                    meta.writeId === _lastAppliedSharedWriteId
+                    && optimizationMarkedExplicit
+                );
+            // Like independentAsrEnabled, this key is copied into every shared
+            // snapshot. With metadata, only an explicit user change may alter
+            // another window; otherwise an unhydrated writer's boot default
+            // could overwrite a server-merged preference incidentally.
+            const optimizationChangedByOtherWindow = meta
+                ? (
+                    optimizationValueDiffers
+                    && optimizationMarkedExplicit
+                    && optimizationWriteIsNewer
+                )
+                : optimizationValueDiffers;
             // Drop the key from the apply set when the snapshot's ASR value
             // carries neither user intent nor trustworthy server truth: an
             // already-superseded write, or one made before its own window
@@ -2163,13 +2194,17 @@
                 && !asrChangedByOtherWindow
                 && (!asrWriteIsNewer || !asrOutranksLocalChoice
                     || (!meta.asrAuthoritative && S.settingsHydrated === true));
+            const optimizationValueIsStale = !!meta
+                && optimizationValueDiffers
+                && !optimizationChangedByOtherWindow;
             if (meta && meta.writeId > _lastAppliedSharedWriteId) {
                 _lastAppliedSharedWriteId = meta.writeId;
             }
             let incoming = settings;
-            if (asrValueIsStale) {
+            if (asrValueIsStale || optimizationValueIsStale) {
                 incoming = Object.assign({}, settings);
-                delete incoming.independentAsrEnabled;
+                if (asrValueIsStale) delete incoming.independentAsrEnabled;
+                if (optimizationValueIsStale) delete incoming[optimizationKey];
             }
             if (meta) {
                 for (const key of meta.changedKeys) {
@@ -2398,6 +2433,12 @@
                     const adopted = meta.asrDecision || meta;
                     _noteAsrDecision(adopted.writeId, adopted.writerId, settings.independentAsrEnabled);
                 }
+            }
+            if (optimizationChangedByOtherWindow) {
+                // Preserve a genuine cross-window toggle across this window's
+                // still-pending server merge without granting unrelated fields
+                // handshake authority or emitting a duplicate POST.
+                _dirtySettingsKeys.add(optimizationKey);
             }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {

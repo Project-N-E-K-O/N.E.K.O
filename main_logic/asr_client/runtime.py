@@ -1182,6 +1182,9 @@ class IndependentAsrRuntime:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
             detector_ref = DetectorRuntime(
+                resource_optimization_enabled=(
+                    self._voice_input_resource_optimization_enabled
+                ),
                 provider_policy=policy,
                 on_endpointing_failure=(
                     on_detector_endpointing_failure

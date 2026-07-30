@@ -256,28 +256,21 @@ def test_independent_asr_provider_copy_resolves_via_provider_names():
     assert "window.t('microphone.independentAsrActive', { providerKey: asrProvider || 'unknown' })" in ready_branch
     assert "window.t('microphone.independentAsrProviderUnavailable', { providerKey: asrProvider || 'unknown' })" in source
 
-    # The hint is rendered by one function now, called both at build time and
-    # from the toggle's change handler -- it used to be computed once, so
-    # flipping the switch with the popup open left the previous text standing
-    # and the confirmation contradicted the choice just made.
-    hint_block = capture_source.split("function renderAsrHint() {", 1)[1].split(
-        "asrInput.addEventListener('change'",
-        1,
-    )[0]
-    assert "{ providerKey: S.independentAsrProvider || 'unknown' }" in hint_block
-    assert "asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));" in hint_block
-    assert hint_block.index("asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));") < hint_block.index(
-        "window.t(hintKey, hintParams)"
-    )
-    assert "provider: S.independentAsrProvider" not in hint_block
+    # The shared popover now owns the summary. It resolves the registry key to a
+    # display name, renders that value through the locale template, and refreshes
+    # from the toggle handler so the visible route never lags the user's choice.
+    summary_block = capture_source.split(
+        "function updateVoiceRecognitionUi() {", 1
+    )[1].split("function positionVoicePanel()", 1)[0]
+    assert "'microphone.independentAsrSummary'" in summary_block
+    assert "{ provider: provider }" in summary_block
+    assert "'microphone.voiceRecognitionDisabled'" in summary_block
+    assert "provider: S.independentAsrProvider" not in summary_block
 
-    # ...and the change handler actually re-renders it.
     change_handler = capture_source.split(
-        "asrInput.addEventListener('change', function () {", 1
-    )[1].split("window.appSettings.saveSettings", 1)[0]
-    assert "renderAsrHint();" in change_handler, (
-        "flipping the toggle must refresh the hint it confirms"
-    )
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    assert "updateVoiceRecognitionUi();" in change_handler
 
 
 def test_provider_names_cover_asr_registry_keys_in_all_locales():
@@ -493,19 +486,22 @@ def test_independent_asr_toggle_awaits_server_sync_before_next_session():
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
     websocket_source = APP_WEBSOCKET_PATH.read_text(encoding="utf-8")
 
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("var voiceSettingsPendingUntilEpoch", 1)[0]
     toggle_block = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
-    assert "window.appSettings.saveSettings({ skipServerSync: true });" in toggle_block
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
-    assert "S.pendingSettingsSyncPromise = syncPromise;" in toggle_block
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    assert "persistVoiceSettingChange();" in toggle_block
+    assert "window.appSettings.saveSettings({ skipServerSync: true });" in persist_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
+    assert "S.pendingSettingsSyncPromise = syncPromise;" in persist_block
     # Completion clears the gate only when it still owns it (a newer toggle
     # may have replaced the pending promise meanwhile).
-    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in toggle_block
-    assert "S.pendingSettingsSyncPromise = null;" in toggle_block
+    assert "if (S.pendingSettingsSyncPromise === syncPromise)" in persist_block
+    assert "S.pendingSettingsSyncPromise = null;" in persist_block
     # Fallback when the settings module does not expose syncSettingsToServer.
-    assert "window.appSettings.saveSettings();" in toggle_block
+    assert "window.appSettings.saveSettings();" in persist_block
 
     gate_block = websocket_source.split(
         "function ensureWebSocketOpen(timeoutMs = 5000)",
@@ -677,11 +673,14 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     # syncSettingsToServer({ userInitiated: true }); the saveSettings call it
     # makes skips the internal server sync, so the direct call is the seam.
     toggle_handler = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(", 1)[0]
-    assert "S.independentAsrEnabled = asrInput.checked;" in toggle_handler
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_handler
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("var voiceSettingsPendingUntilEpoch", 1)[0]
+    assert "S.independentAsrEnabled = enabled;" in toggle_handler
+    assert "persistVoiceSettingChange();" in toggle_handler
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
     # Boot must NOT mark hydration: the first-launch initialization save goes
     # through saveSettings({ skipServerSync: true }) which bypasses
@@ -759,10 +758,13 @@ def test_user_toggle_during_get_failure_marks_hydration_posts_and_stamps():
 
     # The toggle's direct sync call is user-initiated and still POSTs.
     toggle_block = capture_source.split(
-        "asrInput.addEventListener('change', function () {",
-        1,
-    )[1].split("asrRow.appendChild(asrLabel);", 1)[0]
-    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in toggle_block
+        "var asrToggle = createVoiceSettingToggle(", 1
+    )[1].split("asrRow.appendChild(asrCopy);", 1)[0]
+    persist_block = capture_source.split(
+        "function persistVoiceSettingChange() {", 1
+    )[1].split("var voiceSettingsPendingUntilEpoch", 1)[0]
+    assert "persistVoiceSettingChange();" in toggle_block
+    assert "window.appSettings.syncSettingsToServer({ userInitiated: true })" in persist_block
 
     # saveSettings' full (non-skipServerSync) path is the other user seam —
     # the settings popup, subtitle toggles and chat-window toggles all route
@@ -3157,8 +3159,15 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
         async function main() {
           // ---- Scenario 1: unrelated save from an UNHYDRATED window ----
           const receiver = makeContext();
-          await hydrateFromServer(receiver, { independentAsrEnabled: true });
+          await hydrateFromServer(receiver, {
+            independentAsrEnabled: true,
+            voiceInputResourceOptimizationEnabled: false,
+          });
           assert(receiver.S.independentAsrEnabled === true, 'receiver merged the server ASR value');
+          assert(
+            receiver.S.voiceInputResourceOptimizationEnabled === false,
+            'receiver merged the server optimization value'
+          );
 
           const writer = makeContext();      // boot GET left pending -> unhydrated
           writer.win.mergeMessagesEnabled = true;
@@ -3169,11 +3178,19 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             staleParsed.independentAsrEnabled === false,
             'saveSettings still copies the ASR key into every snapshot (that is the trap)'
           );
+          assert(
+            staleParsed.voiceInputResourceOptimizationEnabled === true,
+            'saveSettings still copies the optimization key into every snapshot (that is the trap)'
+          );
           const receiverPostsBefore = receiver.postCalls.length;
           receiver.fireStorage(stalePayload);
           assert(
             receiver.S.independentAsrEnabled === true,
             'the hydrated ASR value must survive an unrelated save from an unhydrated window'
+          );
+          assert(
+            receiver.S.voiceInputResourceOptimizationEnabled === false,
+            'the hydrated optimization value must survive an unrelated save from an unhydrated window'
           );
           assert(
             receiver.S.mergeMessagesEnabled === true,
@@ -3194,6 +3211,10 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             staleMeta.changedKeys.indexOf('independentAsrEnabled') === -1,
             'an unrelated save must NOT declare the ASR key as user-changed'
+          );
+          assert(
+            staleMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') === -1,
+            'an unrelated save must NOT declare the optimization key as user-changed'
           );
           assert(staleMeta.hydrated === false, 'the writer had not merged the server settings yet');
 
@@ -3482,6 +3503,34 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           assert(
             observer.S.focusModeEnabled === false,
             'a fresh recovery envelope must not outrank its older per-key provenance'
+          );
+
+          // ---- Scenario 11: a genuine optimization toggle still propagates ----
+          const optimizationWriter = makeContext();
+          await hydrateFromServer(optimizationWriter, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationWriter.S.voiceInputResourceOptimizationEnabled = false;
+          optimizationWriter.mod.saveSettings({ skipServerSync: true });
+          const optimizationPayload = optimizationWriter.lastSharedWrite();
+          const optimizationMeta = JSON.parse(optimizationPayload)._sharedWriteMeta;
+          assert(
+            optimizationMeta.changedKeys.indexOf(
+              'voiceInputResourceOptimizationEnabled'
+            ) !== -1,
+            'a real optimization toggle must be declared explicitly'
+          );
+
+          const optimizationReceiver = makeContext();
+          await hydrateFromServer(optimizationReceiver, {
+            independentAsrEnabled: false,
+            voiceInputResourceOptimizationEnabled: true,
+          });
+          optimizationReceiver.fireStorage(optimizationPayload);
+          assert(
+            optimizationReceiver.S.voiceInputResourceOptimizationEnabled === false,
+            'a real optimization toggle must apply across windows'
           );
 
           console.log('HARNESS_OK');

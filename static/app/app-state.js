@@ -88,11 +88,13 @@
         selectedMicrophoneId: null,
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
-        independentAsrEnabled: false,
+        independentAsrEnabled: true,
+        voiceInputResourceOptimizationEnabled: true,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
-        // 在此之前 S.independentAsrEnabled 只是启动默认值（false），不代表权威偏好，
+        // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
+        // independentAsrEnabled 尤其不能提前进入会话握手，
         // start_session 握手（app-websocket.js attachStartSessionHandshake）不得携带它，
-        // 否则新浏览器 profile 首个会话会用默认 false 覆盖后端持久化的 true。
+        // 否则新浏览器 profile 首个会话会覆盖后端持久化的显式 false。
         settingsHydrated: false,
         // independentAsrEnabled 的按键权威位：settingsHydrated 在任何一次用户改
         // 设置时都会翻真，而那与 ASR 的值毫无关系。只有「server GET 合并成功」
