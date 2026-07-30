@@ -98,11 +98,13 @@ jobs:
 
       - name: Calculate version
         id: calc
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
           if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
             VERSION="${GITHUB_REF#refs/tags/v}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            VERSION="${{ inputs.version }}"
+          elif [[ -n "$INPUT_VERSION" ]]; then
+            VERSION="$INPUT_VERSION"
           else
             COMMIT_SHORT=$(git rev-parse --short HEAD)
             DATE=$(date +%Y%m%d)
@@ -760,11 +762,13 @@ jobs:
 
       - name: Update version in package.json
         working-directory: electron-app
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           node -e "
             const fs = require('fs');
             const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-            pkg.version = '${{ needs.version.outputs.version }}'.replace(/^[^0-9]*/, '');
+            pkg.version = process.env.RELEASE_VERSION.replace(/^[^0-9]*/, '');
             if (!/^\d+\.\d+\.\d+/.test(pkg.version)) {
               pkg.version = '0.0.0-' + pkg.version;
             }
@@ -1013,9 +1017,11 @@ jobs:
           path: artifacts
 
       - name: Organize release files
+        env:
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
           mkdir -p release
-          VERSION="${{ needs.version.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
 
           # Zip Python backend artifacts per platform
           for dir in artifacts/python-backend-*; do
@@ -1075,8 +1081,9 @@ jobs:
         if: ${{ !inputs.windows_only }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
         run: |
-          VERSION="${{ needs.version.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
           DATE=$(date +%Y-%m-%d)
 
           gh release create nightly release/* \
@@ -1118,10 +1125,16 @@ jobs:
         if: ${{ inputs.windows_only }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_VERSION: ${{ needs.version.outputs.version }}
+          REQUESTED_SKIP_SIGNING: ${{ inputs.skip_signing }}
         run: |
           set -euo pipefail
-          VERSION="${{ needs.version.outputs.version }}"
+          VERSION="$RELEASE_VERSION"
           DATE=$(date +%Y-%m-%d)
+          SIGNING_NOTE="Unsigned"
+          if [[ "$REQUESTED_SKIP_SIGNING" != "true" ]]; then
+            SIGNING_NOTE="Signed"
+          fi
           if gh release view nightly >/dev/null 2>&1; then
             gh release upload nightly release/* --clobber
           else
@@ -1129,5 +1142,5 @@ jobs:
               --title "Nightly Build ${DATE}" \
               --target "${{ github.sha }}" \
               --prerelease \
-              --notes "Unsigned Windows-only nightly build (${VERSION})."
+              --notes "${SIGNING_NOTE} Windows-only nightly build (${VERSION})."
           fi

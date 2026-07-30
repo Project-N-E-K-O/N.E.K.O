@@ -102,6 +102,45 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     windows_nightly = nightly_steps["Create or update Windows nightly release"]
     assert windows_nightly["if"] == "${{ inputs.windows_only }}"
     assert "gh release upload nightly release/* --clobber" in windows_nightly["run"]
+    assert windows_nightly["env"]["REQUESTED_SKIP_SIGNING"] == (
+        "${{ inputs.skip_signing }}"
+    )
+    assert 'SIGNING_NOTE="Unsigned"' in windows_nightly["run"]
+    assert 'SIGNING_NOTE="Signed"' in windows_nightly["run"]
+    assert '"${SIGNING_NOTE} Windows-only nightly build (${VERSION})."' in (
+        windows_nightly["run"]
+    )
+
+
+def test_workflow_values_are_passed_to_shell_through_environment_variables() -> None:
+    workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    version_steps = _steps_by_name(workflow, "version")
+    calculate_version = version_steps["Calculate version"]
+
+    assert calculate_version["env"]["INPUT_VERSION"] == "${{ inputs.version }}"
+    assert "${{ inputs.version }}" not in calculate_version["run"]
+    assert 'VERSION="$INPUT_VERSION"' in calculate_version["run"]
+
+    build_steps = _steps_by_name(workflow, "build-electron")
+    update_package_version = build_steps["Update version in package.json"]
+    assert update_package_version["env"]["RELEASE_VERSION"] == (
+        "${{ needs.version.outputs.version }}"
+    )
+    assert "${{ needs.version.outputs.version }}" not in update_package_version["run"]
+    assert "process.env.RELEASE_VERSION" in update_package_version["run"]
+
+    nightly_steps = _steps_by_name(workflow, "nightly")
+    for step_name in (
+        "Organize release files",
+        "Create nightly release",
+        "Create or update Windows nightly release",
+    ):
+        step = nightly_steps[step_name]
+        assert step["env"]["RELEASE_VERSION"] == (
+            "${{ needs.version.outputs.version }}"
+        )
+        assert "${{ needs.version.outputs.version }}" not in step["run"]
+        assert 'VERSION="$RELEASE_VERSION"' in step["run"]
 
 
 def test_debug_build_values_are_runtime_inputs_not_test_defaults() -> None:
