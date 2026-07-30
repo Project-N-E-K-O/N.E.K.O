@@ -917,3 +917,45 @@ def test_korean_whole_label_negation_is_unchanged(label, confidence):
     two mechanisms have to coexist.
     """
     assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("text", [
+    "不會真的開心", "不再那麼難過", "不算很開心", "未必開心", "不至於難過",
+])
+def test_degraded_heuristic_reads_adjacent_modal_negation(text):
+    """Modal compounds only negate the word they sit against.
+
+    They were tried in the wide 14-character lookback first, where they swallowed
+    an unrelated predicate in the same clause; this table is consulted only after
+    the degree adverbs are peeled off, so it has to be adjacent.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] is None
+
+
+@pytest.mark.parametrize("text,expected", [
+    # the trap the wide lookback fell into: a modal negating a DIFFERENT predicate
+    ("我不会唱歌也很开心", "happy"),
+    ("他不会来所以我很难过", "sad"),
+])
+def test_a_modal_negating_another_predicate_is_left_alone(text, expected):
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # leading punctuation is dropped from one index space but not the other
+    ("......sad但開心", "sad"),
+    ("sad但開心", "sad"),
+    ("開心但sad", "happy"),
+])
+def test_mixed_script_aliases_are_ranked_in_one_space(label, expected, confidence):
+    """An ASCII match indexes the normalized text, a CJK one the compact text.
+
+    Comparing them directly meant the punctuation compact_text drops could order
+    a later alias ahead of an earlier one.
+    """
+    assert _label(label, confidence) == expected

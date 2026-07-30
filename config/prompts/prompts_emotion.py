@@ -486,6 +486,15 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
     'pt': ('não ', 'nao ', 'nunca ', 'jamais '),
 }
 
+# 情态复合否定：整词才是否定，且**只有紧贴情绪词时**才是在否定它。
+# 单独列一张表而不是并进上面的宽回看表 —— 那张表按 14 字符窗口搜索，
+# `我不会唱歌也很开心` 会被它把不相干的情绪词也灭掉（实测过，已回退）。
+# 判定方式：剥掉尾部程度副词后要求它压在情绪词前面。
+HEURISTIC_MODAL_NEGATIONS_BY_LANG = {
+    'zh': ('不会', '不算', '不再', '未必', '不至于', '算不上', '谈不上', '说不上'),
+    'zh-TW': ('不會', '不算', '不再', '未必', '不至於', '算不上', '談不上', '說不上'),
+}
+
 # 紧凑否定 token：仅在命中关键词紧邻前若干字符（_HEURISTIC_TIGHT_NEGATION_LOOKBACK）
 # 内出现才算真否定。这是 zh 单字否定的特殊处理——`不/没/別/未` 等单字在中文里
 # 假阳率极高（`不错/不思议/不具合/不愧/不仅/不可思议` 等都不是否定），但作为否定
@@ -646,6 +655,10 @@ def get_heuristic_negation_tokens_flat() -> tuple:
 
 def get_heuristic_tight_negation_tokens_flat() -> tuple:
     return _flatten_lang_tuples(HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG)
+
+
+def get_heuristic_modal_negations_flat() -> tuple:
+    return _flatten_lang_tuples(HEURISTIC_MODAL_NEGATIONS_BY_LANG)
 
 
 def get_heuristic_negation_blocklist_flat() -> tuple:

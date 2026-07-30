@@ -50,6 +50,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_negation_words_flat,
     get_emotion_negation_suffixes_flat,
     get_emotion_negation_degree_adverbs_flat,
+    get_heuristic_modal_negations_flat,
 )
 from utils.language_utils import detect_prompt_language
 
@@ -119,6 +120,17 @@ _EMOTION_NEGATION_COMPACT_SUFFIXES = tuple(sorted({
 
 
 _EMOTION_NEGATION_COMPACT_PREFIX_SET = frozenset(_EMOTION_NEGATION_COMPACT_PREFIXES)
+
+
+_HEURISTIC_MODAL_NEGATIONS = tuple(sorted(
+    {
+        re.sub(r"[\W_]+", "", str(word).strip().lower(), flags=re.UNICODE)
+        for word in get_heuristic_modal_negations_flat()
+        if str(word).strip()
+    },
+    key=len,
+    reverse=True,
+))
 
 
 _EMOTION_NEGATION_CONTEXT_WINDOW = max(
@@ -343,7 +355,14 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             pattern = r"(?<![a-z0-9])" + re.escape(alias) + r"(?![a-z0-9])"
             for match in re.finditer(pattern, normalized_text):
                 if not _is_negated_ascii_match(match.start()):
-                    matches.append((match.start(), -len(alias), canonical))
+                    # Positions are compared across scripts, so both kinds have to
+                    # be in the same space: an ASCII index counts the punctuation
+                    # that compact_text drops, and leading punctuation alone was
+                    # enough to order a later alias ahead of an earlier one.
+                    compact_start = len(
+                        _NON_WORD_RE.sub("", normalized_text[:match.start()])
+                    )
+                    matches.append((compact_start, -len(alias), canonical))
             continue
 
         compact_alias = re.sub(r"[\W_]+", "", alias, flags=re.UNICODE)
@@ -497,6 +516,15 @@ def _has_heuristic_negation_before(text_value, position):
             sanitized = sanitized.replace(phrase, '')
     # 5) 多字否定 token（宽 lookback）
     if any(token in sanitized for token in _HEURISTIC_NEGATION_TOKENS):
+        return True
+    # 5.5) 情态复合否定（`不會 / 不算 / 不再 / 未必`）：这些词只有紧贴情绪词时
+    #      才是在否定它 —— 放进上面那张宽回看表会否定同一小句里**另一个**谓语
+    #      （`我不会唱歌也很开心`）。所以剥掉尾部的程度副词之后，要求它就压在
+    #      情绪词前面。
+    if any(
+        _strip_degree_adverbs(sanitized).endswith(modal)
+        for modal in _HEURISTIC_MODAL_NEGATIONS
+    ):
         return True
     # 6) zh 单字否定 token：仅在紧邻命中关键词的尾部窗口里才算真否定，
     #    避免 `不错/不思议/不具合` 等非否定词组里的单字误触发整个否定。
