@@ -16,12 +16,7 @@
 
 from __future__ import annotations
 
-
 import hashlib
-
-
-
-
 
 from collections import defaultdict
 
@@ -35,7 +30,6 @@ from config import (
     PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES,
     REFLECTION_RENDER_MAX_TOKENS,
     SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
-    SCOPED_RENDER_GROUP_RESERVED_TOKENS,
     SCOPED_RENDER_SUBJECT_MIN_TOKENS,
     SCOPED_RENDER_TOTAL_MAX_TOKENS,
 )
@@ -44,12 +38,7 @@ from memory.evidence import evidence_score
 
 from ._shared import logger
 
-
-
-
-
 from utils.tokenize import acount_tokens, count_tokens, tokenizer_identity
-
 
 class _RenderPrep(NamedTuple):
     """Everything the sync and async render paths derive identically.
@@ -75,7 +64,6 @@ class _RenderPrep(NamedTuple):
     reflections: list
     suppressed_text_set: set
     subject_slots: tuple
-
 
 class RenderingMixin:
     @staticmethod
@@ -749,106 +737,10 @@ class RenderingMixin:
         return buckets
 
     @classmethod
-    def _subject_available_budget(
-        cls, slots: tuple, index: int, remaining: int,
-        *bucket_maps, member_ceiling: int | None = None,
-    ) -> int:
-        """What slot `index` may spend out of the overall `remaining` gate.
-
-        Every group subject still queued behind this one keeps a reserved
-        slice out of reach. The group's persona is the context every member
-        of the conversation shares, so it is the worst thing to lose to
-        whoever happened to be listed first — and the caller's order is not
-        ours to reshuffle (see `_subject_render_slots`).
-
-        One reserve PER remaining group, not one flat reserve: with two
-        groups in the same render, a single flat slice covers only the last
-        of them, and the earlier group ends up donating to the later one
-        and starving itself — the exact outcome the reserve exists to
-        prevent.
-
-        A group never reserves against another group. Groups are peers;
-        between peers the caller's order decides, and the reserve exists
-        only to stop MEMBERS from eating a group that is queued behind
-        them. Charging a group for the groups after it inverts the very
-        thing it protects: with five groups in one render the first one
-        would owe four reserves, come out with nothing, and the request
-        would render its LAST four subjects instead of its first four.
-
-        Only groups that have something to render are counted. A brand-new
-        group with an empty corpus would otherwise hold 4000 tokens that
-        nobody can ever spend: the member ahead of it gets skipped for
-        nothing, and — worse — a member listed AFTER the empty group sees
-        the slice released and renders in its place, which is the caller
-        order inverted again.
-        """
-        from memory.scopes import SUBJECT_GROUP_CHAT
-
-        current = slots[index] if index < len(slots) else None
-        if current is not None and current.kind == SUBJECT_GROUP_CHAT:
-            # Groups are the documented exception to caller order — the
-            # reserve exists precisely so one can outrank a member ahead
-            # of it — so the monotone ceiling below does not apply here.
-            return max(0, remaining)
-        groups_ahead = sum(
-            1 for later in slots[index + 1:]
-            if later is not None
-            and later.kind == SUBJECT_GROUP_CHAT
-            and cls._slot_has_entries(later, bucket_maps)
-        )
-        reserved = groups_ahead * SCOPED_RENDER_GROUP_RESERVED_TOKENS
-        available = max(0, remaining - reserved)
-        if member_ceiling is not None:
-            # Never more than the member before it got. Without this a
-            # reserve that a group ends up not spending is released to
-            # whoever follows, so an earlier member is skipped to fund a
-            # later one — caller order inverted across the group boundary.
-            # Capping instead of forfeiting keeps the capacity usable by
-            # the group it was held for.
-            available = min(available, member_ceiling)
-        return available
-
-    @staticmethod
-    def _is_group_slot(subject) -> bool:
-        from memory.scopes import SUBJECT_GROUP_CHAT
-
-        return subject is not None and subject.kind == SUBJECT_GROUP_CHAT
-
-    @classmethod
-    def _slot_has_entries(cls, subject, bucket_maps) -> bool:
-        """Whether any bucket holds an entry for this slot.
-
-        A proxy for "will render something": entries could still all be
-        individually over budget. Erring toward reserving is the safe
-        direction — the failure it guards against is the group getting
-        nothing, not a member getting slightly less.
-
-        `member_ceiling` is the allowance the previous non-group slot
-        received; see the clamp below.
-
-        Pass the BUDGETED buckets only. Exempt sections render without
-        debiting anything, so reserving for a slot that holds nothing else
-        parks capacity no one will ever spend — the slot releases it to
-        whoever comes next, and an earlier member gets skipped so a later
-        one can render. "Should anyone reserve for this slot" and "may
-        this slot be dropped whole" are separate questions; the second is
-        answered at the skip site, which never drops a slot that has only
-        exempt content.
-        """
-        marker = cls._subject_bucket_marker(subject)
-        return any(buckets.get(marker) for buckets in bucket_maps)
-
-    @classmethod
-    def _log_skipped_subject(cls, subject, remaining: int, available: int) -> None:
-        # Both numbers, because they diverge exactly when this line matters
-        # most: with a group queued behind, `available` is the gate minus
-        # the reserve. Reporting only that as "总闸剩余" sends whoever is
-        # debugging a vanished persona to raise the wrong constant — the
-        # gate is not what is holding them back, the reserve is.
+    def _log_skipped_subject(cls, subject, available: int) -> None:
         label = "legacy" if subject is None else subject.key
         logger.warning(
-            f"[Persona] scoped 渲染总闸剩余 {remaining} tok，扣掉群保底后可用 "
-            f"{available} tok，低于单 subject 下限 "
+            f"[Persona] scoped 渲染总闸剩余 {available} tok，低于单 subject 下限 "
             f"{SCOPED_RENDER_SUBJECT_MIN_TOKENS}，subject {label} 整段跳过"
             f"（半截的人设比缺席更糟）"
         )
@@ -874,14 +766,15 @@ class RenderingMixin:
     @classmethod
     def _trim_scoped_by_subject(
         cls, prep: _RenderPrep, now: datetime,
-    ) -> tuple[list, list]:
+    ) -> tuple[list, list, set]:
         """Sync per-subject allocation under the overall scoped gate.
 
         Each subject gets its own `PERSONA_RENDER_MAX_TOKENS` /
         `REFLECTION_RENDER_MAX_TOKENS` instead of every subject in the
         render fighting over one shared pair, and the sum is held down by
         `SCOPED_RENDER_TOTAL_MAX_TOKENS`. Whatever a subject leaves unspent
-        rolls forward to the next one.
+        rolls forward to the next one, in the caller's order — no subject
+        kind gets a reserved slice or otherwise jumps the queue.
         """
         persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
@@ -889,28 +782,25 @@ class RenderingMixin:
         kept_reflections: list = []
         skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
-        member_ceiling: int | None = None
-        for index, subject in enumerate(prep.subject_slots):
+        for subject in prep.subject_slots:
             marker = cls._subject_bucket_marker(subject)
-            available = cls._subject_available_budget(
-                prep.subject_slots, index, remaining,
-                persona_buckets, reflection_buckets,
-                member_ceiling=member_ceiling,
-            )
-            if not cls._is_group_slot(subject) and (
-                persona_buckets.get(marker) or reflection_buckets.get(marker)
-            ):
-                # Only members that actually want budget set the ceiling.
-                # An authorized subject with nothing recorded yet (common
-                # before its first memory) spends nothing, so letting its
-                # reservation-reduced allowance cap everyone behind it
-                # would strand capacity the group in front never used.
-                member_ceiling = available
+            # Pure caller order: whatever the gate still holds, in the
+            # order the caller listed. A subject that wants priority is
+            # listed earlier — that is the whole contract, and it is the
+            # one every caller already follows (group first). An earlier
+            # attempt gave group subjects a reserved slice so they could
+            # outrank members ahead of them; it was dead code for every
+            # shipped and planned caller and each of its interactions
+            # (multiple groups, empty groups, exempt-only groups, unspent
+            # slices flowing to later slots) was its own way to invert the
+            # order it was meant to protect. Deleted rather than patched
+            # a sixth time.
+            available = max(0, remaining)
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 if persona_buckets.get(marker) or reflection_buckets.get(marker):
                     # Has budgeted content it cannot afford → drop it whole,
                     # exempt sections included, rather than emit a fragment.
-                    cls._log_skipped_subject(subject, remaining, available)
+                    cls._log_skipped_subject(subject, available)
                     skipped.add(marker)
                 # Nothing budgeted to drop: whatever exempt sections this
                 # slot has cost the gate nothing and still render.
@@ -944,7 +834,7 @@ class RenderingMixin:
     @classmethod
     async def _atrim_scoped_by_subject(
         cls, prep: _RenderPrep, now: datetime,
-    ) -> tuple[list, list]:
+    ) -> tuple[list, list, set]:
         """Async twin of `_trim_scoped_by_subject` — same allocation, only
         the token counter differs (worker-thread tiktoken)."""
         persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
@@ -953,28 +843,25 @@ class RenderingMixin:
         kept_reflections: list = []
         skipped: set = set()
         remaining = SCOPED_RENDER_TOTAL_MAX_TOKENS
-        member_ceiling: int | None = None
-        for index, subject in enumerate(prep.subject_slots):
+        for subject in prep.subject_slots:
             marker = cls._subject_bucket_marker(subject)
-            available = cls._subject_available_budget(
-                prep.subject_slots, index, remaining,
-                persona_buckets, reflection_buckets,
-                member_ceiling=member_ceiling,
-            )
-            if not cls._is_group_slot(subject) and (
-                persona_buckets.get(marker) or reflection_buckets.get(marker)
-            ):
-                # Only members that actually want budget set the ceiling.
-                # An authorized subject with nothing recorded yet (common
-                # before its first memory) spends nothing, so letting its
-                # reservation-reduced allowance cap everyone behind it
-                # would strand capacity the group in front never used.
-                member_ceiling = available
+            # Pure caller order: whatever the gate still holds, in the
+            # order the caller listed. A subject that wants priority is
+            # listed earlier — that is the whole contract, and it is the
+            # one every caller already follows (group first). An earlier
+            # attempt gave group subjects a reserved slice so they could
+            # outrank members ahead of them; it was dead code for every
+            # shipped and planned caller and each of its interactions
+            # (multiple groups, empty groups, exempt-only groups, unspent
+            # slices flowing to later slots) was its own way to invert the
+            # order it was meant to protect. Deleted rather than patched
+            # a sixth time.
+            available = max(0, remaining)
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 if persona_buckets.get(marker) or reflection_buckets.get(marker):
                     # Has budgeted content it cannot afford → drop it whole,
                     # exempt sections included, rather than emit a fragment.
-                    cls._log_skipped_subject(subject, remaining, available)
+                    cls._log_skipped_subject(subject, available)
                     skipped.add(marker)
                 # Nothing budgeted to drop: whatever exempt sections this
                 # slot has cost the gate nothing and still render.

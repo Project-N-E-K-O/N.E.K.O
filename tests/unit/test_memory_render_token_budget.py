@@ -343,187 +343,6 @@ async def test_total_gate_drops_a_trailing_subject_whole():
 
 
 @pytest.mark.asyncio
-async def test_group_subject_keeps_a_reserve_against_earlier_members():
-    """A group listed behind members must not be eaten by them. The group's
-    persona is the context every participant shares, so it is the worst
-    thing to lose to whoever happened to be enumerated first."""
-    group, member = _group_and_member()
-    bulk = '阿离说过的一大段话要占掉相当多的预算才行' * 3
-    # One big entry plus a long tail of 1-token crumbs. The crumbs are the
-    # point: without a reserve the member mops up every last token that the
-    # big entry leaves behind, and the group gets nothing.
-    member_facts = [_entry('m-bulk', bulk, rein=9.0, subject=member)] + [
-        _entry(f'm{i}', 'x', rein=8.0 - i * 0.01, subject=member)
-        for i in range(60)
-    ]
-    group_facts = [_entry('g1', '群规是不许剧透', rein=1.0, subject=group)]
-    persona = {
-        member.persona_section_key: _scoped_section(member, member_facts),
-        group.persona_section_key: _scoped_section(group, group_facts),
-    }
-    harness = _RenderHarness(persona)
-
-    # Derived, not hand-tuned: the gate also charges per-entry markup, so
-    # the reserve has to cover the group's line as rendered.
-    reserve = _gate(group_facts[0]['text'])
-    total = _gate(bulk) + reserve
-    crumbs = sum(count_tokens(e['text']) for e in member_facts[1:])
-    assert crumbs >= reserve, "夹具失效：碎屑不够多，吃不光保底额度"
-
-    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total), \
-            patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS', reserve), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=[member, group], include_legacy_private=False,
-        )
-
-    assert '群规是不许剧透' in rendered, "群 subject 的保底额度被前面的成员吃光了"
-    assert bulk in rendered, "保底额度不该把前面成员的正常配额也扣没"
-    assert '- x' not in rendered, (
-        "成员只该拿到 total - reserve；碎屑挤进来说明保底额度没起作用"
-    )
-
-
-@pytest.mark.asyncio
-async def test_reserve_covers_every_group_still_queued_not_just_one():
-    """Two groups in one render need two reserves.
-
-    A single flat reserve covers only the last group in the list: the
-    earlier one deducts a slice for the later one, gets nothing back for
-    itself, and is the subject that disappears — while every member ahead
-    of it renders in full. That is exactly the outcome the reserve exists
-    to prevent, so it has to scale with how many groups are still queued.
-    """
-    from memory.scopes import MemorySubject
-
-    members = [
-        MemorySubject.group_participant("qq", "7788", str(2000 + i))
-        for i in range(2)
-    ]
-    group_a = MemorySubject.group_chat("qq", "7788")
-    group_b = MemorySubject.group_chat("qq", "9900")
-    order = members + [group_a, group_b]
-
-    def _facts(subject, label):
-        return [
-            _entry(f'{label}-{i}', f'{label}说过的第{i}件事情要占掉不少预算才行',
-                   rein=9.0 - i, subject=subject)
-            for i in range(4)
-        ]
-
-    persona = {
-        s.persona_section_key: _scoped_section(s, _facts(s, name))
-        for s, name in zip(order, ('成员甲', '成员乙', '群A', '群B'))
-    }
-    harness = _RenderHarness(persona)
-    # One entry's worth per pool, and one pool's worth per reserve: with a
-    # FLAT reserve the two members then eat enough of the gate that the
-    # second group falls off. A roomier gate hides the difference.
-    per_subject = _gate('成员甲说过的第0件事情要占掉不少预算才行')
-
-    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', per_subject), \
-            patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-                  per_subject), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS',
-                  per_subject * 3):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=order, include_legacy_private=False,
-        )
-
-    assert '群A说过的第0件事情要占掉不少预算才行' in rendered, (
-        "排在前面的那个群替后面的群留了额度，把自己饿死了"
-    )
-    assert '群B说过的第0件事情要占掉不少预算才行' in rendered
-    # The gate funds three subjects' worth; two reserves mean the members
-    # split what is left, so at least one of them gives way — never a group.
-    assert '成员甲说过的第0件事情要占掉不少预算才行' in rendered
-
-
-@pytest.mark.asyncio
-async def test_a_group_never_reserves_against_another_group():
-    """Groups are peers; between peers the caller's order decides.
-
-    The reserve exists to stop MEMBERS from eating a group queued behind
-    them. Charging a group for the groups after it inverts what it
-    protects: with five groups the first owes four reserves, comes out
-    with nothing, and the request renders its LAST four subjects instead
-    of its first four — caller order backwards.
-    """
-    from memory.scopes import MemorySubject
-
-    groups = [MemorySubject.group_chat("qq", str(7000 + i)) for i in range(5)]
-    persona = {
-        s.persona_section_key: _scoped_section(s, [
-            _entry(f'g{i}', f'群{i}的群规是不许剧透而且要按时报名', rein=5.0, subject=s),
-        ])
-        for i, s in enumerate(groups)
-    }
-    harness = _RenderHarness(persona)
-    from config import SCOPED_RENDER_ENTRY_MARKUP_TOKENS as MARKUP
-
-    per_group = count_tokens('群0的群规是不许剧透而且要按时报名')
-
-    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-               per_group), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS',
-                  (per_group + MARKUP) * 3):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=groups, include_legacy_private=False,
-        )
-
-    for i in range(3):
-        assert f'群{i}的群规是不许剧透而且要按时报名' in rendered, (
-            f"群{i} 排在前面却被跳过了——保底额度把 caller order 倒了过来"
-        )
-    for i in (3, 4):
-        assert f'群{i}的群规是不许剧透而且要按时报名' not in rendered, (
-            "总闸打满时该丢队尾，不是队首"
-        )
-
-
-@pytest.mark.asyncio
-async def test_an_empty_group_does_not_hold_a_reserve_nobody_can_spend():
-    """A brand-new group has nothing to render. Reserving for it anyway
-    costs the member ahead of it its whole slot for no benefit — and the
-    slice then falls to whoever is listed AFTER the empty group, which
-    inverts the caller order the allocator is supposed to honour.
-    """
-    from memory.scopes import MemorySubject
-
-    early = MemorySubject.group_participant("qq", "7788", "2046")
-    empty_group = MemorySubject.group_chat("qq", "7788")
-    late = MemorySubject.group_participant("qq", "7788", "3057")
-    persona = {
-        early.persona_section_key: _scoped_section(early, [
-            _entry('e1', '阿离在准备考试而且最近睡得很晚', rein=5.0, subject=early),
-        ]),
-        # The group section exists but holds nothing renderable.
-        empty_group.persona_section_key: _scoped_section(empty_group, []),
-        late.persona_section_key: _scoped_section(late, [
-            _entry('l1', '小北在学吉他而且刚买了新琴弦', rein=4.0, subject=late),
-        ]),
-    }
-    harness = _RenderHarness(persona)
-    reserve = count_tokens('阿离在准备考试而且最近睡得很晚') * 4
-
-    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-               reserve), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS',
-                  reserve):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=[early, empty_group, late],
-            include_legacy_private=False,
-        )
-
-    assert '阿离在准备考试而且最近睡得很晚' in rendered, (
-        "空群占住了没人能花的保底额度，把排在它前面的成员挤掉了"
-    )
-
-
-@pytest.mark.asyncio
 async def test_a_skipped_subject_drops_its_budget_exempt_sections_too():
     """Dropping a subject has to take its protected and suppressed
     entries with it.
@@ -687,13 +506,10 @@ async def test_a_group_holding_only_suppressed_facts_still_renders_them():
         ]),
     }
     harness = _RenderHarness(persona)
-    reserve = _gate('群里不要主动提起的那件事')
-    total = reserve + _gate('阿离说过的一件事情要占掉不少预算才行')
+    total = _gate('阿离说过的一件事情要占掉不少预算才行')
 
-    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-               reserve), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS',
-                  _gate('x')), \
+    with patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS',
+               _gate('x')), \
             patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
         rendered = await harness.arender_persona_markdown(
             '小天', subjects=[member, group], include_legacy_private=False,
@@ -705,59 +521,6 @@ async def test_a_group_holding_only_suppressed_facts_still_renders_them():
     assert '群里不要主动提起的那件事' in rendered, (
         "只有免预算内容的 subject 被下限当成「半截人设」丢掉了，"
         "「别主动提」清单跟着一起没了"
-    )
-
-
-@pytest.mark.asyncio
-async def test_an_exempt_only_group_reserves_nothing_for_itself():
-    """Rendering for free must not park capacity nobody spends.
-
-    An exempt-only group debits the gate nothing, so a reserve held on its
-    behalf is released untouched to whatever slot follows it. The member
-    ahead pays for it and gets skipped; the member behind inherits it and
-    renders — the caller's order, inverted across the group boundary.
-
-    Both halves are asserted: the group's own exempt content still shows
-    up (that is the round-5 property this must not regress), and the
-    earlier member wins over the later one.
-    """
-    from memory.scopes import MemorySubject
-
-    early = MemorySubject.group_participant("qq", "7788", "2046")
-    exempt_group = MemorySubject.group_chat("qq", "7788")
-    late = MemorySubject.group_participant("qq", "7788", "3057")
-    persona = {
-        early.persona_section_key: _scoped_section(early, [
-            _entry('e1', '阿离在准备考试而且最近睡得很晚', rein=5.0, subject=early),
-        ]),
-        exempt_group.persona_section_key: _scoped_section(exempt_group, [
-            _entry('g-hush', '群里不要主动提起的那件事', suppress=True,
-                   subject=exempt_group),
-        ]),
-        late.persona_section_key: _scoped_section(late, [
-            _entry('l1', '小北在学吉他而且刚买了新琴弦', rein=4.0, subject=late),
-        ]),
-    }
-    harness = _RenderHarness(persona)
-    gate = _gate('阿离在准备考试而且最近睡得很晚')
-
-    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-               gate), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=[early, exempt_group, late],
-            include_legacy_private=False,
-        )
-
-    assert '群里不要主动提起的那件事' in rendered, (
-        "只有免预算内容的群没能渲染出它的「别主动提」清单"
-    )
-    assert '阿离在准备考试而且最近睡得很晚' in rendered, (
-        "排在前面的成员替一个根本不花钱的群让了位"
-    )
-    assert '小北在学吉他而且刚买了新琴弦' not in rendered, (
-        "排在后面的成员捡走了那份没人花的保底额度——caller order 被跨过群边界倒了"
     )
 
 
@@ -789,59 +552,6 @@ async def test_the_pool_ceiling_stays_denominated_in_entry_text():
     assert rendered.count('- x') == pool, (
         f"文本预算 {pool} 只渲染了 {rendered.count('- x')} 条——markup 被算进了"
         f"per-subject 池，池的含义和常量名对不上了"
-    )
-
-
-@pytest.mark.asyncio
-async def test_a_later_member_never_outranks_an_earlier_one():
-    """Caller order holds between members, whatever a group in the middle
-    does with its reserve.
-
-    Sizing matters here: the group must leave MOST of its reserve unspent,
-    so that what falls through to the next slot is more than the member
-    ahead ever had. With the two members spending comparable amounts the
-    remainder is small either way and the clamp never binds — the
-    assertion passes for the wrong reason.
-
-    Groups may outrank a member (that is what the reserve buys); members
-    may not outrank each other.
-    """
-    from memory.scopes import MemorySubject
-
-    early = MemorySubject.group_participant("qq", "7788", "2046")
-    thrifty_group = MemorySubject.group_chat("qq", "7788")
-    late = MemorySubject.group_participant("qq", "7788", "3057")
-    late_text = '小北在学吉他而且刚买了新琴弦'
-    persona = {
-        early.persona_section_key: _scoped_section(early, [
-            _entry('e1', '甲', rein=5.0, subject=early),
-        ]),
-        thrifty_group.persona_section_key: _scoped_section(thrifty_group, [
-            _entry('g1', '乙', rein=5.0, subject=thrifty_group),
-        ]),
-        late.persona_section_key: _scoped_section(late, [
-            _entry('l1', late_text, rein=4.0, subject=late),
-        ]),
-    }
-    harness = _RenderHarness(persona)
-    # A big reserve the group barely touches, and just enough on top for
-    # the early member's single crumb.
-    reserve = _gate(late_text)
-    total = reserve + _gate('甲') + _gate('乙')
-
-    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-               reserve), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=[early, thrifty_group, late],
-            include_legacy_private=False,
-        )
-
-    assert '- 乙' in rendered, "群没拿到它的保底额度"
-    assert '- 甲' in rendered, "排在前面的成员被跳过了"
-    assert late_text not in rendered, (
-        "群没花完的保底额度落到了后面的成员手上——成员之间的 caller order 被倒了"
     )
 
 
@@ -919,52 +629,6 @@ def test_markup_allowance_covers_the_worst_rendered_decoration():
 
 
 @pytest.mark.asyncio
-async def test_an_empty_member_does_not_cap_the_members_behind_it():
-    """A subject with nothing recorded spends nothing, so it must not set
-    the ceiling for the members after it.
-
-    An authorized-but-empty participant is the normal state before its
-    first memory is written. If the reserve in front of it drives its
-    allowance to zero, recording that as the ceiling strands whatever the
-    group ahead did not spend, and every later member is dropped with
-    capacity still on the table.
-    """
-    from memory.scopes import MemorySubject
-
-    empty = MemorySubject.group_participant("qq", "7788", "2046")
-    group = MemorySubject.group_chat("qq", "7788")
-    later = MemorySubject.group_participant("qq", "7788", "3057")
-    later_text = '小北在学吉他而且刚买了新琴弦'
-    persona = {
-        empty.persona_section_key: _scoped_section(empty, []),
-        group.persona_section_key: _scoped_section(group, [
-            _entry('g1', '群规', rein=5.0, subject=group),
-        ]),
-        later.persona_section_key: _scoped_section(later, [
-            _entry('l1', later_text, rein=4.0, subject=later),
-        ]),
-    }
-    harness = _RenderHarness(persona)
-    # A reserve big enough to zero the empty member's allowance, and a gate
-    # the thrifty group leaves most of.
-    reserve = _gate(later_text)
-    total = reserve + _gate('群规')
-
-    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
-               reserve), \
-            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
-        rendered = await harness.arender_persona_markdown(
-            '小天', subjects=[empty, group, later], include_legacy_private=False,
-        )
-
-    assert '- 群规' in rendered, "夹具失效：群没渲染出来"
-    assert later_text in rendered, (
-        "一个什么都没有的成员把后面的成员钳死了，群没花完的额度就此搁浅"
-    )
-
-
-@pytest.mark.asyncio
 async def test_a_suppressed_fact_under_many_subjects_spends_one_slot():
     """The do-not-mention section has one unscoped heading, so the same
     fact under several subjects renders once and costs one slot.
@@ -1002,10 +666,15 @@ async def test_a_suppressed_fact_under_many_subjects_spends_one_slot():
 
 @pytest.mark.asyncio
 async def test_allocation_follows_the_caller_subject_order():
-    """Order is the caller's call. It sends [group, current speaker] today
-    and grows to [group, speaker, three recent speakers] next; ranking the
-    subjects here would silently override the only layer that knows who
-    matters this turn."""
+    """Order is the caller's call, unconditionally.
+
+    It sends [group, current speaker] today and grows to [group, speaker,
+    three recent speakers] next; ranking the subjects here would silently
+    override the only layer that knows who matters this turn. No subject
+    kind is exempt — the group reserve that used to be that exemption is
+    gone, and with it every way it had of inverting the order it was
+    supposed to protect.
+    """
     from memory.scopes import MemorySubject
 
     first = MemorySubject.group_participant("qq", "7788", "2046")
@@ -1173,14 +842,6 @@ _PARITY_SCENARIOS = [
          'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 14},
         {'present': ['群规是不许剧透'], 'absent': ['阿离在准备考试', '- x']},
     ),
-    (
-        'group-reserve',           # group queued last keeps its slice
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 35,
-         'SCOPED_RENDER_GROUP_RESERVED_TOKENS': 18,
-         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1,
-         'reversed_order': True},
-        {'present': ['群规是不许剧透'], 'absent': ['阿离养了一只橘猫']},
-    ),
 ]
 
 
@@ -1221,9 +882,7 @@ async def test_sync_and_async_scoped_renders_agree(name, knobs, expect):
     nowhere to hide.
     """
     group, member, persona, reflections = _parity_fixture()
-    knobs = dict(knobs)
-    order = ([member, group] if knobs.pop('reversed_order', False)
-             else [group, member])
+    order = [group, member]
     patches = [
         patch(f'memory.persona.rendering.{key}', value)
         for key, value in knobs.items()
