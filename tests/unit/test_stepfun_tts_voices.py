@@ -24,6 +24,8 @@ from utils.stepfun_tts_voices import (
     normalize_stepfun_tts_voice,
 )
 from utils.tts.providers import stepfun as stepfun_provider
+import main_logic.tts_client as tts_client
+from main_logic.tts_client.workers import free as free_worker_module
 
 
 def test_stepfun_and_free_catalogs_are_registered():
@@ -34,6 +36,51 @@ def test_stepfun_and_free_catalogs_are_registered():
     assert is_native_voice(STEPFUN_TTS_DEFAULT_VOICE, provider_key="free") is True
     assert is_native_voice("青春少女", provider_key="step") is True
     assert is_native_voice("中文男", provider_key="free") is True
+
+
+def test_stepfun_and_free_dispatch_to_dedicated_workers(monkeypatch):
+    class EmptyConfigManager:
+        def get_core_config(self):
+            return {}
+
+    monkeypatch.setattr(
+        tts_client,
+        "get_config_manager",
+        lambda: EmptyConfigManager(),
+    )
+
+    free_worker, free_key, free_provider = tts_client.get_tts_worker(core_api_type="free")
+    step_worker, step_key, step_provider = tts_client.get_tts_worker(core_api_type="step")
+
+    assert free_worker is tts_client.free_realtime_tts_worker
+    assert step_worker is tts_client.step_realtime_tts_worker
+    assert free_worker is not step_worker
+    assert (free_key, free_provider) == (None, "free")
+    assert (step_key, step_provider) == (None, "step")
+
+
+def test_legacy_step_worker_free_mode_delegates_to_free_worker(monkeypatch):
+    calls = []
+
+    def fake_free_worker(*args):
+        calls.append(args)
+
+    monkeypatch.setattr(
+        free_worker_module,
+        "free_realtime_tts_worker",
+        fake_free_worker,
+    )
+
+    result = tts_client.step_realtime_tts_worker(
+        "requests",
+        "responses",
+        "api-key",
+        "voice-id",
+        free_mode=True,
+    )
+
+    assert result is None
+    assert calls == [("requests", "responses", "api-key", "voice-id")]
 
 
 def test_stepfun_native_voice_aliases_route_to_canonical_ids():

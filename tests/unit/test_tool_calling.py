@@ -2912,7 +2912,10 @@ async def test_realtime_glm_tool_result_must_not_carry_call_id():
         "GLM function_call_output 不能带 call_id —— 文档示例只有 output 字段，"
         "合成的 glm_xxx 仅供内部追踪"
     )
-    assert sent[1] == {"type": "response.create"}
+    # The arbiter stamps a client event_id at enqueue time (previously
+    # send_event added the same field at send time), so compare without it.
+    assert sent[1]["type"] == "response.create"
+    assert set(sent[1]) <= {"type", "event_id"}
 
 
 @pytest.mark.asyncio

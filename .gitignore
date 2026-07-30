@@ -12,6 +12,15 @@ tests/test_inputs/
 *.log
 /logs/
 /data/
+# Voice-turn assets are prepared from a pinned, checksummed manifest. Keep the
+# manifest/notices reviewable while preventing downloaded weights or stray data
+# from being added accidentally.
+!/data/
+/data/*
+!/data/vad_models/
+/data/vad_models/*
+!/data/vad_models/manifest.json
+!/data/vad_models/THIRD_PARTY_NOTICES.md
 debug_audio/*
 # Binaries (but keep our committed Windows tools listed explicitly if needed)
 *.exe

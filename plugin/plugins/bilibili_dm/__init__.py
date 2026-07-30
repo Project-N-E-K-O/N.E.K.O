@@ -1159,13 +1159,14 @@ class BiliDMPlugin(NekoPluginBase):
                     if response.is_success:
                         memory_context = response.text.strip()
                         if memory_context:
-                            from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY
+                            from config.prompts.prompts_sys import (
+                                get_context_summary_ready,
+                            )
 
-                            context_ready_template = CONTEXT_SUMMARY_READY.get(
-                                short_language,
-                                CONTEXT_SUMMARY_READY.get(
-                                    user_language, CONTEXT_SUMMARY_READY["en"]
-                                ),
+                            # B站私聊是文字一对一，不是语音（与 QQ 插件、
+                            # 桌面 text 模式同一口径）。
+                            context_ready_template = get_context_summary_ready(
+                                short_language, input_mode="text",
                             )
                             system_prompt_parts.append(
                                 memory_context

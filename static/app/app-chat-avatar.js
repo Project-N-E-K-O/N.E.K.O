@@ -374,7 +374,7 @@
     }
 
     function getCharacterReferenceCacheKey() {
-        return getCurrentModelCacheKey() + ':card-forge-character-reference:v1';
+        return getCurrentModelCacheKey() + ':card-drop-character-reference:v1';
     }
 
     function getActiveLanlanName() {
@@ -402,26 +402,26 @@
         }
     }
 
-    function postCharacterReferenceToCardForge(characterReferenceDataUrl) {
+    function postCharacterReferenceToCardDrop(characterReferenceDataUrl) {
         if (!characterReferenceDataUrl) return Promise.resolve(false);
         var _nekoName = getActiveLanlanName();
         var referenceBody = { characterReferenceDataUrl: characterReferenceDataUrl };
         if (_nekoName) referenceBody.name = _nekoName;
-        return fetch('/card-forge/active-character', {
+        return fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(referenceBody)
         }).then(function (response) {
             if (!response.ok) {
                 console.warn(
-                    '[chat-avatar] card-forge character reference sync returned HTTP',
+                    '[chat-avatar] card-drop character reference sync returned HTTP',
                     response.status
                 );
                 return false;
             }
             return true;
         }).catch(function (err) {
-            console.warn('[chat-avatar] card-forge character reference sync failed:', err);
+            console.warn('[chat-avatar] card-drop character reference sync failed:', err);
             return false;
         });
     }
@@ -432,7 +432,7 @@
         var cacheKey = getCharacterReferenceCacheKey();
         ensureCharacterReferenceRetryCacheKey(cacheKey);
         if (characterReferenceRetryAttempts >= CHARACTER_REFERENCE_RETRY_LIMIT) {
-            console.warn('[chat-avatar] card-forge character reference sync gave up:', reason || 'retry-limit');
+            console.warn('[chat-avatar] card-drop character reference sync gave up:', reason || 'retry-limit');
             return;
         }
         if (characterReferenceRetryTimer) return;
@@ -442,11 +442,11 @@
         );
         characterReferenceRetryTimer = setTimeout(function () {
             characterReferenceRetryTimer = null;
-            syncCharacterReferenceToCardForge(reason || 'retry');
+            syncCharacterReferenceToCardDrop(reason || 'retry');
         }, delay);
     }
 
-    function syncCharacterReferenceToCardForge(reason) {
+    function syncCharacterReferenceToCardDrop(reason) {
         var modelCacheKey = getCurrentModelCacheKey();
         if (!modelCacheKey || modelCacheKey.endsWith(':')) return Promise.resolve(false);
         var cacheKey = getCharacterReferenceCacheKey();
@@ -458,7 +458,7 @@
                     queueCharacterReferenceRetry(reason || 'empty-capture');
                     return false;
                 }
-                return postCharacterReferenceToCardForge(characterReferenceDataUrl)
+                return postCharacterReferenceToCardDrop(characterReferenceDataUrl)
                     .then(function (posted) {
                         if (posted) {
                             characterReferenceRetryAttempts = 0;
@@ -482,7 +482,7 @@
         if (characterReferenceRetryTimer) return;
         characterReferenceRetryTimer = setTimeout(function () {
             characterReferenceRetryTimer = null;
-            syncCharacterReferenceToCardForge(reason || 'scheduled');
+            syncCharacterReferenceToCardDrop(reason || 'scheduled');
         }, hasUsableCachedCharacterReference() ? 0 : 240);
     }
 
@@ -612,7 +612,7 @@
                 return rememberCharacterReferenceResult(result, cacheKey);
             })
             .catch(function (err) {
-                console.warn('[chat-avatar] card-forge character reference capture failed:', err);
+                console.warn('[chat-avatar] card-drop character reference capture failed:', err);
                 return '';
             })
             .finally(function () {
@@ -627,26 +627,25 @@
     }
 
     /**
-     * 把当前头像 dataUrl、全身角色参考图和猫娘名推送到 card-forge 后端（非关键，静默失败）。
-     * 用于"奇遇铸造机" (card-forge) 前端读取当前猫娘名作为 runtime_character_hint。
-     * 上游未运行 card-forge 时本接口仍存在，POST 只是空写无副作用。
+     * 把当前头像 dataUrl、全身角色参考图和猫娘名同步到主服务的角色快照（非关键，静默失败）。
+     * 社区卡片的原生委托链路会通过 canonical card-drop 路由读取该快照。
      *
      * 只把有值的字段塞进 body：服务端的 POST handler 用 in-payload 语义区分
      * "省略字段（不动）" vs "显式空串（清空）"，所以不要无脑发空串，避免把
      * 上一次同步过来的猫娘名覆盖掉。当 dataUrl 暂不可用但 name 仍有效时，
      * 仍然走一次 name-only 同步。
      */
-    function syncAvatarToCardForge(dataUrl) {
+    function syncAvatarToCardDrop(dataUrl) {
         var _nekoName = getActiveLanlanName();
         if (!dataUrl && !_nekoName) return;
         var body = {};
         if (dataUrl) body.dataUrl = dataUrl;
         if (_nekoName) body.name = _nekoName;
-        fetch('/card-forge/active-character', {
+        fetch('/api/card-drop/active-character', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
-        }).catch(function () { /* card-forge 未运行时静默失败 */ });
+        }).catch(function () { /* 本地角色快照同步失败时静默 */ });
 
         scheduleCharacterReferenceSync('avatar-sync');
     }
@@ -659,7 +658,7 @@
             capturedAt: Date.now()
         };
         saveToStorage(cachedPreview);
-        syncAvatarToCardForge(cachedPreview.dataUrl);
+        syncAvatarToCardDrop(cachedPreview.dataUrl);
 
         setPreviewImage(cachedPreview.dataUrl);
         setPreviewStatus(
@@ -1332,13 +1331,13 @@
         var newCacheKey = getCurrentModelCacheKey();
         if (cachedPreview && cachedPreview.dataUrl && cachedPreview.cacheKey === newCacheKey) {
             // 不同猫娘可能复用同一模型/cache key；即使头像无需重抓，也要把当前名称
-            // 和缓存预览重新 POST 给 Card Forge。该函数内部也会安排参考图同步。
-            syncAvatarToCardForge(cachedPreview.dataUrl);
+            // 和缓存预览重新同步到 card-drop 角色快照。该函数内部也会安排参考图同步。
+            syncAvatarToCardDrop(cachedPreview.dataUrl);
             return;
         }
-        // 头像捕获失败或尚未完成时，也先同步已知角色名，避免 Card Forge
-        // 因 activeCharacterName 为空而跳过真实记忆加载。
-        syncAvatarToCardForge('');
+        // 头像捕获失败或尚未完成时，也先同步已知角色名，避免社区卡片流程
+        // 因角色快照缺少名称而跳过真实记忆加载。
+        syncAvatarToCardDrop('');
         invalidateCachedPreview();
         scheduleAutoCapture(reason);
     }
@@ -1441,7 +1440,7 @@
             // （加载时 lanlan_config.lanlan_name 可能尚未就绪，保存会静默失败）。
             cachedPreview.cacheKey = getCurrentModelCacheKey();
             saveToStorage(cachedPreview);
-            syncAvatarToCardForge(cachedPreview.dataUrl);
+            syncAvatarToCardDrop(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1454,7 +1453,7 @@
                 modelType: stored.modelType,
                 capturedAt: stored.capturedAt
             };
-            syncAvatarToCardForge(cachedPreview.dataUrl);
+            syncAvatarToCardDrop(cachedPreview.dataUrl);
             setPreviewImage(cachedPreview.dataUrl);
             setPreviewStatus(
                 translateLabel('chat.avatarPreviewReady', '头像已更新') + ' · ' + normalizeModelLabel(cachedPreview.modelType)
@@ -1471,7 +1470,7 @@
         } else {
             cachedPreview = null;
             // 首次运行没有缓存头像时，角色身份不应被头像捕获阻塞。
-            syncAvatarToCardForge('');
+            syncAvatarToCardDrop('');
             setPreviewImage('');
             setPreviewStatus(translateLabel('chat.avatarPreviewWaiting', '等待当前模型头像缓存生成'));
             setPreviewNote(translateLabel('chat.avatarPreviewCardNote', '将基于当前显示中的 Live2D / VRM / MMD 模型生成头像。'));
@@ -1608,7 +1607,7 @@
                 capturedAt: Date.now()
             };
             saveToStorage(cachedPreview);
-            syncAvatarToCardForge(cachedPreview.dataUrl);
+            syncAvatarToCardDrop(cachedPreview.dataUrl);
         }
 
         // 如果弹窗已打开且本地没有本窗口可采集的模型，就直接把 IPC 数据显示出来。

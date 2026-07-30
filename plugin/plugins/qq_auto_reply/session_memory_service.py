@@ -36,9 +36,69 @@ class QQSessionMemoryService:
     # 系统消息，此前未落盘的轮次当场消失；在它之前主动落盘，能把损失从
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
+    # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，并发
+    # MEMBER_FLUSH_CONCURRENCY，每发一次 scoped history（那是一次 LLM
+    # 抽取，所以超时给得很宽）。下面的等待上限由它们算出来，别写死——
+    # 三个数任何一个改了，等待上限必须跟着走。
+    MEMBER_FLUSH_CONCURRENCY = 4
+    SCOPED_HISTORY_TIMEOUT_SECONDS = 30.0
+    # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
+    # · 短档（idle sweep）：放弃只是多等一个 sweep 周期，下轮自然重来。
+    # · 长档（关机 / opt-out 结算）：放弃就换成丢数据或让已提升的一代
+    #   失去消费者，没有便宜的下一轮。所以长档按**整趟**排空的最坏用时
+    #   算（波数 × 单发超时），而不是一次请求——只覆盖一次请求的话，第二
+    #   波还攥着快照时等待就到点了。这正好是改前的实际行为（整趟排空持
+    #   会话锁，这些路径只能干等到它结束），因此不构成关机变慢的回归。
+    # 波数 × 单发超时只是排空的**理论**用时；信号量交接、超时清理、gather
+    # 收尾、任务调度都还要时间。等待上限必须严格大于它，恰好相等会在排空
+    # 正要返回的那一刻判它"还在途"——白等了整整一趟，然后照样按超时处理。
+    SETTLE_JOIN_SLACK_SECONDS = 5.0
+    SETTLE_JOIN_TIMEOUT_SECONDS = 5.0
+    SETTLE_JOIN_TIMEOUT_LONG_SECONDS = SCOPED_HISTORY_TIMEOUT_SECONDS * (
+        -(-GROUP_MEMBER_MAX_PARTICIPANTS // MEMBER_FLUSH_CONCURRENCY)
+    ) + SETTLE_JOIN_SLACK_SECONDS
 
     def __init__(self, plugin: Any):
         self.plugin = plugin
+
+    async def _await_pending_session_settlement(
+        self, session_key: str, *, timeout: float | None = None,
+    ) -> bool:
+        """Let this session's registered settlement work finish first.
+
+        Returns False when it is still outstanding after the bound — the
+        caller decides whether that session may be finalized anyway.
+
+        finalize pops the session, and the member drain holds the only
+        copy of the buckets it popped out of the live mapping: pop first
+        and the drain has nowhere to hand its failures back to.
+
+        Must run OUTSIDE the session lock. The drain takes that lock again
+        to return its snapshot, so waiting while holding it deadlocks."""
+        tasks = [
+            task
+            for task in (
+                (getattr(self.plugin, "_session_settle_tasks", None) or {})
+                .get(session_key) or ()
+            )
+            if not task.done()
+        ]
+        if not tasks:
+            return True
+        _done, still_pending = await asyncio.wait(
+            tasks,
+            timeout=(
+                self.SETTLE_JOIN_TIMEOUT_SECONDS if timeout is None else timeout
+            ),
+        )
+        if not still_pending:
+            return True
+        # 不取消：取消一趟排空等于丢掉它攥着的那批已授权发言。
+        self.plugin.logger.warning(
+            f"等待会话结算工作超时（{session_key}），仍有 "
+            f"{len(still_pending)} 项在途"
+        )
+        return False
 
     async def wait_session_response_complete(self, session: Any, timeout: float = 30.0) -> bool:
         deadline = time.monotonic() + timeout
@@ -68,6 +128,17 @@ class QQSessionMemoryService:
                     return False
                 return await self.finalize_user_memory_session(session_key, reason="idle_timeout")
 
+            # 锁外先等在途排空：finalize 会弹出会话，而排空攥着从活映射
+            # 里 pop 出来的唯一副本（discard_session 有自己的推迟判据，
+            # 这条路径没有）。
+            if not await self._await_pending_session_settlement(session_key):
+                # 等不到就整轮跳过：进程还在跑，下一次 sweep 会重来，而
+                # idle 会话多等一个 sweep 周期没有任何代价——把它弹掉才有
+                # （排空就再也没地方还失败的桶了）。
+                self.plugin.logger.info(
+                    f"排空在途，本轮跳过 idle 结算（{session_key}），下次 sweep 重试"
+                )
+                continue
             await self.plugin._run_with_session_lock(session_key, _finalize_if_still_idle)
 
     async def flush_all_memory_sessions(self, reason: str):
@@ -109,6 +180,20 @@ class QQSessionMemoryService:
                         return finalized
                     prev_progress = progress
 
+            # 同 idle 路径：关机时 shutdown 只 join 1s 就放行，30s 的
+            # scoped POST 完全可能还在飞——这里再给一次有界的等待，别在
+            # 排空还攥着快照时把会话弹掉（弹掉即销毁唯一副本）。
+            # 与 idle 不同的是**等不到也照样结算**：这是最后一次机会，跳过
+            # 意味着这个会话的群 digest 也一起没了（那通常比成员桶大得多）。
+            # 两种损失里选小的，排空自己会把丢掉的量记进 error 日志。
+            if not await self._await_pending_session_settlement(
+                session_key,
+                timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+            ):
+                self.plugin.logger.warning(
+                    f"排空仍在途但已是最后一次结算机会（{session_key}, "
+                    f"reason={reason}），继续结算群侧数据"
+                )
             await self.plugin._run_with_session_lock(session_key, _finalize_existing)
 
     @staticmethod
@@ -426,9 +511,21 @@ class QQSessionMemoryService:
                 # 协程。在飞时不清 due 标：下一轮再判，别把信号吞掉。
                 user_data.pop("member_flush_due", None)
                 user_data["member_drain_in_flight"] = True
+                # 登记成该会话的结算工作：排空的 POST 现在跑在锁外，会话锁
+                # 不再是天然屏障，discard_session 会在它还攥着快照时把会话
+                # 弹掉、把失败的桶留在一份没人消费的 user_data 上。带上
+                # session_key，discard 就会按既有约定推迟并下轮重试。
                 self.plugin._spawn_memory_sync_task(
-                    self._drain_member_buckets(session_key)
+                    self._drain_member_buckets(session_key),
+                    session_key=session_key,
                 )
+            return 0
+        if not user_data.get("memory_enabled"):
+            # 私聊 legacy 语料是**主人**的：非 admin 好友的 memory_enabled
+            # 恒为 False，他们的消息一条都不得进 /cache。闸放在被调方而不是
+            # 调用方——_cache_session_delta 有多个入口（成功路径自己判过，
+            # 静默轮的记忆管家、旁路调度都没判），逐个补必漏。群分支在上面
+            # 就返回了，不受影响（那两个排空各有自己的闸）。
             return 0
         session = user_data.get("session")
         her_name = user_data.get("her_name")
@@ -513,45 +610,261 @@ class QQSessionMemoryService:
 
     async def _drain_member_buckets(self, session_key: str) -> None:
         """Flush member buckets that hit the cap, instead of dropping the
-        oldest authorized turns of a group that never goes idle."""
-        async def _drain() -> None:
+        oldest authorized turns of a group that never goes idle.
+
+        The session lock is held only to take the snapshot and to hand the
+        failures back — never across the scoped POSTs. One sweep is two
+        waves of four concurrent requests at up to 30s each; holding the
+        lock for that stalls every message in the group, and the handlers
+        queued behind it keep their share of the global message semaphore,
+        so a couple of always-busy groups could wedge the whole plugin
+        (private chats included)."""
+        snapshot: dict[str, list] = {}
+        snapshot_labels: dict[str, str] = {}
+        flush_target: dict[str, Any] = {}
+        # 会话在飞行期间没了、但授权还在时，把最后一次重试排到锁外——
+        # 会话已经不存在，在锁内发 30s 的请求只会挡住同 key 的新会话。
+        orphan_retry: dict[str, Any] = {}
+
+        async def _take_snapshot() -> bool:
             user_data = self.plugin._user_sessions.get(session_key)
             if not user_data:
+                return False
+            if not user_data.get("is_group") or not user_data.get(
+                "memory_enabled"
+            ):
+                return False
+            if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                "group_member_memory_enabled", False,
+            ):
+                return False
+            group_id = str(user_data.get("group_id") or "").strip()
+            her_name = user_data.get("her_name")
+            if not group_id or not her_name:
+                return False
+            buckets = user_data.get("group_member_memory_messages") or {}
+            labels = user_data.get("group_member_memory_labels") or {}
+            ready = [s for s, msgs in buckets.items() if s and msgs]
+            # 一趟最多带走一个名额的量。归还失败快照时参与者数可以暂时到
+            # 名额的两倍（见 _return_snapshot：宁可超额也不丢掉整个已授权
+            # 发言人），不设这个上限的话，那种局面下的排空会变成四波，而
+            # 结算侧的等待上限是按两波算的——等待到点时后面几波还攥着快照。
+            # 限住工作量比拉长等待好：多出来的下一轮接着排。
+            deferred = ready[self.GROUP_MEMBER_MAX_PARTICIPANTS:]
+            for sender_id in ready[:self.GROUP_MEMBER_MAX_PARTICIPANTS]:
+                snapshot[sender_id] = buckets.pop(sender_id)
+                label = labels.pop(sender_id, None)
+                if label:
+                    snapshot_labels[sender_id] = label
+            if not snapshot:
+                return False
+            if deferred:
+                # 留下的那些要再排一轮，否则得等这些成员各自再攒满一次。
+                user_data["member_flush_due"] = True
+                self.plugin.logger.info(
+                    f"[member_bucket_cap] 群 {group_id} 参与者超额，本轮先带走 "
+                    f"{len(snapshot)} 个，剩 {len(deferred)} 个下轮再排"
+                )
+            # 整桶搬走：参与者名额当场腾空，冲刷期间新到的发言写进全新的
+            # 一代，和在飞的这一代互不覆盖。冲刷标记必须在锁内就位——设置侧
+            # 的 opt-out 快照靠它决定"另起一代"，锁一放它就可能跑起来。
+            # 这一层计数覆盖整趟排空（含把失败桶还回去），所以中途并发的
+            # finalize 冲刷结束时不会替我们把标记清掉。
+            self._enter_member_flush(user_data)
+            flush_target["user_data"] = user_data
+            flush_target["group_id"] = group_id
+            flush_target["her_name"] = her_name
+            return True
+
+        async def _return_snapshot() -> None:
+            # _flush_member_buckets 成功即 pop，所以此刻 snapshot 里剩下的
+            # 正好是没冲出去的那些。
+            held = flush_target.get("user_data")
+            user_data = self.plugin._user_sessions.get(session_key)
+            if user_data is not held:
+                # 身份比对而不是判空：会话在飞行期间被结算弹出后，排队中的
+                # 群消息可能已经用同一个 key 建了**新**会话。这份快照属于旧
+                # 那一份 user_data——挂到顶替者身上，随后的冲刷会拿新会话的
+                # her_name 去写，等于把这些发言存进另一个角色的记忆库。
+                # 这份旧 dict 已经没有消费者了，提升与否都不改变去向；但计数
+                # 还是要放掉（重新绑定同一份 dict 的路径否则会永远看到"冲刷
+                # 中"），并且把真正丢掉的量记下来——不持锁换来的代价必须看得
+                # 见，不能悄悄消失。
+                stranded = 0
+                if isinstance(held, dict):
+                    stranded = len(held.get("group_member_memory_messages") or {})
+                    # 两个在飞标记同源，就得同时放掉。只放计数、留着
+                    # member_drain_in_flight 的话，一旦这份 dict 被重新绑回
+                    # _user_sessions，cache_session_delta 的调度判据就永久为
+                    # 假——成员桶排空再也不会被排上，只能等硬顶丢弃收场。
+                    held.pop("member_drain_in_flight", None)
+                    self._finish_member_flush_generation(held)
+                # 日志分级的判据统一成一句话：**error 是"本想留下却没留住"，
+                # warning 是"按策略本来就该丢"**。opt-out 撤掉之后的丢弃属于
+                # 后者（fail-closed 是设计），把它记成 error 会让真正的意外
+                # 丢失淹没在噪音里。
+                consent_on = self._member_memory_consent_live()
+                lost = (
+                    self.plugin.logger.error if consent_on
+                    else self.plugin.logger.warning
+                )
+                if snapshot and consent_on:
+                    # 开关都还开着 = 会话不是被 opt-out 撤掉的，这些桶仍是
+                    # 已授权且唯一的副本。排在锁外再试一次：改前会话锁挡着
+                    # 结算，紧随其后的 finalize 总会替它们重试一次，本 PR
+                    # 拆锁之后没人接手了。opt-out 撤的场景照旧丢弃（fail
+                    # closed），不在这里复活。
+                    orphan_retry["snapshot"] = dict(snapshot)
+                    orphan_retry["labels"] = dict(snapshot_labels)
+                replaced = "并已被新会话顶替" if user_data is not None else ""
+                if stranded:
+                    # 滞留在孤儿映射上的那一代没有任何补救余地。
+                    lost(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间会话已结算并弹出{replaced}：{stranded} 个滞留"
+                        f"队列丢失"
+                    )
+                if not snapshot:
+                    return
+                if orphan_retry.get("snapshot"):
+                    # 还有救就别报「丢失」：末次重试成功时什么都没丢，留一条
+                    # 判丢的日志只会把排查的人带偏。真丢了由重试之后那条记。
+                    self.plugin.logger.warning(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
+                        f"未冲成功的成员队列转末次重试"
+                    )
+                else:
+                    lost(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间会话已结算并弹出{replaced}：{len(snapshot)} 个"
+                        f"未冲成功的成员队列丢失"
+                    )
                 return
             try:
-                if not user_data.get("is_group") or not user_data.get(
-                    "memory_enabled"
+                if not snapshot:
+                    return
+                if not user_data.get("memory_enabled") or not (
+                    self._member_memory_consent_live()
                 ):
-                    return
-                if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                    "group_member_memory_enabled", False,
-                ):
-                    return
-                group_id = str(user_data.get("group_id") or "").strip()
-                her_name = user_data.get("her_name")
-                if not group_id or not her_name:
-                    return
-                failed = await self._flush_member_buckets(
-                    user_data, group_id=group_id, her_name=her_name,
-                    reason="member_bucket_cap",
-                )
-                if failed:
-                    # 冲失败的桶留在原地等下一轮：due 标已经被调度器消费
-                    # 掉，不重新置起来的话要等这个成员再攒满一轮才会重试
-                    # （硬顶兜底防无界增长）。
-                    user_data["member_flush_due"] = True
+                    # 冲刷飞行期间 opt-out：按 fail-closed 丢弃。放回队列
+                    # 等下一轮重发，等于让撤销授权之前收集的发言在 opt-out
+                    # 之后继续往服务端跑。
                     self.plugin.logger.warning(
-                        f"[member_bucket_cap] 群 {group_id} 有 {len(failed)} 个"
-                        f"成员队列冲刷失败，留待下轮"
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"冲刷期间成员记忆被关闭，丢弃 {len(snapshot)} 个未冲"
+                        f"成功的成员队列"
                     )
+                    return
+                buckets = user_data.setdefault("group_member_memory_messages", {})
+                labels = user_data.setdefault("group_member_memory_labels", {})
+                for sender_id, messages in snapshot.items():
+                    # 失败的旧发言排在冲刷期间新到的之前，保持时间顺序。
+                    merged = messages + list(buckets.get(sender_id) or [])
+                    if len(merged) > self.GROUP_MEMBER_HARD_LIMIT:
+                        # 硬顶要重新压：快照与新一代各自有界，拼起来没有。
+                        # 服务端持续挂掉时，每轮失败都把上一轮整批加回来，
+                        # 队列会无界增长——硬顶正是为这个场景存在的。
+                        self.plugin.logger.warning(
+                            f"[member_bucket_cap] 成员 {sender_id} 的队列归还后"
+                            f"超过硬顶（{len(merged)}），丢弃最早的 "
+                            f"{len(merged) - self.GROUP_MEMBER_HARD_LIMIT} 条"
+                        )
+                        del merged[:-self.GROUP_MEMBER_HARD_LIMIT]
+                    buckets[sender_id] = merged
+                    if sender_id in snapshot_labels:
+                        # 冲刷期间又发言的人可能带来更新的展示名，不覆盖。
+                        labels.setdefault(sender_id, snapshot_labels[sender_id])
+                if len(buckets) > self.GROUP_MEMBER_MAX_PARTICIPANTS:
+                    # 名额只在 record_group_member_turn 的入口把关，归还会
+                    # 暂时越线（上限 2 倍：活映射自己进不了新人）。不在这里
+                    # 丢人——丢掉的是已授权的整个发言人，比暂时超额更糟——
+                    # 但要留痕，并且下一轮排空会把它压回去。
+                    self.plugin.logger.warning(
+                        f"[member_bucket_cap] 群 {flush_target.get('group_id')} "
+                        f"归还后参与者数 {len(buckets)} 超过名额 "
+                        f"{self.GROUP_MEMBER_MAX_PARTICIPANTS}，待下轮排空压回"
+                    )
+                # due 标已被调度器消费掉：不重新置起来的话，要等这些成员各自
+                # 再攒满一轮才会重试（硬顶兜底防无界增长）。
+                user_data["member_flush_due"] = True
+                self.plugin.logger.warning(
+                    f"[member_bucket_cap] 群 {flush_target.get('group_id')} 有 "
+                    f"{len(snapshot)} 个成员队列冲刷失败，留待下轮"
+                )
             finally:
                 user_data.pop("member_drain_in_flight", None)
+                # 排空这一层的计数在锁内放掉：到这里失败桶已经归位，此刻
+                # 若是最后一个在飞的冲刷，快照提升拿到的才是完整的一代。
+                self._finish_member_flush_generation(user_data)
 
-        await self.plugin._run_with_session_lock(session_key, _drain)
+        if not await self.plugin._run_with_session_lock(
+            session_key, _take_snapshot,
+        ):
+            stale = self.plugin._user_sessions.get(session_key)
+            if stale is not None:
+                stale.pop("member_drain_in_flight", None)
+            return
+        try:
+            await self._flush_member_buckets(
+                flush_target["user_data"],
+                group_id=flush_target["group_id"],
+                her_name=flush_target["her_name"],
+                reason="member_bucket_cap",
+                buckets=snapshot,
+                labels=snapshot_labels,
+                # 一趟最多两波：第一波在飞时落下的 opt-out，第二波必须看见。
+                # 剩下的桶会以"失败"回到 snapshot，再由 _return_snapshot 按
+                # fail-closed 丢弃。
+                # 注意只有这条"在实时授权下收集"的路径该开它——finalize 与
+                # settle_member_buckets_on_disable 冲的是 opt-out 之前收集、
+                # 等着结算的那批，开了等于把它们连同结算一起废掉。
+                require_consent=True,
+            )
+        finally:
+            await self.plugin._run_with_session_lock(
+                session_key, _return_snapshot,
+            )
+            if orphan_retry.get("snapshot") and not self._member_memory_consent_live():
+                # 授权是在锁内采样的，这一步却在锁外——中间落下的 opt-out
+                # 必须在**发请求之前**再看一眼，否则这次重试会把撤销之后
+                # 本该 fail-closed 丢弃的发言推上去。判据放在本调用点而不是
+                # _flush_member_buckets 里：那个函数被 opt-out 结算复用，
+                # 而后者恰恰是在开关已经 False 之后调用的。
+                self.plugin.logger.warning(
+                    f"[member_bucket_orphan_retry] 群 "
+                    f"{flush_target.get('group_id')} 末次重试前授权已撤销，"
+                    f"按 fail-closed 丢弃 {len(orphan_retry['snapshot'])} 个队列"
+                )
+                orphan_retry.clear()
+            if orphan_retry.get("snapshot"):
+                try:
+                    await self._flush_member_buckets(
+                        flush_target["user_data"],
+                        group_id=flush_target["group_id"],
+                        her_name=flush_target["her_name"],
+                        reason="member_bucket_orphan_retry",
+                        buckets=orphan_retry["snapshot"],
+                        labels=orphan_retry["labels"],
+                        require_consent=True,
+                    )
+                except Exception as exc:
+                    self.plugin.logger.error(
+                        f"[member_bucket_orphan_retry] 群 "
+                        f"{flush_target.get('group_id')} 末次重试失败: {exc}"
+                    )
+                left = len(orphan_retry["snapshot"])
+                if left:
+                    self.plugin.logger.error(
+                        f"[member_bucket_orphan_retry] 群 "
+                        f"{flush_target.get('group_id')} 末次重试后仍有 "
+                        f"{left} 个成员队列未能入库，就此丢失"
+                    )
 
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
         reason: str, buckets: dict | None = None, labels: dict | None = None,
+        require_consent: bool = False,
     ) -> list[str]:
         """Concurrently flush member buckets (semaphore 4).
 
@@ -567,23 +880,41 @@ class QQSessionMemoryService:
             labels if labels is not None
             else user_data.get("group_member_memory_labels") or {}
         )
-        member_flush_sem = asyncio.Semaphore(4)
+        member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
         async def _flush_one_member(
             sender_id: str, member_messages: list,
         ) -> str | None:
             async with member_flush_sem:
+                if require_consent and not self._member_memory_consent_live():
+                    # 逐请求复检，因为信号量排队与 gather 的任务调度都是挂起
+                    # 点：调用点检查过之后、真正发出之前，设置侧完全可能把
+                    # 开关翻掉。默认关着——opt-out 结算复用本函数，而它恰恰
+                    # 是在开关已 False 之后调用的，那条路径必须放行。
+                    self.plugin.logger.warning(
+                        f"[{reason}] 群 {group_id} 成员 {sender_id} 发出前"
+                        f"授权已撤销，按 fail-closed 丢弃"
+                    )
+                    return sender_id
                 try:
-                    result = await self.plugin.memory_bridge.post_scoped_memory_history(
-                        her_name,
-                        member_messages,
-                        subject=self.plugin.memory_bridge.group_participant_subject(
-                            group_id, sender_id,
+                    # 外层再包一次墙钟上限：httpx 的 timeout= 是给 connect /
+                    # read / write / pool **各自**一份，不是整次请求的总时长
+                    # ——连接池被别的群排空占满时，光等池就能花掉一份，再花
+                    # 一份读响应。等待上限是按"波数 × 单发超时"推的，单发不
+                    # 真的封顶，那个推导就不成立。
+                    result = await asyncio.wait_for(
+                        self.plugin.memory_bridge.post_scoped_memory_history(
+                            her_name,
+                            member_messages,
+                            subject=self.plugin.memory_bridge.group_participant_subject(
+                                group_id, sender_id,
+                            ),
+                            speaker_label=(
+                                str(member_labels.get(sender_id) or sender_id)[:64]
+                            ),
+                            timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                         ),
-                        speaker_label=(
-                            str(member_labels.get(sender_id) or sender_id)[:64]
-                        ),
-                        timeout=30.0,
+                        timeout=self.SCOPED_HISTORY_TIMEOUT_SECONDS,
                     )
                     if result.get("status") == "error":
                         raise RuntimeError(
@@ -608,7 +939,7 @@ class QQSessionMemoryService:
 
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
-        user_data["member_flush_in_progress"] = True
+        self._enter_member_flush(user_data)
         flush_jobs = [
             _flush_one_member(sender_id, member_messages)
             for sender_id, member_messages in list(member_buckets.items())
@@ -622,16 +953,55 @@ class QQSessionMemoryService:
         finally:
             self._finish_member_flush_generation(user_data)
 
+    def _member_memory_consent_live(self) -> bool:
+        """Whether member memory is still authorized right now.
+
+        Both switches count: the member option is a child of the group one,
+        so the parent going off revokes it too."""
+        settings = getattr(self.plugin, "_qq_settings", {}) or {}
+        return bool(
+            settings.get("group_member_memory_enabled", False)
+            and settings.get("group_memory_enabled", False)
+        )
+
     @staticmethod
-    def _finish_member_flush_generation(user_data: dict[str, Any]) -> None:
+    def _enter_member_flush(user_data: dict[str, Any]) -> None:
+        """Register one more flush as in flight.
+
+        A depth counter, not a boolean: the cap drain runs its POSTs with
+        the session lock released, so a finalize/idle/shutdown settlement
+        can start its own flush on the live mapping meanwhile. With a
+        boolean, whichever finished first cleared the mark while the other
+        still owned an in-flight mapping — and an opt-out landing in that
+        window would copy that mapping into the settlement snapshot and
+        submit the same messages twice."""
+        user_data["member_flush_in_progress"] = int(
+            user_data.get("member_flush_in_progress") or 0
+        ) + 1
+
+    @staticmethod
+    def _exit_member_flush(user_data: dict[str, Any]) -> bool:
+        """Drop one flush; True when it was the last one in flight."""
+        depth = int(user_data.get("member_flush_in_progress") or 0) - 1
+        if depth > 0:
+            user_data["member_flush_in_progress"] = depth
+            return False
+        user_data.pop("member_flush_in_progress", None)
+        return True
+
+    @classmethod
+    def _finish_member_flush_generation(cls, user_data: dict[str, Any]) -> None:
         """Snapshot what the finished flush left behind, if an opt-out asked.
 
         The settings path defers its snapshot while a flush is in flight —
         popping the live mapping there would hand the in-flight request's
         own payload to a second submission. Whatever remains here (entries
         it failed to commit, plus turns written during it) is what the
-        opt-out settlement should carry."""
-        user_data.pop("member_flush_in_progress", None)
+        opt-out settlement should carry. Only the last flush standing may
+        take that snapshot; an earlier one finishing says nothing about the
+        mapping another flush is still holding."""
+        if not cls._exit_member_flush(user_data):
+            return
         if not user_data.pop("member_snapshot_due", None):
             return
         fresh_buckets = user_data.pop("group_member_memory_messages", None) or {}
@@ -708,6 +1078,23 @@ class QQSessionMemoryService:
                 current.pop("pending_settle_labels", None)
                 current.pop("pending_member_settle", None)
 
+            # 锁外先等在途排空：会话锁不再是屏障，这个结算可能抢在排空
+            # 之前拿到锁，看到还没提升的空 pending_settle_buckets，什么都
+            # 没做就收尾——随后排空提升出来的那一代就没有消费者了，会一直
+            # 滞留到某次 idle/finalize（活跃群可能永远等不到）。等它落地，
+            # 提升出来的一代正好被下面的 _settle_one 冲掉。
+            if not await self._await_pending_session_settlement(
+                session_key, timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+            ):
+                # 等不到就整轮跳过，而且**不能**让 _settle_one 跑：它收尾时
+                # 会把 pending_member_settle 抹掉，而排空随后才提升出那一代
+                # ——标记没了就再没有消费者，opt-out 之后一直滞留。留着标记
+                # 与快照，交给后续的 finalize / 下一次转变消费。
+                self.plugin.logger.warning(
+                    f"排空在途，本轮跳过 opt-out 成员结算（{session_key}），"
+                    f"标记保留待后续结算"
+                )
+                continue
             await self.plugin._run_with_session_lock(session_key, _settle_one)
 
     async def finalize_user_memory_session(
@@ -1046,6 +1433,19 @@ class QQSessionMemoryService:
                         current.pop("pending_settle_labels", None)
                         current.pop("pending_member_settle", None)
 
+            # 第四条要等在途排空的结算路径（前三条：idle / 关机 / opt-out
+            # 成员结算）。UI 把群记忆与成员记忆联动关闭时，_sync_memory_
+            # transitions 先跑成员结算、紧接着跑这里；成员结算等不到时会
+            # 跳过，但这里的 finalize 照样把会话弹掉——skip 就白做了，排空
+            # 攥着的快照一样孤儿化。
+            # 与 opt-out 成员结算不同，这里**等不到也必须继续**：这是隐私
+            # 转变，跳过等于 OFF 没落实，会话还挂着 memory_enabled。
+            if not await self._await_pending_session_settlement(
+                session_key, timeout=self.SETTLE_JOIN_TIMEOUT_LONG_SECONDS,
+            ):
+                self.plugin.logger.warning(
+                    f"排空在途但群记忆转变必须落实（{session_key}），继续结算"
+                )
             await self.plugin._run_with_session_lock(session_key, _sync_one)
 
     async def invalidate_private_session(self, qq_number: str) -> None:

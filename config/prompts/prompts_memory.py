@@ -2320,14 +2320,84 @@ PAST_MEMORY_BLOCK = {
 }
 
 
+# Scoped 渲染（/scoped_context：群聊 / 群成员 subject）用的变体。
+# legacy 私聊那份点名 {MASTER_NAME} 的"除非他先提起"在群里是双重错误：
+# 私聊对象的名字被写进群 prompt，且指令对象根本不是群里的人。这里不指认
+# 任何具体的人，只说"有人"。
+#
+# 占位符：{AI_NAME}、{ITEMS}（无 {MASTER_NAME}）
+PAST_MEMORY_BLOCK_SCOPED = {
+    "zh": (
+        "======以下为较久前的记忆======\n"
+        "说明：下列条目是 {AI_NAME} 较早之前形成的印象，仅作背景知识。"
+        "除非有人先主动提起，否则 {AI_NAME} 不要主动唤起或追问相关内容。\n"
+        "{ITEMS}\n"
+        "======以上为较久前的记忆======"
+    ),
+    "en": (
+        "======Below is older memory======\n"
+        "Note: the following items are impressions {AI_NAME} formed a while ago, included only as background. "
+        "Unless someone brings them up first, {AI_NAME} should not volunteer or probe these topics.\n"
+        "{ITEMS}\n"
+        "======Above is older memory======"
+    ),
+    "ja": (
+        "======以下は過去の記憶======\n"
+        "注：以下は {AI_NAME} が以前形成した印象であり、背景知識としてのみ提示します。"
+        "誰かが先に話題に出さない限り、{AI_NAME} は自発的にこれらの内容を持ち出したり追及したりしてはいけません。\n"
+        "{ITEMS}\n"
+        "======以上は過去の記憶======"
+    ),
+    "ko": (
+        "======아래는 오래된 기억======\n"
+        "참고: 아래 항목들은 {AI_NAME}이(가) 예전에 형성한 인상으로, 배경 지식으로만 제시됩니다. "
+        "누군가 먼저 꺼내지 않는 한 {AI_NAME}은(는) 스스로 이 내용을 꺼내거나 캐묻지 마세요.\n"
+        "{ITEMS}\n"
+        "======위는 오래된 기억======"
+    ),
+    "ru": (
+        "======Ниже давние воспоминания======\n"
+        "Примечание: следующие пункты — это впечатления, сформированные {AI_NAME} ранее, и приводятся только как фоновая информация. "
+        "Если кто-нибудь не поднимет эти темы первым, {AI_NAME} не должен(на) сам(а) их затрагивать или расспрашивать.\n"
+        "{ITEMS}\n"
+        "======Выше давние воспоминания======"
+    ),
+    "es": (
+        "======Abajo recuerdos antiguos======\n"
+        "Nota: los siguientes elementos son impresiones que {AI_NAME} formó hace un tiempo y se incluyen solo como contexto de fondo. "
+        "A menos que alguien los mencione primero, {AI_NAME} no debe sacarlos por iniciativa propia ni indagar sobre ellos.\n"
+        "{ITEMS}\n"
+        "======Arriba recuerdos antiguos======"
+    ),
+    "pt": (
+        "======Abaixo memórias antigas======\n"
+        "Nota: os itens a seguir são impressões que {AI_NAME} formou há algum tempo, incluídos apenas como contexto de fundo. "
+        "A menos que alguém os mencione primeiro, {AI_NAME} não deve trazê-los por iniciativa própria nem investigá-los.\n"
+        "{ITEMS}\n"
+        "======Acima memórias antigas======"
+    ),
+}
+
+
 def render_past_memory_block(
     lang: str,
     ai_name: str,
     master_name: str,
     items_text: str,
+    *,
+    scoped_only: bool = False,
 ) -> str:
     """Render the localized past-memory section. `items_text` is a pre-formatted
-    bullet list (each line ``- [time-label] reflection text``)."""
+    bullet list (each line ``- [time-label] reflection text``).
+
+    ``scoped_only`` picks the variant with no reference to the private-chat
+    counterpart — the render is showing group/member subjects only."""
+    if scoped_only:
+        return (
+            _loc(PAST_MEMORY_BLOCK_SCOPED, lang)
+            .replace('{AI_NAME}', ai_name)
+            .replace('{ITEMS}', items_text)
+        )
     tmpl = _loc(PAST_MEMORY_BLOCK, lang)
     return (
         tmpl
@@ -2927,6 +2997,80 @@ def get_scoped_persona_section_header(
         return subject_id
     return _loc(table, lang).format(subject_id=subject_id)
 
+
+# ---------- 召回条目的 [层级/归属] 标签 ----------
+# 召回结果每条前面挂一个 `[tier/entity]` 标签。tier / entity 是**内部枚举**
+# （hybrid_recall 的 _tier、fact 的 entity；scoped 写入时 entity 被强制成
+# subject.kind），直接回显等于把 `[fact/group_chat]` 这种英文标识符塞进
+# 中文 prompt。这里给出本地化说法，两个渲染点（memory_bridge 的群/私聊
+# 召回、tool_calling 的 recall_memory 工具结果）共用。
+RECALL_ENTRY_TIER_LABEL = {
+    "fact": {
+        "zh": "事实", "en": "fact", "ja": "事実", "ko": "사실",
+        "ru": "факт", "es": "hecho", "pt": "fato",
+    },
+    "reflection": {
+        "zh": "印象", "en": "impression", "ja": "印象", "ko": "인상",
+        "ru": "впечатление", "es": "impresión", "pt": "impressão",
+    },
+    "fact_archive": {
+        "zh": "旧事实", "en": "archived fact", "ja": "過去の事実",
+        "ko": "지난 사실", "ru": "архивный факт",
+        "es": "hecho archivado", "pt": "fato arquivado",
+    },
+}
+
+# entity 的 'master' 指"关于使用者的事实"，不是称谓——一律用中性的"用户"
+# 类词，绝不写成附属称呼。
+RECALL_ENTRY_ENTITY_LABEL = {
+    "master": {
+        "zh": "关于用户", "en": "about the user", "ja": "ユーザーについて",
+        "ko": "사용자에 대해", "ru": "о пользователе",
+        "es": "sobre el usuario", "pt": "sobre o usuário",
+    },
+    "neko": {
+        "zh": "关于自己", "en": "about self", "ja": "自分について",
+        "ko": "자신에 대해", "ru": "о себе",
+        "es": "sobre sí", "pt": "sobre si",
+    },
+    "relationship": {
+        "zh": "关系", "en": "relationship", "ja": "関係", "ko": "관계",
+        "ru": "отношения", "es": "relación", "pt": "relação",
+    },
+    "group_chat": {
+        "zh": "群聊", "en": "group chat", "ja": "グループチャット",
+        "ko": "그룹 채팅", "ru": "групповой чат",
+        "es": "chat grupal", "pt": "chat em grupo",
+    },
+    "participant": {
+        "zh": "对话成员", "en": "participant", "ja": "参加者",
+        "ko": "참가자", "ru": "участник",
+        "es": "participante", "pt": "participante",
+    },
+    "group_participant": {
+        "zh": "群成员", "en": "group member", "ja": "グループメンバー",
+        "ko": "그룹 멤버", "ru": "участник группы",
+        "es": "miembro del grupo", "pt": "membro do grupo",
+    },
+}
+
+
+def render_recall_entry_tag(
+    tier: object, entity: object, lang: str = "zh",
+) -> str:
+    """Localized ``[tier/entity]`` prefix for one recalled memory line.
+
+    Unknown values pass through verbatim: a tier or entity this table does
+    not know is still better shown than swallowed, and a new enum value
+    shows up in the prompt instead of silently rendering as a blank."""
+    tier_key = str(tier or "").strip()
+    entity_key = str(entity or "").strip()
+    tier_table = RECALL_ENTRY_TIER_LABEL.get(tier_key)
+    entity_table = RECALL_ENTRY_ENTITY_LABEL.get(entity_key)
+    tier_text = _loc(tier_table, lang) if tier_table else (tier_key or "?")
+    entity_text = _loc(entity_table, lang) if entity_table else (entity_key or "-")
+    return f"[{tier_text}/{entity_text}]"
+
 GROUP_DIGEST_SPEAKER_LABEL = {
     "zh": "群聊成员们（每条消息开头标注了实际发言人）",
     "en": "the group members (the actual speaker is named at the start of each message)",
@@ -3383,9 +3527,9 @@ RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN = {
 }
 
 # 召回到 N 条记忆时的总览首句；后面接渲染条目，每条按
-# ``[tier/entity] text  (事件日期, 相对标签)`` 格式（tier/entity 是英文
-# enum，不翻译；text 是原始记忆内容，按用户拍板"不翻译"；时间锚点优先
-# 取事件真正发生时间而非记忆写盘时间）。
+# ``[层级/归属] text  (事件日期, 相对标签)`` 格式（层级/归属走
+# render_recall_entry_tag 的本地化标签表；text 是原始记忆内容，按用户
+# 拍板"不翻译"；时间锚点优先取事件真正发生时间而非记忆写盘时间）。
 RECALL_MEMORY_TOOL_FOUND_HEADER = {
     "zh": "找到 {n} 条相关记忆：",
     "en": "Found {n} relevant memories:",

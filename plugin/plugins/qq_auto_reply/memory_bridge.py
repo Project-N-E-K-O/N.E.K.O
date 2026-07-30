@@ -4,8 +4,6 @@ import json
 from dataclasses import dataclass, field
 from typing import Any
 
-import httpx
-
 
 @dataclass(slots=True)
 class QQMemoryQueryResult:
@@ -18,6 +16,24 @@ class QQMemoryQueryResult:
 class QQMemoryBridge:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+
+    @staticmethod
+    def _client():
+        """The process-wide client for internal 127.0.0.1 services.
+
+        Every endpoint used to build and tear down its own AsyncClient, and
+        each construction eagerly initializes an SSLContext even for plain
+        http to localhost — the reason utils/http/internal_client.py exists.
+        A busy group does at least two of these per turn and a member drain
+        fires eight at once. Its lifetime is the process's (main_server's
+        shutdown hook closes it), so nothing here may close it.
+
+        The timeout has to be passed **per request**: it differs by endpoint
+        (scoped history waits on an LLM extraction, the rest are local
+        reads), and the shared client carries an unrelated default."""
+        from utils.internal_http_client import get_internal_http_client
+
+        return get_internal_http_client()
 
     def _base_url(self) -> str:
         from config import MEMORY_SERVER_PORT
@@ -41,10 +57,12 @@ class QQMemoryBridge:
         }
 
     async def fetch_bootstrap_memory(self, her_name: str, *, timeout: float = 5.0) -> str:
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-            response = await client.get(f"{self._base_url()}/new_dialog/{her_name}")
-            response.raise_for_status()
-            return response.text.strip()
+        client = self._client()
+        response = await client.get(
+            f"{self._base_url()}/new_dialog/{her_name}", timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.text.strip()
 
     async def fetch_scoped_bootstrap_memory(
         self,
@@ -55,13 +73,14 @@ class QQMemoryBridge:
     ) -> str:
         if not subjects:
             return ""
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-            response = await client.post(
-                f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-                json={"subjects": subjects},
-            )
-            response.raise_for_status()
-            return response.text.strip()
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
+            json={"subjects": subjects},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.text.strip()
 
     async def post_scoped_mentions(
         self,
@@ -73,12 +92,13 @@ class QQMemoryBridge:
     ) -> None:
         if not subjects or not response_text:
             return
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-            response = await client.post(
-                f"{self._base_url()}/internal/memory/{her_name}/scoped_mentions",
-                json={"response_text": response_text, "subjects": subjects},
-            )
-            response.raise_for_status()
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_mentions",
+            json={"response_text": response_text, "subjects": subjects},
+            timeout=timeout,
+        )
+        response.raise_for_status()
 
     async def query_relevant_memory(
         self,
@@ -100,13 +120,14 @@ class QQMemoryBridge:
         request_payload: dict[str, Any] = {"query": normalized_query}
         if subjects is not None:
             request_payload["subjects"] = subjects
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-            response = await client.post(
-                f"{self._base_url()}/query_memory/{her_name}",
-                json=request_payload,
-            )
-            response.raise_for_status()
-            response_payload = response.json()
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/query_memory/{her_name}",
+            json=request_payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        response_payload = response.json()
         results = response_payload.get("results") if isinstance(response_payload, dict) else None
         memory_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
         rendered = self.render_relevant_memory(memory_items[:limit])
@@ -123,13 +144,21 @@ class QQMemoryBridge:
         )
 
     def render_relevant_memory(self, results: list[dict[str, Any]]) -> str:
+        # tier / entity 是内部枚举（scoped 条目的 entity 恒等于 subject.kind），
+        # 裸拼会让 `[fact/group_chat]` 出现在中文 prompt 里。与本体侧
+        # main_logic/core/tool_calling.py 的召回渲染同一张标签表。
+        from config.prompts.prompts_memory import render_recall_entry_tag
+        from utils.language_utils import get_global_language
+
+        lang = get_global_language()
         lines: list[str] = []
         for index, item in enumerate(results, start=1):
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
-            tier = str(item.get("tier") or "memory").strip()
-            entity = str(item.get("entity") or "-").strip()
+            tag = render_recall_entry_tag(
+                item.get("tier"), item.get("entity"), lang,
+            )
             anchor = str(
                 item.get("event_end_at")
                 or item.get("event_start_at")
@@ -137,17 +166,18 @@ class QQMemoryBridge:
                 or ""
             ).strip()
             suffix = f" ({anchor[:10]})" if anchor else ""
-            lines.append(f"{index}. [{tier}/{entity}] {text}{suffix}")
+            lines.append(f"{index}. {tag} {text}{suffix}")
         return "\n".join(lines)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-            response = await client.post(
-                f"{self._base_url()}/{endpoint}/{her_name}",
-                json={"input_history": json.dumps(messages, ensure_ascii=False)},
-            )
-            response.raise_for_status()
-            return response.json()
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/{endpoint}/{her_name}",
+            json={"input_history": json.dumps(messages, ensure_ascii=False)},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
 
     async def post_scoped_memory_history(
         self,
@@ -167,10 +197,11 @@ class QQMemoryBridge:
         }
         if speaker_label:
             payload["speaker_label"] = speaker_label
-        async with httpx.AsyncClient(timeout=timeout, proxy=None, trust_env=False) as client:
-            response = await client.post(
-                f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
-                json=payload,
-            )
-            response.raise_for_status()
-            return response.json()
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
+            json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()

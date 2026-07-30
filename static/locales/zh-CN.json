@@ -929,7 +929,14 @@
         "volumeWaiting": "等待声音",
         "volumeHintWaiting": "麦克风正在监听，请说话",
         "noiseReduction": "降噪",
-        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰"
+        "noiseReductionHint": "RNNoise AI 降噪，让语音更清晰",
+        "independentAsr": "独立语音识别",
+        "independentAsrActive": "当前使用独立 ASR：{{provider}}",
+        "independentAsrFallback": "独立 ASR 不可用，本次语音输入已停止。请检查独立 ASR 配置，然后重新开始语音会话。",
+        "audioPreprocessingFailed": "麦克风音频处理失败，本次会话的语音输入已停止。请重新开始一次语音会话。",
+        "independentAsrProviderUnavailable": "{{provider}} 暂时不可用，本次语音输入已停止。未切换到其他语音识别服务，请稍后重新开始语音会话。",
+        "independentAsrNextSession": "将在下次语音会话启用；不可用时不会自动切换到 Omni。",
+        "independentAsrNative": "当前使用 Omni 原生语音识别"
     },
     "speaker": {
         "volumeLabel": "扬声器音量",
@@ -1028,7 +1035,13 @@
             "silicon": "硅基流动",
             "gemini": "Gemini",
             "kimi_code": "Kimi Code（月之暗面）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "通义千问",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "免费版",
+            "dummy": "测试服务",
+            "unknown": "未知服务"
         },
         "coreProviderNames": {
             "free": "免费版（猫娘专属福利，支持联网搜索）",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "ttsModelApiKeyPlaceholder": "可选，本地服务商可留空",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI 兼容：HTTP(S) POST /v1/audio/speech，完整文本请求、流式音频响应。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文本与音频双向流式传输。",
         "ttsVoiceIdHint": "（可选，角色未设置时的回退音色）",
         "ttsVoiceIdPlaceholder": "如：中文女、alloy",
         "agentModelUrlPlaceholder": "留空则跟随辅助API视觉模型URL",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API 仅用于 Local 模式（本地语音对话）",
             "wsProtocol": "• URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
             "autoSwitchLocal": "• 配置后，核心 API 类型将自动切换为 \"local\""
-        },
-        "ttsWarning": {
-            "title": "重要提示：",
-            "duplexStreaming": "• TTS API 必须支持双工流式（全双工实时语音合成）",
-            "wsProtocol": "• URL 必须使用 WebSocket 协议（以 ws:// 或 wss:// 开头）",
-            "cosyVoiceOnly": "• 目前仅支持阿里云 CosyVoice 兼容的协议格式"
         },
         "gptsovitsConfig": "GPT-SoVITS 配置",
         "gptsovitsDescription": "GPT-SoVITS 说明：",

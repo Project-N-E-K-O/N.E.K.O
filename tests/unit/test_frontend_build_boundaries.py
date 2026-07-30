@@ -26,14 +26,13 @@ def test_react_chat_vite_config_is_not_emitted_next_to_its_source() -> None:
     assert {"vite.config.js", "vite.config.d.ts"} <= ignored_names
 
 
-def test_card_forge_stays_out_of_production_frontend_builds() -> None:
-    shell_build = _read("build_frontend.sh")
-    batch_build = _read("build_frontend.bat")
-    card_forge_readme = _read("local_server/card_forge_server/README.md")
+def test_standalone_card_forge_sources_are_retired() -> None:
+    retired_source_files = (
+        PROJECT_ROOT / "frontend" / "card-forge" / "package.json",
+        PROJECT_ROOT / "frontend" / "card-forge" / "src" / "App.jsx",
+        PROJECT_ROOT / "local_server" / "card_forge_server" / "server.py",
+        PROJECT_ROOT / "scripts" / "card_forge" / "start_card_forge.py",
+        PROJECT_ROOT / "main_logic" / "card_cache" / "puller.py",
+    )
 
-    assert "CF_DIR=" not in shell_build
-    assert 'set "CF_DIR=' not in batch_build
-    assert "card-forge" not in shell_build.lower()
-    assert "card-forge" not in batch_build.lower()
-    assert "本地开发工具" in card_forge_readme
-    assert "不会安装或构建 `frontend/card-forge`" in card_forge_readme
+    assert all(not path.exists() for path in retired_source_files)

@@ -1,0 +1,477 @@
+from __future__ import annotations
+
+import ast
+import importlib.util
+from pathlib import Path
+
+import pytest
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+SCRIPT_PATH = PROJECT_ROOT / "scripts" / "check_core_contracts.py"
+
+
+@pytest.fixture(scope="module")
+def contract_checker():
+    spec = importlib.util.spec_from_file_location(
+        "check_core_contracts_test",
+        SCRIPT_PATH,
+    )
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        ("import main_logic as ml\nvalue = ml.core.manager", "main_logic.core"),
+        ("import main_logic.core as core\nvalue = core.manager", "main_logic.core.manager"),
+        ("from main_logic import core as facade\nvalue = facade.manager", "main_logic.core.manager"),
+    ],
+)
+def test_imported_paths_resolves_package_alias_attribute_chains(
+    contract_checker,
+    source: str,
+    expected: str,
+) -> None:
+    tree = ast.parse(source)
+    aliases = contract_checker.module_alias_paths(tree, "main_logic.asr_client")
+    referenced = {
+        path
+        for node in ast.walk(tree)
+        for path in contract_checker._imported_paths(
+            node,
+            "main_logic.asr_client",
+            aliases,
+        )
+    }
+
+    assert expected in referenced
+
+
+def _dynamic_import_results(contract_checker, source: str) -> list[tuple[str | None, bool]]:
+    tree = ast.parse(source)
+    aliases = contract_checker.module_alias_paths(tree, "main_logic.asr_client")
+    return [
+        (target, dynamic)
+        for node in ast.walk(tree)
+        for target, dynamic in [contract_checker._dynamic_import_target(node, aliases)]
+        if dynamic
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import importlib\nmod = importlib.import_module('main_logic.core')",
+        "import importlib as il\nmod = il.import_module('main_logic.core')",
+        "from importlib import import_module\nmod = import_module('main_logic.core')",
+        "from importlib import import_module as im\nmod = im('main_logic.core')",
+        "mod = __import__('main_logic.core')",
+        "import importlib\nmod = importlib.import_module(name='main_logic.core')",
+    ],
+)
+def test_dynamic_import_target_resolves_string_literal_forms(
+    contract_checker,
+    source: str,
+) -> None:
+    assert _dynamic_import_results(contract_checker, source) == [
+        ("main_logic.core", True)
+    ]
+
+
+@pytest.mark.unit
+def test_dynamic_import_target_reports_non_literal_argument(contract_checker) -> None:
+    source = "import importlib\ndef load(name):\n    return importlib.import_module(name)"
+
+    assert _dynamic_import_results(contract_checker, source) == [(None, True)]
+
+
+@pytest.mark.unit
+def test_dynamic_import_target_ignores_unrelated_calls(contract_checker) -> None:
+    source = "def import_module(name):\n    return name\nmod = import_module('main_logic.core')"
+
+    assert _dynamic_import_results(contract_checker, source) == []
+
+
+def _dynamic_import_violation_messages(contract_checker, source: str) -> list[str]:
+    tree = ast.parse(source)
+    aliases = contract_checker.module_alias_paths(tree, "main_logic.asr_client")
+    return [
+        violation.message
+        for violation in contract_checker._dynamic_import_violations(
+            Path("loader.py"), tree, aliases, "main_logic.core", "asr_client"
+        )
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "def load():\n"
+        "    import importlib as il\n"
+        "    return il.import_module('main_logic.core')",
+        "def load():\n"
+        "    from importlib import import_module as im\n"
+        "    return im('main_logic.core')",
+    ],
+)
+def test_dynamic_import_violations_sees_function_local_importlib_aliases(
+    contract_checker,
+    source: str,
+) -> None:
+    assert _dynamic_import_violation_messages(contract_checker, source) == [
+        "asr_client must not import main_logic.core (dynamic import)"
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        # Plain assignment re-binding of the module.
+        "import importlib\n"
+        "def load():\n"
+        "    il = importlib\n"
+        "    return il.import_module('main_logic.core')",
+        # Annotated assignment must not disable the gate.
+        "import importlib\n"
+        "from types import ModuleType\n"
+        "def load():\n"
+        "    il: ModuleType = importlib\n"
+        "    return il.import_module('main_logic.core')",
+        # Walrus binding, then a read through the bound name.
+        "import importlib\n"
+        "def load():\n"
+        "    if (il := importlib):\n"
+        "        return il.import_module('main_logic.core')",
+        # Re-binding the entry-point attribute itself.
+        "import importlib\n"
+        "def load():\n"
+        "    im = importlib.import_module\n"
+        "    return im('main_logic.core')",
+        # Chained re-aliasing needs the fixpoint pass.
+        "import importlib\n"
+        "def load():\n"
+        "    a = importlib\n"
+        "    b = a\n"
+        "    return b.import_module('main_logic.core')",
+        # The __import__ builtin under an assigned alias.
+        "def load():\n"
+        "    f = __import__\n"
+        "    return f('main_logic.core')",
+    ],
+)
+def test_dynamic_import_violations_sees_assignment_rebindings(
+    contract_checker,
+    source: str,
+) -> None:
+    assert _dynamic_import_violation_messages(contract_checker, source) == [
+        "asr_client must not import main_logic.core (dynamic import)"
+    ]
+
+
+@pytest.mark.unit
+def test_dynamic_import_violations_ignores_non_importlib_local_alias(
+    contract_checker,
+) -> None:
+    source = (
+        "def load(factory):\n"
+        "    il = factory()\n"
+        "    return il.import_module('main_logic.core')"
+    )
+
+    assert _dynamic_import_violation_messages(contract_checker, source) == []
+
+
+@pytest.mark.unit
+def test_asr_runtime_alias_reads_flags_single_assignment_alias(contract_checker) -> None:
+    source = (
+        "class Bridge:\n"
+        "    def peek(self):\n"
+        "        rt = self._asr_runtime\n"
+        "        direct = self._asr_runtime.display_name\n"
+        "        return rt.lifecycle, rt.route_mode, direct\n"
+    )
+    fn = ast.parse(source).body[0].body[0]
+
+    sites = contract_checker._asr_runtime_alias_reads(
+        fn, {"lifecycle", "route_mode", "required"}
+    )
+
+    assert sorted(attr for _line, _col, attr in sites) == ["lifecycle", "route_mode"]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "alias_stmt",
+    [
+        "rt: IndependentAsrRuntime = self._asr_runtime",
+        "rt = self._asr_runtime",
+        "(rt := self._asr_runtime)",
+    ],
+)
+def test_asr_runtime_alias_reads_flags_annotated_and_walrus_aliases(
+    contract_checker,
+    alias_stmt: str,
+) -> None:
+    source = (
+        "class Bridge:\n"
+        "    def peek(self):\n"
+        f"        {alias_stmt}\n"
+        "        return rt.lifecycle\n"
+    )
+    fn = ast.parse(source).body[0].body[0]
+
+    sites = contract_checker._asr_runtime_alias_reads(fn, {"lifecycle"})
+
+    assert [attr for _line, _col, attr in sites] == ["lifecycle"]
+
+
+@pytest.mark.unit
+def test_asr_runtime_alias_reads_ignores_valueless_annotation_and_augassign(
+    contract_checker,
+) -> None:
+    # A bare annotation binds nothing, and ``+=`` never creates a fresh alias;
+    # neither may turn ``rt`` into a tracked runtime alias.
+    source = (
+        "class Bridge:\n"
+        "    def peek(self, rt):\n"
+        "        other: IndependentAsrRuntime\n"
+        "        rt += self._asr_runtime\n"
+        "        return rt.lifecycle, other\n"
+    )
+    fn = ast.parse(source).body[0].body[0]
+
+    assert contract_checker._asr_runtime_alias_reads(fn, {"lifecycle"}) == []
+
+
+@pytest.mark.unit
+def test_registry_provider_keys_extracts_dict_literal(contract_checker, tmp_path) -> None:
+    registry = tmp_path / "_registry_meta.py"
+    registry.write_text(
+        "ASR_PROVIDER_REGISTRY: dict[str, object] = {\n"
+        '    "provider_a": object,\n'
+        '    "provider_b": object,\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    assert contract_checker._registry_provider_keys(registry) == frozenset(
+        {"provider_a", "provider_b"}
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "ASR_PROVIDER_REGISTRY = dict(provider_a=object)",
+        "OTHER_NAME = {'provider_a': object}",
+    ],
+)
+def test_registry_provider_keys_hard_fails_on_unrecognized_shape(
+    contract_checker,
+    tmp_path,
+    capsys,
+    source: str,
+) -> None:
+    registry = tmp_path / "_registry_meta.py"
+    registry.write_text(source, encoding="utf-8")
+
+    with pytest.raises(SystemExit) as excinfo:
+        contract_checker._registry_provider_keys(registry)
+
+    assert excinfo.value.code == 2
+    assert "ASR_PROVIDER_REGISTRY" in capsys.readouterr().err
+
+
+def _write_minimal_core_layout(root: Path) -> None:
+    core = root / "main_logic" / "core"
+    core.mkdir(parents=True)
+    (root / "tests").mkdir()
+    (core / "__init__.py").write_text(
+        '"""facade."""\nfrom .manager import LLMSessionManager\n',
+        encoding="utf-8",
+    )
+    (core / "manager.py").write_text(
+        '"""manager."""\n\n\nclass LLMSessionManager:\n'
+        "    def __init__(self):\n        pass\n",
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.unit
+def test_run_flags_dynamic_imports_of_core_inside_asr_client(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    asr_client = tmp_path / "main_logic" / "asr_client"
+    asr_client.mkdir()
+    loader = asr_client / "loader.py"
+    loader.write_text(
+        "import importlib\n\n\n"
+        "def load_core():\n"
+        '    return importlib.import_module("main_logic.core")\n\n\n'
+        "def load_any(name):\n"
+        "    return importlib.import_module(name)\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == loader and violation.code == "ASR_LAYERING"
+    ]
+
+    assert "asr_client must not import main_logic.core (dynamic import)" in messages
+    assert any("non-literal module name" in message for message in messages)
+
+
+@pytest.mark.unit
+def test_run_flags_forbidden_runtime_reads_through_local_alias(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    bridge = tmp_path / "main_logic" / "core" / "asr_runtime.py"
+    bridge.write_text(
+        '"""bridge."""\n\n\n'
+        "class AsrRuntimeMixin:\n"
+        '    """m."""\n\n'
+        "    def _set_microphone_route(self):\n"
+        "        return None\n\n"
+        "    def _peek(self):\n"
+        "        rt = self._asr_runtime\n"
+        "        return rt.lifecycle\n",
+        encoding="utf-8",
+    )
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == bridge and violation.code == "ASR_LAYERING"
+    ]
+
+    assert (
+        "Core must not read IndependentAsrRuntime.lifecycle "
+        "(via a local alias of self._asr_runtime)"
+    ) in messages
+
+
+def _chokepoint_core_dir(tmp_path: Path, probe_source: str) -> Path:
+    """A minimal core package: the canonical chokepoint plus one probe module."""
+
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="utf-8")
+    (core / "asr_runtime.py").write_text(
+        '"""m."""\n\n'
+        "class AsrRuntimeMixin:\n"
+        '    """m."""\n\n'
+        "    async def _fail_closed_voice_route(self, reason):\n"
+        "        return await self._revoke_lease_for_blocked_route(reason)\n",
+        encoding="utf-8",
+    )
+    (core / "probe.py").write_text(probe_source, encoding="utf-8")
+    return core
+
+
+def _chokepoint_codes(contract_checker, core: Path) -> list[str]:
+    return [
+        violation.code
+        for violation in contract_checker.check_fail_closed_chokepoint(core)
+    ]
+
+
+@pytest.mark.unit
+def test_fail_closed_gate_accepts_a_package_that_only_uses_the_chokepoint(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    core = _chokepoint_core_dir(
+        tmp_path,
+        '"""m."""\n\n'
+        "class Probe:\n"
+        '    """m."""\n\n'
+        "    async def exit_blocked(self):\n"
+        "        return await self._fail_closed_voice_route('reason')\n",
+    )
+
+    assert _chokepoint_codes(contract_checker, core) == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "call",
+    [
+        # The form the gate always caught...
+        "await self._revoke_lease_for_blocked_route('r')",
+        # ...and the one-line rewrite that used to walk straight past it:
+        # the callee is a Call node, so no Name/Attribute name was resolved.
+        "await getattr(self, '_revoke_lease_for_blocked_route')('r')",
+        "await getattr(self, '_revoke_voice_input_connection')('r')",
+    ],
+)
+def test_fail_closed_gate_catches_direct_and_dynamic_revokes(
+    contract_checker,
+    tmp_path: Path,
+    call: str,
+) -> None:
+    core = _chokepoint_core_dir(
+        tmp_path,
+        '"""m."""\n\n'
+        "class Probe:\n"
+        '    """m."""\n\n'
+        "    async def exit_blocked(self):\n"
+        f"        {call}\n",
+    )
+
+    assert _chokepoint_codes(contract_checker, core) == [
+        "VOICE_FAIL_CLOSED_CHOKEPOINT"
+    ]
+
+
+@pytest.mark.unit
+def test_fail_closed_gate_does_not_let_a_same_named_function_exempt_itself(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    # The exemption is what makes the chokepoint able to call the revoke at all,
+    # so it has to be pinned to the canonical module. Otherwise any module can
+    # opt out by naming its function _fail_closed_voice_route -- and that name
+    # also satisfied the "chokepoint still exists" check, so removing the real
+    # one would not have been noticed either.
+    core = _chokepoint_core_dir(
+        tmp_path,
+        '"""m."""\n\n'
+        "class Probe:\n"
+        '    """m."""\n\n'
+        "    async def _fail_closed_voice_route(self, reason):\n"
+        "        return await self._revoke_lease_for_blocked_route(reason)\n",
+    )
+
+    assert _chokepoint_codes(contract_checker, core) == [
+        "VOICE_FAIL_CLOSED_CHOKEPOINT"
+    ]
+
+
+@pytest.mark.unit
+def test_fail_closed_gate_reports_a_missing_chokepoint(
+    contract_checker,
+    tmp_path: Path,
+) -> None:
+    core = tmp_path / "core"
+    core.mkdir()
+    (core / "__init__.py").write_text("", encoding="utf-8")
+    (core / "asr_runtime.py").write_text('"""m."""\n', encoding="utf-8")
+
+    assert _chokepoint_codes(contract_checker, core) == [
+        "VOICE_FAIL_CLOSED_CHOKEPOINT"
+    ]

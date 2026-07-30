@@ -392,6 +392,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             except asyncio.CancelledError:
                 pass
             self._session_housekeeping_task = None
+        # 这里不关 http client：记忆桥与附件下载用的是 utils/http 的进程级
+        # 单例，由 main_server 的 shutdown 钩子统一关。插件自己关会把上面
+        # 那批"只 join 1s、不取消"的结算任务的在途请求打断。
         return Ok({"status": "shutdown"})
 
     def _mask_token(self, token: str) -> str:

@@ -41,8 +41,31 @@ def _js_function_block(source: str, function_name: str) -> str:
     depth = 0
     quote: str | None = None
     escaped = False
+    # Comment-aware, like the sibling extractor in
+    # test_voice_start_failure_static.py. Without this an apostrophe inside a
+    # `//` comment -- "the server's auto_close_mic" -- opens a string state that
+    # never closes, the brace counter never returns to zero, and the failure
+    # surfaces as "unterminated JS function" in a test that has nothing to do
+    # with the comment that was edited.
+    line_comment = False
+    block_comment = False
     for index in range(brace, len(source)):
         char = source[index]
+        next_char = source[index + 1] if index + 1 < len(source) else ""
+        if line_comment:
+            if char in "\r\n":
+                line_comment = False
+            continue
+        if block_comment:
+            if char == "*" and next_char == "/":
+                block_comment = False
+            continue
+        if not quote and char == "/" and next_char == "/":
+            line_comment = True
+            continue
+        if not quote and char == "/" and next_char == "*":
+            block_comment = True
+            continue
         if quote:
             if escaped:
                 escaped = False

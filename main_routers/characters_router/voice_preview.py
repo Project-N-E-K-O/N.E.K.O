@@ -137,6 +137,19 @@ def _is_unpreviewable_selected_preset_voice(config_manager, core_config, voice_i
     static-catalog provider like MiMo (60), so the clone wins. Any id present in a voice
     storage bucket is therefore never treated as an unpreviewable preset (dual to the
     native-preview collision guard, which passes voice_id_exists_in_any_storage)."""
+    try:
+        selected_preset_key = tts_provider_registry.selected_preset_provider_key(
+            core_config or {}, config_manager, voice_id
+        )
+        selected_provider = tts_provider_registry.get(selected_preset_key)
+        if selected_provider and selected_provider.configured_preset_voice:
+            # The exact configured preset owns preview routing over a stale clone.
+            # 配置框中的精确 Voice ID 归当前 Custom API 所有；即使存储里有同名
+            # 克隆，也不能借旧克隆的 preview 路径制造预览/运行时身份分裂。
+            return True
+    except Exception:
+        logger.debug("configured preset preview 归属判定失败，按普通冲突规则继续", exc_info=True)
+
     if voice_data:
         return False
     try:
@@ -379,7 +392,7 @@ async def get_voices():
         core_config or {}, _config_manager
     )
     selected_preset_catalog = (
-        tts_provider_registry.preset_catalog_for_ui(winning_provider_key)
+        tts_provider_registry.preset_catalog_for_ui(winning_provider_key, core_config)
         if winning_provider_key else None
     )
     active_native_provider = (
@@ -387,6 +400,19 @@ async def get_voices():
         if winning_provider_key is None else None
     )
     if selected_preset_catalog is not None:
+        selected_provider = tts_provider_registry.get(winning_provider_key)
+        if selected_provider and selected_provider.configured_preset_voice:
+            # Remove colliding clone rows so every frontend keeps the winning owner.
+            # 配置型 preset 对精确 Voice ID 拥有显式所有权。目录中移除同名历史
+            # 克隆，避免前端去重逻辑把真正会命中的 Custom API 条目隐藏掉。
+            # Runtime configured-preset ownership is exact and case-sensitive.
+            # 目录去重必须与运行时精确 ID 语义一致；大小写不同的克隆仍可选择。
+            configured_ids = {str(voice_id) for voice_id in selected_preset_catalog}
+            result["voices"] = {
+                voice_id: voice_data
+                for voice_id, voice_data in (result["voices"] or {}).items()
+                if str(voice_id) not in configured_ids
+            }
         result["native_voices"] = selected_preset_catalog
     elif active_native_provider:
         native_catalog = get_native_voice_catalog_for_ui(active_native_provider) or {}

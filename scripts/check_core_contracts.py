@@ -42,8 +42,9 @@ CORE_PATCH_TARGET_EXISTS
     ``create=True`` (intentional absent-name guards).
 
 CORE_MIXIN_SHAPE
-    A mixin module's top level holds only a docstring, imports and exactly
-    one ``*Mixin`` class; the class body holds only a docstring and
+    A mixin module's top level holds only a docstring, imports, exactly one
+    ``*Mixin`` class, and any explicitly registered private support classes;
+    the mixin class body holds only a docstring and
     methods, and the class has an empty base list (a base would pull
     inherited behavior into the MRO uncounted). Instance state has a single
     home (``LLMSessionManager.__init__``), and module-level state in a
@@ -78,6 +79,12 @@ CORE_FACADE_LAYOUT
     must be fully populated before the class modules bind it as
     ``_core_facade``.
 
+ASR_LAYERING
+    The Core ASR bridge owns microphone ingress and Core callbacks, while the
+    independent runtime owns provider state. TTS cannot import ASR, ASR cannot
+    import Core, provider literals cannot leak into the bridge, and streaming
+    can only enqueue audio into the bridge.
+
 Every violation prints as ``path:line:col  CODE  message``. Exit 1 on any
 violation, 0 otherwise, 2 when the expected layout itself is missing (this
 gate hard-fails rather than silently skipping when paths move — see the
@@ -94,7 +101,20 @@ import sys
 from pathlib import Path
 
 FACADE_MODULE_ALIAS = "_core_facade"
-OWNER_SUBMODULES = {"_shared", "callback_render", "notices"}
+OWNER_SUBMODULES = {
+    "_shared",
+    "callback_render",
+    "notices",
+}
+MIXIN_SUPPORT_CLASSES = {
+    "asr_runtime": {
+        "VoiceInputConsumerBinding",
+        "_QueuedMicFrame",
+        "_AudioDurationQueue",
+        "_HotSwapAudioFrame",
+        "_HotSwapAudioBuffer",
+    },
+}
 PATCH_CALL_NAMES = {"setattr", "patch", "delattr"}
 
 
@@ -307,6 +327,248 @@ def _resolve_relative(pkg: str, level: int, module) -> str | None:
     return ".".join(anchor)
 
 
+def _imported_paths(
+    node: ast.AST,
+    pkg: str,
+    alias_paths: dict[str, str] | None = None,
+) -> tuple[str, ...]:
+    """Return absolute module paths imported or referenced by one AST node."""
+
+    if isinstance(node, ast.Import):
+        return tuple(alias.name for alias in node.names)
+    if isinstance(node, ast.Attribute) and alias_paths is not None:
+        # The innermost attribute is sufficient to expose a package alias:
+        # ``ml.core.runtime`` visits ``ml.core`` and resolves it to
+        # ``main_logic.core`` without reporting the same expression twice.
+        if isinstance(node.value, ast.Attribute):
+            return ()
+        resolved = resolve_chain(dotted_node_path(node) or "", alias_paths)
+        return (resolved,) if resolved else ()
+    if not isinstance(node, ast.ImportFrom):
+        return ()
+    base = (
+        node.module
+        if node.level == 0
+        else _resolve_relative(pkg, node.level, node.module)
+    )
+    if not base:
+        return ()
+    members = tuple(
+        f"{base}.{alias.name}"
+        for alias in node.names
+        if alias.name != "*"
+    )
+    return (base, *members)
+
+
+def _registry_provider_keys(path: Path) -> frozenset[str]:
+    """Extract ASR provider keys from the registry without importing runtime code.
+
+    Hard-fails (exit 2) when the registry shape is unrecognized: silently
+    returning an empty set would disable the provider-literal rule while the
+    gate keeps reporting green — the exact go-dark failure mode this gate
+    exists to prevent (see module docstring).
+    """
+
+    for node in parse(path).body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if not any(
+            isinstance(target, ast.Name)
+            and target.id == "ASR_PROVIDER_REGISTRY"
+            for target in targets
+        ):
+            continue
+        value = node.value
+        if not isinstance(value, ast.Dict):
+            print(f"error: ASR_PROVIDER_REGISTRY in {path} is not a top-level dict literal — "
+                  f"the provider-literal rule cannot harvest its keys; keep the registry a "
+                  f"literal dict or update _registry_provider_keys in "
+                  f"scripts/check_core_contracts.py instead of letting the rule go dark.",
+                  file=sys.stderr)
+            sys.exit(2)
+        return frozenset(
+            key.value
+            for key in value.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        )
+    print(f"error: no top-level ASR_PROVIDER_REGISTRY assignment found in {path} — "
+          f"the provider-literal rule cannot harvest its keys; restore the assignment or "
+          f"update _registry_provider_keys in scripts/check_core_contracts.py instead of "
+          f"letting the rule go dark.",
+          file=sys.stderr)
+    sys.exit(2)
+
+
+def _dynamic_import_target(node: ast.AST, alias_paths: dict[str, str]) -> tuple[str | None, bool]:
+    """(module, is_dynamic) for ``importlib.import_module``/``__import__`` calls.
+
+    The static layering scans see only ``import``/``from`` forms, so
+    ``importlib.import_module("main_logic.core")`` would sail through the gate.
+    ``module`` is the string-literal module argument when statically known and
+    None otherwise; ``is_dynamic`` is True whenever the call is one of the two
+    dynamic-import entry points, so guarded packages can also reject
+    non-literal targets the AST cannot verify. Recognizes ``importlib`` under
+    a top-level alias and ``from importlib import import_module [as x]`` via
+    ``alias_paths``.
+    """
+    if not isinstance(node, ast.Call):
+        return None, False
+    chain = dotted_node_path(node.func)
+    if chain is None:
+        return None, False
+    resolved = resolve_chain(chain, alias_paths) or chain
+    if resolved not in {"__import__", "importlib.import_module"}:
+        return None, False
+    arg = node.args[0] if node.args else next(
+        (kw.value for kw in node.keywords if kw.arg == "name"), None)
+    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
+        return arg.value, True
+    return None, True
+
+
+def _name_binding(node: ast.AST) -> tuple[str, ast.AST] | None:
+    """(target name, value expr) for a simple single-name binding, else None.
+
+    Covers plain ``x = v``, annotated ``x: T = v`` (a bare annotation without a
+    value binds nothing), and walrus ``(x := v)``. ``ast.AugAssign`` is
+    deliberately excluded: ``x += v`` requires ``x`` to be bound already and
+    never creates a fresh alias to ``v``.
+    """
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target, value = node.targets[0], node.value
+    elif isinstance(node, ast.AnnAssign) and node.value is not None:
+        target, value = node.target, node.value
+    elif isinstance(node, ast.NamedExpr):
+        target, value = node.target, node.value
+    else:
+        return None
+    if not isinstance(target, ast.Name):
+        return None
+    return target.id, value
+
+
+def _importlib_alias_paths(tree: ast.Module) -> dict[str, str]:
+    """importlib-related bindings from ANY scope → absolute dotted path.
+
+    ``module_alias_paths`` only reads ``tree.body``, so a function-local
+    ``import importlib as il`` or ``from importlib import import_module as im``
+    would evade the dynamic-import gate. This walks the whole tree and is
+    deliberately scope-insensitive: a binding collected here applies to the
+    entire module even where Python scoping would shadow it. For a gate that
+    over-approximation is the right trade — flagging a shadowed name is better
+    than a blind spot. Only importlib bindings are collected, so unrelated
+    local names never resolve to a dynamic-import entry point.
+
+    Assignment re-bindings are covered too: ``il = importlib``,
+    ``il: ModuleType = importlib``, ``(il := importlib)``,
+    ``im = importlib.import_module`` and ``f = __import__`` all resolve to the
+    same entry points (iterated to a fixpoint so chained re-aliases like
+    ``a = importlib; b = a`` cannot dodge the gate either).
+    """
+    out: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for a in node.names:
+                if a.name == "importlib" or a.name.startswith("importlib."):
+                    out[a.asname or a.name.split(".")[0]] = (
+                        a.name if a.asname else "importlib")
+        elif (isinstance(node, ast.ImportFrom) and node.level == 0
+              and node.module
+              and (node.module == "importlib"
+                   or node.module.startswith("importlib."))):
+            for a in node.names:
+                if a.name != "*":
+                    out[a.asname or a.name] = f"{node.module}.{a.name}"
+    changed = True
+    while changed:
+        changed = False
+        for node in ast.walk(tree):
+            binding = _name_binding(node)
+            if binding is None:
+                continue
+            name, value = binding
+            chain = dotted_node_path(value)
+            if chain is None:
+                continue
+            resolved = resolve_chain(chain, out) or (
+                "__import__" if chain == "__import__" else None)
+            if (resolved
+                    and (resolved == "__import__" or resolved == "importlib"
+                         or resolved.startswith("importlib."))
+                    and out.get(name) != resolved):
+                out[name] = resolved
+                changed = True
+    return out
+
+
+def _dynamic_import_violations(path: Path, tree: ast.Module, alias_paths: dict[str, str],
+                               forbidden_prefix: str, where: str) -> list["Violation"]:
+    """ASR_LAYERING violations for dynamic imports in a guarded module.
+
+    Flags a literal target inside ``forbidden_prefix`` the same way the static
+    import ban does, and any non-literal target outright — the gate cannot
+    prove a computed module name stays on the right side of the boundary.
+    """
+    # Function-local importlib aliases win over same-named module-level
+    # bindings so nested ``import importlib as il`` cannot dodge the gate;
+    # module-level importlib aliases resolve identically through either dict.
+    alias_paths = {**alias_paths, **_importlib_alias_paths(tree)}
+    out: list[Violation] = []
+    for node in ast.walk(tree):
+        target, dynamic = _dynamic_import_target(node, alias_paths)
+        if not dynamic:
+            continue
+        if target is None:
+            out.append(Violation(
+                path, node.lineno, node.col_offset, "ASR_LAYERING",
+                f"dynamic import with a non-literal module name is not allowed in "
+                f"{where} — the layering gate cannot verify its target; use a "
+                f"static import or a string literal",
+            ))
+        elif target == forbidden_prefix or target.startswith(f"{forbidden_prefix}."):
+            out.append(Violation(
+                path, node.lineno, node.col_offset, "ASR_LAYERING",
+                f"{where} must not import {forbidden_prefix} (dynamic import)",
+            ))
+    return out
+
+
+def _asr_runtime_alias_reads(fn: ast.AST, forbidden: set[str]) -> list[tuple[int, int, str]]:
+    """(line, col, attr) reads of forbidden runtime fields through a local alias.
+
+    ``rt = self._asr_runtime; rt.lifecycle`` dodges the exact three-node
+    ``self._asr_runtime.<attr>`` pattern the bridge scan matches. Track simple
+    single-target Name bindings from ``self._asr_runtime`` — plain, annotated
+    (``rt: T = self._asr_runtime``) and walrus assignments alike, via
+    ``_name_binding`` — within one function scope (order-insensitive and
+    without reassignment tracking — a deliberately conservative
+    over-approximation for a gate).
+    """
+    aliases = set()
+    for child in ast.walk(fn):
+        binding = _name_binding(child)
+        if binding is None:
+            continue
+        name, value = binding
+        if (isinstance(value, ast.Attribute)
+                and isinstance(value.value, ast.Name)
+                and value.value.id == "self"
+                and value.attr == "_asr_runtime"):
+            aliases.add(name)
+    if not aliases:
+        return []
+    return [
+        (child.lineno, child.col_offset, child.attr)
+        for child in ast.walk(fn)
+        if isinstance(child, ast.Attribute)
+        and child.attr in forbidden
+        and isinstance(child.value, ast.Name)
+        and child.value.id in aliases
+    ]
+
+
 def module_alias_paths(tree: ast.Module, pkg: str) -> dict[str, str]:
     """Module/name bindings at top level → ABSOLUTE dotted path.
 
@@ -456,6 +718,97 @@ def def_time_facade_reads(tree: ast.Module, alias_paths: dict[str, str], attr: s
 
 
 # ------------------------------------------------------------------- checks
+def check_fail_closed_chokepoint(core_dir: Path) -> list[Violation]:
+    """VOICE_FAIL_CLOSED_CHOKEPOINT — one way for a route to end fail-closed.
+
+    Five call sites can leave the microphone route blocked while independent
+    ASR is enabled, and every review round on #2345 found another. Each one
+    has to notify the LEASE holder, then re-check that no competing newer
+    route operation has taken over, and only then revoke — because
+    ``_revoke_voice_input_connection`` calls ``_invalidate_asr_start()`` and
+    would otherwise cancel that newer start.
+
+    That order now lives in ``_fail_closed_voice_route``. Keeping it correct
+    by construction means the revoke helpers must be unreachable from
+    anywhere else in the core package: a new exit then cannot open the mic
+    onto a dead route by simply forgetting a step, because there is no step
+    left to forget.
+
+    Outside ``main_logic/core`` the disconnect-cleanup caller in
+    ``main_routers/websocket_router.py`` is untouched and deliberately so —
+    it revokes because a socket departed, not because a route ended blocked,
+    and it is reached through a getattr by name, not this call graph.
+    """
+
+    REVOKE_HELPERS = {"_revoke_lease_for_blocked_route", "_revoke_voice_input_connection"}
+    CHOKEPOINT = "_fail_closed_voice_route"
+    CHOKEPOINT_PATH = core_dir / "asr_runtime.py"
+
+    def called_name(target: ast.expr) -> str | None:
+        """Resolve the callee name, including a literal ``getattr`` lookup.
+
+        CodeRabbit: matching only ``Name``/``Attribute`` let
+        ``getattr(self, "_revoke_lease_for_blocked_route")(...)`` straight
+        through — the callee is a ``Call`` node there, so the gate resolved no
+        name at all and reported nothing. Measured: the direct form produces
+        one violation, the getattr form produced zero. A gate a one-line
+        rewrite defeats is not a gate.
+        """
+
+        if isinstance(target, ast.Attribute):
+            return target.attr
+        if isinstance(target, ast.Name):
+            return target.id
+        if (
+            isinstance(target, ast.Call)
+            and isinstance(target.func, ast.Name)
+            and target.func.id == "getattr"
+            and len(target.args) >= 2
+            and isinstance(target.args[1], ast.Constant)
+            and isinstance(target.args[1].value, str)
+        ):
+            return target.args[1].value
+        return None
+
+    violations: list[Violation] = []
+    chokepoint_seen = False
+    for path in sorted(core_dir.glob("*.py")):
+        if path.name == "__init__.py":
+            continue
+        tree = parse(path)
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            # Pinned to the canonical module: a same-named function anywhere
+            # else in the package would otherwise exempt ITSELF from the gate
+            # and satisfy the not-vacuous check below at the same time.
+            is_chokepoint = path == CHOKEPOINT_PATH and func.name == CHOKEPOINT
+            if is_chokepoint:
+                chokepoint_seen = True
+            # A helper may call its own downstream revoke; what must not
+            # happen is an ARBITRARY function reaching one directly.
+            if func.name in REVOKE_HELPERS or is_chokepoint:
+                continue
+            for node in ast.walk(func):
+                if not isinstance(node, ast.Call):
+                    continue
+                name = called_name(node.func)
+                if name in REVOKE_HELPERS:
+                    violations.append(Violation(
+                        path, node.lineno, node.col_offset, "VOICE_FAIL_CLOSED_CHOKEPOINT",
+                        f"{func.name}() calls {name}() directly — every fail-closed route exit "
+                        f"must go through {CHOKEPOINT}(reason, operation_generation=..., ...), "
+                        f"which notifies the lease holder BEFORE the revoke and re-fences the "
+                        f"route operation in between; revoking on a stale exit cancels a "
+                        f"competing newer start"))
+    if not chokepoint_seen:
+        violations.append(Violation(
+            core_dir / "asr_runtime.py", 1, 0, "VOICE_FAIL_CLOSED_CHOKEPOINT",
+            f"{CHOKEPOINT}() is gone from main_logic/core — it is the only sanctioned caller "
+            f"of {sorted(REVOKE_HELPERS)}, so its removal makes this gate vacuous"))
+    return violations
+
+
 def run(root: Path) -> list[Violation]:
     core_dir = root / "main_logic" / "core"
     tests_dir = root / "tests"
@@ -469,6 +822,7 @@ def run(root: Path) -> list[Violation]:
             sys.exit(2)
 
     violations: list[Violation] = []
+    violations.extend(check_fail_closed_chokepoint(core_dir))
     init_tree = parse(init_path)
     facade_names = facade_top_level_names(init_tree)
     facade_owners = facade_owner_modules(init_tree)
@@ -524,9 +878,20 @@ def run(root: Path) -> list[Violation]:
             continue
         mixins = [c for c in classes if c.name.endswith("Mixin")]
         if mixins:
-            if len(classes) != 1:
-                violations.append(Violation(path, classes[1].lineno, classes[1].col_offset, "CORE_MIXIN_SHAPE",
-                                            f"{path.name} must define exactly one class (found {len(classes)})"))
+            expected_classes = {
+                mixins[0].name,
+                *MIXIN_SUPPORT_CLASSES.get(path.stem, set()),
+            }
+            actual_classes = {klass.name for klass in classes}
+            if len(mixins) != 1 or actual_classes != expected_classes:
+                violations.append(Violation(
+                    path,
+                    classes[0].lineno if classes else 1,
+                    classes[0].col_offset if classes else 0,
+                    "CORE_MIXIN_SHAPE",
+                    f"{path.name} classes must be exactly {sorted(expected_classes)} "
+                    f"(found {sorted(actual_classes)})",
+                ))
             # A base on a mixin drags inherited methods/state into
             # LLMSessionManager's MRO uncounted by CORE_MIXIN_DISJOINT/BASES.
             if mixins[0].bases or mixins[0].keywords:
@@ -591,6 +956,430 @@ def run(root: Path) -> list[Violation]:
             violations.append(Violation(path, node.lineno, node.col_offset, "CORE_MIXIN_SHAPE",
                                         f"mixin class body allows only docstring/methods, "
                                         f"found {type(node).__name__} — state belongs in manager.__init__"))
+
+    # -- ASR_LAYERING: keep microphone ingress, Core integration, and provider
+    # runtime ownership on their explicit sides of the composition boundary.
+    asr_bridge_path = core_dir / "asr_runtime.py"
+    tts_path = core_dir / "tts_runtime.py"
+    streaming_path = core_dir / "streaming.py"
+    asr_client_dir = root / "main_logic" / "asr_client"
+    asr_component_path = asr_client_dir / "runtime.py"
+    asr_audio_path = asr_client_dir / "audio.py"
+    asr_registry_path = asr_client_dir / "_registry_meta.py"
+    voice_input_path = root / "main_logic" / "voice_turn" / "audio_input.py"
+    for required in (
+        asr_bridge_path,
+        tts_path,
+        streaming_path,
+        asr_client_dir,
+        asr_component_path,
+        asr_audio_path,
+        asr_registry_path,
+        voice_input_path,
+    ):
+        if not required.exists():
+            violations.append(Violation(
+                required,
+                1,
+                0,
+                "ASR_LAYERING",
+                "required ASR layering path is missing",
+            ))
+
+    if tts_path.exists():
+        tts_tree = parse(tts_path)
+        tts_pkg = ".".join(tts_path.relative_to(root).parts[:-1])
+        tts_alias_paths = module_alias_paths(tts_tree, tts_pkg)
+        forbidden_ingress_methods = {
+            "_ensure_audio_stream_worker",
+            "_clear_audio_stream_queue",
+            "_cancel_audio_stream_worker",
+            "_enqueue_audio_stream_data",
+            "_audio_stream_worker_loop",
+        }
+        for node in ast.walk(tts_tree):
+            if any(
+                imported == "main_logic.asr_client"
+                or imported.startswith("main_logic.asr_client.")
+                for imported in _imported_paths(node, tts_pkg, tts_alias_paths)
+            ):
+                violations.append(Violation(
+                    tts_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "tts_runtime.py must not import main_logic.asr_client",
+                ))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and (
+                node.name in forbidden_ingress_methods
+            ):
+                violations.append(Violation(
+                    tts_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"microphone ingress method '{node.name}' belongs in core/asr_runtime.py",
+                ))
+        violations.extend(_dynamic_import_violations(
+            tts_path, tts_tree, tts_alias_paths,
+            "main_logic.asr_client", "tts_runtime.py",
+        ))
+
+    if asr_client_dir.exists():
+        for path in sorted(asr_client_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            for node in ast.walk(tree):
+                if any(
+                    module == "main_logic.core"
+                    or module.startswith("main_logic.core.")
+                    for module in _imported_paths(node, pkg, alias_paths)
+                ):
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "asr_client must not import main_logic.core",
+                    ))
+            violations.extend(_dynamic_import_violations(
+                path, tree, alias_paths,
+                "main_logic.core", "asr_client",
+            ))
+
+    if asr_bridge_path.exists():
+        bridge_tree = parse(asr_bridge_path)
+        provider_literals = (
+            _registry_provider_keys(asr_registry_path)
+            if asr_registry_path.exists()
+            else frozenset()
+        )
+        route_setter_found = False
+        forbidden_runtime_reads = {"lifecycle", "route_mode", "required"}
+        for node in ast.walk(bridge_tree):
+            if (
+                isinstance(node, ast.Constant)
+                and isinstance(node.value, str)
+                and node.value.strip().lower() in provider_literals
+            ):
+                violations.append(Violation(
+                    asr_bridge_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"provider literal '{node.value}' must stay below the Core ASR bridge",
+                ))
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr in forbidden_runtime_reads
+                and isinstance(node.value, ast.Attribute)
+                and isinstance(node.value.value, ast.Name)
+                and node.value.value.id == "self"
+                and node.value.attr == "_asr_runtime"
+            ):
+                violations.append(Violation(
+                    asr_bridge_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"Core must not read IndependentAsrRuntime.{node.attr}",
+                ))
+        alias_read_sites: set[tuple[int, int, str]] = set()
+        for node in ast.walk(bridge_tree):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                alias_read_sites.update(
+                    _asr_runtime_alias_reads(node, forbidden_runtime_reads)
+                )
+        for line, col, attr in sorted(alias_read_sites):
+            violations.append(Violation(
+                asr_bridge_path,
+                line,
+                col,
+                "ASR_LAYERING",
+                f"Core must not read IndependentAsrRuntime.{attr} "
+                f"(via a local alias of self._asr_runtime)",
+            ))
+        for node in ast.walk(bridge_tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if node.name == "_set_microphone_route":
+                route_setter_found = True
+            if node.name in {"_init_asr_runtime_state", "_set_microphone_route"}:
+                continue
+            for child in ast.walk(node):
+                targets = []
+                if isinstance(child, ast.Assign):
+                    targets = child.targets
+                elif isinstance(child, ast.AnnAssign):
+                    targets = [child.target]
+                if any(
+                    isinstance(target, ast.Attribute)
+                    and isinstance(target.value, ast.Name)
+                    and target.value.id == "self"
+                    and target.attr == "_asr_route_mode"
+                    for target in targets
+                ):
+                    violations.append(Violation(
+                        asr_bridge_path,
+                        child.lineno,
+                        child.col_offset,
+                        "ASR_LAYERING",
+                        "Core route changes must go through _set_microphone_route()",
+                    ))
+        if not route_setter_found:
+            violations.append(Violation(
+                asr_bridge_path,
+                1,
+                0,
+                "ASR_LAYERING",
+                "core/asr_runtime.py must define _set_microphone_route()",
+            ))
+
+    for path in (asr_bridge_path, asr_component_path):
+        if not path.exists():
+            continue
+        for node in ast.walk(parse(path)):
+            if isinstance(node, ast.ImportFrom) and any(
+                alias.name == "ProcessedVoiceFrame" for alias in node.names
+            ) and node.module != "main_logic.voice_turn.audio_input":
+                violations.append(Violation(
+                    path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "ProcessedVoiceFrame must come from voice_turn.audio_input",
+                ))
+
+    if asr_audio_path.exists():
+        for node in ast.walk(parse(asr_audio_path)):
+            if isinstance(node, ast.ClassDef) and node.name in {
+                "ProcessedVoiceFrame",
+                "VoiceInputAudioPipeline",
+            }:
+                violations.append(Violation(
+                    asr_audio_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"provider-neutral {node.name} belongs in voice_turn/audio_input.py",
+                ))
+
+    if asr_component_path.exists():
+        component_tree = parse(asr_component_path)
+        component_class = next(
+            (
+                node
+                for node in component_tree.body
+                if isinstance(node, ast.ClassDef)
+                and node.name == "IndependentAsrRuntime"
+            ),
+            None,
+        )
+        if component_class is None:
+            violations.append(Violation(
+                asr_component_path,
+                1,
+                0,
+                "ASR_LAYERING",
+                "asr_client/runtime.py must define IndependentAsrRuntime",
+            ))
+        elif component_class.bases or component_class.keywords:
+            violations.append(Violation(
+                asr_component_path,
+                component_class.lineno,
+                component_class.col_offset,
+                "ASR_LAYERING",
+                "IndependentAsrRuntime must be a plain composed object, not a mixin subclass",
+            ))
+        if component_class is not None:
+            forbidden_fields = {
+                "_asr_route_mode",
+                "_asr_required",
+                "_voice_lease_connection_id",
+                "_voice_lease_generation",
+                "_voice_lease_synchronized",
+                "_voice_lease_owner",
+                "_voice_lease_hard_muted",
+                "_voice_lease_focus_suppressed",
+                "_voice_input_suppressed",
+            }
+            forbidden_methods = {
+                "activate_native_route",
+                "deactivate_audio_route",
+                "block_audio_route",
+                "sync_voice_lease",
+                "apply_voice_lease_state",
+                "process_audio",
+                "_process_microphone_audio",
+            }
+            public_methods = {
+                "__init__",
+                "display_name",
+                "close",
+                "capture_ingress_token",
+                "suspend",
+                "resume",
+                "abort",
+                "wait_transcript_idle",
+                "start",
+                "submit",
+            }
+            for node in ast.walk(component_class):
+                if (
+                    isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "self"
+                    and node.attr in forbidden_fields
+                ):
+                    violations.append(Violation(
+                        asr_component_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        f"IndependentAsrRuntime must not mirror Core state {node.attr}",
+                    ))
+                if (
+                    isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                    and node in component_class.body
+                ):
+                    if node.name in forbidden_methods:
+                        violations.append(Violation(
+                            asr_component_path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"IndependentAsrRuntime must not define {node.name}()",
+                        ))
+                    if not node.name.startswith("_") and node.name not in public_methods:
+                        violations.append(Violation(
+                            asr_component_path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"unexpected IndependentAsrRuntime public method {node.name}()",
+                        ))
+            for node in ast.walk(component_tree):
+                if (
+                    isinstance(node, ast.Name)
+                    and node.id == "VoiceInputAudioPipeline"
+                ):
+                    violations.append(Violation(
+                        asr_component_path,
+                        node.lineno,
+                        node.col_offset,
+                        "ASR_LAYERING",
+                        "IndependentAsrRuntime must not own the Core PCM pipeline",
+                    ))
+
+        callbacks_class = next(
+            (
+                node for node in component_tree.body
+                if isinstance(node, ast.ClassDef)
+                and node.name == "AsrRuntimeCallbacks"
+            ),
+            None,
+        )
+        callback_events = {
+            "on_partial": "VoicePartialEvent",
+            "on_final": "VoiceTranscriptEvent",
+            "on_failure": "AsrFailureEvent",
+            "on_status": "AsrStatusEvent",
+            "on_lifecycle": "AsrLifecycleNotification",
+        }
+        annotations = {
+            node.target.id: {name.id for name in ast.walk(node.annotation) if isinstance(name, ast.Name)}
+            for node in (callbacks_class.body if callbacks_class is not None else [])
+            if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+        }
+        for callback_name, event_name in callback_events.items():
+            if event_name not in annotations.get(callback_name, set()):
+                violations.append(Violation(
+                    asr_component_path,
+                    getattr(callbacks_class, "lineno", 1),
+                    0,
+                    "ASR_LAYERING",
+                    f"{callback_name} must receive immutable {event_name}",
+                ))
+        for node in ast.walk(component_tree):
+            if isinstance(node, ast.ClassDef) and node.name.endswith("Mixin"):
+                violations.append(Violation(
+                    asr_component_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    "asr_client/runtime.py must not define a manager mixin",
+                ))
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "self"
+                and node.attr
+                in {
+                    "session",
+                    "handle_new_message",
+                    "handle_input_transcript",
+                    "send_status",
+                }
+            ):
+                violations.append(Violation(
+                    asr_component_path,
+                    node.lineno,
+                    node.col_offset,
+                    "ASR_LAYERING",
+                    f"IndependentAsrRuntime must not access Core attribute self.{node.attr}",
+                ))
+
+    if streaming_path.exists():
+        streaming_tree = parse(streaming_path)
+        stream_data_method = next(
+            (
+                node
+                for node in ast.walk(streaming_tree)
+                if isinstance(node, ast.AsyncFunctionDef) and node.name == "stream_data"
+            ),
+            None,
+        )
+        audio_branch = None
+        if stream_data_method is not None:
+            for node in ast.walk(stream_data_method):
+                if (
+                    isinstance(node, ast.If)
+                    and isinstance(node.test, ast.Compare)
+                    and len(node.test.ops) == 1
+                    and isinstance(node.test.ops[0], ast.Eq)
+                    and len(node.test.comparators) == 1
+                    and isinstance(node.test.comparators[0], ast.Constant)
+                    and node.test.comparators[0].value == "audio"
+                ):
+                    audio_branch = node
+                    break
+        valid_audio_branch = False
+        if audio_branch is not None and len(audio_branch.body) == 2:
+            call_stmt, return_stmt = audio_branch.body
+            awaited = call_stmt.value if isinstance(call_stmt, ast.Expr) else None
+            call = awaited.value if isinstance(awaited, ast.Await) else None
+            valid_audio_branch = bool(
+                isinstance(call, ast.Call)
+                and isinstance(call.func, ast.Attribute)
+                and isinstance(call.func.value, ast.Name)
+                and call.func.value.id == "self"
+                and call.func.attr == "_enqueue_audio_stream_data"
+                and len(call.args) == 1
+                and isinstance(call.args[0], ast.Name)
+                and call.args[0].id == "message"
+                and not call.keywords
+                and isinstance(return_stmt, ast.Return)
+                and return_stmt.value is None
+            )
+        if not valid_audio_branch:
+            violations.append(Violation(
+                streaming_path,
+                getattr(audio_branch or stream_data_method, "lineno", 1),
+                getattr(audio_branch or stream_data_method, "col_offset", 0),
+                "ASR_LAYERING",
+                "stream_data audio branch may only await _enqueue_audio_stream_data(message) and return",
+            ))
 
     # -- CORE_MANAGER_SHAPE: class body is only docstring / class constants /
     #    __init__. Any other statement (extra method, nested class, class-level
@@ -737,29 +1526,35 @@ def run(root: Path) -> list[Violation]:
         # MRO while the real package mixin sits orphaned, yet the set check
         # would still pass. ``defining_stem`` comes from where the class was
         # discovered.
-        defining_stem = {mklass.name: mpath.stem for mpath, mklass in mixin_files.items()}
-        # bound name -> (level-1 module, ORIGINAL imported symbol name). The
-        # original name matters: ``from .focus import OmniOfflineClient as
-        # FocusMixin`` is same-module but binds the WRONG class.
-        relative_binds = {}
+        defining_imports = {
+            mklass.name: (1, mpath.stem, mklass.name)
+            for mpath, mklass in mixin_files.items()
+        }
+        # bound name -> (relative level, module, ORIGINAL imported symbol).
+        import_binds = {}
         for node in parse(manager_path).body:
-            if isinstance(node, ast.ImportFrom) and node.level == 1 and node.module:
+            if isinstance(node, ast.ImportFrom) and node.module:
                 for a in node.names:
-                    relative_binds[a.asname or a.name] = (node.module, a.name)
+                    import_binds[a.asname or a.name] = (
+                        node.level,
+                        node.module,
+                        a.name,
+                    )
         for name in sorted(base_names & mixin_names):
-            want = defining_stem.get(name)
-            if relative_binds.get(name) != (want, name):
-                got = relative_binds.get(name)
+            want = defining_imports[name]
+            if import_binds.get(name) != want:
+                got = import_binds.get(name)
                 if got is None:
-                    where = "not bound via a level-1 core-local import"
-                elif got[0] != want:
-                    where = f"bound from '.{got[0]}'"
+                    where = "not bound via an accepted import"
                 else:
-                    where = f"bound to the different symbol '{got[1]}'"
+                    prefix = "." * got[0]
+                    where = f"bound from '{prefix}{got[1]}' as symbol '{got[2]}'"
+                prefix = "." * want[0]
                 violations.append(Violation(manager_path, manager_class.lineno, manager_class.col_offset,
                                             "CORE_MIXIN_BASES",
                                             f"base {name} must be imported as the class named {name} from its "
-                                            f"defining module (from .{want} import {name}) but is {where}; the "
+                                            f"defining module (from {prefix}{want[1]} import {name}) but is "
+                                            f"{where}; the "
                                             f"MRO may be using a different/outside class while the package mixin "
                                             f"is orphaned"))
 
@@ -801,7 +1596,12 @@ def run(root: Path) -> list[Violation]:
 
     # -- patch-target checks
     targets = collect_patch_targets(tests_dir)
-    routing_files = sorted(set(mixin_files) | {manager_path})
+    # Facade patch routing applies only to core-owned modules. The explicitly
+    # registered ASR mixin must read its real owner modules and must not depend
+    # on the core facade.
+    routing_files = sorted(
+        set(mixin_files) | {manager_path}
+    )
     module_info = {}
     for path in routing_files:
         tree = parse(path)

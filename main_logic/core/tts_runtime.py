@@ -58,77 +58,6 @@ from main_logic import core as _core_facade
 class TtsRuntimeMixin:
     """TTS runtime methods (see module docstring)."""
 
-    def _ensure_audio_stream_worker(self):
-        if self._audio_stream_worker_task and not self._audio_stream_worker_task.done():
-            return
-        self._audio_stream_worker_task = self._fire_task(self._audio_stream_worker_loop())
-
-    def _clear_audio_stream_queue(self, reason: str):
-        dropped = 0
-        while True:
-            try:
-                self._audio_stream_queue.get_nowait()
-                self._audio_stream_queue.task_done()
-                dropped += 1
-            except asyncio.QueueEmpty:
-                break
-        if dropped:
-            self._audio_stream_dropped_total += dropped
-            logger.info(
-                "[%s] audio stream queue cleared reason=%s dropped=%d total_dropped=%d",
-                self.lanlan_name, reason, dropped, self._audio_stream_dropped_total,
-            )
-
-    def _cancel_audio_stream_worker(self, reason: str):
-        task = self._audio_stream_worker_task
-        if not task:
-            return
-        if task.done():
-            self._audio_stream_worker_task = None
-            return
-        if task is asyncio.current_task():
-            return
-        task.cancel()
-        self._audio_stream_worker_task = None
-        logger.debug("[%s] audio stream worker cancelled reason=%s", self.lanlan_name, reason)
-
-    async def _enqueue_audio_stream_data(self, message: dict):
-        self._ensure_audio_stream_worker()
-        if self._audio_stream_queue.full():
-            try:
-                self._audio_stream_queue.get_nowait()
-                self._audio_stream_queue.task_done()
-                self._audio_stream_dropped_total += 1
-            except asyncio.QueueEmpty:
-                # Raced with the consumer draining the queue — nothing left to drop.
-                pass
-        await self._audio_stream_queue.put(message)
-        qsize = self._audio_stream_queue.qsize()
-        now = time.time()
-        if qsize >= 250 and now - self._last_audio_stream_backlog_log_time >= 2.0:
-            self._last_audio_stream_backlog_log_time = now
-            logger.warning(
-                "[%s] audio stream queue backlog qsize=%d max=%d total_dropped=%d",
-                self.lanlan_name,
-                qsize,
-                self._audio_stream_queue.maxsize,
-                self._audio_stream_dropped_total,
-            )
-
-    async def _audio_stream_worker_loop(self):
-        while True:
-            while not self.session_ready and self._starting_session_count > 0:
-                await asyncio.sleep(0.02)
-            message = await self._audio_stream_queue.get()
-            try:
-                await self._stream_data_now(message)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.error("[%s] audio stream worker error: %s", self.lanlan_name, exc)
-            finally:
-                self._audio_stream_queue.task_done()
-
     def _get_text_guard_max_length(self) -> int:
         """Read the user-configured reply token cap.
         Unit: tiktoken (o200k_base) tokens. 0 = unlimited (returns 999999).
@@ -150,6 +79,46 @@ class TtsRuntimeMixin:
         except Exception:
             return 300
 
+    def _reset_tts_replay_state(self) -> None:
+        """Forget text retained for configured-provider runtime recovery."""
+        self._tts_replay_speech_id = None
+        self._tts_replay_chunks = []
+        self._tts_replay_sent_chunks = []
+        self._tts_replay_done = False
+        self._tts_replay_audio_emitted = False
+        self._tts_replay_sentence_audio_emitted = False
+
+    def _remember_tts_replay_chunk(self, speech_id, text: str) -> None:
+        """Retain one raw text chunk until the active utterance is replaced."""
+        if speech_id != getattr(self, "_tts_replay_speech_id", None):
+            self._reset_tts_replay_state()
+            self._tts_replay_speech_id = speech_id
+        if text:
+            self._tts_replay_chunks.append((speech_id, text))
+
+    def _remember_tts_sent_chunk(self, speech_id, text: str) -> None:
+        """Retain text actually submitted to a sentence-aware worker."""
+        if speech_id == getattr(self, "_tts_replay_speech_id", None) and text:
+            self._tts_replay_sent_chunks.append((speech_id, text))
+
+    def _consume_tts_replay_sentence(self, speech_id, sentence: str) -> None:
+        """Remove one confirmed audible sentence from the fallback suffix."""
+        if speech_id != getattr(self, "_tts_replay_speech_id", None) or not sentence:
+            return
+        remaining = "".join(
+            text
+            for sid, text in getattr(self, "_tts_replay_sent_chunks", ())
+            if sid == speech_id
+        )
+        if not remaining.startswith(sentence):
+            # 边界不一致时宁可保留文本，也不能误删尚未播出的内容。
+            logger.warning("TTS 回放句界不匹配，保留现有未确认文本")
+            return
+        remaining = remaining[len(sentence):]
+        self._tts_replay_sent_chunks = (
+            [(speech_id, remaining)] if remaining else []
+        )
+
     def _enqueue_tts_text_chunk(self, speech_id, text: str) -> None:
         """Enqueue a text chunk into the TTS queue; http_sentence-class providers go through the normalizer.
 
@@ -163,6 +132,10 @@ class TtsRuntimeMixin:
         ``tts_request_queue.put``, calling ``_reset_tts_stream_normalizer`` at the
         appropriate moment.
         """
+        # Retain pre-normalized text because the replacement may use another protocol class.
+        # 保留规范化前的原始文本；替代 worker 可能属于另一协议类别，需要从原文重放。
+        self._remember_tts_replay_chunk(speech_id, text)
+
         # speech_id 切换时重置所有 stripper 状态（pending 内容属于上一轮，丢弃）
         if speech_id != self._tts_norm_speech_id:
             self._tts_stream_normalizer.reset()
@@ -182,6 +155,7 @@ class TtsRuntimeMixin:
         if not text:
             return
         self.tts_request_queue.put((speech_id, text))
+        self._remember_tts_sent_chunk(speech_id, text)
         self._remember_pending_ai_voice_echo(speech_id, text)
 
     def _reset_tts_stream_normalizer(self) -> None:
@@ -207,6 +181,7 @@ class TtsRuntimeMixin:
             return "no_worker"
 
         if not self.tts_ready or self.tts_pending_chunks:
+            self._tts_replay_done = True
             self._tts_done_pending_until_ready = True
             return "deferred"
 
@@ -221,9 +196,11 @@ class TtsRuntimeMixin:
         self._tts_bracket_stripper.flush()
         if flushed and self._tts_norm_speech_id is not None:
             self.tts_request_queue.put((self._tts_norm_speech_id, flushed))
+            self._remember_tts_sent_chunk(self._tts_norm_speech_id, flushed)
             self._remember_pending_ai_voice_echo(self._tts_norm_speech_id, flushed)
 
         self.tts_request_queue.put((None, None))
+        self._tts_replay_done = True
         self._tts_done_queued_for_turn = True
         self._tts_done_pending_until_ready = False
         return "queued"
@@ -303,11 +280,14 @@ class TtsRuntimeMixin:
             core_config = self._config_manager.get_core_config()
             if core_config.get('DISABLE_TTS', False):
                 return ("disabled",)
-            has_custom = self._has_custom_tts()
+            route_voice_id, has_custom = self._effective_tts_route()
             _, api_key_override, provider_key = _core_facade.get_tts_worker(
                 core_api_type=self.core_api_type,
                 has_custom_voice=has_custom,
-                voice_id=self.voice_id or '',
+                voice_id=route_voice_id,
+                excluded_provider_keys=getattr(
+                    self, "_tts_excluded_provider_keys", frozenset()
+                ),
             )
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
@@ -316,13 +296,14 @@ class TtsRuntimeMixin:
             return (
                 provider_key,
                 self.core_api_type,
-                self.voice_id or '',
+                route_voice_id,
                 bool(getattr(self, "_is_free_preset_voice", False)),
                 bool(has_custom),
                 tts_config.get('base_url', ''),
                 tts_config.get('model', ''),
                 self._resolve_vllm_omni_runtime_config(core_config),
                 api_key,
+                tuple(sorted(getattr(self, "_tts_excluded_provider_keys", frozenset()))),
             )
         except Exception:
             return (
@@ -363,6 +344,7 @@ class TtsRuntimeMixin:
         async with self.tts_cache_lock:
             self.tts_pending_chunks.clear()
             self._tts_done_pending_until_ready = False
+            self._reset_tts_replay_state()
             # Drop only queued-but-unconfirmed TTS text. Already-confirmed
             # audio may still be echoed by STT shortly after an interrupt.
             self._discard_pending_ai_voice_echo()
@@ -386,7 +368,11 @@ class TtsRuntimeMixin:
         ``tts_ready`` flips).
         """
         if not (self.tts_thread and self.tts_thread.is_alive()):
-            self._start_tts_thread()
+            self._start_tts_thread(
+                preserve_provider_exclusions=bool(
+                    getattr(self, "_tts_excluded_provider_keys", frozenset())
+                )
+            )
         if self.tts_handler_task is None or self.tts_handler_task.done():
             self.tts_handler_task = asyncio.create_task(self.tts_response_handler())
 
@@ -421,7 +407,16 @@ class TtsRuntimeMixin:
             return True
         return False
 
-    def _start_tts_thread(self):
+    def _effective_tts_route(self) -> tuple[str, bool]:
+        """Return the voice identity and custom flag used for worker dispatch."""
+        # Recovery keeps character storage unchanged but strips the failed preset
+        # from the replacement worker's routing and credential context.
+        # 回退只清理替代 worker 的路由上下文，不修改角色卡中保存的音色。
+        if getattr(self, "_tts_fallback_uses_default_voice", False):
+            return "", False
+        return self.voice_id or "", self._has_custom_tts()
+
+    def _start_tts_thread(self, *, preserve_provider_exclusions: bool = False):
         """Create and start the TTS worker thread.
 
         Selects the worker by voice_id / core_api_type, resolves the api_key,
@@ -432,9 +427,13 @@ class TtsRuntimeMixin:
         # 重置就绪状态，新 worker 需重新握手
         self.tts_ready = False
         self._tts_runtime_key = None
+        if not preserve_provider_exclusions:
+            self._tts_excluded_provider_keys = frozenset()
+            self._tts_fallback_uses_default_voice = False
 
         # 检查是否禁用了 TTS
         core_config = self._config_manager.get_core_config()
+        route_voice_id = self.voice_id or ''
         if core_config.get('DISABLE_TTS', False):
             logger.info("TTS 已被用户禁用, 使用 dummy worker")
             tts_worker = dummy_tts_worker
@@ -442,11 +441,12 @@ class TtsRuntimeMixin:
             provider_key = None
             api_key = ''
         else:
-            has_custom = self._has_custom_tts()
+            route_voice_id, has_custom = self._effective_tts_route()
             tts_worker, api_key_override, provider_key = _core_facade.get_tts_worker(
                 core_api_type=self.core_api_type,
                 has_custom_voice=has_custom,
-                voice_id=self.voice_id or '',
+                voice_id=route_voice_id,
+                excluded_provider_keys=self._tts_excluded_provider_keys,
             )
             tts_config = self._config_manager.get_model_api_config(
                 'tts_custom' if has_custom else 'tts_default'
@@ -462,17 +462,114 @@ class TtsRuntimeMixin:
         # 因为 free 国外模式走 Gemini 后端，需要 CJK 空格清理。
         meta = TTS_PROVIDER_REGISTRY.get(provider_key) if provider_key else None
         self._tts_normalize_enabled = not meta or meta.category != "ws_bistream"
+        self._tts_replay_progress_supported = bool(
+            meta and meta.category == "http_sentence"
+        )
 
         self.tts_request_queue = Queue()
         self.tts_response_queue = Queue()
 
         self.tts_thread = Thread(
             target=tts_worker,
-            args=(self.tts_request_queue, self.tts_response_queue, api_key, self.voice_id),
+            args=(self.tts_request_queue, self.tts_response_queue, api_key, route_voice_id),
             daemon=True,
         )
+        self._tts_active_provider_key = provider_key
         self._tts_runtime_key = self._build_tts_runtime_key()
         self.tts_thread.start()
+
+    def _activate_configured_tts_fallback(self, failure_stage: str) -> bool:
+        """Exclude a failed configured provider and restart with existing order."""
+        failed_provider = getattr(self, "_tts_active_provider_key", None)
+        if not _core_facade.tts_provider_falls_back_on_failure(failed_provider):
+            return False
+
+        excluded = frozenset(getattr(self, "_tts_excluded_provider_keys", frozenset()))
+        if failed_provider in excluded:
+            return False
+
+        # The ledger is authoritative after response.done: some realtime paths
+        # rotate ``current_speech_id`` before trailing TTS audio has finished.
+        # 回复流结束时 current_speech_id 可能已提前轮换；旧 worker 的尾音仍在处理，
+        # 因此优先使用账本中的 speech_id，避免恰在收尾失败时漏掉整轮重放。
+        active_speech_id = getattr(self, "_tts_replay_speech_id", None)
+        if active_speech_id is None:
+            active_speech_id = getattr(self, "current_speech_id", None)
+
+        # Only replay the active utterance. A new turn can be cached while a late
+        # error from the superseded worker is still arriving on the old queue.
+        # 只重放当前轮次，避免旧 worker 的迟到错误把上一轮文本带进新回复。
+        replay_chunks = [
+            item
+            for item in getattr(self, "_tts_replay_chunks", ())
+            if active_speech_id is None or item[0] == active_speech_id
+        ]
+        pending_chunks = [
+            item
+            for item in getattr(self, "tts_pending_chunks", ())
+            if active_speech_id is None or item[0] == active_speech_id
+        ]
+        replay_done = bool(
+            getattr(self, "_tts_replay_done", False)
+            or getattr(self, "_tts_done_queued_for_turn", False)
+            or getattr(self, "_tts_done_pending_until_ready", False)
+        )
+        audio_emitted = bool(getattr(self, "_tts_replay_audio_emitted", False))
+        if audio_emitted:
+            if getattr(self, "_tts_replay_progress_supported", False):
+                # HTTP 分句 worker 会逐句确认进度：已播句从该账本删除，失败句若
+                # 已输出部分音频也只跳过本句，后续完整句仍交给保底 provider。
+                replay_chunks = [
+                    item
+                    for item in getattr(self, "_tts_replay_sent_chunks", ())
+                    if active_speech_id is None or item[0] == active_speech_id
+                ]
+                replay_done = bool((replay_chunks or pending_chunks) and replay_done)
+                logger.warning(
+                    "自定义 TTS API 已输出部分音频，仅重放未确认的后续文本"
+                )
+            else:
+                # WS 双流协议没有文本到音频位置确认，不能安全推导精确后缀。
+                replay_chunks = []
+                replay_done = bool(pending_chunks and replay_done)
+                logger.warning(
+                    "自定义 TTS API 已输出部分音频，跳过当前句重放以避免重复播报"
+                )
+
+        # Excluding one failed provider lets get_tts_worker reuse every existing
+        # fallback rule below it; no fallback provider or priority is hardcoded.
+        # 这里只排除失败项，再调用原 dispatcher；不新增、不重排任何保底方案。
+        self._tts_excluded_provider_keys = excluded | {failed_provider}
+        if _core_facade.tts_provider_uses_configured_preset_voice(failed_provider):
+            self._tts_fallback_uses_default_voice = True
+        # 替代 worker 不继承故障 provider 的错误码和提示次数。
+        self._last_tts_error_code = ''
+        self._tts_retry_notify_count = 0
+        old_request_queue = self.tts_request_queue
+        try:
+            old_request_queue.put(("__shutdown__", None))
+        except Exception:
+            logger.debug("关闭故障 TTS worker 失败，继续启动保底 worker", exc_info=True)
+
+        logger.warning(
+            "自定义 TTS API provider=%s 在%s阶段失败；开始按既有顺序选择保底 provider",
+            failed_provider,
+            failure_stage,
+        )
+        # 新 worker 就绪后按原始文本重建本轮请求。不能沿用失败 preset 的
+        # Voice ID/凭证；角色配置本身不变，下个会话仍可重新尝试该 provider。
+        self.tts_pending_chunks = replay_chunks + pending_chunks
+        self._reset_tts_replay_state()
+        self._tts_done_queued_for_turn = False
+        self._tts_done_pending_until_ready = replay_done
+        self._reset_tts_stream_normalizer()
+        self._start_tts_thread(preserve_provider_exclusions=True)
+        logger.warning(
+            "自定义 TTS API 已回退: failed_provider=%s fallback_provider=%s",
+            failed_provider,
+            self._tts_active_provider_key or "default",
+        )
+        return True
 
     def _reset_tts_retry_state(self):
         """Cancel pending TTS respawn task and clear error/cooldown state.
@@ -489,7 +586,11 @@ class TtsRuntimeMixin:
         self._last_tts_respawn_time = 0.0
         self._tts_retry_notify_count = 0
         self._tts_done_queued_for_turn = False
+        self._tts_fallback_uses_default_voice = False
+        self._reset_tts_replay_state()
         self._tts_done_pending_until_ready = False
+        self._tts_active_provider_key = None
+        self._tts_excluded_provider_keys = frozenset()
 
     async def _teardown_tts_runtime(self, handler_task_ref, thread_ref,
                                      req_queue_ref, resp_queue_ref):
@@ -576,7 +677,11 @@ class TtsRuntimeMixin:
         self._last_tts_respawn_time = now
 
         logger.info("🔄 TTS Worker 已死亡，尝试重新拉起...")
-        self._start_tts_thread()
+        self._start_tts_thread(
+            preserve_provider_exclusions=bool(
+                getattr(self, "_tts_excluded_provider_keys", frozenset())
+            )
+        )
 
         # 重新启动 tts_response_handler 以监听新队列
         if self.tts_handler_task and not self.tts_handler_task.done():
@@ -638,6 +743,21 @@ class TtsRuntimeMixin:
         if self._is_livestream_active():
             logger.info(f"{log_prefix}🎙️ livestream 模式：使用服务端原生语音，跳过外部 TTS")
             return False
+        # Configured preset ownership must be resolved before core-native voice
+        # routing; identical IDs still belong to the explicitly selected TTS API.
+        # 配置型音色与核心原生音色同名时，自定义 TTS 的显式归属优先，不能被原生路由抢走。
+        configured_provider = _core_facade.selected_configured_tts_preset_provider_key(
+            core_config_snapshot,
+            self._config_manager,
+            self.voice_id,
+        )
+        if configured_provider:
+            logger.info(
+                "%s🔊 语音模式：音色归属已配置 TTS provider=%s，将使用外部 TTS",
+                log_prefix,
+                configured_provider,
+            )
+            return True
         if self._is_vllm_omni_tts_enabled(core_config_snapshot):
             logger.info(f"{log_prefix}🔊 语音模式：检测到 vLLM-Omni TTS provider，将使用外部 TTS")
             return True
@@ -854,6 +974,21 @@ class TtsRuntimeMixin:
                 if isinstance(data, tuple) and len(data) == 2 and data[0] == "__handler_exit__":
                     continue
 
+                if (
+                    isinstance(data, tuple)
+                    and len(data) == 3
+                    and data[0] in {"__tts_sentence_done__", "__tts_sentence_failed__"}
+                ):
+                    _, speech_id, sentence = data
+                    if speech_id == getattr(self, "_tts_replay_speech_id", None):
+                        # marker 排在该句所有音频之后；只有音频实际送达前端才推进边界。
+                        # 失败句若已播放过前缀也整体跳过，避免 fallback 从句首重念；
+                        # 其后的未确认句仍保留在账本中。
+                        if getattr(self, "_tts_replay_sentence_audio_emitted", False):
+                            self._consume_tts_replay_sentence(speech_id, str(sentence))
+                        self._tts_replay_sentence_audio_emitted = False
+                    continue
+
                 if isinstance(data, tuple) and len(data) == 2:
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
@@ -865,6 +1000,12 @@ class TtsRuntimeMixin:
                             logger.info("✅ 收到TTS运行时就绪信号，开始刷新缓存文本")
                             await self._flush_tts_pending_chunks()
                         else:
+                            # Configured endpoints fall back once; the handler
+                            # then follows the replacement worker's new queue.
+                            # 自定义端点未就绪时立即切到保底 worker，并改听新队列。
+                            if self._activate_configured_tts_fallback("初始化"):
+                                q = self.tts_response_queue
+                                continue
                             # 复用 __error__ 分支记录的 code 判断是否重试
                             _last_code = self._last_tts_error_code
                             if _last_code in NO_RETRY_TTS_CODES:
@@ -912,6 +1053,14 @@ class TtsRuntimeMixin:
                         error_msg = data[1]
                         error_msg_text = str(error_msg)
                         logger.error(f"TTS Worker Error: {error_msg}")
+
+                        # A configured endpoint failure is observable in the
+                        # backend log above, then redispatched through the exact
+                        # pre-existing fallback chain for subsequent audio.
+                        # 自定义 API 运行时出错后，仅切换 provider；现有保底顺序不变。
+                        if self._activate_configured_tts_fallback("运行时"):
+                            q = self.tts_response_queue
+                            continue
 
                         # 优先尝试从结构化 JSON 中提取明确的 code 字段
                         _known_codes = {
@@ -1004,6 +1153,8 @@ class TtsRuntimeMixin:
                 elif isinstance(data, tuple) and len(data) == 3 and data[0] == "__audio__":
                     _, speech_id, audio_payload = data
                     if await self.send_speech(audio_payload, speech_id=speech_id):
+                        self._tts_replay_audio_emitted = True
+                        self._tts_replay_sentence_audio_emitted = True
                         self._confirm_pending_ai_voice_echo(speech_id)
                         # Telemetry：音频成功投递 = 用户听到了角色的声音。配合
                         # note_core_loop_completed 的"用户已开口"前置，构成 D1
@@ -1021,7 +1172,9 @@ class TtsRuntimeMixin:
 
                 size = len(data) if isinstance(data, (bytes, bytearray)) else f"type={type(data).__name__}"
                 logger.debug(f"🎧 handler dequeued audio: {size}, qsize≈{q.qsize()}")
-                await self.send_speech(data)
+                if await self.send_speech(data):
+                    self._tts_replay_audio_emitted = True
+                    self._tts_replay_sentence_audio_emitted = True
                 self._discard_pending_ai_voice_echo()
             except asyncio.CancelledError:
                 logger.info("🎧 tts_response_handler cancelled")

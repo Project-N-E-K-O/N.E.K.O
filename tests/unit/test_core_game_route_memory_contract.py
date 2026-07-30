@@ -2347,6 +2347,24 @@ async def test_takeover_response_complete_clears_interrupted_ordinary_turn():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_handle_input_transcript_reports_acceptance_for_asr_bridge():
+    ordinary = _make_transcript_manager()
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        ordinary,
+        "ordinary voice input",
+        is_voice_source=True,
+    ) is True
+
+    empty = _make_transcript_manager()
+    assert await core_module.LLMSessionManager.handle_input_transcript(
+        empty,
+        "   ",
+        is_voice_source=True,
+    ) is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_discarded_retry_drops_stream_text_from_activity_buffer():
     """A discarded reply must not stay queued for the tracker across the retry."""
     mgr = _make_manager()

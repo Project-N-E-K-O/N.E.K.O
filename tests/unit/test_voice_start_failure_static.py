@@ -120,13 +120,28 @@ def _balanced_js_block_end(source: str, brace: int) -> int:
     raise AssertionError("unterminated JS block")
 
 
-def _catch_block_after(source: str, marker: str) -> str:
+def _catch_block_after(source: str, marker: str, binding: str | None = None) -> str:
+    """The first ``catch`` block after ``marker``, optionally by its binding.
+
+    Without ``binding`` this returns whatever catch comes first, which silently
+    retargets the moment a best-effort ``catch (_)`` teardown is added in
+    between -- the assertions then run against three lines of cleanup and fail
+    for a reason that has nothing to do with what they check. Name the binding
+    when the intent is a specific handler.
+    """
     start = source.find(marker)
     if start < 0:
         raise AssertionError(f"missing marker {marker!r}")
-    match = re.search(r"\bcatch\s*\([^)]*\)\s*\{", source[start:])
+    pattern = (
+        rf"\bcatch\s*\(\s*{re.escape(binding)}\s*\)\s*\{{"
+        if binding
+        else r"\bcatch\s*\([^)]*\)\s*\{"
+    )
+    match = re.search(pattern, source[start:])
     if not match:
-        raise AssertionError(f"missing catch block after {marker!r}")
+        raise AssertionError(
+            f"missing catch block{f' (binding {binding!r})' if binding else ''} after {marker!r}"
+        )
     catch_start = start + match.start()
     brace = source.find("{", catch_start)
     return source[catch_start : _balanced_js_block_end(source, brace) + 1]
@@ -300,7 +315,11 @@ runScenario()
 def test_mic_capture_failure_restores_composer_without_outer_voice_start_lifecycle():
     source = _read(APP_AUDIO_CAPTURE_PATH)
     start_mic = _js_function_block(source, "startMicCapture")
-    failure = _catch_block_after(start_mic, "S.stream = await navigator.mediaDevices.getUserMedia(constraints);")
+    failure = _catch_block_after(
+        start_mic,
+        "ownStream = await navigator.mediaDevices.getUserMedia(constraints);",
+        binding="err",
+    )
 
     assert "S.voiceStartPending = false;" not in failure
     assert "window.isMicStarting = false;" not in failure
@@ -670,3 +689,53 @@ def test_manual_screen_stop_clears_voice_share_ownership():
     assert result["startScreenCalls"] == ["start"]
     assert result["stopScreenCalls"] == ["stop"]
     assert result["screenClasses"] == []
+
+
+def test_voice_start_bails_when_another_start_took_over_the_pending_slot():
+    # Codex P2. On mobile the composer stays visible during an audio session, so
+    # the user can send text inside the 500ms settle window after an audio ack.
+    # app-websocket.js leaves _pendingSessionStartMode owned by that newer text
+    # start but settles the audio promise anyway (its timeout is already gone,
+    # so nothing else ever would). The audio flow then resumes -- and none of
+    # the guards after the await can see what happened: the text ack changes
+    # neither voiceSessionStartEpoch nor isMicStarting, so ensureVoiceStartCurrent
+    # passes, and it never sets voiceInputRouteBlocked either. The microphone
+    # opens and reclaims a lease onto the text session's blocked route.
+    source = _read(APP_BUTTONS_PATH)
+    start_flow = _mic_button_start_flow(source)
+
+    # The takeover decision now lives in one micStartMustStandDown() check --
+    # see tests/unit/test_voice_start_slot_ownership.py for what that check has
+    # to consider, which grew well past the pending mode. What this case pins is
+    # WHERE the resumed flow consults it.
+    await_index = start_flow.index("await sessionStartPromise;")
+    guard = "micStartMustStandDown()"
+    assert guard in start_flow, (
+        "the resumed voice start must notice that another start took the slot"
+    )
+    guard_index = start_flow.index(guard, await_index)
+
+    # It has to come before BOTH downstream guards, because neither can see a
+    # takeover -- that is the whole finding.
+    assert guard_index < start_flow.index("ensureVoiceStartCurrent();", await_index)
+    assert guard_index < start_flow.index("S.voiceInputRouteBlocked === true")
+    assert guard_index < start_flow.index("await window.startMicCapture();")
+
+    # And it must unwind without throwing: the generic catch used to clear
+    # S.sessionStartedResolver / Rejecter / _pendingSessionStartMode
+    # unconditionally, which would tear down the start that superseded us.
+    bail = start_flow[guard_index:start_flow.index("ensureVoiceStartCurrent();", await_index)]
+    bail_code = " ".join(
+        line for line in bail.splitlines() if not line.strip().startswith("//")
+    )
+    assert "throw" not in bail_code
+    # The newer start owns the shared timeout now; cancelling it is the same
+    # cross-start damage this guard exists to prevent.
+    assert "clearTimeout" not in bail_code
+
+    # The unwind itself sits inside the check, and is gated there: it is global
+    # (mic generation + isMicStarting), so it may not run while a newer AUDIO
+    # start is driving that state.
+    check = start_flow[start_flow.index("function micStartMustStandDown()"):await_index]
+    assert "abortVoiceStartForBlockedRoute" in check
+    assert "supersededByAudioStart" in check

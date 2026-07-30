@@ -688,9 +688,7 @@ async def test_qq_recall_with_empty_subjects_never_falls_back_to_private():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace())
-    with patch(
-        "plugin.plugins.qq_auto_reply.memory_bridge.httpx.AsyncClient",
-    ) as client:
+    with patch.object(QQMemoryBridge, "_client") as client:
         result = await bridge.query_relevant_memory(
             "Neko", "不应读取私聊记忆", subjects=[],
         )
@@ -3706,6 +3704,9 @@ async def test_private_flush_prompt_not_excluded_and_cache_lags_tail_draft():
     history = [_msg("human", "第一条"), _msg("ai", "本轮草稿")]
     user_data = {
         "is_group": False,
+        # 私聊 /cache 只对已授权（admin）会话开放，见
+        # test_silent_turn_never_caches_unauthorized_private_history。
+        "memory_enabled": True,
         "her_name": "Neko",
         "session": SimpleNamespace(_conversation_history=history),
         "last_synced_index": 0,
@@ -8394,7 +8395,10 @@ async def test_member_bucket_cap_flushes_instead_of_dropping():
             "group_memory_enabled": True, "group_member_memory_enabled": True,
         },
         _run_with_session_lock=_run_with_session_lock,
-        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        _spawn_memory_sync_task=(
+            # 真实签名带 session_key（排空要登记成该会话的结算工作）。
+            lambda coro, *, session_key=None: spawned.append(coro)
+        ),
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
     )
@@ -8481,7 +8485,10 @@ async def test_group_backlog_is_drained_before_it_can_be_lost():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_run_with_session_lock,
-        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        _spawn_memory_sync_task=(
+            # 真实签名带 session_key（排空要登记成该会话的结算工作）。
+            lambda coro, *, session_key=None: spawned.append(coro)
+        ),
         logger=MagicMock(),
     )
     service = QQSessionMemoryService(plugin)
@@ -8896,16 +8903,27 @@ async def test_failed_member_drain_is_rearmed():
         _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
     ))
-    service._flush_member_buckets = AsyncMock(return_value=["2046"])
+    # 与真实实现同契约：成功即从传入的 buckets 里弹出，失败原样留下。
+    async def _flush_all_fail(user_data, **kwargs):
+        return list(kwargs["buckets"])
+
+    async def _flush_all_ok(user_data, **kwargs):
+        kwargs["buckets"].clear()
+        return []
+
+    service._flush_member_buckets = AsyncMock(side_effect=_flush_all_fail)
     await service._drain_member_buckets("group:7788")
     assert ud.get("member_flush_due") is True
     assert "member_drain_in_flight" not in ud
+    # 失败的桶回到队列里等下一轮，没有凭空消失。
+    assert ud["group_member_memory_messages"] == {"2046": [{"role": "user"}]}
 
     # A successful drain leaves nothing armed.
     ud.pop("member_flush_due")
-    service._flush_member_buckets = AsyncMock(return_value=[])
+    service._flush_member_buckets = AsyncMock(side_effect=_flush_all_ok)
     await service._drain_member_buckets("group:7788")
     assert "member_flush_due" not in ud
+    assert not ud["group_member_memory_messages"]
 
 
 @pytest.mark.asyncio
@@ -8931,7 +8949,7 @@ async def test_draft_row_marks_are_pruned_when_rows_leave_history():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         logger=MagicMock(),
-        _spawn_memory_sync_task=lambda coro: coro.close(),
+        _spawn_memory_sync_task=lambda coro, *, session_key=None: coro.close(),
         _run_with_session_lock=None,
     ))
 
@@ -9917,7 +9935,8 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
         # While the request is in flight, a second OFF asks for a snapshot.
         # It must NOT touch the live mapping: that mapping may BE this
         # request's payload, and copying it means submitting twice.
-        assert ud.get("member_flush_in_progress") is True
+        # 计数而非布尔（并发冲刷各持一层），这里只关心"有冲刷在飞"。
+        assert ud.get("member_flush_in_progress")
         ud["member_snapshot_due"] = True
         ud.setdefault("group_member_memory_messages", {}).setdefault(
             "2046", []

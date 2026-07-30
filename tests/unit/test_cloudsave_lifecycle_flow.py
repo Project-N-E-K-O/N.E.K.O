@@ -583,78 +583,57 @@ async def test_release_storage_startup_barrier_starts_integration_workers_after_
 
 
 @pytest.mark.unit
-def test_integration_worker_start_failures_are_logged_as_warnings():
+def test_facts_sync_worker_start_failure_is_logged_as_warning():
     from app import main_server
 
     facts_error = RuntimeError("facts worker failed")
-    card_error = RuntimeError("card cache worker failed")
-    create_task = Mock(side_effect=[facts_error, card_error])
+    create_task = Mock(side_effect=facts_error)
 
     with (
         patch(
             "main_logic.facts_sync.start_facts_sync_worker",
             Mock(return_value=object()),
         ),
-        patch(
-            "main_logic.card_cache.start_card_cache_puller",
-            Mock(return_value=object()),
-        ),
         patch.object(main_server.asyncio, "create_task", create_task),
         patch.object(main_server.logger, "warning") as warning,
         patch.object(main_server, "_facts_sync_worker_task", None),
-        patch.object(main_server, "_card_cache_worker_task", None),
     ):
         main_server._start_neko_servers_integration_workers()
 
-    warning.assert_has_calls(
-        [
-            call("[facts_sync] start worker failed: %s", facts_error),
-            call("[card_cache] start puller failed: %s", card_error),
-        ]
+    warning.assert_called_once_with(
+        "[facts_sync] start worker failed: %s",
+        facts_error,
     )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_stop_integration_workers_cancels_both_background_tasks():
+async def test_stop_integration_workers_cancels_facts_sync_task():
     from app import main_server
 
     async def wait_forever():
         await asyncio.Event().wait()
 
     facts_task = asyncio.create_task(wait_forever())
-    card_task = asyncio.create_task(wait_forever())
     await asyncio.sleep(0)
 
-    with (
-        patch.object(main_server, "_facts_sync_worker_task", facts_task),
-        patch.object(main_server, "_card_cache_worker_task", card_task),
-    ):
+    with patch.object(main_server, "_facts_sync_worker_task", facts_task):
         await main_server._stop_neko_servers_integration_workers()
         assert main_server._facts_sync_worker_task is None
-        assert main_server._card_cache_worker_task is None
 
     assert facts_task.cancelled()
-    assert card_task.cancelled()
 
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
-    ("path", "method"),
-    [
-        (path, method)
-        for path in (
-            "/api/card-drop/active-character",
-            "/card-forge/active-character",
-        )
-        for method in ("GET", "POST", "OPTIONS")
-    ],
+    "method",
+    ("GET", "POST", "OPTIONS"),
 )
-def test_card_forge_active_character_is_allowed_during_limited_mode(path, method):
+def test_card_drop_active_character_is_allowed_during_limited_mode(method):
     from app import main_server
 
     assert main_server._is_main_limited_mode_allowed_path(
-        path,
+        "/api/card-drop/active-character",
         method,
     )
 
@@ -671,8 +650,7 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
             blocked_response = client.get("/api/config/page_config")
             health_response = client.get("/health")
             steam_language_response = client.get("/api/config/steam_language")
-            active_character_response = client.get("/card-forge/active-character")
-            canonical_active_character_response = client.get(
+            active_character_response = client.get(
                 "/api/card-drop/active-character"
             )
 
@@ -685,7 +663,6 @@ def test_main_server_limited_mode_middleware_blocks_runtime_routes():
     assert steam_language_response.status_code == 200
     assert "uiLanguage" in steam_language_response.json()
     assert active_character_response.status_code == 200
-    assert canonical_active_character_response.status_code == 200
 
 
 @pytest.mark.unit

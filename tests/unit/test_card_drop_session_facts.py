@@ -46,8 +46,8 @@ def _main_server_request(*, method: str = "POST", origin: str = "") -> Request:
             "server": ("127.0.0.1", 48911),
             "client": ("127.0.0.1", 50000),
             "root_path": "",
-            "path": "/card-forge/active-character",
-            "raw_path": b"/card-forge/active-character",
+            "path": "/api/card-drop/active-character",
+            "raw_path": b"/api/card-drop/active-character",
             "query_string": b"",
             "headers": headers,
         }
@@ -59,13 +59,13 @@ async def test_main_active_character_post_allows_native_and_local_origin(monkeyp
     from app.main_server import web_app
 
     snapshot: dict[str, str] = {}
-    monkeypatch.setattr(web_app, "_card_forge_active_character", snapshot)
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
 
-    native_response = await web_app.set_card_forge_active_character(
+    native_response = await web_app.set_card_drop_active_character(
         _main_server_request(),
         {"name": "Native"},
     )
-    local_response = await web_app.set_card_forge_active_character(
+    local_response = await web_app.set_card_drop_active_character(
         _main_server_request(origin="http://localhost:48911"),
         {"name": "Local"},
     )
@@ -79,7 +79,7 @@ async def test_main_active_character_post_allows_native_and_local_origin(monkeyp
 async def test_main_active_character_get_falls_back_to_configured_catgirl(monkeypatch):
     from app.main_server import web_app
 
-    monkeypatch.setattr(web_app, "_card_forge_active_character", {})
+    monkeypatch.setattr(web_app, "_card_drop_active_character", {})
 
     async def fallback_identity():
         return "YUI", "Human"
@@ -90,7 +90,7 @@ async def test_main_active_character_get_falls_back_to_configured_catgirl(monkey
         fallback_identity,
     )
 
-    response = await web_app.get_card_forge_active_character(
+    response = await web_app.get_card_drop_active_character(
         _main_server_request(),
         include_avatar=True,
     )
@@ -104,7 +104,7 @@ async def test_main_active_character_get_falls_back_to_configured_catgirl(monkey
     assert "characterReferenceDataUrl" not in payload
 
 
-def test_main_active_character_exposes_canonical_and_compatibility_routes():
+def test_main_active_character_exposes_only_canonical_card_drop_routes():
     from app.main_server import web_app
 
     routes = {
@@ -114,7 +114,7 @@ def test_main_active_character_exposes_canonical_and_compatibility_routes():
     }
     for method in ("GET", "POST", "OPTIONS"):
         assert ("/api/card-drop/active-character", method) in routes
-        assert ("/card-forge/active-character", method) in routes
+        assert ("/card-forge/active-character", method) not in routes
 
 
 @pytest.mark.asyncio
@@ -152,9 +152,9 @@ async def test_main_active_character_name_change_clears_only_stale_avatar_fields
         "dataUrl": "avatar-a",
         "characterReferenceDataUrl": "reference-a",
     }
-    monkeypatch.setattr(web_app, "_card_forge_active_character", snapshot)
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
 
-    response = await web_app.set_card_forge_active_character(
+    response = await web_app.set_card_drop_active_character(
         _main_server_request(),
         payload,
     )
@@ -176,9 +176,9 @@ async def test_main_active_character_post_rejects_cross_origin_before_mutation(
 
     monkeypatch.setenv("NEKO_SOCIAL_BASE_URL", "https://community.example")
     snapshot = {"name": "Before"}
-    monkeypatch.setattr(web_app, "_card_forge_active_character", snapshot)
+    monkeypatch.setattr(web_app, "_card_drop_active_character", snapshot)
 
-    response = await web_app.set_card_forge_active_character(
+    response = await web_app.set_card_drop_active_character(
         _main_server_request(origin=origin),
         {"name": "After", "dataUrl": "private-avatar-data"},
     )
@@ -200,25 +200,6 @@ def test_main_active_character_read_cors_remains_social_origin_only(monkeypatch)
     assert headers is not None
     assert headers["Access-Control-Allow-Origin"] == "https://community.example"
     assert headers["Access-Control-Allow-Methods"] == "GET, POST, OPTIONS"
-
-
-def test_forge_frontend_clears_runtime_hint_when_active_character_sync_fails():
-    source = (
-        Path(__file__).resolve().parents[2]
-        / "frontend"
-        / "card-forge"
-        / "src"
-        / "App.jsx"
-    ).read_text(encoding="utf-8")
-    fetch_block = source.split("async function fetchActiveCharacter() {", 1)[1].split(
-        "    fetchActiveCharacter()", 1
-    )[0]
-
-    non_ok_block = fetch_block.split("if (!res.ok) {", 1)[1].split("}", 1)[0]
-    catch_block = fetch_block.split("catch {", 1)[1].split("}", 1)[0]
-    assert "setActiveCharacterName(null)" in non_ok_block
-    assert "return" in non_ok_block
-    assert "setActiveCharacterName(null)" in catch_block
 
 
 def test_card_drop_client_id_persists_fresh_default_before_returning(
@@ -258,77 +239,11 @@ def test_card_drop_client_id_fails_closed_when_fresh_default_cannot_be_saved(
     assert C._get_client_id() is None
 
 
-def test_packaged_facts_modules_use_package_qualified_imports():
+def test_packaged_facts_module_exposes_shared_entrypoints():
     shared = importlib.import_module("main_logic.card_forge_facts")
-    server = importlib.import_module("local_server.card_forge_server.server")
 
-    assert callable(server.build_forge_facts_payload)
-    assert server.build_forge_facts_payload is shared.build_forge_facts_payload
+    assert callable(shared.build_forge_facts_payload)
     assert callable(shared.resolve_active_neko_context)
-
-
-@pytest.mark.parametrize(
-    ("environment", "expected_port"),
-    [
-        ({"NEKO_MAIN_SERVER_PORT": "43101", "MAIN_SERVER_PORT": "43102"}, 43101),
-        ({"MAIN_SERVER_PORT": "43102"}, 43102),
-        ({"NEKO_MAIN_SERVER_PORT": "invalid", "MAIN_SERVER_PORT": "43102"}, 43102),
-        ({"NEKO_MAIN_SERVER_PORT": "70000", "MAIN_SERVER_PORT": "invalid"}, 48911),
-    ],
-)
-def test_forge_main_active_character_url_tracks_main_server_port(
-    monkeypatch, tmp_path, environment, expected_port
-):
-    server = importlib.import_module("local_server.card_forge_server.server")
-    monkeypatch.setattr(
-        server,
-        "_main_server_port_config_path",
-        lambda: tmp_path / "missing-port-config.json",
-    )
-    for key in (
-        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
-        "NEKO_MAIN_SERVER_PORT",
-        "MAIN_SERVER_PORT",
-    ):
-        monkeypatch.delenv(key, raising=False)
-    for key, value in environment.items():
-        monkeypatch.setenv(key, value)
-
-    assert server._resolve_main_server_active_character_url() == (
-        f"http://127.0.0.1:{expected_port}/card-forge/active-character"
-    )
-
-
-def test_forge_main_active_character_url_uses_electron_port_config(
-    monkeypatch, tmp_path
-):
-    server = importlib.import_module("local_server.card_forge_server.server")
-    port_config = tmp_path / "port_config.json"
-    port_config.write_text('{"MAIN_SERVER_PORT": 43103}', encoding="utf-8")
-    monkeypatch.setattr(server, "_main_server_port_config_path", lambda: port_config)
-    for key in (
-        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
-        "NEKO_MAIN_SERVER_PORT",
-        "MAIN_SERVER_PORT",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-    assert server._resolve_main_server_active_character_url() == (
-        "http://127.0.0.1:43103/card-forge/active-character"
-    )
-
-
-def test_forge_main_active_character_url_allows_explicit_override(monkeypatch):
-    server = importlib.import_module("local_server.card_forge_server.server")
-    monkeypatch.setenv(
-        "NEKO_MAIN_ACTIVE_CHARACTER_URL",
-        "http://localhost:43103/custom-active-character",
-    )
-    monkeypatch.setenv("NEKO_MAIN_SERVER_PORT", "43101")
-
-    assert server._resolve_main_server_active_character_url() == (
-        "http://localhost:43103/custom-active-character"
-    )
 
 
 def test_packaging_manifests_collect_shared_card_forge_module():
@@ -438,100 +353,6 @@ async def test_facts_url_failure_log_does_not_expose_credentials(monkeypatch, ca
     assert "configured URL returned 503" in caplog.text
     assert "password" not in caplog.text
     assert "top-secret" not in caplog.text
-
-
-def test_card_face_lookup_rejects_path_traversal(tmp_path, monkeypatch):
-    server = importlib.import_module("local_server.card_forge_server.server")
-    card_faces = tmp_path / "card_faces"
-    card_faces.mkdir()
-    (card_faces / "Lanlan.png").write_bytes(b"valid")
-    (tmp_path / "secret.png").write_bytes(b"secret")
-    monkeypatch.setattr(server, "_card_face_dirs", lambda: [card_faces])
-
-    assert server._find_card_face_path("Lanlan") == card_faces / "Lanlan.png"
-    assert server._find_card_face_path("../secret") is None
-
-
-def test_forge_server_uses_config_manager_app_data_paths(tmp_path, monkeypatch):
-    server = importlib.import_module("local_server.card_forge_server.server")
-    import utils.config_manager as config_manager
-
-    config_dir = tmp_path / "platform-app-data" / "config"
-    card_faces_dir = tmp_path / "platform-app-data" / "card_faces"
-    config_dir.mkdir(parents=True)
-    card_faces_dir.mkdir(parents=True)
-    (config_dir / "characters.json").write_text(
-        json.dumps({"当前猫娘": "Lanlan", "主人": {"档案名": "Master"}}),
-        encoding="utf-8",
-    )
-    expected_face = card_faces_dir / "Lanlan.png"
-    expected_face.write_bytes(b"valid")
-
-    class FakeConfigManager:
-        pass
-
-    manager = FakeConfigManager()
-    manager.config_dir = config_dir
-    manager.card_faces_dir = card_faces_dir
-    monkeypatch.delenv("NEKO_USER_CONFIG_DIR", raising=False)
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: manager)
-
-    assert server._read_active_character_config_snapshot() == {
-        "name": "Lanlan",
-        "master_name": "Master",
-    }
-    assert card_faces_dir in server._card_face_dirs()
-    assert server._find_card_face_path("Lanlan") == expected_face
-
-
-def test_forge_active_character_endpoint_fails_closed_without_runtime_binding(monkeypatch):
-    server = importlib.import_module("local_server.card_forge_server.server")
-
-    monkeypatch.setattr(
-        server,
-        "_read_active_character_config_snapshot",
-        lambda: {"name": "Lanlan", "master_name": "Master"},
-    )
-    monkeypatch.setattr(
-        server,
-        "_read_main_server_active_character_snapshot",
-        lambda include_avatar=False: {},
-    )
-
-    with TestClient(server.app) as test_client:
-        response = test_client.get("/forge/active-character")
-
-    assert response.status_code == 200
-    assert response.json()["name"] == ""
-    assert response.json()["master_name"] == ""
-
-
-def test_forge_route_sensitive_log_mask_contains_no_memory_preview():
-    server = importlib.import_module("local_server.card_forge_server.server")
-    secret = "主人生日是七月二十六日"
-
-    masked = server._mask_route_sensitive(secret)
-
-    assert masked == f"(len={len(secret)})"
-    assert secret not in masked
-
-
-def test_forge_cards_endpoint_exposes_local_cloud_cache(monkeypatch):
-    server = importlib.import_module("local_server.card_forge_server.server")
-    monkeypatch.setattr(
-        server,
-        "load_cached_cards",
-        lambda: [{"id": "cloud-card-1", "title": "Cloud card"}],
-    )
-
-    with TestClient(server.app) as test_client:
-        response = test_client.get("/forge/cards")
-
-    assert response.status_code == 200
-    assert response.json() == {
-        "cards": [{"id": "cloud-card-1", "title": "Cloud card"}],
-        "count": 1,
-    }
 
 
 @pytest.mark.asyncio

@@ -71,6 +71,11 @@ def _make_swap_manager():
     mgr.lanlan_name = "Lan"
     mgr.master_name = "Master"
     mgr.user_language = "zh"
+    # Production always has this (LLMSessionManager.__init__ defaults it to
+    # 'audio' and start_session overwrites it); object.__new__ skips __init__,
+    # so the swap sequence's context-summary line would hit an AttributeError
+    # here and nowhere else.
+    mgr.input_mode = "audio"
     mgr.lock = asyncio.Lock()
     mgr.session = None
     mgr.message_handler_task = None

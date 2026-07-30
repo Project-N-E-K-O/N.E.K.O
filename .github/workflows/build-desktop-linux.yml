@@ -199,6 +199,16 @@ jobs:
             --output-root data/embedding_models \
             --variant both
 
+      - name: Cache voice-turn model weights
+        uses: actions/cache@v4
+        with:
+          path: data/vad_models/*.onnx
+          key: voice-turn-models-${{ runner.os }}-${{ hashFiles('data/vad_models/manifest.json') }}
+
+      - name: Prepare verified voice-turn assets
+        shell: bash
+        run: uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py
+
       # --- Warm tiktoken o200k_base cache for offline use (PR #929) ---
       # tiktoken downloads encoding blobs (~1.5 MB each) on first use into
       # TIKTOKEN_CACHE_DIR; without warming, the bundled app would either
@@ -268,6 +278,7 @@ jobs:
           if [ -d "data/embedding_models" ]; then
             NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/embedding_models=data/embedding_models"
           fi
+          NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=data/vad_models=data/vad_models"
           NUITKA_OPTS="$NUITKA_OPTS --include-data-dir=static=static"
           # 应用内 OpenClaw 引导文档 + 图片，由 agent_router 经 /api/agent/openclaw/guide/* 提供；
           # 是纯数据目录，--include-package 不带，漏了引导页内容/图片打包后 404。
@@ -396,6 +407,8 @@ jobs:
             echo "::error::data/tiktoken_cache empty in bundle (o200k_base would re-download at runtime)"
             missing=1
           fi
+          uv run --no-sync python tools/voice_eval/prepare_voice_turn_assets.py \
+            --asset-dir dist/Xiao8/data/vad_models --offline || missing=1
           [ "$missing" -eq 0 ]
 
       # --- Generic dist invariant check ---

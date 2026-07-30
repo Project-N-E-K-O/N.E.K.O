@@ -5,7 +5,10 @@ import asyncio
 from datetime import datetime
 from typing import Any, Optional
 
-from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT
+from config.prompts.prompts_sys import (
+    SESSION_INIT_PROMPT,
+    get_context_summary_ready,
+)
 from main_logic.core import apply_role_placeholders
 from utils.language_utils import get_global_language
 from .pipeline_models import QQInstructionBundle
@@ -49,10 +52,17 @@ class QQSessionInstructionService:
         {"id": "time",                  "i18n_key": "time_prompt_section",   "required_placeholders": ["{time_str}"],                   "format_after": True},
         {"id": "detail",                "i18n_key": "detail_constraints_section", "required_placeholders": [],                          "format_after": False},
         {"id": "output",                "i18n_key": "output_prompt_section", "required_placeholders": [],                               "format_after": False},
-        {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
+        # kira_unified 是纯软指令，模板本身一个占位符都没有（见
+        # scene_prompt_templates.SCENE_KIRA_UNIFIED_GROUP）。声明成必需会让
+        # 护栏对每一份 i18n bundle 都判"缺占位符"，把非中文用户的这一段整个
+        # 换回中文默认常量，还每轮打一条 warning。要求必须以模板实际内容为准。
+        {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": [], "format_after": True},
         {"id": "scene_group_collective","i18n_key": "prompts.group.collective", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
         {"id": "scene_group_shared",    "i18n_key": "prompts.group.shared_session", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
-        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}", "{group_id}"], "format_after": True},
+        # directed 的加固默认模板本身不含 {group_id}（身份边界只点名发言人
+        # 与主人/管理员），把它声明成必需就是一条**永远无法满足**的判据，
+        # 再完整的翻译也会被判缺占位符。其余四个是真正的身份边界，保留。
+        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "scene_private",         "i18n_key": "prompts.private.body",  "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "naming_with_title",     "i18n_key": "prompts.group.naming_with_title", "required_placeholders": ["{user_title}"],       "format_after": False},
         {"id": "naming_without_title",  "i18n_key": "prompts.group.naming_without_title", "required_placeholders": [],                "format_after": False},
@@ -256,9 +266,10 @@ class QQSessionInstructionService:
             short_language,
             SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
         )
-        context_ready_template = CONTEXT_SUMMARY_READY.get(
-            short_language,
-            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["zh"]),
+        # QQ 永远是文字；群里没有那个固定的一对一对象，群变体连
+        # {master} 槽都没有（否则等于把私聊对象的名字写进群 prompt）。
+        context_ready_template = get_context_summary_ready(
+            short_language, input_mode="text", is_group=is_group,
         )
 
         master_title = master_name if master_name else self.plugin.i18n.t("prompts.default_master", default="主人")
