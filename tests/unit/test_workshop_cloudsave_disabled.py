@@ -177,3 +177,45 @@ async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monke
     assert a_ensures == ["ensure:A:auto=True"], (
         f"A 的 ensure 读到了别人的配置：{order}"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_folder_that_cannot_be_created_is_reported(monkeypatch):
+    """Saving a read-only path must not be reported as fully successful.
+
+    ``ensure_workshop_folder_exists`` swallows the creation failure and returns
+    False. The config itself did persist, so ``success`` stays True — but the
+    response has to say the folder is not usable, or the user is told an
+    unusable workshop path was set up fine.
+    """
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: None)
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda folder: False)
+
+    result = await config_files.save_workshop_config_api(
+        {"user_mod_folder": "R:/read-only", "auto_create_folder": True}
+    )
+
+    assert result["success"] is True, "配置本身确实存下来了"
+    assert result["folder_ready"] is False
+    assert "warning" in result
+
+
+@pytest.mark.asyncio
+async def test_a_created_folder_reports_ready(monkeypatch):
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: None)
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda folder: True)
+
+    result = await config_files.save_workshop_config_api(
+        {"user_mod_folder": "C:/mods", "auto_create_folder": True}
+    )
+
+    assert result["folder_ready"] is True
+    assert "warning" not in result

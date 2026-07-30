@@ -65,7 +65,7 @@ async def save_workshop_config_api(config_data: dict):
         # 导入与get_workshop_config相同路径的函数，保持一致性
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
 
-        def _apply_config_transaction() -> dict:
+        def _apply_config_transaction() -> tuple[dict, bool | None]:
             with _WORKSHOP_CONFIG_TRANSACTION_LOCK:
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
                 # 后写的那次会把前一次的字段整份盖掉。
@@ -74,16 +74,25 @@ async def save_workshop_config_api(config_data: dict):
                     if key in config_data:
                         merged[key] = config_data[key]
                 save_workshop_config(merged)
+                folder_ready: bool | None = None
                 if merged.get('auto_create_folder', True):
                     # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
                     folder_path = merged.get('user_mod_folder') or merged.get('default_workshop_folder')
                     if folder_path:
-                        ensure_workshop_folder_exists(folder_path)
-                return merged
+                        folder_ready = bool(ensure_workshop_folder_exists(folder_path))
+                return merged, folder_ready
 
-        workshop_config_data = await asyncio.to_thread(_apply_config_transaction)
+        workshop_config_data, folder_ready = await asyncio.to_thread(_apply_config_transaction)
 
-        return {"success": True, "config": workshop_config_data}
+        # ensure_workshop_folder_exists 把创建失败（只读盘、权限不足）吞成返回 False。
+        # 配置确实存下来了，所以 success 仍然是 True —— 但不能因此告诉用户目录也准备
+        # 好了：那条路径接下来根本用不了。两件事分开报。
+        response = {"success": True, "config": workshop_config_data}
+        if folder_ready is not None:
+            response["folder_ready"] = folder_ready
+            if not folder_ready:
+                response["warning"] = "配置已保存，但指定的工坊目录无法创建（路径只读或权限不足）"
+        return response
     except Exception as e:
         logger.error(f"保存创意工坊配置失败: {str(e)}")
         return {"success": False, "error": str(e)}

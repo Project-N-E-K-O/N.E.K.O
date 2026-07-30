@@ -68,22 +68,40 @@ def _replace_voice_reference(
     destroying a reference the user cannot get back.
     """
     with voice_reference_lock(content_folder):
-        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 上去。
-        #    失败的话旧的一对纹丝不动 —— 这一步之前不删任何东西。
+        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 顶上去。
         fd, temp_audio = tempfile.mkstemp(dir=content_folder, suffix='.tmp')
+        backup_audio = None
         try:
             with os.fdopen(fd, 'wb') as f:
                 f.write(audio_bytes)
                 f.flush()
                 os.fsync(f.fileno())
+
+            # 同扩展名替换时，os.replace 会把旧音频原地顶掉 —— 而 manifest 还没写。
+            # 万一第 2 步失败，盘上就是「新音频 + 旧 manifest」，偏偏文件名没变，
+            # _resolve_workshop_voice_reference 会认为这对有效：新音频配旧的
+            # prefix / 语言 / display_name / provider，而用户收到的是 500。静默的
+            # 不一致比响亮的失败糟得多，所以先把旧音频原子挪到一边留作回滚。
+            if os.path.exists(audio_path):
+                backup_audio = f'{temp_audio}.bak'
+                os.replace(audio_path, backup_audio)
+
             os.replace(temp_audio, audio_path)
+
+            # 2) manifest 也是原子替换。走到这里新的一对才算完整可用。
+            atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
         except BaseException:
+            # 回滚到进来时的状态：旧音频挪回原位，旧 manifest 本来就没动过。
+            if backup_audio is not None and os.path.exists(backup_audio):
+                with suppress(OSError):
+                    os.replace(backup_audio, audio_path)
             with suppress(OSError):
                 os.remove(temp_audio)
             raise
-
-        # 2) manifest 也是原子替换。走到这里新的一对已经完整可用。
-        atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
+        finally:
+            if backup_audio is not None:
+                with suppress(OSError):
+                    os.remove(backup_audio)
 
         # 3) 最后才清掉「换了扩展名」留下的旧音频（mp3 → wav 这种）。同名的那次
         #    已经被上面的 os.replace 顶掉了。删失败只是留个孤儿文件，不影响这对

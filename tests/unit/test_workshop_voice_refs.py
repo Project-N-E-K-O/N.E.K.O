@@ -406,3 +406,67 @@ def test_a_failed_audio_write_stages_nothing(tmp_path, monkeypatch):
     assert (tmp_path / "voice_sample.mp3").read_bytes() == b"old-audio"
     leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
     assert leftovers == [], f"失败路径留下了暂存文件：{leftovers}"
+
+
+def test_a_same_extension_replace_rolls_back_when_the_manifest_fails(tmp_path, monkeypatch):
+    """New audio must not survive under the old manifest.
+
+    Replacing a .wav with another .wav reuses the filename, so os.replace
+    overwrites the old audio before the manifest is written. If the manifest
+    write then fails, resolution still finds a "valid" pair — new audio wearing
+    the old prefix / language / provider — while the upload answered 500. A
+    silent mismatch is worse than a loud failure, so the previous audio is
+    staged aside and restored.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    (tmp_path / "voice_sample.wav").write_bytes(b"old-audio")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "reference_audio": "voice_sample.wav", "prefix": "old"}),
+        encoding="utf-8",
+    )
+
+    def _boom(*args, **kwargs):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(voice_refs, "atomic_write_json", _boom)
+
+    with pytest.raises(OSError):
+        voice_refs._replace_voice_reference(
+            str(tmp_path),
+            str(tmp_path / "voice_sample.wav"),
+            b"new-audio",
+            str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+        )
+
+    assert (tmp_path / "voice_sample.wav").read_bytes() == b"old-audio", (
+        "新音频留在了旧 manifest 底下——同名替换失败后必须回滚"
+    )
+    assert _manifest(tmp_path)["prefix"] == "old"
+    leftovers = sorted(p.name for p in tmp_path.iterdir() if ".tmp" in p.name)
+    assert leftovers == [], f"失败路径留下了暂存/备份文件：{leftovers}"
+
+
+def test_a_successful_replace_leaves_no_backup_behind(tmp_path):
+    """The staged backup must not outlive a successful swap."""
+    from main_routers.workshop_router import voice_refs
+
+    (tmp_path / "voice_sample.wav").write_bytes(b"old-audio")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "reference_audio": "voice_sample.wav", "prefix": "old"}),
+        encoding="utf-8",
+    )
+
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / "voice_sample.wav"),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+    )
+
+    assert (tmp_path / "voice_sample.wav").read_bytes() == b"new-audio"
+    assert _manifest(tmp_path)["prefix"] == "new"
+    leftovers = sorted(p.name for p in tmp_path.iterdir() if ".tmp" in p.name)
+    assert leftovers == [], f"成功路径留下了暂存/备份文件：{leftovers}"
