@@ -101,6 +101,9 @@ _EMOTION_NEGATION_SUFFIXES = get_emotion_negation_suffixes_flat()
 _EMOTION_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
 
 
+_NON_WORD_RE = re.compile(r"[\W_]", flags=re.UNICODE)
+
+
 _EMOTION_NEGATION_COMPACT_PREFIXES = tuple(sorted({
     re.sub(r"[\W_]+", "", str(negation).strip().lower(), flags=re.UNICODE)
     for negation in (*_EMOTION_NEGATION_PREFIXES, *_EMOTION_NEGATION_WORDS)
@@ -248,31 +251,44 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         prefix_tokens = _EMOTION_TOKEN_RE.findall(normalized_text[:match_start])
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
 
-    # Whether the label is a single clause. A degree adverb only counts as
-    # "between the negation and the emotion word" within one clause: punctuation
-    # is stripped out of compact_text, so `不是，非常开心` looks contiguous there
-    # and the reach would cross the comma into an unrelated clause.
-    single_clause = not any(
-        delim in emotion_text for delim in _HEURISTIC_CLAUSE_DELIMITERS
-    )
+    # Where each compact character came from, so a clause boundary can be found in
+    # the original text. compact_text has the punctuation removed, which is what
+    # made `不是，非常开心` look contiguous.
+    compact_origin = [
+        index for index, char in enumerate(emotion_text)
+        if not _NON_WORD_RE.match(char)
+    ]
+
+    def _clause_break_before(match_start):
+        if match_start >= len(compact_origin):
+            return False
+        head = emotion_text[:compact_origin[match_start]]
+        return any(delim in head for delim in _HEURISTIC_CLAUSE_DELIMITERS)
 
     def _is_negated_compact_match(match_start):
         prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
-        whole_opening = len(prefix) == match_start
-        if whole_opening and not _strip_degree_adverbs(prefix):
+        if len(prefix) == match_start and not _strip_degree_adverbs(prefix):
             # Nothing but intensifiers ahead of the alias, so the single character
             # one of them ends with is part of that adverb, not a negation.
             return False
         if any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES):
             return True
         # `沒有很生氣`: the window ends with the adverb, so the negation before it is
-        # invisible. Peeling reveals it — but only count that reading when what is
-        # uncovered *is* the label's whole opening and is itself a negation.
-        # Anything weaker reaches into ordinary words: `分别很开心` would peel to
-        # `分别`, whose last character is a negation only by coincidence.
-        if not (whole_opening and single_clause):
+        # invisible. Peeling reveals it — but only within one clause, and only when
+        # what it uncovers really is a negation rather than the tail of an ordinary
+        # word. A single character is a coincidence waiting to happen (`分别很开心`
+        # peels to `分别`), so it has to be the whole of what is left; two or more
+        # characters are specific enough to sit after other text (`我沒有很生氣`).
+        if _clause_break_before(match_start):
             return False
-        return _strip_degree_adverbs(prefix) in _EMOTION_NEGATION_COMPACT_PREFIX_SET
+        # No early-out for "nothing peeled": if the window already ended in a
+        # negation the branch above returned, so an unchanged window can only fail
+        # both tests below anyway.
+        peeled = _strip_degree_adverbs(prefix)
+        return peeled in _EMOTION_NEGATION_COMPACT_PREFIX_SET or any(
+            len(negation) > 1 and peeled.endswith(negation)
+            for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
+        )
 
     alias_items = sorted(
         _EMOTION_NORMALIZED_ALIAS_LOOKUP.items(),

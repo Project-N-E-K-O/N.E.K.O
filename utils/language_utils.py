@@ -1660,7 +1660,13 @@ def detect_prompt_language(
         Prompt language code -- a short code, or 'zh-TW' for Traditional Chinese
     """
     try:
-        detected = normalize_language_code(detect_language(str(text or '')), format='short')
+        detected = detect_language(str(text or ''))
+        if detected == 'unknown':
+            # Emoji, digits or punctuation only. Normalizing 'unknown' lands on
+            # 'en', which is a guess dressed up as a detection; the caller's own
+            # default is the honest answer.
+            return default
+        detected = normalize_language_code(detected, format='short')
     except Exception:
         return default
     if detected != 'zh':

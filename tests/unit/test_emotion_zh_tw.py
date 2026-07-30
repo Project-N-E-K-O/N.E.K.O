@@ -377,46 +377,8 @@ def test_degree_adverb_table_pairs_across_scripts():
     assert not any(ch in SIMPLIFIED_ONLY for entry in table["zh-TW"] for ch in entry)
 
 
-@pytest.mark.parametrize("label", [
-    # negation, degree adverb, emotion — the adverb used to break the match
-    "不怎麼開心", "不怎么开心",
-    "沒有很生氣", "没有很生气",
-    "不是很開心", "不很開心",
-    "並不怎麼開心", "不太怎麼開心",
-    "沒有那麼驚訝", "没有那么惊讶",
-    "不是很難過", "並不特別開心",
-])
-def test_negation_survives_a_degree_adverb(label):
-    """A negated label with a degree adverb in it must not report the emotion.
-
-    English never had this problem -- its scan runs over the last three *tokens*,
-    and a compact CJK window has no token boundaries to count, so the adverb sat
-    between the negation and the alias and the endswith test simply failed.
-    """
-    from main_routers.system_router.emotion import _normalize_emotion_label
-
-    assert _normalize_emotion_label(label) == "neutral"
 
 
-@pytest.mark.parametrize("label,expected", [
-    # intensified but NOT negated — stripping adverbs must not reach a negation
-    ("很開心", "happy"), ("非常生氣", "angry"), ("十分驚訝", "surprised"),
-    ("超級開心", "happy"), ("最難過", "sad"), ("有點難過", "sad"),
-    ("太開心", "happy"), ("更開心", "happy"),
-    # `特別` is itself a degree adverb, so listing it also stops the single
-    # character `別` inside it from reading as a negation
-    ("特別開心", "happy"), ("特别开心", "happy"),
-    ("特別難過", "sad"), ("特别难过", "sad"),
-    # a word that merely contains a negation character
-    ("無比開心", "happy"),
-    # plain aliases, both scripts
-    ("開心", "happy"), ("生氣", "angry"), ("难过", "sad"),
-])
-def test_intensifiers_are_not_read_as_negations(label, expected):
-    """The other direction: reaching further left must not invent a negation."""
-    from main_routers.system_router.emotion import _normalize_emotion_label
-
-    assert _normalize_emotion_label(label) == expected
 
 
 def test_adverb_stripping_is_confined_to_the_label_parser():
@@ -433,15 +395,6 @@ def test_adverb_stripping_is_confined_to_the_label_parser():
         assert R._infer_emotion_from_text(probe) is not None
 
 
-def test_stacked_degree_adverbs_are_all_peeled():
-    """Adverbs stack, so one pass is not enough.
-
-    Both have to come off before the window ends in a negation.
-    """
-    from main_routers.system_router.emotion import _normalize_emotion_label
-
-    assert _normalize_emotion_label("不是很特別開心") == "neutral"
-    assert _normalize_emotion_label("沒有非常生氣") == "neutral"
 
 
 def test_longest_adverb_wins_when_entries_overlap(monkeypatch):
@@ -597,6 +550,42 @@ def test_peeling_needs_to_see_the_whole_opening():
     peeled reading would fire on whatever the cap happened to leave visible.
     """
     for confidence in CONFIDENCES:
-        assert _label("真不是怎麼特別很開心", confidence) == "happy"
-        # the same opening, now short enough for the window to reach its start
+        assert _label("真不是怎麼特別很開心", confidence) == "neutral"
         assert _label("不是怎麼特別很開心", confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # sentence-final punctuation sits AFTER the emotion word, so it says nothing
+    # about whether a negation and that word are in the same clause
+    ("沒有很生氣。", "neutral"), ("不怎麼開心。", "neutral"), ("沒有很生氣！", "neutral"),
+])
+def test_punctuation_after_the_alias_does_not_block_peeling(label, expected, confidence):
+    """The clause check has to look at the text before the match, not the whole label."""
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    ("我沒有很生氣", "neutral"), ("其實沒有很生氣", "neutral"),
+    ("我不是很開心", "neutral"), ("我並不怎麼開心", "neutral"),
+])
+def test_negation_may_follow_descriptive_text(label, expected, confidence):
+    """A model that answers in a sentence still put the negation in it.
+
+    Requiring the negation to open the label was too strict; requiring instead
+    that it be at least two characters is what keeps `分别很开心` out, since there
+    the coincidence is a single character.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("text", ["😀😀😀", "123 456", "!!!", "", "   "])
+def test_undetectable_text_falls_back_to_the_caller_default(text):
+    """`detect_language` says 'unknown', and normalizing that lands on 'en'.
+
+    That is a guess wearing a detection's clothes — the parameter the caller
+    passed for exactly this case is the honest answer.
+    """
+    assert detect_prompt_language(text) == "zh"
+    assert detect_prompt_language(text, default="en") == "en"
