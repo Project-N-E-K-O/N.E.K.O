@@ -101,7 +101,7 @@ async def test_three_output_exhaustions_block_across_growing_contexts():
 
     with (
         patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
         patch(
             "memory.recent.review_context_token_count",
             side_effect=lambda rows: len(rows) * 100,
@@ -141,7 +141,7 @@ async def _drive_review_gate(memory_server, name: str, history: list) -> None:
             "_count_new_user_msgs_since_last_review",
             return_value=999,
         ),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
         patch(
             "memory.recent.review_context_token_count",
             side_effect=lambda rows: len(rows) * 100,
@@ -202,7 +202,7 @@ async def test_success_clears_output_exhaustion_state():
 
     with (
         patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
     ):
         await memory_server._run_review_in_background(
             name,
@@ -214,6 +214,54 @@ async def test_success_clears_output_exhaustion_state():
     assert state["review_output_exhaustion_attempts"] == 0
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_white_review_clears_output_exhaustion_state():
+    """Mirror of the patched-branch case: a white review must reset the breaker too.
+
+    A white review means the cutoff anchor no longer matches, i.e. the input has
+    actually changed, so the previous "context is too long to summarise" verdict
+    no longer describes the current input. Leaving the breaker armed would keep
+    blocking reviews on an input that was never the one that exhausted the
+    output budget.
+    """
+    from app import memory_server
+
+    name = "output-limit-white"
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": 2,
+        "review_output_exhaustion_min_context_tokens": 1000,
+        "review_output_exhaustion_blocked": True,
+        "review_fail_attempts": 3,
+        "review_fail_fp": "old-fp",
+        "last_reviewed_cutoff_tail": "old-anchor",
+    }
+    fake_manager = MagicMock()
+    fake_manager.review_history = AsyncMock(return_value=("white", None))
+
+    with (
+        patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
+    ):
+        await memory_server._run_review_in_background(
+            name,
+            _history(10),
+            asyncio.Event(),
+        )
+
+    state = memory_server.gates._maint_state[name]
+    assert state["review_output_exhaustion_attempts"] == 0
+    assert state["review_output_exhaustion_min_context_tokens"] is None
+    assert state["review_output_exhaustion_blocked"] is False
+    # 顺带钉住白 review 的既有语义：清锚点、清失败退避、故意不刷 last_review_ts
+    # （下轮 gate 4 用旧 ts 直接放行 + fingerprint=None 触发 gate 5 的 ∞ 通行）。
+    assert state["last_reviewed_cutoff_tail"] is None
+    assert state["review_fail_attempts"] == 0
+    assert state["review_fail_fp"] is None
+    assert "last_review_ts" not in state
     memory_server.gates._maint_state.pop(name, None)
 
 
@@ -233,7 +281,7 @@ async def test_generic_failure_breaks_output_exhaustion_streak():
 
     with (
         patch.object(memory_server.runtime, "recent_history_manager", fake_manager),
-        patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()),
+        patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
     ):
         await memory_server._run_review_in_background(
             name,
