@@ -460,8 +460,16 @@ def _next_legacy_asr_decision(
     value: bool,
 ) -> Dict[str, Any]:
     current_write_id = current["writeId"] if current is not None else -1
+    now_ms = time.time_ns() // 1_000_000
+    max_accepted_write_id = min(
+        MAX_SAFE_ASR_WRITE_ID - 1,
+        now_ms + ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+    )
     return {
-        "writeId": max(time.time_ns() // 1_000_000, current_write_id + 1),
+        "writeId": min(
+            max(now_ms, current_write_id + 1),
+            max_accepted_write_id,
+        ),
         "writerId": _LEGACY_ASR_DECISION_WRITER_ID,
         "value": value,
     }
