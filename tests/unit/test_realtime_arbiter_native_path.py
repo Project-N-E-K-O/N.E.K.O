@@ -307,6 +307,47 @@ async def test_reconnect_restores_dispatch_for_a_native_client():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_terminal_resets_the_per_turn_output_state():
+    # The per-turn cleanup in the response.done handler had no coverage at
+    # all: deleting the whole block turned nothing red. It is worth pinning on
+    # its own — _image_sent_this_turn in particular, because a stale one makes
+    # stream_image withhold the NEXT turn's visual context for its whole
+    # duration, so that response answers about a screen it cannot see.
+    #
+    # It is also the safety net for the extraction this commit performs: a
+    # helper nobody tests can be moved wrong without anything noticing.
+    client = _native_client()
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-1"}})
+    await _settle()
+    # Dirty the state AFTER response.created: that handler clears the
+    # transcript buffer itself, so seeding before it would leave this test
+    # asserting a value nobody had to produce.
+    client._audio_delta_count = 5
+    client._output_transcript_buffer = "leftover"
+    client._print_input_transcript = True
+    client._image_sent_this_turn = True
+
+    socket.feed({"type": "response.done", "response": {"id": "resp-1"}})
+    await _settle()
+
+    assert client._audio_delta_count == 0
+    assert client._output_transcript_buffer == ""
+    assert client._print_input_transcript is False
+    assert client._image_sent_this_turn is False, (
+        "a stale image flag makes stream_image withhold the next turn's "
+        "visual context for its whole duration"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_client_wires_an_arbiter_for_every_native_user():
     # The premise of this whole file: the arbiter is not opt-in. If it ever
     # becomes gated, these tests would pass vacuously against a bypass.

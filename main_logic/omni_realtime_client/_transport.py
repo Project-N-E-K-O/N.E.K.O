@@ -922,6 +922,40 @@ class _TransportMixin:
 
         return False
 
+    def _reset_per_turn_output_state(self) -> None:
+        """Clear the transport state scoped to one response.
+
+        Extracted from the ``response.done`` handler so any future path that
+        ends a turn without its terminal event has one place to call rather
+        than a list to re-derive. Every field here leaks into the NEXT turn if
+        it is missed: a stale ``_image_sent_this_turn`` makes ``stream_image``
+        withhold that turn's visual context for its whole duration, a stale
+        transcript buffer is flushed against the wrong turn, and
+        ``_audio_delta_count`` drives the "did this turn actually speak"
+        checks.
+
+        Behaviour is unchanged — this is the same block, in the same order,
+        with the same conditions.
+        """
+
+        self._audio_delta_count = 0
+        # 确保 buffer 被清空
+        self._output_transcript_buffer = ""
+        self._print_input_transcript = False
+        if self._supports_native_image:
+            self._image_recognized_this_turn = False
+        elif (
+            self._latest_image_b64 is None
+            or self._proactive_image_consumed
+        ):
+            # Standard StepFun analyzes only while this sentinel is
+            # present. Rearm after a consumed/absent frame, but keep
+            # a completed annotation generation-bound to an
+            # unconsumed cached frame across unrelated responses.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+        self._image_sent_this_turn = False
+
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
         if not self._is_responding:
@@ -1188,23 +1222,7 @@ class _TransportMixin:
                             self._output_transcript_buffer, self._is_first_transcript_chunk
                         )
                         self._is_first_transcript_chunk = False
-                    self._audio_delta_count = 0
-                    # 确保 buffer 被清空
-                    self._output_transcript_buffer = ""
-                    self._print_input_transcript = False
-                    if self._supports_native_image:
-                        self._image_recognized_this_turn = False
-                    elif (
-                        self._latest_image_b64 is None
-                        or self._proactive_image_consumed
-                    ):
-                        # Standard StepFun analyzes only while this sentinel is
-                        # present. Rearm after a consumed/absent frame, but keep
-                        # a completed annotation generation-bound to an
-                        # unconsumed cached frame across unrelated responses.
-                        self._image_recognized_this_turn = False
-                        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-                    self._image_sent_this_turn = False
+                    self._reset_per_turn_output_state()
                     if self.on_response_done:
                         await self.on_response_done()
                     # No-server-VAD providers (Gemini-proxy: lanlan.app+free /
