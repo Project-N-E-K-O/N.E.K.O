@@ -949,7 +949,7 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
     assert "response.status === 412" in sync_fn
     assert "const preservedKeys = new Set(_pendingSettingsKeys);" in sync_fn
-    assert "_settingsChangedSince(settings).forEach" in sync_fn
+    assert "_settingsChangedSince(settings, mutationVersionAtSend).forEach" in sync_fn
     assert "_mergeConversationSettingsSnapshot(data, preservedKeys);" in sync_fn
     assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
     assert "headers['X-Conversation-Settings-ASR-Decision']" in sync_fn
@@ -1276,6 +1276,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
         function makeContext(bootFails) {
+          let storageListener = null;
           const runtime = {
             stoppedSpeech: 0,
             stoppedScreening: 0,
@@ -1287,6 +1288,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               independentAsrEnabled: false,
               proactiveVisionEnabled: true,
               slopFilterEnabled: false,
+              mergeMessagesEnabled: false,
               mouseTrackingEnabled: false,
             })],
           ]);
@@ -1332,6 +1334,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               independentAsrEnabled: false,
               proactiveVisionEnabled: true,
               slopFilterEnabled: false,
+              mergeMessagesEnabled: false,
               focusModeEnabled: false,
               settingsHydrated: false,
               screenCaptureStream: {
@@ -1348,7 +1351,9 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             stopProactiveVisionDuringSpeech() { runtime.stoppedSpeech += 1; },
             stopScreening() { runtime.stoppedScreening += 1; },
             scheduleProactiveChat() { runtime.scheduled += 1; },
-            addEventListener() {},
+            addEventListener(type, listener) {
+              if (type === 'storage') storageListener = listener;
+            },
             removeEventListener() {},
           };
           vm.createContext(sandbox);
@@ -1360,6 +1365,9 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             postCalls,
             store,
             runtime,
+            fireStorage(newValue) {
+              storageListener({ key: 'project_neko_settings', newValue });
+            },
           };
         }
 
@@ -1493,11 +1501,27 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           assert(ctx.postCalls.length === 2, 'the unrelated edit must POST');
 
-          // A cross-window storage update can change local state without
-          // entering this window's pending-key set. It still happened after
-          // the request snapshot and must survive the 412 reconciliation.
-          ctx.win.mergeMessagesEnabled = true;
-          ctx.S.mergeMessagesEnabled = true;
+          // Cross-window ABA edits do not enter this window's pending set and
+          // leave the final value equal to the request snapshot. The mutation
+          // itself must still protect the latest choice from the 412 snapshot.
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 100,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+            },
+          }));
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 101,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+            },
+          }));
           ctx.postCalls[1].resolve(response(
             false,
             412,
@@ -1509,7 +1533,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 proactiveVisionEnabled: false,
                 slopFilterEnabled: false,
                 focusModeEnabled: false,
-                mergeMessagesEnabled: false,
+                mergeMessagesEnabled: true,
               },
               revision: 2,
               decisions: {},
@@ -1528,8 +1552,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'the still-pending local edit must survive the conflict merge'
           );
           assert(
-            retryBody.mergeMessagesEnabled === true,
-            'a non-pending edit made after send must survive the conflict merge'
+            retryBody.mergeMessagesEnabled === false,
+            'a non-pending ABA edit made after send must survive the conflict merge'
           );
           assert(
             retryBody.proactiveVisionEnabled === false,
@@ -1546,7 +1570,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             reconciledLocal.slopFilterEnabled === false
               && reconciledLocal.focusModeEnabled === true
               && reconciledLocal.proactiveVisionEnabled === false
-              && reconciledLocal.mergeMessagesEnabled === true,
+              && reconciledLocal.mergeMessagesEnabled === false,
             'the conflict winners and pending local edit must persist to shared localStorage'
           );
           assert(

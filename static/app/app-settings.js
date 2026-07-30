@@ -28,6 +28,8 @@
     // without reopening the late-boot-GET overwrite race.
     const _dirtySettingsKeys = new Set();
     const _pendingSettingsKeys = new Set();
+    let _crossWindowMutationVersion = 0;
+    const _crossWindowKeyMutationVersions = Object.create(null);
     let _settingsBaseline = null;
     // Cross-window write metadata (Codex P2): saveSettings() writes EVERY
     // conversation key into the shared localStorage snapshot, so a receiving
@@ -527,7 +529,7 @@
         }
     }
 
-    function _settingsChangedSince(snapshot) {
+    function _settingsChangedSince(snapshot, mutationVersion) {
         const changedKeys = new Set();
         const current = getConversationSettings();
         const keys = new Set(Object.keys(snapshot).concat(Object.keys(current)));
@@ -538,9 +540,25 @@
             const now = Object.prototype.hasOwnProperty.call(current, key)
                 ? current[key]
                 : undefined;
-            if (before !== now) changedKeys.add(key);
+            if (before !== now
+                || (_crossWindowKeyMutationVersions[key] || 0) > mutationVersion) {
+                changedKeys.add(key);
+            }
         });
         return changedKeys;
+    }
+
+    function _noteCrossWindowMutations(settings, explicitKeys) {
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
+            // A server-merge broadcast carries an empty changedKeys list and
+            // must not be mistaken for newer user intent. Metadata-less
+            // previous-build writers retain their value-change fallback.
+            if (explicitKeys && explicitKeys.indexOf(key) === -1) return;
+            if (S[key] === settings[key]) return;
+            _crossWindowMutationVersion += 1;
+            _crossWindowKeyMutationVersions[key] = _crossWindowMutationVersion;
+        });
     }
 
     function applySharedRuntimeSettings(settings) {
@@ -715,6 +733,7 @@
             }
             for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
                 const settings = getConversationSettings();
+                const mutationVersionAtSend = _crossWindowMutationVersion;
                 const mergedAtSend = _settingsMergedFromServer;
                 // Full snapshot only once server values were actually merged. If
                 // the gate opened on its timeout instead — or the GET resolved to
@@ -754,7 +773,7 @@
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (response.status === 412) {
                         const preservedKeys = new Set(_pendingSettingsKeys);
-                        _settingsChangedSince(settings).forEach((key) => {
+                        _settingsChangedSince(settings, mutationVersionAtSend).forEach((key) => {
                             preservedKeys.add(key);
                         });
                         _mergeConversationSettingsSnapshot(data, preservedKeys);
@@ -770,7 +789,10 @@
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
                     }
-                    const changedWhileInFlight = _settingsChangedSince(settings);
+                    const changedWhileInFlight = _settingsChangedSince(
+                        settings,
+                        mutationVersionAtSend
+                    );
                     _clearAcknowledgedPendingSettings(payload);
                     // A successful dirty-only write returns the complete
                     // authoritative snapshot. If the boot GET failed or lost
@@ -1500,6 +1522,7 @@
                 incoming = Object.assign({}, settings);
                 delete incoming.independentAsrEnabled;
             }
+            _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
             // Roll the dirty-diff baseline for every key just adopted from
             // another window. _markUserDirtySettings diffs against this
