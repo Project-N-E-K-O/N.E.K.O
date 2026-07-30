@@ -552,6 +552,16 @@ test('native edge-peek drag restoration keeps virtual positions outside the crop
     vm.runInContext('restoreNekoIdleCat1EdgePeekBeforeDrag(container)', context);
     assert.equal(style.left, '1560px', 'right-edge virtual position must not clamp to innerWidth');
     assert.equal(style.top, '900px', 'bottom-edge virtual position must not clamp to innerHeight');
+
+    context.window.__nekoNiriPetPhysicalCrop.getState = () => ({
+        enabled: true,
+        virtualBounds: { x: 1, y: 1, width: 80, height: 90 }
+    });
+    style.left = '50px';
+    style.top = '40px';
+    vm.runInContext('restoreNekoIdleCat1EdgePeekBeforeDrag(container)', context);
+    assert.equal(style.left, '0px', 'viewport narrower than the container must clamp to zero');
+    assert.equal(style.top, '0px', 'viewport shorter than the container must clamp to zero');
 });
 
 test('CAT1 automatic targets clamp against the virtual desktop instead of the Pet crop', () => {

@@ -1705,8 +1705,10 @@
             ? rawTop
             : (virtualRect ? virtualRect.top : (rect ? rect.top : 0));
         const virtualViewport = getNekoTransitionVirtualViewportSize();
-        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, virtualViewport.width - w))}px`;
-        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, virtualViewport.height - h))}px`;
+        const viewportWidth = Math.max(w, virtualViewport.width);
+        const viewportHeight = Math.max(h, virtualViewport.height);
+        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, viewportWidth - w))}px`;
+        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, viewportHeight - h))}px`;
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';
