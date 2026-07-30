@@ -337,8 +337,38 @@ def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
     return None
 
 
+def _operand_branches(node: ast.AST) -> list[ast.AST]:
+    """An operand, or — when it is conditional — the branches it picks between.
+
+    ``{**(A if flag else B), "zh-TW": t}`` merges whichever of A/B runs, so both
+    are fragments of the same table. Naming only the ``IfExp`` left traversal free
+    to reach A and B and judge each on its own — two false offenders for one
+    compliant table.
+
+    The ``IfExp`` itself is not returned: nothing judges one (it is not a mapping
+    expression), so listing it would be a line no test can hold to account.
+    """
+    if isinstance(node, ast.IfExp):
+        return [*_operand_branches(node.body), *_operand_branches(node.orelse)]
+    return [node]
+
+
 def _merge_operands(node: ast.AST) -> list[ast.AST]:
     """The sub-mappings a merged construction composes, or ``[]`` if not a merge.
+
+    Conditional operands are expanded into their branches here rather than at each
+    caller, so every consumer — fragment suppression, the merge exemption, and
+    payload key resolution — agrees on what counts as a fragment.
+    """
+    return [
+        part
+        for operand in _direct_merge_operands(node)
+        for part in _operand_branches(operand)
+    ]
+
+
+def _direct_merge_operands(node: ast.AST) -> list[ast.AST]:
+    """The operands a merge names outright, before conditionals are expanded.
 
     ``{**a, **b}``, ``dict(BASE, zh=...)`` and ``a | b`` compose their keys out of
     other mappings, so each operand is a *fragment*: the ``'zh-TW'`` entry may
@@ -419,12 +449,17 @@ def _directly_visible_keys(
         return _directly_visible_keys(node.left, resolve_name) | _directly_visible_keys(node.right, resolve_name)
     if isinstance(node, ast.Name) and resolve_name is not None:
         return resolve_name(node.id)
-    if isinstance(node, ast.Call) and _is_dict_fromkeys(node.func) and node.args:
-        # `_F | dict.fromkeys(("zh-TW",), t)` — resolve_keys handles this
-        # constructor, so the visibility scan has to as well or the union looks
-        # like it supplies nothing and _F gets reported.
-        return _literal_string_sequence(node.args[0]) or set()
-    return set()
+    if isinstance(node, ast.IfExp):
+        # Either branch may be the one that carries zh-TW, and a conditional
+        # supply still counts here — same call as `if enabled: T["zh-TW"] = t`.
+        return _directly_visible_keys(node.body, resolve_name) | _directly_visible_keys(
+            node.orelse, resolve_name
+        )
+    # Anything else resolve_keys understands: `_F | dict.fromkeys(("zh-TW",), t)`,
+    # `_F | {loc: tpl for loc in ("zh-TW",)}`. Delegating rather than re-listing
+    # the constructors keeps this from lagging behind resolve_keys again — each
+    # time it did, the union looked like it supplied nothing and _F got reported.
+    return resolve_keys(node) or set()
 
 
 def _exempt_table_nodes(tree: ast.AST) -> set[int]:
@@ -510,6 +545,56 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if value is not None:
             exempt.add(id(value))
 
+    def _mapping_keys(
+        node: ast.AST | None, at: int, _seen: frozenset[str] = frozenset()
+    ) -> set[str]:
+        """Keys a mapping expression supplies, following names to their bindings.
+
+        One resolver for every place a name can stand in for a mapping — a mutation
+        payload, a merge operand, an alias of either. Each of those grew its own
+        partial version first (``resolve_keys`` only; no iterable-of-pairs; no
+        second hop through ``TW2 = dict(TW)``), and every gap read as "no zh-TW
+        here", i.e. a table reported despite being compliant at runtime.
+
+        ``_seen`` guards the name hops, so mutual or self-referential bindings
+        terminate instead of recursing forever.
+        """
+        if node is None:
+            return set()
+        if isinstance(node, ast.Name):
+            if node.id in _seen:
+                return set()
+            return _name_keys(node.id, at, _seen=_seen)
+        if isinstance(node, ast.IfExp):
+            # `T |= TW if flag else {"zh-TW": t}` — either branch may carry it, and
+            # a conditional supply counts, same as in `_directly_visible_keys`.
+            return _mapping_keys(node.body, at, _seen) | _mapping_keys(
+                node.orelse, at, _seen
+            )
+        keys = resolve_keys(node)
+        if keys is None:
+            keys = _pair_sequence_keys(node)
+        if keys is None:
+            # A construction resolve_keys gave up on because its own parts are
+            # names: `dict(TW)`, `{**TW}`, `BASE | TW`.
+            operands = _merge_operands(node)
+            if operands:
+                keys = _directly_visible_keys(node)
+                for operand in operands:
+                    keys |= _mapping_keys(operand, at, _seen)
+        return keys or set()
+
+    def _name_keys(
+        name: str,
+        at: int,
+        exclude: ast.AST | None = None,
+        _seen: frozenset[str] = frozenset(),
+    ) -> set[str]:
+        """Keys of the mapping `name` is bound to just before `at`."""
+        return _mapping_keys(
+            _binding_before(name, at, exclude), at, _seen | {name}
+        )
+
     for node in ast.walk(tree):
         # `T["zh-TW"] = t`, and its annotated form `T["zh-TW"]: str = t`.
         # AnnAssign carries a single `target` rather than a `targets` list, so it
@@ -565,23 +650,10 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if target is None or not payloads:
             continue
 
-        def _payload_keys(payload: ast.AST, _at: int = node.lineno) -> set[str]:
-            """Keys a mutation payload supplies, or empty if unknowable.
-
-            Three shapes, in order: a mapping expression, an iterable of pairs
-            (`update([("zh-TW", t)])`), and a name bound to a mapping earlier
-            (`TW = {"zh-TW": t}` / `T.update(TW)`) — the last one uses the same
-            preceding-binding lookup as merge operands, which it previously did not.
-            """
-            keys = resolve_keys(payload)
-            if keys is None:
-                keys = _pair_sequence_keys(payload)
-            if keys is None and isinstance(payload, ast.Name):
-                bound = _binding_before(payload.id, _at)
-                keys = resolve_keys(bound) if bound is not None else None
-            return keys or set()
-
-        if any(TRADITIONAL_KEY in _payload_keys(p) for p in payloads):
+        if any(
+            TRADITIONAL_KEY in _mapping_keys(payload, node.lineno)
+            for payload in payloads
+        ):
             _exempt_binding_before(target, node.lineno)
 
     # A name merged into a construction that *demonstrably supplies zh-TW* is a
@@ -597,15 +669,11 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if not operands:
             continue
 
+        # `_TW = {"zh-TW": t}` / `T = {**_F, **_TW}` supplies zh-TW as plainly as an
+        # inline literal. Following the name only ever *adds* visible keys, so
+        # `U = dict(T)` still sees {en, zh} and leaves T subject to the rule.
         def _named_keys(name: str, _at: int = node.lineno, _self: ast.AST = node) -> set[str]:
-            """Keys of a name's preceding binding, so a named supplier counts.
-
-            `_TW = {"zh-TW": t}` / `T = {**_F, **_TW}` supplies zh-TW as plainly as
-            an inline literal. Following the name only ever *adds* visible keys, so
-            `U = dict(T)` still sees {en, zh} and leaves T subject to the rule.
-            """
-            bound = _binding_before(name, _at, exclude=_self)
-            return (resolve_keys(bound) or set()) if bound is not None else set()
+            return _name_keys(name, _at, exclude=_self)
 
         if TRADITIONAL_KEY not in _directly_visible_keys(node, _named_keys):
             continue

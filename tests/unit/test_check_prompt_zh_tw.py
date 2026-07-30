@@ -1705,3 +1705,127 @@ def test_documented_miss_side_blind_spots(src):
     localized table into parallel sequences makes the template bodies unreadable.
     """
     assert _violations(src) == []
+
+
+@pytest.mark.parametrize("supplier", [
+    '{loc: tpl for loc in ("zh-TW",)}',
+    'dict.fromkeys(("zh-TW",), "t")',
+    '{"zh-TW": "t"}',
+])
+def test_visible_keys_covers_every_constructor_resolve_keys_does(supplier):
+    """`_directly_visible_keys` must not lag behind `resolve_keys`.
+
+    It answers "does this merge demonstrably supply zh-TW?", so a constructor it
+    fails to read makes the union look like it supplies nothing and the fragment
+    gets reported. It re-listed constructors by hand and fell behind twice; it now
+    delegates, which is what this pins.
+    """
+    assert _violations(f'F = {{"en": "e", "zh": "s"}}\nT = F | {supplier}') == []
+
+
+def test_visible_keys_delegation_does_not_blind_the_gate():
+    src = 'F = {"en": "e", "zh": "s"}\nT = F | {loc: tpl for loc in ("ja",)}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    # payload named, bound to an iterable of pairs rather than a mapping
+    'P = [("zh-TW", "t")]\nT = {"en": "e", "zh": "s"}\nT.update(P)',
+    # the supplier reached through a second name
+    'TW = {"zh-TW": "t"}\nTW2 = dict(TW)\nF = {"en": "e", "zh": "s"}\nT = {**F, **TW2}',
+    'TW = {"zh-TW": "t"}\nTW2 = TW | {}\nT = {"en": "e", "zh": "s"}\nT |= TW2',
+])
+def test_name_resolution_is_uniform_across_paths(src):
+    """Mutation payloads, merge operands and aliases share one resolver.
+
+    Each grew its own partial version first — `resolve_keys` only, no
+    iterable-of-pairs, no second hop — and every gap read as "no zh-TW here".
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('X = {"ja": "j"}\nX2 = dict(X)\nF = {"en": "e", "zh": "s"}\nT = {**F, **X2}', [3]),
+    ('P = [("ja", "j")]\nT = {"en": "e", "zh": "s"}\nT.update(P)', [2]),
+])
+def test_following_names_only_ever_adds_keys(src, expected):
+    """Chasing a name must not become a way to excuse an offender."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ("T = T\nT.update(T)\nU = {'en': 'e', 'zh': 's'}", [3]),
+    ("A = B\nB = A\nT = {'en': 'e', 'zh': 's'}\nT.update(A)", [3]),
+])
+def test_self_and_mutual_bindings_terminate(src, expected):
+    """Name hops are recursive, so they need a cycle guard.
+
+    Without one these hang the gate rather than failing it, which in CI reads as
+    an infrastructure problem rather than a bug here.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_conditional_operand_branches_are_fragments():
+    """`{**(A if flag else B), "zh-TW": t}` is one compliant table, not two.
+
+    Suppressing only the IfExp left traversal free to reach both branch dicts and
+    report each on its own — the count grew by two for a compliant table.
+    """
+    src = (
+        'T = {**({"en": "e", "zh": "s"} if flag else {"en": "e2", "zh": "s2"}),'
+        ' "zh-TW": "t"}'
+    )
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src", [
+    # supplied through a merge operand — in either branch, so neither may be the
+    # only one read
+    'F = {"en": "e", "zh": "s"}\nT = F | (TW if flag else {"zh-TW": "t"})',
+    'F = {"en": "e", "zh": "s"}\nT = F | ({"zh-TW": "t"} if flag else TW)',
+    # a conditional nested in a conditional is still just branches — the fragment
+    # sits in the inner one, so expanding only the outer level leaves it reported
+    'T = {**(X if f else ({"en": "e", "zh": "s"} if g else Y)), "zh-TW": "t"}',
+    # supplied through a mutation payload — the same shape on the other path
+    'TW = {"zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT |= TW if flag else {}',
+    'T = {"en": "e", "zh": "s"}\nT.update({"ja": "j"} if flag else {"zh-TW": "t"})',
+])
+def test_conditional_operand_may_be_the_zh_tw_supplier(src):
+    """A conditional supply counts, same call as `if enabled: T["zh-TW"] = t`.
+
+    Both paths that ask "is zh-TW supplied here?" have to agree — supporting it on
+    merge operands only would report the mutation form of the same table.
+    """
+    assert _violations(src) == []
+
+
+def test_direct_keys_count_even_when_the_rest_of_the_payload_is_unknowable():
+    """`TW = {**BASE, "zh-TW": t}` supplies zh-TW whatever BASE holds.
+
+    `_mapping_keys` gives up on the table as a whole (BASE is unresolvable), so
+    without folding in the keys it states outright the payload looks empty and the
+    compliant target gets reported.
+    """
+    src = 'TW = {**BASE, "zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT.update(TW)'
+    assert _violations(src) == []
+
+
+def test_unknowable_payload_without_direct_zh_tw_still_reports():
+    src = 'TW = {**BASE, "ja": "j"}\nT = {"en": "e", "zh": "s"}\nT.update(TW)'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [2]
+
+
+def test_independent_table_inside_a_conditional_operand_is_still_judged():
+    """Branches are fragments; tables merely *held* by a branch are not.
+
+    The same distinction `_merge_operands` already draws for spreads — otherwise
+    expanding branches would prune real offenders out of the walk.
+    """
+    src = 'T = {**(A if flag else {"new": {"en": "e", "zh": "s"}}), "zh-TW": "t"}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
