@@ -1154,6 +1154,109 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     discard.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_proactive_reuse_also_checks_the_stored_route(monkeypatch):
+    """ensure_session_for_user is the proactive twin of the generation
+    bootstrap: a session serving only proactive traffic would otherwise
+    never hit the reply path's route check and stay on the retired
+    provider forever. Mismatch goes through discard_session (scoped
+    buffers get salvaged), not a bare pop+close."""
+    from plugin.plugins.qq_auto_reply import session_bootstrap_service as sbs
+
+    new_route = (TOOL_CAPABLE_BASE_URL, TOOL_CAPABLE_MODEL)
+
+    class _StubClient:
+        def __init__(self, **kwargs):
+            self.base_url = kwargs.get("base_url")
+            self.model = kwargs.get("model")
+
+        async def connect(self, instructions=""):
+            return None
+
+    monkeypatch.setattr(sbs, "OmniOfflineClient", _StubClient)
+    monkeypatch.setattr(
+        sbs, "get_config_manager",
+        lambda: SimpleNamespace(
+            aensure_region_resolved=AsyncMock(),
+            get_model_api_config=lambda kind: {
+                "base_url": new_route[0], "model": new_route[1], "api_key": "k",
+            },
+            get_character_data=lambda: (
+                "Master", "Neko", None, {}, None, {}, None, None, None,
+            ),
+        ),
+    )
+
+    stale_entry = {
+        "login_self_id": "10000",
+        "her_name": "Neko",
+        "conversation_route": ("https://www.lanlan.app/text/v1", "free-model"),
+        "session": SimpleNamespace(),
+        "session_key": "group:7788",
+        "sender_id": "2046",
+        "is_group": True,
+        "group_id": "7788",
+        "user_title": "群友",
+        "permission_level": "user",
+        "lock": asyncio.Lock(),
+    }
+    discard = AsyncMock(side_effect=lambda key, reason: (
+        plugin._user_sessions.pop(key, None) is not None
+    ))
+    plugin = SimpleNamespace(
+        _user_sessions={"group:7788": stale_entry},
+        _ai_connect_timeout_seconds=5,
+        logger=MagicMock(),
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+        session_runtime_service=SimpleNamespace(discard_session=discard),
+        _normalize_login_identity=lambda payload: ("online", "10000", "Neko"),
+        _fetch_login_status_payload=AsyncMock(return_value={}),
+        _build_character_card_fields=lambda *a, **k: {},
+        _build_qq_session_instructions=AsyncMock(
+            return_value=SimpleNamespace(
+                system_prompt="系统提示词", memory_context_used=False,
+            )
+        ),
+    )
+    service = sbs.QQSessionBootstrapService(plugin)
+    created = await service.ensure_session_for_user({
+        "session_key": "group:7788", "sender_id": "2046",
+        "permission_level": "user", "is_group": True, "group_id": "7788",
+        "user_title": "群友",
+    })
+    discard.assert_awaited_once()
+    assert created is not stale_entry
+    assert created["conversation_route"] == new_route
+
+    # 线路一致：原样复用——比对的是创建期指纹，vision 切换过的 client
+    # 现值不同也不得触发重建。
+    created["session"] = SimpleNamespace(
+        model="vision-x", base_url="https://vision.example.com/v1",
+    )
+    discard.reset_mock()
+    reused = await service.ensure_session_for_user({
+        "session_key": "group:7788", "sender_id": "2046",
+        "permission_level": "user", "is_group": True, "group_id": "7788",
+        "user_title": "群友",
+    })
+    assert reused is created
+    discard.assert_not_awaited()
+
+    # 结算失败（discard 返回 False）：保留旧会话 + 粘性标记交回复路径重试，
+    # 绝不销毁缓冲唯一副本。
+    created["conversation_route"] = ("https://old.example.com/v1", "old-model")
+    discard.reset_mock()
+    discard.side_effect = None
+    discard.return_value = False
+    kept = await service.ensure_session_for_user({
+        "session_key": "group:7788", "sender_id": "2046",
+        "permission_level": "user", "is_group": True, "group_id": "7788",
+        "user_title": "群友",
+    })
+    assert kept is created
+    assert kept["pending_identity_discard"] is True
+
+
 # ---------------------------------------------------------------------------
 # Bridge: time passthrough
 # ---------------------------------------------------------------------------

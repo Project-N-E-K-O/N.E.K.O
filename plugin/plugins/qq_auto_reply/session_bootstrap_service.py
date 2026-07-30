@@ -219,10 +219,45 @@ class QQSessionBootstrapService:
                         self.plugin.logger.warning(f"关闭登录身份已变化的主动会话失败: {close_error}")
                 existing = None
             else:
-                existing["login_status"] = current_login_status
-                existing["login_self_id"] = current_login_self_id
-                existing["login_nickname"] = current_login_nickname
-                return existing
+                # 线路指纹核对（与 ensure_generation_session 对偶）：主动
+                # 路径复用的条目同样可能跨过一次 provider 切换，只靠回复
+                # 路径兜底会漏掉纯主动流量的会话。核对前先落定区域（免费
+                # 线路的区域改写不得造出假错配）；走 discard_session 而非
+                # 裸 pop+close——群会话的 scoped 缓冲要先集中抢救。
+                stored_route = existing.get("conversation_route")
+                if stored_route is not None:
+                    try:
+                        await get_config_manager().aensure_region_resolved()
+                    except Exception as _geo_err:
+                        self.plugin.logger.warning(f"[GeoIP] 线路核对前区域落定失败，跳过错配检查: {_geo_err}")
+                    current_route = None
+                    try:
+                        _route_config = get_config_manager().get_model_api_config("conversation")
+                        current_route = (
+                            str(_route_config.get("base_url") or ""),
+                            str(_route_config.get("model") or ""),
+                        )
+                    except Exception:
+                        current_route = None
+                    if (
+                        current_route is not None
+                        and tuple(stored_route) != current_route
+                    ):
+                        discarded = await self.plugin.session_runtime_service.discard_session(
+                            session_key, reason="登录身份/角色/线路变化",
+                        )
+                        if discarded is False:
+                            # 结算失败被有意保留：打粘性标记让回复路径的
+                            # 复用判据接手重试，本轮沿用旧会话（销毁唯一
+                            # 缓冲副本比线路滞后一轮更糟）。
+                            existing["pending_identity_discard"] = True
+                        else:
+                            existing = None
+                if existing is not None:
+                    existing["login_status"] = current_login_status
+                    existing["login_self_id"] = current_login_self_id
+                    existing["login_nickname"] = current_login_nickname
+                    return existing
 
         try:
             config_manager = get_config_manager()
