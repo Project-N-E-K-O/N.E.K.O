@@ -2173,8 +2173,20 @@ class LifecycleMixin:
                 _extras_for_budget = _selected
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
-                except (web_exceptions.ConnectionClosed, AttributeError) as e:
-                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
+                except (
+                    web_exceptions.ConnectionClosed,
+                    AttributeError,
+                    ConnectionError,
+                    RuntimeError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作。
+                    # skipped=False 的 prime 走 create_response → response arbiter，
+                    # ticket 失败以 ConnectionError / RuntimeError / TimeoutError 浮出
+                    # （派发被打断、连接不可用、终态超时等）——这些同样意味着"本次
+                    # prime 没有送达、放弃本次 swap、老会话继续用"，必须走本分支的
+                    # 定向收尾，而不是落到外层兜底把良性放弃当 INTERNAL_UPDATE_FAILED
+                    # 报给前端。
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
                     await self._reset_preparation_state(clear_main_cache=True)
@@ -2212,8 +2224,16 @@ class LifecycleMixin:
                         final_prime_text += "\n" + _passive_swap_text
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
-                except (web_exceptions.ConnectionClosed, AttributeError) as e:
-                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
+                except (
+                    web_exceptions.ConnectionClosed,
+                    AttributeError,
+                    ConnectionError,
+                    RuntimeError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    # 与上方 skipped=False 分支同款收窄→放宽（对偶）：Gemini 的
+                    # skipped=True prime 走 SDK send，同样以 RuntimeError /
+                    # ConnectionError 浮出；良性"放弃本次 swap"不该落外层兜底。
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
                     await self._reset_preparation_state(clear_main_cache=True)

@@ -912,8 +912,12 @@ class _TransportMixin:
 
         self._is_responding = False
         # Keep the cancelled response identity until its terminal event arrives.
-        # Clearing it here makes the stale-event filter drop that response.done,
-        # leaving the arbiter busy until a later response happens to complete.
+        # Clearing it here makes the stale-event filter classify that
+        # response.done as stale. The filter still forwards stale terminals to
+        # the arbiter (the lane would reopen either way), but the rest of the
+        # done handling is skipped for the turn: the done counters and usage
+        # recording, the _interrupted reset, the transcript flush and the
+        # on_response_done callback all silently miss one turn.
         self._current_item_id = None
         # 清空转录buffer和重置标志，防止打断后的错位
         self._output_transcript_buffer = ""
