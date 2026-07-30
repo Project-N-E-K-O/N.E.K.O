@@ -287,6 +287,8 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
     await _eventually(lambda: coordinator.unload_calls == 1, timeout=2.0)
 
     await adapter.reset(generation=1, buffer_epoch=1, utterance_id=3)
+    armed = adapter._smart_turn_unload_task   # reset() 排下的这一轮 TTL 卸载
+    assert armed is not None
     await adapter.push_audio(
         generation=1,
         buffer_epoch=1,
@@ -295,8 +297,13 @@ async def test_silent_audio_does_not_extend_smart_turn_warm_ttl() -> None:
     )
     await _eventually(lambda: len(gate.feed_calls) == 1)
     # wait_idle 排空队列，保证这帧静音音频已被完整消费——若消费路径错误地
-    # 取消了 TTL 卸载，此刻取消就已经发生了，下面的轮询不会变成空过判定。
+    # 取消了 TTL 卸载，此刻取消就已经发生了，下面的断言不会变成空过判定。
     await adapter.wait_idle()
+    # 本用例的主张是「静音音频不给 TTL 续期」，光数 unload_calls 到 2 证明不了它：
+    # 续期就是 _cancel_smart_turn_unload + _schedule_smart_turn_unload，计数照样会
+    # 到 2、只是晚一轮 TTL。所以要断言 reset() 排下的**同一个**任务还挂着、没被取消。
+    assert adapter._smart_turn_unload_task is armed, "静音音频重排了 TTL 卸载任务"
+    assert not armed.cancelled()
     # 不能用固定 sleep 等 TTL 到点：Windows 事件循环 15.625ms 的时钟粒度下
     # sleep(0.03) 可能只等零毫秒（断言提前落地）。
     await _eventually(lambda: coordinator.unload_calls == 2, timeout=2.0)

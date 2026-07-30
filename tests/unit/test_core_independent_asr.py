@@ -1382,6 +1382,7 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     runtime._asr_detector = _ReadyDetector()
 
     await _start_and_seal_turn(runtime, "glm")
+    armed_at = time.monotonic()
     watchdog = runtime._asr_final_watchdog_task
     assert watchdog is not None
 
@@ -1392,7 +1393,7 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     # 先断言就会把「事后才发生」误报成「窗口内提前开火」。
     # A watchdog stuck on the shared default (10 ms in the scaled test above)
     # would have fired by now; the per-provider override keeps it armed.
-    deadline = time.monotonic() + 0.15
+    deadline = armed_at + 0.15
     while True:
         await asyncio.sleep(0.005)
         if time.monotonic() >= deadline:
@@ -1401,8 +1402,15 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
 
     # 正向那半不猜时间：守护任务自己跑完（内部 await 完错误处理才结束）即同步点。
     await asyncio.wait_for(watchdog, 5)
+    elapsed = time.monotonic() - armed_at
 
     assert runtime._asr_route_mode == "blocked"
+    # 上界也必须钉住，否则这条用例只主张「五秒内会开火」：把 per-provider 超时写成
+    # 常量 2s、或者把 ms 当成 s 换算错的回归，在 150ms 观察窗口里同样还是
+    # independent，然后在 5s 内跑完，照样通过。配置是 500ms，给 3 倍余量。
+    assert elapsed < 1.5, (
+        f"守护任务没有按 per-provider 的 500ms 超时开火，实际 {elapsed:.3f}s"
+    )
 
 
 async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> None:

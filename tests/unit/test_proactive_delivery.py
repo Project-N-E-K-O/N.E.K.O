@@ -49,19 +49,19 @@ async def _wait_until(predicate, *, timeout=5.0, what="condition"):
         await asyncio.sleep(0.005)
 
 
-async def _stays_true(predicate, *, seconds, what="condition"):
-    # 按真实时钟走满一段窗口，期间每圈复查。"窗口内还没发生"这类负向断言只在
-    # 一瞬间取样是没有牙齿的：被测窗口被误缩短十倍时单点取样照样通过（实测过），
+async def _stays_true(predicate, *, until, what="condition"):
+    # 按真实时钟走到 until（绝对时刻），期间每圈复查。"窗口内还没发生"这类负向断言
+    # 只在一瞬间取样是没有牙齿的：被测窗口被误缩短十倍时单点取样照样通过（实测过），
     # 只有按真实时钟走一段才测得出窗口本身还在。
+    # until 必须是绝对时刻而不是时长：相对时长会在前面的等待被拖长时把观察窗口推到
+    # 被测窗口之外，那时发生的放行是合法的，断言就变成假红。
     loop = asyncio.get_running_loop()
-    deadline = loop.time() + seconds
     while True:
         await asyncio.sleep(0.005)
-        # 醒来后先复查挂钟再断言。这一觉可能被别的任务拖长而睡过了窗口，此时窗口
-        # 外发生的放行是合法的，先断言就会把「事后才发生」误报成「窗口内破了」。
-        if loop.time() >= deadline:
+        # 醒来后先复查挂钟再断言。这一觉可能被别的任务拖长而睡过了窗口。
+        if loop.time() >= until:
             return
-        assert predicate(), f"{what} broke within {seconds}s"
+        assert predicate(), f"{what} broke before {until}"
 
 
 def test_effective_priority_normalisation():
@@ -188,15 +188,20 @@ async def test_min_gap_delays_release():
     delivered = []
     # min-gap 抬到 1.0s：负向断言必须落在窗口内，而 Windows 上 sleep 和 pump 各
     # 自会超发一格时钟（15.625ms），0.2s 的窗口给"还没到点"留的余量不足十倍。
-    mgr = _make(delivered, min_gap_s=1.0)
+    min_gap = 1.0
+    mgr = _make(delivered, min_gap_s=min_gap)
+    loop = asyncio.get_running_loop()
     mgr.on_playback_start()
     mgr.submit({"id": "x"}, priority=1)
     mgr.on_playback_end()           # records last_play_end; gap not elapsed
+    window_end = loop.time() + min_gap
     # 不能先 _settle() 再裸断言：那是 5 次不受检的真实 sleep，被拖长到超过 min-gap
-    # 之后放行是合法的，裸断言就会假红。直接交给 _stays_true —— 它每次醒来先复查挂钟，
-    # 而第一次醒来（约 5ms）时 call_later(0) 那轮 pump 早已跑过，所以「不受 min-gap
-    # 约束就会立刻放行」这个回归照样会被第一次断言抓住。走满 min-gap 的 40%。
-    await _stays_true(lambda: delivered == [], seconds=0.4, what="min-gap window")
+    # 之后放行是合法的，裸断言就会假红。交给 _stays_true 并给它**绝对**的窗口终点，
+    # 第一次醒来（约 5ms）时 call_later(0) 那轮 pump 早已跑过，所以「不受 min-gap
+    # 约束就会立刻放行」这个回归照样会被第一次断言抓住。走到窗口的 80% 处收手。
+    await _stays_true(
+        lambda: delivered == [], until=window_end - 0.2, what="min-gap window"
+    )
     await _wait_until(lambda: bool(delivered), what="min-gap release")
     assert [c["id"] for c in delivered] == ["x"]
 
@@ -205,20 +210,28 @@ async def test_playing_watchdog_recovers_missing_play_end():
     # voice_play_start with no matching voice_play_end (frontend disconnect)
     # must not wedge the queue forever — the max_play watchdog re-opens it.
     delivered = []
-    mgr = _make(delivered, max_play_s=0.5)
+    max_play = 0.5
+    mgr = _make(delivered, max_play_s=max_play)
+    loop = asyncio.get_running_loop()
     mgr.on_playback_start()          # ...and voice_play_end never arrives
+    window_end = loop.time() + max_play
     mgr.submit({"id": "x"}, priority=1)
     armed = mgr._pump_handle         # the call_later(0) submit just scheduled
     # 负向那半不睡固定时长：0.05s 的 sleep 在 Windows 上实际耗 62.5ms，离窗口边界
     # 只剩几格时钟，随时滑过看门狗变假红。改成等这一轮 pump 真的跑完——它没有放
     # 行，而是把自己重排到看门狗到点（handle 被换掉），这才是"窗口内"的确定证据。
     await _wait_until(lambda: mgr._pump_handle is not armed, what="first pump run")
-    assert delivered == []           # still within max_play window
-    assert mgr._playing              # 闸门确实还关着，正向断言才不会空过
-    assert mgr._pump_handle is not None  # 看门狗自己会到点，不靠外部再踢一脚
-    # 走满 max_play 的 40%：上面几条只是窗口内某一瞬的取样，看门狗窗口被误缩短
-    # 时它们照样通过，只有按真实时钟走一段才能证明窗口本身还在。
-    await _stays_true(lambda: delivered == [], seconds=0.2, what="max_play window")
+    # 但要先确认这一轮 pump 仍落在看门狗窗口内才有资格断言「还没放行」：事件循环被
+    # 拖到窗口之后才跑第一轮 pump 时，那一轮直接走看门狗分支放行是**正确行为**。
+    if loop.time() < window_end:
+        assert delivered == []           # still within max_play window
+        assert mgr._playing              # 闸门确实还关着，正向断言才不会空过
+        assert mgr._pump_handle is not None  # 看门狗自己会到点，不靠外部再踢一脚
+        # 上面几条只是窗口内某一瞬的取样，看门狗窗口被误缩短时它们照样通过；
+        # 只有按真实时钟走到窗口的 80% 处才能证明窗口本身还在。
+        await _stays_true(
+            lambda: delivered == [], until=window_end - 0.1, what="max_play window"
+        )
     await _wait_until(lambda: bool(delivered), what="watchdog release")
     assert [c["id"] for c in delivered] == ["x"]
 
