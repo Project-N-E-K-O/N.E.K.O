@@ -1132,13 +1132,13 @@
         try {
             localStorage.setItem('neko_noise_reduction', S.noiseReductionEnabled ? '1' : '0');
         } catch (e) { }
-        // 同步到后端 conversation-settings
+        // Route through the shared CAS client so cross-window toggles carry
+        // If-Match and reconcile 412 snapshots instead of bypassing ordering.
         try {
-            fetch('/api/config/conversation-settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ noiseReductionEnabled: S.noiseReductionEnabled })
-            });
+            if (window.appSettings
+                && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
+            }
         } catch (e) { }
     }
 
