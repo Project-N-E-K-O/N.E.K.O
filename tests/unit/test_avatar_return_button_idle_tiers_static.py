@@ -1948,6 +1948,52 @@ def test_return_button_crop_ack_listener_is_removed_on_rebuild_and_cleanup():
         ) in source
 
 
+def test_return_button_drag_cleanup_cancels_delayed_release_before_rebuild_or_dom_removal():
+    return_source = (AVATAR_UI_BUTTONS_DIR / "methods-return.js").read_text(encoding="utf-8")
+    setup_source = (AVATAR_UI_BUTTONS_DIR / "methods-setup.js").read_text(encoding="utf-8")
+    cleanup_source = (AVATAR_UI_BUTTONS_DIR / "methods-state-and-cleanup.js").read_text(encoding="utf-8")
+
+    cleanup_drag = _source_slice_between(
+        return_source,
+        "const cleanupDragState = () => {",
+        "const buildDragPointSnapshot = (localX, localY, virtualX, virtualY) => ({",
+        "return button drag cleanup",
+    )
+    _assert_source_order(
+        cleanup_drag,
+        "return button cleanup silently invalidates delayed callbacks",
+        "dragSafetyToken += 1;",
+        "clearDragSafetyTimer();",
+        "stopDragCursorPolling();",
+        "clearDragReleasePending();",
+        "clearDragCropHoldPending();",
+        "dragActivity = null;",
+    )
+    assert "cancelDragState();" not in cleanup_drag
+    assert "cleanup: cleanupDragState," in return_source
+
+    setup_cleanup = _source_slice_between(
+        setup_source,
+        "if (this._returnButtonDragHandlers) {",
+        "this._returnButtonDragHandlers = null;",
+        "return button rebuild cleanup",
+    )
+    _assert_source_order(
+        setup_cleanup,
+        "return button rebuild cancels closure-owned work before dropping listeners",
+        "this._returnButtonDragHandlers.cleanup();",
+        "document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);",
+    )
+
+    _assert_source_order(
+        cleanup_source,
+        "return button disposal cancels closure-owned work before removing the DOM",
+        "this._returnButtonDragHandlers.cleanup();",
+        "document.querySelectorAll(`#${opts.containerElementId}, #${opts.lockIconId}, #${opts.returnContainerId}`)",
+        "this._returnButtonDragHandlers = null;",
+    )
+
+
 def test_return_button_drag_publishes_token_before_synchronous_start_hooks_and_always_cleans():
     source = _read_avatar_ui_buttons_source()
     handle_start = _source_slice_between(

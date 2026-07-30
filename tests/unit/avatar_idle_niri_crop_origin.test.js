@@ -451,6 +451,109 @@ test('CAT1 drag ignores stale virtual bounds after the Pet crop is disabled', ()
     assert.deepEqual(JSON.parse(JSON.stringify(size)), { width: 360, height: 408 });
 });
 
+test('return transition viewport ignores stale virtual bounds after physical crop is disabled', () => {
+    const context = {
+        window: {
+            innerWidth: 360,
+            innerHeight: 408,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: false,
+                        virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 }
+                    };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext(
+        readFunction('static/app/app-ui/return-transitions.js', 'getNekoTransitionVirtualViewportSize'),
+        context
+    );
+
+    const size = vm.runInContext('getNekoTransitionVirtualViewportSize()', context);
+
+    assert.deepEqual(JSON.parse(JSON.stringify(size)), { width: 360, height: 408 });
+});
+
+test('return transition rejects partial null virtual coordinates and keeps the original rect', () => {
+    const context = {
+        window: {
+            __nekoNiriPetPhysicalCrop: {
+                toVirtualRect() {
+                    return { x: null, y: 252, width: 122, height: 122 };
+                }
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        readFunction('static/app/app-ui/return-transitions.js', 'normalizeNekoScreenRect'),
+        readFunction('static/app/app-ui/return-transitions.js', 'toNekoVirtualTransitionRect')
+    ].join('\n'), context);
+
+    context.localRect = { left: 1, top: 1, width: 122, height: 122 };
+    const rect = vm.runInContext('toNekoVirtualTransitionRect(localRect)', context);
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(rect)),
+        { left: 1, top: 1, right: 123, bottom: 123, width: 122, height: 122 }
+    );
+});
+
+test('native edge-peek drag restoration keeps virtual positions outside the cropped carrier', () => {
+    const context = {
+        window: {
+            innerWidth: 360,
+            innerHeight: 408,
+            __nekoNiriPetPhysicalCrop: {
+                getState() {
+                    return {
+                        enabled: true,
+                        virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 }
+                    };
+                }
+            }
+        },
+        I: {
+            clearNekoIdleCat1EdgePeek() {},
+            isNekoIdleCat1EdgePeekEligible() {
+                return true;
+            },
+            toNekoVirtualTransitionRect() {
+                return { left: 1500, top: 252, width: 122, height: 122 };
+            }
+        }
+    };
+    vm.createContext(context);
+    vm.runInContext([
+        readFunction('static/app/app-ui/return-transitions.js', 'clampNekoIdleCat1EdgePeekCoordinate'),
+        readFunction('static/app/app-ui/return-transitions.js', 'getNekoTransitionVirtualViewportSize'),
+        readFunction('static/app/app-ui/return-transitions.js', 'restoreNekoIdleCat1EdgePeekBeforeDrag')
+    ].join('\n'), context);
+
+    const style = { left: '', top: '', right: '0px', bottom: '0px', transform: 'translateX(1px)' };
+    context.container = {
+        offsetWidth: 122,
+        offsetHeight: 122,
+        style,
+        getBoundingClientRect() {
+            return { left: 1, top: 1, width: 122, height: 122 };
+        }
+    };
+
+    vm.runInContext('restoreNekoIdleCat1EdgePeekBeforeDrag(container)', context);
+    assert.equal(style.left, '1500px', 'crop-local DOMRect must be converted into virtual space');
+    assert.equal(style.top, '252px');
+
+    style.left = '1560px';
+    style.top = '900px';
+    vm.runInContext('restoreNekoIdleCat1EdgePeekBeforeDrag(container)', context);
+    assert.equal(style.left, '1560px', 'right-edge virtual position must not clamp to innerWidth');
+    assert.equal(style.top, '900px', 'bottom-edge virtual position must not clamp to innerHeight');
+});
+
 test('CAT1 automatic targets clamp against the virtual desktop instead of the Pet crop', () => {
     const context = {
         window: {

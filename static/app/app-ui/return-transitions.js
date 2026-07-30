@@ -378,12 +378,21 @@
 
     function normalizeNekoScreenRect(rect) {
         if (!rect) return null;
-        const left = Number(Number.isFinite(Number(rect.left)) ? rect.left : rect.x);
-        const top = Number(Number.isFinite(Number(rect.top)) ? rect.top : rect.y);
+        const readFinite = (value) => (
+            value !== null && value !== undefined && Number.isFinite(Number(value))
+                ? Number(value)
+                : NaN
+        );
+        const normalizedLeft = readFinite(rect.left);
+        const normalizedTop = readFinite(rect.top);
+        const left = Number.isFinite(normalizedLeft) ? normalizedLeft : readFinite(rect.x);
+        const top = Number.isFinite(normalizedTop) ? normalizedTop : readFinite(rect.y);
         const width = Number(rect.width);
         const height = Number(rect.height);
-        const right = Number.isFinite(Number(rect.right)) ? Number(rect.right) : left + width;
-        const bottom = Number.isFinite(Number(rect.bottom)) ? Number(rect.bottom) : top + height;
+        const normalizedRight = readFinite(rect.right);
+        const normalizedBottom = readFinite(rect.bottom);
+        const right = Number.isFinite(normalizedRight) ? normalizedRight : left + width;
+        const bottom = Number.isFinite(normalizedBottom) ? normalizedBottom : top + height;
         const normalizedWidth = Number.isFinite(width) && width > 0 ? width : right - left;
         const normalizedHeight = Number.isFinite(height) && height > 0 ? height : bottom - top;
         if (![left, top, normalizedWidth, normalizedHeight].every(Number.isFinite)) return null;
@@ -432,7 +441,9 @@
             const cropState = cropApi && typeof cropApi.getState === 'function'
                 ? cropApi.getState()
                 : null;
-            const virtualBounds = cropState && cropState.virtualBounds;
+            const virtualBounds = cropState && cropState.enabled === true
+                ? cropState.virtualBounds
+                : null;
             const width = Number(virtualBounds && virtualBounds.width);
             const height = Number(virtualBounds && virtualBounds.height);
             if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
@@ -1684,12 +1695,18 @@
         const w = container.offsetWidth || 64;
         const h = container.offsetHeight || 64;
         const rect = container.getBoundingClientRect && container.getBoundingClientRect();
+        const virtualRect = rect ? I.toNekoVirtualTransitionRect(rect) : null;
         const rawLeft = parseFloat(container.style.left);
         const rawTop = parseFloat(container.style.top);
-        const currentLeft = Number.isFinite(rawLeft) ? rawLeft : (rect ? rect.left : 0);
-        const currentTop = Number.isFinite(rawTop) ? rawTop : (rect ? rect.top : 0);
-        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, (window.innerWidth || w) - w))}px`;
-        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, (window.innerHeight || h) - h))}px`;
+        const currentLeft = Number.isFinite(rawLeft)
+            ? rawLeft
+            : (virtualRect ? virtualRect.left : (rect ? rect.left : 0));
+        const currentTop = Number.isFinite(rawTop)
+            ? rawTop
+            : (virtualRect ? virtualRect.top : (rect ? rect.top : 0));
+        const virtualViewport = getNekoTransitionVirtualViewportSize();
+        container.style.left = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentLeft, 0, virtualViewport.width - w))}px`;
+        container.style.top = `${Math.round(clampNekoIdleCat1EdgePeekCoordinate(currentTop, 0, virtualViewport.height - h))}px`;
         container.style.right = '';
         container.style.bottom = '';
         container.style.transform = 'none';

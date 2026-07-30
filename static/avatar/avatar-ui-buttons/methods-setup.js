@@ -14,6 +14,9 @@ Object.assign(AvatarButtonMixin.methods, {
             }
 
             if (this._returnButtonDragHandlers) {
+                if (typeof this._returnButtonDragHandlers.cleanup === 'function') {
+                    this._returnButtonDragHandlers.cleanup();
+                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);

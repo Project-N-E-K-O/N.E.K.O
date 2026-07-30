@@ -724,6 +724,26 @@ Object.assign(AvatarButtonMixin.methods, {
                 finishDragState(false, safetyToken, movedPastThreshold);
             };
 
+            const cleanupDragState = () => {
+                // Teardown is silent: publishing drag-end/cancel here would queue
+                // the detached old container for the desktop-state bridge. The
+                // token invalidates release timers and already queued RAF finishes.
+                dragSafetyToken += 1;
+                clearDragSafetyTimer();
+                stopDragCursorPolling();
+                clearDragReleasePending();
+                clearDragCropHoldPending();
+                isDragging = false;
+                dragActiveDispatched = false;
+                dragPointerType = '';
+                dragUsesGlobalCursor = false;
+                dragContinuousVirtualPoint = null;
+                dragActivity = null;
+                container.setAttribute('data-dragging', 'false');
+                setReturnClickSuppressed(false);
+                container.style.cursor = 'grab';
+            };
+
             const buildDragPointSnapshot = (localX, localY, virtualX, virtualY) => ({
                 x: localX,
                 y: localY,
@@ -978,6 +998,7 @@ Object.assign(AvatarButtonMixin.methods, {
             });
 
             this._returnButtonDragHandlers = {
+                cleanup: cleanupDragState,
                 mouseMove: (e) => {
                     // document 级 handler：非拖拽期直接返回，避免全页面鼠标移动白算坐标
                     if (!isDragging) return;
