@@ -1828,6 +1828,7 @@
         "facts": "Facts",
         "reflections": "Reflections",
         "factsArchive": "Facts Archive",
+        "componentTabsAria": "Memory components",
         "save": "Save",
         "clear": "Clear",
         "tip1": "Recently ended conversations will take a moment to load. You can click the neko name again to refresh.",

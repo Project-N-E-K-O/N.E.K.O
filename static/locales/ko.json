@@ -1828,6 +1828,7 @@
         "facts": "사실",
         "reflections": "성찰",
         "factsArchive": "사실 아카이브",
+        "componentTabsAria": "기억 구성 요소",
         "save": "저장",
         "clear": "지우기",
         "tip1": "최근 종료된 대화를 로드하는 데 약간의 시간이 걸립니다. 네코 이름을 다시 클릭하여 새로고침할 수 있습니다.",

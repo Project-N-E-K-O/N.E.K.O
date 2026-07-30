@@ -3974,7 +3974,7 @@
     let _componentDataCache = {};
     let _componentRequestId = 0;
 
-    function _renderMemoryFacts(container, data) {
+    function _renderMemoryCards(container, data, metaBuilder) {
         container.innerHTML = '';
         if (!Array.isArray(data) || !data.length) {
             container.innerHTML = '<div class="memory-component-empty">' + translate('memory.componentEmpty', 'No data') + '</div>';
@@ -3985,57 +3985,42 @@
         });
         var list = document.createElement('div');
         list.className = 'memory-component-list';
-        sorted.forEach(function (fact) {
+        sorted.forEach(function (item) {
             var card = document.createElement('div');
             card.className = 'memory-component-item';
             var text = document.createElement('div');
             text.className = 'memory-component-text';
-            text.textContent = fact.text || translate('memory.empty', '(empty)');
+            text.textContent = item.text || translate('memory.empty', '(empty)');
             card.appendChild(text);
             var meta = document.createElement('div');
             meta.className = 'memory-component-meta';
-            var parts = [];
-            if (fact.created_at) parts.push(fact.created_at.replace('T', ' ').slice(0, 19));
-            if (fact.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + fact.importance);
-            if (fact.source) parts.push(translate('memory.source', 'Source') + ': ' + fact.source);
-            if (fact.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + fact.entity);
-            meta.textContent = parts.join(' | ');
+            meta.textContent = metaBuilder(item).join(' | ');
             card.appendChild(meta);
             list.appendChild(card);
         });
         container.appendChild(list);
     }
 
-    function _renderMemoryReflections(container, data) {
-        container.innerHTML = '';
-        if (!Array.isArray(data) || !data.length) {
-            container.innerHTML = '<div class="memory-component-empty">' + translate('memory.componentEmpty', 'No data') + '</div>';
-            return;
-        }
-        var sorted = data.slice().sort(function (a, b) {
-            return (b.created_at || '').localeCompare(a.created_at || '');
+    function _renderMemoryFacts(container, data) {
+        _renderMemoryCards(container, data, function (fact) {
+            var parts = [];
+            if (fact.created_at) parts.push(fact.created_at.replace('T', ' ').slice(0, 19));
+            if (fact.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + fact.importance);
+            if (fact.source) parts.push(translate('memory.source', 'Source') + ': ' + fact.source);
+            if (fact.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + fact.entity);
+            return parts;
         });
-        var list = document.createElement('div');
-        list.className = 'memory-component-list';
-        sorted.forEach(function (ref) {
-            var card = document.createElement('div');
-            card.className = 'memory-component-item';
-            var text = document.createElement('div');
-            text.className = 'memory-component-text';
-            text.textContent = ref.text || translate('memory.empty', '(empty)');
-            card.appendChild(text);
-            var meta = document.createElement('div');
-            meta.className = 'memory-component-meta';
+    }
+
+    function _renderMemoryReflections(container, data) {
+        _renderMemoryCards(container, data, function (ref) {
             var parts = [];
             if (ref.created_at) parts.push(ref.created_at.replace('T', ' ').slice(0, 19));
             if (ref.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + ref.importance);
             if (ref.status) parts.push(translate('memory.status', 'Status') + ': ' + ref.status);
             if (ref.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + ref.entity);
-            meta.textContent = parts.join(' | ');
-            card.appendChild(meta);
-            list.appendChild(card);
+            return parts;
         });
-        container.appendChild(list);
     }
 
     function _loadComponentTab(container, name, type) {
@@ -4060,12 +4045,15 @@
             });
     }
 
-    function switchMemoryTab(tab) {
+    async function switchMemoryTab(tab) {
         if (tab === _activeMemoryTab) return;
+
+        _componentRequestId++;
 
         // Preserve unsaved edits when switching away from recent tab
         if (_activeMemoryTab === 'recent' && memoryHasUnsavedChanges) {
-            saveCurrentMemory();
+            var saved = await saveCurrentMemory();
+            if (!saved) return;
         }
 
         _activeMemoryTab = tab;

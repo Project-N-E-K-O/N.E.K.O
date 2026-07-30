@@ -1828,6 +1828,7 @@
         "facts": "事実",
         "reflections": "考察",
         "factsArchive": "事実アーカイブ",
+        "componentTabsAria": "記憶コンポーネント",
         "save": "保存",
         "clear": "クリア",
         "tip1": "最近終了した会話は読み込みに時間がかかります。neko の名前をもう一度クリックして更新できます。",

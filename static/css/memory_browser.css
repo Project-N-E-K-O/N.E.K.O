@@ -3820,7 +3820,7 @@ body[data-memory-layout="compact"] .editor {
     font-size: var(--memory-font-body, 14px);
     line-height: 1.55;
     color: var(--memory-text);
-    word-break: break-word;
+    overflow-wrap: break-word;
 }
 
 .memory-component-meta {
