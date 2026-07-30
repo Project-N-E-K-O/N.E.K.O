@@ -522,9 +522,10 @@ def robust_json_loads(raw: str) -> Any:
 # PermissionError winerror=32）—— 物理上抢不走；POSIX 上 unlink 会成功，但后果是那次
 # 写的 os.replace 抛 FileNotFoundError，一个诚实的异常而不是静默损坏。
 _TMP_OWNER_TAG = "nkatmp"
-# 带了所有权标记之后随机段的长度和字符集就不重要了，不必再依赖
-# tempfile._RandomNameSequence 的实现细节（8 位 [a-z0-9_]）。
-_STALE_TMP_RE = re.compile(rf"^\..+\.{_TMP_OWNER_TAG}[a-z0-9_]+\.tmp$")
+# 随机段写成 [^.]+ 而不是 [a-z0-9_]+：有了所有权标记之后它的长度和字符集就不重要了，
+# 硬编码字符集等于又依赖回 tempfile._RandomNameSequence 的实现细节 —— CPython 哪天往
+# 里加个大写字母，自己产的 tmp 就再也不被认领，而且是静默失效。
+_STALE_TMP_RE = re.compile(rf"^\.{_TMP_OWNER_TAG}[^.]+\.tmp$")
 _STALE_TMP_MIN_AGE_S = 86400.0
 _STALE_TMP_SWEEP_INTERVAL_S = 3600.0
 # 记账容量上限：cloudsave 的 staging 每次导出都 mkdtemp 出一批新目录（含 per-character
@@ -533,18 +534,11 @@ _STALE_TMP_SWEEP_INTERVAL_S = 3600.0
 _STALE_TMP_MEMO_MAX = 512
 _swept_tmp_dirs: dict[str, float] = {}
 _swept_tmp_dirs_lock = threading.Lock()
-# tmp 名里嵌完整目标名是为了可诊断（os.replace 失败的回显能直接看出是哪个目标），但要
-# 给 NAME_MAX（多数文件系统 255 字节）留余量：`.` + 名字 + `.` + 标记(6) + 随机(8) +
-# `.tmp`(4)。按 UTF-8 字节截断而不是字符 —— CJK 一个字符占 3 字节，按字符截会超。
-_TMP_NAME_MAX_BYTES = 200
-
-
-def _tmp_prefix(target_name: str) -> str:
-    """mkstemp prefix carrying the owner tag, truncated to stay under NAME_MAX."""
-    encoded = target_name.encode("utf-8", "surrogatepass")
-    if len(encoded) > _TMP_NAME_MAX_BYTES:
-        target_name = encoded[:_TMP_NAME_MAX_BYTES].decode("utf-8", "ignore")
-    return f".{target_name}.{_TMP_OWNER_TAG}"
+# tmp 名里**不**嵌目标 basename。原来嵌是为了可诊断，但那是多余的：os.replace 失败时
+# OSError 自带 filename+filename2，回显本来就是 `'<tmp>' -> '<目标>'`，目标名一直在。
+# 不嵌换来两件事：名字长度变成常量（约 19 字节），比改动前的 `.<basename>.<8>.tmp` 严格
+# 更短，于是 ENAMETOOLONG 这一类彻底消失 —— 不需要按目标文件系统探 NAME_MAX（eCryptfs
+# 这类只允许 143 字节的文件系统上，固定的字节上限照样会算错）；正则也简单一档。
 
 
 def _sweep_stale_tmp_if_due(target_path: Path) -> None:
@@ -599,7 +593,7 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
 
     fd, temp_path = tempfile.mkstemp(
         # 前缀里带所有权标记：清扫器靠它证明这个 tmp 是本模块产的，而不是靠猜形状。
-        prefix=_tmp_prefix(target_path.name),
+        prefix=f".{_TMP_OWNER_TAG}",
         suffix=".tmp",
         dir=str(target_path.parent),
     )
@@ -610,7 +604,10 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
             temp_file.flush()
             os.fsync(temp_file.fileno())
         os.replace(temp_path, target_path)
-    except Exception:
+    except BaseException:
+        # BaseException 而不是 Exception：Ctrl-C / SystemExit 落在 write/fsync 上很常见，
+        # 只收 Exception 的话 tmp 直接留盘（要等到下一个清扫窗口 + 24h 才清）。
+        # install_source/manager.py 的 _atomic_write 用的也是 BaseException，保持对偶。
         # 清理失败不许盖掉真正的失败原因。只吞 FileNotFoundError 时有一个具体的坑：
         # 目标被别的句柄占着（杀软扫描、资源管理器预览）会让 os.replace 抛
         # PermissionError，而紧随其后的 os.remove 往往被同一个原因拒掉，于是调用方

@@ -38,17 +38,17 @@ pytestmark = pytest.mark.unit
 
 
 def _tmp_siblings(target: Path) -> list[Path]:
-    """Temp files this module would have created next to ``target``."""
-    prefix = f".{target.name}."
+    """Temp files this module would have created in ``target``'s directory."""
+    # 名字里不带目标 basename（见 file_utils 里的注释），所以这是「目录级」而不是
+    # 「目标级」的查询 —— 用例各自用独立的 tmp_path，不会互相看到。
     return sorted(
-        p for p in target.parent.iterdir()
-        if p.name.startswith(prefix) and p.name.endswith(".tmp")
+        p for p in target.parent.iterdir() if file_utils._STALE_TMP_RE.match(p.name)
     )
 
 
 def _abandoned_tmp(target: Path, rand: str = "deadbeef") -> Path:
     """A temp file shaped exactly like the ones this module leaves behind."""
-    return target.parent / f".{target.name}.{file_utils._TMP_OWNER_TAG}{rand}.tmp"
+    return target.parent / f".{file_utils._TMP_OWNER_TAG}{rand}.tmp"
 
 
 def _expire_sweep_throttle() -> None:
@@ -175,6 +175,22 @@ def test_cleanup_failure_does_not_mask_the_real_error(tmp_path, monkeypatch):
     assert "cleanup also denied" not in str(excinfo.value)
 
 
+def test_a_base_exception_mid_write_still_cleans_up_the_temp_file(tmp_path, monkeypatch):
+    # Ctrl-C / SystemExit 落在 write/fsync 上很常见，而它们不是 Exception 的子类：失败
+    # 分支只收 Exception 的话 tmp 直接留盘，要等下一个清扫窗口 + 24h 才清掉。
+    # install_source/manager.py 的 _atomic_write 用的也是 BaseException，保持对偶。
+    target = tmp_path / "state.json"
+
+    def interrupted(src, dst):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(os, "replace", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        atomic_write_json(target, {"v": 1})
+
+    assert _tmp_siblings(target) == [], "BaseException 也必须清掉临时文件"
+
+
 def test_missing_temp_file_during_cleanup_is_tolerated(tmp_path, monkeypatch):
     target = tmp_path / "state.json"
 
@@ -226,18 +242,33 @@ def test_temp_file_of_a_live_writer_is_not_swept(tmp_path):
     assert inflight.exists()
 
 
-def test_sweep_also_clears_other_targets_abandoned_temps(tmp_path):
-    # 清扫按目录而不是按目标：同一个目录里别的目标留下的残留同样是这个原语产生的
-    # 垃圾。按目标记账会漏掉「写完就沉底、再也不会被写第二次」的目标（归档分片就是
-    # 这种），那些残留永远扫不到。
+def test_sweep_clears_every_abandoned_temp_in_the_directory(tmp_path):
+    # 清扫按目录而不是按目标 —— 同一个目录里的残留不管当初是哪个目标写的都是这个原语
+    # 产生的垃圾。按目标记账/按目标名匹配会漏掉「写完就沉底、再也不会被写第二次」的
+    # 目标（归档分片就是这种），那些残留永远扫不到。
     target = tmp_path / "state.json"
-    other_target_tmp = _abandoned_tmp(tmp_path / "other.json")
-    other_target_tmp.write_text("garbage from a crash", encoding="utf-8")
-    _age(other_target_tmp, file_utils._STALE_TMP_MIN_AGE_S + 60)
+    leftovers = [_abandoned_tmp(target, r) for r in ("deadbeef", "cafef00d")]
+    for path in leftovers:
+        path.write_text("garbage from a crash", encoding="utf-8")
+        _age(path, file_utils._STALE_TMP_MIN_AGE_S + 60)
 
     atomic_write_json(target, {"v": 1})
 
-    assert not other_target_tmp.exists()
+    assert [p.name for p in leftovers if p.exists()] == []
+
+
+def test_sweep_claims_its_temps_whatever_the_random_segment_looks_like(tmp_path):
+    # 随机段的字符集是 tempfile._RandomNameSequence 的实现细节。正则里硬编码
+    # [a-z0-9_] 的话，CPython 哪天往里加个大写字母，自己产的 tmp 就再也不被认领 ——
+    # 而且是静默失效（清扫悄悄变成 no-op，没有任何报错）。
+    target = tmp_path / "state.json"
+    exotic = tmp_path / f".{file_utils._TMP_OWNER_TAG}AB12cd_xYZ-9.tmp"
+    exotic.write_text("garbage", encoding="utf-8")
+    _age(exotic, file_utils._STALE_TMP_MIN_AGE_S + 60)
+
+    atomic_write_json(target, {"v": 1})
+
+    assert not exotic.exists()
 
 
 def test_sweep_only_touches_files_it_can_prove_it_owns(tmp_path):
@@ -247,12 +278,12 @@ def test_sweep_only_touches_files_it_can_prove_it_owns(tmp_path):
     target = tmp_path / "state.json"
     tag = file_utils._TMP_OWNER_TAG
     keepers = [
-        tmp_path / f".{target.name}.{tag}deadbeef.bak",  # 不是 .tmp
-        tmp_path / f"{target.name}.{tag}deadbeef.tmp",   # 没有前导点
-        tmp_path / f".{target.name}.deadbeef.tmp",       # 没有所有权标记（旧版残留）
-        tmp_path / f".{target.name}.{tag.upper()}deadbeef.tmp",  # 标记大小写不对
-        tmp_path / ".rsync-ish.abcdef.tmp",              # 别的工具的临时文件
-        tmp_path / ".notes.tmp",                         # 用户自己的文件
+        tmp_path / f".{tag}deadbeef.bak",          # 不是 .tmp
+        tmp_path / f"{tag}deadbeef.tmp",           # 没有前导点
+        tmp_path / f".{target.name}.deadbeef.tmp",  # 没有所有权标记（旧版残留）
+        tmp_path / f".{tag.upper()}deadbeef.tmp",  # 标记大小写不对
+        tmp_path / ".rsync-ish.abcdef.tmp",        # 别的工具的临时文件
+        tmp_path / ".notes.tmp",                   # 用户自己的文件
     ]
     for path in keepers:
         path.write_text("keep me", encoding="utf-8")
@@ -387,33 +418,29 @@ def test_the_sweep_memo_stays_bounded(tmp_path):
     assert len(file_utils._swept_tmp_dirs) <= limit
 
 
-def test_temp_name_stays_within_the_filesystem_name_limit(tmp_path, monkeypatch):
-    # 前缀里嵌完整目标名是为了可诊断，但 basename 本身合法（多数文件系统 NAME_MAX 是
-    # 255 字节）时，不能因为加了所有权标记就把 tmp 名顶过限制、让原本能写的目标写不动。
-    # `.` + 名字 + `.` + 标记 + 随机(8) + `.tmp`(4)
-    overhead = 8 + len(".tmp")
-    for basename in ("state.json", "a" * 240 + ".json", "妮" * 200 + ".json"):
-        prefix = file_utils._tmp_prefix(basename)
-        assert len(prefix.encode("utf-8")) + overhead <= 255, basename
-        # 截断之后仍然要被清扫器认领，否则这些目标的残留就永远扫不到了
-        assert file_utils._STALE_TMP_RE.match(f"{prefix}abcdefgh.tmp"), basename
-
-    # 上面是纯函数，还得钉住 atomic_write_text 真的走了它（只测谓词不测调用点是本仓库
-    # 反复踩的坑）。用 CJK 名字：79 个汉字 = 237 字节，不截断的话 tmp 名 257 字节就超了
-    # NAME_MAX，但**字符数**只有 98，不会先撞 Windows 的 MAX_PATH(260)。
-    seen = {}
+def test_temp_name_is_a_short_constant_shape(tmp_path, monkeypatch):
+    # tmp 名里不嵌目标 basename，所以长度是常量。这条钉住两件事：名字远小于 NAME_MAX
+    # （eCryptfs 这类只给 143 字节的文件系统也够），以及它比改动前的
+    # `.<basename>.<8>.tmp` 严格更短 —— 否则原本能写的长名字目标会因为 ENAMETOOLONG
+    # 写不动。顺便：不嵌 basename 不影响诊断，os.replace 失败的回显自带目标路径。
+    seen = []
     real_mkstemp = tempfile.mkstemp
 
     def spy(*args, **kwargs):
         fd, path = real_mkstemp(*args, **kwargs)
-        seen["name"] = Path(path).name
+        seen.append(Path(path).name)
         return fd, path
 
     monkeypatch.setattr(tempfile, "mkstemp", spy)
-    atomic_write_json(tmp_path / ("妮" * 79 + ".json"), {"v": 1})
+    for basename in ("s.json", "妮" * 60 + ".json"):
+        atomic_write_json(tmp_path / basename, {"v": 1})
 
-    assert len(seen["name"].encode("utf-8")) <= 255, seen["name"]
-    assert file_utils._STALE_TMP_RE.match(seen["name"])
+    assert len({len(n) for n in seen}) == 1, f"名字长度应该与目标名无关: {seen}"
+    for name, basename in zip(seen, ("s.json", "妮" * 60 + ".json")):
+        assert len(name.encode("utf-8")) < 143, name
+        legacy = len(f".{basename}.abcdefgh.tmp".encode("utf-8"))
+        assert len(name.encode("utf-8")) <= legacy, (name, basename)
+        assert file_utils._STALE_TMP_RE.match(name), name
 
 
 def test_fork_child_gets_a_fresh_sweep_lock(tmp_path):
@@ -467,7 +494,7 @@ def test_sweep_cannot_steal_a_temp_file_that_is_still_open(tmp_path):
     fd, inflight = tempfile.mkstemp(
         # 必须带所有权标记，否则清扫器在 unlink 之前就把它按「不是我的」拒了，
         # 这条用例就变成恒真、验不到 Windows 的句柄语义。
-        prefix=file_utils._tmp_prefix(target.name), suffix=".tmp", dir=str(tmp_path)
+        prefix=f".{file_utils._TMP_OWNER_TAG}", suffix=".tmp", dir=str(tmp_path)
     )
     try:
         _age(Path(inflight), file_utils._STALE_TMP_MIN_AGE_S + 60)
