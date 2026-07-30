@@ -2020,6 +2020,53 @@ async def test_paused_precreated_proactive_yields_to_completed_user_turn():
 
 
 @pytest.mark.asyncio
+async def test_repause_after_dequeue_requeues_without_processing_or_bypass_charge():
+    async def send(_event):
+        raise AssertionError("paused work must not be sent")
+
+    arbiter = RealtimeResponseArbiter(send)
+    arbiter.pause_dispatch()
+    first = await arbiter.enqueue(source="proactive-1", priority=20)
+    second = await arbiter.enqueue(source="proactive-2", priority=20)
+    first_queued = arbiter._queued_by_ticket[id(first)]
+    second_queued = arbiter._queued_by_ticket[id(second)]
+
+    selection_ready = asyncio.Event()
+    return_selection = asyncio.Event()
+    original_next_queued = arbiter._next_queued
+
+    async def controlled_next_queued():
+        selected = await original_next_queued()
+        selection_ready.set()
+        await return_selection.wait()
+        return selected
+
+    arbiter._next_queued = controlled_next_queued
+    process = AsyncMock(wraps=arbiter._process)
+    arbiter._process = process
+
+    try:
+        arbiter.resume_dispatch()
+        await asyncio.wait_for(selection_ready.wait(), timeout=0.2)
+        arbiter.pause_dispatch()
+        return_selection.set()
+
+        for _ in range(20):
+            if arbiter._queue.qsize() == 2:
+                break
+            await asyncio.sleep(0)
+
+        assert arbiter._queue.qsize() == 2
+        process.assert_not_awaited()
+        assert first.sent.done() is False
+        assert second.sent.done() is False
+        assert first_queued.bypass_count == 0
+        assert second_queued.bypass_count == 0
+    finally:
+        await arbiter.shutdown()
+
+
+@pytest.mark.asyncio
 async def test_external_text_turn_rejects_gemini_before_creating_arbiter():
     client = OmniRealtimeClient.__new__(OmniRealtimeClient)
     client._is_gemini = True
