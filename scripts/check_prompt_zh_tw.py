@@ -56,6 +56,27 @@ and passes. That is a deliberate accept — the alternative is matching dicts
 across revisions by identity, and every candidate for that identity (position,
 key set, scheme) is what the three wrong turns above already tried.
 
+What this gate promises, and what it asks of you instead
+=======================================================
+It reads the shapes prompt modules actually use -- a dict literal, ``dict()``,
+``|``, a comprehension, an iterable of pairs, ``dict.fromkeys``, and the
+statement-level backfills around them (``T["zh-TW"] = ...``, ``update()``,
+``setdefault()``, ``|=``, and the removals that undo them).
+
+It does **not** try to be a Python interpreter. When a table is assembled in a
+way it cannot prove statically, the answer is not a smarter analysis; it is one
+of two things you do to the code:
+
+  * write the table in one of the canonical shapes above, or
+  * put ``# noqa: PROMPT_ZH_TW`` on it, which is a one-line, greppable record
+    that a human decided this table is out of scope.
+
+That line is the design, not a shortfall. Every extra construct taught to the
+resolver buys a case nobody writes and costs a rule that can misfire on the
+~339 tables this gate actually watches; the escape hatch costs one comment.
+Reviewers who find a shape it does not resolve should reach for the hatch, not
+for another branch here.
+
 Scope: one expression at a time, plus one cross-statement exemption
 ==================================================================
 A table assembled across statements is not judged::
@@ -1532,8 +1553,16 @@ def main(argv: list[str] | None = None) -> int:
         "back to 'en', not 'zh', so Traditional Chinese users would get an "
         "English prompt. Add the template, or put '# noqa: PROMPT_ZH_TW' on the "
         "dict's opening or closing line if it genuinely does not need one.\n"
+        "\nThis check reads the shapes prompt modules use: a dict literal, "
+        "dict(), |, a comprehension, an iterable of pairs, dict.fromkeys, and "
+        "the statement-level backfills around them. It is not a Python "
+        "interpreter. A table assembled some other way should be rewritten in "
+        "one of those shapes or marked with the noqa above -- that is the "
+        "intended answer, not a gap to report.\n"
         "The ratchet compares totals rather than source lines, so the locations "
-        "above are narrowed to the tables this change touched.\n"
+        "above are narrowed to the tables this change touched. A change that "
+        "removes one offender and adds another nets to zero and passes; that is "
+        "an accepted blind spot, documented at the top of this script.\n"
         f"(Set $PROMPT_ZH_TW_BASE or pass --base to override the base ref.)"
     )
     return 1
