@@ -147,8 +147,11 @@ async def test_clear_review_clean_does_not_even_switch_threads_when_flag_absent(
     """No flag → no worker thread at all, not merely no disk write."""
     clean_state["角色"] = {"review_clean": False}
 
-    real_to_thread = asyncio.to_thread
-    with patch.object(gates.asyncio, "to_thread", wraps=real_to_thread) as thread_spy, \
+    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
+    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
+    # 这里的 call_count 断言就会莫名其妙地飘。
+    real_amutate = gates._amutate_maint_state
+    with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_mutate_maint_state_locked") as locked_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await gates._aclear_review_clean("角色")
@@ -166,8 +169,11 @@ async def test_clear_review_clean_does_persist_when_flag_is_set(clean_state):
     """Dual of the skip test: a set flag must actually go through the entry point."""
     clean_state["角色"] = {"review_clean": True}
 
-    real_to_thread = asyncio.to_thread
-    with patch.object(gates.asyncio, "to_thread", wraps=real_to_thread) as thread_spy, \
+    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
+    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
+    # 这里的 call_count 断言就会莫名其妙地飘。
+    real_amutate = gates._amutate_maint_state
+    with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await gates._aclear_review_clean("角色")
 
@@ -191,8 +197,11 @@ async def test_clear_compress_backup_failure_does_not_even_switch_threads_when_b
     """
     clean_state["角色"] = {"compress_backup_fail_attempts": 0, "compress_backup_fail_fp": None}
 
-    real_to_thread = asyncio.to_thread
-    with patch.object(gates.asyncio, "to_thread", wraps=real_to_thread) as thread_spy, \
+    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
+    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
+    # 这里的 call_count 断言就会莫名其妙地飘。
+    real_amutate = gates._amutate_maint_state
+    with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_mutate_maint_state_locked") as locked_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await review._clear_compress_backup_failure("角色")
@@ -210,8 +219,11 @@ async def test_clear_compress_backup_failure_does_persist_when_backoff_present(c
     """Dual of the skip test: a non-empty backoff must actually go through the entry point."""
     clean_state["角色"] = {"compress_backup_fail_attempts": 2, "compress_backup_fail_fp": "fp"}
 
-    real_to_thread = asyncio.to_thread
-    with patch.object(gates.asyncio, "to_thread", wraps=real_to_thread) as thread_spy, \
+    # spy 收在写入口本身，而不是 patch 全局的 asyncio.to_thread：后者会把整个
+    # 进程的 to_thread 换掉，被测路径将来多一次无关的线程跳、或者测试并行化之后，
+    # 这里的 call_count 断言就会莫名其妙地飘。
+    real_amutate = gates._amutate_maint_state
+    with patch.object(gates, "_amutate_maint_state", wraps=real_amutate) as thread_spy, \
          patch.object(gates, "_persist_maint_state_locked", MagicMock()) as persist:
         await review._clear_compress_backup_failure("角色")
 
@@ -478,6 +490,42 @@ async def test_load_rebind_is_mutually_exclusive_with_mutators(tmp_path, monkeyp
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("payload", "what_is_wrong"),
+    [
+        (b'{"\xff\xfe": {"review_clean": true}}', "undecodable-bytes"),
+        ('{"角色": {"review_clean": true}}'.encode("utf-16"), "wrong-codec"),
+        (b'{"\xe8\xa7", "truncated"}', "truncated-multibyte"),
+    ],
+    ids=["undecodable-bytes", "wrong-codec", "truncated-multibyte"],
+)
+async def test_load_falls_back_to_empty_state_on_a_mis_encoded_file(
+    payload: bytes, what_is_wrong: str, tmp_path, monkeypatch, clean_state,
+):
+    """A state file that is not valid UTF-8 must degrade to empty state, not abort startup.
+
+    ``read_json`` is ``open(encoding='utf-8')`` + ``json.load``, so undecodable
+    bytes raise ``UnicodeDecodeError`` — a ``ValueError`` subclass that is neither
+    ``json.JSONDecodeError`` nor ``OSError``. The sole caller
+    (``ensure_memory_server_runtime_initialized``) does not wrap this await, so an
+    escaping exception takes the whole memory_server runtime init down instead of
+    losing one advisory maintenance flag.
+    """
+    target = tmp_path / "idle_maintenance_state.json"
+    target.write_bytes(payload)
+    monkeypatch.setattr(gates, "_maint_state_path", lambda: str(target))
+    # 预置一条残留，确保下面的空断言不是「本来就空」蒙对的。
+    clean_state["上一轮残留"] = {"review_clean": True}
+
+    await gates._aload_maint_state()
+
+    assert gates._maint_state == {}, (
+        f"坏编码（{what_is_wrong}）没有回落到空状态"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_mutator_takes_the_sub_dict_inside_the_lock(clean_state, monkeypatch):
     """The sub-dict must be fetched after the lock, or a rebind orphans the mutation.
 
@@ -565,7 +613,6 @@ async def test_generic_failure_lands_both_updates_in_one_write(clean_state):
         "review_output_exhaustion_blocked": False,
     }
     fake_mgr = MagicMock()
-    fake_mgr.review_history = MagicMock()
 
     landed: list[dict] = []
 
@@ -713,7 +760,8 @@ def test_gate6a_recovery_clears_when_the_observed_breaker_is_still_current() -> 
         state, seen_attempts=2, seen_min_tokens=1000
     )
 
-    assert (dirty, value) == (True, None)
+    # value=True 是给调用方的信号「恢复成立、可以继续 spawn」。
+    assert (dirty, value) == (True, True)
     assert state['review_output_exhaustion_attempts'] == 0
     assert state['review_output_exhaustion_min_context_tokens'] is None
     assert state['review_output_exhaustion_blocked'] is False
@@ -752,5 +800,7 @@ def test_gate6a_recovery_keeps_a_breaker_armed_by_a_concurrent_writer(
         newer_state, seen_attempts=2, seen_min_tokens=1000
     )
 
-    assert (dirty, value) == (False, None), f"{what_changed} 变了就不该清零"
+    # value=False 是给调用方的信号「恢复判定已过期、本轮必须放弃」——只是不清零而
+    # 继续 spawn 的话，等于拿过期判定绕过刚 armed 的断路器。
+    assert (dirty, value) == (False, False), f"{what_changed} 变了就不该清零"
     assert newer_state == before, "复查失败时一个字段都不许动"

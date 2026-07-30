@@ -75,7 +75,7 @@ def _clear_review_output_exhaustion_state(state: dict) -> bool:
 
 def _mutate_clear_output_exhaustion(
     state: dict, *, seen_attempts: int, seen_min_tokens: int
-) -> tuple[bool, None]:
+) -> tuple[bool, bool]:
     """Mutator: clear the output-exhaustion breaker, unless a newer failure was armed."""
     # Gate 6a 的恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以
     # 锁内要复查它依赖的那份输入还在不在：另一个后台 review 可能在那次 await 期间刚写下
@@ -88,8 +88,11 @@ def _mutate_clear_output_exhaustion(
         current_min = 0
     current_attempts = state.get('review_output_exhaustion_attempts', 0) or 0
     if current_min != seen_min_tokens or current_attempts != seen_attempts:
-        return False, None
-    return _clear_review_output_exhaustion_state(state), None
+        return False, False
+    _clear_review_output_exhaustion_state(state)
+    # value 把「恢复是否成立」带给调用方（这正是 (dirty, value) 里 value 的用途）。
+    # dirty 恒 True：走到这里说明观测到的断路器确实还在，清零一定改变了状态。
+    return True, True
 
 
 def _get_review_spawn_lock(name: str) -> asyncio.Lock:
@@ -204,7 +207,7 @@ async def maybe_spawn_review(name: str) -> None:
                     f"失败最小值 {failed_min_tokens})，跳过本轮"
                 )
                 return
-            await gates._amutate_maint_state(
+            cleared = await gates._amutate_maint_state(
                 name,
                 functools.partial(
                     _mutate_clear_output_exhaustion,
@@ -212,6 +215,15 @@ async def maybe_spawn_review(name: str) -> None:
                     seen_min_tokens=failed_min_tokens,
                 ),
             )
+            if not cleared:
+                # 锁内复查发现断路器已经被换成更新的一份（在 await token 计数期间又失败
+                # 了一次）。恢复判定已经过期，本轮必须跟着放弃 —— 只是不清零却继续往下
+                # spawn 的话，等于拿一个过期的判定绕过了刚 armed 的断路器。
+                logger.debug(
+                    f"[Review/spawn] {name}: 恢复判定已过期"
+                    f"（断路器在 token 计数期间被并发写者更新），跳过本轮"
+                )
+                return
             logger.info(
                 f"[Review/spawn] {name}: context 已缩短 "
                 f"({current_tokens} < {failed_min_tokens})，恢复历史审阅"

@@ -209,7 +209,12 @@ async def _aload_maint_state() -> None:
             await asyncio.to_thread(_rebind_maint_state_locked, data)
             logger.debug(f"[IdleMaint] 已加载维护状态: {len(data)} 个角色")
             return
-    except (json.JSONDecodeError, OSError) as e:
+    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as e:
+        # UnicodeDecodeError 必须单列：read_json 是 open(encoding='utf-8') + json.load，
+        # 文件被外部工具按 GBK/UTF-16 写过、或断电写了半截多字节序列时抛的是它，
+        # 而它是 ValueError 的子类——既不是 JSONDecodeError 也不是 OSError。漏掉就会
+        # 从这里冒到唯一的调用点 ensure_memory_server_runtime_initialized（那次 await
+        # 没有 try），把整个 memory_server 的 runtime 初始化打断。
         logger.warning(f"[IdleMaint] 维护状态文件加载失败: {e}")
     await asyncio.to_thread(_rebind_maint_state_locked, {})
 

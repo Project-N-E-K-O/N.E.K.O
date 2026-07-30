@@ -124,7 +124,9 @@ async def test_three_output_exhaustions_block_across_growing_contexts():
     memory_server.gates._maint_state.pop(name, None)
 
 
-async def _drive_review_gate(memory_server, name: str, history: list) -> None:
+async def _drive_review_gate(
+    memory_server, name: str, history: list, token_count=None
+) -> None:
     fake_manager = MagicMock()
     fake_manager.aget_recent_history = AsyncMock(return_value=history)
     fake_manager.review_history = AsyncMock(return_value=("white", None))
@@ -144,7 +146,7 @@ async def _drive_review_gate(memory_server, name: str, history: list) -> None:
         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()),
         patch(
             "memory.recent.review_context_token_count",
-            side_effect=lambda rows: len(rows) * 100,
+            side_effect=token_count or (lambda rows: len(rows) * 100),
         ),
     ):
         await memory_server.maybe_spawn_review(name)
@@ -294,4 +296,52 @@ async def test_generic_failure_breaks_output_exhaustion_streak():
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
     assert state["review_fail_attempts"] == 1
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
+    """A breaker armed while the async token count ran must still block the spawn."""
+    # Gate 6a 的恢复判定只能在锁外做（review_context_token_count 是 async，进不了同步
+    # mutator），锁内复查会拒绝清零。但**拒绝清零还不够** —— 调用方必须跟着放弃本轮，
+    # 否则等于拿一个已经过期的判定绕过了刚 armed 的断路器，那条已经证明压不动的
+    # context 又被放行重烧一轮。这条钉的是调用点，不是 mutator 的返回值。
+    from app import memory_server
+    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+
+    name = "output-limit-lost-race"
+    memory_server.correction_tasks.pop(name, None)
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": (
+            MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+        ),
+        "review_output_exhaustion_min_context_tokens": 1000,
+        "review_output_exhaustion_blocked": True,
+    }
+
+    def count_while_a_concurrent_writer_arms_a_newer_breaker(rows):
+        # 模拟另一个后台 review 在这次 async 计数期间又失败了一次，写下更新的断路器。
+        memory_server.gates._maint_state[name][
+            "review_output_exhaustion_min_context_tokens"
+        ] = 400
+        return len(rows) * 100
+
+    # 8 行 → 800 tokens，与**锁外观测到的** 1000 相比像是「context 已缩短、可以恢复」。
+    await _drive_review_gate(
+        memory_server,
+        name,
+        _history(8),
+        token_count=count_while_a_concurrent_writer_arms_a_newer_breaker,
+    )
+
+    assert name not in memory_server.correction_tasks, "恢复判定过期时不许 spawn"
+    state = memory_server.gates._maint_state[name]
+    assert state["review_output_exhaustion_min_context_tokens"] == 400, (
+        "并发写者刚 armed 的断路器必须留着"
+    )
+    assert state["review_output_exhaustion_attempts"] == (
+        MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+    )
+    assert state["review_output_exhaustion_blocked"] is True
     memory_server.gates._maint_state.pop(name, None)
