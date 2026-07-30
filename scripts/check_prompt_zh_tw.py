@@ -132,6 +132,11 @@ def resolve_keys(node: ast.AST) -> set[str] | None:
         for arg in node.args:
             inner = resolve_keys(arg)
             if inner is None:
+                # `dict([("en", ...), ("zh", ...)])` — the iterable-of-pairs
+                # constructor. Not a mapping, so resolve_keys says nothing about
+                # it, but its keys are as statically known as a literal's.
+                inner = _pair_sequence_keys(arg)
+            if inner is None:
                 return None
             keys |= inner
         for kw in node.keywords:
@@ -152,6 +157,26 @@ def resolve_keys(node: ast.AST) -> set[str] | None:
     if isinstance(node, ast.DictComp):
         return _comprehension_keys(node)
     return None
+
+
+def _pair_sequence_keys(node: ast.AST) -> set[str] | None:
+    """Keys of a literal iterable of ``(key, value)`` pairs, or None.
+
+    Covers the standard ``dict([("en", ...), ("zh", ...)])`` constructor. Every
+    element must be a two-item sequence whose first item is a string constant;
+    anything else makes the key set unknowable.
+    """
+    if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
+        return None
+    keys: set[str] = set()
+    for element in node.elts:
+        if not isinstance(element, (ast.Tuple, ast.List)) or len(element.elts) != 2:
+            return None
+        first = element.elts[0]
+        if not isinstance(first, ast.Constant) or not isinstance(first.value, str):
+            return None
+        keys.add(first.value)
+    return keys
 
 
 def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
@@ -277,22 +302,40 @@ def _table_nodes(tree: ast.AST) -> Iterator[tuple[ast.AST, set[str]]]:
         stack.extend(ast.iter_child_nodes(node))
 
 
-def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
-    """Return the line number of every localized dict with no zh-TW key."""
-    out: list[int] = []
+def is_offender(keys: set[str]) -> bool:
+    """Whether a resolved key set belongs to a table that needs a zh-TW entry."""
+    if ANCHOR_KEY not in keys:
+        return False
+    if not any(k in keys for k in SIMPLIFIED_KEYS):
+        return False
+    return TRADITIONAL_KEY not in keys
+
+
+def _offending_nodes(
+    tree: ast.Module, source_lines: list[str]
+) -> Iterator[tuple[ast.AST, int, int]]:
+    """Yield ``(node, lineno, end_lineno)`` for each offending table, in order.
+
+    Nodes rather than bare line numbers, because two tables can share an opening
+    line (``T = {"en": {``) and each needs its own span — see ``locate_touched``.
+    """
+    found: list[tuple[ast.AST, int, int]] = []
     for node, keys in _table_nodes(tree):
-        if ANCHOR_KEY not in keys:
-            continue
-        if not any(k in keys for k in SIMPLIFIED_KEYS):
-            continue
-        if TRADITIONAL_KEY in keys:
+        if not is_offender(keys):
             continue
         lineno = node.lineno
         if 1 <= lineno <= len(source_lines) and _has_noqa(source_lines[lineno - 1]):
             continue
-        out.append(lineno)
+        end = getattr(node, "end_lineno", lineno) or lineno
+        found.append((node, lineno, end))
     # _table_nodes walks depth-first off a stack, so restore source order.
-    return sorted(out)
+    found.sort(key=lambda item: (item[1], item[2]))
+    yield from found
+
+
+def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
+    """Return the line number of every localized dict with no zh-TW key."""
+    return [lineno for _node, lineno, _end in _offending_nodes(tree, source_lines)]
 
 
 def _parse_source(source: str, origin: str) -> tuple[ast.Module | None, list[str]]:
@@ -324,6 +367,16 @@ def locate_touched(
     A total says *that* the backlog grew but not *where*, and 339 pre-existing
     offenders is far too many to print, so the diff's own lines are what make the
     failure actionable.
+
+    Each node carries its own span. Keying nodes by start line instead would let a
+    nested table opening on its parent's line (``T = {"en": {``) evict the parent,
+    and the parent would then be matched against the child's shorter span — so
+    touching a line inside the parent but past the child classified both as
+    pre-existing and degraded the message to "run --full".
+
+    Labels are de-duplicated: two offenders sharing an opening line render to the
+    same ``path:lineno``, and printing it twice reads as a bug rather than as two
+    tables.
     """
     likely: list[str] = []
     other = 0
@@ -331,13 +384,14 @@ def locate_touched(
         tree, lines = _parse_source(source, path)
         if tree is None:
             continue
-        by_line = {node.lineno: node for node, _keys in _table_nodes(tree)}
         added = (touched or {}).get(path, set())
-        for lineno in find_violations(tree, lines):
-            node = by_line.get(lineno)
-            span = range(lineno, (getattr(node, "end_lineno", lineno) or lineno) + 1)
-            if added and any(ln in added for ln in span):
-                likely.append(f"{path}:{lineno}")
+        seen: set[str] = set()
+        for _node, lineno, end in _offending_nodes(tree, lines):
+            if added and any(ln in added for ln in range(lineno, end + 1)):
+                label = f"{path}:{lineno}"
+                if label not in seen:
+                    seen.add(label)
+                    likely.append(label)
             else:
                 other += 1
     return likely, other

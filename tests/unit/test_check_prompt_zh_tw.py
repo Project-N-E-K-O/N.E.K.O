@@ -313,6 +313,41 @@ _TWO_TABLES = {
 }
 
 
+_NESTED_SHARING_A_LINE = 'T = {"en": {\n    "en": "a",\n    "zh": "b",\n  },\n  "zh": "s",\n  "other": "x",\n}'
+
+
+def test_nested_table_sharing_its_parents_opening_line():
+    """Both tables count when a nested one opens on its parent's line.
+
+    Outer resolves to {en, other, zh} and inner to {en, zh}; neither has zh-TW, so
+    both are offenders and both report line 1.
+    """
+    src = _NESTED_SHARING_A_LINE
+    assert MOD.find_violations(ast.parse(src), src.splitlines()) == [1, 1]
+
+
+def test_locate_uses_each_nodes_own_span_not_the_survivors():
+    """A nested table must not shadow its parent's span.
+
+    Keying nodes by start line let the inner table (ending line 4) evict the outer
+    one (ending line 7). Touching line 5 — inside the parent, past the child — then
+    matched against the child's shorter span and classified both as pre-existing,
+    degrading the message to "run --full".
+    """
+    src = _NESTED_SHARING_A_LINE
+    likely, other = MOD.locate_touched({"p.py": src}, {"p.py": {5}})
+    assert likely == ["p.py:1"]
+    assert other == 1
+
+
+def test_locate_deduplicates_labels_for_tables_on_one_line():
+    """Two offenders on one line render to one label, not the same line twice."""
+    src = _NESTED_SHARING_A_LINE
+    likely, other = MOD.locate_touched({"p.py": src}, {"p.py": {1}})
+    assert likely == ["p.py:1"]
+    assert other == 0
+
+
 def test_locate_narrows_to_tables_the_diff_touched():
     """A bare total says nothing about where, so the message needs the touched one.
 
@@ -606,6 +641,34 @@ def test_merge_resolving_to_an_offender_is_reported(src):
 def test_resolvable_comprehension_is_judged(src):
     """A comprehension over an inline literal has statically known keys."""
     assert len(_violations(src)) == 1
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict([("en", "english"), ("zh", "s")])',
+    'T = dict((("en", "e"), ("zh", "s")))',
+])
+def test_iterable_of_pairs_constructor_is_judged(src):
+    """`dict([(k, v), ...])` is as statically known as a literal.
+
+    It reaches resolve_keys as a list, not a mapping, so without a pair-sequence
+    path it resolved to None and the table escaped entirely.
+    """
+    assert len(_violations(src)) == 1
+
+
+def test_iterable_of_pairs_with_traditional_is_silent():
+    assert _violations('T = dict([("en", "e"), ("zh", "s"), ("zh-TW", "t")])') == []
+
+
+@pytest.mark.parametrize("src", [
+    'T = dict(PAIRS)',
+    'T = dict([("en", "e"), BAD])',
+    'T = dict([("en", "e"), (VAR, "s")])',
+    'T = dict([("en", "e", "extra"), ("zh", "s", "extra")])',
+])
+def test_unresolvable_pair_sequence_is_not_judged(src):
+    """Anything but a literal sequence of two-item string-keyed pairs stays unknown."""
+    assert _violations(src) == []
 
 
 @pytest.mark.parametrize("src", [
