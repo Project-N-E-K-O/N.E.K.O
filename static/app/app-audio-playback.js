@@ -515,6 +515,21 @@
             S.assistantAudioTurnBySpeechId = {};
         }
         S.assistantAudioTurnBySpeechId[sid] = normalizedTurnId;
+
+        // 宣告关闭之后又收到本轮的音频头 = 那条 audio_done 已经过期。
+        // 音频头和 audio_done 走同一条 ws、严格按序，所以这是"后端说完了却
+        // 又发来音频"的确凿证据，不是猜测。omni 原生通路会遇到：它的
+        // response.audio.done 是 per-response 的，而一轮里可能有第二个带音频
+        // 的 response（工具调用后的续答）。作废后重新等下一条 audio_done，
+        // 等不到就走 give-up。
+        if (isAssistantAudioStreamClosed(normalizedTurnId)) {
+            logAudioLifecycle('rememberAssistantAudioSpeechTurn:reopen_after_close', {
+                speechId: sid,
+                turnId: normalizedTurnId
+            });
+            S.assistantAudioStreamClosedTurnId = null;
+            S.assistantAudioStreamClosedEpoch = -1;
+        }
     }
 
     // 后端权威信号：该 speech_id 的音频流已关闭，之后不会再有属于它的 chunk。

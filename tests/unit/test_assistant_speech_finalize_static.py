@@ -285,6 +285,21 @@ const report = {};
   report.unknown_sid_then_real = h.speechEnds();
 }
 
+// 宣告关闭之后又收到本轮的音频头（omni 的 per-response audio.done 会这样）：
+// 旧信号作废，重新等下一条，等不到就走 give-up。
+{
+  const h = createHarness();
+  h.primeSpeakingTurn('TC');
+  h.mod.rememberAssistantAudioSpeechTurn('sid-c', 'TC');
+  h.mod.noteAssistantAudioStreamClosed('sid-c');   // 第一个 response 的 audio.done
+  h.mod.rememberAssistantAudioSpeechTurn('sid-c', 'TC');  // 第二个 response 的音频头
+  report.reopen_closed_turn = h.S.assistantAudioStreamClosedTurnId;
+  h.turnEnd('TC');
+  report.reopen_speech_ends = h.speechEnds();
+  h.mod.noteAssistantAudioStreamClosed('sid-c');   // 第二个 response 的 audio.done
+  report.reopen_after_second_done = h.speechEnds();
+}
+
 console.log(JSON.stringify(report));
 """
 
@@ -372,6 +387,13 @@ def test_turn_start_clears_previous_close_mark(report):
     """A new turn must not inherit the previous turn's stream-closed mark."""
     assert report["turn_start_cleared_mark"] is None
     assert report["turn_start_cleared_map"] == 0
+
+
+def test_audio_after_close_reopens_the_stream(report):
+    """More audio for the turn after a close notice proves that notice stale."""
+    assert report["reopen_closed_turn"] is None
+    assert report["reopen_speech_ends"] == []
+    assert report["reopen_after_second_done"] == ["TC"]
 
 
 def test_audio_done_for_never_played_speech_is_ignored(report):
