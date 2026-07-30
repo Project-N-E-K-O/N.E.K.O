@@ -446,19 +446,23 @@ def vllm_omni_tts_worker(request_queue, response_queue, audio_api_key, voice_id,
                         try:
                             await receive_task
                         except asyncio.CancelledError:
+                            # 这个 cancel 是上一行自己发的，正常路径
                             pass
                         except Exception:
+                            # 接收协程临终抛的异常与本次打断无关，吞掉继续拆卸
                             pass
                     receive_task = None
                     if ws is not None:
                         try:
                             await ws.close()
                         except Exception:
+                            # 连接马上要丢弃，close 失败不影响拆卸
                             pass
                         ws = None
                     try:
                         resampler.clear()
                     except Exception:
+                        # 重采样器状态下一轮会重建，清不掉也不该拦住打断
                         pass
                     session_state["active"] = False
                     session_state["awaiting_done"] = False

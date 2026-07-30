@@ -326,6 +326,8 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                     try:
                         synthesizer.close()
                     except Exception:
+                        # 打断拆卸：连接反正要丢弃，close 失败也得继续往下清状态，
+                        # 抛上去只会把打断本身打断（回调已 _muted，不会再灌数据）。
                         pass
                 synthesizer = None
                 last_streaming_call_time = None
