@@ -57,12 +57,19 @@ class _FakeWebSocket:
 
     def send(self, payload):
         self._synth.finish_payloads.append(payload)
+        if _FakeSynthesizer.complete_on_finish:
+            self._synth.callback.on_complete()
 
 
 class _FakeSynthesizer:
     """Records its callback so the test can fire completions out of order."""
 
     instances = []
+    # 每次 streaming_call 依次消费一个脚本项（拿到 synth 实例）；空了就走默认。
+    script = []
+    # True 时 ws.send(FINISH) 会同步打回 on_complete —— 模拟 SDK 接收线程
+    # 抢在 send 返回前就完成的那一瞬。
+    complete_on_finish = False
 
     def __init__(self, **kwargs):
         self.callback = kwargs["callback"]
@@ -76,6 +83,9 @@ class _FakeSynthesizer:
 
     def streaming_call(self, text):
         self.spoken.append(text)
+        if _FakeSynthesizer.script:
+            _FakeSynthesizer.script.pop(0)(self)
+            return
         # 一次给够 bootstrap 阈值（1024B），逼 worker 立刻把音频投出去，
         # 这样 _active_sid 会被置上 —— 与真实链路一致。
         self.callback.on_data(b"\x00" * 2048)
@@ -100,6 +110,8 @@ def fake_dashscope(monkeypatch):
     monkeypatch.setitem(sys.modules, "dashscope.audio", audio)
     monkeypatch.setitem(sys.modules, "dashscope.audio.tts_v2", tts_v2)
     _FakeSynthesizer.instances = []
+    _FakeSynthesizer.script = []
+    _FakeSynthesizer.complete_on_finish = False
     return root
 
 
@@ -249,3 +261,58 @@ def test_idle_keepalive_finish_does_not_close_the_stream(fake_dashscope, monkeyp
     finally:
         request_queue.put((TTS_SHUTDOWN_SENTINEL, None))
         thread.join(timeout=5)
+
+
+def test_completion_racing_the_finish_send_still_closes_the_stream(worker):
+    """The SDK thread can complete before ws.send returns; arming must precede it."""
+    request_queue, response_queue, _thread = worker
+    _FakeSynthesizer.complete_on_finish = True
+
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一轮。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "synthesizer")
+    synth = _FakeSynthesizer.instances[0]
+    request_queue.put((None, None))
+    _wait_for(lambda: synth.finish_payloads, "FINISH")
+
+    seen = []
+
+    def _closed():
+        seen.extend(_drain(response_queue))
+        return _audio_done_ids(seen) == ["speech-a"]
+
+    _wait_for(_closed, "audio_done from the completion that raced the FINISH send")
+
+
+def test_reconnect_does_not_splice_stale_buffer_into_the_new_stream(worker):
+    """A rebuilt connection restarts the OGG stream; leftovers would corrupt it."""
+    request_queue, response_queue, _thread = worker
+
+    def _half_packet(synth):
+        synth.callback.on_data(b"A" * 500)   # 低于 1024 的 bootstrap 阈值，留在缓冲里
+
+    def _boom(_synth):
+        raise RuntimeError("stream broke")
+
+    def _fresh_stream(synth):
+        synth.callback.on_data(b"B" * 2048)
+
+    _FakeSynthesizer.script = [_half_packet, _boom, _fresh_stream]
+
+    request_queue.put(("speech-a", _LONG_ENOUGH + "第一轮。"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 1, "first synthesizer")
+    request_queue.put(("speech-a", "同一轮的后续文本"))
+    _wait_for(lambda: len(_FakeSynthesizer.instances) == 2, "rebuilt synthesizer")
+
+    seen = []
+
+    def _got_audio():
+        seen.extend(item for item in _drain(response_queue)
+                    if isinstance(item, tuple) and len(item) == 3 and item[0] == "__audio__")
+        return bool(seen)
+
+    _wait_for(_got_audio, "audio from the rebuilt stream")
+    payload = seen[-1][2]
+    assert payload == b"B" * 2048, (
+        "the rebuilt stream must not carry the dead connection's half packet "
+        f"(got {len(payload)} bytes)"
+    )

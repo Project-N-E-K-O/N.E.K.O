@@ -340,14 +340,20 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
             last_streaming_call_time = None
             return
 
-        try:
-            synthesizer.ws.send(synthesizer.request.getFinishRequest())
-        except Exception as e:
-            logger.warning(f"发送TTS完成信号失败: {e}")
+        # 标记必须在 send 之前武装：SDK 的接收线程可能在 send 返回前就把
+        # on_complete 打回来（短句尤其快），标记晚一步就等于本轮白白漏发一次
+        # audio_done、退化到前端 700ms give-up。
         # 本轮已经发过 FINISH：后续的 on_complete 才是真正的音频收尾。
         # 空闲保活的 FINISH 不算：本轮还可能继续来文本（届时会新建 synthesizer），
         # 那次 on_complete 发 audio_done 就是早发，前端会提前收尾。
         callback.finish_requested_speech_id = current_speech_id if round_end else None
+        try:
+            synthesizer.ws.send(synthesizer.request.getFinishRequest())
+        except Exception as e:
+            logger.warning(f"发送TTS完成信号失败: {e}")
+            # FINISH 没发出去，服务端不会给这一轮的完成通知；撤回标记，
+            # 免得后面某个别的完成通知被当成本轮收尾（早发）。
+            callback.finish_requested_speech_id = None
         last_streaming_call_time = None
         # 这里不能立刻清 accepted_speech_id/bootstrap。
         # FINISH 发出后，服务端仍可能继续回传尾包；应由 on_complete 或后续中断/切换来收口状态。
@@ -485,6 +491,13 @@ def cosyvoice_vc_tts_worker(request_queue, response_queue, audio_api_key, voice_
                         pass
                     synthesizer = None
                     last_streaming_call_time = None
+                    # 旧流留在共享缓冲里的半包必须就地清掉。重连沿用同一个
+                    # speech_id，on_data 只在 sid 变化时才重置缓冲，所以这些
+                    # 半包会和新流的数据拼在一起变成坏音频。以前是靠旧
+                    # synthesizer 迟到的 on_complete 顺手 reset，现在那条回调
+                    # 认出自己过期就整个早退了（正是为了不动当前轮的状态），
+                    # 清理只能由这里做。
+                    callback.reset_bootstrap_state()
 
                 try:
                     synthesizer = _create_synthesizer(detected_lang)
