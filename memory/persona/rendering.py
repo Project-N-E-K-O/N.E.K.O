@@ -62,6 +62,10 @@ class _RenderPrep(NamedTuple):
     lives here (built once by ``_prepare_render``, consumed by
     ``_compose_from_prep``).
 
+    ``exempt_entries`` are the protected and suppressed entries: they
+    never pass through the trim, but they DO render, so the allocator has
+    to count them when deciding whether a slot has anything to show.
+
     ``subject_slots`` is the allocation order for scoped rendering: one
     entry per authorized subject, in the order the CALLER supplied, plus a
     trailing ``None`` slot when legacy-private rows are also allowed in.
@@ -74,6 +78,7 @@ class _RenderPrep(NamedTuple):
     flat_non_protected: list
     reflections: list
     suppressed_text_set: set
+    exempt_entries: list
     subject_slots: tuple
 
 
@@ -286,10 +291,10 @@ class RenderingMixin:
     @classmethod
     def _score_trim_entries(
         cls, entries: list, budget: int, now: datetime,
-        *, cache_writeback: bool = True,
+        *, cache_writeback: bool = True, per_entry_overhead: int = 0,
     ) -> tuple[list, int]:
         """Sync score-trim: sort by (evidence_score, importance) DESC, keep
-        entries whose accumulated `count_tokens(text)` ≤ `budget`.
+        entries whose accumulated cost stays within `budget`.
 
         An entry that does not fit is SKIPPED, not treated as a stop sign.
         The loop used to `break` there, which turned "the top-ranked entry
@@ -304,6 +309,15 @@ class RenderingMixin:
         per-subject allocator needs the usage to hand what is left of the
         overall gate to the next subject.
 
+        `per_entry_overhead` is what composition adds around each entry —
+        the `- ` bullet and its newline. Zero (the default) keeps the
+        legacy private/main-app pools measured exactly as they always
+        were, in entry text alone. The scoped allocator passes the real
+        markup, because its gate advertises a bound on the RENDERED block:
+        with short facts the markup is most of the line, and selecting on
+        text while charging markup afterwards lets one pool hand the next
+        one tokens the gate no longer has.
+
         `cache_writeback`: default True writes `token_count` fields back
         onto each entry for across-render reuse (persona path — entries
         live in `_personas`). Pass False for reflection entries, which are
@@ -314,30 +328,34 @@ class RenderingMixin:
         kept = []
         total = 0
         for e in cls._score_trim_sort(entries, now):
-            t = cls._get_cached_token_count(e, writeback=cache_writeback)
-            if total + t > budget:
+            cost = cls._get_cached_token_count(
+                e, writeback=cache_writeback,
+            ) + per_entry_overhead
+            if total + cost > budget:
                 continue
             kept.append(e)
-            total += t
+            total += cost
         return kept, total
 
     @classmethod
     async def _ascore_trim_entries(
         cls, entries: list, budget: int, now: datetime,
-        *, cache_writeback: bool = True,
+        *, cache_writeback: bool = True, per_entry_overhead: int = 0,
     ) -> tuple[list, int]:
         """Async twin of `_score_trim_entries`. Identical math; the only
         difference is `acount_tokens` (worker-thread tiktoken). See the
         sync twin for the skip-don't-stop rule, the `(kept, tokens_used)`
-        return and the `cache_writeback` contract."""
+        return, `per_entry_overhead` and the `cache_writeback` contract."""
         kept = []
         total = 0
         for e in cls._score_trim_sort(entries, now):
-            t = await cls._aget_cached_token_count(e, writeback=cache_writeback)
-            if total + t > budget:
+            cost = await cls._aget_cached_token_count(
+                e, writeback=cache_writeback,
+            ) + per_entry_overhead
+            if total + cost > budget:
                 continue
             kept.append(e)
-            total += t
+            total += cost
         return kept, total
 
     def _split_persona_for_render(
@@ -747,24 +765,17 @@ class RenderingMixin:
         individually over budget. Erring toward reserving is the safe
         direction — the failure it guards against is the group getting
         nothing, not a member getting slightly less.
+
+        Callers must include the budget-exempt buckets. A group holding
+        only suppressed facts has empty persona/reflection buckets yet
+        still renders a do-not-mention section, and a slot judged empty
+        gets no reserve, falls under the minimum, and is dropped whole —
+        taking those suppression instructions with it. Losing them means
+        the character starts volunteering exactly what it was told to sit
+        on.
         """
         marker = cls._subject_bucket_marker(subject)
         return any(buckets.get(marker) for buckets in bucket_maps)
-
-    @staticmethod
-    def _charge_gate(text_tokens: int, kept: list) -> int:
-        """What a subject's kept entries really cost the overall gate.
-
-        The per-subject pools have always been measured in entry ``text``
-        alone, and that stays — changing them would move the private-chat
-        baseline too. But the gate advertises a bound on the RENDERED
-        block, and composition adds a ``- `` bullet and a newline to every
-        entry. With short facts that markup is a large fraction of the
-        line, so a workload whose text exactly fills the gate emits a
-        block well past it. Section headers are not attributed to any one
-        entry; they are bounded by the subject count and left out.
-        """
-        return text_tokens + len(kept) * SCOPED_RENDER_ENTRY_MARKUP_TOKENS
 
     @classmethod
     def _log_skipped_subject(cls, subject, remaining: int, available: int) -> None:
@@ -813,6 +824,7 @@ class RenderingMixin:
         """
         persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
+        exempt_buckets = cls._bucket_entries_by_subject(prep.exempt_entries)
         kept_persona: list = []
         kept_reflections: list = []
         skipped: set = set()
@@ -821,7 +833,7 @@ class RenderingMixin:
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
-                persona_buckets, reflection_buckets,
+                persona_buckets, reflection_buckets, exempt_buckets,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 cls._log_skipped_subject(subject, remaining, available)
@@ -830,15 +842,20 @@ class RenderingMixin:
             persona_kept, persona_used = cls._score_trim_entries(
                 persona_buckets.get(marker, ()),
                 min(PERSONA_RENDER_MAX_TOKENS, available), now,
+                per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
             )
-            remaining -= cls._charge_gate(persona_used, persona_kept)
-            available -= persona_used
+            # Both counters move by the CHARGED cost. Subtracting only the
+            # text from `available` would let the reflection pool spend
+            # tokens the gate has already run out of.
+            remaining -= persona_used
+            available = max(0, available - persona_used)
             reflection_kept, reflection_used = cls._score_trim_entries(
                 reflection_buckets.get(marker, ()),
                 min(REFLECTION_RENDER_MAX_TOKENS, available), now,
                 cache_writeback=False,
+                per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
             )
-            remaining -= cls._charge_gate(reflection_used, reflection_kept)
+            remaining -= reflection_used
             kept_persona.extend(persona_kept)
             kept_reflections.extend(reflection_kept)
         cls._log_unslotted_buckets(
@@ -854,6 +871,7 @@ class RenderingMixin:
         the token counter differs (worker-thread tiktoken)."""
         persona_buckets = cls._bucket_entries_by_subject(prep.flat_non_protected)
         reflection_buckets = cls._bucket_entries_by_subject(prep.reflections)
+        exempt_buckets = cls._bucket_entries_by_subject(prep.exempt_entries)
         kept_persona: list = []
         kept_reflections: list = []
         skipped: set = set()
@@ -862,7 +880,7 @@ class RenderingMixin:
             marker = cls._subject_bucket_marker(subject)
             available = cls._subject_available_budget(
                 prep.subject_slots, index, remaining,
-                persona_buckets, reflection_buckets,
+                persona_buckets, reflection_buckets, exempt_buckets,
             )
             if available < SCOPED_RENDER_SUBJECT_MIN_TOKENS:
                 cls._log_skipped_subject(subject, remaining, available)
@@ -871,15 +889,20 @@ class RenderingMixin:
             persona_kept, persona_used = await cls._ascore_trim_entries(
                 persona_buckets.get(marker, ()),
                 min(PERSONA_RENDER_MAX_TOKENS, available), now,
+                per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
             )
-            remaining -= cls._charge_gate(persona_used, persona_kept)
-            available -= persona_used
+            # Both counters move by the CHARGED cost. Subtracting only the
+            # text from `available` would let the reflection pool spend
+            # tokens the gate has already run out of.
+            remaining -= persona_used
+            available = max(0, available - persona_used)
             reflection_kept, reflection_used = await cls._ascore_trim_entries(
                 reflection_buckets.get(marker, ()),
                 min(REFLECTION_RENDER_MAX_TOKENS, available), now,
                 cache_writeback=False,
+                per_entry_overhead=SCOPED_RENDER_ENTRY_MARKUP_TOKENS,
             )
-            remaining -= cls._charge_gate(reflection_used, reflection_kept)
+            remaining -= reflection_used
             kept_persona.extend(persona_kept)
             kept_reflections.extend(reflection_kept)
         cls._log_unslotted_buckets(
@@ -917,6 +940,10 @@ class RenderingMixin:
             subjects,
             include_legacy_private,
         )
+        exempt_entries = [entry for _ek, entry in protected_entries] + [
+            entry for entry in self._collect_all_entries(persona_view)
+            if isinstance(entry, dict) and entry.get('suppress')
+        ]
         return _RenderPrep(
             persona_view=persona_view,
             protected_entries=protected_entries,
@@ -924,6 +951,7 @@ class RenderingMixin:
             flat_non_protected=flat_non_protected,
             reflections=reflections,
             suppressed_text_set=suppressed_text_set,
+            exempt_entries=exempt_entries,
             subject_slots=self._subject_render_slots(
                 subjects, include_legacy_private,
             ),

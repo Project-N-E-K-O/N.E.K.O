@@ -62,6 +62,19 @@ def _scoped_section(subject, facts: list[dict]) -> dict:
     return {**subject.as_entry_fields(), 'facts': facts}
 
 
+def _pool(*texts: str) -> int:
+    """A scoped pool sized to hold exactly these entries.
+
+    Scoped budgets are charged per rendered line, not per raw text, so a
+    fixture that adds up bare ``count_tokens`` comes out one markup short
+    per entry and silently drops the last one. Derived from the constant
+    rather than written down, so changing it retunes every fixture here.
+    """
+    from config import SCOPED_RENDER_ENTRY_MARKUP_TOKENS as MARKUP
+
+    return sum(count_tokens(t) + MARKUP for t in texts)
+
+
 class _RenderHarness:
     """Runs the real RenderingMixin, stubbing only persona/config IO."""
 
@@ -203,7 +216,7 @@ async def test_each_subject_gets_its_own_persona_budget():
     harness = _RenderHarness(persona)
     # Exactly what the group's first two entries cost: under one shared
     # pool the member's entries (lower score) get nothing at all.
-    pool = sum(count_tokens(e['text']) for e in group_facts[:2])
+    pool = _pool(*[e['text'] for e in group_facts[:2]])
 
     with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', pool):
         rendered = await harness.arender_persona_markdown(
@@ -240,7 +253,7 @@ async def test_each_subject_gets_its_own_reflection_budget():
         _reflection('rm1', '小天觉得阿离最近很忙', rein=3.0, subject=member),
     ]
     harness = _RenderHarness(persona)
-    pool = sum(count_tokens(r['text']) for r in group_reflections[:2])
+    pool = _pool(*[r['text'] for r in group_reflections[:2]])
 
     with patch('memory.persona.rendering.REFLECTION_RENDER_MAX_TOKENS', pool):
         rendered = await harness.arender_persona_markdown(
@@ -343,10 +356,8 @@ async def test_group_subject_keeps_a_reserve_against_earlier_members():
 
     # Derived, not hand-tuned: the gate also charges per-entry markup, so
     # the reserve has to cover the group's line as rendered.
-    from config import SCOPED_RENDER_ENTRY_MARKUP_TOKENS as MARKUP
-
-    reserve = count_tokens(group_facts[0]['text']) + MARKUP
-    total = count_tokens(bulk) + reserve
+    reserve = _pool(group_facts[0]['text'])
+    total = _pool(bulk) + reserve
     crumbs = sum(count_tokens(e['text']) for e in member_facts[1:])
     assert crumbs >= reserve, "夹具失效：碎屑不够多，吃不光保底额度"
 
@@ -396,7 +407,10 @@ async def test_reserve_covers_every_group_still_queued_not_just_one():
         for s, name in zip(order, ('成员甲', '成员乙', '群A', '群B'))
     }
     harness = _RenderHarness(persona)
-    per_subject = count_tokens('成员甲说过的第0件事情要占掉不少预算才行') * 2
+    # One entry's worth per pool, and one pool's worth per reserve: with a
+    # FLAT reserve the two members then eat enough of the gate that the
+    # second group falls off. A roomier gate hides the difference.
+    per_subject = _pool('成员甲说过的第0件事情要占掉不少预算才行')
 
     with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', per_subject), \
             patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
@@ -524,7 +538,7 @@ async def test_a_skipped_subject_drops_its_budget_exempt_sections_too():
     }
     harness = _RenderHarness(persona)
     logger = MagicMock()
-    gate = count_tokens('群规是不许剧透而且要按时报名参加活动')
+    gate = _pool('群规是不许剧透而且要按时报名参加活动')
 
     with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate), \
             patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1), \
@@ -572,26 +586,114 @@ async def test_gate_charges_the_markup_composition_adds_to_every_entry():
         ]),
     }
     harness = _RenderHarness(persona)
-    pool, gate = 5, 12
+    from config import SCOPED_RENDER_ENTRY_MARKUP_TOKENS as MARKUP
 
-    with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', pool), \
-            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate), \
+    gate = 40
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate), \
             patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
         rendered = await harness.arender_persona_markdown(
             '小天', subjects=[first, second], include_legacy_private=False,
         )
 
-    assert '- x' in rendered, "夹具失效：第一个 subject 一条都没渲染出来"
-    # Under text-only accounting the first subject looks like it cost 5 of
-    # the 12-token gate, leaving 7 — enough to fund a whole second subject
-    # that the gate cannot actually pay for: its five bullets alone render
-    # past what is left. Charging the markup is what stops that.
-    assert '- y' not in rendered, (
-        "第二个 subject 用总闸里根本不存在的余量渲染了出来——markup 没计费"
+    bullets = rendered.count('- x') + rendered.count('- y')
+    assert bullets, "夹具失效：一条都没渲染出来"
+    # Every entry is one token of text, so once the bullet and its newline
+    # are charged the gate can fund at most this many of them. Counting
+    # text alone funds five times as many and emits a block far past the
+    # cap the constant advertises.
+    affordable = gate // (1 + MARKUP)
+    assert bullets <= affordable, (
+        f"总闸 {gate} tok 渲染了 {bullets} 条（含 markup 最多只装得下 "
+        f"{affordable} 条）——markup 没计进预算"
     )
-    assert count_tokens(rendered) < gate * 4, (
-        f"整块渲染出来 {count_tokens(rendered)} tok，与 {gate} tok 的总闸"
-        f"差得离谱"
+
+
+@pytest.mark.asyncio
+async def test_the_gate_is_never_overspent_within_one_subject():
+    """A subject's reflection pool cannot spend what its persona pool
+    already used up.
+
+    Selecting on text while charging markup afterwards left the two
+    counters disagreeing: the gate could be exhausted (or negative) while
+    the same subject went on funding reflections out of an ``available``
+    that had only been debited the raw text.
+    """
+    group, member = _group_and_member()
+    persona = {
+        group.persona_section_key: _scoped_section(group, [
+            _entry(f'g{j}', 'x', rein=float(40 - j), subject=group)
+            for j in range(40)
+        ]),
+        member.persona_section_key: _scoped_section(member, []),
+    }
+    reflections = [
+        _reflection('rg1', '小天觉得这个群很热闹', rein=5.0, subject=group),
+        _reflection('rm1', '小天觉得阿离最近很忙', rein=4.0, subject=member),
+    ]
+    harness = _RenderHarness(persona)
+    # Exactly enough for the persona side and nothing more.
+    gate = _pool(*['x'] * 6)
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
+        rendered = await harness.arender_persona_markdown(
+            '小天', None, reflections,
+            subjects=[group, member], include_legacy_private=False,
+        )
+
+    assert '- x' in rendered, "夹具失效：persona 一条都没渲染出来"
+    assert '小天觉得这个群很热闹' not in rendered, (
+        "persona 已经吃光总闸，同一个 subject 的 reflection 还是拿到了额度"
+    )
+    assert '小天觉得阿离最近很忙' not in rendered
+
+
+@pytest.mark.asyncio
+async def test_a_group_holding_only_suppressed_facts_still_gets_its_reserve():
+    """"Has something to render" includes the budget-exempt sections.
+
+    A group whose facts are all suppressed has empty persona and
+    reflection buckets, so a demand probe that only looks at those judges
+    it empty, denies it a reserve, and the floor then drops it whole —
+    taking its do-not-mention list with it. Losing that list makes the
+    character start volunteering exactly what it was told to sit on.
+    """
+    group, member = _group_and_member()
+    persona = {
+        member.persona_section_key: _scoped_section(member, [
+            _entry('m-big', '阿离说过的一件事情要占掉不少预算才行',
+                   rein=9.0, subject=member),
+        ] + [
+            # Crumbs, so that without a reserve the member mops the gate
+            # down past the floor and the group really does get dropped.
+            _entry(f'm{j}', 'x', rein=8.0 - j * 0.01, subject=member)
+            for j in range(20)
+        ]),
+        group.persona_section_key: _scoped_section(group, [
+            _entry('g-hush', '群里不要主动提起的那件事', suppress=True,
+                   subject=group),
+        ]),
+    }
+    harness = _RenderHarness(persona)
+    reserve = _pool('群里不要主动提起的那件事')
+    total = reserve + _pool('阿离说过的一件事情要占掉不少预算才行')
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_GROUP_RESERVED_TOKENS',
+               reserve), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS',
+                  _pool('x')), \
+            patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
+        rendered = await harness.arender_persona_markdown(
+            '小天', subjects=[member, group], include_legacy_private=False,
+        )
+
+    assert '阿离说过的一件事情要占掉不少预算才行' in rendered, (
+        "夹具失效：成员一条都没渲染出来"
+    )
+    assert '群里不要主动提起的那件事' in rendered, (
+        "只有 suppressed 内容的群被判成空、没拿到保底额度，整段被跳过，"
+        "「别主动提」清单跟着一起没了"
     )
 
 
@@ -616,8 +718,8 @@ async def test_allocation_follows_the_caller_subject_order():
     # Funds whichever subject comes first and nothing after it, regardless
     # of which of the two that is.
     total = max(
-        count_tokens('阿离在准备考试而且最近睡得很晚'),
-        count_tokens('小北在学吉他而且刚买了新琴弦'),
+        _pool('阿离在准备考试而且最近睡得很晚'),
+        _pool('小北在学吉他而且刚买了新琴弦'),
     )
 
     async def _render(order):
@@ -669,7 +771,7 @@ async def test_two_custom_scopes_of_one_subject_id_get_separate_budgets():
     }
     harness = _RenderHarness(persona)
     # Only enough for ONE entry if the two scopes share a pool.
-    pool = count_tokens(a_facts[0]['text'])
+    pool = _pool(a_facts[0]['text'])
 
     with patch('memory.persona.rendering.PERSONA_RENDER_MAX_TOKENS', pool):
         rendered = await harness.arender_persona_markdown(
@@ -737,13 +839,13 @@ async def test_legacy_render_ignores_the_scoped_total_gate():
 _PARITY_SCENARIOS = [
     (
         'persona-pool',            # per-subject persona ceiling binds
-        {'PERSONA_RENDER_MAX_TOKENS': 6, 'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
+        {'PERSONA_RENDER_MAX_TOKENS': 10, 'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
         {'present': ['群规是不许剧透', '阿离在准备考试'],
          'absent': ['群里在筹划露营', '阿离养了一只橘猫']},
     ),
     (
         'reflection-pool',         # per-subject reflection ceiling binds
-        {'REFLECTION_RENDER_MAX_TOKENS': 9, 'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
+        {'REFLECTION_RENDER_MAX_TOKENS': 13, 'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
         {'present': ['小天觉得这个群很热闹', '小天觉得阿离最近很忙'],
          'absent': ['小天觉得群里爱聊吃的']},
     ),
@@ -751,8 +853,8 @@ _PARITY_SCENARIOS = [
         # Gate nearly spent; the floor is low, so the 2nd subject still
         # gets its sliver — only the entries that don't fit drop out.
         'total-gate',
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 35,
-         'REFLECTION_RENDER_MAX_TOKENS': 9,
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 40,
+         'REFLECTION_RENDER_MAX_TOKENS': 13,
          'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1},
         {'present': ['群规是不许剧透', '- x'], 'absent': ['阿离在准备考试']},
     ),
@@ -761,15 +863,15 @@ _PARITY_SCENARIOS = [
         # renders NOTHING. Contrasting with the row above is what proves
         # the floor does its own work and isn't just the gate again.
         'min-floor',
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 35,
-         'REFLECTION_RENDER_MAX_TOKENS': 9,
-         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 3},
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 40,
+         'REFLECTION_RENDER_MAX_TOKENS': 13,
+         'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 7},
         {'present': ['群规是不许剧透'], 'absent': ['阿离在准备考试', '- x']},
     ),
     (
         'group-reserve',           # group queued last keeps its slice
-        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 18,
-         'SCOPED_RENDER_GROUP_RESERVED_TOKENS': 13,
+        {'SCOPED_RENDER_TOTAL_MAX_TOKENS': 26,
+         'SCOPED_RENDER_GROUP_RESERVED_TOKENS': 17,
          'SCOPED_RENDER_SUBJECT_MIN_TOKENS': 1,
          'reversed_order': True},
         {'present': ['群规是不许剧透'], 'absent': ['阿离养了一只橘猫']},

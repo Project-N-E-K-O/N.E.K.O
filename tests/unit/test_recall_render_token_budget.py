@@ -150,12 +150,18 @@ def test_block_cap_funds_a_full_page_of_max_length_entries():
 
 
 def test_line_overhead_allowance_covers_what_the_renderer_actually_adds():
-    """The allowance above is only honest if it matches reality. Measure
-    the decoration on a real rendered line instead of trusting the number.
+    """The allowance is only honest if it matches reality. Measure the
+    decoration on a real rendered line instead of trusting the number.
+
+    Measured on a SHORT entry on purpose. With a max-length one the
+    per-line cap (``ENTRY + OVERHEAD``) truncates the result, so the
+    measurement lands on exactly the allowance being checked and shrinking
+    the constant shrinks the measurement with it — the assertion holds for
+    any value, which is no assertion at all.
     """
     from config import RECALL_RENDER_LINE_OVERHEAD_TOKENS
 
-    body = "群里聊过的一件事情，" * 400
+    body = "群里聊过的一件事情"
     with patch("utils.language_utils.get_global_language", return_value="zh"):
         rendered = _bridge().render_relevant_memory([
             {
@@ -166,7 +172,8 @@ def test_line_overhead_allowance_covers_what_the_renderer_actually_adds():
             },
         ])
 
-    overhead = count_tokens(rendered) - RECALL_RENDER_ENTRY_MAX_TOKENS
+    assert body in rendered, "夹具失效：短条目被截断了，量到的就不是纯装饰"
+    overhead = count_tokens(rendered) - count_tokens(body)
     assert 0 < overhead <= RECALL_RENDER_LINE_OVERHEAD_TOKENS, (
         f"实测行装饰 {overhead} tok 超出预留的 "
         f"{RECALL_RENDER_LINE_OVERHEAD_TOKENS} tok"
@@ -207,15 +214,29 @@ def _bridge():
 
 def test_plugin_recall_truncates_an_oversized_entry_instead_of_dropping_it():
     """A merged reflection can be thousands of tokens. Cut it, don't lose
-    it — the entry is there because it ranked highest for this query."""
+    it — the entry is there because it ranked highest for this query.
+
+    The per-line cap would bound the total on its own, so size alone
+    cannot tell the two apart. What only the per-entry cap buys is room
+    for the decoration: it trims the TEXT, leaving the trailing date
+    intact, where a line-level cut would take the date off the end.
+    """
     long_text = "露营的细节" * 2000
     assert count_tokens(long_text) > RECALL_RENDER_ENTRY_MAX_TOKENS
 
     with patch("utils.language_utils.get_global_language", return_value="zh"):
-        rendered = _bridge().render_relevant_memory([_result(long_text)])
+        rendered = _bridge().render_relevant_memory([{
+            "text": long_text,
+            "tier": "fact",
+            "entity": "group_chat",
+            "created_at": "2026-05-01T10:00:00",
+        }])
 
     assert rendered, "超长条目应被截断保留，而不是整条消失"
     assert "露营的细节" in rendered
+    assert rendered.rstrip().endswith("(2026-05-01)"), (
+        "正文没先按单条上限截断，日期后缀被整行截断吃掉了"
+    )
     assert count_tokens(rendered) <= RECALL_RENDER_ENTRY_MAX_TOKENS + 32, (
         f"单条召回未按 {RECALL_RENDER_ENTRY_MAX_TOKENS} tok 截断"
     )
@@ -283,11 +304,24 @@ async def _call_tool(results: list[dict]) -> str:
 @pytest.mark.asyncio
 async def test_tool_recall_truncates_an_oversized_entry_instead_of_dropping_it():
     """Main-app twin of the plugin cap. This repo has shipped a group-side
-    fix without the private-side one before."""
+    fix without the private-side one before.
+
+    Same reasoning as the plugin twin: the time suffix surviving is what
+    distinguishes trimming the text from cutting the whole line.
+    """
     long_text = "露营的细节" * 2000
-    rendered = await _call_tool([_result(long_text)])
+    rendered = await _call_tool([{
+        "text": long_text,
+        "tier": "fact",
+        "entity": "group_chat",
+        "created_at": "2026-05-01T10:00:00",
+    }])
 
     assert "露营的细节" in rendered
+    assert rendered.rstrip().endswith(")"), (
+        "正文没先按单条上限截断，时间后缀被整行截断吃掉了"
+    )
+    assert "2026-05-01" in rendered
     assert count_tokens(rendered) <= RECALL_RENDER_ENTRY_MAX_TOKENS + 64
 
 
