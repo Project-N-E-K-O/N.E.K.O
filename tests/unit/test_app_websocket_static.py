@@ -1723,13 +1723,16 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             },
           }));
           assert(
-            serverBroadcaster.S.proactiveVisionEnabled === false,
-            'the broadcasting window must retain its own server-authority floor'
+            serverBroadcaster.S.proactiveVisionEnabled === true,
+            'an unconfirmed explicit edit must outrank a server snapshot '
+              + 'that did not observe it'
           );
           assert(
-            serverSnapshot._sharedWriteMeta.knownKeyWrites
-              .proactiveVisionEnabled.confirmedRevision === 2,
-            'the server-authority floor must be serialized for reloads'
+            !serverSnapshot._sharedWriteMeta.knownKeyWrites
+              .proactiveVisionEnabled
+              && serverSnapshot._sharedWriteMeta.serverKeyRevisions
+                .proactiveVisionEnabled === 2,
+            'the server floor must be serialized without forging a source token'
           );
           const reloadedServerWinner = makeContext(
             true,
@@ -1755,8 +1758,9 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             },
           }));
           assert(
-            reloadedServerWinner.S.proactiveVisionEnabled === false,
-            'reload must reconstruct the server floor before its boot GET succeeds'
+            reloadedServerWinner.S.proactiveVisionEnabled === true,
+            'reload must not let the persisted server floor suppress '
+              + 'an unconfirmed explicit edit'
           );
 
           const receiver = makeContext(true);

@@ -49,6 +49,11 @@
     // Carrying these per-key source tokens lets receivers compare the data's
     // actual provenance instead of mistaking the envelope timestamp for it.
     const _knownSharedKeyWrites = Object.create(null);
+    // Server revision floors are deliberately separate from per-key browser
+    // write provenance. A GET/merge can prove that a server revision won, but
+    // its freshly minted localStorage envelope did not produce that field and
+    // must not become the field's source token.
+    const _knownServerKeyRevisions = Object.create(null);
     // Window-unique second sort key for concurrent shared-settings writes. Per
     // document load; stability across reloads is not needed because every
     // comparison reads the id off the write itself, and sessionStorage would be
@@ -203,6 +208,25 @@
             }
         }
         return snapshot;
+    }
+    function _rememberServerKeyRevisions(revisions, acceptedSettings) {
+        if (!revisions || typeof revisions !== 'object') return;
+        for (const key of Object.keys(revisions)) {
+            if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) continue;
+            if (acceptedSettings
+                && !Object.prototype.hasOwnProperty.call(acceptedSettings, key)) continue;
+            const revision = revisions[key];
+            if (!Number.isInteger(revision) || revision < 0) continue;
+            _knownServerKeyRevisions[key] = Math.max(
+                Number.isInteger(_knownServerKeyRevisions[key])
+                    ? _knownServerKeyRevisions[key]
+                    : 0,
+                revision
+            );
+        }
+    }
+    function _knownServerKeyRevisionsSnapshot() {
+        return Object.assign({}, _knownServerKeyRevisions);
     }
     function _confirmSharedKeyWrites(
         payload,
@@ -699,18 +723,20 @@
             ownMeta.serverRevision = _conversationSettingsRevision;
             ownMeta.serverAuthoritativeKeys =
                 serverAuthoritativeKeys.slice();
-            // Persist the authority floor inside knownKeyWrites as well as in
-            // memory. A reloaded window may have to reject a delayed explicit
-            // event before its boot GET returns (or when that GET is offline).
+            // Persist the server floor independently from source provenance. A
+            // reloaded window may need the revision before its boot GET returns,
+            // but the merge envelope did not produce any of these field values.
             for (const key of ownMeta.serverAuthoritativeKeys) {
-                _knownSharedKeyWrites[key] = {
-                    writeId: ownMeta.writeId,
-                    writerId: ownMeta.writerId,
-                    confirmedRevision: ownMeta.serverRevision
-                };
+                _knownServerKeyRevisions[key] = Math.max(
+                    Number.isInteger(_knownServerKeyRevisions[key])
+                        ? _knownServerKeyRevisions[key]
+                        : 0,
+                    ownMeta.serverRevision
+                );
             }
         }
         ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
+        ownMeta.serverKeyRevisions = _knownServerKeyRevisionsSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
             _noteAsrDecision(
                 _nextAsrDecisionWriteId(ownMeta.writeId),
@@ -753,6 +779,7 @@
         if (!meta || typeof meta !== 'object') return null;
         if (!_isValidAsrWriteId(meta.writeId)) return null;
         const knownKeyWrites = {};
+        const serverKeyRevisions = {};
         const rawKnownKeyWrites = meta.knownKeyWrites;
         const knownKeyWritesPresent = !!rawKnownKeyWrites
             && typeof rawKnownKeyWrites === 'object';
@@ -774,6 +801,49 @@
                 }
             }
         }
+        const rawServerKeyRevisions = meta.serverKeyRevisions;
+        if (rawServerKeyRevisions
+            && typeof rawServerKeyRevisions === 'object') {
+            for (const key of Object.keys(rawServerKeyRevisions)) {
+                const revision = rawServerKeyRevisions[key];
+                if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                    && Number.isInteger(revision)
+                    && revision >= 0) {
+                    serverKeyRevisions[key] = revision;
+                }
+            }
+        }
+        const serverRevision = Number.isInteger(meta.serverRevision)
+            && meta.serverRevision >= 0
+            ? meta.serverRevision
+            : null;
+        const serverAuthoritativeKeys =
+            Array.isArray(meta.serverAuthoritativeKeys)
+                ? meta.serverAuthoritativeKeys.filter(
+                    (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                )
+                : [];
+        if (serverRevision !== null) {
+            for (const key of serverAuthoritativeKeys) {
+                serverKeyRevisions[key] = Math.max(
+                    Number.isInteger(serverKeyRevisions[key])
+                        ? serverKeyRevisions[key]
+                        : 0,
+                    serverRevision
+                );
+                // Upgrade snapshots written by the previous implementation:
+                // it stamped the merge envelope itself as field provenance.
+                const token = knownKeyWrites[key];
+                if (token
+                    && token.writeId === meta.writeId
+                    && token.writerId === (
+                        typeof meta.writerId === 'string' ? meta.writerId : ''
+                    )
+                    && token.confirmedRevision === serverRevision) {
+                    delete knownKeyWrites[key];
+                }
+            }
+        }
         return {
             writeId: meta.writeId,
             // Absent on snapshots written by the previous build: '' sorts below
@@ -789,18 +859,11 @@
             // changedKeys and keeps flowing through asrChangedByOtherWindow.
             asrAuthoritative: meta.asrAuthoritative === true,
             pendingRecovery: meta.pendingRecovery === true,
-            serverRevision: Number.isInteger(meta.serverRevision)
-                && meta.serverRevision >= 0
-                ? meta.serverRevision
-                : null,
-            serverAuthoritativeKeys:
-                Array.isArray(meta.serverAuthoritativeKeys)
-                    ? meta.serverAuthoritativeKeys.filter(
-                        (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
-                    )
-                    : [],
+            serverRevision,
+            serverAuthoritativeKeys,
             knownKeyWrites,
             knownKeyWritesPresent,
+            serverKeyRevisions,
             // Absent on previous-build snapshots and on writers with no
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
@@ -1552,6 +1615,10 @@
                 }
                 if (bootMeta) {
                     _rememberKnownSharedKeyWrites(bootMeta.knownKeyWrites, settings);
+                    _rememberServerKeyRevisions(
+                        bootMeta.serverKeyRevisions,
+                        settings
+                    );
                     _rememberSharedKeyWrites(bootMeta.changedKeys, bootMeta, settings);
                     if (Number.isInteger(bootMeta.serverRevision)) {
                         _conversationSettingsRevision =
@@ -1563,10 +1630,8 @@
                                 settings,
                                 key
                             )) continue;
-                            _rememberSharedKeyWrites([key], {
-                                writeId: bootMeta.writeId,
-                                writerId: bootMeta.writerId,
-                                confirmedRevision: bootMeta.serverRevision
+                            _rememberServerKeyRevisions({
+                                [key]: bootMeta.serverRevision
                             }, settings);
                         }
                     }
@@ -2114,9 +2179,21 @@
                         key
                     )) continue;
                     const localToken = _knownSharedKeyWrites[key];
-                    if (localToken
-                        && !_sharedWriteTokenOutranks(meta, localToken)
-                        && !_sharedWriteTokensEqual(meta, localToken)) {
+                    const incomingToken = meta.knownKeyWrites[key];
+                    const localServerRevision =
+                        _knownServerKeyRevisions[key];
+                    const incomingPredatesServerFloor =
+                        Number.isInteger(localServerRevision)
+                        && incomingToken
+                        && Number.isInteger(
+                            incomingToken.confirmedRevision
+                        )
+                        && incomingToken.confirmedRevision
+                            < localServerRevision;
+                    if (incomingPredatesServerFloor
+                        || (localToken
+                            && !_sharedWriteTokenOutranks(meta, localToken)
+                            && !_sharedWriteTokensEqual(meta, localToken))) {
                         if (incoming === settings) {
                             incoming = Object.assign({}, settings);
                         }
@@ -2165,6 +2242,8 @@
                                 mergeToken.confirmedRevision
                             );
                         }
+                        const localServerRevision =
+                            _knownServerKeyRevisions[key];
                         const serverSnapshotIsOlder =
                             (Number.isInteger(_conversationSettingsRevision)
                                 && meta.serverRevision
@@ -2173,7 +2252,10 @@
                                 && !Number.isInteger(confirmedRevision))
                             || (Number.isInteger(confirmedRevision)
                                 && meta.serverRevision
-                                    < confirmedRevision);
+                                    < confirmedRevision)
+                            || (Number.isInteger(localServerRevision)
+                                && meta.serverRevision
+                                    < localServerRevision);
                         if (serverSnapshotIsOlder) {
                             if (incoming === settings) {
                                 incoming = Object.assign({}, settings);
@@ -2225,14 +2307,16 @@
             const changed = applySharedRuntimeSettings(incoming);
             if (meta) {
                 _rememberKnownSharedKeyWrites(meta.knownKeyWrites, incoming);
+                _rememberServerKeyRevisions(
+                    meta.serverKeyRevisions,
+                    incoming
+                );
                 _rememberSharedKeyWrites(meta.changedKeys, meta, incoming);
                 for (const key of meta.serverAuthoritativeKeys) {
                     if (Object.prototype.hasOwnProperty.call(incoming, key)) {
-                        _knownSharedKeyWrites[key] = {
-                            writeId: meta.writeId,
-                            writerId: meta.writerId,
-                            confirmedRevision: meta.serverRevision
-                        };
+                        _rememberServerKeyRevisions({
+                            [key]: meta.serverRevision
+                        }, incoming);
                     }
                 }
                 if (Number.isInteger(meta.serverRevision)) {
