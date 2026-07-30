@@ -125,7 +125,7 @@ def test_flat_helpers_expose_the_traditional_entries(getter, flat_name, word):
 
 
 def test_tight_negation_set_is_unchanged_by_the_split():
-    """`别/別` and `没/沒` used to sit together in the zh block.
+    """Both orthographies of the single-character negations shared one zh block.
 
     Splitting them by language is a readability change only — the flattened set the
     heuristic actually matches on must come out identical, or an existing negation
