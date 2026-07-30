@@ -67,10 +67,12 @@ from __future__ import annotations
 
 import argparse
 import ast
+import io
 import os
 import re
 import subprocess
 import sys
+import tokenize
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -113,7 +115,9 @@ def _string_keys(node: ast.AST) -> set[str]:
         and isinstance(node.func, ast.Name)
         and node.func.id == "dict"
     ):
-        if any(kw.arg is None for kw in node.keywords):
+        # A positional arg is a base mapping (`dict(BASE, zh=...)`) and is just
+        # as unknowable as `**`: either could be where zh-TW comes from.
+        if node.args or any(kw.arg is None for kw in node.keywords):
             return set()
         return {kw.arg for kw in node.keywords if kw.arg is not None}
     return set()
@@ -194,23 +198,44 @@ def locate_touched(
 
 
 def _git(*args: str) -> str:
-    """Run git and return stdout.
+    """Run git and return stdout as text.
 
-    ``errors="replace"`` is the base-side counterpart to ``_sources_on_disk``
-    tolerating a bad decode: ``git show`` of a non-UTF-8 prompt module would
-    otherwise raise mid-decode. A replaced source then fails ``ast.parse``, which
-    ``_parse_source`` reports and skips — same outcome as the disk side.
+    ``errors="replace"`` because this decodes git's own reporting (diff headers,
+    path lists); a malformed byte there should not abort the gate. Source blobs go
+    through ``_git_bytes`` instead, so they can honour a PEP 263 declaration.
     """
+    return _git_bytes(*args).decode("utf-8", errors="replace")
+
+
+def _git_bytes(*args: str) -> bytes:
+    """Run git and return raw stdout."""
     result = subprocess.run(
         ["git", *args],
         cwd=REPO_ROOT,
         capture_output=True, check=False,
-        text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
-        sys.stderr.write(result.stderr)
+        sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
         sys.exit(2)
     return result.stdout
+
+
+def _decode_source(raw: bytes, origin: str) -> str | None:
+    """Decode Python source, honouring a PEP 263 coding declaration.
+
+    A module carrying ``# coding: latin-1`` is valid Python that a plain UTF-8
+    read would reject; skipping it would mean silently not checking a real prompt
+    module. Only genuinely undecodable bytes are skipped, with a diagnostic.
+    """
+    try:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(raw).readline)
+    except SyntaxError:
+        encoding = "utf-8"
+    try:
+        return raw.decode(encoding)
+    except (UnicodeDecodeError, LookupError) as exc:
+        sys.stderr.write(f"{origin}: cannot decode as {encoding} ({exc})\n")
+        return None
 
 
 def _merge_base(base: str) -> str:
@@ -230,7 +255,12 @@ def _prompt_files_at(rev: str) -> list[str]:
 
 
 def _sources_at(rev: str) -> dict[str, str]:
-    return {path: _git("show", f"{rev}:{path}") for path in _prompt_files_at(rev)}
+    sources: dict[str, str] = {}
+    for path in _prompt_files_at(rev):
+        text = _decode_source(_git_bytes("show", f"{rev}:{path}"), f"{rev}:{path}")
+        if text is not None:
+            sources[path] = text
+    return sources
 
 
 _HUNK_HEADER_RE = re.compile(r"^@@ -\d+(?:,\d+)? \+(\d+)(?:,(\d+))? @@")
@@ -242,7 +272,14 @@ def _touched_lines(rev: str) -> dict[str, set[int]]:
     ``-M`` keeps a pure rename from reporting every line of the new path as
     added, which would make the hint point at the whole file.
     """
-    diff = _git("diff", "-M", "--unified=0", f"{rev}...HEAD", "--", PROMPTS_SUBDIR)
+    # core.quotePath=false: git otherwise C-quotes non-ASCII paths in the `+++`
+    # header (`+++ "b/config/prompts/\344\270\255.py"`), which would not match the
+    # real path and would drop that file's hints. Same class of problem as the
+    # `-z` on ls-tree, different output channel.
+    diff = _git(
+        "-c", "core.quotePath=false",
+        "diff", "-M", "--unified=0", f"{rev}...HEAD", "--", PROMPTS_SUBDIR,
+    )
     touched: dict[str, set[int]] = {}
     current: str | None = None
     for line in diff.splitlines():
@@ -259,19 +296,23 @@ def _touched_lines(rev: str) -> dict[str, set[int]]:
 
 
 def _sources_on_disk() -> dict[str, str]:
-    """Read every prompt module off disk, skipping any that cannot be decoded.
+    """Read every prompt module off disk, decoding per PEP 263.
 
-    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so catching
-    only the latter would let a non-UTF-8 prompt module take the whole gate down
-    with a traceback instead of skipping that one file.
+    Reads bytes and hands them to ``_decode_source``, the same path the base side
+    uses, so a module with a coding declaration is checked rather than skipped and
+    an unreadable one is reported rather than fatal.
     """
     sources: dict[str, str] = {}
     for path in sorted(PROMPTS_DIR.rglob("*.py")):
         rel = path.relative_to(REPO_ROOT).as_posix()
         try:
-            sources[rel] = path.read_text(encoding="utf-8")
-        except (OSError, UnicodeDecodeError) as exc:
+            raw = path.read_bytes()
+        except OSError as exc:
             sys.stderr.write(f"{rel}: cannot read ({exc})\n")
+            continue
+        text = _decode_source(raw, rel)
+        if text is not None:
+            sources[rel] = text
     return sources
 
 
@@ -296,6 +337,15 @@ def main(argv: list[str] | None = None) -> int:
         help="Print the backlog size and exit 0.",
     )
     args = parser.parse_args(argv)
+
+    # Force UTF-8 on our own streams. When stdout is a pipe, Python encodes with
+    # the locale encoding — cp1252 on the Windows CI runner — so printing a
+    # non-ASCII path, or a SyntaxError whose text carries CJK source, would raise
+    # UnicodeEncodeError from inside the gate. Callers decode as UTF-8 to match.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
 
     disk = _sources_on_disk()
 

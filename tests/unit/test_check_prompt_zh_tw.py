@@ -434,6 +434,53 @@ def test_main_passes_when_head_backfilled_an_offender(monkeypatch):
     assert MOD.main(["--base", "irrelevant"]) == 0
 
 
+def test_main_forces_utf8_on_its_own_streams(monkeypatch):
+    """The gate must not encode its output with the locale encoding.
+
+    Asserting the reconfigure call is asserting the mechanism, because the failure
+    it prevents is not reproducible in-process: when stdout is a pipe, Python picks
+    the locale encoding — cp1252 on the Windows CI runner — and printing a
+    non-ASCII path or a SyntaxError carrying CJK source raises UnicodeEncodeError
+    from inside the gate. That is exactly how this gate first went red on CI.
+    """
+    calls: list[dict[str, object]] = []
+
+    class _Stream:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+        def write(self, _text):
+            return None
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(sys, "stdout", _Stream())
+    monkeypatch.setattr(sys, "stderr", _Stream())
+    _stub_revisions(monkeypatch, {}, {})
+    MOD.main(["--base", "irrelevant"])
+
+    assert len(calls) == 2, calls
+    assert all(c.get("encoding") == "utf-8" for c in calls), calls
+    assert all(c.get("errors") == "replace" for c in calls), calls
+
+
+def test_main_tolerates_streams_without_reconfigure(monkeypatch):
+    """Older/wrapped streams lack reconfigure; the gate must not crash on them."""
+
+    class _Bare:
+        def write(self, _text):
+            return None
+
+        def flush(self):
+            return None
+
+    monkeypatch.setattr(sys, "stdout", _Bare())
+    monkeypatch.setattr(sys, "stderr", _Bare())
+    _stub_revisions(monkeypatch, {}, {})
+    assert MOD.main(["--base", "irrelevant"]) == 0
+
+
 def test_main_passes_on_an_unchanged_tree(monkeypatch):
     src = {"a.py": 'T = {"en": "x", "zh": "y"}'}
     _stub_revisions(monkeypatch, src, src)
@@ -457,26 +504,103 @@ def test_sources_on_disk_skips_undecodable_file(tmp_path, monkeypatch, capsys):
     assert MOD.count_offenders(sources) == 1
 
 
-def test_git_decodes_with_replacement(monkeypatch):
-    """git output is decoded with errors="replace" so a bad blob cannot crash us.
-
-    The base side reads sources through `git show`; without this it would raise
-    mid-decode where the disk side merely skips the file.
-    """
-    captured: dict[str, object] = {}
-
+def _stub_git_stdout(monkeypatch, stdout: bytes):
     class _Result:
         returncode = 0
-        stdout = "ok"
-        stderr = ""
+        stderr = b""
 
-    def fake_run(cmd, **kwargs):
-        captured.update(kwargs)
-        return _Result()
+    _Result.stdout = stdout
+    monkeypatch.setattr(MOD.subprocess, "run", lambda cmd, **kw: _Result())
 
-    monkeypatch.setattr(MOD.subprocess, "run", fake_run)
-    assert MOD._git("show", "X:y.py") == "ok"
-    assert captured.get("errors") == "replace", captured
+
+def test_git_text_decoding_survives_bad_bytes(monkeypatch):
+    """`_git` decodes git's own reporting without crashing on a bad byte.
+
+    Asserts the behavior rather than the subprocess kwargs: diff headers and path
+    lists must come back as text even when a byte is not valid UTF-8, because the
+    alternative is the gate dying mid-decode on unrelated repo content.
+    """
+    _stub_git_stdout(monkeypatch, b"ok\xff\xfe")
+    out = MOD._git("diff", "--name-only")
+    assert out.startswith("ok")
+    assert "�" in out, out
+
+
+def test_git_bytes_hands_back_raw_stdout(monkeypatch):
+    """Source blobs stay bytes so `_decode_source` can honour PEP 263.
+
+    If this decoded eagerly, a `# coding: latin-1` module would already be
+    mangled before its declaration was ever read.
+    """
+    _stub_git_stdout(monkeypatch, b"# coding: latin-1\nT = {'en': 'caf\xe9'}\n")
+    raw = MOD._git_bytes("show", "X:y.py")
+    assert isinstance(raw, bytes)
+    assert raw.endswith(b"\n")
+
+
+def test_dict_call_with_positional_base_is_not_judged():
+    """`dict(BASE, zh=...)` must be left alone: BASE may hold the zh-TW entry.
+
+    Same unknowable-keys problem as `**`, and a gate that cries wolf gets worked
+    around rather than satisfied.
+    """
+    assert _violations("T = dict(BASE, en='e', zh='s')") == []
+    assert _violations("T = dict({'zh-TW': 't'}, en='e', zh='s')") == []
+    # Keyword-only is still fully knowable, so it is still judged.
+    assert len(_violations("T = dict(en='e', zh='s')")) == 1
+
+
+def test_touched_lines_disables_git_path_quoting(monkeypatch):
+    """Non-ASCII paths must not come back C-quoted in the `+++` header.
+
+    Git's default output is `+++ "b/config/prompts/\\344\\270\\255.py"`, which
+    matches no real path and would silently drop that file's location hints.
+    """
+    seen: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> str:
+        seen.append(args)
+        return ""
+
+    monkeypatch.setattr(MOD, "_git", fake_git)
+    MOD._touched_lines("BASE_SHA")
+    assert seen, "no git invocation recorded"
+    args = seen[0]
+    assert "core.quotePath=false" in args, args
+    assert args.index("-c") < args.index("core.quotePath=false")
+
+
+def test_touched_lines_parses_a_non_ascii_path(monkeypatch):
+    """End of the same story: an unquoted CJK path is keyed by its real name."""
+    monkeypatch.setattr(MOD, "_git", lambda *a: (
+        "diff --git a/config/prompts/中文表.py b/config/prompts/中文表.py\n"
+        "--- a/config/prompts/中文表.py\n"
+        "+++ b/config/prompts/中文表.py\n"
+        "@@ -3,0 +4 @@\n"
+        '+    "ja": "c",\n'
+    ))
+    touched = MOD._touched_lines("BASE_SHA")
+    assert touched == {"config/prompts/中文表.py": {4}}
+
+
+def test_decode_source_honours_a_coding_declaration():
+    """A `# coding: latin-1` module is valid Python and must be checked, not skipped."""
+    raw = "# coding: latin-1\nT = {'en': 'caf\xe9', 'zh': 'x'}\n".encode("latin-1")
+    text = MOD._decode_source(raw, "legacy.py")
+    assert text is not None
+    assert "café" in text
+    assert len(_violations(text)) == 1
+
+
+def test_decode_source_defaults_to_utf8_without_a_declaration():
+    raw = "T = {'en': 'a', 'zh': '简体'}\n".encode("utf-8")
+    assert "简体" in (MOD._decode_source(raw, "plain.py") or "")
+
+
+def test_decode_source_reports_undecodable_bytes(capsys):
+    """Only genuinely broken bytes are skipped, and never silently."""
+    assert MOD._decode_source(b"# coding: utf-8\nT = '\xff\xfe'\n", "bad.py") is None
+    assert "bad.py" in capsys.readouterr().err
 
 
 def test_prompt_files_at_reads_nul_separated_paths(monkeypatch):
@@ -522,9 +646,18 @@ def test_touched_lines_asks_git_for_rename_detection(monkeypatch):
 
 
 def _run(*args: str) -> subprocess.CompletedProcess:
+    """Run the gate as a subprocess, decoding its output as UTF-8.
+
+    ``text=True`` alone decodes with the *locale* encoding, which is cp1252 on
+    the Windows CI runner — any non-ASCII byte in the gate's output then raises
+    UnicodeDecodeError inside subprocess's reader thread, and the failure surfaces
+    as an unrelated-looking assertion on returncode. The gate forces UTF-8 on its
+    own streams; this is the matching half.
+    """
     return subprocess.run(
         [sys.executable, str(SCRIPT_PATH), *args],
-        cwd=PROJECT_ROOT, capture_output=True, text=True, check=False,
+        cwd=PROJECT_ROOT, capture_output=True, check=False,
+        text=True, encoding="utf-8", errors="replace",
     )
 
 
