@@ -4046,8 +4046,10 @@
     }
 
     async function switchMemoryTab(tab) {
+        var sameTab = tab === _activeMemoryTab;
+        var cancelPendingSave = sameTab && _activeMemoryTab === 'recent' && memoryHasUnsavedChanges;
+        if (sameTab && !cancelPendingSave) return;
         var myId = ++_componentRequestId;
-        if (tab === _activeMemoryTab) return;
 
         if (_activeMemoryTab === 'recent') {
             memoryFileRequestId++;
