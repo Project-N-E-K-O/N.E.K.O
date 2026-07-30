@@ -18,17 +18,16 @@
     // 周期同步因「设置未水合」被跳过时只 log 一次，避免 GET 持续失败刷屏
     let _periodicSyncSkippedUnhydratedLogged = false;
     // Field-level user authority (Codex P2): _dirtySettingsKeys records which
-    // conversation-settings keys the user explicitly changed since boot. Every
-    // userInitiated sync diffs the current settings against _settingsBaseline
-    // (snapshotted right before the boot GET, rolled forward on every diff and
-    // after the server merge) and adds the keys that diverged. The boot GET's
-    // merge callback applies server values to NON-dirty keys only and
-    // preserves the dirty ones, so changing one unrelated preference while
-    // the GET is in flight no longer makes the whole boot-default snapshot
-    // authoritative (the earlier whole-merge-drop design let a boot-default
-    // independentAsrEnabled clobber the server-persisted ASR choice and later
-    // handshakes then stamped the wrong route).
+    // conversation-settings keys the user explicitly changed since boot. It is
+    // intentionally monotone because a boot GET started before an acknowledged
+    // POST can still arrive later with an older snapshot; its merge must keep
+    // every user-touched key. _pendingSettingsKeys is narrower: it contains only
+    // changes not yet acknowledged by a successful POST, and is the set used by
+    // dirty-only writes plus 412 conflict merges. Keeping those roles separate
+    // prevents an acknowledged stale local value from winning a later conflict
+    // without reopening the late-boot-GET overwrite race.
     const _dirtySettingsKeys = new Set();
+    const _pendingSettingsKeys = new Set();
     let _settingsBaseline = null;
     // Cross-window write metadata (Codex P2): saveSettings() writes EVERY
     // conversation key into the shared localStorage snapshot, so a receiving
@@ -163,7 +162,7 @@
         for (const key of Object.keys(serverSettings)) {
             if (key === 'independentAsrEnabled'
                 && (adoptedAsr || preserveLocalAsrDecision)) continue;
-            if (_dirtySettingsKeys.has(key)) continue;
+            if (_pendingSettingsKeys.has(key)) continue;
             if (serverSettings[key] !== undefined) {
                 acceptedSettings[key] = serverSettings[key];
             }
@@ -181,7 +180,7 @@
         _settingsMergedFromServer = true;
         if (_settingsBaseline) {
             for (const key of Object.keys(serverSettings)) {
-                if (_dirtySettingsKeys.has(key)) continue;
+                if (_pendingSettingsKeys.has(key)) continue;
                 if (serverSettings[key] !== undefined) {
                     _settingsBaseline[key] = S[key];
                 }
@@ -335,6 +334,7 @@
                     : undefined;
                 if (cur !== base) {
                     _dirtySettingsKeys.add(key);
+                    _pendingSettingsKeys.add(key);
                 }
             });
         }
@@ -490,12 +490,25 @@
      */
     function _pickDirtySettings(settings) {
         const partial = {};
-        _dirtySettingsKeys.forEach((key) => {
+        _pendingSettingsKeys.forEach((key) => {
             if (Object.prototype.hasOwnProperty.call(settings, key)) {
                 partial[key] = settings[key];
             }
         });
         return partial;
+    }
+
+    function _clearAcknowledgedPendingSettings(payload) {
+        const current = getConversationSettings();
+        for (const key of Object.keys(payload)) {
+            // A later local edit may have happened while this POST was in
+            // flight. Clear only keys whose current value is still exactly the
+            // value the server just acknowledged.
+            if (Object.prototype.hasOwnProperty.call(current, key)
+                && current[key] === payload[key]) {
+                _pendingSettingsKeys.delete(key);
+            }
+        }
     }
 
     function applySharedRuntimeSettings(settings) {
@@ -718,7 +731,9 @@
                     }
                     if (!data.success) {
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                        return;
                     }
+                    _clearAcknowledgedPendingSettings(payload);
                     return;
                 } catch (err) {
                     console.error('[app-settings] 同步设置到服务器失败:', err);

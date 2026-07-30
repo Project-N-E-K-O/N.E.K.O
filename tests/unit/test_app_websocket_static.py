@@ -827,8 +827,10 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
 
     # (4) Negative validation — non-user flows never dirty keys: the periodic
     # tick passes no options (its POST is not a user change), the boot-time
-    # skipServerSync save bypasses syncSettingsToServer entirely, and the set
-    # is monotone (no delete/clear), so a toggle-and-back stays authoritative.
+    # skipServerSync save bypasses syncSettingsToServer entirely, and the
+    # boot-merge authority set is monotone so a toggle-and-back survives a
+    # stale in-flight GET. The separate pending set is cleared only after a
+    # successful POST and only while the acknowledged value is still current.
     tick_body = settings_source.split("_syncTimerId = setInterval(() => {", 1)[1].split(
         "}, SYNC_INTERVAL_MS);", 1
     )[0]
@@ -841,6 +843,12 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     assert "saveSettings({ skipServerSync: true });" in first_launch_block
     assert "_dirtySettingsKeys.delete" not in settings_source
     assert "_dirtySettingsKeys.clear" not in settings_source
+    clear_fn = settings_source.split(
+        "function _clearAcknowledgedPendingSettings(payload) {", 1
+    )[1].split("function applySharedRuntimeSettings", 1)[0]
+    assert "current[key] === payload[key]" in clear_fn
+    assert "_pendingSettingsKeys.delete(key);" in clear_fn
+    assert "_clearAcknowledgedPendingSettings(payload);" in sync_fn
 
 
 def test_settings_post_snapshot_waits_bounded_for_boot_get_merge():
@@ -1097,11 +1105,13 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
             appState: {
               independentAsrEnabled: false,
               slopFilterEnabled: false,
+              focusModeEnabled: false,
               settingsHydrated: false,
             },
             appConst: {},
             appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
             slopFilterEnabled: false,
+            focusModeEnabled: false,
             addEventListener() {},
             removeEventListener() {},
           };
@@ -1418,9 +1428,82 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           }
         }
 
+        async function runAcknowledgedDirtyScenario() {
+          const ctx = makeContext();
+          await tick();
+          await tick();
+
+          ctx.win.slopFilterEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'the first user edit must POST');
+          const acknowledged = JSON.parse(ctx.postCalls[0].opts.body);
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: acknowledged,
+              revision: 1,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          // A different local edit races a newer server revision. The earlier
+          // slopFilterEnabled=true was already acknowledged and must no longer
+          // be protected as pending during the 412 merge.
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          assert(ctx.postCalls.length === 2, 'the unrelated edit must POST');
+          ctx.postCalls[1].resolve(response(
+            false,
+            412,
+            '"conversation-settings-2"',
+            {
+              success: false,
+              settings: {
+                independentAsrEnabled: false,
+                slopFilterEnabled: false,
+                focusModeEnabled: false,
+              },
+              revision: 2,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 3, 'the conflict must retry');
+          const retryBody = JSON.parse(ctx.postCalls[2].opts.body);
+          assert(
+            retryBody.slopFilterEnabled === false,
+            'the retry must adopt the newer server value for an acknowledged old edit'
+          );
+          assert(
+            retryBody.focusModeEnabled === true,
+            'the still-pending local edit must survive the conflict merge'
+          );
+          ctx.postCalls[2].resolve(response(
+            true,
+            200,
+            '"conversation-settings-3"',
+            {
+              success: true,
+              settings: retryBody,
+              revision: 3,
+              decisions: {},
+            }
+          ));
+          await tick();
+        }
+
         async function main() {
           await runScenario(false);
           await runScenario(true);
+          await runAcknowledgedDirtyScenario();
           console.log('CAS_HARNESS_OK');
           process.exitCode = 0;
         }
@@ -1860,15 +1943,10 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
           const pp = pending.mod.syncSettingsToServer();  // periodic-style: no dirty marking
           await tick();
           await tick();
-          assert(pending.postCalls.length === 2, 'the follow-up sync must POST');
-          const dirtyBody2 = JSON.parse(pending.postCalls[1].body);
           assert(
-            !('independentAsrEnabled' in dirtyBody2),
-            'the stale cross-window snapshot must NOT mark the ASR key user-dirty, got: '
-              + JSON.stringify(dirtyBody2)
+            pending.postCalls.length === 1,
+            'the acknowledged local key and incidental ASR copy leave no pending POST'
           );
-          assert(dirtyBody2.mergeMessagesEnabled === true, 'the genuine dirty key still posts');
-          pending.postCalls[1].resolve(okPost);
           await pp;
 
           // ---- Scenario 3: a genuine cross-window toggle stays authoritative ----
@@ -2189,12 +2267,12 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
         "await fetch("
     )
 
-    # The picker copies ONLY dirty keys (negative: no fallback that would drag
-    # untouched keys back into the partial body).
+    # The picker copies ONLY pending keys (negative: acknowledged or untouched
+    # keys cannot be dragged back into the partial body).
     pick_fn = settings_source.split("function _pickDirtySettings(settings) {", 1)[1].split(
         "function applySharedRuntimeSettings", 1
     )[0]
-    assert "_dirtySettingsKeys.forEach((key) => {" in pick_fn
+    assert "_pendingSettingsKeys.forEach((key) => {" in pick_fn
     assert "Object.prototype.hasOwnProperty.call(settings, key)" in pick_fn
     assert "partial[key] = settings[key];" in pick_fn
     assert "Object.keys(settings)" not in pick_fn
@@ -2431,13 +2509,13 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
     #
     # Pin the split: "the GET attempt finished" and "server values were merged"
     # are different facts, and only the latter licenses full snapshots.
-    # Scenario 1: HTTP-failed GET + later unrelated user edits -> every POST
-    # (including the periodic one) carries only the dirty keys, so untouched
-    # persisted values survive. Scenario 2: application-level failure
+    # Scenario 1: HTTP-failed GET + later unrelated user edits -> each new
+    # pending edit POST carries only that key, while an acknowledged key is not
+    # resent and an idle periodic pass sends nothing. Scenario 2: application-level failure
     # (success:false) + ASR toggle -> the toggle IS persisted. Scenario 3:
-    # network-error GET -> still dirty-only, and the periodic timer only POSTs
-    # (it never re-fetches), which is why the chosen recovery model is "stay
-    # dirty-only for this session" — safe because the backend merges partial
+    # network-error GET -> still pending-only, and the periodic timer does not
+    # re-fetch or resend an acknowledged key. The recovery model remains "stay
+    # partial-write-only for this session" — safe because the backend merges partial
     # payloads per key. Scenario 4 (recovery): a GET that fails the bound but
     # eventually SUCCEEDS flips back to full snapshots on its merge.
     harness = textwrap.dedent(
@@ -2547,7 +2625,7 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           await tick();
 
           // The restriction does not decay: a LATER, second edit is still
-          // dirty-only (both touched keys, nothing else).
+          // pending-only. The first key was acknowledged and must not be resent.
           ctx.win.focusModeEnabled = true;
           ctx.mod.saveSettings();
           await tick();
@@ -2555,26 +2633,20 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
           assert(ctx.postCalls.length === 2, 'the second user edit is persisted too');
           const body2 = JSON.parse(ctx.postCalls[1].body);
           assert(body2.focusModeEnabled === true, 'the newly dirtied key is persisted');
-          assert(body2.mergeMessagesEnabled === true, 'the earlier dirty key stays authoritative');
+          assert(!('mergeMessagesEnabled' in body2), 'the acknowledged key is no longer pending');
           assert(
-            Object.keys(body2).length === 2,
-            'still only user-touched keys, got: ' + JSON.stringify(body2)
+            Object.keys(body2).length === 1,
+            'only the new pending key travels, got: ' + JSON.stringify(body2)
           );
           ctx.postCalls[1].resolve(okPost);
           await tick();
 
-          // ... and the periodic sync (no userInitiated) never widens the body
-          // either, and never rejects.
+          // ... and the periodic sync (no userInitiated) neither widens nor
+          // resends an already acknowledged body, and never rejects.
           const pp = ctx.mod.syncSettingsToServer();
           await tick();
           await tick();
-          assert(ctx.postCalls.length === 3, 'the periodic-style sync still writes the dirty keys');
-          const body3 = JSON.parse(ctx.postCalls[2].body);
-          assert(
-            Object.keys(body3).length === 2,
-            'the periodic sync must not widen the body, got: ' + JSON.stringify(body3)
-          );
-          ctx.postCalls[2].resolve(okPost);
+          assert(ctx.postCalls.length === 2, 'the periodic-style sync has no pending keys to write');
           await pp;
 
           // ---- Scenario 2: application-level failure + the ASR toggle.
@@ -2628,13 +2700,7 @@ def test_failed_boot_get_keeps_posts_dirty_only_harness():
             'no path re-fetches the settings GET, so dirty-only must be permanently safe '
               + 'rather than a temporary state (recovery is a fresh page load)'
           );
-          assert(ctx3.postCalls.length === 2, 'the periodic tick still POSTs (persistence never blocks)');
-          assert(
-            Object.keys(JSON.parse(ctx3.postCalls[1].body)).length === 1,
-            'the periodic tick stays dirty-only after a failed GET'
-          );
-          ctx3.postCalls[1].resolve(okPost);
-          await tick();
+          assert(ctx3.postCalls.length === 1, 'the periodic tick does not resend an acknowledged key');
 
           // ---- Scenario 4 (recovery): the bound elapses, the POST goes out
           // dirty-only, and the GET LATER succeeds -> full snapshots resume.
