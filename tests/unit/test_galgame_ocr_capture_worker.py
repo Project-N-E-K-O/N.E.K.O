@@ -771,6 +771,25 @@ def test_drain_timeout_leaves_room_for_the_rest_of_plugin_shutdown() -> None:
     assert runtime_types._resolve_ocr_shutdown_drain_timeout(-1.0) == 0.0
 
 
+def test_drain_inflight_capture_workers_is_safe_to_repeat() -> None:
+    """The cancel path hands the same futures to drain twice; it must stay a pure wait."""
+    manager = _teardown_manager(_FakeRapidOcrBackend())
+    running: Future[OcrExtractionResult] = Future()
+    running.set_running_or_notify_cancel()
+
+    first = manager._drain_inflight_capture_workers([running], timeout=0.01)
+    second = manager._drain_inflight_capture_workers([running], timeout=0.01)
+
+    assert first == [running]
+    assert second == [running], "重复 drain 必须得到一致结果"
+    assert running.running(), "drain 不该改变 future 的状态"
+    assert not running.done()
+
+    running.set_result(OcrExtractionResult(text="done"))
+    assert manager._drain_inflight_capture_workers([running], timeout=0.01) == []
+    assert running.result(timeout=0).text == "done", "drain 不该消费掉 future 的结果"
+
+
 def test_drain_inflight_capture_workers_skips_wait_when_nothing_is_running() -> None:
     manager = _teardown_manager(_FakeRapidOcrBackend())
     finished: Future[OcrExtractionResult] = Future()
