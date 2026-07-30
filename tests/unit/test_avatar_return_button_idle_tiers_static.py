@@ -2378,13 +2378,14 @@ def test_local_return_button_drag_safety_timer_waits_for_active_drag_inactivity(
         safety_block,
         "local return-ball drag safety timer",
         "const moved = container.getAttribute('data-dragging') === 'true';",
-        "const finishAsMoved = moved && !dragCropHoldPending;",
+        "const finishAsMoved = moved;",
         "if (finishAsMoved) {",
         "const inactiveMs = Math.max(0, Date.now() - lastMovedAt);",
         "if (inactiveMs < ACTIVE_DRAG_STALE_MS) {",
         "resetDragStateAfterMissingEnd(safetyToken);",
         "finishDragState(finishAsMoved, safetyToken, moved);",
     )
+    assert "moved && !dragCropHoldPending" not in safety_block
 
 
 def test_local_return_button_drag_recovers_lost_release_without_active_timeout():

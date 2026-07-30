@@ -689,7 +689,7 @@ Object.assign(AvatarButtonMixin.methods, {
             const resetDragStateAfterMissingEnd = (safetyToken) => {
                 if (dragSafetyToken !== safetyToken || !isDragging) return;
                 const moved = container.getAttribute('data-dragging') === 'true';
-                const finishAsMoved = moved && !dragCropHoldPending;
+                const finishAsMoved = moved;
                 if (finishAsMoved) {
                     const lastMovedAt = Number(dragActivity && dragActivity.lastMovedAt) || Date.now();
                     const inactiveMs = Math.max(0, Date.now() - lastMovedAt);
