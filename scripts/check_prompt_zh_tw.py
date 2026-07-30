@@ -367,14 +367,44 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     The table is compliant at runtime, so reporting it is a false positive — and
     false positives are what get a gate worked around rather than satisfied.
 
-    Deliberately narrow: only a mutation that *demonstrably supplies zh-TW*
-    exempts its target. Suppressing on any mutation would let an unrelated
-    ``T["other"] = x`` excuse a real offender, trading one rare false positive for
-    a broad blind spot. Names are matched across the whole module rather than
-    per-scope: over-matching here can only exempt a table whose name is somewhere
-    given zh-TW, which is the safe direction.
+    Deliberately narrow in two ways:
+
+    * Only a mutation that *demonstrably supplies zh-TW* exempts its target.
+      Exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a
+      real offender, trading one rare false positive for a broad blind spot.
+    * The exemption lands on the binding **most recently before** the mutation, not
+      on every same-named assignment. Otherwise a name reassigned afterwards::
+
+          T = {"en": "e", "zh": "s"}
+          T["zh-TW"] = "t"
+          T = {"en": "e2", "zh": "s2"}   # a real offender
+
+      would have its later table exempted too.
+
+    No scope analysis: line order is enough here because a mutation and the
+    binding it mutates sit in the same scope in practice, and picking the nearest
+    preceding binding is right in either nesting direction.
     """
-    backfilled: set[str] = set()
+    assignments: dict[str, list[tuple[int, int]]] = {}
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+        ):
+            assignments.setdefault(node.targets[0].id, []).append(
+                (node.lineno, id(node.value))
+            )
+    for bindings in assignments.values():
+        bindings.sort()
+
+    exempt: set[int] = set()
+
+    def _exempt_binding_before(name: str, lineno: int) -> None:
+        prior = [vid for ln, vid in assignments.get(name, []) if ln <= lineno]
+        if prior:
+            exempt.add(prior[-1])
+
     for node in ast.walk(tree):
         if (
             isinstance(node, ast.Assign)
@@ -384,7 +414,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             and isinstance(node.targets[0].slice, ast.Constant)
             and node.targets[0].slice.value == TRADITIONAL_KEY
         ):
-            backfilled.add(node.targets[0].value.id)
+            _exempt_binding_before(node.targets[0].value.id, node.lineno)
             continue
         target: str | None = None
         payload: ast.AST | None = None
@@ -405,29 +435,23 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if target is None or payload is None:
             continue
         keys = resolve_keys(payload)
+        if keys is None:
+            # `T.update([("zh-TW", "t")])` — the iterable-of-pairs form is just as
+            # knowable, and missing it means the target is not marked backfilled
+            # and its literal gets reported despite being compliant at runtime.
+            keys = _pair_sequence_keys(payload)
         if keys and TRADITIONAL_KEY in keys:
-            backfilled.add(target)
+            _exempt_binding_before(target, node.lineno)
 
     # A name used as a merge operand is a fragment by the same argument as an
     # inline one: `_FRAGMENT = {"en": .., "zh": ..}` / `T = {**_FRAGMENT, "zh-TW":
-    # ..}` assembles a compliant table, so reporting _FRAGMENT is a false
-    # positive. Costs a blind spot if the same name is also used as a whole table,
-    # which is the direction to err in.
+    # ..}` assembles a compliant table, so reporting _FRAGMENT is a false positive.
     for node in ast.walk(tree):
         for operand in _merge_operands(node):
             if isinstance(operand, ast.Name):
-                backfilled.add(operand.id)
+                _exempt_binding_before(operand.id, node.lineno)
 
-    if not backfilled:
-        return set()
-    return {
-        id(node.value)
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Assign)
-        and len(node.targets) == 1
-        and isinstance(node.targets[0], ast.Name)
-        and node.targets[0].id in backfilled
-    }
+    return exempt
 
 
 def _table_nodes(tree: ast.AST) -> Iterator[tuple[ast.AST, set[str]]]:

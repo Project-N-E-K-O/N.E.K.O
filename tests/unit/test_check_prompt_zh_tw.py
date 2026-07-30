@@ -1350,3 +1350,68 @@ def test_comment_lines_on_unparseable_source_suppresses_nothing():
     """A tokenize failure must not hand back stale or wrong suppression."""
     comments = MOD._comment_lines('T = {"en": "e"  # noqa: PROMPT_ZH_TW\n')
     assert all(c == "" for c in comments), comments
+
+
+def test_exemption_lands_on_the_binding_before_the_mutation():
+    """A name reassigned after a backfill must not inherit the exemption.
+
+    The later literal is a real offender; exempting every same-named assignment
+    let it through.
+    """
+    src = (
+        'T = {"en": "e", "zh": "s"}\n'
+        'T["zh-TW"] = "t"\n'
+        'T = {"en": "e2", "zh": "s2"}'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [3]
+
+
+def test_exemption_does_not_reach_a_different_name():
+    src = (
+        'T = {"en": "e2", "zh": "s2"}\n'
+        'T2 = {"en": "e", "zh": "s"}\n'
+        'T2["zh-TW"] = "t"'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nT.update([("zh-TW", "t")])',
+    'T = {"en": "e", "zh": "s"}\nT.update((("zh-TW", "t"),))',
+])
+def test_iterable_of_pairs_update_payload_counts_as_backfill(src):
+    """`update([("zh-TW", ...)])` supplies zh-TW as knowably as a dict literal.
+
+    resolve_keys says nothing about a list, so without the pair-sequence fallback
+    the target went unexempted and its compliant literal was reported.
+    """
+    assert _violations(src) == []
+
+
+def test_exemption_picks_the_nearest_preceding_binding_not_the_first():
+    """With two bindings before the mutation, only the nearest one is exempt.
+
+    The earlier literal was live until it was reassigned, and it lacks zh-TW, so it
+    is a genuine offender. Exempting the first binding instead would clear the
+    wrong one and report the compliant table.
+    """
+    src = (
+        'T = {"en": "a", "zh": "b"}\n'
+        'T = {"en": "c", "zh": "d"}\n'
+        'T["zh-TW"] = "t"'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+def test_exemption_covers_a_binding_mutated_on_the_same_line():
+    """`T = {...}; T["zh-TW"] = "t"` on one line still exempts the table.
+
+    The binding and the mutation share a line number, so the comparison has to be
+    inclusive.
+    """
+    src = 'T = {"en": "e", "zh": "s"}; T["zh-TW"] = "t"'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == []
