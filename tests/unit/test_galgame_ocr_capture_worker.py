@@ -679,7 +679,9 @@ def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
     """Cancelling the unload must neither strand the heavy deps nor skip the drain."""
     manager, observed = _async_shutdown_manager()
     order: list[str] = []
+    order_lock = threading.Lock()
     drain_entered = threading.Event()
+    worker_finished = threading.Event()
     still_running: Future[OcrExtractionResult] = Future()
 
     manager._stop_foreground_advance_monitor = types.MethodType(
@@ -694,28 +696,46 @@ def test_async_shutdown_finishes_cleanup_when_cancelled_mid_drain() -> None:
     def _slow_drain(self, _futures, **_kwargs) -> list:
         del self
         drain_entered.set()
-        # 取消不会停掉这个线程，它照样跑满 —— 收尾必须等它落地再释放 backend。
-        time.sleep(0.3)
-        order.append("drain-finished")
+        # 取消不会停掉在飞的 worker —— 收尾必须等它落地再释放 backend。
+        worker_finished.wait(timeout=5.0)
+        with order_lock:
+            order.append("drain-returned")
         return []
 
     manager._drain_inflight_capture_workers = types.MethodType(_slow_drain, manager)
-    manager._release_rapidocr_backend = types.MethodType(
-        lambda self: order.append("backend-released"),
-        manager,
-    )
+
+    def _release(self) -> None:
+        del self
+        with order_lock:
+            order.append("backend-released")
+
+    manager._release_rapidocr_backend = types.MethodType(_release, manager)
 
     async def _cancel_during_drain() -> None:
         task = asyncio.create_task(manager.shutdown())
         await asyncio.to_thread(drain_entered.wait, 2.0)
+        releaser = threading.Timer(0.2, worker_finished.set)
+        releaser.start()
         task.cancel()
-        with pytest.raises(asyncio.CancelledError):
-            await task
+        # 让第一次取消真正投递进去、shutdown 走进它的取消分支，再补第二刀。
+        # 连着调两次 cancel() 是幂等的，抓不到这个场景：`await` 形式的等待
+        # （哪怕套了 shield）只挡得住第一次，第二次会从同一个口子把 drain 绕过去。
+        await asyncio.sleep(0.05)
+        task.cancel()
+        try:
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        finally:
+            releaser.cancel()
+            worker_finished.set()
 
     asyncio.run(_cancel_during_drain())
 
-    assert order == ["drain-finished", "backend-released"], (
-        "取消绕过了 drain —— backend 在 worker 还没跑完时就被释放了"
+    with order_lock:
+        settled = list(order)
+    assert "drain-returned" in settled, "取消绕过了 drain，没等在飞任务落地"
+    assert settled[-1] == "backend-released", (
+        f"backend 在 worker 还没跑完时就被释放了：{settled}"
     )
     assert observed["closed_classifier"] == [True]
     assert manager.vision_classifier is None

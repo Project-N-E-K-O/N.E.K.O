@@ -228,23 +228,21 @@ class PollMixin:
         # 不能让下面的释放落空：先把取消记下来，收尾跑完再原样抛出去。
         #
         # 取消不会停掉 to_thread 那个线程 —— 它照样在 _futures_wait 里等满上限。
-        # 所以这里用 shield 把取消挡在外层，仍旧等 drain 落地再往下拆；否则取消
-        # 路径会整个绕过 drain，退回到「在还在跑的 worker 脚下关 backend」，正是
-        # 本次要修的那件事。代价是取消后最多多等一个 drain 上限（默认 0.3s），
-        # 这个数就是照着宿主关闭预算挑的。
+        # 若就这么往下走，取消路径会整个绕过 drain，退回到「在还在跑的 worker 脚下
+        # 关 backend」，正是本次要修的那件事。
+        #
+        # 所以取消之后改在当前线程上把这一等重做一遍：同步调用挡不掉也躲不开，
+        # 二次、三次 cancel 都打断不了它。用 shield 套 await 只能挡住一次取消，
+        # 下一次照样从同一个口子穿过去。代价是取消路径最坏等两个 drain 上限
+        # （默认 2 × 0.3s），仍远小于宿主给的关闭预算，且只在被取消时才付。
         cancelled: asyncio.CancelledError | None = None
         if inflight:
-            drain = asyncio.ensure_future(
-                asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
-            )
             try:
-                await asyncio.shield(drain)
+                await asyncio.to_thread(self._drain_inflight_capture_workers, inflight)
             except asyncio.CancelledError as exc:
                 cancelled = exc
                 try:
-                    await drain
-                except asyncio.CancelledError:
-                    pass
+                    self._drain_inflight_capture_workers(inflight)
                 except Exception as drain_exc:
                     self._log_warning(
                         "ocr_reader in-flight capture drain failed: {}", drain_exc
