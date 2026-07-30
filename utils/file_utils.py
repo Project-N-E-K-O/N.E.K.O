@@ -19,7 +19,10 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
 import unicodedata
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -496,10 +499,45 @@ def robust_json_loads(raw: str) -> Any:
     return _normalize_overescaped_newlines(json.loads(s))  # 让最终错误带完整上下文抛出
 
 
+# 崩后残留 tmp 的清扫。mkstemp 与 os.replace 之间被硬杀（taskkill、断电、OOM）会留下
+# 一个 `.<目标名>.<随机>.tmp`：没人读它，但会一直攒在用户的 config / memory 目录里。
+# 摊销策略是「每个目标文件在本进程内扫一次」——残留是崩溃造成的，而崩溃结束了那个
+# 进程，所以长寿进程反复扫没有意义。年龄门槛是防误删：正常写盘是毫秒级，比这更老的
+# tmp 不可能还有活着的写者（包括另一个进程的）在用它。
+_STALE_TMP_MIN_AGE_S = 3600.0
+_swept_tmp_targets: set[str] = set()
+_swept_tmp_targets_lock = threading.Lock()
+
+
+def _sweep_stale_tmp_once(target_path: Path) -> None:
+    """Best-effort removal of this target's abandoned temp files. Never fatal."""
+    key = f"{target_path.parent}\x00{target_path.name}"
+    with _swept_tmp_targets_lock:
+        if key in _swept_tmp_targets:
+            return
+        _swept_tmp_targets.add(key)
+
+    # 用 scandir 前缀匹配而不是 glob：目标名里出现 `[` `?` `*` 时 glob 会把它们当
+    # 通配符，匹配范围会跑偏（config 目录下的文件名不是我们能控制的）。
+    prefix = f".{target_path.name}."
+    cutoff = time.time() - _STALE_TMP_MIN_AGE_S
+    try:
+        entries = list(os.scandir(target_path.parent))
+    except OSError:
+        return
+    for entry in entries:
+        if not (entry.name.startswith(prefix) and entry.name.endswith(".tmp")):
+            continue
+        with suppress(OSError):
+            if entry.stat().st_mtime < cutoff:
+                os.unlink(entry.path)
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_tmp_once(target_path)
 
     fd, temp_path = tempfile.mkstemp(
         prefix=f".{target_path.name}.",
@@ -514,10 +552,12 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
             os.fsync(temp_file.fileno())
         os.replace(temp_path, target_path)
     except Exception:
-        try:
+        # 清理失败不许盖掉真正的失败原因。只吞 FileNotFoundError 时有一个具体的坑：
+        # 目标被别的句柄占着（杀软扫描、资源管理器预览）会让 os.replace 抛
+        # PermissionError，而紧随其后的 os.remove 往往被同一个原因拒掉，于是调用方
+        # 看到的是 remove 的异常、真实原因退到 __context__ 里去了，同时 tmp 还是留盘。
+        with suppress(OSError):
             os.remove(temp_path)
-        except FileNotFoundError:
-            pass
         raise
 
 
