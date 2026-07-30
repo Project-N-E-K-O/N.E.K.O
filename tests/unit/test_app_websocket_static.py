@@ -1510,6 +1510,24 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           await tick();
 
+          const acknowledgedLocal = JSON.parse(
+            ctx.store.get('project_neko_settings')
+          );
+          ctx.fireStorage(JSON.stringify({
+            slopFilterEnabled: false,
+            _sharedWriteMeta: {
+              writeId: acknowledgedLocal._sharedWriteMeta.writeId - 1,
+              writerId: 'window-a',
+              changedKeys: [],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.slopFilterEnabled === true,
+            'a delayed older server merge must not roll back an acknowledged local edit'
+          );
+
           // A different local edit races a newer server revision. The earlier
           // slopFilterEnabled=true was already acknowledged and must no longer
           // be protected as pending during the 412 merge.

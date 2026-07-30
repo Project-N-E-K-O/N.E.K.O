@@ -1558,6 +1558,22 @@
                 incoming = Object.assign({}, settings);
                 delete incoming.independentAsrEnabled;
             }
+            const serverMergePredatesLocalWrite = !!meta
+                && meta.changedKeys.length === 0
+                && (meta.writeId < _lastSharedWriteId
+                    || (meta.writeId === _lastSharedWriteId
+                        && meta.writerId < _SHARED_WRITER_ID));
+            if (serverMergePredatesLocalWrite) {
+                if (incoming === settings) incoming = Object.assign({}, settings);
+                // Non-ASR server-merge fields have no per-key decision token.
+                // Once this window has written a newer snapshot, an older merge
+                // arriving late must not roll confirmed local values back. ASR
+                // keeps its independent decision-tuple ordering above.
+                for (const key of _SHARED_SETTINGS_KEYS) {
+                    if (key === 'independentAsrEnabled') continue;
+                    delete incoming[key];
+                }
+            }
             const pendingKeysToReassert = [];
             if (meta) {
                 // Keep this as for...of: static listener-contract tests slice
