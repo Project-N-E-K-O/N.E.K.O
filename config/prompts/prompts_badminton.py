@@ -19,9 +19,11 @@ from __future__ import annotations
 
 from typing import Any
 
-# NEKO_CORE_LOCALES is re-exported: it used to be defined here, and
-# tests/unit/test_badminton_improvement_contract.py reads it off this module.
-from config.prompts._locale import NEKO_CORE_LOCALES, normalize_prompt_locale
+# Re-export, not dead weight: NEKO_CORE_LOCALES used to be defined in this
+# module and tests/unit/test_badminton_improvement_contract.py still reads it
+# off this namespace.
+from config.prompts._locale import NEKO_CORE_LOCALES  # noqa: F401
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_minigame_common import _localized_template, _normalize_prompt_lang
 
 BADMINTON_QUICK_LINE_KEYS = frozenset({
