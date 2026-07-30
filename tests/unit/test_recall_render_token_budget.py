@@ -38,7 +38,9 @@ def test_shared_helper_takes_a_prefix_and_reports_what_it_dropped():
     from utils.tokenize import take_lines_within_token_budget
 
     lines = ["一二三四五" * 20, "短一点的一条", "更短"]
-    budget = count_tokens(lines[0]) + count_tokens(lines[1])
+    # Exactly the first two lines as the caller will emit them — joined,
+    # so the separator between them is part of the price.
+    budget = count_tokens("\n".join(lines[:2]))
 
     kept, dropped = take_lines_within_token_budget(lines, budget)
 
@@ -66,6 +68,30 @@ def test_shared_helper_stops_rather_than_letting_a_shorter_line_jump_the_queue()
         "放不下的一条应当终止整段，而不是跳过它把后面更短的塞进来"
     )
     assert dropped == 2
+
+
+def test_shared_helper_charges_the_joiner_it_was_given():
+    """The budget covers ``separator.join(kept)``, not the bare lines.
+
+    A newline usually costs one token, so counting lines alone
+    undercounts by one per gap. Small, but it is an undercount — the
+    unsafe direction — and it is the same mistake as capping ``text``
+    while budgeting the whole rendered line.
+    """
+    from utils.tokenize import take_lines_within_token_budget
+
+    lines = ["露营", "钓鱼", "爬山"]
+    bare = sum(count_tokens(ln) for ln in lines)
+    assert count_tokens("\n".join(lines)) > bare, (
+        "夹具失效：这几行拼起来时换行被 BPE 吞了，量不出分隔符开销"
+    )
+
+    kept, dropped = take_lines_within_token_budget(lines, bare)
+
+    assert count_tokens("\n".join(kept)) <= bare, (
+        "预算没算分隔符：实际拼出来的整段超过了给定预算"
+    )
+    assert kept and dropped >= 1
 
 
 def test_shared_helper_always_emits_the_top_ranked_line():
@@ -267,14 +293,75 @@ async def test_tool_recall_truncates_an_oversized_entry_instead_of_dropping_it()
 @pytest.mark.asyncio
 async def test_tool_recall_block_stops_at_the_total_budget():
     """hybrid_recall returns more than the plugin's five, so this side is
-    where the total gate actually binds."""
+    where the total gate actually binds.
+
+    Budgeted against the WHOLE returned string, with no slack: the i18n
+    overview line and the newlines both go into the model's context, so
+    both have to be paid for out of the same allowance. An earlier version
+    of this assertion carried a ``+64`` fudge, which is exactly how the
+    header got to stay outside the budget unnoticed.
+    """
     chunk = "聊过的一件事情" * 200
     results = [_result(f"{i}{chunk}") for i in range(10)]
 
     rendered = await _call_tool(results)
 
-    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS + 64, (
-        "召回工具结果整体超过预算（+64 是 i18n 首行的余量）"
+    assert count_tokens(rendered) <= RECALL_RENDER_TOTAL_MAX_TOKENS, (
+        f"召回工具结果整体 {count_tokens(rendered)} tok 超过预算 "
+        f"{RECALL_RENDER_TOTAL_MAX_TOKENS}（首行总览与换行也要算进去）"
+    )
+
+
+async def _call_tool_in(lang: str, results: list[dict]) -> str:
+    harness = _ToolHarness()
+    harness.user_language = lang
+    payload = {"results": results, "elapsed_ms": 3.0}
+    response = SimpleNamespace(
+        is_success=True, status_code=200, text="", json=lambda: payload,
+    )
+    client = SimpleNamespace(post=AsyncMock(return_value=response))
+    with patch(
+        "utils.internal_http_client.get_internal_http_client",
+        return_value=client,
+    ):
+        return await harness._handle_recall_memory_call({"query": "露营"})
+
+
+@pytest.mark.parametrize("lang", ["zh", "en", "ja"])
+@pytest.mark.asyncio
+async def test_tool_recall_reserves_room_for_its_localized_header(lang):
+    """The overview line lands in the same string, so it comes out of the
+    same allowance.
+
+    The gate is set right at "two entries plus the header", where leaving
+    the header unpaid buys exactly one entry too many. A roomier fixture
+    cannot show this: the greedy stop usually leaves more slack than a
+    header costs, so the block stays under budget either way and the
+    assertion passes for the wrong reason. Header width is locale-
+    dependent (``ja`` is over twice ``en``), hence the parametrize —
+    a reservation tuned against Chinese would pass zh and fail ja.
+    """
+    from config.prompts.prompts_memory import RECALL_MEMORY_TOOL_FOUND_HEADER
+
+    results = [_result(f"第{i}条召回到的记忆内容") for i in range(4)]
+    rendered_probe = await _call_tool_in(lang, results[:1])
+    header_probe = RECALL_MEMORY_TOOL_FOUND_HEADER[lang].format(n=2)
+    line_cost = count_tokens(rendered_probe.split("\n")[1])
+    header_cost = count_tokens(header_probe)
+    gate = 2 * line_cost + header_cost
+
+    with patch(
+        # tool_calling 在函数体里 `from config import ...`，每次调用都重新
+        # 绑定，所以必须打在 config 上而不是模块属性上。
+        "config.RECALL_RENDER_TOTAL_MAX_TOKENS", gate,
+    ):
+        rendered = await _call_tool_in(lang, results)
+
+    listed = [ln for ln in rendered.split("\n")[1:] if ln.strip()]
+    assert listed, "夹具失效：一条都没渲染出来"
+    assert count_tokens(rendered) <= gate, (
+        f"locale={lang}：整段 {count_tokens(rendered)} tok 超过闸门 {gate}"
+        f"——首行总览没有从预算里扣掉"
     )
 
 

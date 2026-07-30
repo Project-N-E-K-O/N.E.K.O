@@ -303,7 +303,11 @@ class ToolCallingMixin:
             _parse_iso_safe,
             to_naive_local,
         )
-        from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
+        from utils.tokenize import (
+            count_tokens,
+            take_lines_within_token_budget,
+            truncate_to_tokens,
+        )
         entry_lines: list[str] = []
         for i, r in enumerate(results, start=1):
             tag = render_recall_entry_tag(r.get("tier"), r.get("entity"), _lang)
@@ -341,17 +345,24 @@ class ToolCallingMixin:
             else:
                 time_suffix = ""
             entry_lines.append(f"{i}. {tag} {text}{time_suffix}")
+        # 首行 i18n 总览也进这个字符串，所以要先从预算里扣掉，否则整段实际
+        # 超预算（ja 的表头就有 14 tok）。用 n=条目总数 估表头开销：最终 n
+        # 只可能更小、位数只可能更少，往大了估是安全方向。
+        header_template = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang)
+        header_reserve = count_tokens(
+            header_template.format(n=len(entry_lines))
+        ) + count_tokens("\n")
         kept, dropped = take_lines_within_token_budget(
-            entry_lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
+            entry_lines, max(0, RECALL_RENDER_TOTAL_MAX_TOKENS - header_reserve),
         )
         if dropped:
             logger.info(
                 "[recall_memory] rendered block over %d tok budget; dropped "
                 "trailing %d entries", RECALL_RENDER_TOTAL_MAX_TOKENS, dropped,
             )
-        # 首行 i18n 总览按**实际渲染出去的条数**算：报 n=8 却只列 5 条会让
-        # 模型以为剩下三条被自己漏掉了，追着再调一次工具。
-        header = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(kept))
+        # 总览按**实际渲染出去的条数**算：报 n=8 却只列 5 条会让模型以为
+        # 剩下三条被自己漏掉了，追着再调一次工具。
+        header = header_template.format(n=len(kept))
         return "\n".join([header] + kept)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:

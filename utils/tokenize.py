@@ -187,13 +187,21 @@ def take_lines_within_token_budget(
     lines: list[str],
     max_tokens: int,
     encoding: str = PERSONA_RENDER_ENCODING,
+    separator: str = "\n",
 ) -> tuple[list[str], int]:
     """Greedy prefix of ``lines`` whose token sum stays within budget.
 
-    Returns ``(kept, dropped_count)``. Always keeps the first line even
-    when it alone exceeds the budget, so a caller that ranked its input by
-    relevance still emits its single best item instead of an empty block
-    (same forward-progress rule as
+    Returns ``(kept, dropped_count)``. The budget covers what the caller
+    will actually emit — ``separator.join(kept)`` — so the joiner is
+    charged too. Counting bare lines undercounts by one token per gap
+    (a newline usually costs one; occasionally BPE merges it into the
+    neighbouring text and it is free, which is the safe direction). Small,
+    but budgets that quietly run over are how this whole area got its
+    reputation: pass the separator you are going to join with.
+
+    Always keeps the first line even when it alone exceeds the budget, so
+    a caller that ranked its input by relevance still emits its single
+    best item instead of an empty block (same forward-progress rule as
     ``main_logic.core.callback_render._select_callbacks_within_token_budget``);
     per-item truncation is the caller's job and is what actually bounds
     that first line.
@@ -207,10 +215,11 @@ def take_lines_within_token_budget(
     ``render_relevant_memory`` and the main app's ``recall_memory`` tool
     handler) so their budgets cannot drift apart.
     """
+    separator_cost = count_tokens(separator, encoding)
     kept: list[str] = []
     used = 0
     for index, line in enumerate(lines):
-        cost = count_tokens(line, encoding)
+        cost = count_tokens(line, encoding) + (separator_cost if kept else 0)
         if kept and used + cost > max_tokens:
             return kept, len(lines) - index
         kept.append(line)
