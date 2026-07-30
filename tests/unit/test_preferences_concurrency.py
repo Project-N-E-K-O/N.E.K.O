@@ -363,6 +363,18 @@ async def test_conversation_settings_route_validates_contract_and_keeps_legacy_w
     )
     assert unsafe_decision.status_code == 400
 
+    ceiling_decision = await preferences_router.save_conversation_settings(
+        _Request(
+            {"independentAsrEnabled": True},
+            asr_decision={
+                "writeId": preferences.MAX_SAFE_ASR_WRITE_ID,
+                "writerId": "api-client",
+                "value": True,
+            },
+        )
+    )
+    assert ceiling_decision.status_code == 400
+
     legacy_write = await preferences_router.save_conversation_settings(
         _Request({"focusModeEnabled": True})
     )

@@ -43,6 +43,7 @@
     // the keys the writing user EXPLICITLY changed plus a monotonic write id,
     // and the listener grants ASR authority only on that evidence.
     const _SHARED_WRITE_META_KEY = '_sharedWriteMeta';
+    const _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000;
     let _lastSharedWriteId = 0;
     let _lastAppliedSharedWriteId = 0;
     // Window-unique second sort key for concurrent shared-settings writes. Per
@@ -59,6 +60,13 @@
     // other each adopt the other and stay swapped forever. That needs no
     // millisecond tie at all -- a strictly older foreign write still wins.
     let _lastAsrDecision = null;
+    function _isValidAsrWriteId(value) {
+        const maxAccepted = Math.min(
+            Number.MAX_SAFE_INTEGER - 1,
+            Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS
+        );
+        return Number.isSafeInteger(value) && value >= 0 && value <= maxAccepted;
+    }
     function _noteAsrDecision(writeId, writerId, value) {
         // A write that merely re-asserts the value already decided is not a new
         // choice: _dirtySettingsKeys is monotone, so every later save from a
@@ -97,7 +105,7 @@
     }
     function _normalizeServerAsrDecision(value) {
         if (!value || typeof value !== 'object') return null;
-        if (!Number.isSafeInteger(value.writeId) || value.writeId < 0) return null;
+        if (!_isValidAsrWriteId(value.writeId)) return null;
         if (typeof value.writerId !== 'string' || !value.writerId) return null;
         if (typeof value.value !== 'boolean') return null;
         return {
@@ -469,7 +477,7 @@
     function _readSharedWriteMeta(settings) {
         const meta = settings ? settings[_SHARED_WRITE_META_KEY] : null;
         if (!meta || typeof meta !== 'object') return null;
-        if (!Number.isSafeInteger(meta.writeId) || meta.writeId < 0) return null;
+        if (!_isValidAsrWriteId(meta.writeId)) return null;
         return {
             writeId: meta.writeId,
             // Absent on snapshots written by the previous build: '' sorts below
@@ -488,8 +496,7 @@
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
             asrDecision: (meta.asrDecision
-                && Number.isSafeInteger(meta.asrDecision.writeId)
-                && meta.asrDecision.writeId >= 0)
+                && _isValidAsrWriteId(meta.asrDecision.writeId))
                 ? {
                     writeId: meta.asrDecision.writeId,
                     writerId: typeof meta.asrDecision.writerId === 'string'
@@ -558,11 +565,15 @@
     function _noteCrossWindowMutations(settings, explicitKeys) {
         _SHARED_SETTINGS_KEYS.forEach((key) => {
             if (!Object.prototype.hasOwnProperty.call(settings, key)) return;
-            // A server-merge broadcast carries an empty changedKeys list and
-            // must not be mistaken for newer user intent. Metadata-less
-            // previous-build writers retain their value-change fallback.
-            if (explicitKeys && explicitKeys.indexOf(key) === -1) return;
-            if (S[key] === settings[key]) return;
+            // Metadata declares user intent per key, including a same-value
+            // choice made while a request is in flight. Server-merge broadcasts
+            // carry an empty list; metadata-less previous-build writers retain
+            // their value-change fallback.
+            if (explicitKeys) {
+                if (explicitKeys.indexOf(key) === -1) return;
+            } else if (S[key] === settings[key]) {
+                return;
+            }
             _crossWindowMutationVersion += 1;
             _crossWindowKeyMutationVersions[key] = _crossWindowMutationVersion;
         });
@@ -584,6 +595,14 @@
                 window[key] = S[key];
             }
         });
+        if (Object.prototype.hasOwnProperty.call(settings, 'noiseReductionEnabled')) {
+            try {
+                localStorage.setItem(
+                    'neko_noise_reduction',
+                    S.noiseReductionEnabled ? '1' : '0'
+                );
+            } catch (_) { }
+        }
         if (
             Object.prototype.hasOwnProperty.call(settings, 'userLanguage') &&
             S.userLanguage !== settings.userLanguage
@@ -1540,10 +1559,14 @@
                 delete incoming.independentAsrEnabled;
             }
             const pendingKeysToReassert = [];
-            if (meta && meta.changedKeys.length === 0) {
+            if (meta) {
                 // Keep this as for...of: static listener-contract tests slice
                 // at the first callback terminator.
                 for (const key of _pendingSettingsKeys) {
+                    // A full snapshot carries incidental copies of every other
+                    // key. Only a sender-declared edit may supersede local
+                    // pending intent.
+                    if (meta.changedKeys.indexOf(key) !== -1) continue;
                     if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
                     if (incoming === settings) incoming = Object.assign({}, settings);
                     delete incoming[key];

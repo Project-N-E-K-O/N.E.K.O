@@ -396,6 +396,7 @@ _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _LEGACY_ASR_DECISION_WRITER_ID = "server-legacy"
 MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
+ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
 
 
 @dataclass(frozen=True)
@@ -424,11 +425,15 @@ def _normalize_asr_decision(value: Any) -> Optional[Dict[str, Any]]:
     write_id = value.get("writeId")
     writer_id = value.get("writerId")
     decision_value = value.get("value")
+    max_accepted_write_id = min(
+        MAX_SAFE_ASR_WRITE_ID - 1,
+        time.time_ns() // 1_000_000 + ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+    )
     if (
         not isinstance(write_id, int)
         or isinstance(write_id, bool)
         or write_id < 0
-        or write_id > MAX_SAFE_ASR_WRITE_ID
+        or write_id > max_accepted_write_id
         or not isinstance(writer_id, str)
         or not writer_id
         or len(writer_id) > 128

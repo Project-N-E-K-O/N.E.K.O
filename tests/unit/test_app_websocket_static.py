@@ -1518,6 +1518,25 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           assert(ctx.postCalls.length === 2, 'the unrelated edit must POST');
 
+          // A sibling's unrelated explicit edit still carries a full snapshot.
+          // Its incidental copy of this window's pending key must not replace
+          // the pending value merely because changedKeys is nonempty.
+          ctx.fireStorage(JSON.stringify({
+            focusModeEnabled: false,
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 98,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          assert(
+            ctx.S.focusModeEnabled === true && ctx.S.mergeMessagesEnabled === true,
+            'a nonempty explicit broadcast preserves unrelated pending keys'
+          );
+
           // A server-merge broadcast may have been built before this pending
           // edit. It must neither overwrite the local value nor leave its
           // stale full snapshot in shared localStorage.
@@ -1662,6 +1681,20 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
           assert(ctx.postCalls.length === 1, 'the later edit queues behind the first POST');
 
+          // The other window explicitly chooses the value this stale local
+          // view already holds. The metadata still represents a newer user
+          // mutation and must protect the key from the delayed response.
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: false,
+            _sharedWriteMeta: {
+              writeId: 102,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+
           ctx.postCalls[0].resolve(response(
             true,
             200,
@@ -1673,6 +1706,8 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 proactiveVisionEnabled: false,
                 slopFilterEnabled: false,
                 focusModeEnabled: true,
+                mergeMessagesEnabled: true,
+                noiseReductionEnabled: true,
               },
               revision: 1,
               decisions: {},
@@ -1691,6 +1726,14 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
             'an edit made while the request was in flight remains pending'
           );
           assert(
+            ctx.S.mergeMessagesEnabled === false,
+            'a same-value explicit cross-window edit survives the delayed response'
+          );
+          assert(
+            ctx.store.get('neko_noise_reduction') === '1',
+            'accepted shared noise reduction mirrors into the legacy cache'
+          );
+          assert(
             ctx.runtime.stoppedSpeech === 1
               && ctx.runtime.stoppedScreening === 1
               && ctx.runtime.stoppedTracks === 1,
@@ -1701,7 +1744,9 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             secondBody.independentAsrEnabled === true
               && secondBody.proactiveVisionEnabled === false
-              && secondBody.slopFilterEnabled === true,
+              && secondBody.slopFilterEnabled === true
+              && secondBody.mergeMessagesEnabled === false
+              && secondBody.noiseReductionEnabled === true,
             'the queued retry uses the reconciled full snapshot plus the pending edit'
           );
           const reconciledLocal = JSON.parse(ctx.store.get('project_neko_settings'));
@@ -1952,7 +1997,11 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         "\n    }", 1
     )[0]
     assert "if (!meta || typeof meta !== 'object') return null;" in read_fn
-    assert "!Number.isSafeInteger(meta.writeId)" in read_fn
+    assert "if (!_isValidAsrWriteId(meta.writeId)) return null;" in read_fn
+    id_validator = _block_after(settings_source, "function _isValidAsrWriteId(value) {")
+    assert "Number.isSafeInteger(value)" in id_validator
+    assert "Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS" in id_validator
+    assert "Number.MAX_SAFE_INTEGER - 1" in id_validator
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
 
     listener_block = settings_source.split(
@@ -3867,7 +3916,7 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     # ...the reader parses it defensively, falling back to today's behaviour...
     read_fn = _block_after(settings_source, "function _readSharedWriteMeta(settings) {")
     assert "asrDecision:" in read_fn
-    assert "Number.isSafeInteger(meta.asrDecision.writeId)" in read_fn
+    assert "_isValidAsrWriteId(meta.asrDecision.writeId)" in read_fn
 
     # ...and both the boot seed and the adopted cross-window flip record the
     # ORIGINAL id, or this window re-inflates the value on its own next save.
