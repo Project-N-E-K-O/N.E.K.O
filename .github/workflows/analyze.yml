@@ -205,10 +205,12 @@ jobs:
         # localized prompt table, and `_loc` falls back to 'en' rather than
         # 'zh' on a missing key — so a table without 'zh-TW' serves Traditional
         # Chinese users an English prompt. 339 existing tables are still short
-        # one (the batched backfill in issue #2500), so this is a diff-ratchet
-        # keyed on the dict's own definition line: it fires for dicts a PR
-        # introduces and stays quiet about the existing stock. Editing an
-        # existing table's copy does not trip it. `--full` lists the whole
+        # one (the batched backfill in issue #2500), so this is a ratchet: it
+        # compares how many such tables exist at the merge-base vs at HEAD and
+        # fails only when the total grew. A plain total is what keeps renames,
+        # copy edits, added locales, and the eventual 'zh'->'zh-CN' migration
+        # from tripping it — see the script docstring for the three narrower
+        # keys that were tried and why each broke. `--full` lists the whole
         # backlog, `--count` just sizes it. Suppress a single dict with
         # `# noqa: PROMPT_ZH_TW` on its opening line. Skipped on direct push
         # to main — nothing to diff against.

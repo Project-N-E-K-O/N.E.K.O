@@ -25,32 +25,36 @@ gate only stops the hole from growing.
 
 How the ratchet works
 =====================
-It counts offending dicts per Simplified-key scheme ('zh' vs 'zh-CN') at the
-merge-base and at HEAD; HEAD having more of either than the base is what fails
-the check. Source lines are not consulted for the decision.
+It counts offending dicts at the merge-base and at HEAD. HEAD having more than
+the base is what fails the check. That is the whole decision — no source lines,
+no per-dict identity, no grouping.
 
-Line-based ratcheting was tried first and is wrong in both directions:
+Getting here took three wrong turns, each of which broke a case the simple count
+handles for free:
 
-  * A pre-existing ``{'en': ..., 'ja': ...}`` table that a PR turns into a
-    localized one by adding a single ``'zh'`` line never has its own definition
-    line in the diff, so the gate this is meant to be would miss exactly the
-    case it exists for.
-  * Renaming a prompt module with no content change makes every line of the new
-    path count as added, so a rename would report the whole file's existing
-    backlog.
+  * **By diff line.** A pre-existing ``{'en': ..., 'ja': ...}`` table that a PR
+    turns into a localized one by adding a single ``'zh'`` line never has its own
+    definition line in the diff — the gate would miss the very case it exists
+    for. And renaming a module with no content change marks every line of the
+    new path as added, reporting the whole file's existing backlog.
+  * **By whole key set.** Then adding an unrelated locale (a new ``'fr'``
+    template) to a pre-existing offender reads as a brand-new table, failing a
+    PR that did not grow the backlog.
+  * **By Simplified-key scheme** ('zh' vs 'zh-CN' counted separately). Then
+    migrating a table from ``'zh'`` to ``'zh-CN'`` shows up as one scheme losing
+    a table and the other gaining one, and Counter subtraction only keeps the
+    positive side — so it reports growth that did not happen. issue #2500's own
+    endgame is exactly that rename across all ~339 tables, i.e. this gate would
+    have blocked the migration it exists to serve.
 
-Counting dodges both: a table gaining a Chinese key starts being counted, while
-renaming a file or editing a template's copy changes no count.
+A plain total is invariant under all three: renames, copy edits, added locales,
+and scheme migrations all leave it alone, while a table newly subject to the rule
+raises it.
 
-Counting *whole key sets* was the next wrong turn — then adding an unrelated
-locale (a new 'fr' template) to a pre-existing offender reads as a brand-new
-table and fails a PR that did not grow the backlog. Hence ``rule_signature``,
-which projects a key set down to just the Simplified key the rule keys on.
-
-The tradeoff that remains: a PR removing one offending table while adding
-another under the same scheme nets to zero and passes. That is a deliberate
-accept — the alternative is matching dicts across revisions by position, which
-breaks on every reformat.
+The tradeoff: a PR removing one offending table while adding another nets to zero
+and passes. That is a deliberate accept — the alternative is matching dicts
+across revisions by identity, and every candidate for that identity (position,
+key set, scheme) is what the three wrong turns above already tried.
 
 Usage:
     python scripts/check_prompt_zh_tw.py [--base origin/main]
@@ -67,7 +71,6 @@ import os
 import re
 import subprocess
 import sys
-from collections import Counter
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -116,27 +119,9 @@ def _string_keys(node: ast.AST) -> set[str]:
     return set()
 
 
-def rule_signature(keys: set[str]) -> str:
-    """The part of a key set the rule keys on: which Simplified key is used.
-
-    Deliberately *not* the whole key set. Counting whole key sets makes adding
-    an unrelated locale to a pre-existing offender (say a new ``fr`` template)
-    look like a brand-new table, which fails a PR that did not grow the backlog.
-    Projecting onto the Simplified key keeps the count equal to "how many tables
-    of this scheme still lack zh-TW", which is the quantity the ratchet is
-    about.
-    """
-    for key in SIMPLIFIED_KEYS:
-        if key in keys:
-            return key
-    return ""
-
-
-def find_violations(
-    tree: ast.Module, source_lines: list[str]
-) -> list[tuple[int, str]]:
-    """Return (lineno, rule-signature) for localized dicts with no zh-TW key."""
-    out: list[tuple[int, str]] = []
+def find_violations(tree: ast.Module, source_lines: list[str]) -> list[int]:
+    """Return the line number of every localized dict with no zh-TW key."""
+    out: list[int] = []
     for node in ast.walk(tree):
         keys = _string_keys(node)
         if not keys:
@@ -150,7 +135,7 @@ def find_violations(
         lineno = node.lineno
         if 1 <= lineno <= len(source_lines) and _has_noqa(source_lines[lineno - 1]):
             continue
-        out.append((lineno, rule_signature(keys)))
+        out.append(lineno)
     return out
 
 
@@ -162,31 +147,27 @@ def _parse_source(source: str, origin: str) -> tuple[ast.Module | None, list[str
         return None, []
 
 
-def signature_counter(sources: dict[str, str]) -> Counter[str]:
-    """Count offending key signatures across a {path: source} mapping."""
-    counter: Counter[str] = Counter()
+def count_offenders(sources: dict[str, str]) -> int:
+    """How many localized prompt tables in a {path: source} mapping lack zh-TW."""
+    total = 0
     for path, source in sorted(sources.items()):
         tree, lines = _parse_source(source, path)
         if tree is None:
             continue
-        for _lineno, signature in find_violations(tree, lines):
-            counter[signature] += 1
-    return counter
+        total += len(find_violations(tree, lines))
+    return total
 
 
-def locate(
+def locate_touched(
     sources: dict[str, str],
-    signature: str,
     touched: dict[str, set[int]] | None = None,
 ) -> tuple[list[str], int]:
-    """Locate offending dicts matching `signature`.
+    """Split offending dicts into (touched by this diff, count of the rest).
 
-    Returns (likely, other_count). A dict counts as *likely* when `touched` says
-    the diff added a line inside its body, which is only a presentation hint:
-    the pass/fail decision is the signature comparison, because line spans alone
-    both miss added-key cases and misfire on renames. Common key sets like
-    {en, zh} match dozens of pre-existing tables, so surfacing the touched ones
-    is what makes the failure actionable.
+    Purely for the error message: the pass/fail decision is the count comparison.
+    A total says *that* the backlog grew but not *where*, and 339 pre-existing
+    offenders is far too many to print, so the diff's own lines are what make the
+    failure actionable.
     """
     likely: list[str] = []
     other = 0
@@ -196,12 +177,10 @@ def locate(
             continue
         by_line = {node.lineno: node for node in ast.walk(tree)
                    if _string_keys(node)}
-        for lineno, sig in find_violations(tree, lines):
-            if sig != signature:
-                continue
+        added = (touched or {}).get(path, set())
+        for lineno in find_violations(tree, lines):
             node = by_line.get(lineno)
             span = range(lineno, (getattr(node, "end_lineno", lineno) or lineno) + 1)
-            added = (touched or {}).get(path, set())
             if added and any(ln in added for ln in span):
                 likely.append(f"{path}:{lineno}")
             else:
@@ -215,10 +194,18 @@ def locate(
 
 
 def _git(*args: str) -> str:
+    """Run git and return stdout.
+
+    ``errors="replace"`` is the base-side counterpart to ``_sources_on_disk``
+    tolerating a bad decode: ``git show`` of a non-UTF-8 prompt module would
+    otherwise raise mid-decode. A replaced source then fails ``ast.parse``, which
+    ``_parse_source`` reports and skips — same outcome as the disk side.
+    """
     result = subprocess.run(
         ["git", *args],
         cwd=REPO_ROOT,
-        capture_output=True, text=True, check=False,
+        capture_output=True, check=False,
+        text=True, encoding="utf-8", errors="replace",
     )
     if result.returncode != 0:
         sys.stderr.write(result.stderr)
@@ -272,12 +259,18 @@ def _touched_lines(rev: str) -> dict[str, set[int]]:
 
 
 def _sources_on_disk() -> dict[str, str]:
+    """Read every prompt module off disk, skipping any that cannot be decoded.
+
+    ``UnicodeDecodeError`` is a ``ValueError``, not an ``OSError``, so catching
+    only the latter would let a non-UTF-8 prompt module take the whole gate down
+    with a traceback instead of skipping that one file.
+    """
     sources: dict[str, str] = {}
     for path in sorted(PROMPTS_DIR.rglob("*.py")):
         rel = path.relative_to(REPO_ROOT).as_posix()
         try:
             sources[rel] = path.read_text(encoding="utf-8")
-        except OSError as exc:
+        except (OSError, UnicodeDecodeError) as exc:
             sys.stderr.write(f"{rel}: cannot read ({exc})\n")
     return sources
 
@@ -307,8 +300,8 @@ def main(argv: list[str] | None = None) -> int:
     disk = _sources_on_disk()
 
     if args.count:
-        total = sum(signature_counter(disk).values())
-        print(f"localized prompt dicts missing '{TRADITIONAL_KEY}': {total}")
+        print(f"localized prompt dicts missing '{TRADITIONAL_KEY}': "
+              f"{count_offenders(disk)}")
         return 0
 
     if args.full:
@@ -317,9 +310,8 @@ def main(argv: list[str] | None = None) -> int:
             tree, lines = _parse_source(source, path)
             if tree is None:
                 continue
-            for lineno, signature in find_violations(tree, lines):
-                print(f"{path}:{lineno}: [{CODE}] missing "
-                      f"'{TRADITIONAL_KEY}' (keyed by '{signature}')")
+            for lineno in find_violations(tree, lines):
+                print(f"{path}:{lineno}: [{CODE}] missing '{TRADITIONAL_KEY}'")
                 found += 1
         if found:
             print(f"\n{found} localized prompt dict(s) missing '{TRADITIONAL_KEY}'.")
@@ -327,36 +319,26 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if found else 0
 
     merge_base = _merge_base(args.base)
-    base_counter = signature_counter(_sources_at(merge_base))
-    head_counter = signature_counter(disk)
-
-    added = head_counter - base_counter
-    if not added:
+    grew = count_offenders(disk) - count_offenders(_sources_at(merge_base))
+    if grew <= 0:
         return 0
 
-    touched = _touched_lines(merge_base)
-    total = sum(added.values())
-    for signature, count in sorted(added.items()):
-        likely, other = locate(disk, signature, touched)
-        print(f"[{CODE}] {count} new localized prompt dict(s) keyed by "
-              f"'{signature}' with no '{TRADITIONAL_KEY}'.")
-        if likely:
-            print(f"        in lines this change touched: {', '.join(likely)}")
-        if other:
-            print(f"        ({other} pre-existing table(s) share this key set "
-                  f"and are exempt)")
-        if not likely:
-            print("        no touched table matches — the new table may have "
-                  "moved in from elsewhere; run --full to see every offender")
+    likely, other = locate_touched(disk, _touched_lines(merge_base))
+    print(f"[{CODE}] {grew} more localized prompt dict(s) lack "
+          f"'{TRADITIONAL_KEY}' than at the merge-base.")
+    if likely:
+        print(f"        in lines this change touched: {', '.join(likely)}")
+    else:
+        print("        no touched table is missing it — the new table may have "
+              "moved in from elsewhere; run --full to see every offender")
+    print(f"        ({other} pre-existing offender(s) are exempt)")
     print(
-        f"\n{total} newly added localized prompt dict(s) lack "
-        f"'{TRADITIONAL_KEY}'.\n"
-        "A prompt dict with 'en' + 'zh'/'zh-CN' needs 'zh-TW' too: _loc falls "
+        "\nA prompt dict with 'en' + 'zh'/'zh-CN' needs 'zh-TW' too: _loc falls "
         "back to 'en', not 'zh', so Traditional Chinese users would get an "
         "English prompt. Add the template, or put '# noqa: PROMPT_ZH_TW' on the "
         "dict's opening line if it genuinely does not need one.\n"
-        "The ratchet counts key signatures rather than source lines, so the "
-        "locations above are narrowed to the tables this change touched.\n"
+        "The ratchet compares totals rather than source lines, so the locations "
+        "above are narrowed to the tables this change touched.\n"
         f"(Set $PROMPT_ZH_TW_BASE or pass --base to override the base ref.)"
     )
     return 1

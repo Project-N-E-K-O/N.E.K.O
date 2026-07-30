@@ -16,8 +16,8 @@
 """Unit tests for ``scripts/check_prompt_zh_tw.py``.
 
 Two layers: which dict shapes count as a localized prompt table
-(``find_violations``), and what the signature ratchet does to a given
-base -> head transition (``signature_counter``). The ratchet layer needs no git
+(``find_violations``), and what the count ratchet does to a given
+base -> head transition (``count_offenders``). The ratchet layer needs no git
 because it compares two {path: source} mappings, so each scenario — added key,
 pure rename, copy edit — is expressed directly. The git plumbing is smoke-tested
 through ``--base HEAD`` (empty diff -> exit 0).
@@ -52,11 +52,11 @@ def _violations(source: str):
     return MOD.find_violations(tree, source.splitlines())
 
 
-def _added(base: dict[str, str], head: dict[str, str]):
-    """Signatures HEAD has more of than base — what the ratchet reports."""
+def _grew(base: dict[str, str], head: dict[str, str]) -> int:
+    """How many more offenders HEAD has than base — the ratchet decision."""
     base = {k: textwrap.dedent(v) for k, v in base.items()}
     head = {k: textwrap.dedent(v) for k, v in head.items()}
-    return MOD.signature_counter(head) - MOD.signature_counter(base)
+    return MOD.count_offenders(head) - MOD.count_offenders(base)
 
 
 # ---------------------------------------------------------------------------
@@ -73,8 +73,7 @@ def test_flags_en_plus_short_zh_without_traditional():
     '''
     out = _violations(src)
     assert len(out) == 1
-    assert out[0][0] == 2
-    assert out[0][1] == "zh"
+    assert out == [2]
 
 
 def test_flags_en_plus_full_zh_cn_without_traditional():
@@ -132,9 +131,7 @@ def test_ignores_non_string_keys():
 
 def test_flags_dict_constructor_call():
     """`dict(en=..., zh=...)` has the same runtime shape and the same problem."""
-    out = _violations('TABLE = dict(en="english", zh="简体")')
-    assert len(out) == 1
-    assert out[0][1] == "zh"
+    assert _violations('TABLE = dict(en="english", zh="简体")') == [1]
 
 
 def test_ignores_dict_constructor_with_unpacking():
@@ -167,17 +164,16 @@ def test_flags_nested_and_multiple_tables():
     '''
     out = _violations(src)
     assert len(out) == 2, out
-    assert [lineno for lineno, _ in out] == [3, 7]
+    assert out == [3, 7]
 
 
 # ---------------------------------------------------------------------------
-# The signature ratchet
+# The count ratchet
 # ---------------------------------------------------------------------------
 
 
 def test_ratchet_flags_a_brand_new_table():
-    added = _added({"a.py": ""}, {"a.py": 'T = {"en": "x", "zh": "y"}'})
-    assert sum(added.values()) == 1
+    assert _grew({"a.py": ""}, {"a.py": 'T = {"en": "x", "zh": "y"}'}) == 1
 
 
 def test_ratchet_flags_table_that_becomes_localized_via_added_key():
@@ -189,9 +185,7 @@ def test_ratchet_flags_table_that_becomes_localized_via_added_key():
     """
     base = {"a.py": 'T = {"en": "x", "ja": "y"}'}
     head = {"a.py": 'T = {"en": "x", "ja": "y", "zh": "z"}'}
-    added = _added(base, head)
-    assert sum(added.values()) == 1
-    assert "zh" in added
+    assert _grew(base, head) == 1
 
 
 def test_ratchet_ignores_adding_an_unrelated_locale():
@@ -203,18 +197,45 @@ def test_ratchet_ignores_adding_an_unrelated_locale():
     """
     base = {"a.py": 'T = {"en": "x", "zh": "y"}'}
     head = {"a.py": 'T = {"en": "x", "zh": "y", "fr": "z"}'}
-    assert not _added(base, head)
+    assert _grew(base, head) <= 0
 
 
-def test_ratchet_keeps_the_two_key_schemes_separate():
-    """A new zh-CN-scheme table is not offset by an existing zh-scheme one."""
+def test_ratchet_flags_a_new_table_under_either_scheme():
+    """A new zh-CN-scheme offender counts, same as a zh-scheme one."""
     base = {"a.py": 'A = {"en": "x", "zh": "y"}'}
     head = {
         "a.py": 'A = {"en": "x", "zh": "y"}',
         "b.py": 'B = {"en": "p", "zh-CN": "q"}',
     }
-    added = _added(base, head)
-    assert dict(added) == {"zh-CN": 1}
+    assert _grew(base, head) == 1
+
+
+def test_ratchet_ignores_a_scheme_migration():
+    """Renaming an offender's key from 'zh' to 'zh-CN' did not grow the backlog.
+
+    This is why the ratchet counts a plain total. Counting the two schemes
+    separately made a migration read as one scheme losing a table and the other
+    gaining one, and Counter subtraction keeps only the positive side — reporting
+    growth that never happened.
+    """
+    base = {"a.py": 'T = {"en": "x", "zh": "y"}'}
+    head = {"a.py": 'T = {"en": "x", "zh-CN": "y"}'}
+    assert _grew(base, head) == 0
+
+
+def test_ratchet_ignores_a_bulk_scheme_migration():
+    """issue #2500's endgame renames 'zh' to 'zh-CN' across every table.
+
+    A gate that failed on that would be blocking the migration it exists to
+    serve, so this pins the whole-file case, not just one table.
+    """
+    base = {"a.py": "\n".join(
+        f'T{i} = {{"en": "x", "zh": "y{i}"}}' for i in range(5)
+    )}
+    head = {"a.py": "\n".join(
+        f'T{i} = {{"en": "x", "zh-CN": "y{i}"}}' for i in range(5)
+    )}
+    assert _grew(base, head) == 0
 
 
 def test_ratchet_ignores_a_pure_rename():
@@ -229,37 +250,35 @@ def test_ratchet_ignores_a_pure_rename():
         "en": "english",
     }
     '''
-    assert not _added({"old_name.py": src}, {"new_name.py": src})
+    assert _grew({"old_name.py": src}, {"new_name.py": src}) == 0
 
 
 def test_ratchet_ignores_a_copy_edit():
     """Editing an existing table's text must not trip the gate."""
     base = {"a.py": 'T = {"en": "old copy", "zh": "旧文案"}'}
     head = {"a.py": 'T = {"en": "new copy", "zh": "新文案"}'}
-    assert not _added(base, head)
+    assert _grew(base, head) <= 0
 
 
 def test_ratchet_ignores_adding_traditional_to_an_existing_table():
     """Backfilling zh-TW removes an offender; nothing is reported as added."""
     base = {"a.py": 'T = {"en": "x", "zh": "y"}'}
     head = {"a.py": 'T = {"en": "x", "zh": "y", "zh-TW": "z"}'}
-    assert not _added(base, head)
+    assert _grew(base, head) <= 0
 
 
 def test_ratchet_counts_multiplicity_not_just_presence():
-    """Two new tables sharing one key set still count as two."""
+    """Two new offenders raise the total by two, not by one."""
     base = {"a.py": 'A = {"en": "x", "zh": "y"}'}
     head = {
         "a.py": 'A = {"en": "x", "zh": "y"}',
         "b.py": 'B = {"en": "p", "zh": "q"}\nC = {"en": "r", "zh": "s"}',
     }
-    added = _added(base, head)
-    assert sum(added.values()) == 2
-    assert added["zh"] == 2
+    assert _grew(base, head) == 2
 
 
 def test_ratchet_documented_blind_spot_nets_to_zero():
-    """Removing one offender while adding another with the same key set passes.
+    """Removing one offender while adding another nets to zero and passes.
 
     Pinned deliberately: the script's docstring calls this out as an accepted
     tradeoff, because the alternative is matching dicts across revisions by
@@ -268,7 +287,7 @@ def test_ratchet_documented_blind_spot_nets_to_zero():
     """
     base = {"a.py": 'A = {"en": "x", "zh": "y"}'}
     head = {"b.py": 'B = {"en": "p", "zh": "q"}'}
-    assert not _added(base, head)
+    assert _grew(base, head) <= 0
 
 
 # ---------------------------------------------------------------------------
@@ -280,28 +299,27 @@ _TWO_TABLES = {
     "new.py": 'NEW = {\n    "en": "a",\n    "zh": "b",\n}',
     "old.py": 'OLD = {\n    "en": "c",\n    "zh": "d",\n}',
 }
-_EN_ZH = "zh"
 
 
 def test_locate_narrows_to_tables_the_diff_touched():
-    """Common key sets match many tables, so the message needs the touched one.
+    """A bare total says nothing about where, so the message needs the touched one.
 
     Without this, a failure on the {en, zh} signature lists every pre-existing
     table sharing it and the developer has to guess which one is theirs.
     """
-    likely, other = MOD.locate(_TWO_TABLES, _EN_ZH, {"new.py": {2}})
+    likely, other = MOD.locate_touched(_TWO_TABLES, {"new.py": {2}})
     assert likely == ["new.py:1"]
     assert other == 1
 
 
 def test_locate_matches_anywhere_in_the_dict_body():
     """A key added on the dict's last line still identifies that dict."""
-    likely, _ = MOD.locate(_TWO_TABLES, _EN_ZH, {"new.py": {3}})
+    likely, _ = MOD.locate_touched(_TWO_TABLES, {"new.py": {3}})
     assert likely == ["new.py:1"]
 
 
 def test_locate_without_hints_reports_everything_as_pre_existing():
-    likely, other = MOD.locate(_TWO_TABLES, _EN_ZH, None)
+    likely, other = MOD.locate_touched(_TWO_TABLES, None)
     assert likely == []
     assert other == 2
 
@@ -309,7 +327,7 @@ def test_locate_without_hints_reports_everything_as_pre_existing():
 def test_locate_hint_outside_any_table_body_is_ignored():
     """Touching an unrelated line must not mislabel a table as the new one."""
     sources = {"a.py": 'X = 1\n\nT = {\n    "en": "a",\n    "zh": "b",\n}'}
-    likely, other = MOD.locate(sources, _EN_ZH, {"a.py": {1}})
+    likely, other = MOD.locate_touched(sources, {"a.py": {1}})
     assert likely == []
     assert other == 1
 
@@ -372,7 +390,7 @@ def test_sources_on_disk_includes_subpackages(tmp_path, monkeypatch):
 
     sources = MOD._sources_on_disk()
     assert set(sources) == {"top.py", "sub/nested.py"}
-    assert sum(MOD.signature_counter(sources).values()) == 2
+    assert MOD.count_offenders(sources) == 2
 
 
 # ---------------------------------------------------------------------------
@@ -392,7 +410,7 @@ def _stub_revisions(monkeypatch, base_src: dict[str, str], head_src: dict[str, s
 def test_main_fails_when_head_gained_an_offender(monkeypatch, capsys):
     """Covers the subtraction direction in main(), not just the helper.
 
-    Asserting on signature_counter alone lets `head - base` silently become
+    Asserting on count_offenders alone lets `head - base` silently become
     `base - head`, which never reports anything and disables the gate.
     """
     _stub_revisions(
@@ -420,6 +438,45 @@ def test_main_passes_on_an_unchanged_tree(monkeypatch):
     src = {"a.py": 'T = {"en": "x", "zh": "y"}'}
     _stub_revisions(monkeypatch, src, src)
     assert MOD.main(["--base", "irrelevant"]) == 0
+
+
+def test_sources_on_disk_skips_undecodable_file(tmp_path, monkeypatch, capsys):
+    """A non-UTF-8 prompt module is skipped, not fatal.
+
+    UnicodeDecodeError is a ValueError, not an OSError, so catching only OSError
+    would take the whole gate down with a traceback over one bad file.
+    """
+    (tmp_path / "good.py").write_text('T = {"en": "a", "zh": "b"}', encoding="utf-8")
+    (tmp_path / "bad.py").write_bytes(b'T = {"en": "\xff\xfe not utf-8"}')
+    monkeypatch.setattr(MOD, "PROMPTS_DIR", tmp_path)
+    monkeypatch.setattr(MOD, "REPO_ROOT", tmp_path)
+
+    sources = MOD._sources_on_disk()
+    assert set(sources) == {"good.py"}
+    assert "bad.py" in capsys.readouterr().err
+    assert MOD.count_offenders(sources) == 1
+
+
+def test_git_decodes_with_replacement(monkeypatch):
+    """git output is decoded with errors="replace" so a bad blob cannot crash us.
+
+    The base side reads sources through `git show`; without this it would raise
+    mid-decode where the disk side merely skips the file.
+    """
+    captured: dict[str, object] = {}
+
+    class _Result:
+        returncode = 0
+        stdout = "ok"
+        stderr = ""
+
+    def fake_run(cmd, **kwargs):
+        captured.update(kwargs)
+        return _Result()
+
+    monkeypatch.setattr(MOD.subprocess, "run", fake_run)
+    assert MOD._git("show", "X:y.py") == "ok"
+    assert captured.get("errors") == "replace", captured
 
 
 def test_prompt_files_at_reads_nul_separated_paths(monkeypatch):
