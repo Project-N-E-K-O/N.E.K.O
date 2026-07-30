@@ -22,6 +22,7 @@ const rawConfig = {
       keyword: 'live2d ai assistant',
       landingPage: '/frontend/live2d',
       intent: 'MOFU',
+      cta: 'Read Live2D docs',
     },
     {
       keyword: 'open source ai companion',
@@ -35,6 +36,7 @@ test('config validation normalizes tracked entries and rejects duplicates', () =
   const config = validateConfig(rawConfig)
   assert.equal(config.targetDomain, 'project-neko.online')
   assert.equal(config.keywords[0].landingPage, '/frontend/live2d')
+  assert.equal(config.keywords[0].cta, 'Read Live2D docs')
 
   assert.throws(
     () => validateConfig({
@@ -78,6 +80,24 @@ test('request plan makes paid call volume visible before execution', () => {
   })
   assert.equal(plan.maximumSerpPages, 6)
   assert.equal(plan.asynchronousAiOverviewRequests, 2)
+})
+
+test('China segments collect Google Ads search volume without unsupported Labs KD', () => {
+  const config = validateConfig({ ...rawConfig, locationCode: 2156, languageCode: 'zh-CN' })
+  const plan = buildPlan(config, {
+    mode: 'all',
+    depth: 30,
+    includeAiOverview: true,
+    includeKeywordDifficulty: false,
+  })
+
+  assert.deepEqual(plan.requests, {
+    searchVolume: 1,
+    keywordDifficulty: 0,
+    organicSerp: 2,
+    total: 3,
+  })
+  assert.equal(plan.includeKeywordDifficulty, false)
 })
 
 test('request plan labels an invalid CLI depth override as --depth', () => {

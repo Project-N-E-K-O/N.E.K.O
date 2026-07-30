@@ -912,8 +912,12 @@ class _TransportMixin:
 
         self._is_responding = False
         # Keep the cancelled response identity until its terminal event arrives.
-        # Clearing it here makes the stale-event filter drop that response.done,
-        # leaving the arbiter busy until a later response happens to complete.
+        # Clearing it here makes the stale-event filter classify that
+        # response.done as stale. The filter still forwards stale terminals to
+        # the arbiter (the lane would reopen either way), but the rest of the
+        # done handling is skipped for the turn: the done counters and usage
+        # recording, the _interrupted reset, the transcript flush and the
+        # on_response_done callback all silently miss one turn.
         self._current_item_id = None
         # 清空转录buffer和重置标志，防止打断后的错位
         self._output_transcript_buffer = ""
@@ -1289,6 +1293,23 @@ class _TransportMixin:
                             audio_bytes = base64.b64decode(event["delta"])
                             self._ai_recent_activity_time = time.time()
                             await self.on_audio_delta(audio_bytes)
+                    elif event_type in ["response.audio.done", "response.output_audio.done"]:
+                        # 权威的「这一轮音频流已关闭」信号（issue #1566）。前端原本
+                        # 靠「四个音频队列当下是否为空」猜本轮放完没，落在音频阵之间
+                        # 的空档就会提前收尾（口型停一下又重启、尾音孤儿）。
+                        #
+                        # ⚠️ 时序：必须在这里 await 触发，绝不能 _fire_task /
+                        # create_task。本接收循环是顺序的，走到这条事件时该轮所有
+                        # audio.delta 的 ``await self.on_audio_delta(...)`` 都已经
+                        # 返回，因此完结信号天然排在最后一块音频之后。改成
+                        # fire-and-forget 会让它插到音频前面，前端提前收尾 —— 那正是
+                        # 这个 issue 本身。
+                        #
+                        # 放在 _skip_until_next_response / _interrupted 守卫内，与
+                        # audio.delta 同门：被打断的一轮不发（打断有独立的 cancel
+                        # 通道）。漏发是可接受的降级，前端有 give-up 计时器兜底。
+                        if self.on_audio_done:
+                            await self.on_audio_done()
                     elif event_type in ["response.audio_transcript.done", "response.output_audio_transcript.done"]:
                         if self.on_output_transcript and self._is_first_transcript_chunk:
                             transcript = event.get("transcript", "")

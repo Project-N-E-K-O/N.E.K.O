@@ -11,7 +11,11 @@ from .pipeline_models import QQReplyContext
 
 
 def generation_session_is_reusable(
-    entry: Optional[dict[str, Any]], *, login_self_id: Any, her_name: Any,
+    entry: Optional[dict[str, Any]],
+    *,
+    login_self_id: Any,
+    her_name: Any,
+    conversation_route: tuple[str, str] | None = None,
 ) -> bool:
     """Whether this turn keeps an existing session instead of rebuilding it.
 
@@ -19,7 +23,18 @@ def generation_session_is_reusable(
     that rebuilds must await region resolution *before* the persona is
     assembled, and that prediction is only correct while it enumerates the
     same triggers as the rebuild below. Keeping two copies is how the wait
-    silently stopped covering the character-switch and retry paths."""
+    silently stopped covering the character-switch and retry paths.
+
+    ``conversation_route`` is the CURRENT config's ``(base_url, model)``.
+    It is compared against the route the entry was CREATED with (stored on
+    the entry — never read off the live client, whose model may have been
+    legitimately vision-switched mid-session). A stale-route session would
+    keep answering on the retired provider indefinitely in a busy group,
+    and after a free→tool-capable switch it would leave the turn with NO
+    recall channel at all: the context skips the synchronous recall per
+    the new config while the arm step refuses the old client's route.
+    Entries without a stored route (pre-upgrade / lightweight callers)
+    skip the comparison."""
     if not entry:
         return False
     if entry.get("login_self_id") != login_self_id:
@@ -27,6 +42,13 @@ def generation_session_is_reusable(
     if her_name is not None and entry.get("her_name") != her_name:
         return False
     if entry.get("pending_identity_discard"):
+        return False
+    stored_route = entry.get("conversation_route")
+    if (
+        conversation_route is not None
+        and stored_route is not None
+        and tuple(stored_route) != tuple(conversation_route)
+    ):
         return False
     return True
 
@@ -40,10 +62,28 @@ class QQSessionBootstrapService:
             self.plugin._user_sessions = {}
 
         existing_session = None if context.ephemeral_session else self.plugin._user_sessions.get(session_key)
+        current_route: tuple[str, str] | None = None
+        if existing_session is not None:
+            # 线路指纹核对要用当前配置：先落定区域再读（免费线路的 URL 会被
+            # 区域改写，未落定就比对会拿 pre-rewrite 快照造出假错配）。已落定
+            # 零开销；fail-open，落定失败按"线路未知"跳过核对。
+            try:
+                await get_config_manager().aensure_region_resolved()
+            except Exception as _geo_err:
+                self.plugin.logger.warning(f"[GeoIP] 线路核对前区域落定失败，跳过错配检查: {_geo_err}")
+            try:
+                _route_config = get_config_manager().get_model_api_config("conversation")
+                current_route = (
+                    str(_route_config.get("base_url") or ""),
+                    str(_route_config.get("model") or ""),
+                )
+            except Exception:
+                current_route = None
         if existing_session and not generation_session_is_reusable(
             existing_session,
             login_self_id=context.login_self_id,
             her_name=getattr(context, "her_name", None),
+            conversation_route=current_route,
         ):
             # her_name 失配=活跃角色切换：旧会话的 scoped 缓冲仍属旧角色，
             # discard 内的集中抢救会以旧 her_name 结算——新角色的对话绝不
@@ -51,7 +91,7 @@ class QQSessionBootstrapService:
             character_changed = existing_session.get("her_name") != getattr(
                 context, "her_name", existing_session.get("her_name"),
             )
-            discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="登录身份变化")
+            discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="登录身份/角色/线路变化")
             if discarded is False:
                 # 粘性标记：prime 会把 login_self_id 刷成新值，若只靠 id
                 # 不匹配做重试条件，下一轮就再也进不来这里了。
@@ -98,6 +138,11 @@ class QQSessionBootstrapService:
                 api_key=api_key,
                 model=model,
                 on_text_delta=on_text_delta,
+                # 一轮只允许一次召回：与旧的每轮同步召回同预算，也压住
+                # 工具轮的最坏超时（每多一次迭代就多一整段 LLM 流，而这里
+                # 超时的代价是丢弃整个共享群会话）。封顶后 forced-finalize
+                # 会摘掉 tools 逼出最终文本，召回结果不会白拿。
+                max_tool_iterations=1,
             )
             await asyncio.wait_for(
                 user_session.connect(instructions=context.system_prompt),
@@ -108,6 +153,10 @@ class QQSessionBootstrapService:
                 "session": user_session,
                 "reply_chunks": reply_chunks,
                 "her_name": context.her_name,
+                # 创建时刻的会话线路指纹：复用判据拿它与当前配置比对（绝不
+                # 读 client 现值——图片轮会把 client 合法地切到 vision 模型，
+                # 按现值比对会让每个看过图的会话每轮都被误重建）。
+                "conversation_route": (str(base_url or ""), str(model or "")),
                 "character_fields": context.character_card_fields,
                 "last_synced_index": 0,
                 "last_activity_at": time.time(),
@@ -170,10 +219,45 @@ class QQSessionBootstrapService:
                         self.plugin.logger.warning(f"关闭登录身份已变化的主动会话失败: {close_error}")
                 existing = None
             else:
-                existing["login_status"] = current_login_status
-                existing["login_self_id"] = current_login_self_id
-                existing["login_nickname"] = current_login_nickname
-                return existing
+                # 线路指纹核对（与 ensure_generation_session 对偶）：主动
+                # 路径复用的条目同样可能跨过一次 provider 切换，只靠回复
+                # 路径兜底会漏掉纯主动流量的会话。核对前先落定区域（免费
+                # 线路的区域改写不得造出假错配）；走 discard_session 而非
+                # 裸 pop+close——群会话的 scoped 缓冲要先集中抢救。
+                stored_route = existing.get("conversation_route")
+                if stored_route is not None:
+                    try:
+                        await get_config_manager().aensure_region_resolved()
+                    except Exception as _geo_err:
+                        self.plugin.logger.warning(f"[GeoIP] 线路核对前区域落定失败，跳过错配检查: {_geo_err}")
+                    current_route = None
+                    try:
+                        _route_config = get_config_manager().get_model_api_config("conversation")
+                        current_route = (
+                            str(_route_config.get("base_url") or ""),
+                            str(_route_config.get("model") or ""),
+                        )
+                    except Exception:
+                        current_route = None
+                    if (
+                        current_route is not None
+                        and tuple(stored_route) != current_route
+                    ):
+                        discarded = await self.plugin.session_runtime_service.discard_session(
+                            session_key, reason="登录身份/角色/线路变化",
+                        )
+                        if discarded is False:
+                            # 结算失败被有意保留：打粘性标记让回复路径的
+                            # 复用判据接手重试，本轮沿用旧会话（销毁唯一
+                            # 缓冲副本比线路滞后一轮更糟）。
+                            existing["pending_identity_discard"] = True
+                        else:
+                            existing = None
+                if existing is not None:
+                    existing["login_status"] = current_login_status
+                    existing["login_self_id"] = current_login_self_id
+                    existing["login_nickname"] = current_login_nickname
+                    return existing
 
         try:
             config_manager = get_config_manager()
@@ -212,6 +296,9 @@ class QQSessionBootstrapService:
                 api_key=api_key,
                 model=model,
                 on_text_delta=on_text_delta,
+                # 与 ensure_generation_session 对偶：主动会话与回复会话共用
+                # _user_sessions 缓存，回复轮可能复用这里建的 client。
+                max_tool_iterations=1,
             )
 
             login_status, login_self_id, login_nickname = self.plugin._normalize_login_identity(
@@ -250,6 +337,9 @@ class QQSessionBootstrapService:
                 "session": user_session,
                 "reply_chunks": reply_chunks,
                 "her_name": her_name,
+                # 与 ensure_generation_session 对偶：回复路径会复用这里建的
+                # 条目，缺指纹就等于对这批会话永久关闭线路错配重建。
+                "conversation_route": (str(base_url or ""), str(model or "")),
                 "character_fields": character_card_fields,
                 "last_synced_index": 0,
                 "last_activity_at": time.time(),

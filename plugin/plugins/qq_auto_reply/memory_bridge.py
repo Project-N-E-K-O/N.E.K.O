@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -11,6 +12,10 @@ class QQMemoryQueryResult:
     hit_count: int = 0
     elapsed_ms: float = 0.0
     raw_results: list[dict[str, Any]] = field(default_factory=list)
+    # text 里实际渲染出的条目数（预算截断后）：hit_count 是检索命中数，
+    # 两者在预算丢弃尾部条目时会不同。消费方给模型报条数必须用它——
+    # 记忆原文可含 "N. " 开头的行，从 text 反解会数错。
+    rendered_count: int = 0
 
 
 class QQMemoryBridge:
@@ -108,9 +113,14 @@ class QQMemoryBridge:
         timeout: float = 5.0,
         limit: int = 5,
         subjects: list[dict[str, str]] | None = None,
+        time_spec: str = "",
     ) -> QQMemoryQueryResult:
+        # ``time_spec`` mirrors the endpoint's optional ``time`` field: alone
+        # it recalls by event-time proximity; combined with a query it runs
+        # the joint semantic + time search. Empty keeps the legacy shape.
         normalized_query = str(query or "").strip()
-        if not normalized_query:
+        normalized_time = str(time_spec or "").strip()
+        if not normalized_query and not normalized_time:
             return QQMemoryQueryResult()
         # ``None`` means the legacy private caller omitted an authorization
         # boundary. An explicit empty list means the caller has no authorized
@@ -118,6 +128,8 @@ class QQMemoryBridge:
         if subjects == []:
             return QQMemoryQueryResult()
         request_payload: dict[str, Any] = {"query": normalized_query}
+        if normalized_time:
+            request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
         client = self._client()
@@ -130,7 +142,17 @@ class QQMemoryBridge:
         response_payload = response.json()
         results = response_payload.get("results") if isinstance(response_payload, dict) else None
         memory_items = [item for item in results if isinstance(item, dict)] if isinstance(results, list) else []
-        rendered = self.render_relevant_memory(memory_items[:limit])
+        # 整段渲染扔进 worker 线程：render_relevant_memory 里的
+        # truncate_to_tokens 编码的是**截断前**的原文，而这条链路存在的
+        # 理由正是"上游可能返回一条超长的合并 reflection"。tiktoken 对
+        # 切不开的超长 chunk 是二次退化，同步跑在事件循环上会连带卡住这
+        # 个进程里其它群的回复。渲染函数本身保持同步（本体侧同构、测试
+        # 直调），offload 放在唯一的 async 调用点。
+        kept_count_out: list[int] = []
+        rendered = await asyncio.to_thread(
+            self.render_relevant_memory, memory_items[:limit],
+            kept_count_out=kept_count_out,
+        )
         elapsed_ms = response_payload.get("elapsed_ms", 0.0) if isinstance(response_payload, dict) else 0.0
         try:
             normalized_elapsed = float(elapsed_ms or 0.0)
@@ -141,14 +163,31 @@ class QQMemoryBridge:
             hit_count=len(memory_items),
             elapsed_ms=normalized_elapsed,
             raw_results=memory_items,
+            rendered_count=kept_count_out[0] if kept_count_out else 0,
         )
 
-    def render_relevant_memory(self, results: list[dict[str, Any]]) -> str:
+    def render_relevant_memory(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        kept_count_out: list[int] | None = None,
+    ) -> str:
         # tier / entity 是内部枚举（scoped 条目的 entity 恒等于 subject.kind），
         # 裸拼会让 `[fact/group_chat]` 出现在中文 prompt 里。与本体侧
         # main_logic/core/tool_calling.py 的召回渲染同一张标签表。
+        #
+        # 预算：这段此前只有"取前 5 条"，单条零上限——一条被合并出来的超长
+        # reflection 就能把召回段撑到几千 token。单条按 token 截断（不丢弃：
+        # 召回按相关度排，命中的那条留半段也比整条消失有用），整段按
+        # take_lines_within_token_budget 收口，与本体侧同一个 helper。
+        from config import (
+            RECALL_RENDER_ENTRY_MAX_TOKENS,
+            RECALL_RENDER_LINE_OVERHEAD_TOKENS,
+            RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
         from config.prompts.prompts_memory import render_recall_entry_tag
         from utils.language_utils import get_global_language
+        from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
 
         lang = get_global_language()
         lines: list[str] = []
@@ -156,6 +195,7 @@ class QQMemoryBridge:
             text = str(item.get("text") or "").strip()
             if not text:
                 continue
+            text = truncate_to_tokens(text, RECALL_RENDER_ENTRY_MAX_TOKENS)
             tag = render_recall_entry_tag(
                 item.get("tier"), item.get("entity"), lang,
             )
@@ -166,8 +206,32 @@ class QQMemoryBridge:
                 or ""
             ).strip()
             suffix = f" ({anchor[:10]})" if anchor else ""
-            lines.append(f"{index}. {tag} {text}{suffix}")
-        return "\n".join(lines)
+            # 整行再兜一次底。截断只管 text，而 tag 里的 tier / entity 是
+            # 未知枚举原样透出的（见 render_recall_entry_tag），手改过的
+            # facts.json 能塞进任意长的 entity——而整段预算的"至少留一条"
+            # 规则会无条件留下第一行。行上限用「单条 + 行装饰」的口径，
+            # 正常条目够不着，只有畸形数据会被它切。
+            lines.append(truncate_to_tokens(
+                f"{index}. {tag} {text}{suffix}",
+                RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS,
+            ))
+        kept, dropped = take_lines_within_token_budget(
+            lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
+        if kept_count_out is not None:
+            # out-param 而非改返回签名（与 reply_context_node 的
+            # used_member_subject_out 同模式）：既有直调方不受影响。
+            kept_count_out.append(len(kept))
+        logger = getattr(self.plugin, "logger", None)
+        if dropped and logger is not None:
+            # 诊断行不该成为渲染的硬依赖：这个函数此前对 plugin 对象零依赖，
+            # 抛 AttributeError 会被上游 _build_recalled_memory_text 的
+            # except 吞掉，整段召回为了一条日志凭空消失。
+            logger.info(
+                f"QQ 长期记忆召回段超出 {RECALL_RENDER_TOTAL_MAX_TOKENS} tok 预算，"
+                f"丢弃末尾 {dropped} 条"
+            )
+        return "\n".join(kept)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
         client = self._client()

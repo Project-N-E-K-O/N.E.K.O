@@ -97,10 +97,12 @@ export function validateConfig(input) {
     seen.add(key)
 
     const intent = source.intent == null ? null : String(source.intent).trim() || null
+    const cta = source.cta == null ? null : String(source.cta).trim() || null
     return {
       keyword,
       landingPage: normalizeLandingPage(source.landingPage),
       intent,
+      cta,
     }
   })
 
@@ -153,7 +155,12 @@ function normalizeRetryOptions(options = {}) {
   return { maxAttempts, baseDelayMs, sleep, onRetry, onFatal }
 }
 
-export function buildPlan(config, { mode = 'all', includeAiOverview = false, depth } = {}) {
+export function buildPlan(config, {
+  mode = 'all',
+  includeAiOverview = false,
+  includeKeywordDifficulty = true,
+  depth,
+} = {}) {
   const normalizedMode = normalizeMode(mode)
   const serpDepth = normalizeDepth(
     depth ?? config.serpDepth,
@@ -162,17 +169,19 @@ export function buildPlan(config, { mode = 'all', includeAiOverview = false, dep
   const includesKeywords = normalizedMode === 'all' || normalizedMode === 'keywords'
   const includesSerp = normalizedMode === 'all' || normalizedMode === 'serp'
   const serpRequests = includesSerp ? config.keywords.length : 0
+  const keywordDifficultyRequests = includesKeywords && includeKeywordDifficulty ? 1 : 0
 
   return {
     mode: normalizedMode,
     keywordCount: config.keywords.length,
     serpDepth,
     includeAiOverview: Boolean(includeAiOverview && includesSerp),
+    includeKeywordDifficulty: Boolean(includeKeywordDifficulty && includesKeywords),
     requests: {
       searchVolume: includesKeywords ? 1 : 0,
-      keywordDifficulty: includesKeywords ? 1 : 0,
+      keywordDifficulty: keywordDifficultyRequests,
       organicSerp: serpRequests,
-      total: (includesKeywords ? 2 : 0) + serpRequests,
+      total: (includesKeywords ? 1 : 0) + keywordDifficultyRequests + serpRequests,
     },
     maximumSerpPages: serpRequests * Math.ceil(serpDepth / 10),
     asynchronousAiOverviewRequests: includeAiOverview && includesSerp ? serpRequests : 0,
@@ -298,7 +307,7 @@ export function summarizeSerpResult(configEntry, targetDomain, result) {
   }
 }
 
-async function collectKeywordMetrics(client, config) {
+async function collectKeywordMetrics(client, config, { includeKeywordDifficulty = true } = {}) {
   const common = {
     location_code: config.locationCode,
     language_code: config.languageCode,
@@ -308,7 +317,9 @@ async function collectKeywordMetrics(client, config) {
     ...common,
     search_partners: false,
   }])
-  const difficultyPayload = await client.post(DATAFORSEO_ENDPOINTS.keywordDifficulty, [common])
+  const difficultyPayload = includeKeywordDifficulty
+    ? await client.post(DATAFORSEO_ENDPOINTS.keywordDifficulty, [common])
+    : { tasks: [], cost: 0 }
 
   return {
     items: mergeKeywordMetrics(config, searchVolumePayload, difficultyPayload),
@@ -431,12 +442,18 @@ export async function createDataForSeoReport({
   config,
   mode = 'all',
   includeAiOverview = false,
+  includeKeywordDifficulty = true,
   depth,
   dryRun = false,
   generatedAt = new Date().toISOString(),
   retryOptions,
 }) {
-  const plan = buildPlan(config, { mode, includeAiOverview, depth })
+  const plan = buildPlan(config, {
+    mode,
+    includeAiOverview,
+    includeKeywordDifficulty,
+    depth,
+  })
   const report = {
     schemaVersion: 1,
     generatedAt,
@@ -466,7 +483,9 @@ export async function createDataForSeoReport({
   }
 
   if (plan.mode === 'all' || plan.mode === 'keywords') {
-    const keywordMetrics = await collectKeywordMetrics(client, config)
+    const keywordMetrics = await collectKeywordMetrics(client, config, {
+      includeKeywordDifficulty: plan.requests.keywordDifficulty > 0,
+    })
     report.keywordMetrics = keywordMetrics.items
     Object.assign(costs, keywordMetrics.costs)
   }

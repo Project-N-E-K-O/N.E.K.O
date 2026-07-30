@@ -72,6 +72,11 @@
         pendingAudioChunkMetaQueue: [],
         incomingAudioEpoch: 0,
         isProcessingIncomingAudioBlob: false,
+        // 正在解码中的那个 blob 属于哪一轮。processIncomingAudioBlobQueue 是
+        // 先 shift 出队再 await 解码，这段窗口里该 chunk 不在任何一个队列里，
+        // 只有这个字段能证明"这一轮还有音频在路上"。缺了它，解码期间进来的
+        // turn-end / source.onended 会把本轮判成已放完 → 提前收尾。
+        processingAudioBlobTurnId: null,
         decoderResetPromise: null,
 
         // --- Audio (录音/麦克风) ---
@@ -167,6 +172,17 @@
         assistantSpeechPlaybackTurnId: null,
         assistantSpeechPlaybackStartAudioTime: 0,
         assistantSpeechPlaybackEndAudioTime: 0,
+        // 后端声明"这一 speech 的音频流已关闭"之后记下的轮 id + 当时的 epoch。
+        // 音频队列瞬时为空只能证明"此刻手里没有音频"，证明不了"后面不会再有"：
+        // TTS 一阵一阵地到，阵间空档和真正的流结束在前端长得一模一样。所以收尾
+        // 要等这个权威标记，或等 give-up 计时器到点。epoch 用来作废打断之后才
+        // 迟到的信号（否则会去收尾一个已经被取消的轮）。
+        assistantAudioStreamClosedTurnId: null,
+        assistantAudioStreamClosedEpoch: -1,
+        // speech_id → turnId。音频头只带 speech_id（后端 send_speech 不发 turn_id），
+        // audio_done 也只能按 speech_id 对账，这里存下音频头到达时解析出的映射。
+        // 随 close 标记一起清，所以条目数被限制在单轮之内。
+        assistantAudioTurnBySpeechId: {},
         // 最近一次本地麦克风 RMS 超过语音阈值的时间戳（ms epoch）。
         // 由 app-audio-capture.js 里的 monitorInputVolume 持续写入；
         // app-proactive.js 在 voice 模式 tick 时用它判断"用户最近是否在发声"，

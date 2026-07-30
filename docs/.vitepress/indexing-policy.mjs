@@ -1,4 +1,4 @@
-export const NOINDEX_ROUTE_PREFIXES = ['/design/']
+export const NOINDEX_ROUTE_PREFIXES = ['/design/', '/seo/reports/']
 export const NOINDEX_ROUTES = new Set([
   '/live2d_motion_plan',
   '/pngtuber-remix-physics-plan',

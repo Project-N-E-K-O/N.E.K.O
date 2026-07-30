@@ -124,14 +124,18 @@ function interactionTurnMeta(interactionId) {
   };
 }
 
-test('assistant lifecycle forwards the backend response meta unchanged', () => {
+test('assistant lifecycle forwards legacy and mirror response metadata', () => {
   const websocketSource = fs.readFileSync(
     path.join(__dirname, 'app/app-websocket.js'),
     'utf8',
   );
   assert.match(
     websocketSource,
-    /ensureAssistantTurnStarted\(\s*'gemini_response_first_chunk',\s*response\.turn_id,\s*response\.meta\s*\)/,
+    /var assistantResponseMeta = response\.meta !== undefined\s*\? response\.meta\s*:\s*response\.metadata;/,
+  );
+  assert.match(
+    websocketSource,
+    /ensureAssistantTurnStarted\(\s*'gemini_response_first_chunk',\s*response\.turn_id,\s*assistantResponseMeta\s*,/,
   );
   assert.match(
     websocketSource,

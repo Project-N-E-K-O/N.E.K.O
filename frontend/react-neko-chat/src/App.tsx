@@ -1012,6 +1012,8 @@ function CompactChatApp({
   const compactSpeechPreviewIdRef = useRef('');
   const compactSpeechPreviewTextRef = useRef('');
   const compactSpeechPreviewTurnIdRef = useRef('');
+  const activeCompactGameSessionIdRef = useRef('');
+  const compactAssistantTurnGameSessionIdRef = useRef('');
   // Identity of the turn the speech reveal is currently walking through (the
   // preview's turnStartId). Updated when the preview re-keys (messageId change),
   // so it holds the *previous* turn's anchor at the moment a new bubble arrives
@@ -1035,6 +1037,10 @@ function CompactChatApp({
   const [compactAssistantStreamingGap, setCompactAssistantStreamingGap] = useState<{
     turnId: string;
     acceptStreaming: boolean;
+    // `turn-ending` only seals the current sentence; `turn-end` closes the
+    // whole turn. Keep those phases separate so a terminal, text-less mirror
+    // turn can release the empty-state copy without exposing stale streams.
+    turnEnded: boolean;
   } | null>(null);
   const [compactChoiceLayerPlacement, setCompactChoiceLayerPlacement] = useState<'above' | 'below'>('above');
   const [compactInputToolFanOpen, setCompactInputToolFanOpen] = useState(false);
@@ -1833,6 +1839,8 @@ function CompactChatApp({
   const compactSuppressAssistantFallback = !!compactAssistantStreamingGap
     && !compactPreviewMatchesStreamingGap
     && !compactPreservedSpeechMatchesEndingGap;
+  const compactRestoreEmptyStateAfterTurnEnd = compactSuppressAssistantFallback
+    && compactAssistantStreamingGap.turnEnded;
   const compactPreservedSpeechActive = !compactMessagePreview
     && !compactSuppressAssistantFallback
     && !!compactSpeechPreviewIdRef.current
@@ -1855,7 +1863,9 @@ function CompactChatApp({
       ? i18n('chat.companionEmptyState', getChatCompanionEmptyStateFallback())
       : i18n('chat.emptyState', getChatEmptyStateFallback());
   const compactPreviewText = compactSuppressAssistantFallback
-    ? ''
+    ? compactRestoreEmptyStateAfterTurnEnd
+      ? compactEmptyStateText
+      : ''
     : compactSpeechModeActive
       ? (
         compactMessagePreview?.isStreaming
@@ -1944,17 +1954,33 @@ function CompactChatApp({
     const handleAssistantTurnStart = (event: Event) => {
       const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
       const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-${Date.now()}`;
+      const meta = detail?.meta && typeof detail.meta === 'object'
+        ? detail.meta as Record<string, unknown>
+        : undefined;
+      const mirror = meta?.mirror && typeof meta.mirror === 'object'
+        ? meta.mirror as Record<string, unknown>
+        : undefined;
+      const metaSource = meta?.source ? String(meta.source).trim() : '';
+      const isGameMirror = metaSource === 'game_route'
+        || metaSource === 'game_llm'
+        || metaSource === 'game-llm-result';
+      const mirroredGameSessionId = isGameMirror && mirror?.session_id
+        ? String(mirror.session_id).trim()
+        : '';
+      // Only explicit mirror metadata owns a game turn. The active-window ref
+      // can be stale until reconnect reconciliation completes, so inheriting it
+      // would let an ordinary assistant response be cleared as game dialogue.
+      compactAssistantTurnGameSessionIdRef.current = mirroredGameSessionId;
       setCompactCaptionState(current => (
         current?.turnId === turnId ? current : null
       ));
       setCompactAssistantStreamingGap({
         turnId,
         acceptStreaming: true,
+        turnEnded: false,
       });
     };
-    const handleAssistantTurnBoundary = (event: Event) => {
-      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
-      const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-ended-${Date.now()}`;
+    const settleCompactCaption = (turnId: string) => {
       setCompactCaptionState(current => (
         current?.turnId === turnId
           ? {
@@ -1963,9 +1989,69 @@ function CompactChatApp({
           }
           : current
       ));
+    };
+    const handleAssistantTurnEnding = (event: Event) => {
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-ended-${Date.now()}`;
+      settleCompactCaption(turnId);
       setCompactAssistantStreamingGap({
         turnId,
         acceptStreaming: false,
+        turnEnded: false,
+      });
+    };
+    const handleAssistantTurnEnd = (event: Event) => {
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const turnId = detail?.turnId ? String(detail.turnId) : `assistant-gap-ended-${Date.now()}`;
+      settleCompactCaption(turnId);
+      setCompactAssistantStreamingGap({
+        turnId,
+        acceptStreaming: false,
+        turnEnded: true,
+      });
+    };
+    const handleGameWindowStateChange = (event: Event) => {
+      const detail = (event as CustomEvent).detail as Record<string, unknown> | undefined;
+      const sessionId = detail?.sessionId ? String(detail.sessionId).trim() : '';
+      const gameType = detail?.gameType ? String(detail.gameType).trim() : '';
+      if (detail?.action === 'opened') {
+        if (sessionId && gameType) {
+          activeCompactGameSessionIdRef.current = sessionId;
+        }
+        return;
+      }
+      if (detail?.action !== 'closed') {
+        return;
+      }
+      // A reconnect reconciliation reports an inactive route without identity.
+      // Consume that snapshot only when this component already tracks a game;
+      // the same identity-less snapshot during ordinary chat remains a no-op.
+      const trackedGameSessionId = compactAssistantTurnGameSessionIdRef.current
+        || activeCompactGameSessionIdRef.current;
+      const resolvedSessionId = sessionId && gameType
+        ? sessionId
+        : (!sessionId && !gameType ? trackedGameSessionId : '');
+      if (!resolvedSessionId) {
+        return;
+      }
+      if (activeCompactGameSessionIdRef.current === resolvedSessionId) {
+        activeCompactGameSessionIdRef.current = '';
+      }
+      if (compactAssistantTurnGameSessionIdRef.current !== resolvedSessionId) {
+        return;
+      }
+      compactAssistantTurnGameSessionIdRef.current = '';
+      setCompactCaptionState(null);
+      compactSpeechPreviewIdRef.current = '';
+      compactSpeechPreviewTextRef.current = '';
+      compactSpeechPreviewTurnIdRef.current = '';
+      // Game mirrors may intentionally omit turn-end. Install a terminal gap
+      // with a distinct id so stale game streams stay hidden while the normal
+      // empty-state copy becomes visible immediately after the window closes.
+      setCompactAssistantStreamingGap({
+        turnId: `game-closed:${resolvedSessionId}`,
+        acceptStreaming: false,
+        turnEnded: true,
       });
     };
     const handleCompactCaptionUpdate = (event: Event) => {
@@ -2036,14 +2122,16 @@ function CompactChatApp({
     };
 
     window.addEventListener('neko-assistant-turn-start', handleAssistantTurnStart);
-    window.addEventListener('neko-assistant-turn-ending', handleAssistantTurnBoundary);
-    window.addEventListener('neko-assistant-turn-end', handleAssistantTurnBoundary);
+    window.addEventListener('neko-assistant-turn-ending', handleAssistantTurnEnding);
+    window.addEventListener('neko-assistant-turn-end', handleAssistantTurnEnd);
     window.addEventListener('neko-compact-caption-update', handleCompactCaptionUpdate);
+    window.addEventListener('neko-game-window-state-change', handleGameWindowStateChange);
     return () => {
       window.removeEventListener('neko-assistant-turn-start', handleAssistantTurnStart);
-      window.removeEventListener('neko-assistant-turn-ending', handleAssistantTurnBoundary);
-      window.removeEventListener('neko-assistant-turn-end', handleAssistantTurnBoundary);
+      window.removeEventListener('neko-assistant-turn-ending', handleAssistantTurnEnding);
+      window.removeEventListener('neko-assistant-turn-end', handleAssistantTurnEnd);
       window.removeEventListener('neko-compact-caption-update', handleCompactCaptionUpdate);
+      window.removeEventListener('neko-game-window-state-change', handleGameWindowStateChange);
     };
   }, []);
 

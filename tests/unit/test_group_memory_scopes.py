@@ -541,6 +541,11 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
 
 @pytest.mark.asyncio
 async def test_qq_group_recall_passes_group_and_member_subjects():
+    """Fallback recall channel (routes that silently drop ``tools``, i.e.
+    the free proxy): the pre-generation synchronous recall must authorize
+    exactly the group (+ participant) scopes. Tool-capable routes recall
+    via the recall_memory tool instead — the two channels share the
+    subject resolver, covered in test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.memory_bridge import (
         QQMemoryBridge,
         QQMemoryQueryResult,
@@ -643,6 +648,8 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
 
 @pytest.mark.asyncio
 async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
+    """Fallback recall channel: an empty sender must not fabricate a
+    phantom participant subject (the tool channel shares the resolver)."""
     from plugin.plugins.qq_auto_reply.memory_bridge import (
         QQMemoryBridge,
         QQMemoryQueryResult,
@@ -4214,10 +4221,12 @@ def test_generation_strips_scoped_sections_when_group_revoked():
 
 @pytest.mark.asyncio
 async def test_recall_reports_participant_usage_to_caller():
-    """The recall reports whether it actually queried the participant
-    subject, and build() ORs that into the context flag — binding the flag
-    to a nonempty bootstrap section would miss the empty-bootstrap +
-    participant-hit combination."""
+    """Fallback recall channel: the recall reports whether it actually
+    queried the participant subject, and build() ORs that into the
+    context flag — binding the flag to a nonempty bootstrap section would
+    miss the empty-bootstrap + participant-hit combination. (On the tool
+    channel the equivalent record is the handler's runtime consent
+    entry, covered in test_group_memory_recall_tool.py.)"""
     import inspect
 
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryQueryResult
@@ -4284,10 +4293,12 @@ async def test_recall_reports_participant_usage_to_caller():
 
 
 def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
-    """Participant authorization must be tracked from the recall itself:
-    an empty scoped bootstrap (no core-memory section) with a participant
-    recall hit still has to lose that recall when member memory is
-    revoked before generation."""
+    """Fallback recall channel: participant authorization must be tracked
+    from the recall itself — an empty scoped bootstrap (no core-memory
+    section) with a participant recall hit still has to lose that recall
+    when member memory is revoked before generation. (The tool channel
+    has no pre-composed recall section; its dual is the in-handler
+    entry/post-fetch gate pair.)"""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -4322,7 +4333,10 @@ def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
 async def test_generation_recheck_wiring_drops_scoped_prompt():
     """Wiring guard for the generation-time recheck: the stripped prompt
     and the emptied recall must actually reach _apply_turn_memory_context
-    (a correct helper nobody calls is dead code)."""
+    (a correct helper nobody calls is dead code). The recalled-text leg
+    only exists on the fallback recall channel — tool-channel turns carry
+    an empty recalled_memory_text and rely on the runtime consent record
+    instead."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -4475,7 +4489,10 @@ async def test_delivered_fallback_reply_enters_shared_history():
 async def test_generation_discards_reply_when_consent_revoked_mid_stream():
     """The model already saw the scoped prompt; if the switch goes off
     while streaming, the reply still carries that content — it must be
-    discarded rather than delivered."""
+    discarded rather than delivered. This drives the prompt-section
+    (fallback-channel) dependency shape; the tool channel's runtime-record
+    twin — including rolling back THROUGH tool-round dict rows — lives in
+    test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -5395,7 +5412,10 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
     (login fetch, first memory call) while the admin opts the group out:
     both scoped read points must recheck the live setting immediately
     before fetching — persistence is already re-gated at prime time, reads
-    must not inject scoped context into a reply after opt-out."""
+    must not inject scoped context into a reply after opt-out. The recall
+    leg here is the fallback channel; the tool channel's read-point
+    rechecks live inside the handler (entry + post-fetch), covered in
+    test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.reply_context_node import (
         QQReplyContextNode,
     )
@@ -6976,7 +6996,9 @@ def test_persona_view_authorizes_scoped_entries_per_entry():
 async def test_fallback_reply_dropped_when_consent_revoked_during_call(monkeypatch):
     """The direct fallback sanitizes once, then awaits an LLM for up to a
     minute: a switch turned off during that call leaves the returned text
-    carrying memory the user just revoked."""
+    carrying memory the user just revoked. (Tool-channel turns reach this
+    path with an empty recalled_memory_text — their dependency, if any,
+    was already unioned into context.consent_snapshot by the handler.)"""
     import plugin.plugins.qq_auto_reply.reply_generation_service as rgs
 
     plugin = SimpleNamespace(

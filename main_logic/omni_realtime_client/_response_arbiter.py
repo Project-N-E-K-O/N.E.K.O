@@ -838,6 +838,24 @@ class RealtimeResponseArbiter:
             self._queue.task_done()
 
     async def _fail_closed(self, reason: str) -> None:
+        # This is the only chokepoint through which the arbiter tears down the
+        # transport, and to the rest of the system the result is
+        # indistinguishable from a provider-side disconnect (the receive loop
+        # errors first, then host cleanup runs). Log the initiator, the reason
+        # and the lane state here so a field disconnect can be attributed —
+        # see issue #2561, where the absence of exactly this line forced a
+        # build-provenance investigation to rule the arbiter out.
+        current = self._current
+        owner = self._response_owner
+        logger.warning(
+            "response arbiter failing closed: %s "
+            "(current=%s owner=%s queue_depth=%d server_vad_pending=%s)",
+            reason,
+            current.source if current is not None else None,
+            owner.source if owner is not None else None,
+            self._queue.qsize(),
+            self._server_vad_response_pending,
+        )
         self._mark_connection_lost(reason, fail_current_tickets=False)
         if self._abort_transport is None:
             return

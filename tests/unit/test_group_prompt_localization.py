@@ -552,41 +552,96 @@ def test_english_user_actually_gets_the_english_group_reply_guidelines():
     ]
 
 
-def test_declared_required_placeholders_exist_in_their_own_templates():
-    """Discovered: every declared placeholder must exist in its own
-    default template.
+def _discovered_layer_templates() -> dict[str, str]:
+    """Pair every ``i18n_key`` with the default template its call site
+    actually hands to ``_resolve_static_layer``.
 
-    A hand-kept list would miss entries; this pairs _PROMPT_LAYERS with
-    the templates themselves.
+    Read off the AST instead of copied into a table here. The previous
+    hand-kept dict silently skipped any key it did not list, and it was
+    already two keys short of ``_PROMPT_LAYERS`` — so the guard was
+    passing on layers it had never looked at. Defaults arrive both as
+    module constants (``SCENE_DIRECTED_GROUP``) and as inline literals
+    (the two naming layers), so both forms are resolved.
     """
-    from plugin.plugins.qq_auto_reply import prompt_fragment_templates as frag
-    from plugin.plugins.qq_auto_reply import scene_prompt_templates as scenes
+    import importlib
+
+    module = importlib.import_module(
+        "plugin.plugins.qq_auto_reply.session_instruction_service"
+    )
+    source = Path(module.__file__).read_text(encoding="utf-8")
+    found: dict[str, str] = {}
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if not (isinstance(func, ast.Attribute)
+                and func.attr == "_resolve_static_layer"):
+            continue
+        if len(node.args) < 2:
+            continue
+        key_node, default_node = node.args[0], node.args[1]
+        if not (isinstance(key_node, ast.Constant)
+                and isinstance(key_node.value, str)):
+            continue
+        if isinstance(default_node, ast.Constant) and isinstance(
+            default_node.value, str
+        ):
+            found[key_node.value] = default_node.value
+        elif isinstance(default_node, ast.Name):
+            resolved = getattr(module, default_node.id, None)
+            if isinstance(resolved, str):
+                found[key_node.value] = resolved
+    return found
+
+
+def test_every_guarded_layer_has_a_discoverable_default_template():
+    """Every keyed layer must be reachable by the discovery above.
+
+    This is what the old hand-kept table got wrong: an unlisted key fell
+    through a bare ``continue``, so its declared placeholders were never
+    compared with anything. Failing here — instead of skipping — is what
+    makes the next test's coverage real.
+    """
     from plugin.plugins.qq_auto_reply.session_instruction_service import (
         QQSessionInstructionService,
     )
 
-    defaults = {
-        "prompts.group.kira_unified": scenes.SCENE_KIRA_UNIFIED_GROUP,
-        "prompts.group.collective": scenes.SCENE_COLLECTIVE_GROUP,
-        "prompts.group.shared_session": scenes.SCENE_SHARED_GROUP,
-        "prompts.group.directed": scenes.SCENE_DIRECTED_GROUP,
-        "prompts.private.body": scenes.SCENE_PRIVATE_CHAT,
-        "role_prompt_section": frag.ROLE_PROMPT_SECTION,
-        "attention_prompt_section": frag.ATTENTION_PROMPT_SECTION,
-        "format_prompt_section": frag.FORMAT_PROMPT_SECTION,
-        "format_prompt_section_neko_dynamic": frag.FORMAT_PROMPT_SECTION_NEKO_DYNAMIC,
-        "format_prompt_section_open_platform": frag.FORMAT_PROMPT_SECTION_OPEN_PLATFORM,
-        "character_prompt_section": frag.CHARACTER_PROMPT_SECTION,
-        "time_prompt_section": frag.TIME_PROMPT_SECTION,
-        "detail_constraints_section": frag.DETAIL_CONSTRAINTS_SECTION,
-        "output_prompt_section": frag.OUTPUT_PROMPT_SECTION,
-        "core_memory_section": frag.CORE_MEMORY_SECTION,
-    }
+    discovered = _discovered_layer_templates()
+    guarded = [
+        layer["i18n_key"]
+        for layer in QQSessionInstructionService._PROMPT_LAYERS
+        if layer.get("i18n_key") and layer["i18n_key"] != "__runtime__"
+    ]
+    assert guarded, "夹具失效：一个受护栏管辖的层都没找到"
+    missing = [key for key in guarded if key not in discovered]
+    assert missing == [], (
+        f"这些层受必需占位符护栏管辖，却找不到对应的默认模板，"
+        f"它们声明的占位符等于没人校验：{missing}"
+    )
+
+
+def test_declared_required_placeholders_exist_in_their_own_templates():
+    """Every declared placeholder must exist in its own default template.
+
+    A declaration the template cannot satisfy is an always-failing
+    condition: the guard judges every i18n bundle "missing placeholders"
+    and swaps the whole layer back to the Chinese constant for every
+    non-Chinese user, once per turn, with a warning each time.
+    """
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    discovered = _discovered_layer_templates()
     mismatched = []
     for layer in QQSessionInstructionService._PROMPT_LAYERS:
         key = layer.get("i18n_key")
-        template = defaults.get(key)
+        if not key or key == "__runtime__":
+            continue
+        template = discovered.get(key)
         if template is None:
+            # Reported by the test above; skipping here keeps one failure
+            # per defect instead of two.
             continue
         for placeholder in layer.get("required_placeholders") or ():
             if placeholder not in template:
@@ -640,8 +695,23 @@ def test_pipeline_still_forces_group_facing_for_collective_scene():
         "prompting._build_group_turn_message 的 collective 分支被删掉了，"
         "这条推导是它可以被删的唯一理由"
     )
-    assert re.search(
-        r"_build_prompt_message\(\s*\n\s*is_group=is_group,"
-        r"\s*\n\s*group_facing=effective_group_facing,",
-        source,
+    # 这一条走 AST 而不是正则：上一版把参数顺序和"每个参数各占一行"一起
+    # 钉死了，压成一行、换顺序、中间插一个参数都会误红，而行为零变化。
+    calls = [
+        node for node in ast.walk(ast.parse(source))
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_build_prompt_message"
+    ]
+    assert len(calls) == 1, (
+        f"reply_context_node 里 _build_prompt_message 的调用点数量变了"
+        f"（{len(calls)} 处），这条护栏只覆盖单一调用点"
+    )
+    passed = {
+        kw.arg: kw.value for kw in calls[0].keywords if kw.arg is not None
+    }
+    group_facing_arg = passed.get("group_facing")
+    assert (
+        isinstance(group_facing_arg, ast.Name)
+        and group_facing_arg.id == "effective_group_facing"
     ), "prompt_message 不再用 effective_group_facing 构建"
