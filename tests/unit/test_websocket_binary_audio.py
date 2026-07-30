@@ -130,6 +130,35 @@ class _EventWebSocket:
         self.closed = True
 
 
+class _DeferredHandshakeManager(_ProtocolManager):
+    """Model the real async start task reading manager fallback state late."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asr_override = None
+        self.optimization_override = None
+        self.started_overrides: list[tuple[object, object]] = []
+
+    def set_independent_asr_handshake(self, value) -> None:
+        super().set_independent_asr_handshake(value)
+        self.asr_override = value if isinstance(value, bool) else None
+
+    def set_voice_input_resource_optimization_handshake(self, value) -> None:
+        super().set_voice_input_resource_optimization_handshake(value)
+        self.optimization_override = value if isinstance(value, bool) else None
+
+    async def start_session(self, *_args, **kwargs) -> None:
+        self.started_overrides.append(
+            (
+                kwargs.get("handshake_override", self.asr_override),
+                kwargs.get(
+                    "resource_optimization_override",
+                    self.optimization_override,
+                ),
+            )
+        )
+
+
 def _install_protocol_endpoint(
     monkeypatch,
     *,
@@ -1470,3 +1499,41 @@ async def test_replaced_socket_cannot_authorize_or_start_audio(
     assert "authorize" not in [name for name, _payload in manager.calls]
     assert "start_session" not in [name for name, _payload in manager.calls]
     assert websocket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_each_start_task_keeps_its_own_voice_handshake_overrides(
+    monkeypatch,
+) -> None:
+    manager = _DeferredHandshakeManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_enabled": False,
+                "voice_input_resource_optimization_enabled": True,
+            },
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_enabled": True,
+                "voice_input_resource_optimization_enabled": False,
+            },
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    deferred: list[object] = []
+    monkeypatch.setattr(websocket_router, "_fire_task", deferred.append)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*deferred)
+
+    assert manager.started_overrides == [
+        (False, True),
+        (True, False),
+    ]

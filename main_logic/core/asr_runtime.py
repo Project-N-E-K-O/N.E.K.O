@@ -2352,9 +2352,13 @@ class AsrRuntimeMixin:
                     and self._ingress_token_matches(token)
                 )
 
-            operation_still_current = self.session is session_ref and route_still_core()
+            operation_still_current = route_still_core()
             if not accepted or not operation_still_current:
-                if not accepted and operation_still_current:
+                if (
+                    not accepted
+                    and operation_still_current
+                    and self.session is session_ref
+                ):
                     # Rejected text (echo suppression, takeover routing) also
                     # never produces a user_transcript; drop the preview so it
                     # cannot linger. Guarded on an unchanged runtime identity:

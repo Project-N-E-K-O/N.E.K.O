@@ -107,6 +107,10 @@
         return { writeId: writeId, writerId: writerId || '', value: value };
     }
     let _lastOptimizationDecision = null;
+    // Durable write-ahead bit for the optimization handshake. A localStorage
+    // decision can outlive the page that issued its POST; keep it authoritative
+    // across reloads until the exact decision is acknowledged by the server.
+    let _optimizationDecisionPendingSync = false;
     function _noteAsrDecision(
         writeId,
         writerId,
@@ -820,15 +824,19 @@
             );
         }
         if (ownMeta.changedKeys.indexOf('voiceInputResourceOptimizationEnabled') !== -1) {
+            const isFreshOptimizationChoice = _settingDivergedFromBaseline(
+                snapshot,
+                'voiceInputResourceOptimizationEnabled'
+            );
             _noteOptimizationDecision(
                 ownMeta.writeId,
                 ownMeta.writerId,
                 snapshot.voiceInputResourceOptimizationEnabled,
-                _settingDivergedFromBaseline(
-                    snapshot,
-                    'voiceInputResourceOptimizationEnabled'
-                )
+                isFreshOptimizationChoice
             );
+            if (isFreshOptimizationChoice) {
+                _optimizationDecisionPendingSync = true;
+            }
         }
         // Stamp the ASR key with the id of the decision that PRODUCED this
         // value. _noteAsrDecision already refuses to advance the LOCAL decision
@@ -853,6 +861,8 @@
                 writerId: _lastOptimizationDecision.writerId,
                 value: _lastOptimizationDecision.value
             };
+            ownMeta.optimizationDecisionPendingSync =
+                _optimizationDecisionPendingSync === true;
         }
         try {
             localStorage.setItem('project_neko_settings', JSON.stringify(payload));
@@ -985,7 +995,12 @@
                         : '',
                     value: meta.optimizationDecision.value
                 }
-                : null
+                : null,
+            // Snapshots from the previous PR head already carry the decision
+            // tuple but not this bit. Treat those as pending so an interrupted
+            // POST cannot be forgotten during rollout.
+            optimizationDecisionPendingSync: !!meta.optimizationDecision
+                && meta.optimizationDecisionPendingSync !== false
         };
     }
 
@@ -1338,6 +1353,17 @@
                     writerId: _lastAsrDecision.writerId,
                     value: _lastAsrDecision.value
                 } : null;
+                const optimizationDecisionAtSend = (
+                    Object.prototype.hasOwnProperty.call(
+                        payload,
+                        'voiceInputResourceOptimizationEnabled'
+                    )
+                    && _lastOptimizationDecision
+                    && _lastOptimizationDecision.value
+                        === payload.voiceInputResourceOptimizationEnabled
+                )
+                    ? Object.assign({}, _lastOptimizationDecision)
+                    : null;
                 const headers = { 'Content-Type': 'application/json' };
                 if (_conversationSettingsEtag) {
                     headers['If-Match'] = _conversationSettingsEtag;
@@ -1386,6 +1412,21 @@
                     if (!data.success) {
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
+                    }
+                    if (
+                        optimizationDecisionAtSend
+                        && _lastOptimizationDecision
+                        && optimizationDecisionAtSend.writeId
+                            === _lastOptimizationDecision.writeId
+                        && optimizationDecisionAtSend.writerId
+                            === _lastOptimizationDecision.writerId
+                        && optimizationDecisionAtSend.value
+                            === _lastOptimizationDecision.value
+                        && S.voiceInputResourceOptimizationEnabled
+                            === optimizationDecisionAtSend.value
+                    ) {
+                        _optimizationDecisionPendingSync = false;
+                        _writeSharedSettings(getConversationSettings(), []);
                     }
                     _confirmSharedKeyWrites(
                         payload,
@@ -1780,6 +1821,18 @@
                         optimizationDecision.writerId,
                         settings.voiceInputResourceOptimizationEnabled
                     );
+                    if (
+                        bootMeta.optimizationDecisionPendingSync
+                        && typeof settings.voiceInputResourceOptimizationEnabled
+                            === 'boolean'
+                    ) {
+                        _optimizationDecisionPendingSync = true;
+                        _dirtySettingsKeys.add(
+                            'voiceInputResourceOptimizationEnabled'
+                        );
+                        S.settingsHydrated = true;
+                        S.voiceInputResourceOptimizationAuthoritative = true;
+                    }
                 }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
@@ -2311,6 +2364,19 @@
                     && optimizationOutranksLocalChoice
                 )
                 : optimizationValueDiffers;
+            const optimizationSyncAcknowledgesLocalDecision = !!meta
+                && !!meta.optimizationDecision
+                && meta.optimizationDecisionPendingSync === false
+                && !!_lastOptimizationDecision
+                && meta.optimizationDecision.writeId
+                    === _lastOptimizationDecision.writeId
+                && meta.optimizationDecision.writerId
+                    === _lastOptimizationDecision.writerId
+                && meta.optimizationDecision.value
+                    === _lastOptimizationDecision.value;
+            if (optimizationSyncAcknowledgesLocalDecision) {
+                _optimizationDecisionPendingSync = false;
+            }
             const activeRouteBeforeSharedVoiceChange = S.voiceChatActive === true
                 ? (
                     S.independentAsrActive === true
@@ -2581,6 +2647,8 @@
                 S.settingsHydrated = true;
                 S.voiceInputResourceOptimizationAuthoritative = true;
                 _dirtySettingsKeys.add(optimizationKey);
+                _optimizationDecisionPendingSync = !meta
+                    || meta.optimizationDecisionPendingSync;
                 if (meta) {
                     const adopted = meta.optimizationDecision || meta;
                     _noteOptimizationDecision(

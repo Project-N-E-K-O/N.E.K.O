@@ -43,6 +43,7 @@ from ._shared import (
     IDLE_SESSION_RESET_THRESHOLD_SECONDS,
     IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
+    _HANDSHAKE_OVERRIDE_UNSET,
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
 )
@@ -57,7 +58,6 @@ from .callback_render import (
 # those names here: a from-import snapshots the value at import time and the
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
-
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -683,8 +683,17 @@ class LifecycleMixin:
         except Exception as e:
             logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
-    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio',
-                            *, user_initiated=False, _allow_cross_mode_restart=True):
+    async def start_session(
+        self,
+        websocket: WebSocket,
+        new=False,
+        input_mode='audio',
+        *,
+        user_initiated=False,
+        _allow_cross_mode_restart=True,
+        handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
+        resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
+    ):
         # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
         # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
         # 落定后改起目标模式；后台 proactive / greeting 的 auto-start 跨模式撞车
@@ -701,13 +710,19 @@ class LifecycleMixin:
         # frontend whose field is absent and therefore CLEARS the override --
         # replaced the first request's value, so that audio session selected the
         # persisted or opposite route. Read once here, then carry it down.
-        session_handshake_override = getattr(
-            self, "_independent_asr_handshake_override", None
+        session_handshake_override = (
+            getattr(self, "_independent_asr_handshake_override", None)
+            if handshake_override is _HANDSHAKE_OVERRIDE_UNSET
+            else handshake_override
         )
-        session_resource_optimization_handshake_override = getattr(
-            self,
-            "_voice_input_resource_optimization_handshake_override",
-            None,
+        session_resource_optimization_handshake_override = (
+            getattr(
+                self,
+                "_voice_input_resource_optimization_handshake_override",
+                None,
+            )
+            if resource_optimization_override is _HANDSHAKE_OVERRIDE_UNSET
+            else resource_optimization_override
         )
         self._start_session_seed_turn_language()
         # 重置防刷屏标志
@@ -725,6 +740,10 @@ class LifecycleMixin:
             websocket, new, input_mode,
             user_initiated=user_initiated,
             _allow_cross_mode_restart=_allow_cross_mode_restart,
+            handshake_override=session_handshake_override,
+            resource_optimization_override=(
+                session_resource_optimization_handshake_override
+            ),
         ):
             return
 
@@ -846,8 +865,17 @@ class LifecycleMixin:
                     # Cancellation echo or the prefetch's own error — moot once this start attempt ends.
                     pass
 
-    async def _start_session_handle_inflight(self, websocket, new, input_mode, *,
-                                             user_initiated, _allow_cross_mode_restart):
+    async def _start_session_handle_inflight(
+        self,
+        websocket,
+        new,
+        input_mode,
+        *,
+        user_initiated,
+        _allow_cross_mode_restart,
+        handshake_override,
+        resource_optimization_override,
+    ):
         """Handle a start request that collides with an in-flight start_session.
 
         Returns True when the collision was fully handled here (same-mode dedup
@@ -947,8 +975,15 @@ class LifecycleMixin:
                 # 二次并发撞车回落静默 return 而非无界递归（greptile P2）。guard 检查
                 # （_starting_session_count 判定）前无 await，count==0 的判定到重入是原子的。
                 self.reset_session_start_circuit()
-                await self.start_session(websocket, new, input_mode,
-                                         user_initiated=True, _allow_cross_mode_restart=False)
+                await self.start_session(
+                    websocket,
+                    new,
+                    input_mode,
+                    user_initiated=True,
+                    _allow_cross_mode_restart=False,
+                    handshake_override=handshake_override,
+                    resource_optimization_override=resource_optimization_override,
+                )
         else:
             logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
         return True

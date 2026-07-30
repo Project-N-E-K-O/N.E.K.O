@@ -644,7 +644,7 @@ def test_start_session_handshake_omitted_until_settings_hydrated():
 
 
 def test_settings_hydration_marked_on_server_merge_and_user_change():
-    # S.settingsHydrated must flip true on exactly the three authoritative
+    # S.settingsHydrated must flip true on authoritative settings evidence:
     # events, and never merely at boot:
     #   (1) the conversation-settings GET succeeded (server values merged);
     #   (2) the user explicitly changed a setting — the independent-ASR toggle
@@ -655,6 +655,8 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     #   (3) a cross-window independent-ASR flip arrived via the 'storage'
     #       listener — the originating window's user action, pinned by
     #       test_cross_window_asr_flip_marks_hydration_and_asr_dirty.
+    #   (4) a durable, explicit optimization decision survived a reload while
+    #       its server synchronization is still pending.
     settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
     capture_source = APP_AUDIO_CAPTURE_PATH.read_text(encoding="utf-8")
 
@@ -714,13 +716,18 @@ def test_settings_hydration_marked_on_server_merge_and_user_change():
     )[1].split("} catch (error) {", 1)[0]
     assert "saveSettings({ skipServerSync: true });" in first_launch_block
     assert "S.settingsHydrated" not in first_launch_block
-    # And nothing else in loadSettings' synchronous body marks hydration
-    # before the async GET callback runs.
+    # The only synchronous load-time hydration is guarded by a durable pending
+    # optimization decision; ordinary boot defaults still cannot gain authority.
     sync_load_body = settings_source.split("function loadSettings()", 1)[1].split(
         "loadSettingsFromServer().then(serverResult => {",
         1,
     )[0]
-    assert "S.settingsHydrated" not in sync_load_body
+    assert sync_load_body.count("S.settingsHydrated = true;") == 1
+    assert "bootMeta.optimizationDecisionPendingSync" in sync_load_body
+    assert (
+        sync_load_body.index("bootMeta.optimizationDecisionPendingSync")
+        < sync_load_body.index("S.settingsHydrated = true;")
+    )
 
 
 def test_periodic_sync_skips_post_and_never_marks_hydration_while_unhydrated():
@@ -2984,7 +2991,7 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
         "localStorage.setItem('project_neko_settings', JSON.stringify(settings))"
         not in settings_source
     )
-    assert settings_source.count("_writeSharedSettings(") == 3  # 1 def + 2 writes
+    assert settings_source.count("_writeSharedSettings(") == 4  # 1 def + 3 writes
     save_fn = _block_after(settings_source, "function saveSettings(options) {")
     assert "serverMerged ? [] : _collectExplicitSharedKeys(settings)" in save_fn
     assert "const serverMerged = !!(options && options.serverMerged);" in save_fn
@@ -3648,6 +3655,7 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
               ],
               asrDecision: restoredDecision,
               optimizationDecision: restoredDecision,
+              optimizationDecisionPendingSync: false,
             },
           }));
           await hydrateFromServer(rebound, {
@@ -4154,6 +4162,176 @@ def test_never_settling_get_posts_only_dirty_keys_harness():
     result = _run_settings_node_harness(harness)
     assert result.returncode == 0, (
         "never-settling-GET dirty-only harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "HARNESS_OK" in result.stdout
+
+
+def test_unsynced_optimization_decision_survives_reload_until_posted_harness():
+    """A persisted explicit choice stays authoritative until its POST succeeds."""
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+        const optimizationKey = 'voiceInputResourceOptimizationEnabled';
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+
+        function makeContext(initialSnapshot) {
+          let stored = initialSnapshot ? JSON.stringify(initialSnapshot) : null;
+          const postCalls = [];
+          const getCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const t = setTimeout(fn, ms);
+              if (t && typeof t.unref === 'function') t.unref();
+              return t;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) {
+                return key === 'project_neko_settings' ? stored : null;
+              },
+              setItem(key, value) {
+                if (key === 'project_neko_settings') stored = value;
+              },
+              removeItem() {},
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              return new Promise((resolve, reject) => {
+                if (opts && opts.method === 'POST') {
+                  postCalls.push({ body: opts.body, resolve, reject });
+                } else {
+                  getCalls.push({ resolve, reject });
+                }
+              });
+            },
+          };
+          sandbox.window = {
+            appState: {
+              independentAsrEnabled: true,
+              settingsHydrated: false,
+              independentAsrAuthoritative: false,
+              voiceInputResourceOptimizationEnabled: true,
+              voiceInputResourceOptimizationAuthoritative: false,
+            },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+            dispatchEvent() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            getCalls,
+            postCalls,
+            S: sandbox.window.appState,
+            mod: sandbox.window.appSettings,
+            snapshot() { return JSON.parse(stored); },
+          };
+        }
+
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+        const okPost = { ok: true, json: async () => ({ success: true }) };
+
+        async function main() {
+          // This is a snapshot written by the previous PR head: it records the
+          // explicit decision but predates the durable pending-sync marker.
+          const legacyPendingSnapshot = {
+            [optimizationKey]: false,
+            _sharedWriteMeta: {
+              writeId: 41,
+              writerId: 'window-a',
+              changedKeys: [optimizationKey],
+              hydrated: true,
+              asrAuthoritative: false,
+              optimizationDecision: {
+                writeId: 41,
+                writerId: 'window-a',
+                value: false,
+              },
+            },
+          };
+          const ctx = makeContext(legacyPendingSnapshot);
+          assert(ctx.S[optimizationKey] === false, 'boot must load the local choice');
+          assert(ctx.S.settingsHydrated === true, 'pending choice must hydrate the handshake');
+          assert(
+            ctx.S.voiceInputResourceOptimizationAuthoritative === true,
+            'pending choice must be authoritative for the next start handshake'
+          );
+
+          ctx.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { [optimizationKey]: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            ctx.S[optimizationKey] === false,
+            'stale server GET must not overwrite the unsynced local choice'
+          );
+
+          const sync = ctx.mod.syncSettingsToServer();
+          await tick();
+          assert(ctx.postCalls.length === 1, 'pending choice must be POSTed after reload');
+          assert(
+            JSON.parse(ctx.postCalls[0].body)[optimizationKey] === false,
+            'POST must carry the pending local choice'
+          );
+          ctx.postCalls[0].resolve(okPost);
+          await sync;
+          const syncedSnapshot = ctx.snapshot();
+          assert(
+            syncedSnapshot._sharedWriteMeta.optimizationDecisionPendingSync === false,
+            'successful POST must durably clear the pending marker'
+          );
+
+          // Once synchronization is durable, a later reload may accept newer
+          // server truth instead of pinning the old local choice forever.
+          const reloaded = makeContext(syncedSnapshot);
+          reloaded.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { [optimizationKey]: true },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            reloaded.S[optimizationKey] === true,
+            'synced decision must no longer block server truth on a later reload'
+          );
+
+          console.log('HARNESS_OK');
+          process.exitCode = 0;
+        }
+
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "unsynced-optimization-reload harness failed\n"
         f"stdout:\n{result.stdout}\n"
         f"stderr:\n{result.stderr}"
     )

@@ -1475,6 +1475,30 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
     replacement.submit_external_voice_turn.assert_not_awaited()
 
 
+async def test_pre_dispatch_session_swap_keeps_prepared_turn_on_pinned_session() -> None:
+    """A same-route hot swap must not discard an already-prepared utterance."""
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    prepared_session = runtime.session
+
+    replacement = type("Omni", (), {})()
+    replacement.create_response = AsyncMock()
+    replacement.submit_external_voice_turn = AsyncMock()
+    replacement.abandon_external_voice_turn = MagicMock()
+
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    runtime.session = replacement
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="qwen", text="prepared"),
+        session_ref=prepared_session,
+    )
+
+    prepared_session.create_response.assert_awaited_once_with("prepared")
+    replacement.create_response.assert_not_awaited()
+    replacement.submit_external_voice_turn.assert_not_awaited()
+
+
 async def test_final_transcript_is_dropped_when_the_route_leaves_core_mid_restore() -> None:
     # Codex P2, the other half of the case above. Pinning session_ref protects
     # only the SESSION: a game or text takeover landing inside the preview
@@ -5818,7 +5842,10 @@ async def test_session_swap_during_transcript_drops_old_final_injection() -> Non
     )
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    old_session.create_response.assert_not_awaited()
+    # The registry already prepared this turn against old_session. A same-route
+    # hot swap deliberately keeps the ingress token and utterance live, so the
+    # final must finish on that pinned session instead of being dropped.
+    old_session.create_response.assert_awaited_once_with("belongs to old role")
     new_session.create_response.assert_not_awaited()
 
 

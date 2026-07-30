@@ -763,6 +763,20 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
             if action == "start_session":
                 session_manager[lanlan_name].active_session_is_idle = False
                 session_manager[lanlan_name].set_goodbye_silent(False, "start_session")
+                raw_handshake_override = message.get("independent_asr_enabled")
+                request_handshake_override = (
+                    raw_handshake_override
+                    if isinstance(raw_handshake_override, bool)
+                    else None
+                )
+                raw_optimization_override = message.get(
+                    "voice_input_resource_optimization_enabled"
+                )
+                request_optimization_override = (
+                    raw_optimization_override
+                    if isinstance(raw_optimization_override, bool)
+                    else None
+                )
                 # Handshake: the frontend rides its authoritative independent-ASR
                 # toggle along on every start_session so the route decision cannot
                 # use a stale persisted value (settings POST failed or still in
@@ -799,7 +813,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                             if session_manager[lanlan_name]._starting_session_count == 0:
                                 session_manager[lanlan_name].reset_session_start_circuit()
                             _fire_task(route_external_stream_message(lanlan_name, {"input_type": "audio", "stt_provider": "realtime"}))
-                            _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), "audio", user_initiated=True))
+                            _fire_task(
+                                session_manager[lanlan_name].start_session(
+                                    websocket,
+                                    message.get("new_session", False),
+                                    "audio",
+                                    user_initiated=True,
+                                    handshake_override=request_handshake_override,
+                                    resource_optimization_override=(
+                                        request_optimization_override
+                                    ),
+                                )
+                            )
                             continue
                     # 传递input_mode参数，告知session manager使用何种模式
                     # 注意：音频模块由 main_server 后台预加载，Python import lock 会自动等待首次导入完成
@@ -837,7 +862,18 @@ async def websocket_endpoint(websocket: WebSocket, lanlan_name: str):
                     # _starting_session_count > 0 的早退拦掉。
                     if session_manager[lanlan_name]._starting_session_count == 0:
                         session_manager[lanlan_name].reset_session_start_circuit()
-                    _fire_task(session_manager[lanlan_name].start_session(websocket, message.get("new_session", False), mode, user_initiated=True))
+                    _fire_task(
+                        session_manager[lanlan_name].start_session(
+                            websocket,
+                            message.get("new_session", False),
+                            mode,
+                            user_initiated=True,
+                            handshake_override=request_handshake_override,
+                            resource_optimization_override=(
+                                request_optimization_override
+                            ),
+                        )
+                    )
                 else:
                     await session_manager[lanlan_name].send_status(json.dumps({"code": "INVALID_INPUT_TYPE", "details": {"input_type": input_type}}))
 
