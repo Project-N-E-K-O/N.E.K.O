@@ -37,6 +37,29 @@ async def _settle():
         await asyncio.sleep(0.01)
 
 
+async def _wait_until(predicate, *, timeout=5.0, what="condition"):
+    # 轮询到条件成立，超时才报错。不能用固定 sleep 等后台跑完：Windows 事件
+    # 循环时钟精度 15.625ms，短于一格的 sleep 会在下一轮循环立刻返回（等于零
+    # 等待），长于一格的又成倍超发，等多久完全取决于与被测逻辑无关的其它活动。
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while not predicate():
+        if loop.time() >= deadline:
+            raise AssertionError(f"{what} not satisfied within {timeout}s")
+        await asyncio.sleep(0.005)
+
+
+async def _stays_true(predicate, *, seconds, what="condition"):
+    # 按真实时钟走满一段窗口，期间每圈复查。"窗口内还没发生"这类负向断言只在
+    # 一瞬间取样是没有牙齿的：被测窗口被误缩短十倍时单点取样照样通过（实测过），
+    # 只有按真实时钟走一段才测得出窗口本身还在。
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while loop.time() < deadline:
+        await asyncio.sleep(0.005)
+        assert predicate(), f"{what} broke within {seconds}s"
+
+
 def test_effective_priority_normalisation():
     # HIGHER = more important; unspecified / invalid → 0 (least important).
     assert effective_priority(1) == 1
@@ -159,13 +182,17 @@ async def test_noop_release_frees_inflight_slot_immediately():
 
 async def test_min_gap_delays_release():
     delivered = []
-    mgr = _make(delivered, min_gap_s=0.2)
+    # min-gap 抬到 1.0s：负向断言必须落在窗口内，而 Windows 上 sleep 和 pump 各
+    # 自会超发一格时钟（15.625ms），0.2s 的窗口给"还没到点"留的余量不足十倍。
+    mgr = _make(delivered, min_gap_s=1.0)
     mgr.on_playback_start()
     mgr.submit({"id": "x"}, priority=1)
     mgr.on_playback_end()           # records last_play_end; gap not elapsed
-    await asyncio.sleep(0.05)
+    await _settle()                 # 不受 min-gap 约束的话 call_later(0) 早放行了
     assert delivered == []          # still inside min-gap
-    await asyncio.sleep(0.3)
+    # 走满 min-gap 的 40%：只取一瞬间的样证明不了 min-gap 还在生效。
+    await _stays_true(lambda: delivered == [], seconds=0.4, what="min-gap window")
+    await _wait_until(lambda: bool(delivered), what="min-gap release")
     assert [c["id"] for c in delivered] == ["x"]
 
 
@@ -173,12 +200,21 @@ async def test_playing_watchdog_recovers_missing_play_end():
     # voice_play_start with no matching voice_play_end (frontend disconnect)
     # must not wedge the queue forever — the max_play watchdog re-opens it.
     delivered = []
-    mgr = _make(delivered, max_play_s=0.1)
+    mgr = _make(delivered, max_play_s=0.5)
     mgr.on_playback_start()          # ...and voice_play_end never arrives
     mgr.submit({"id": "x"}, priority=1)
-    await asyncio.sleep(0.05)
+    armed = mgr._pump_handle         # the call_later(0) submit just scheduled
+    # 负向那半不睡固定时长：0.05s 的 sleep 在 Windows 上实际耗 62.5ms，离窗口边界
+    # 只剩几格时钟，随时滑过看门狗变假红。改成等这一轮 pump 真的跑完——它没有放
+    # 行，而是把自己重排到看门狗到点（handle 被换掉），这才是"窗口内"的确定证据。
+    await _wait_until(lambda: mgr._pump_handle is not armed, what="first pump run")
     assert delivered == []           # still within max_play window
-    await asyncio.sleep(0.2)         # exceed watchdog
+    assert mgr._playing              # 闸门确实还关着，正向断言才不会空过
+    assert mgr._pump_handle is not None  # 看门狗自己会到点，不靠外部再踢一脚
+    # 走满 max_play 的 40%：上面几条只是窗口内某一瞬的取样，看门狗窗口被误缩短
+    # 时它们照样通过，只有按真实时钟走一段才能证明窗口本身还在。
+    await _stays_true(lambda: delivered == [], seconds=0.2, what="max_play window")
+    await _wait_until(lambda: bool(delivered), what="watchdog release")
     assert [c["id"] for c in delivered] == ["x"]
 
 
