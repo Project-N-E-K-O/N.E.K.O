@@ -682,6 +682,121 @@ async def test_the_lazily_built_arbiter_gets_the_same_notification(client_rig):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_the_release_finalizes_the_abandoned_turn(monkeypatch):
+    # Codex P2 on PR #2592. Flipping _is_responding alone leaves the host
+    # holding an open turn: response.done is what normally ends it and rotates
+    # the speech id, and that is the event being given up on. The rotation half
+    # matters on any route without server VAD — the lanlan.app free route and
+    # livestream mode are both _is_free_proxy yet NOT _is_gemini, so they are
+    # arbitrated. Without it the speech id never advances and TTS upstream
+    # drops every later turn's text.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    monkeypatch.setenv(FAIL_OPEN_ENV_VAR, "1")
+    done_calls: list[str] = []
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/api/v1/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    assert client._has_server_vad is False, (
+        "this route is the one whose only rotation point is response.done"
+    )
+    assert client._is_gemini is False, "and it really does reach the arbiter"
+
+    sent: list[dict] = []
+
+    async def _send(event: dict) -> None:
+        sent.append(event)
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        client._is_responding = True
+
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+        await _settle()
+
+        assert client._is_responding is False
+        assert done_calls == ["done"], (
+            "the abandoned turn must be finalized, not left open"
+        )
+        assert rotations == ["rotate"], (
+            "without rotation the speech id never advances and TTS upstream "
+            "silently drops every later turn"
+        )
+    finally:
+        await arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_uncorrelatable_owner_makes_fail_open_stand_down(caplog):
+    # Codex P2 on PR #2592. An owner that reached response.created without an
+    # id leaves nothing to quarantine its late terminal by: after release, that
+    # terminal would be credited to the NEXT id-less owner, resolving its
+    # ticket early and reopening the lane while its response is still
+    # streaming. Providers that omit response ids are explicitly supported
+    # elsewhere in this module, so this is a real shape.
+    harness = _Harness(fail_open=True)
+    try:
+        ticket = await harness.arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        # created WITHOUT an id — the id-less proxy shape.
+        harness.arbiter.notify_response_created({"type": "response.created"})
+        await _settle()
+
+        with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+            raised = await _stick_a_cancel(harness)
+
+        assert isinstance(raised, asyncio.TimeoutError)
+        assert harness.aborted, (
+            "fail-open must decline when the abandoned turn's terminal cannot "
+            "be told apart from the next turn's"
+        )
+        assert harness.arbiter._connection_available is False
+        assert any(
+            "uncorrelatable_owner=True" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        await harness.arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_id_bearing_owner_still_fails_open(make_harness):
+    # The dual: same escalation, same site, but the provider supplied an id —
+    # the terminal is correlatable, so the hatch applies. Without this pair,
+    # standing down unconditionally would look correct.
+    harness = make_harness(fail_open=True)
+    await harness.own_a_live_response("resp-with-id")
+
+    raised = await _stick_a_cancel(harness)
+    assert isinstance(raised, asyncio.TimeoutError)
+    assert harness.aborted == []
+    assert harness.arbiter._connection_available is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_release_notification_touches_nothing_else(client_rig):
     # Both of these would be tempting to reset here and both would be wrong:
     # _skip_until_next_response is cleared only by response.done, so setting it

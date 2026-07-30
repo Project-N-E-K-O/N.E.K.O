@@ -86,8 +86,25 @@ response arbiter failing closed: <reason> (current=... owner=... queue_depth=...
 
 That line is what distinguishes an arbiter-initiated teardown from an upstream
 provider disconnect — absent it, the disconnect came from somewhere else and
-this variable will not help. With fail-open enabled the same escalations log
-`response arbiter failing open, transport kept: ...` instead.
+this variable will not help.
+
+With fail-open enabled, escalations normally log
+`response arbiter failing open, transport kept: ...` instead. **They do not
+always**: the hatch stands down and still tears the transport down whenever
+its premise — that the connection is usable and the abandoned turn is
+separable — does not hold. Seeing `failing closed` with the variable set is
+therefore expected behaviour, not a broken switch. The three trailing log
+fields say which condition applied:
+
+| Field | Meaning when `True` |
+| --- | --- |
+| `worker_send_in_flight` | The queue consumer is suspended inside a transport write. Nothing the arbiter does to its own state unwinds that await, and closing the transport is what releases it. |
+| `transport_write_failed` | The cancellation write raised moments earlier, so the transport just refused a send — on the fatal branch it has already dropped its socket. |
+| `uncorrelatable_owner` | The abandoned turn reached `response.created` without a response id, so its late terminal cannot be told apart from the next turn's. |
+
+If every escalation in your logs carries one of these, the variable is working
+as designed and the disconnects have a different cause — attach those lines to
+the report rather than assuming the switch had no effect.
 
 ## Storage and local vectors
 

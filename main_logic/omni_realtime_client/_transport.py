@@ -896,8 +896,8 @@ class _TransportMixin:
 
         return False
 
-    def _on_arbiter_stuck_release(self, reason: str) -> None:
-        """Drop the client-side "a response is in progress" flag after fail-open.
+    async def _on_arbiter_stuck_release(self, reason: str) -> None:
+        """Finalize a turn the arbiter abandoned, the way its terminal would.
 
         ``_is_responding`` is set on ``response.created`` and cleared only by
         that response's own ``response.done`` or by an interruption. When the
@@ -906,7 +906,24 @@ class _TransportMixin:
         the rest of the session — silencing proactive chat on a connection the
         escape hatch just kept alive.
 
-        Deliberately narrow. It does NOT touch:
+        Flipping ``_is_responding`` alone is not enough: the host's end-of-turn
+        work is driven by ``response.done``, and that is the event being given
+        up on. Two consequences matter, so both hooks the terminal path calls
+        are called here.
+
+        - ``on_response_done`` finalizes the turn (turn end, TTS close). Its
+          absence leaves the host holding an open turn on a connection the
+          escape hatch just kept alive.
+        - ``on_sid_rotate`` under the same ``not _has_server_vad`` condition
+          the terminal path uses. Providers without server VAD never emit
+          ``speech_stopped``, so this is their only rotation point; without it
+          the speech id never advances and TTS upstream silently drops every
+          later turn's text. Reachable here because the lanlan.app free route
+          and livestream mode are both ``_is_free_proxy`` yet not
+          ``_is_gemini``, so they are arbitrated — this is not a Gemini-only
+          concern, and Gemini itself never reaches the arbiter at all.
+
+        Deliberately still narrow. It does NOT touch:
 
         - ``_interrupted``: the AI-activity timestamps are recorded inside the
           guard it gates, and proactive delivery leans on those — the 3s
@@ -928,10 +945,27 @@ class _TransportMixin:
         if not self._is_responding:
             return
         logger.info(
-            "Clearing client response state after arbiter fail-open release: %s",
+            "Finalizing abandoned turn after arbiter fail-open release: %s",
             reason,
         )
         self._is_responding = False
+        # Each hook is isolated: a host that raises while closing one turn
+        # must not stop the other hook from running, and neither may
+        # propagate into the arbiter's release path.
+        if self.on_response_done:
+            try:
+                await self.on_response_done()
+            except Exception as exc:
+                logger.warning(
+                    "abandoned-turn finalization failed: %s", exc
+                )
+        if not self._has_server_vad and self.on_sid_rotate:
+            try:
+                await self.on_sid_rotate()
+            except Exception as exc:
+                logger.warning(
+                    "abandoned-turn speech-id rotation failed: %s", exc
+                )
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""

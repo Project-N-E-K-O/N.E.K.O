@@ -25,7 +25,7 @@ from typing import Any, Awaitable, Callable
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
-OnStuckRelease = Callable[[str], None]
+OnStuckRelease = Callable[[str], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 # Server-initiated response ids are remembered so their terminal events are
@@ -881,7 +881,7 @@ class RealtimeResponseArbiter:
         finally:
             self._worker_send_in_flight = False
 
-    def _release_stuck_lifecycle(self, reason: str) -> None:
+    async def _release_stuck_lifecycle(self, reason: str) -> None:
         """Drop the stuck turn but keep the connection (the fail-open policy).
 
         Deliberately narrower than ``_mark_connection_lost``, which exists for
@@ -925,15 +925,15 @@ class RealtimeResponseArbiter:
         self._cancel_stale_release_timer()
         self._idle.set()
         # Last, because it is the only step that hands control to project code.
-        # The host keeps its own view of "a response is in progress" that only
-        # this connection's own terminal events normally clear, and the turn
-        # whose terminal we just gave up on is exactly the one that would have
-        # cleared it. Leaving it set would spend the connection we just saved:
-        # the host would treat the session as busy and hold back the work
-        # fail-open exists to keep serving.
+        # The host keeps its own end-of-turn bookkeeping that only this
+        # connection's terminal events normally drive, and the terminal we just
+        # gave up on is exactly the one that would have driven it. Skipping it
+        # would spend the connection we just saved: the host would treat the
+        # session as busy, and on providers without server VAD it would also
+        # never rotate the speech id, which silently drops all later TTS text.
         if self._on_stuck_release is not None:
             try:
-                self._on_stuck_release(reason)
+                await self._on_stuck_release(reason)
             except Exception as exc:
                 logger.debug(
                     "stuck-release host notification failed: %s",
@@ -960,6 +960,18 @@ class RealtimeResponseArbiter:
 
         current = self._current
         owner = self._response_owner
+        # An owner that reached response.created without an id leaves nothing
+        # to quarantine its late terminal by. Releasing there would let that
+        # terminal be credited to the NEXT id-less owner: its ticket resolves
+        # early, ownership clears, and the lane reopens while its response is
+        # still streaming — so a third response.create overlaps it. Providers
+        # that omit response ids are explicitly supported elsewhere in this
+        # module, so this is a real shape, not a hypothetical one.
+        uncorrelatable_owner = (
+            owner is not None
+            and owner.ticket.started.done()
+            and owner.response_id is None
+        )
         lane_state = (
             reason,
             current.source if current is not None else None,
@@ -968,6 +980,7 @@ class RealtimeResponseArbiter:
             self._server_vad_response_pending,
             self._worker_send_in_flight,
             transport_write_failed,
+            uncorrelatable_owner,
         )
         # Fail-open rests on one premise: the transport is still usable. Two
         # things falsify it, and each makes the hatch decline.
@@ -987,11 +1000,15 @@ class RealtimeResponseArbiter:
         # connection that cannot carry it. Callers whose escalation follows a
         # failed write say so explicitly.
         #
-        # Worst case in both is exactly today's shipped default, never worse.
+        # A third: an owner whose terminal cannot be correlated, above.
+        #
+        # Worst case in all three is exactly today's shipped default, never
+        # worse.
         if (
             self._fail_open
             and not self._worker_send_in_flight
             and not transport_write_failed
+            and not uncorrelatable_owner
         ):
             # Wording differs on purpose: the fail-closed line below is the
             # documented grep target for attributing a field disconnect, and
@@ -999,15 +1016,17 @@ class RealtimeResponseArbiter:
             logger.warning(
                 "response arbiter failing open, transport kept: %s "
                 "(current=%s owner=%s queue_depth=%d server_vad_pending=%s "
-                "worker_send_in_flight=%s transport_write_failed=%s)",
+                "worker_send_in_flight=%s transport_write_failed=%s "
+                "uncorrelatable_owner=%s)",
                 *lane_state,
             )
-            self._release_stuck_lifecycle(reason)
+            await self._release_stuck_lifecycle(reason)
             return
         logger.warning(
             "response arbiter failing closed: %s "
             "(current=%s owner=%s queue_depth=%d server_vad_pending=%s "
-            "worker_send_in_flight=%s transport_write_failed=%s)",
+            "worker_send_in_flight=%s transport_write_failed=%s "
+            "uncorrelatable_owner=%s)",
             *lane_state,
         )
         self._mark_connection_lost(reason, fail_current_tickets=False)
