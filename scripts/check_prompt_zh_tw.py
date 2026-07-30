@@ -655,18 +655,21 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             # `for T in ({...}, {...}): T["zh-TW"] = t` — a literal iterable makes
             # every element a binding of the loop target. Anything else (a name, a
             # call, a range) is not knowable and binds nothing.
-            group: set[int] = set()
+            # One group per target name: `for T, U in ((a, b), (c, d))` makes a
+            # and c alternatives of T, b and d alternatives of U. Pooling them
+            # would let a backfill through T excuse U's tables as well.
+            groups: dict[str, set[int]] = {}
             for item in node.iter.elts:
                 for bound, value in _unpacked_bindings(node.target, item):
                     assignments.setdefault(bound, []).append(
                         (_source_position(value), value)
                     )
-                    group.add(id(value))
-            if len(group) > 1:
-                # The body runs once per element, so these bindings are
-                # alternatives rather than a sequence: a backfill in the body
-                # completes every one of them, not just the last.
-                loop_alternatives.append(group)
+                    groups.setdefault(bound, set()).add(id(value))
+            # The body runs once per element, so a target's bindings are
+            # alternatives rather than a sequence: a backfill in the body
+            # completes every one of them, not just the last. A single-element
+            # group is kept rather than filtered — closing over it is a no-op.
+            loop_alternatives.extend(groups.values())
             continue
         if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
             # `if (T := {...}): T["zh-TW"] = t` binds T as much as a statement does.

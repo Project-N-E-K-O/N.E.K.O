@@ -2358,3 +2358,20 @@ def test_loop_alternatives_are_only_closed_over_when_one_is_exempt():
     )
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [2, 3]
+
+
+def test_loop_alternatives_are_grouped_per_target():
+    """`for T, U in ((a, b), (c, d))` makes a/c alternatives of T, b/d of U.
+
+    Pooling every value the loop binds would let a backfill through one target
+    excuse the tables bound to the other.
+    """
+    src = (
+        "for T, U in (\n"
+        '    ({"en": "e", "zh": "s"}, {"en": "e2", "zh": "s2"}),\n'
+        '    ({"en": "e3", "zh": "s3"}, {"en": "e4", "zh": "s4"}),\n'
+        "):\n"
+        '    T["zh-TW"] = "t"'
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [2, 3]
