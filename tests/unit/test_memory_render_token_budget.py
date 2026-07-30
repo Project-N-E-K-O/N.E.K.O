@@ -4,9 +4,12 @@
   treating it as a stop sign; one over-long top-ranked entry used to make
   the whole persona / reflection section vanish.
 - A scoped (group) render gives every subject its own persona and
-  reflection budget, bounded overall by ``SCOPED_RENDER_TOTAL_MAX_TOKENS``,
-  with a slice reserved for a group subject that is queued behind members.
-  Allocation follows the caller's subject order, never one invented here.
+  reflection budget, bounded overall by ``SCOPED_RENDER_TOTAL_MAX_TOKENS``.
+  Allocation follows the caller's subject order, never one invented here —
+  unconditionally, with no reserved slice for any subject kind. (An earlier
+  draft of this file described a group reserve two lines above that
+  sentence; the reserve was deleted before merge and the two halves of the
+  docstring had been contradicting each other ever since.)
 - The legacy (private / main-app) path keeps its single shared pool.
 - ``protected`` and ``suppressed`` entries stay exempt from the token
   budget but are capped by count, loudly.
@@ -278,8 +281,26 @@ async def test_each_subject_gets_its_own_reflection_budget():
     )
 
 
+async def _render_either(harness, twin: str, *args, **kwargs) -> str:
+    """Drive whichever of the two render twins `twin` names.
+
+    Budget guards that only ever call the async path leave the sync twin
+    free to drift: `test_sync_and_async_scoped_renders_agree` catches a
+    divergence only on the knobs its scenarios actually bind, and a
+    one-sided edit to an accounting line it does not exercise sails
+    through. Guards over the shared allocator run on both.
+    """
+    if twin == 'sync':
+        return harness.render_persona_markdown(*args, **kwargs)
+    return await harness.arender_persona_markdown(*args, **kwargs)
+
+
+_TWINS = ('sync', 'async')
+
+
+@pytest.mark.parametrize('twin', _TWINS)
 @pytest.mark.asyncio
-async def test_total_gate_drops_a_trailing_subject_whole():
+async def test_total_gate_drops_a_trailing_subject_whole(twin):
     """When the overall gate runs out, the remaining subject renders
     nothing — a two-line persona reads to the model as that person's
     complete profile, which is worse than an honest absence.
@@ -288,6 +309,17 @@ async def test_total_gate_drops_a_trailing_subject_whole():
     has to account for BOTH. Fact-only fixtures leave the reflection half
     of the accounting untested: drop `remaining -= reflection_used` and
     a fact-only test never notices.
+
+    Carrying reflections is necessary but NOT sufficient, which is how this
+    guard spent a release doing nothing. Sizing the gate in bare
+    ``count_tokens`` left the leftover at 127 tok with the reflection
+    charge and 179 without — both under the 200 tok floor, so the third
+    subject was skipped either way and the assertion below could not tell
+    the two apart. The fixture has to land the leftover on OPPOSITE sides
+    of the floor, which means denominating the gate the way the gate is
+    denominated: rendered tokens, via ``_gate``. Correct → exactly
+    ``MIN - 1`` left, one token under. Mutated → that plus whatever the
+    reflections cost, comfortably over, and the third subject appears.
     """
     from memory.scopes import MemorySubject
 
@@ -318,18 +350,24 @@ async def test_total_gate_drops_a_trailing_subject_whole():
         for s in subjects
     }
     harness = _RenderHarness(persona)
+    logger = MagicMock()
 
     from config import SCOPED_RENDER_SUBJECT_MIN_TOKENS
 
-    spent = sum(
-        count_tokens(e['text'])
-        for s in subjects[:2] for e in facts[s.subject_id]
-    ) + sum(count_tokens(r['text']) for r in reflections)
+    # Charged cost — text PLUS markup — for everything the first two
+    # subjects render, so the leftover is exactly one token under the floor.
+    spent = _gate(
+        *[e['text'] for s in subjects[:2] for e in facts[s.subject_id]],
+        *[r['text'] for r in reflections],
+    )
+    reflection_charge = _gate(*[r['text'] for r in reflections])
     total = spent + SCOPED_RENDER_SUBJECT_MIN_TOKENS - 1
+    assert reflection_charge >= 1, "夹具失效：reflection 一点额度都没花"
 
-    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total):
-        rendered = await harness.arender_persona_markdown(
-            '小天', None, reflections,
+    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total), \
+            patch('memory.persona.rendering.logger', logger):
+        rendered = await _render_either(
+            harness, twin, '小天', None, reflections,
             subjects=subjects, include_legacy_private=False,
         )
 
@@ -339,6 +377,20 @@ async def test_total_gate_drops_a_trailing_subject_whole():
     assert '小天觉得成员1最近状态还不错也挺好聊的' in rendered
     assert '短' not in rendered, (
         "总闸剩量低于单 subject 下限时该整段跳过，而不是塞进能放下的碎片"
+    )
+    # Assert the LEFTOVER itself, not just which side of the floor it fell
+    # on: the skip log is the only place the allocator's running total is
+    # observable, and a number is the one assertion an "equivalent but
+    # wrong" accounting cannot satisfy by accident. Dropping the reflection
+    # charge shows up here as `MIN - 1 + reflection_charge`.
+    skips = [
+        c for c in logger.warning.call_args_list if '整段跳过' in str(c)
+    ]
+    assert len(skips) == 1, f"夹具失效：期望恰好一次整段跳过，实际 {len(skips)} 次"
+    assert f"剩余 {SCOPED_RENDER_SUBJECT_MIN_TOKENS - 1} tok" in str(skips[0]), (
+        f"总闸剩量不是 {SCOPED_RENDER_SUBJECT_MIN_TOKENS - 1}——reflection 的用量"
+        f"没有从 remaining 里扣掉（漏扣会多出 {reflection_charge} tok）："
+        f"{skips[0]}"
     )
 
 
@@ -712,6 +764,157 @@ async def test_allocation_follows_the_caller_subject_order():
     assert '阿离在准备考试而且最近睡得很晚' not in second_wins
 
 
+@pytest.mark.parametrize('twin', _TWINS)
+@pytest.mark.asyncio
+async def test_reflections_render_in_global_score_order_across_subjects(twin):
+    """Allocation order is the caller's; READING order is confidence.
+
+    The two reflection sections are flat bullet lists under a single
+    heading — nothing in them marks where one subject's impressions end and
+    the next one's begin. Per-subject allocation hands back one trimmed
+    list per slot and the allocator concatenates them, so without a final
+    sort the flat list comes out in caller-subject order: a barely-held
+    impression about the group sits above a well-evidenced one about the
+    person actually being replied to, and position is the only confidence
+    signal the model has. The pre-split code trimmed one global pool and
+    was sorted by construction; nothing in the requirement asked for that
+    to change, and nothing in the PR recorded that it had.
+    """
+    group, member = _group_and_member()
+    persona = {
+        group.persona_section_key: _scoped_section(group, []),
+        member.persona_section_key: _scoped_section(member, []),
+    }
+    low_first = '小天觉得群里最近挺热闹的'      # listed first, scores LOWER
+    high_second = '小天觉得阿离最近很努力'       # listed second, scores HIGHER
+    reflections = [
+        _reflection('rg', low_first, rein=1.0, subject=group),
+        _reflection('rm', high_second, rein=9.0, subject=member),
+    ]
+
+    rendered = await _render_either(
+        _RenderHarness(persona), twin, '小天', None, reflections,
+        subjects=[group, member], include_legacy_private=False,
+    )
+
+    bullets = [line for line in rendered.split('\n') if line.startswith('- ')]
+    assert set(bullets) == {f'- {low_first}', f'- {high_second}'}, (
+        f"夹具失效：两条 reflection 没有都渲染出来，{bullets!r}"
+    )
+    assert bullets[0] == f'- {high_second}', (
+        "低分的群印象排在了高分的成员印象前面——分配顺序（调用方的）泄漏成了"
+        "渲染顺序（该按置信度）"
+    )
+
+
+@pytest.mark.parametrize('twin', _TWINS)
+@pytest.mark.asyncio
+async def test_a_group_queued_behind_a_member_gets_no_reserved_slice(twin):
+    """The unconditional half of the caller-order contract, on the one
+    subject kind that used to be exempt from it.
+
+    ``test_allocation_follows_the_caller_subject_order`` proves the
+    allocator does not rank by score — but it runs two
+    ``group_participant`` subjects, and every reserve this code has ever
+    carried keyed on ``group_chat``, so the reserve predicate is constant
+    across that fixture and it cannot see one. The only other place a
+    ``group_chat`` sits behind a member is the exempt-only-group case,
+    whose group has nothing billable — precisely the shape a
+    "reserve only for a group that has billable content" variant exempts
+    itself from. That variant (the deleted ``_slot_has_entries``, which
+    took five review rounds to kill) passes this whole file today.
+
+    So: a group with real billable content, listed SECOND, must lose. Any
+    reserve at all — conditional or not — starves the member ahead of it
+    and hands the slot to the group, which is the order inversion the
+    reserve was supposedly there to prevent.
+    """
+    group, member = _group_and_member()
+    member_fact = '阿离在准备考试而且最近睡得很晚'
+    group_fact = '群规是不许剧透大家都要遵守'
+    persona = {
+        member.persona_section_key: _scoped_section(member, [
+            _entry('m1', member_fact, rein=1.0, subject=member),
+        ]),
+        group.persona_section_key: _scoped_section(group, [
+            # Higher score AND billable, so nothing but caller order can
+            # explain the member winning.
+            _entry('g1', group_fact, rein=9.0, subject=group),
+        ]),
+    }
+    # Funds exactly one of the two, whichever the allocator reaches first.
+    total = max(_gate(member_fact), _gate(group_fact))
+
+    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', total), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
+        rendered = await _render_either(
+            _RenderHarness(persona), twin, '小天',
+            subjects=[member, group], include_legacy_private=False,
+        )
+
+    assert member_fact in rendered, (
+        "调用方把成员排在群前面，成员却被饿死了——群拿到了预留额度或插队权，"
+        "而这正是删掉保底要根除的顺序倒置"
+    )
+    assert group_fact not in rendered, (
+        "总闸只够一个 subject，排在后面的群却也渲染出来了——夹具失效或额度超发"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_scoped_context_caller_ranks_the_group_first():
+    """The other end of the caller-order contract.
+
+    The allocator refuses to rank subjects, which only produces a sane
+    render because the caller does. That makes "group first" a contract
+    between two files with nothing between them enforcing it — `/scoped_
+    context` accepts 1..8 subjects in any order and deliberately does not
+    validate one (a caller with a legitimately different ranking should
+    not get a 422). It is documented on the route; this is the executable
+    half.
+
+    Send members first and the group's own persona is what falls off the
+    end of the gate — silently, as a group that has "no personality" this
+    turn rather than as an error.
+    """
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    bridge = MagicMock()
+    bridge.group_subject.side_effect = QQMemoryBridge.group_subject
+    bridge.group_participant_subject.side_effect = (
+        QQMemoryBridge.group_participant_subject
+    )
+    bridge.fetch_scoped_bootstrap_memory = AsyncMock(return_value='群聊长期记忆')
+    plugin = SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+        i18n=SimpleNamespace(t=lambda key, **kw: key),
+        _qq_settings={
+            'group_memory_enabled': True,
+            'group_member_memory_enabled': True,
+        },
+    )
+
+    await QQSessionInstructionService(plugin)._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name='Neko', master_name='Master',
+        context_ready_template='{name}/{master}',
+        is_group=True, group_id='7788', sender_id='2046',
+    )
+
+    sent = bridge.fetch_scoped_bootstrap_memory.await_args.kwargs['subjects']
+    assert len(sent) > 1, (
+        "夹具失效：只发了一个 subject，顺序契约在这条路径上没有可测内容"
+    )
+    assert sent[0]['subject_kind'] == 'group_chat', (
+        f"/scoped_context 的调用方没有把群排在第一位（实际首位 "
+        f"{sent[0]['subject_kind']}）——总闸是先到先得，排在成员后面的群"
+        f"会在额度耗尽后整段消失"
+    )
+
+
 @pytest.mark.asyncio
 async def test_two_custom_scopes_of_one_subject_id_get_separate_budgets():
     """Bucketing is by (key, scope), not by persona section.
@@ -1010,20 +1213,34 @@ async def test_a_malformed_text_value_does_not_bring_the_render_down():
     assert '1735689600' in rendered, "非字符串 text 应照常渲染，不该被当空条目丢掉"
 
 
+@pytest.mark.parametrize('blank_carrier', ('facts', 'reflections'))
 @pytest.mark.asyncio
-async def test_blank_entries_do_not_spend_the_scoped_gate():
+async def test_blank_entries_do_not_spend_the_scoped_gate(blank_carrier):
     """A blank entry emits no line, so it must not be charged either.
 
     With the per-entry markup charge it costs a full allowance against the
     overall gate while producing nothing — enough blanks in front and the
     next subject drops under the floor and vanishes for no output at all.
+
+    Both carriers, because "does this entry produce a line" is supposed to
+    have exactly ONE answer (`_renderable_text`) and the reflection branch
+    was not using it: it ran its own ``if not text``, and a whitespace-only
+    string is truthy. So the reflection entered the bucket, paid text +
+    markup against the gate, and composed into an empty ``- `` bullet. A
+    fact-only fixture left this guard's name (blank entries do not spend
+    the gate) claiming more than it proved.
     """
     group, member = _group_and_member()
+    blanks = [
+        _entry(f'blank{j}', '   ', rein=float(9 - j), subject=group)
+        for j in range(6)
+    ] if blank_carrier == 'facts' else []
+    blank_reflections = [
+        _reflection(f'rblank{j}', '   ', rein=float(9 - j), subject=group)
+        for j in range(6)
+    ] if blank_carrier == 'reflections' else []
     persona = {
-        group.persona_section_key: _scoped_section(group, [
-            _entry(f'blank{j}', '   ', rein=float(9 - j), subject=group)
-            for j in range(6)
-        ] + [
+        group.persona_section_key: _scoped_section(group, blanks + [
             _entry('g1', '群规是不许剧透', rein=1.0, subject=group),
         ]),
         member.persona_section_key: _scoped_section(member, [
@@ -1033,14 +1250,25 @@ async def test_blank_entries_do_not_spend_the_scoped_gate():
     harness = _RenderHarness(persona)
     gate = _gate('群规是不许剧透', '阿离在准备考试')
 
-    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate),             patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
+    with patch('memory.persona.rendering.SCOPED_RENDER_TOTAL_MAX_TOKENS', gate), \
+            patch('memory.persona.rendering.SCOPED_RENDER_SUBJECT_MIN_TOKENS', 1):
         rendered = await harness.arender_persona_markdown(
-            '小天', subjects=[group, member], include_legacy_private=False,
+            '小天', None, blank_reflections,
+            subjects=[group, member], include_legacy_private=False,
         )
 
     assert '群规是不许剧透' in rendered
     assert '阿离在准备考试' in rendered, (
-        "空白条目在总闸上收了费，把后面的 subject 挤掉了——而它们一行都没渲染"
+        f"空白{blank_carrier}在总闸上收了费，把后面的 subject 挤掉了"
+        f"——而它们一行都没渲染"
+    )
+    # The other half of "emits no line": no empty bullet reaches the prompt.
+    empty_bullets = [
+        line for line in rendered.split('\n')
+        if line.startswith('- ') and not line[2:].strip()
+    ]
+    assert empty_bullets == [], (
+        f"空白条目渲染成了空 bullet：{empty_bullets!r}"
     )
 
 
@@ -1074,6 +1302,13 @@ async def test_blank_protected_entries_do_not_spend_the_count_cap():
     spends the allowance on nothing — enough blanks in front and every
     real character-card line disappears while the section renders empty.
     Hand-edited or half-migrated persona.json is where blanks come from.
+
+    The enforcing layer is `_split_persona_for_render`, and it is asserted
+    on directly below. `_cap_protected_entries` used to repeat the same
+    filter, which read like a second line of defence but was unreachable —
+    its only caller is fed by the split, which has already dropped every
+    blank. A guard aimed at the copy would have gone on passing with the
+    real filter deleted.
     """
     persona = {
         'master': {'facts': [
@@ -1083,6 +1318,12 @@ async def test_blank_protected_entries_do_not_spend_the_count_cap():
         ]},
     }
     harness = _RenderHarness(persona)
+
+    protected, _by_entity = harness._split_persona_for_render(persona)
+    assert [entry['id'] for _ek, entry in protected] == ['card'], (
+        "空白 protected 条目穿过了 _split_persona_for_render——条数上限"
+        "下游只能看到它已经放行的东西"
+    )
 
     with patch('memory.persona.rendering.PERSONA_RENDER_PROTECTED_MAX_ENTRIES', 4):
         rendered = await harness.arender_persona_markdown('小天')

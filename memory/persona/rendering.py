@@ -472,15 +472,14 @@ class RenderingMixin:
         would silently take another subject's character-card lines with
         it.
 
-        Entries with no renderable text are dropped before counting, for
-        the same reason: compose emits nothing for them, so letting them
-        occupy slots spends the allowance on blank lines. A hand-edited or
-        half-migrated persona.json is where they come from.
+        Blank entries never reach here: `_split_persona_for_render` is the
+        sole producer of the `protected_entries` this is called with, and
+        it already drops them at the `_renderable_text` check. This used to
+        repeat that filter, which read like a second line of defence but
+        was unreachable — the reason it matters is that the guard for the
+        blank rule then had no anchor in the layer that actually enforces
+        it (see `test_blank_protected_entries_do_not_spend_the_count_cap`).
         """
-        protected_entries = [
-            (entity_key, entry) for entity_key, entry in protected_entries
-            if cls._renderable_text(entry)
-        ]
         if len(protected_entries) <= PERSONA_RENDER_PROTECTED_MAX_ENTRIES:
             return protected_entries
         logger.warning(
@@ -491,15 +490,34 @@ class RenderingMixin:
         )
         return protected_entries[:PERSONA_RENDER_PROTECTED_MAX_ENTRIES]
 
-    @staticmethod
+    @classmethod
     def _filter_reflections_for_render(
+        cls,
         reflections: list[dict] | None, persona: dict,
         suppressed_text_set: set[str],
         subjects=None,
         include_legacy_private: bool | None = None,
     ) -> list[dict]:
         """Drop reflections whose text matches a suppressed persona entry
-        (existing semantic — see `_is_suppressed_text` callers below)."""
+        (existing semantic — see `_is_suppressed_text` callers below).
+
+        Blank-rejection goes through `_renderable_text`, the same single
+        definition the persona split, the protected cap and the suppressed
+        section use. This branch used to run its own `if not text:`, which
+        accepts a whitespace-only string: the reflection then entered the
+        bucket, was charged text + markup against the overall gate, and
+        composed into an empty `- ` bullet. Paying the gate for a line that
+        says nothing is exactly what can push the next subject under
+        `SCOPED_RENDER_SUBJECT_MIN_TOKENS`.
+
+        Only the blank decision moves to the shared definition. The
+        suppression match still compares the RAW text, because
+        `_suppressed_text_set` is built from raw text and
+        `_partition_trimmed_reflections` matches against it the same way —
+        stripping on one side of that comparison and not the other is how
+        the two spellings would start disagreeing about which reflections
+        are suppressed.
+        """
         if not reflections:
             return []
         from memory.scopes import filter_entries_for_subjects
@@ -511,10 +529,9 @@ class RenderingMixin:
         ):
             if not isinstance(r, dict):
                 continue
-            text = r.get('text', '')
-            if not text:
+            if not cls._renderable_text(r):
                 continue
-            if text in suppressed_text_set:
+            if r.get('text', '') in suppressed_text_set:
                 continue
             out.append(r)
         return out
@@ -813,6 +830,29 @@ class RenderingMixin:
                     )
 
     @classmethod
+    def _sort_kept_reflections(cls, kept: list, now: datetime) -> list:
+        """Restore the global `(evidence_score, importance)` DESC order the
+        reflection sections are read in.
+
+        Per-subject allocation hands back one trimmed list per slot and the
+        allocator concatenates them, so the flat list comes out ordered by
+        the CALLER's subject order first and by score only within a slot.
+        Allocation order is deliberately the caller's — that is the whole
+        contract of `_trim_scoped_by_subject` — but the reflection sections
+        render as a single flat bullet list under one heading, with no
+        subject boundary the model can see. Leaving the concatenation order
+        in place puts a low-confidence impression of the group above a
+        high-confidence one about the person actually being replied to, and
+        the model reads position as confidence.
+
+        Sort only: everything here already survived its slot's trim, so
+        re-running the trim would be re-charging a budget that is spent.
+        The legacy path never needed this — it trims one global pool and
+        comes out sorted already.
+        """
+        return cls._score_trim_sort(kept, now)
+
+    @classmethod
     def _trim_scoped_by_subject(
         cls, prep: _RenderPrep, now: datetime,
     ) -> tuple[list, list, set]:
@@ -878,7 +918,7 @@ class RenderingMixin:
         cls._log_unslotted_buckets(
             prep.subject_slots, persona_buckets, reflection_buckets,
         )
-        return kept_persona, kept_reflections, skipped
+        return kept_persona, cls._sort_kept_reflections(kept_reflections, now), skipped
 
     @classmethod
     async def _atrim_scoped_by_subject(
@@ -939,7 +979,7 @@ class RenderingMixin:
         cls._log_unslotted_buckets(
             prep.subject_slots, persona_buckets, reflection_buckets,
         )
-        return kept_persona, kept_reflections, skipped
+        return kept_persona, cls._sort_kept_reflections(kept_reflections, now), skipped
 
     def _prepare_render(
         self, persona: dict,

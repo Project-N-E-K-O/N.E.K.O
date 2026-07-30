@@ -917,7 +917,28 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
-    """Render only explicitly authorized persona/reflection subjects."""
+    """Render only explicitly authorized persona/reflection subjects.
+
+    ⚠️ `subjects` ORDER IS THE BUDGET PRIORITY. The renderer allocates the
+    overall scoped gate (`SCOPED_RENDER_TOTAL_MAX_TOKENS`) strictly first-
+    come-first-served down this list, and a subject that arrives after the
+    gate has dropped below `SCOPED_RENDER_SUBJECT_MIN_TOKENS` renders
+    nothing at all — not a shortened version, nothing. No subject kind is
+    special-cased; an earlier attempt to reserve a slice for a group
+    subject queued behind its members was deleted because every one of its
+    interactions was a way to invert the order it was meant to protect.
+
+    So the caller owns the ranking, and every shipped caller puts the group
+    subject FIRST, then the current speaker, then other recent speakers.
+    That is a contract, not a coincidence — send members first and the
+    group's own persona is what falls off the end.
+
+    Deliberately not validated here: rejecting an order would turn a
+    ranking choice into a 422 for callers with a legitimately different one
+    (a private-DM-style render with no group subject at all is already
+    valid input). The endpoint accepts 1..8 subjects in any order; what it
+    does NOT do is second-guess the order it was given.
+    """
     lanlan_name = validate_lanlan_name(lanlan_name)
     if runtime.persona_manager is None or runtime.reflection_engine is None:
         raise HTTPException(

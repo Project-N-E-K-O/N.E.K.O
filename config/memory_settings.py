@@ -176,10 +176,18 @@ RECALL_RENDER_ENTRY_MAX_TOKENS = 400
 # `f"{i}. {tag} {text}{suffix}"`——序号 + 本地化 tier/entity 标签 + 日期
 # 后缀实测约 17-25 tok/行（英文标签更长）。所以「5 × 400 = 2000」是错的
 # 算术：5 条满额实际是 5 × 425 ≈ 2125，按 2000 设会把相关度第 5 的那条
-# 静默丢掉。按含开销的口径给 40 tok/行余量：5 × (400 + 40) = 2200。
-# 后续 PR 放大 limit 时这条才是真正绑定的闸。
+# 静默丢掉。按含开销的口径给 40 tok/行余量。
+#
+# 但 5 × (400 + 40) = 2200 仍然少算了一项：take_lines_within_token_budget
+# 拼行用 separator，**separator 自己也计费**（见它的 docstring —— 数裸行
+# 会每个缝隙少算一个 token）。N 行有 N-1 个缝隙，换行实测 1 tok，所以 5 行
+# 的真实需求是 5 × (400 + 40) + 4 × 1 = 2204。按 2200 设时第 5 条恰好
+# 越界被丢——正常条目（tag 6-8 tok）每行约 417 tok 够不着，是畸形/满额
+# 数据才咬人的那种差 4 tok。后续 PR 放大 limit 时这条才是真正绑定的闸，
+# 那时按 limit × (ENTRY + OVERHEAD) + (limit - 1) × 换行 重新推导。
 RECALL_RENDER_LINE_OVERHEAD_TOKENS = 40
-RECALL_RENDER_TOTAL_MAX_TOKENS = 2200
+RECALL_RENDER_LINE_SEPARATOR_TOKENS = 1  # "\n"，take_lines_within_token_budget 的缝隙计费
+RECALL_RENDER_TOTAL_MAX_TOKENS = 2204
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
