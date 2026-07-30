@@ -74,7 +74,7 @@ def test_flags_en_plus_short_zh_without_traditional():
     out = _violations(src)
     assert len(out) == 1
     assert out[0][0] == 2
-    assert out[0][1] == frozenset({"zh", "en"})
+    assert out[0][1] == "zh"
 
 
 def test_flags_en_plus_full_zh_cn_without_traditional():
@@ -130,6 +130,27 @@ def test_ignores_non_string_keys():
     assert _violations(src) == []
 
 
+def test_flags_dict_constructor_call():
+    """`dict(en=..., zh=...)` has the same runtime shape and the same problem."""
+    out = _violations('TABLE = dict(en="english", zh="简体")')
+    assert len(out) == 1
+    assert out[0][1] == "zh"
+
+
+def test_ignores_dict_constructor_with_unpacking():
+    """`**` is where such a table would have to put 'zh-TW', so judging is unsafe.
+
+    `dict()` cannot name zh-TW as a keyword (not an identifier), so unpacking is
+    the only way to write one — reporting it would be a false positive, and a
+    gate that cries wolf gets worked around instead of satisfied.
+    """
+    assert _violations('T = dict(en="e", zh="s", **{"zh-TW": "t"})') == []
+
+
+def test_ignores_dict_literal_with_unpacking():
+    assert _violations('T = {"en": "e", "zh": "s", **OTHER_TABLE}') == []
+
+
 def test_flags_nested_and_multiple_tables():
     """Nested dicts are walked, and each offending table is reported once."""
     src = '''
@@ -170,7 +191,30 @@ def test_ratchet_flags_table_that_becomes_localized_via_added_key():
     head = {"a.py": 'T = {"en": "x", "ja": "y", "zh": "z"}'}
     added = _added(base, head)
     assert sum(added.values()) == 1
-    assert frozenset({"en", "ja", "zh"}) in added
+    assert "zh" in added
+
+
+def test_ratchet_ignores_adding_an_unrelated_locale():
+    """Adding a 'fr' template to a pre-existing offender did not grow the backlog.
+
+    This is why the signature is the Simplified key rather than the whole key
+    set: counting whole sets made {en, zh} -> {en, zh, fr} look like a new table
+    and failed PRs that only added a language.
+    """
+    base = {"a.py": 'T = {"en": "x", "zh": "y"}'}
+    head = {"a.py": 'T = {"en": "x", "zh": "y", "fr": "z"}'}
+    assert not _added(base, head)
+
+
+def test_ratchet_keeps_the_two_key_schemes_separate():
+    """A new zh-CN-scheme table is not offset by an existing zh-scheme one."""
+    base = {"a.py": 'A = {"en": "x", "zh": "y"}'}
+    head = {
+        "a.py": 'A = {"en": "x", "zh": "y"}',
+        "b.py": 'B = {"en": "p", "zh-CN": "q"}',
+    }
+    added = _added(base, head)
+    assert dict(added) == {"zh-CN": 1}
 
 
 def test_ratchet_ignores_a_pure_rename():
@@ -211,7 +255,7 @@ def test_ratchet_counts_multiplicity_not_just_presence():
     }
     added = _added(base, head)
     assert sum(added.values()) == 2
-    assert added[frozenset({"en", "zh"})] == 2
+    assert added["zh"] == 2
 
 
 def test_ratchet_documented_blind_spot_nets_to_zero():
@@ -236,7 +280,7 @@ _TWO_TABLES = {
     "new.py": 'NEW = {\n    "en": "a",\n    "zh": "b",\n}',
     "old.py": 'OLD = {\n    "en": "c",\n    "zh": "d",\n}',
 }
-_EN_ZH = frozenset({"en", "zh"})
+_EN_ZH = "zh"
 
 
 def test_locate_narrows_to_tables_the_diff_touched():
@@ -378,6 +422,25 @@ def test_main_passes_on_an_unchanged_tree(monkeypatch):
     assert MOD.main(["--base", "irrelevant"]) == 0
 
 
+def test_prompt_files_at_reads_nul_separated_paths(monkeypatch):
+    """`-z` output is NUL-separated and unquoted.
+
+    Without it git quotes non-ASCII paths and octal-escapes their bytes
+    (`"config/prompts/\\344\\270\\255.py"`), which would not resolve as a path.
+    This repo already carries such paths under tests/testbench.
+    """
+    captured: list[tuple[str, ...]] = []
+
+    def fake_git(*args: str) -> str:
+        captured.append(args)
+        return "config/prompts/a.py\0config/prompts/中文.py\0config/prompts/notes.txt\0"
+
+    monkeypatch.setattr(MOD, "_git", fake_git)
+    files = MOD._prompt_files_at("REV")
+    assert files == ["config/prompts/a.py", "config/prompts/中文.py"]
+    assert "-z" in captured[0], captured[0]
+
+
 def test_touched_lines_asks_git_for_rename_detection(monkeypatch):
     """`-M` is load-bearing: without it a rename marks every line as added.
 
@@ -414,19 +477,19 @@ def test_cli_against_head_is_clean():
     assert result.returncode == 0, result.stdout + result.stderr
 
 
-def test_cli_count_reports_backlog_and_exits_zero():
+def test_cli_count_reports_a_nonempty_backlog():
+    """--count exits 0 and reports a real number.
+
+    The non-zero assertion guards the scanner itself: the issue #2500 backlog is
+    large, so a zero means detection silently broke, not that the work finished.
+    When the backfill genuinely lands, replace this with the full-scan gate.
+
+    Deliberately one subprocess, not two: --count re-parses every prompt module
+    (prompts_proactive.py alone is ~5k lines) and the Windows CI runner shares
+    this suite with thread-timing tests on one-second budgets.
+    """
     result = _run("--count")
     assert result.returncode == 0, result.stdout + result.stderr
     assert "missing 'zh-TW'" in result.stdout
-
-
-def test_repo_backlog_is_nonempty():
-    """Guards the scanner itself: if this hits 0, detection silently broke.
-
-    The issue #2500 backlog is large. A zero here means the detector stopped
-    matching, not that the work finished — when the backfill genuinely lands,
-    replace this with the full-scan gate.
-    """
-    result = _run("--count")
     count = int(result.stdout.strip().rsplit(":", 1)[1])
     assert count > 0, "scanner found nothing; detection likely broke"

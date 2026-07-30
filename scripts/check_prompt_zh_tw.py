@@ -25,10 +25,9 @@ gate only stops the hole from growing.
 
 How the ratchet works
 =====================
-It compares the **multiset of key signatures** of offending dicts between the
-merge-base and HEAD, rather than asking which source lines the diff touched.
-A dict contributes ``frozenset(its string keys)``; HEAD needing more copies of
-some signature than the base had is what fails the check.
+It counts offending dicts per Simplified-key scheme ('zh' vs 'zh-CN') at the
+merge-base and at HEAD; HEAD having more of either than the base is what fails
+the check. Source lines are not consulted for the decision.
 
 Line-based ratcheting was tried first and is wrong in both directions:
 
@@ -40,13 +39,17 @@ Line-based ratcheting was tried first and is wrong in both directions:
     path count as added, so a rename would report the whole file's existing
     backlog.
 
-Signatures dodge both: adding a Chinese key changes a dict's signature (and so
-increments a count), while renaming a file or editing a template's copy leaves
-every signature untouched.
+Counting dodges both: a table gaining a Chinese key starts being counted, while
+renaming a file or editing a template's copy changes no count.
 
-The tradeoff is that a PR which removes one offending table and adds another
-with the identical key set nets to zero and passes. That is a deliberate
-accept: the alternative is matching dicts across revisions by position, which
+Counting *whole key sets* was the next wrong turn — then adding an unrelated
+locale (a new 'fr' template) to a pre-existing offender reads as a brand-new
+table and fails a PR that did not grow the backlog. Hence ``rule_signature``,
+which projects a key set down to just the Simplified key the rule keys on.
+
+The tradeoff that remains: a PR removing one offending table while adding
+another under the same scheme nets to zero and passes. That is a deliberate
+accept — the alternative is matching dicts across revisions by position, which
 breaks on every reformat.
 
 Usage:
@@ -82,23 +85,62 @@ def _has_noqa(line: str) -> bool:
     return bool(re.search(rf"#\s*noqa:\s*{CODE}\b", line))
 
 
-def _string_keys(node: ast.Dict) -> set[str]:
-    return {
-        k.value
-        for k in node.keys
-        if isinstance(k, ast.Constant) and isinstance(k.value, str)
-    }
+def _string_keys(node: ast.AST) -> set[str]:
+    """String keys of a dict literal, or of a ``dict(en=..., zh=...)`` call.
+
+    The call form cannot express ``zh-CN`` or ``zh-TW`` as keywords (neither is
+    an identifier), but it can express ``zh``, so a table written that way is
+    still subject to the rule.
+
+    Returns empty — i.e. "not a table I can judge" — for a call carrying ``**``,
+    since the unpacked mapping is exactly where such a table would have to put
+    its ``'zh-TW'`` entry. Reporting it would be a false positive, and a gate
+    that cries wolf gets worked around rather than satisfied.
+    """
+    if isinstance(node, ast.Dict):
+        if any(k is None for k in node.keys):
+            return set()  # `{**other}` — same unknowable-keys problem
+        return {
+            k.value
+            for k in node.keys
+            if isinstance(k, ast.Constant) and isinstance(k.value, str)
+        }
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+    ):
+        if any(kw.arg is None for kw in node.keywords):
+            return set()
+        return {kw.arg for kw in node.keywords if kw.arg is not None}
+    return set()
+
+
+def rule_signature(keys: set[str]) -> str:
+    """The part of a key set the rule keys on: which Simplified key is used.
+
+    Deliberately *not* the whole key set. Counting whole key sets makes adding
+    an unrelated locale to a pre-existing offender (say a new ``fr`` template)
+    look like a brand-new table, which fails a PR that did not grow the backlog.
+    Projecting onto the Simplified key keeps the count equal to "how many tables
+    of this scheme still lack zh-TW", which is the quantity the ratchet is
+    about.
+    """
+    for key in SIMPLIFIED_KEYS:
+        if key in keys:
+            return key
+    return ""
 
 
 def find_violations(
     tree: ast.Module, source_lines: list[str]
-) -> list[tuple[int, frozenset[str]]]:
-    """Return (lineno, key-signature) for localized dicts with no zh-TW key."""
-    out: list[tuple[int, frozenset[str]]] = []
+) -> list[tuple[int, str]]:
+    """Return (lineno, rule-signature) for localized dicts with no zh-TW key."""
+    out: list[tuple[int, str]] = []
     for node in ast.walk(tree):
-        if not isinstance(node, ast.Dict):
-            continue
         keys = _string_keys(node)
+        if not keys:
+            continue
         if ANCHOR_KEY not in keys:
             continue
         if not any(k in keys for k in SIMPLIFIED_KEYS):
@@ -108,7 +150,7 @@ def find_violations(
         lineno = node.lineno
         if 1 <= lineno <= len(source_lines) and _has_noqa(source_lines[lineno - 1]):
             continue
-        out.append((lineno, frozenset(keys)))
+        out.append((lineno, rule_signature(keys)))
     return out
 
 
@@ -120,9 +162,9 @@ def _parse_source(source: str, origin: str) -> tuple[ast.Module | None, list[str
         return None, []
 
 
-def signature_counter(sources: dict[str, str]) -> Counter[frozenset[str]]:
+def signature_counter(sources: dict[str, str]) -> Counter[str]:
     """Count offending key signatures across a {path: source} mapping."""
-    counter: Counter[frozenset[str]] = Counter()
+    counter: Counter[str] = Counter()
     for path, source in sorted(sources.items()):
         tree, lines = _parse_source(source, path)
         if tree is None:
@@ -134,7 +176,7 @@ def signature_counter(sources: dict[str, str]) -> Counter[frozenset[str]]:
 
 def locate(
     sources: dict[str, str],
-    signature: frozenset[str],
+    signature: str,
     touched: dict[str, set[int]] | None = None,
 ) -> tuple[list[str], int]:
     """Locate offending dicts matching `signature`.
@@ -153,7 +195,7 @@ def locate(
         if tree is None:
             continue
         by_line = {node.lineno: node for node in ast.walk(tree)
-                   if isinstance(node, ast.Dict)}
+                   if _string_keys(node)}
         for lineno, sig in find_violations(tree, lines):
             if sig != signature:
                 continue
@@ -190,11 +232,13 @@ def _merge_base(base: str) -> str:
 
 def _prompt_files_at(rev: str) -> list[str]:
     """Prompt modules present at `rev`, including any in subpackages."""
-    out = _git("ls-tree", "-r", "--name-only", rev, "--", PROMPTS_SUBDIR)
+    # -z: NUL-separated and unquoted. Without it git wraps non-ASCII paths in
+    # quotes and octal-escapes the bytes, which would not resolve as a path.
+    out = _git("ls-tree", "-r", "-z", "--name-only", rev, "--", PROMPTS_SUBDIR)
     return [
-        ln.strip().replace("\\", "/")
-        for ln in out.splitlines()
-        if ln.strip().endswith(".py")
+        entry.replace("\\", "/")
+        for entry in out.split("\0")
+        if entry.endswith(".py")
     ]
 
 
@@ -274,9 +318,8 @@ def main(argv: list[str] | None = None) -> int:
             if tree is None:
                 continue
             for lineno, signature in find_violations(tree, lines):
-                present = ", ".join(sorted(k for k in signature if len(k) <= 6))
                 print(f"{path}:{lineno}: [{CODE}] missing "
-                      f"'{TRADITIONAL_KEY}' (has: {present})")
+                      f"'{TRADITIONAL_KEY}' (keyed by '{signature}')")
                 found += 1
         if found:
             print(f"\n{found} localized prompt dict(s) missing '{TRADITIONAL_KEY}'.")
@@ -293,11 +336,10 @@ def main(argv: list[str] | None = None) -> int:
 
     touched = _touched_lines(merge_base)
     total = sum(added.values())
-    for signature, count in sorted(added.items(), key=lambda kv: sorted(kv[0])):
-        present = ", ".join(sorted(k for k in signature if len(k) <= 6))
+    for signature, count in sorted(added.items()):
         likely, other = locate(disk, signature, touched)
-        print(f"[{CODE}] {count} new localized prompt dict(s) with keys "
-              f"({present}) and no '{TRADITIONAL_KEY}'.")
+        print(f"[{CODE}] {count} new localized prompt dict(s) keyed by "
+              f"'{signature}' with no '{TRADITIONAL_KEY}'.")
         if likely:
             print(f"        in lines this change touched: {', '.join(likely)}")
         if other:
