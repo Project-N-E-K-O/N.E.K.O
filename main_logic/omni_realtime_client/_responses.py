@@ -268,9 +268,10 @@ class _ResponseMixin:
         # turn is present, so queued proactive work cannot win the race. An
         # older completed turn may still be ahead of a newer paused turn in
         # the serial transcript dispatcher; let that ticket through, then
-        # restore the newer pause. The arbiter rechecks the gate after queue
-        # selection and returns blocked work without charging its fairness
-        # allowance, so this hand-off does not depend on task-yield ordering.
+        # restore the newer pause. Before selecting again, the arbiter
+        # explicitly yields to this ticket's waiter; its post-selection gate
+        # then returns any concurrently blocked work without charging the
+        # fairness allowance.
         active_pause_id = getattr(self, "_external_voice_turn_pause_id", None)
         if active_pause_id == stable_turn_id:
             self._external_voice_turn_pause_id = None

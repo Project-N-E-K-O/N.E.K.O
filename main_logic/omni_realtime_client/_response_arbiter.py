@@ -2,7 +2,9 @@
 
 Dispatch permission is checked both before and after queue selection. If a
 pause lands while an item is being selected, that item is returned to the
-queue without consuming any fairness allowance.
+queue without consuming any fairness allowance. After resolving a ticket's
+``sent`` future, the worker explicitly yields to its waiter before selecting
+more work so that an external-turn hand-off can restore a newer pause.
 """
 
 from __future__ import annotations
@@ -894,6 +896,13 @@ class RealtimeResponseArbiter:
                 await self._process(queued)
             finally:
                 self._queue.task_done()
+            if queued.ticket.sent.done():
+                # Resolving ``ticket.sent`` schedules callers that may need to
+                # restore a newer external-turn pause. ``sleep(0)`` always
+                # suspends the current task, unlike ``wait_for`` on an already
+                # completed future on Python 3.12+, so the waiter runs before
+                # this worker can select another queued response.
+                await asyncio.sleep(0)
 
     async def _wait_for_dispatch_or_interrupt(
         self,
