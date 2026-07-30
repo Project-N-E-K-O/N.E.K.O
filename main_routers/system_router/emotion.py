@@ -259,32 +259,40 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         if not _NON_WORD_RE.match(char)
     ]
 
-    def _clause_break_before(match_start):
+    def _current_clause(match_start):
+        """The compact text before `match_start` that shares its clause.
+
+        Punctuation is gone from compact_text, so a comma earlier in the label
+        would otherwise be invisible and the lookback would reach across it.
+        """
+        prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
         if match_start >= len(compact_origin):
-            return False
+            return prefix
         head = emotion_text[:compact_origin[match_start]]
-        return any(delim in head for delim in _HEURISTIC_CLAUSE_DELIMITERS)
+        cut = max((head.rfind(delim) for delim in _HEURISTIC_CLAUSE_DELIMITERS), default=-1)
+        if cut < 0:
+            return prefix
+        # How many compact characters survive the cut — anything before the
+        # delimiter belongs to a different clause.
+        kept = sum(1 for origin in compact_origin[:match_start] if origin > cut)
+        return prefix[len(prefix) - min(len(prefix), kept):]
 
     def _is_negated_compact_match(match_start):
-        prefix = compact_text[max(0, match_start - _EMOTION_NEGATION_CONTEXT_WINDOW):match_start]
-        if len(prefix) == match_start and not _strip_degree_adverbs(prefix):
-            # Nothing but intensifiers ahead of the alias, so the single character
-            # one of them ends with is part of that adverb, not a negation.
-            return False
-        if any(prefix.endswith(negation) for negation in _EMOTION_NEGATION_COMPACT_PREFIXES):
-            return True
-        # `沒有很生氣`: the window ends with the adverb, so the negation before it is
-        # invisible. Peeling reveals it — but only within one clause, and only when
-        # what it uncovers really is a negation rather than the tail of an ordinary
-        # word. A single character is a coincidence waiting to happen (`分别很开心`
-        # peels to `分别`), so it has to be the whole of what is left; two or more
-        # characters are specific enough to sit after other text (`我沒有很生氣`).
-        if _clause_break_before(match_start):
-            return False
-        # No early-out for "nothing peeled": if the window already ended in a
-        # negation the branch above returned, so an unchanged window can only fail
-        # both tests below anyway.
+        prefix = _current_clause(match_start)
         peeled = _strip_degree_adverbs(prefix)
+        if peeled == prefix:
+            # Nothing between the negation and the emotion word: the original
+            # adjacency test, unchanged.
+            return any(
+                prefix.endswith(negation)
+                for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
+            )
+        # An intensifier sits against the alias, so whatever the window ends with
+        # belongs to *it*, not to a negation — `我特別開心` must not read `別` as
+        # one. The negation, if there is one, is what peeling uncovers, and it has
+        # to really be one: a single character is a coincidence waiting to happen
+        # (`分别很开心` peels to `分别`), so it must be the whole of what is left;
+        # two or more are specific enough to sit after other text (`我沒有很生氣`).
         return peeled in _EMOTION_NEGATION_COMPACT_PREFIX_SET or any(
             len(negation) > 1 and peeled.endswith(negation)
             for negation in _EMOTION_NEGATION_COMPACT_PREFIXES
@@ -439,7 +447,10 @@ def _has_heuristic_negation_before(text_value, position):
     sanitized = window
     for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
         if phrase and phrase in sanitized:
-            sanitized = sanitized.replace(phrase, ' ' * len(phrase))
+            # Removed, not blanked: the tight lookback is a fixed-width suffix,
+            # so leaving spaces behind pushes a real negation out of it —
+            # `別特別開心` would become `別  ` and read as un-negated.
+            sanitized = sanitized.replace(phrase, '')
     # 5) 多字否定 token（宽 lookback）
     if any(token in sanitized for token in _HEURISTIC_NEGATION_TOKENS):
         return True

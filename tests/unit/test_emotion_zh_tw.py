@@ -676,3 +676,45 @@ def test_real_negation_still_suppresses_the_keyword_heuristic(text):
     from main_routers.system_router.emotion import _infer_emotion_from_text
 
     assert _infer_emotion_from_text(text)[0] is None
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    # punctuation BEFORE a valid negation: the negation and the emotion word are
+    # still in the same clause, so the reach must be truncated, not abandoned
+    ("嗯，我沒有很生氣", "neutral"), ("我想想，我沒有很生氣", "neutral"),
+    # ...while punctuation BETWEEN them still cuts
+    ("不是，非常开心", "happy"),
+])
+def test_clause_cut_keeps_the_part_that_shares_the_clause(label, expected, confidence):
+    """Rejecting the whole label on any punctuation threw away valid readings."""
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label,expected", [
+    ("我特別開心", "happy"), ("感覺特別開心", "happy"), ("其實特別難過", "sad"),
+    ("我今天特别开心", "happy"),
+])
+def test_an_intensifier_against_the_alias_is_not_a_negation(label, expected, confidence):
+    """Whatever the window ends with belongs to the adverb, not to a negation.
+
+    The earlier version only handled this when the adverb was the label's whole
+    opening, so a sentence-style answer still read the last character of the
+    adverb as a negation.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("text", [
+    # a real negation sitting in front of a blocklisted intensifier
+    "別特別開心", "别特别生气", "不要特別開心",
+    # compound negations, which the heuristic had no entry for
+    "不會真的開心", "不再那麼難過", "不算很開心", "未必開心",
+])
+def test_degraded_heuristic_keeps_these_negated(text):
+    """Blanking a blocklisted phrase with spaces pushed a real negation out of
+    the fixed-width tight lookback; removing it keeps the negation adjacent."""
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] is None
