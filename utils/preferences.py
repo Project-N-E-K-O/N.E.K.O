@@ -458,14 +458,14 @@ def _asr_decision_key(decision: Dict[str, Any]) -> tuple[int, str]:
 def _next_legacy_asr_decision(
     current: Optional[Dict[str, Any]],
     value: bool,
-) -> Dict[str, Any]:
+) -> Optional[Dict[str, Any]]:
     current_write_id = current["writeId"] if current is not None else -1
     now_ms = time.time_ns() // 1_000_000
     max_accepted_write_id = min(
         MAX_SAFE_ASR_WRITE_ID - 1,
         now_ms + ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
     )
-    return {
+    decision = {
         "writeId": min(
             max(now_ms, current_write_id + 1),
             max_accepted_write_id,
@@ -473,6 +473,9 @@ def _next_legacy_asr_decision(
         "writerId": _LEGACY_ASR_DECISION_WRITER_ID,
         "value": value,
     }
+    if current is not None and _asr_decision_key(decision) <= _asr_decision_key(current):
+        return None
+    return decision
 
 
 def _snapshot_from_preferences_data(data: Any) -> ConversationSettingsSnapshot:
@@ -720,6 +723,12 @@ def save_global_conversation_settings_versioned(
                         current.asr_decision,
                         validated["independentAsrEnabled"],
                     )
+                    if legacy_decision is None:
+                        return ConversationSettingsWriteResult(
+                            success=False,
+                            conflict=True,
+                            snapshot=current,
+                        )
                     if (
                         global_pref.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
                         != legacy_decision

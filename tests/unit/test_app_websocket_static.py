@@ -831,9 +831,8 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     assert "!_dirtySettingsKeys.has('subtitleEnabled')" in merge_block
     assert "!_dirtySettingsKeys.has('userLanguage')" in merge_block
     roll_index = merge_block.index("_settingsBaseline = getConversationSettings();")
-    assert skip_index < roll_index < merge_block.index(
-        "saveSettings({ serverMerged: true });"
-    )
+    assert skip_index < roll_index < merge_block.index("saveSettings({")
+    assert "serverAuthoritativeKeys: Object.keys(" in merge_block
     # The whole-merge drop is gone: no early return between the null-guard
     # and the hydration mark, and the old drop log no longer exists.
     after_null_guard = null_guard_index + len("if (!serverResult) return;")
@@ -1431,6 +1430,56 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           assert(
             noiseMerge.store.get('neko_noise_reduction') === '1',
             'a boot merge must synchronize the legacy noise cache'
+          );
+
+          const serverBroadcaster = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              proactiveVisionEnabled: false,
+            },
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          const serverSnapshot = JSON.parse(
+            serverBroadcaster.store.get('project_neko_settings')
+          );
+          assert(
+            serverSnapshot._sharedWriteMeta.knownKeyWrites.proactiveVisionEnabled,
+            'a server winner must receive per-key broadcast provenance'
+          );
+
+          const receiver = makeContext(true);
+          await tick();
+          await tick();
+          receiver.fireStorage(JSON.stringify({
+            proactiveVisionEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 1,
+              writerId: 'window-old',
+              changedKeys: ['proactiveVisionEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+              knownKeyWrites: {
+                proactiveVisionEnabled: {
+                  writeId: 1,
+                  writerId: 'window-old',
+                },
+              },
+            },
+          }));
+          receiver.fireStorage(JSON.stringify(serverSnapshot));
+          assert(
+            receiver.S.proactiveVisionEnabled === false,
+            'a newer authoritative server winner must outrank an older local token'
+          );
+          assert(
+            receiver.runtime.stoppedSpeech === 1
+              && receiver.runtime.stoppedScreening === 1
+              && receiver.runtime.stoppedTracks === 1,
+            'the authoritative privacy disable must stop active vision runtime'
           );
         }
 
@@ -2200,7 +2249,7 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "_writeSharedSettings(settings, []);" in settings_source
 
     write_fn = settings_source.split(
-        "function _writeSharedSettings(snapshot, explicitKeys, pendingRecovery) {", 1
+        "function _writeSharedSettings(", 1
     )[1].split("\n    }", 1)[0]
     assert "writeId: _nextSharedWriteId()," in write_fn
     assert "changedKeys: explicitKeys || []," in write_fn
@@ -2953,8 +3002,9 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
         "_settingsMergedFromServer = true;"
     )
     assert merge_cb.index("_settingsMergedFromServer = true;") < merge_cb.index(
-        "saveSettings({ serverMerged: true });"
+        "saveSettings({"
     )
+    assert "serverAuthoritativeKeys: Object.keys(" in merge_cb
     # Negative: the failure paths must NOT re-enable full snapshots. The
     # finally runs for merged AND failed GETs, so it may not touch the flag;
     # neither may the synchronous-throw catch, where nothing was ever read.
@@ -4319,7 +4369,12 @@ def test_asr_decision_tuple_survives_unrelated_saves():
     # The write carries the id of the decision that produced the value...
     write_fn = _block_after(
         settings_source,
-        "function _writeSharedSettings(snapshot, explicitKeys, pendingRecovery) {",
+        "function _writeSharedSettings(\n"
+        "        snapshot,\n"
+        "        explicitKeys,\n"
+        "        pendingRecovery,\n"
+        "        serverAuthoritativeKeys\n"
+        "    ) {",
     )
     assert "ownMeta.asrDecision = {" in write_fn
     assert "_lastAsrDecision.value === snapshot.independentAsrEnabled" in write_fn

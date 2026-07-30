@@ -253,7 +253,13 @@
         // Persist the reconciled runtime snapshot for offline restarts and
         // notify sibling windows, but do not advertise server winners as fresh
         // user intent or enqueue another POST.
-        saveSettings({ skipServerSync: true, serverMerged: true });
+        saveSettings({
+            skipServerSync: true,
+            serverMerged: true,
+            serverAuthoritativeKeys: Object.keys(acceptedSettings).filter(
+                (key) => _SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+            )
+        });
         if (changed) {
             if (typeof window.appProactive !== 'undefined'
                 && window.appProactive.scheduleProactiveChat) {
@@ -491,7 +497,12 @@
      * window that HAD merged the server value adopts it, mis-stamps its next
      * handshake, and POSTs the wrong value back on its next full sync.
      */
-    function _writeSharedSettings(snapshot, explicitKeys, pendingRecovery) {
+    function _writeSharedSettings(
+        snapshot,
+        explicitKeys,
+        pendingRecovery,
+        serverAuthoritativeKeys
+    ) {
         const payload = Object.assign({}, snapshot);
         payload[_SHARED_WRITE_META_KEY] = {
             writeId: _nextSharedWriteId(),
@@ -507,6 +518,11 @@
         };
         const ownMeta = payload[_SHARED_WRITE_META_KEY];
         _rememberSharedKeyWrites(ownMeta.changedKeys, ownMeta);
+        // Server winners need provenance too. Otherwise a sibling with any
+        // older explicit token can mistake an accepted GET/412 value for an
+        // incidental stale copy and discard it. Stamp only fields actually
+        // accepted from the response; pending/local winners stay untouched.
+        _rememberSharedKeyWrites(serverAuthoritativeKeys || [], ownMeta);
         ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
             _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
@@ -1048,7 +1064,8 @@
      *   skipServerSync?: boolean,
      *   serverMerged?: boolean,
      *   pendingRecovery?: boolean,
-     *   explicitSharedKeys?: string[]
+     *   explicitSharedKeys?: string[],
+     *   serverAuthoritativeKeys?: string[]
      * }} [options]
      *   传 skipServerSync 跳过 POST；
      *   serverMerged 表示共享快照来自服务端合并，不得标记成新的用户修改。
@@ -1062,6 +1079,10 @@
         const explicitSharedKeys = options && Array.isArray(options.explicitSharedKeys)
             ? options.explicitSharedKeys
             : null;
+        const serverAuthoritativeKeys =
+            options && Array.isArray(options.serverAuthoritativeKeys)
+                ? options.serverAuthoritativeKeys
+                : [];
         // 从全局变量读取最新值（确保同步 live2d.js 中的更改）
         const currentProactive = typeof window.proactiveChatEnabled !== 'undefined'
             ? window.proactiveChatEnabled
@@ -1184,7 +1205,8 @@
             explicitSharedKeys !== null
                 ? explicitSharedKeys
                 : (serverMerged ? [] : _collectExplicitSharedKeys(settings)),
-            pendingRecovery
+            pendingRecovery,
+            serverAuthoritativeKeys
         );
 
         // 同步回共享状态，保持一致性
@@ -1537,6 +1559,7 @@
                     hasUpdate = true;
                 }
 
+                const acceptedSharedSettings = {};
                 if (serverSettings) {
                     // Field-level merge (Codex P2): apply server values to the
                     // keys the user never touched, preserve the dirty ones. A
@@ -1545,7 +1568,6 @@
                     // hydrates from the server — the old whole-merge-drop let
                     // one unrelated toggle turn the entire boot-default
                     // snapshot into the POSTed truth.
-                    const acceptedSharedSettings = {};
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] === undefined) continue;
                         if (_dirtySettingsKeys.has(key)) continue;
@@ -1610,7 +1632,12 @@
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;
                     // 同步回 localStorage
-                    saveSettings({ serverMerged: true });
+                    saveSettings({
+                        serverMerged: true,
+                        serverAuthoritativeKeys: Object.keys(
+                            acceptedSharedSettings
+                        )
+                    });
                     // 重新初始化主动搭话调度器（使用最新标志）
                     if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
                         window.appProactive.scheduleProactiveChat();

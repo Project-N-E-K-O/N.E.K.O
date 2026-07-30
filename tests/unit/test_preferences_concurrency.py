@@ -155,6 +155,50 @@ def test_legacy_asr_decision_stays_within_future_skew_ceiling(
     }
 
 
+def test_legacy_asr_change_rejects_unadvanceable_ceiling_token(
+    monkeypatch,
+    tmp_path,
+):
+    now_ms = 1_000
+    ceiling_write_id = now_ms + preferences.ASR_WRITE_ID_MAX_FUTURE_SKEW_MS
+    _use_preferences_file(
+        monkeypatch,
+        tmp_path,
+        [
+            {
+                "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                "independentAsrEnabled": True,
+                "_conversation_settings_revision": 1,
+                "_independent_asr_decision": {
+                    "writeId": ceiling_write_id,
+                    "writerId": "zzzz-client",
+                    "value": True,
+                },
+            }
+        ],
+    )
+    patch_module_clock(
+        monkeypatch,
+        preferences,
+        time_ns=lambda: now_ms * 1_000_000,
+    )
+
+    legacy = preferences.save_global_conversation_settings_versioned(
+        {"independentAsrEnabled": False},
+        expected_revision=1,
+    )
+
+    assert legacy.success is False
+    assert legacy.conflict is True
+    assert legacy.snapshot.revision == 1
+    assert legacy.snapshot.settings["independentAsrEnabled"] is True
+    assert legacy.snapshot.asr_decision == {
+        "writeId": ceiling_write_id,
+        "writerId": "zzzz-client",
+        "value": True,
+    }
+
+
 def test_locked_partial_writes_preserve_both_concurrent_changes(monkeypatch, tmp_path):
     path = _use_preferences_file(
         monkeypatch,
