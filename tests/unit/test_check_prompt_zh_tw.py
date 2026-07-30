@@ -2284,3 +2284,77 @@ def test_documented_blind_spots_around_aliased_mutation(src):
     `update()`, which is None — code that cannot be doing what it looks like.
     """
     assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('TW = {"zh-TW": "t"}\nTW.clear()\nT = {"en": "e", "zh": "s"}\nT.update(TW)', [3]),
+    ('T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\nT.clear()', [1]),
+    # emptied and then filled again
+    ('TW = {"zh-TW": "t"}\nTW.clear()\nTW["zh-TW"] = "t"\n'
+     + 'T = {"en": "e", "zh": "s"}\nT.update(TW)', []),
+])
+def test_clear_empties_the_timeline(src, expected):
+    """`clear()` removes everything, so it cannot be recorded as a key list.
+
+    It joins `del` and `pop` as a removal — the third spelling of the same thing,
+    and the third one this gate had to be told about separately.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('TW = {"zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT.update(TW.items())', []),
+    ('TW = {"zh-TW": "t"}\nT = {"en": "e", "zh": "s"}\nT.update(TW.copy())', []),
+    ('TW = {"ja": "j"}\nT = {"en": "e", "zh": "s"}\nT.update(TW.items())', [2]),
+])
+def test_a_payload_may_be_a_view_of_a_known_mapping(src, expected):
+    """`update(other.items())` is ordinary Python and hands over exactly those keys."""
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    # two unrelated scopes sharing a name
+    'def a():\n    T = {"en": "e", "zh": "s"}\n\n\ndef b():\n    T["zh-TW"] = "t"',
+    # a backfill inside a function that is never called
+    'T = {"en": "e", "zh": "s"}\n\n\ndef never_called():\n    T["zh-TW"] = "t"',
+])
+def test_documented_blind_spots_around_scope_and_reachability(src):
+    """Pinned so a change here is deliberate — see the module docstring.
+
+    All three need scope or reachability analysis, which this gate states it does
+    not do: prompt modules are tables evaluated at import, not call graphs.
+    """
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('for T in ({"en": "e", "zh": "s"},):\n    T["zh-TW"] = "t"', []),
+    ('for T in [{"en": "e", "zh": "s"}, {"en": "e2", "zh": "s2"}]:\n    T["zh-TW"] = "t"', []),
+    # not a literal iterable: nothing is knowable, so nothing is bound
+    ('for T in tables():\n    T["zh-TW"] = "t"\nU = {"en": "e", "zh": "s"}', [3]),
+])
+def test_a_loop_over_a_literal_binds_its_target(src, expected):
+    """Every element of a literal iterable is a binding of the loop target.
+
+    The same pairing as unpacking, which is where the helper comes from.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_loop_alternatives_are_only_closed_over_when_one_is_exempt():
+    """Grouping says "a backfill completes them all", not "they are all fine".
+
+    Without a backfill in the body every element is still its own offender.
+    """
+    src = (
+        "for T in [\n"
+        '    {"en": "e", "zh": "s"},\n'
+        '    {"en": "e2", "zh": "s2"},\n'
+        "]:\n"
+        "    pass"
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [2, 3]

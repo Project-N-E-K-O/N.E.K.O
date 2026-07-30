@@ -80,7 +80,7 @@ exemption is deliberately keyed on the mutation *demonstrably supplying zh-TW*:
 exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a real
 offender, trading one rare false positive for a broad blind spot.
 
-Four accepted blind spots, all on the miss side:
+Five accepted blind spots:
 
   * The exemption is not ordered against *other* uses of the name, so a copy taken
     before the backfill is not judged::
@@ -98,6 +98,12 @@ Four accepted blind spots, all on the miss side:
     bodies unreadable, so it is not a shape prompt modules use — there are zero
     occurrences under config/prompts. Chasing constructor forms with no realistic
     use grows ``resolve_keys`` without shrinking the backlog.
+  * Bindings are ordered by source position, with no scope or reachability
+    analysis. Two functions that each bind a local ``T`` share one timeline, and a
+    backfill written inside a function nobody calls counts as if it ran. Both
+    follow from the same choice the section above states: a mutation and the
+    binding it mutates sit in the same scope in practice, and prompt modules are
+    tables at import time, not call graphs.
   * A removal that reaches the table through a different name is not seen::
 
         T = {"en": "e", "zh": "s"}
@@ -629,6 +635,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     preceding binding is right in either nesting direction.
     """
     assignments: dict[str, list[tuple[tuple[int, int], ast.AST]]] = {}
+    loop_alternatives: list[set[int]] = []
     for node in ast.walk(tree):
         name: str | None = None
         if isinstance(node, ast.Assign):
@@ -641,6 +648,25 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                     assignments.setdefault(bound, []).append(
                         (_source_position(value), value)
                     )
+            continue
+        if isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(
+            node.iter, (ast.Tuple, ast.List, ast.Set)
+        ):
+            # `for T in ({...}, {...}): T["zh-TW"] = t` — a literal iterable makes
+            # every element a binding of the loop target. Anything else (a name, a
+            # call, a range) is not knowable and binds nothing.
+            group: set[int] = set()
+            for item in node.iter.elts:
+                for bound, value in _unpacked_bindings(node.target, item):
+                    assignments.setdefault(bound, []).append(
+                        (_source_position(value), value)
+                    )
+                    group.add(id(value))
+            if len(group) > 1:
+                # The body runs once per element, so these bindings are
+                # alternatives rather than a sequence: a backfill in the body
+                # completes every one of them, not just the last.
+                loop_alternatives.append(group)
             continue
         if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
             # `if (T := {...}): T["zh-TW"] = t` binds T as much as a statement does.
@@ -671,17 +697,18 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     # table. The same index answers the reverse — a later `del TW["zh-TW"]` means
     # an earlier backfill no longer makes its table compliant.
     mutations: dict[
-        str, list[tuple[tuple[int, int], set[str], set[str], tuple[ast.AST, ...]]]
+        str,
+        list[tuple[tuple[int, int], set[str], set[str] | None, tuple[ast.AST, ...]]],
     ] = {}
 
     def _record(
         name: str,
         at: tuple[int, int],
         added: set[str],
-        removed: set[str],
+        removed: set[str] | None,
         payloads: tuple[ast.AST, ...] = (),
     ) -> None:
-        if added or removed or payloads:
+        if added or removed is None or removed or payloads:
             mutations.setdefault(name, []).append((at, added, removed, payloads))
 
     for node in ast.walk(tree):
@@ -706,7 +733,11 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
         ):
-            if node.func.attr == "pop" and node.args:
+            if node.func.attr == "clear" and not node.args:
+                # `TW.clear()` empties it, so anything recorded before is gone.
+                # `None` rather than a key set: there is no list of keys to name.
+                _record(node.func.value.id, at, set(), None)
+            elif node.func.attr == "pop" and node.args:
                 # `T.pop("zh-TW")` removes the key as plainly as `del T["zh-TW"]`.
                 first = node.args[0]
                 if isinstance(first, ast.Constant) and isinstance(first.value, str):
@@ -793,7 +824,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         for pos, _added, removed, _payloads in mutations.get(name, ()):
             if pos <= at or (rebound is not None and pos > rebound):
                 continue
-            if TRADITIONAL_KEY in removed:
+            if removed is None or TRADITIONAL_KEY in removed:
                 return True
         return False
 
@@ -853,6 +884,16 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             return set()
         if isinstance(node, ast.Name):
             return _name_keys(node.id, at, strict)
+        if (
+            isinstance(node, ast.Call)
+            and not node.args
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr in ("items", "copy")
+            and isinstance(node.func.value, ast.Name)
+        ):
+            # `T.update(TW.items())` / `dict(TW.copy())` — both hand over exactly
+            # the keys TW has, and passing a view is ordinary Python.
+            return _mapping_keys(node.func.value, at, strict)
         if isinstance(node, ast.IfExp):
             # `T |= TW if flag else {"zh-TW": t}` — either branch may carry it, and
             # a conditional supply counts, same as in `_directly_visible_keys`.
@@ -904,7 +945,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 continue
             for payload in payloads:
                 added = added | _mapping_keys(payload, pos)
-            keys = (keys | added) - removed
+            keys = set() if removed is None else (keys | added) - removed
         return keys
 
     for node in ast.walk(tree):
@@ -1019,6 +1060,10 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 _exempt_binding_before(operand.id, origin, inside_binding)
             else:
                 pending.extend(_merge_operands(operand))
+
+    for group in loop_alternatives:
+        if group & exempt:
+            exempt |= group
 
     return exempt
 
