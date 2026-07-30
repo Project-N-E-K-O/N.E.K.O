@@ -1829,3 +1829,102 @@ def test_independent_table_inside_a_conditional_operand_is_still_judged():
     src = 'T = {**(A if flag else {"new": {"en": "e", "zh": "s"}}), "zh-TW": "t"}'
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'F = {"en": "e", "zh": "s"}\nT = {**dict(F), "zh-TW": "t"}',
+    'F = {"en": "e", "zh": "s"}\nT = {**(dict(F) | {}), "zh-TW": "t"}',
+])
+def test_named_fragment_is_exempt_through_a_nested_merge(src):
+    """`{**dict(_F), "zh-TW": t}` wraps the fragment `{**_F, "zh-TW": t}` names.
+
+    Stopping at the outer Call reported _F for a table that is compliant either way
+    it is written.
+    """
+    assert _violations(src) == []
+
+
+def test_nested_merge_without_zh_tw_still_reports_the_fragment():
+    src = 'F = {"en": "e", "zh": "s"}\nT = {**dict(F), "ja": "j"}'
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+def test_alias_resolves_against_the_binding_it_captured():
+    """An alias holds the object bound *then*, not whatever the name means later.
+
+    Carrying the use site's line through every hop read `ALIAS` against a later
+    rebinding of its source and exempted a table that really is missing zh-TW —
+    a miss, and the one direction this exemption must never produce.
+    """
+    src = (
+        "P = {}\n"
+        "ALIAS = P\n"
+        'P = {"zh-TW": "t"}\n'
+        'T = {"en": "e", "zh": "s"}\n'
+        "T.update(ALIAS)"
+    )
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [4]
+
+
+def test_alias_to_a_traditional_binding_still_exempts():
+    src = (
+        'P = {"zh-TW": "t"}\n'
+        "ALIAS = P\n"
+        'T = {"en": "e", "zh": "s"}\n'
+        "T.update(ALIAS)"
+    )
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = {k: v for k, v in ((None, d), ("en", e), ("zh", s))}', [1]),
+    ('T = {k: v for k, v in ((None, d), ("en", e), ("zh", s), ("zh-TW", t))}', []),
+])
+def test_pair_comprehension_skips_constant_non_string_keys(src, expected):
+    """A sentinel like `(None, default)` cannot be hiding zh-TW.
+
+    Abandoning the whole comprehension over one made the table unknowable and let
+    a real offender through — while the dict-literal and iterable-of-pairs paths
+    had skipped the same kind of item all along.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('T = dict((loc, build(loc)) for loc in ("en", "zh"))', [1]),
+    ('T = dict((loc, build(loc)) for loc in ("en", "zh", "zh-TW"))', []),
+    ('T = dict((k, v) for k, v in (("en", e), ("zh", s)))', [1]),
+])
+def test_generator_constructor_resolves_like_the_comprehension(src, expected):
+    """`dict((loc, v) for loc in ...)` is a dict comprehension in other syntax.
+
+    Resolving one spelling and not the other is the kind of near-miss a gate gets
+    worked around by, so both go through `_comprehension_keys`.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+def test_documented_blind_spot_individually_innocent_fragments():
+    """Pinned so a change here is deliberate — see the module docstring.
+
+    Judging the result would mean following names from `_table_nodes`, the reverse
+    of the union-style resolution used for the supply question: over-approximating
+    is safe there and unsafe here. Zero `NAME | NAME` merges exist under
+    config/prompts, and the shape is strictly more verbose than one dict.
+    """
+    src = 'EN = {"en": "e"}\nZH = {"zh": "s"}\nT = EN | ZH'
+    assert _violations(src) == []
+
+
+def test_generator_of_non_pairs_is_not_treated_as_a_mapping():
+    """`dict(<3-tuples>)` is a TypeError, not a table with knowable keys.
+
+    Reading the first two slots of a wider tuple would have the gate claim to know
+    the keys of something that is not a mapping at all.
+    """
+    src = 'T = dict((loc, x, y) for loc, x, y in (("en", 1, 2), ("zh", 3, 4)))'
+    assert _violations(src) == []

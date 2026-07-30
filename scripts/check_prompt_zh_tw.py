@@ -80,7 +80,7 @@ exemption is deliberately keyed on the mutation *demonstrably supplying zh-TW*:
 exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a real
 offender, trading one rare false positive for a broad blind spot.
 
-Two accepted blind spots follow from that choice, both on the miss side:
+Three accepted blind spots, all on the miss side:
 
   * The exemption is not ordered against *other* uses of the name, so a copy taken
     before the backfill is not judged::
@@ -98,6 +98,19 @@ Two accepted blind spots follow from that choice, both on the miss side:
     bodies unreadable, so it is not a shape prompt modules use — there are zero
     occurrences under config/prompts. Chasing constructor forms with no realistic
     use grows ``resolve_keys`` without shrinking the backlog.
+  * A table assembled from fragments that are each *individually* fine is not
+    judged::
+
+        EN = {"en": "e"}         # no simplified key — not an offender
+        ZH = {"zh": "s"}         # no anchor key — not an offender
+        T = EN | ZH              # the runtime table is one, and lacks zh-TW
+
+    Judging the result would mean following names from ``_table_nodes``, which is
+    the reverse of the union-style resolution used for the supply question: there,
+    over-approximating is safe; here, a merge with one unknowable operand would be
+    reported despite that operand possibly carrying zh-TW. Under config/prompts
+    there are zero ``NAME | NAME`` merges, and the shape — one dict per locale,
+    merged — is strictly more verbose than the single dict it replaces.
 
 
 Usage:
@@ -262,12 +275,14 @@ def _literal_string_sequence(node: ast.AST) -> set[str] | None:
 
 
 def _pair_sequence_keys(node: ast.AST) -> set[str] | None:
-    """Keys of a literal iterable of ``(key, value)`` pairs, or None.
+    """Keys of an iterable of ``(key, value)`` pairs, or None.
 
     Covers the standard ``dict([("en", ...), ("zh", ...)])`` constructor. Every
     element must be a two-item sequence whose first item is a string constant;
     anything else makes the key set unknowable.
     """
+    if isinstance(node, ast.GeneratorExp):
+        return _generator_pair_keys(node)
     if not isinstance(node, (ast.List, ast.Tuple, ast.Set)):
         return None
     keys: set[str] = set()
@@ -329,12 +344,38 @@ def _comprehension_keys(node: ast.DictComp) -> set[str] | None:
             if index >= len(element.elts):
                 return None
             item = element.elts[index]
-            if not isinstance(item, ast.Constant) or not isinstance(item.value, str):
+            if not isinstance(item, ast.Constant):
                 return None
-            keys.add(item.value)
+            # Constant non-string keys are skipped, not disqualifying — the dict
+            # literal and iterable-of-pairs paths already say so, and a sentinel
+            # like `(None, default)` cannot be hiding 'zh-TW'.
+            if isinstance(item.value, str):
+                keys.add(item.value)
         return keys
 
     return None
+
+
+def _generator_pair_keys(node: ast.GeneratorExp) -> set[str] | None:
+    """Keys of ``dict((loc, build(loc)) for loc in ("en", "zh"))``, or None.
+
+    The generator spelling of a dict comprehension, resolved on exactly the same
+    terms because it is the same table written with different syntax — accepting
+    one and not the other is the kind of near-miss the gate gets worked around by.
+
+    Rather than restate those terms, the generator's ``(key, value)`` element is
+    handed to ``_comprehension_keys`` in the slots a DictComp keeps them in, so the
+    two spellings cannot drift apart.
+    """
+    if not isinstance(node.elt, ast.Tuple) or len(node.elt.elts) != 2:
+        return None
+    return _comprehension_keys(
+        ast.DictComp(
+            key=node.elt.elts[0],
+            value=node.elt.elts[1],
+            generators=node.generators,
+        )
+    )
 
 
 def _operand_branches(node: ast.AST) -> list[ast.AST]:
@@ -522,8 +563,12 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
 
     def _binding_before(
         name: str, lineno: int, exclude: ast.AST | None = None
-    ) -> ast.AST | None:
+    ) -> tuple[int, ast.AST] | None:
         """The value bound to `name` most recently at or before `lineno`.
+
+        Returns the binding's own line along with it, because a hop through an
+        alias has to continue searching from where the alias was bound rather than
+        from the far-away line that reads it.
 
         ``exclude`` skips one candidate: for a self-rebinding merge like
         ``T = T | {...}`` the new assignment registers on the same line as the
@@ -535,15 +580,15 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 continue
             if exclude is not None and value is exclude:
                 continue
-            return value
+            return ln, value
         return None
 
     def _exempt_binding_before(
         name: str, lineno: int, exclude: ast.AST | None = None
     ) -> None:
-        value = _binding_before(name, lineno, exclude)
-        if value is not None:
-            exempt.add(id(value))
+        found = _binding_before(name, lineno, exclude)
+        if found is not None:
+            exempt.add(id(found[1]))
 
     def _mapping_keys(
         node: ast.AST | None, at: int, _seen: frozenset[str] = frozenset()
@@ -590,10 +635,20 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         exclude: ast.AST | None = None,
         _seen: frozenset[str] = frozenset(),
     ) -> set[str]:
-        """Keys of the mapping `name` is bound to just before `at`."""
-        return _mapping_keys(
-            _binding_before(name, at, exclude), at, _seen | {name}
-        )
+        """Keys of the mapping `name` is bound to just before `at`.
+
+        The hop moves the search position back to that binding's own line. Keeping
+        the original `at` through every hop read an alias against a *later*
+        rebinding of its source: in ``ALIAS = P`` / ``P = {"zh-TW": t}`` / ``T.
+        update(ALIAS)``, ALIAS still holds the earlier object at runtime, so
+        resolving P at the update line would exempt a table that really is missing
+        zh-TW.
+        """
+        found = _binding_before(name, at, exclude)
+        if found is None:
+            return set()
+        bound_at, value = found
+        return _mapping_keys(value, bound_at, _seen | {name})
 
     for node in ast.walk(tree):
         # `T["zh-TW"] = t`, and its annotated form `T["zh-TW"]: str = t`.
@@ -677,9 +732,20 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
 
         if TRADITIONAL_KEY not in _directly_visible_keys(node, _named_keys):
             continue
-        for operand in operands:
+        # Down through nested merges, not just the operands spelled as bare names:
+        # `{**dict(_F), "zh-TW": t}` wraps the same fragment `{**_F, "zh-TW": t}`
+        # names directly, and stopping at the outer Call reported _F for a table
+        # that is compliant either way it is written.
+        pending, walked = list(operands), set()
+        while pending:
+            operand = pending.pop()
+            if id(operand) in walked:
+                continue
+            walked.add(id(operand))
             if isinstance(operand, ast.Name):
                 _exempt_binding_before(operand.id, node.lineno, exclude=node)
+            else:
+                pending.extend(_merge_operands(operand))
 
     return exempt
 
