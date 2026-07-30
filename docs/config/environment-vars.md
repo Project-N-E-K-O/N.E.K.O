@@ -65,6 +65,30 @@ Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.
 
+## Realtime voice escape hatches
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEKO_REALTIME_ARBITER_FAIL_OPEN` | unset (off) | Changes what the realtime response arbiter does when a response lifecycle cannot reach a terminal state. By default it tears the realtime WebSocket down, which the user sees as a disconnect and session rebuild. Set to `1`, `true`, `yes`, or `on` to instead drop only the stuck turn and keep the connection. Read once when a voice session's client is constructed, so a change needs a restart. |
+
+Leave this unset unless you are actually hitting the failure. The default
+exists because the arbiter escalates precisely when its own bookkeeping about
+which response owns the connection has become untrustworthy, and continuing on
+a connection in that state can produce overlapping responses. Fail-open trades
+that safety for availability: one turn is lost instead of the session.
+
+The symptom worth setting it for is repeated disconnect-and-rebuild during
+voice conversation, with backend logs carrying:
+
+```
+response arbiter failing closed: <reason> (current=... owner=... queue_depth=... server_vad_pending=...)
+```
+
+That line is what distinguishes an arbiter-initiated teardown from an upstream
+provider disconnect — absent it, the disconnect came from somewhere else and
+this variable will not help. With fail-open enabled the same escalations log
+`response arbiter failing open, transport kept: ...` instead.
+
 ## Storage and local vectors
 
 | Variable | Meaning |

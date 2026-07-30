@@ -371,6 +371,13 @@ async def test_fail_open_clears_the_bookkeeping_it_gave_up_on(make_harness):
     assert isinstance(raised, asyncio.TimeoutError)
     await _settle()
 
+    # Pin the policy first. Clearing this bookkeeping is something BOTH
+    # policies do (fail-closed reaches it through _mark_connection_lost), so
+    # without these two lines the test would stay green against a switch
+    # hardwired to fail-closed — asserting less than its own name claims.
+    assert harness.aborted == []
+    assert harness.arbiter._connection_available is True
+
     assert harness.arbiter._server_response_ids == {}
     assert harness.arbiter._server_response_active is False
     assert harness.arbiter._server_vad_response_pending is False

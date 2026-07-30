@@ -979,34 +979,41 @@ async def test_fail_close_logs_initiator_reason_and_lane_state(caplog):
         aborted.append(reason)
 
     arbiter = RealtimeResponseArbiter(_send, abort_transport=_abort)
-    ticket = await arbiter.enqueue(source="native")
-    await asyncio.wait_for(ticket.sent, timeout=1)
-    arbiter.notify_response_created(
-        {"type": "response.created", "response": {"id": "resp-1"}}
-    )
+    # try/finally, not a bare sequence: failing closed is what lets the queue
+    # consumer exit on its own here, so any regression that stops it from
+    # firing leaves the worker running and the test hanging on teardown
+    # instead of reporting the failure it just found.
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
 
-    with caplog.at_level(
-        logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
-    ):
-        # No terminal ever arrives for the cancelled response; cancel_current
-        # fails closed and re-raises the timeout to its caller.
-        with pytest.raises(asyncio.TimeoutError):
-            await arbiter.cancel_current(timeout=0.05)
+        with caplog.at_level(
+            logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
+        ):
+            # No terminal ever arrives for the cancelled response; cancel_current
+            # fails closed and re-raises the timeout to its caller.
+            with pytest.raises(asyncio.TimeoutError):
+                await arbiter.cancel_current(timeout=0.05)
 
-    assert aborted, "the cancel-terminal timeout must fail closed"
-    fail_close_logs = [
-        record.getMessage()
-        for record in caplog.records
-        if "failing closed" in record.getMessage()
-    ]
-    assert fail_close_logs, (
-        "the fail-close chokepoint must log BEFORE tearing the transport, or "
-        "a field disconnect cannot be attributed to the arbiter at all"
-    )
-    message = fail_close_logs[0]
-    assert "response cancellation terminal event timed out" in message
-    assert "queue_depth" in message
-    assert "owner=native" in message
+        assert aborted, "the cancel-terminal timeout must fail closed"
+        fail_close_logs = [
+            record.getMessage()
+            for record in caplog.records
+            if "failing closed" in record.getMessage()
+        ]
+        assert fail_close_logs, (
+            "the fail-close chokepoint must log BEFORE tearing the transport, or "
+            "a field disconnect cannot be attributed to the arbiter at all"
+        )
+        message = fail_close_logs[0]
+        assert "response cancellation terminal event timed out" in message
+        assert "queue_depth" in message
+        assert "owner=native" in message
+    finally:
+        await arbiter.shutdown("test teardown")
 
 
 @pytest.mark.unit
@@ -1023,24 +1030,30 @@ async def test_cancel_whose_terminal_arrives_in_time_never_fails_closed(caplog):
         aborted.append(reason)
 
     arbiter = RealtimeResponseArbiter(_send, abort_transport=_abort)
-    ticket = await arbiter.enqueue(source="native")
-    await asyncio.wait_for(ticket.sent, timeout=1)
-    arbiter.notify_response_created(
-        {"type": "response.created", "response": {"id": "resp-1"}}
-    )
-
-    with caplog.at_level(
-        logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
-    ):
-        cancel_task = asyncio.create_task(arbiter.cancel_current(timeout=1))
-        await _settle()
-        arbiter.notify_response_terminal(
-            {"type": "response.cancelled", "response": {"id": "resp-1"}}
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
         )
-        await asyncio.wait_for(cancel_task, timeout=1)
 
-    assert aborted == []
-    assert not any(
-        "failing closed" in record.getMessage() for record in caplog.records
-    )
-    await arbiter.wait_until_idle(timeout=1)
+        with caplog.at_level(
+            logging.WARNING, logger="main_logic.omni_realtime_client._response_arbiter"
+        ):
+            cancel_task = asyncio.create_task(arbiter.cancel_current(timeout=1))
+            await _settle()
+            arbiter.notify_response_terminal(
+                {"type": "response.cancelled", "response": {"id": "resp-1"}}
+            )
+            await asyncio.wait_for(cancel_task, timeout=1)
+
+        assert aborted == []
+        assert not any(
+            "failing closed" in record.getMessage() for record in caplog.records
+        )
+        await arbiter.wait_until_idle(timeout=1)
+    finally:
+        # This one never escalates, so nothing ever clears
+        # ``_connection_available`` for it — the worker outlives the test
+        # unless it is reaped here.
+        await arbiter.shutdown("test teardown")
