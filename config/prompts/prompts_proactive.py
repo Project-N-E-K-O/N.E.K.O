@@ -1295,6 +1295,12 @@ def _normalize_prompt_language(lang: str) -> str:
     ``'zh-TW'`` template yet; resolving to ``zh-TW`` here would send Traditional
     Chinese users straight to the English fallback. Flip it together with the
     templates. See issue #2500.
+
+    Flipping it also turns tests/unit/test_proactive_text_does_not_dehumanize.py
+    red — that file asserts the collapse directly
+    (``get_cat_greeting_episode_scene(..., 'zh-TW') == zh``). That failure is
+    expected once the templates exist: update the assertion, do not restore the
+    collapse.
     """
     return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=False)
 
