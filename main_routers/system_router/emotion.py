@@ -99,7 +99,9 @@ _EMOTION_NEGATION_PREFIXES = get_emotion_negation_prefixes_flat()
 _EMOTION_NEGATION_SUFFIXES = get_emotion_negation_suffixes_flat()
 
 
-_EMOTION_TOKEN_RE = re.compile(r"[^\W_]+", flags=re.UNICODE)
+# 保留撇号：否则 `don't` 被切成 `don` + `t`，两半都不在否定词表里，而
+# `_is_negated_ascii_match` 正是按 token 回看三个词来判 `don't be sad` 的。
+_EMOTION_TOKEN_RE = re.compile(r"[^\W_]+(?:['’][^\W_]+)*", flags=re.UNICODE)
 
 
 _NON_WORD_RE = re.compile(r"[\W_]", flags=re.UNICODE)

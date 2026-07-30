@@ -276,11 +276,14 @@ def test_negation_flattening_preserves_the_previous_vocabulary():
         "안", "아니", "못", "не", "нет", "никогда",
     }
     assert previous_prefixes <= set(P.get_emotion_negation_prefixes_flat())
-    assert set(P.get_emotion_negation_words_flat()) == {
+    # A superset, not equality: the move had to preserve every token, and later
+    # rounds deliberately added the English contractions plus the Spanish and
+    # Portuguese blocks that were missing entirely.
+    assert {
         "not", "no", "never", "without",
         "안", "아니", "못", "않", "아니다", "아닌", "아님",
         "не", "нет", "никогда",
-    }
+    } <= set(P.get_emotion_negation_words_flat())
     # The Korean set is what the move had to preserve; the Chinese postposed
     # forms are a later, deliberate addition on top of it.
     korean = set(P.EMOTION_NEGATION_SUFFIXES_BY_LANG["ko"])
@@ -741,22 +744,30 @@ def test_modal_negations_stay_out_of_the_wide_lookback(text, expected):
     assert _infer_emotion_from_text(text)[0] == expected
 
 
-@pytest.mark.parametrize("text,expected", [
-    # a negation separated from the keyword by a degree word: the single
-    # character falls outside the two-character tight window
-    ("不要那麼難過", "sad"), ("不要那么难过", "sad"),
-    ("不要太開心", "happy"), ("我沒有必要生氣", "angry"),
+@pytest.mark.parametrize("text", [
+    "不要那麼難過", "不要那么难过", "不要太開心",
 ])
-def test_documented_gap_negation_across_a_degree_word(text, expected):
-    """Pinned so a change here is deliberate, not accidental.
+def test_imperative_negation_across_a_degree_word(text):
+    """Was a documented gap until the adjacent-modal table covered it.
 
-    Both orthographies behave the same, on main as here — closing it means
-    carrying a negation across intervening words in the heuristic, which is a
-    different mechanism from either table and out of scope for a backfill.
+    The imperative negator reaches the emotion word once the degree adverb
+    between them is peeled -- the same scoping the modal compounds use, so it
+    costs no extra mechanism.
     """
     from main_routers.system_router.emotion import _infer_emotion_from_text
 
-    assert _infer_emotion_from_text(text)[0] == expected
+    assert _infer_emotion_from_text(text)[0] is None
+
+
+def test_still_uncovered_negation_shape():
+    """A noun phrase between the negation and the emotion word is still uncovered.
+
+    It is not a degree adverb, so nothing peels it; both orthographies behave
+    the same, on main as here. Pinned so closing it later is deliberate.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text("我沒有必要生氣")[0] == "angry"
 
 
 @pytest.mark.parametrize("confidence", CONFIDENCES)
@@ -959,3 +970,67 @@ def test_mixed_script_aliases_are_ranked_in_one_space(label, expected, confidenc
     a later alias ahead of an earlier one.
     """
     assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    # a negator separated from the emotion by something that is NOT a degree
+    # adverb, so peeling cannot reach it — the whole phrase goes in the table
+    "沒什麼好開心的", "沒什麼可開心的", "没什么好开心的", "有什麼好開心的",
+    "不要生氣", "不要這麼開心", "我不覺得開心", "我沒覺得難過",
+    "我沒有在生氣", "我沒有到很難過", "我沒有覺得很開心",
+    # `超級` / `一直` really are degree/aspect adverbs, so those go in that table
+    "我沒有超級難過", "我沒有一直很難過",
+])
+def test_negation_separated_by_a_non_adverb(label, confidence):
+    """One of the most ordinary ways Chinese denies an emotion.
+
+    What sits between the negator and the emotion word is not a degree adverb,
+    so peeling cannot reach it. Returning the denied emotion is the worst answer
+    available under any reading.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+def test_hao_is_not_treated_as_a_degree_adverb():
+    """The obvious shortcut for the above, which does not work.
+
+    Peeling that character off "in a bad mood" uncovers a trailing negation, so
+    "in a bad mood, sad" would read as negated. It is both an intensifier and
+    half of a negation, which is why these go in the negation table as whole
+    phrases instead.
+    """
+    for confidence in CONFIDENCES:
+        assert _label("心情不好難過", confidence) == "sad"
+        assert _label("心情不好难过", confidence) == "sad"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "興奮しない", "興奮していない", "憤怒しない", "傷心ではない",
+])
+def test_japanese_postposed_negation(label, confidence):
+    """Japanese negates with a trailing kana, and that table had no `ja` block.
+
+    It went unnoticed until this PR added Traditional aliases that are the same
+    Han characters Japanese uses: those words became reachable and landed
+    straight in the hole.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "não estou feliz", "não estou triste", "nunca feliz", "jamás feliz",
+    "isn't happy", "wasn't sad", "aren't sad",
+    # the contraction has to survive tokenizing for the three-token lookback to
+    # see it — `don't` split into `don` + `t` was in no table at all
+    "don't be sad", "can't be happy",
+])
+def test_portuguese_spanish_and_contracted_english_negation(label, confidence):
+    """Portuguese had no negation words at all; Spanish borrowed English's `no`.
+
+    The English contractions were split by the tokenizer into `isn` + `t`, so
+    neither half was ever a negation.
+    """
+    assert _label(label, confidence) == "neutral"
