@@ -457,8 +457,9 @@ async def test_user_speech_preempts_an_inflight_native_request():
         "an utterance ending must fail the in-flight explicit request "
         "immediately, not leave it racing the automatic VAD response"
     )
-    with pytest.raises(RuntimeError, match="pending server VAD response"):
-        await create
+    exc = create.exception()
+    assert isinstance(exc, RuntimeError)
+    assert "pending server VAD response" in str(exc)
     assert "response.create" not in socket.types, (
         "the losing explicit request must never emit its response.create"
     )
