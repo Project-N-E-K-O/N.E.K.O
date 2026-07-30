@@ -965,9 +965,10 @@ def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
     assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
     assert "response.status === 412" in sync_fn
     assert "const preservedKeys = new Set(_pendingSettingsKeys);" in sync_fn
-    assert "_conversationSettingsEtagMutationVersion" in sync_fn
-    assert "_crossWindowSettingsChangedSince(" in sync_fn
-    assert "etagMutationVersionAtSend" in sync_fn
+    assert "_conversationSettingsEtagKeyMutationVersions" in sync_fn
+    assert "_crossWindowSettingsNewerThanEtag(" in sync_fn
+    assert "etagKeyMutationVersionsAtSend" in sync_fn
+    assert "_markEtagConfirmedSharedSettings(" in sync_fn
     assert "_settingsChangedSince(settings, mutationVersionAtSend).forEach" in sync_fn
     assert "_mergeConversationSettingsSnapshot(data, preservedKeys);" in sync_fn
     assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
@@ -1297,7 +1298,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
         }
         const tick = () => new Promise((resolve) => setImmediate(resolve));
 
-        function makeContext(bootFails) {
+        function makeContext(bootFails, bootData) {
           let storageListener = null;
           const runtime = {
             stoppedSpeech: 0,
@@ -1313,6 +1314,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               mergeMessagesEnabled: false,
               mouseTrackingEnabled: false,
             })],
+            ['neko_noise_reduction', '0'],
           ]);
           const postCalls = [];
           const sandbox = {
@@ -1342,7 +1344,7 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
                 true,
                 200,
                 '"conversation-settings-0"',
-                {
+                bootData || {
                   success: true,
                   settings: { independentAsrEnabled: false },
                   telemetryBranch: null,
@@ -1391,6 +1393,45 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
               storageListener({ key: 'project_neko_settings', newValue });
             },
           };
+        }
+
+        async function runBootMetadataScenario() {
+          const tuple = {
+            writeId: Date.now() + 1000,
+            writerId: 'server-ahead',
+            value: false,
+          };
+          const tupleOnly = makeContext(false, {
+            success: true,
+            settings: { independentAsrEnabled: false },
+            telemetryBranch: null,
+            decisions: { independentAsrEnabled: tuple },
+          });
+          await tick();
+          await tick();
+          const persistedTuple = JSON.parse(
+            tupleOnly.store.get('project_neko_settings')
+          )._sharedWriteMeta.asrDecision;
+          assert(
+            JSON.stringify(persistedTuple) === JSON.stringify(tuple),
+            'a newer same-value server tuple must persist for offline write-id flooring'
+          );
+
+          const noiseMerge = makeContext(false, {
+            success: true,
+            settings: {
+              independentAsrEnabled: false,
+              noiseReductionEnabled: true,
+            },
+            telemetryBranch: null,
+            decisions: {},
+          });
+          await tick();
+          await tick();
+          assert(
+            noiseMerge.store.get('neko_noise_reduction') === '1',
+            'a boot merge must synchronize the legacy noise cache'
+          );
         }
 
         async function runScenario(serverDecisionIsNewer) {
@@ -1872,11 +1913,113 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           await tick();
         }
 
+        async function runPartialConfirmedWatermarkScenario() {
+          const ctx = makeContext(true);
+          await tick();
+          await tick();
+
+          ctx.fireStorage(JSON.stringify({
+            mergeMessagesEnabled: true,
+            _sharedWriteMeta: {
+              writeId: 110,
+              writerId: 'window-b',
+              changedKeys: ['mergeMessagesEnabled'],
+              hydrated: true,
+              asrAuthoritative: true,
+            },
+          }));
+          ctx.win.focusModeEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+
+          assert(ctx.postCalls.length === 1, 'the dirty-only edit must POST');
+          const firstBody = JSON.parse(ctx.postCalls[0].opts.body);
+          assert(firstBody.focusModeEnabled === true, 'the pending key is sent');
+          assert(
+            !Object.prototype.hasOwnProperty.call(
+              firstBody,
+              'mergeMessagesEnabled'
+            ),
+            'the sibling cross-window key stays outside the partial request'
+          );
+
+          ctx.postCalls[0].resolve(response(
+            true,
+            200,
+            '"conversation-settings-1"',
+            {
+              success: true,
+              settings: {
+                independentAsrEnabled: false,
+                focusModeEnabled: true,
+                mergeMessagesEnabled: true,
+                slopFilterEnabled: false,
+              },
+              revision: 1,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          ctx.win.slopFilterEnabled = true;
+          ctx.mod.saveSettings();
+          await tick();
+          await tick();
+
+          assert(ctx.postCalls.length === 2, 'the next edit sends a full snapshot');
+          ctx.postCalls[1].resolve(response(
+            false,
+            412,
+            '"conversation-settings-2"',
+            {
+              success: false,
+              settings: {
+                independentAsrEnabled: false,
+                focusModeEnabled: true,
+                mergeMessagesEnabled: false,
+                slopFilterEnabled: false,
+              },
+              revision: 2,
+              decisions: {},
+            }
+          ));
+          await tick();
+          await tick();
+
+          assert(ctx.postCalls.length === 3, 'the CAS mismatch retries once');
+          const retryBody = JSON.parse(ctx.postCalls[2].opts.body);
+          assert(
+            retryBody.mergeMessagesEnabled === false,
+            'a sibling edit confirmed by the prior response no longer masks server state'
+          );
+          assert(
+            retryBody.slopFilterEnabled === true,
+            'the still-pending local edit survives the CAS merge'
+          );
+
+          ctx.postCalls[2].resolve(response(
+            true,
+            200,
+            '"conversation-settings-3"',
+            {
+              success: true,
+              settings: retryBody,
+              revision: 3,
+              decisions: {},
+            }
+          ));
+          await tick();
+        }
+
         async function main() {
+          await runBootMetadataScenario();
           await runScenario(false);
           await runScenario(true);
           await runAcknowledgedDirtyScenario();
           await runSuccessfulPartialSnapshotScenario();
+          await runPartialConfirmedWatermarkScenario();
           console.log('CAS_HARNESS_OK');
           process.exitCode = 0;
         }

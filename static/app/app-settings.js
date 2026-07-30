@@ -316,7 +316,7 @@
     // revision even when the edit arrived before the next CAS request began.
     // Preserve such fields across a 412; mutationVersionAtSend alone only sees
     // edits that arrive after the request snapshot.
-    let _conversationSettingsEtagMutationVersion = 0;
+    const _conversationSettingsEtagKeyMutationVersions = Object.create(null);
     const _CONVERSATION_SETTINGS_MAX_ATTEMPTS = 3;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
@@ -642,14 +642,41 @@
         return changedKeys;
     }
 
-    function _crossWindowSettingsChangedSince(mutationVersion) {
+    function _etagKeyMutationVersionsSnapshot() {
+        const snapshot = {};
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            snapshot[key] =
+                _conversationSettingsEtagKeyMutationVersions[key] || 0;
+        });
+        return snapshot;
+    }
+
+    function _crossWindowSettingsNewerThanEtag(etagKeyMutationVersions) {
         const changedKeys = new Set();
         _SHARED_SETTINGS_KEYS.forEach((key) => {
-            if ((_crossWindowKeyMutationVersions[key] || 0) > mutationVersion) {
+            if ((_crossWindowKeyMutationVersions[key] || 0)
+                > (etagKeyMutationVersions[key] || 0)) {
                 changedKeys.add(key);
             }
         });
         return changedKeys;
+    }
+
+    function _markEtagConfirmedSharedSettings(
+        settingsAtSend,
+        serverSettings,
+        mutationVersionAtSend,
+        payloadWasFull
+    ) {
+        if (!serverSettings || typeof serverSettings !== 'object') return;
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(serverSettings, key)) return;
+            if (!payloadWasFull
+                && (!Object.prototype.hasOwnProperty.call(settingsAtSend, key)
+                    || settingsAtSend[key] !== serverSettings[key])) return;
+            _conversationSettingsEtagKeyMutationVersions[key] =
+                mutationVersionAtSend;
+        });
     }
 
     function _noteCrossWindowMutations(settings, explicitKeys) {
@@ -850,8 +877,8 @@
             for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
                 const settings = getConversationSettings();
                 const mutationVersionAtSend = _crossWindowMutationVersion;
-                const etagMutationVersionAtSend =
-                    _conversationSettingsEtagMutationVersion;
+                const etagKeyMutationVersionsAtSend =
+                    _etagKeyMutationVersionsSnapshot();
                 const mergedAtSend = _settingsMergedFromServer;
                 // Full snapshot only once server values were actually merged. If
                 // the gate opened on its timeout instead — or the GET resolved to
@@ -891,8 +918,8 @@
                     if (nextEtag) _conversationSettingsEtag = nextEtag;
                     if (response.status === 412) {
                         const preservedKeys = new Set(_pendingSettingsKeys);
-                        _crossWindowSettingsChangedSince(
-                            etagMutationVersionAtSend
+                        _crossWindowSettingsNewerThanEtag(
+                            etagKeyMutationVersionsAtSend
                         ).forEach((key) => {
                             preservedKeys.add(key);
                         });
@@ -912,9 +939,13 @@
                         console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
                         return;
                     }
-                    if (nextEtag && mergedAtSend) {
-                        _conversationSettingsEtagMutationVersion =
-                            mutationVersionAtSend;
+                    if (nextEtag) {
+                        _markEtagConfirmedSharedSettings(
+                            settings,
+                            data.settings,
+                            mutationVersionAtSend,
+                            mergedAtSend
+                        );
                     }
                     const changedWhileInFlight = _settingsChangedSince(
                         settings,
@@ -926,8 +957,8 @@
                     // the gate race, hydrate untouched fields from this response
                     // while preserving edits made after the request was sent.
                     if (!mergedAtSend) {
-                        _crossWindowSettingsChangedSince(
-                            etagMutationVersionAtSend
+                        _crossWindowSettingsNewerThanEtag(
+                            _conversationSettingsEtagKeyMutationVersions
                         ).forEach((key) => {
                             changedWhileInFlight.add(key);
                         });
@@ -1483,8 +1514,10 @@
                         || _asrDecisionOutranks(_lastAsrDecision, serverAsrDecision)));
                 if (serverResult.etag) {
                     _conversationSettingsEtag = serverResult.etag;
-                    _conversationSettingsEtagMutationVersion =
-                        mutationVersionAtGetStart;
+                    _SHARED_SETTINGS_KEYS.forEach((key) => {
+                        _conversationSettingsEtagKeyMutationVersions[key] =
+                            mutationVersionAtGetStart;
+                    });
                 }
                 let hasUpdate = false;
 
@@ -1512,16 +1545,23 @@
                     // hydrates from the server — the old whole-merge-drop let
                     // one unrelated toggle turn the entire boot-default
                     // snapshot into the POSTed truth.
+                    const acceptedSharedSettings = {};
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] === undefined) continue;
                         if (_dirtySettingsKeys.has(key)) continue;
                         if ((_crossWindowKeyMutationVersions[key] || 0)
                             > mutationVersionAtGetStart) continue;
                         if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;
-                        if (S[key] !== serverSettings[key]) {
+                        if (_SHARED_SETTINGS_KEYS.indexOf(key) !== -1
+                            || key === 'userLanguage') {
+                            acceptedSharedSettings[key] = serverSettings[key];
+                        } else if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;
                         }
+                    }
+                    if (applySharedRuntimeSettings(acceptedSharedSettings)) {
+                        hasUpdate = true;
                     }
                     // Subtitle bridge mirrors follow the same dirty gating so
                     // a user-changed subtitle preference survives the merge.
@@ -1534,11 +1574,12 @@
                 }
                 if (serverResult.decisions) {
                     const previousAsr = S.independentAsrEnabled;
-                    _adoptServerAsrDecision({
+                    const adoptedAsrDecision = _adoptServerAsrDecision({
                         settings: serverSettings,
                         decisions: serverResult.decisions
                     });
-                    if (S.independentAsrEnabled !== previousAsr) {
+                    if (adoptedAsrDecision
+                        || S.independentAsrEnabled !== previousAsr) {
                         hasUpdate = true;
                     }
                 }

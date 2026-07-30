@@ -465,30 +465,32 @@ async def test_noise_reduction_runtime_updates_follow_persisted_revision(monkeyp
     )
 
     old_apply = asyncio.create_task(
-        preferences_router._apply_noise_reduction_if_current(True, 1)
+        preferences_router._apply_noise_reduction_if_current(True)
     )
     await old_apply_started.wait()
     current = SimpleNamespace(
         revision=2,
-        settings={"noiseReductionEnabled": False},
+        settings={
+            "noiseReductionEnabled": True,
+            "focusModeEnabled": True,
+        },
     )
-    new_apply = asyncio.create_task(
-        preferences_router._apply_noise_reduction_if_current(False, 2)
-    )
-    await asyncio.sleep(0)
-    assert calls == [("start", True)]
-
     allow_old_apply.set()
-    await asyncio.gather(old_apply, new_apply)
+    await old_apply
     assert calls == [
         ("start", True),
         ("end", True),
-        ("start", False),
-        ("end", False),
     ]
 
-    await preferences_router._apply_noise_reduction_if_current(True, 1)
-    assert calls[-1] == ("end", False)
+    current = SimpleNamespace(
+        revision=3,
+        settings={"noiseReductionEnabled": False},
+    )
+    await preferences_router._apply_noise_reduction_if_current(True)
+    assert calls == [("start", True), ("end", True)]
+
+    await preferences_router._apply_noise_reduction_if_current(False)
+    assert calls[-2:] == [("start", False), ("end", False)]
 
 
 def test_cloud_restore_rebases_asr_decision_and_revision(monkeypatch, tmp_path):
@@ -534,6 +536,74 @@ def test_cloud_restore_rebases_asr_decision_and_revision(monkeypatch, tmp_path):
     assert restored["_conversation_settings_revision"] == 10
     assert restored["_independent_asr_decision"] == {
         "writeId": 201,
+        "writerId": "server-cloud-restore",
+        "value": False,
+    }
+
+
+def test_cloud_restore_empty_settings_still_advances_revision(tmp_path):
+    path = tmp_path / "user_preferences.json"
+    path.write_text(
+        json.dumps(
+            [
+                {
+                    "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+                    "focusModeEnabled": True,
+                    "_conversation_settings_revision": 9,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    payload = cloudsave_bindings._build_runtime_preferences_payload(
+        _FakeConfigManager(path),
+        {},
+    )
+    restored = next(
+        entry
+        for entry in payload
+        if entry.get("model_path") == preferences.GLOBAL_CONVERSATION_KEY
+    )
+
+    assert restored == {
+        "model_path": preferences.GLOBAL_CONVERSATION_KEY,
+        "_conversation_settings_revision": 10,
+    }
+
+
+def test_cloud_restore_ignores_out_of_range_asr_decision_floor(
+    monkeypatch,
+    tmp_path,
+):
+    path = tmp_path / "user_preferences.json"
+    path.write_text("[]", encoding="utf-8")
+    now_ms = 150
+    patch_module_clock(
+        monkeypatch,
+        cloudsave_bindings,
+        time_ns=lambda: now_ms * 1_000_000,
+    )
+
+    payload = cloudsave_bindings._build_runtime_preferences_payload(
+        _FakeConfigManager(path),
+        {
+            "independentAsrEnabled": False,
+            "_independent_asr_decision": {
+                "writeId": preferences.MAX_SAFE_ASR_WRITE_ID + 1,
+                "writerId": "malformed-cloud",
+                "value": False,
+            },
+        },
+    )
+    restored = next(
+        entry
+        for entry in payload
+        if entry.get("model_path") == preferences.GLOBAL_CONVERSATION_KEY
+    )
+
+    assert restored["_independent_asr_decision"] == {
+        "writeId": now_ms,
         "writerId": "server-cloud-restore",
         "value": False,
     }

@@ -114,14 +114,11 @@ async def _apply_noise_reduction_to_active_sessions(enabled: bool):
         logger.warning(f"Failed to apply noise reduction to active sessions: {e}")
 
 
-async def _apply_noise_reduction_if_current(enabled: bool, revision: int):
-    """Serialize runtime updates and discard revisions superseded before apply."""
+async def _apply_noise_reduction_if_current(enabled: bool):
+    """Serialize runtime updates and discard superseded noise values."""
     async with _NOISE_REDUCTION_APPLY_LOCK:
         current = await aload_global_conversation_settings_snapshot()
-        if (
-            current.revision != revision
-            or current.settings.get("noiseReductionEnabled") is not enabled
-        ):
+        if current.settings.get("noiseReductionEnabled") is not enabled:
             return
         await _apply_noise_reduction_to_active_sessions(enabled)
 
@@ -315,7 +312,6 @@ async def save_conversation_settings(request: Request):
         ):
             await _apply_noise_reduction_if_current(
                 data["noiseReductionEnabled"],
-                result.snapshot.revision,
             )
 
         return JSONResponse(

@@ -41,6 +41,8 @@ from .staging import (
 _CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
 _CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
 _CLOUD_RESTORE_ASR_WRITER_ID = "server-cloud-restore"
+_MAX_SAFE_ASR_WRITE_ID = 9_007_199_254_740_991
+_ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000
 
 
 def _load_user_preferences_entries(config_manager) -> list[dict[str, Any]]:
@@ -91,41 +93,60 @@ def _build_runtime_preferences_payload(config_manager, conversation_settings: di
         for key, value in (conversation_settings or {}).items()
         if key != "model_path"
     }
-    if filtered_settings:
-        current_revision = current_global.get(_CONVERSATION_SETTINGS_REVISION_KEY)
-        imported_revision = filtered_settings.get(_CONVERSATION_SETTINGS_REVISION_KEY)
-        filtered_settings[_CONVERSATION_SETTINGS_REVISION_KEY] = max(
-            current_revision
-            if isinstance(current_revision, int) and not isinstance(current_revision, bool)
-            else 0,
-            imported_revision
-            if isinstance(imported_revision, int) and not isinstance(imported_revision, bool)
-            else 0,
-        ) + 1
+    current_revision = current_global.get(_CONVERSATION_SETTINGS_REVISION_KEY)
+    imported_revision = filtered_settings.get(_CONVERSATION_SETTINGS_REVISION_KEY)
+    filtered_settings[_CONVERSATION_SETTINGS_REVISION_KEY] = max(
+        current_revision
+        if isinstance(current_revision, int) and not isinstance(current_revision, bool)
+        else 0,
+        imported_revision
+        if isinstance(imported_revision, int) and not isinstance(imported_revision, bool)
+        else 0,
+    ) + 1
 
-        restored_asr_value = filtered_settings.get("independentAsrEnabled")
-        if isinstance(restored_asr_value, bool):
-            known_write_ids = []
-            for entry in (current_global, filtered_settings):
-                decision = entry.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
-                write_id = decision.get("writeId") if isinstance(decision, dict) else None
-                if isinstance(write_id, int) and not isinstance(write_id, bool) and write_id >= 0:
-                    known_write_ids.append(write_id)
-            filtered_settings[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = {
-                "writeId": max([
-                    time.time_ns() // 1_000_000,
+    restored_asr_value = filtered_settings.get("independentAsrEnabled")
+    if isinstance(restored_asr_value, bool):
+        now_ms = time.time_ns() // 1_000_000
+        max_accepted_write_id = min(
+            _MAX_SAFE_ASR_WRITE_ID - 1,
+            now_ms + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS,
+        )
+        known_write_ids = []
+        for entry in (current_global, filtered_settings):
+            decision = entry.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
+            if not isinstance(decision, dict):
+                continue
+            write_id = decision.get("writeId")
+            writer_id = decision.get("writerId")
+            decision_value = decision.get("value")
+            if (
+                isinstance(write_id, int)
+                and not isinstance(write_id, bool)
+                and 0 <= write_id <= max_accepted_write_id
+                and isinstance(writer_id, str)
+                and 0 < len(writer_id) <= 128
+                and isinstance(decision_value, bool)
+                and entry.get("independentAsrEnabled") is decision_value
+            ):
+                known_write_ids.append(write_id)
+        filtered_settings[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = {
+            "writeId": min(
+                max([
+                    now_ms,
                     *(write_id + 1 for write_id in known_write_ids),
                 ]),
-                "writerId": _CLOUD_RESTORE_ASR_WRITER_ID,
-                "value": restored_asr_value,
-            }
-        else:
-            filtered_settings.pop(_CONVERSATION_SETTINGS_ASR_DECISION_KEY, None)
+                max_accepted_write_id,
+            ),
+            "writerId": _CLOUD_RESTORE_ASR_WRITER_ID,
+            "value": restored_asr_value,
+        }
+    else:
+        filtered_settings.pop(_CONVERSATION_SETTINGS_ASR_DECISION_KEY, None)
 
-        preferences.append({
-            "model_path": GLOBAL_CONVERSATION_KEY,
-            **filtered_settings,
-        })
+    preferences.append({
+        "model_path": GLOBAL_CONVERSATION_KEY,
+        **filtered_settings,
+    })
     return preferences
 
 
