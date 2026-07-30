@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import hashlib
 import json
 import os
 import time
@@ -26,9 +27,12 @@ from main_logic.asr_client._infra import (
     AsrSessionConfig,
     AsrWorkerFn,
     _AsrWorkerEvent,
+    _AsrWorkerRequest,
     _RealtimeAsrSessionImpl,
 )
 from main_logic.asr_client._registry_meta import ASR_PROVIDER_REGISTRY
+from main_logic.asr_client.detector_runtime import _create_voice_turn_adapter
+from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 
 _CREDENTIAL_FIELDS = {
@@ -37,6 +41,12 @@ _CREDENTIAL_FIELDS = {
     "openai": "ASSIST_API_KEY_OPENAI",
     "step": "ASSIST_API_KEY_STEP",
     "grok": "ASSIST_API_KEY_GROK",
+    "glm": "ASSIST_API_KEY_GLM",
+    "gemini": "ASSIST_API_KEY_GEMINI",
+}
+
+_DEFAULT_CREDENTIAL_ENVS = {
+    "openai": ("OPENAI_API_KEY", "ASSIST_API_KEY_OPENAI"),
 }
 
 _AUTH_FAILURE_CODES = {
@@ -62,21 +72,65 @@ class SmokeResult:
     auth_failure_observed: bool = False
     audio_sample_rates_hz: list[int] = field(default_factory=list)
     turns_requested: int = 0
+    expected_finals: int = 0
     business_finals: int = 0
+    smart_turn_auto: bool = False
+    normalized_audio_seconds: float = 0.0
+    commit_count: int = 0
+    client_commit_count: int = 0
     ready_ms: float | None = None
     first_partial_ms: float | None = None
+    commit_ms: list[float] = field(default_factory=list)
     final_ms: list[float] = field(default_factory=list)
+    activity_events: list[dict[str, float | str]] = field(default_factory=list)
     close_ms: float | None = None
     statuses: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
     transcripts: list[str] | None = None
+    requested_model: str | None = None
+    accepted_model: str | None = None
+    requested_server_vad: dict[str, Any] | None = None
+    accepted_server_vad: dict[str, Any] | None = None
+    provider_timeline: list[dict[str, Any]] = field(default_factory=list)
+    item_final_counts: dict[str, int] = field(default_factory=dict)
+    stop_to_final_ms: list[float] = field(default_factory=list)
+    reconnect_count: int = 0
+    disconnect_count: int = 0
+    transcript_fingerprints: list[dict[str, int | str]] = field(default_factory=list)
 
 
 @dataclass(slots=True)
 class _Observation:
     started_at: float
     first_partial_at: float | None = None
+    audio_bytes: int = 0
+    commit_at: list[float] = field(default_factory=list)
     final_at: list[float] = field(default_factory=list)
+    activity_at: list[tuple[str, float]] = field(default_factory=list)
+    protocol_at: list[tuple[dict[str, Any], float]] = field(default_factory=list)
+
+
+class _RequestQueueObserver:
+    """Count normalized audio and commits without retaining audio payloads."""
+
+    def __init__(
+        self,
+        target: asyncio.Queue[_AsrWorkerRequest],
+        observation: _Observation,
+    ) -> None:
+        self._target = target
+        self._observation = observation
+
+    async def get(self) -> _AsrWorkerRequest:
+        request = await self._target.get()
+        if request.kind == "audio":
+            self._observation.audio_bytes += len(request.audio)
+        elif request.kind == "commit":
+            self._observation.commit_at.append(time.perf_counter())
+        return request
+
+    def task_done(self) -> None:
+        self._target.task_done()
 
 
 class _ResponseQueueObserver:
@@ -131,7 +185,12 @@ def _read_wav_pcm16(path: Path) -> _AudioTurn:
     )
 
 
-def _resolve_provider(provider: str) -> AsrWorkerFn:
+def _resolve_provider(
+    provider: str,
+    *,
+    diagnostic_sink: Callable[[dict[str, Any]], None] | None = None,
+    openai_server_vad_silence_ms: int = 1_000,
+) -> AsrWorkerFn:
     if provider in {"qwen", "qwen_intl"}:
         from main_logic.asr_client.workers.qwen import qwen_asr_worker
 
@@ -140,7 +199,11 @@ def _resolve_provider(provider: str) -> AsrWorkerFn:
     if provider == "openai":
         from main_logic.asr_client.workers.openai import openai_asr_worker
 
-        return openai_asr_worker
+        return partial(
+            openai_asr_worker,
+            diagnostic_sink=diagnostic_sink,
+            server_vad_silence_ms=openai_server_vad_silence_ms,
+        )
     if provider == "step":
         from main_logic.asr_client.workers.step import step_asr_worker
 
@@ -149,15 +212,29 @@ def _resolve_provider(provider: str) -> AsrWorkerFn:
         from main_logic.asr_client.workers.grok import grok_asr_worker
 
         return grok_asr_worker
+    if provider == "glm":
+        from main_logic.asr_client.workers.glm import glm_asr_worker
+
+        return glm_asr_worker
+    if provider == "gemini":
+        from main_logic.asr_client.workers.gemini import gemini_asr_worker
+
+        return gemini_asr_worker
     raise ValueError(f"unknown provider: {provider}")
 
 
 def _resolve_api_key(provider: str, override_env: str) -> str:
     field_name = _CREDENTIAL_FIELDS[provider]
-    env_name = override_env.strip() or field_name
-    api_key = os.getenv(env_name, "").strip()
-    if api_key:
-        return api_key
+    override = override_env.strip()
+    env_names = (
+        (override,)
+        if override
+        else _DEFAULT_CREDENTIAL_ENVS.get(provider, (field_name,))
+    )
+    for env_name in env_names:
+        api_key = os.getenv(env_name, "").strip()
+        if api_key:
+            return api_key
 
     from utils.config_manager import get_config_manager
 
@@ -178,10 +255,24 @@ def _observe_worker(
         api_key: str,
         config: AsrSessionConfig,
     ) -> None:
+        request_observer = _RequestQueueObserver(request_queue, observation)
         observer = _ResponseQueueObserver(response_queue, observation)
-        await worker_fn(request_queue, observer, api_key, config)  # type: ignore[arg-type]
+        await worker_fn(  # type: ignore[arg-type]
+            request_observer,
+            observer,
+            api_key,
+            config,
+        )
 
     return observed_worker
+
+
+async def _sleep_until(deadline: float) -> None:
+    """Pace against perf-counter; Windows asyncio timers can fire 10 ms early."""
+
+    remaining = deadline - time.perf_counter()
+    if remaining > 0:
+        await asyncio.to_thread(time.sleep, remaining)
 
 
 async def _stream_turn(
@@ -192,8 +283,11 @@ async def _stream_turn(
     endpointing_mode: str,
     realtime: bool,
     vad_silence_ms: int,
+    smart_turn_auto: bool = False,
+    smart_turn_silence_ms: int = 0,
 ) -> None:
     bytes_per_frame = 2
+    next_chunk_at = time.perf_counter()
     chunk_bytes = max(
         bytes_per_frame,
         turn.sample_rate_hz * bytes_per_frame * chunk_ms // 1000,
@@ -203,15 +297,23 @@ async def _stream_turn(
         chunk = turn.pcm[offset : offset + chunk_bytes]
         await session.stream_audio(chunk, sample_rate_hz=turn.sample_rate_hz)
         if realtime:
-            await asyncio.sleep(len(chunk) / bytes_per_frame / turn.sample_rate_hz)
-    if endpointing_mode == "provider" and vad_silence_ms:
-        silence = bytes(turn.sample_rate_hz * bytes_per_frame * vad_silence_ms // 1000)
+            next_chunk_at += len(chunk) / bytes_per_frame / turn.sample_rate_hz
+            await _sleep_until(next_chunk_at)
+    silence_ms = (
+        smart_turn_silence_ms
+        if smart_turn_auto
+        else vad_silence_ms if endpointing_mode == "provider" else 0
+    )
+    if silence_ms:
+        silence = bytes(turn.sample_rate_hz * bytes_per_frame * silence_ms // 1000)
         for offset in range(0, len(silence), chunk_bytes):
             chunk = silence[offset : offset + chunk_bytes]
             await session.stream_audio(chunk, sample_rate_hz=turn.sample_rate_hz)
             if realtime:
-                await asyncio.sleep(len(chunk) / bytes_per_frame / turn.sample_rate_hz)
-    await session.signal_user_activity_end()
+                next_chunk_at += len(chunk) / bytes_per_frame / turn.sample_rate_hz
+                await _sleep_until(next_chunk_at)
+    if not smart_turn_auto:
+        await session.signal_user_activity_end()
 
 
 async def _wait_for_final_count(
@@ -233,12 +335,21 @@ async def _wait_for_final_count(
 
 async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
     turns = [_read_wav_pcm16(path) for path in args.audio]
+    if any(turn.sample_rate_hz != turns[0].sample_rate_hz for turn in turns[1:]):
+        raise ValueError(
+            "all WAV turns in one smoke session must use the same sample rate"
+        )
+    smart_turn_auto = bool(getattr(args, "smart_turn_auto", False))
+    expected_finals = int(getattr(args, "expected_finals", 0) or len(turns))
+    smart_turn_silence_ms = int(getattr(args, "smart_turn_silence_ms", 0))
     result = SmokeResult(
         provider=args.provider,
         endpointing_mode=args.endpointing_mode,
         expected_auth_failure=bool(args.invalid_credential),
         audio_sample_rates_hz=[turn.sample_rate_hz for turn in turns],
         turns_requested=len(turns),
+        expected_finals=expected_finals,
+        smart_turn_auto=smart_turn_auto,
         transcripts=[] if args.show_transcripts else None,
     )
     api_key = (
@@ -247,19 +358,37 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         else _resolve_api_key(args.provider, args.api_key_env)
     )
     observation = _Observation(started_at=time.perf_counter())
-    worker_fn = _observe_worker(_resolve_provider(args.provider), observation)
+    def record_protocol(event: dict[str, Any]) -> None:
+        observation.protocol_at.append((dict(event), time.perf_counter()))
+
+    worker_fn = _observe_worker(
+        _resolve_provider(
+            args.provider,
+            diagnostic_sink=record_protocol,
+            openai_server_vad_silence_ms=int(
+                getattr(args, "openai_server_vad_silence_ms", 1_000)
+            ),
+        ),
+        observation,
+    )
     final_event = asyncio.Event()
+    credential_result_event = asyncio.Event()
     transcripts: list[str] = []
 
     async def on_transcript(text: str) -> None:
         transcripts.append(text)
         final_event.set()
+        credential_result_event.set()
 
     async def on_error(error: str) -> None:
         result.errors.append(error)
+        credential_result_event.set()
 
     async def on_status(status: str) -> None:
         result.statuses.append(status)
+
+    async def on_activity(event: SpeechActivityEvent) -> None:
+        observation.activity_at.append((event.value, time.perf_counter()))
 
     session = _RealtimeAsrSessionImpl(
         worker_fn=worker_fn,
@@ -272,6 +401,11 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         on_input_transcript=on_transcript,
         on_connection_error=on_error,
         on_status_message=on_status,
+        voice_turn_factory=(
+            partial(_create_voice_turn_adapter, on_activity=on_activity)
+            if smart_turn_auto
+            else None
+        ),
     )
 
     connected_at: float | None = None
@@ -280,33 +414,68 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         await session.connect()
         connected_at = time.perf_counter()
         result.ready_ms = (connected_at - observation.started_at) * 1000
-        if args.invalid_credential:
-            raise RuntimeError("invalid credential unexpectedly reached ASR_READY")
 
         if not args.skip_clear:
             await session.clear_audio_buffer()
 
-        for index, turn in enumerate(turns, start=1):
+        if args.invalid_credential:
             await _stream_turn(
                 session,
-                turn,
+                turns[0],
                 chunk_ms=args.chunk_ms,
                 endpointing_mode=args.endpointing_mode,
                 realtime=not args.no_realtime,
                 vad_silence_ms=args.vad_silence_ms,
+                smart_turn_auto=smart_turn_auto,
+                smart_turn_silence_ms=smart_turn_silence_ms,
             )
-            await _wait_for_final_count(
-                final_event,
-                transcripts,
-                index,
-                args.timeout_s,
-            )
-            if not session.is_ready:
-                raise RuntimeError("commit or provider endpointing closed the session")
+            try:
+                await asyncio.wait_for(
+                    credential_result_event.wait(), timeout=args.timeout_s
+                )
+            except TimeoutError:
+                raise RuntimeError(
+                    "invalid credential was not rejected before timeout"
+                ) from None
+            error_codes = {error.partition(":")[0] for error in result.errors}
+            if not error_codes & _AUTH_FAILURE_CODES:
+                raise RuntimeError(
+                    "invalid credential unexpectedly reached a provider result"
+                )
+        else:
+            for index, turn in enumerate(turns, start=1):
+                await _stream_turn(
+                    session,
+                    turn,
+                    chunk_ms=args.chunk_ms,
+                    endpointing_mode=args.endpointing_mode,
+                    realtime=not args.no_realtime,
+                    vad_silence_ms=args.vad_silence_ms,
+                    smart_turn_auto=smart_turn_auto,
+                    smart_turn_silence_ms=smart_turn_silence_ms,
+                )
+                if not smart_turn_auto:
+                    await _wait_for_final_count(
+                        final_event,
+                        transcripts,
+                        index,
+                        args.timeout_s,
+                    )
+                if not session.is_ready:
+                    raise RuntimeError(
+                        "commit or provider endpointing closed the session"
+                    )
+            if smart_turn_auto:
+                await _wait_for_final_count(
+                    final_event,
+                    transcripts,
+                    expected_finals,
+                    args.timeout_s,
+                )
 
-        if result.errors:
+        if result.errors and not args.invalid_credential:
             raise RuntimeError(result.errors[-1])
-        result.ok = len(transcripts) == len(turns)
+        result.ok = len(transcripts) == expected_finals
     except Exception as exc:
         if args.invalid_credential:
             if session.is_ready:
@@ -330,6 +499,9 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
         result.close_ms = (time.perf_counter() - close_started) * 1000
 
     result.business_finals = len(transcripts)
+    result.normalized_audio_seconds = observation.audio_bytes / (16_000 * 2)
+    result.commit_count = len(observation.commit_at)
+    result.client_commit_count = result.commit_count
     if result.transcripts is not None:
         result.transcripts.extend(transcripts)
     if observation.first_partial_at is not None:
@@ -339,6 +511,70 @@ async def _run_provider_smoke(args: argparse.Namespace) -> SmokeResult:
     result.final_ms = [
         (timestamp - observation.started_at) * 1000
         for timestamp in observation.final_at
+    ]
+    result.commit_ms = [
+        (timestamp - observation.started_at) * 1000
+        for timestamp in observation.commit_at
+    ]
+    result.activity_events = [
+        {
+            "event": event,
+            "ms": (timestamp - observation.started_at) * 1000,
+        }
+        for event, timestamp in observation.activity_at
+    ]
+    item_ordinals: dict[str, str] = {}
+    stopped_at: dict[str, float] = {}
+    connection_count = 0
+    for event, timestamp in observation.protocol_at:
+        event_type = str(event.get("type") or "unknown")
+        raw_item_id = event.get("item_id")
+        item_label: str | None = None
+        if isinstance(raw_item_id, str) and raw_item_id:
+            item_label = item_ordinals.setdefault(
+                raw_item_id,
+                f"item-{len(item_ordinals) + 1}",
+            )
+        timeline_event: dict[str, Any] = {
+            "event": event_type,
+            "ms": (timestamp - observation.started_at) * 1000,
+        }
+        if item_label is not None:
+            timeline_event["item"] = item_label
+        result.provider_timeline.append(timeline_event)
+        if event_type == "session.update":
+            result.requested_model = str(event.get("requested_model") or "") or None
+            requested_vad = event.get("requested_turn_detection")
+            if isinstance(requested_vad, dict):
+                result.requested_server_vad = dict(requested_vad)
+        elif event_type == "session.updated":
+            result.accepted_model = str(event.get("accepted_model") or "") or None
+            accepted_vad = event.get("accepted_turn_detection")
+            if isinstance(accepted_vad, dict):
+                result.accepted_server_vad = dict(accepted_vad)
+        elif event_type == "input_audio_buffer.speech_stopped" and item_label:
+            stopped_at[item_label] = timestamp
+        elif (
+            event_type == "conversation.item.input_audio_transcription.completed"
+            and item_label
+        ):
+            result.item_final_counts[item_label] = (
+                result.item_final_counts.get(item_label, 0) + 1
+            )
+            stopped = stopped_at.get(item_label)
+            if stopped is not None:
+                result.stop_to_final_ms.append((timestamp - stopped) * 1000)
+        elif event_type == "websocket.connected":
+            connection_count += 1
+        elif event_type == "websocket.disconnected":
+            result.disconnect_count += 1
+    result.reconnect_count = max(0, connection_count - 1)
+    result.transcript_fingerprints = [
+        {
+            "length": len(transcript),
+            "sha256_12": hashlib.sha256(transcript.encode("utf-8")).hexdigest()[:12],
+        }
+        for transcript in transcripts
     ]
     if args.invalid_credential:
         error_codes = {error.partition(":")[0] for error in result.errors}
@@ -375,18 +611,42 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--language", default="zh")
     parser.add_argument("--api-key-env", default="")
-    parser.add_argument("--chunk-ms", type=int, default=100)
+    parser.add_argument("--chunk-ms", type=int, default=10)
     parser.add_argument(
         "--vad-silence-ms",
         type=int,
         default=1000,
         help="Silence appended to each provider-endpointed turn so it can finalize.",
     )
+    parser.add_argument(
+        "--openai-server-vad-silence-ms",
+        type=int,
+        choices=(800, 1_000, 1_200),
+        default=1_000,
+        help="OpenAI-only calibration candidate; production defaults to 1000 ms.",
+    )
     parser.add_argument("--timeout-s", type=float, default=30.0)
     parser.add_argument("--no-realtime", action="store_true")
     parser.add_argument("--skip-clear", action="store_true")
     parser.add_argument("--invalid-credential", action="store_true")
     parser.add_argument("--show-transcripts", action="store_true")
+    parser.add_argument(
+        "--smart-turn-auto",
+        action="store_true",
+        help="Use the production Smart Turn adapter and do not issue manual commits.",
+    )
+    parser.add_argument(
+        "--smart-turn-silence-ms",
+        type=int,
+        default=1000,
+        help="Trailing silence streamed after each WAV in Smart Turn auto mode.",
+    )
+    parser.add_argument(
+        "--expected-finals",
+        type=int,
+        default=None,
+        help="Expected final callbacks; defaults to the number of WAV inputs.",
+    )
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     if args.chunk_ms <= 0:
@@ -395,6 +655,12 @@ def parse_args() -> argparse.Namespace:
         parser.error("--timeout-s must be positive")
     if args.vad_silence_ms < 0:
         parser.error("--vad-silence-ms must not be negative")
+    if args.smart_turn_silence_ms < 0:
+        parser.error("--smart-turn-silence-ms must not be negative")
+    if args.expected_finals is None:
+        args.expected_finals = len(args.audio)
+    elif args.expected_finals <= 0:
+        parser.error("--expected-finals must be positive")
     supported_modes = ASR_PROVIDER_REGISTRY[
         "qwen" if args.provider == "qwen_intl" else args.provider
     ].supported_endpointing_modes
@@ -404,6 +670,13 @@ def parse_args() -> argparse.Namespace:
         parser.error(
             f"{args.provider} does not support {args.endpointing_mode} endpointing"
         )
+    provider_key = "qwen" if args.provider == "qwen_intl" else args.provider
+    provider_meta = ASR_PROVIDER_REGISTRY[provider_key]
+    if args.smart_turn_auto:
+        if args.endpointing_mode != "manual" or not provider_meta.requires_smart_turn:
+            parser.error("--smart-turn-auto requires a Smart Turn manual provider")
+        if args.no_realtime:
+            parser.error("--smart-turn-auto requires real-time chunk pacing")
     return args
 
 

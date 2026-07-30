@@ -15,6 +15,7 @@ import { createPortal } from 'react-dom';
 import AvatarToolItemManager, { type AvatarToolManagerAnchorRect } from './AvatarToolItemManager';
 import AvatarToolQuickbar from './AvatarToolQuickbar';
 import FullChatSurface from './FullChatSurface';
+import NekoTooltipLayer from './NekoTooltipLayer';
 import AvatarToolVisuals from './avatar-tools/presentation';
 import { useAvatarToolRuntime } from './avatar-tools/runtime';
 import {
@@ -29,6 +30,10 @@ import {
   resetCompactToolWheelDetentAudioForTests,
   useCompactToolWheelAudioPreload,
 } from './compactToolWheelAudio';
+import {
+  createCompactToolWheelForwardedClick,
+  resolveCompactToolWheelPointerHit,
+} from './compactToolWheelGeometry';
 import { useFocusGlow } from './useFocusGlow';
 import { useGuideChatButtonLock } from './useGuideChatButtonLock';
 import CompactExportHistoryPanel, {
@@ -55,7 +60,7 @@ import {
   type ChoicePromptSource,
 } from './message-schema';
 import {
-  AVAILABLE_AVATAR_TOOLS,
+  AVAILABLE_COMPACT_AVATAR_TOOLS,
   DEFAULT_ACTIVE_AVATAR_TOOL_IDS,
   persistActiveAvatarToolIds,
   readPersistedActiveAvatarToolIds,
@@ -104,6 +109,19 @@ type CompactInlineExportBridge = {
 };
 
 const defaultMessages: ChatMessage[] = [];
+
+function hasSingleInsertedLineBreak(previousValue: string, currentValue: string): boolean {
+  if (currentValue.length !== previousValue.length + 1) return false;
+
+  for (let index = 0; index < currentValue.length; index += 1) {
+    if (currentValue[index] !== '\n') continue;
+    if (currentValue.slice(0, index) + currentValue.slice(index + 1) === previousValue) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 function getEffectiveCompactChatState(
   requestedState: CompactChatState,
@@ -767,7 +785,7 @@ function getCompactMessagePreview(messages: ChatMessage[]): CompactMessagePrevie
 
 type ToolIconItem = AvatarToolItem;
 
-const toolIconItems = AVAILABLE_AVATAR_TOOLS;
+const toolIconItems = AVAILABLE_COMPACT_AVATAR_TOOLS;
 
 function getToolItemLabel(item: ToolIconItem): string {
   return i18n(item.labelKey, item.labelFallback);
@@ -847,16 +865,21 @@ function getCompactHistoryScrollUnderCompactToolWheel(
  * same shared runtime.
  */
 export default function ChatWindowRoot(props: ChatWindowProps) {
-  if (props.chatSurfaceMode === 'full') {
-    return <FullChatSurface {...props} />;
-  }
-  return <CompactChatApp {...props} />;
+  return (
+    <>
+      {props.chatSurfaceMode === 'full'
+        ? <FullChatSurface {...props} />
+        : <CompactChatApp {...props} />}
+      <NekoTooltipLayer />
+    </>
+  );
 }
 
 function CompactChatApp({
   title = i18n('chat.title', 'N.E.K.O Chat'),
   iconSrc = '/static/icons/chat_icon.png',
   messages = defaultMessages,
+  assistantName = '',
   inputPlaceholder = i18n('chat.textInputPlaceholder', 'Type a message...'),
   sendButtonLabel = i18n('chat.send', 'Send'),
   chatWindowAriaLabel = i18n('chat.reactWindowAriaLabel', 'Neko chat window'),
@@ -865,6 +888,7 @@ function CompactChatApp({
   composerHidden = false,
   composerDisabled = false,
   compactInputLocked = false,
+  catLocalTextOnly = false,
   chatSurfaceMode = 'compact',
   compactMinimizeCancelSeq = 0,
   compactChatState,
@@ -921,6 +945,8 @@ function CompactChatApp({
   useCompactToolWheelAudioPreload();
 
   const [draft, setDraft] = useState('');
+  const [catDraft, setCatDraft] = useState('');
+  const visibleDraft = catLocalTextOnly ? catDraft : draft;
   const guideChatButtonsLocked = useGuideChatButtonLock();
   const compactTextEntryLocked = composerDisabled || compactInputLocked || guideChatButtonsLocked;
   const [toolMenuOpen, setToolMenuOpen] = useState(false);
@@ -974,7 +1000,7 @@ function CompactChatApp({
   const compactInputToolFanInteractiveRef = useRef(false);
   const compactInputRef = useRef<HTMLTextAreaElement | null>(null);
   const compactChoiceLayerRef = useRef<HTMLDivElement | null>(null);
-  const draftRef = useRef(draft);
+  const draftRef = useRef(visibleDraft);
   const compactPreviewTextVisibleRef = useRef('');
   const previousCompactPreviewTextRef = useRef('');
   const compactPreviewTextRef = useRef<HTMLSpanElement | null>(null);
@@ -1064,13 +1090,22 @@ function CompactChatApp({
   const compactHistoryVisibilitySuppressClickRef = useRef(false);
   const compactExportHistoryUnmountTimerRef = useRef<number | null>(null);
   const submittingRef = useRef(false);
+  const composerIsComposingRef = useRef(false);
+  const composerImeCommitPendingRef = useRef(false);
+  const composerEnterCycleActiveRef = useRef(false);
+  const composerEnterCycleImeRef = useRef(false);
+  const composerEnterCycleShiftRef = useRef(false);
+  const composerEnterCycleLineBreakRef = useRef(false);
+  const composerEnterCycleDraftRef = useRef('');
+  const composerExplicitPointerSubmitRef = useRef(false);
   const lastRollbackKeyRef = useRef('');
   const lastAvatarToolMenuOpenRequestIdRef = useRef('');
   const lastCompactToolFanOpenRequestIdRef = useRef('');
   const lastCompactToolWheelRotateRequestIdRef = useRef('');
   const lastCompactHistoryOpenRequestIdRef = useRef('');
   const lastCompactToolWheelIndexRequestIdRef = useRef('');
-  const compactInputHasPayload = draft.trim().length > 0 || composerAttachments.length > 0;
+  const compactInputHasPayload = visibleDraft.trim().length > 0
+    || (!catLocalTextOnly && composerAttachments.length > 0);
   const canSubmit = !compactTextEntryLocked && compactInputHasPayload;
   const avatarToolRuntime = useAvatarToolRuntime({
     composerHidden,
@@ -1080,6 +1115,7 @@ function CompactChatApp({
     onInteraction: onAvatarInteraction,
     onStateChange: onAvatarToolStateChange,
     getToolLabel: getToolItemLabel,
+    avatarName: assistantName,
     onDeactivate: () => setToolMenuOpen(false),
   });
   const activeAvatarToolId = avatarToolRuntime.activeToolId;
@@ -1172,7 +1208,7 @@ function CompactChatApp({
   // ChoicePrompt and galgame options share the same composer-anchored slot.
   // The transient invite should win when both are present so we do not stack
   // two button groups in the same compact surface.
-  const compactChoiceInteractionsAllowed = !composerHidden;
+  const compactChoiceInteractionsAllowed = !composerHidden && !catLocalTextOnly;
   const choicePromptHasOptions = compactChoiceInteractionsAllowed
     && !!(choicePrompt && choicePrompt.options.length > 0);
   const galgameOptionsVisible =
@@ -1893,8 +1929,8 @@ function CompactChatApp({
   const clearAvatarToolAriaLabel = i18n('chat.clearAvatarToolAriaLabel', '取消道具');
 
   useEffect(() => {
-    draftRef.current = draft;
-  }, [draft]);
+    draftRef.current = visibleDraft;
+  }, [visibleDraft]);
 
   useEffect(() => {
     compactPreviewTextVisibleRef.current = compactPreviewTextVisible;
@@ -3256,8 +3292,6 @@ function CompactChatApp({
       && workAreaWidth > 0
       && Number.isFinite(workAreaHeight)
       && workAreaHeight > 0;
-    const isMobileViewport = window.matchMedia?.('(max-width: 820px)').matches === true;
-    if (!isMobileViewport && !hasDesktopWorkArea) return 'default';
     const fanElement = compactInputToolFanRef.current;
     const fanRect = fanElement?.getBoundingClientRect();
     if (!fanElement || !fanRect || fanRect.width <= 0 || fanRect.height <= 0) return 'default';
@@ -3300,30 +3334,35 @@ function CompactChatApp({
       prefersViewportFitFromBottomGap = bottomGap < bottomFlipThreshold;
     }
 
-    const wheelLayoutFitsViewport = (
+    const getWheelLayoutViewportOverflow = (
       slots: ReadonlyArray<{ angleDeg: number; scale: number }>,
       options?: { axis?: 'both' | 'horizontal' },
-    ) => slots.every(({ angleDeg, scale }) => {
+    ) => slots.reduce((totalOverflow, { angleDeg, scale }) => {
       const angle = angleDeg * (Math.PI / 180);
       const itemCenterX = centerX + (Math.cos(angle) * orbitRadius);
       const itemCenterY = centerY + (Math.sin(angle) * orbitRadius);
       const halfSize = (buttonSize * scale) / 2;
-      const fitsHorizontally = itemCenterX - halfSize >= minX
-        && itemCenterX + halfSize <= maxX;
-      if (options?.axis === 'horizontal') return fitsHorizontally;
-      return fitsHorizontally
-        && itemCenterY - halfSize >= minY
-        && itemCenterY + halfSize <= maxY;
-    });
+      const horizontalOverflow = Math.max(0, minX - (itemCenterX - halfSize))
+        + Math.max(0, (itemCenterX + halfSize) - maxX);
+      if (options?.axis === 'horizontal') return totalOverflow + horizontalOverflow;
+      const verticalOverflow = Math.max(0, minY - (itemCenterY - halfSize))
+        + Math.max(0, (itemCenterY + halfSize) - maxY);
+      return totalOverflow + horizontalOverflow + verticalOverflow;
+    }, 0);
+
+    const defaultOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelDefaultVisibleSlots);
+    const viewportFitOverflow = getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots);
 
     if (
       prefersViewportFitFromBottomGap
-      && wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' })
+      && getWheelLayoutViewportOverflow(compactInputToolWheelViewportFitVisibleSlots, { axis: 'horizontal' }) === 0
+      && viewportFitOverflow <= defaultOverflow
     ) {
       return 'viewport-fit';
     }
-    if (wheelLayoutFitsViewport(compactInputToolWheelDefaultVisibleSlots)) return 'default';
-    if (wheelLayoutFitsViewport(compactInputToolWheelViewportFitVisibleSlots)) return 'viewport-fit';
+    if (defaultOverflow === 0) return 'default';
+    if (viewportFitOverflow === 0) return 'viewport-fit';
+    if (!hasDesktopWorkArea && viewportFitOverflow < defaultOverflow) return 'viewport-fit';
     return 'default';
   }, []);
 
@@ -3466,7 +3505,7 @@ function CompactChatApp({
   ]);
 
   const openCompactInputToolFan = useCallback((intent: 'click' | 'hover', options?: { ignoreDisabled?: boolean }) => {
-    if ((!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
+    if (catLocalTextOnly || (!options?.ignoreDisabled && composerDisabled) || compactInputHasPayload) return false;
     if (compactInputToolFanOpenRef.current) {
       clearCompactInputToolFanCloseTimer();
       if (compactInputToolFanOpenIntentRef.current !== 'click') {
@@ -3498,6 +3537,7 @@ function CompactChatApp({
   }, [
     clearCompactInputToolFanCloseTimer,
     clearCompactInputToolFanInteractiveTimer,
+    catLocalTextOnly,
     compactInputHasPayload,
     composerDisabled,
     dispatchCompactToolFanOpenState,
@@ -4534,6 +4574,20 @@ function CompactChatApp({
   ]);
 
   useEffect(() => {
+    if (!catLocalTextOnly) return;
+    closeCompactInputToolFan();
+    setToolMenuOpen(false);
+    setAvatarToolManagerOpen(false);
+    setCompactExportControlsOpen(false);
+    setCompactExportPreviewOpen(false);
+    clearActiveAvatarToolSelection();
+  }, [catLocalTextOnly, clearActiveAvatarToolSelection, closeCompactInputToolFan]);
+
+  useEffect(() => {
+    if (!catLocalTextOnly) setCatDraft('');
+  }, [catLocalTextOnly]);
+
+  useEffect(() => {
     if (compactInputToolFanOpen) return;
     clearCompactInputToolFanCloseTimer();
     clearCompactInputToolWheelDragGuardTimer();
@@ -4784,17 +4838,21 @@ function CompactChatApp({
     inputNode.setSelectionRange(selectionEnd, selectionEnd);
   }
 
-  function submitDraft() {
+  function submitDraft(draftOverride?: string) {
     if (compactTextEntryLocked) return;
     if (submittingRef.current) return;
-    const text = draft.trim();
-    if (!text && composerAttachments.length === 0) return;
+    const text = (draftOverride ?? visibleDraft).trim();
+    if (!text && (catLocalTextOnly || composerAttachments.length === 0)) return;
     closeCompactInputToolFan();
     submittingRef.current = true;
     let shouldRefocusCompactInput = false;
     try {
       onComposerSubmit?.({ text });
-      setDraft('');
+      if (catLocalTextOnly) {
+        setCatDraft('');
+      } else {
+        setDraft('');
+      }
       restoreCompactExportHistoryToBottomForOutgoingMessage();
       shouldRefocusCompactInput = isCompactSurface
         && effectiveCompactChatState === 'input'
@@ -4847,12 +4905,15 @@ function CompactChatApp({
 
   const getCompactToolWheelTabIndex = (toolIndex: number): number => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1 ? 0 : -1;
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2 ? 0 : -1;
   };
 
   const isCompactToolWheelActionable = (toolIndex: number): boolean => {
     const slot = getCompactToolWheelSlot(toolIndex);
-    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 1;
+    // Every rendered wheel button is a real action. Treating the faded edge
+    // slots as visual-only makes their pixels fall through to the drag layer,
+    // which looks like an Electron/Niri hit-region failure to users.
+    return compactInputToolFanOpen && slot !== null && Math.abs(slot) <= 2;
   };
 
   const getCompactToolWheelAriaHidden = (toolIndex: number): 'true' | 'false' => {
@@ -4937,53 +4998,24 @@ function CompactChatApp({
       return;
     }
 
-    const fanElement = compactInputToolFanRef.current;
-    const fanRect = fanElement?.getBoundingClientRect();
-    if (!fanElement || !fanRect) {
-      setCompactInputToolWheelHoveredIndexState(null);
-      return;
-    }
-
-    const fanStyle = window.getComputedStyle ? window.getComputedStyle(fanElement) : null;
-    const readFanPixelVar = (name: string, fallback: number) => {
-      const rawValue = fanStyle?.getPropertyValue(name).trim() || '';
-      const parsedValue = Number.parseFloat(rawValue);
-      return Number.isFinite(parsedValue) ? parsedValue : fallback;
-    };
-    const centerX = fanRect.left + readFanPixelVar('--compact-tool-wheel-center-x', COMPACT_INPUT_TOOL_WHEEL_CENTER_X);
-    const centerY = fanRect.top + readFanPixelVar('--compact-tool-wheel-center-y', COMPACT_INPUT_TOOL_WHEEL_CENTER_Y);
-    const orbitRadius = readFanPixelVar('--compact-tool-wheel-orbit-radius', 80);
-    const buttonSize = readFanPixelVar('--compact-tool-button-size', 38);
     const visibleSlots = compactInputToolWheelLayout === 'viewport-fit'
       ? compactInputToolWheelViewportFitVisibleSlots
       : compactInputToolWheelDefaultVisibleSlots;
-    const dragAngleRad = compactInputToolWheelDragAngle * (Math.PI / 180);
-    let hoveredIndex: number | null = null;
-    let hoveredDistanceSquared = Number.POSITIVE_INFINITY;
-
-    for (let toolIndex = 0; toolIndex < COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT; toolIndex += 1) {
-      const slot = getCompactToolWheelSlotForIndex(
+    setCompactInputToolWheelHoveredIndexState(resolveCompactToolWheelPointerHit({
+      fanElement: compactInputToolFanRef.current,
+      clientX: pointer.clientX,
+      clientY: pointer.clientY,
+      itemCount: COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
+      dragAngleDeg: compactInputToolWheelDragAngle,
+      visibleSlots,
+      centerFallbackX: COMPACT_INPUT_TOOL_WHEEL_CENTER_X,
+      centerFallbackY: COMPACT_INPUT_TOOL_WHEEL_CENTER_Y,
+      getSlot: toolIndex => getCompactToolWheelSlotForIndex(
         toolIndex,
         compactInputToolWheelVisualIndex,
         COMPACT_INPUT_TOOL_WHEEL_ITEM_COUNT,
-      );
-      if (slot === null || Math.abs(slot) > 1) continue;
-      const slotVisual = visibleSlots[slot + 2];
-      if (!slotVisual) continue;
-      const angleRad = (slotVisual.angleDeg * (Math.PI / 180)) + dragAngleRad;
-      const itemCenterX = centerX + (Math.cos(angleRad) * orbitRadius);
-      const itemCenterY = centerY + (Math.sin(angleRad) * orbitRadius);
-      const hitRadius = (buttonSize * slotVisual.scale) / 2;
-      const dx = pointer.clientX - itemCenterX;
-      const dy = pointer.clientY - itemCenterY;
-      const distanceSquared = (dx * dx) + (dy * dy);
-      if (distanceSquared <= hitRadius * hitRadius && distanceSquared < hoveredDistanceSquared) {
-        hoveredIndex = toolIndex;
-        hoveredDistanceSquared = distanceSquared;
-      }
-    }
-
-    setCompactInputToolWheelHoveredIndexState(hoveredIndex);
+      ),
+    }));
   }, [
     compactInputToolFanActionsDisabled,
     compactInputToolFanInteractive,
@@ -4998,14 +5030,51 @@ function CompactChatApp({
     syncCompactInputToolWheelPointerHover();
   }, [syncCompactInputToolWheelPointerHover]);
 
+  const forwardCompactToolWheelBackgroundClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (event.defaultPrevented || event.button !== 0) return;
+    const eventTarget = event.target instanceof Element ? event.target : null;
+    if (eventTarget?.closest('.compact-input-tool-item')) return;
+
+    // Chromium can occasionally paint the compositor-animated wheel item at
+    // its new transform while hit-testing the old transform. In that case the
+    // real pointer event reaches the fan background even though the pointer is
+    // visibly over a button. Resolve the same geometry used by hover feedback
+    // and forward only an exact visible-button hit. A real wheel rotation still
+    // wins because onClickCapture suppresses this click before it reaches here.
+    syncCompactInputToolWheelPointerHover({
+      clientX: event.clientX,
+      clientY: event.clientY,
+    });
+    const toolIndex = compactInputToolWheelHoveredIndexRef.current;
+    if (toolIndex === null || isCompactToolWheelActionDisabled(toolIndex)) return;
+    const slot = getCompactToolWheelSlot(toolIndex);
+    if (slot === null || Math.abs(slot) > 2) return;
+
+    const item = compactInputToolFanRef.current?.querySelector<HTMLElement>(
+      `.compact-input-tool-item[data-compact-tool-wheel-slot="${slot}"]`,
+    );
+    const actionButton = item instanceof HTMLButtonElement
+      ? item
+      : item?.querySelector<HTMLButtonElement>(':scope > button:not(:disabled)');
+    if (!actionButton || actionButton.disabled) return;
+    actionButton.dispatchEvent(createCompactToolWheelForwardedClick(actionButton, {
+      clientX: event.clientX,
+      clientY: event.clientY,
+      screenX: event.screenX,
+      screenY: event.screenY,
+    }));
+  };
+
   const getCompactToolWheelPointerHoveredValue = (toolIndex: number): 'true' | 'false' => (
     compactInputToolWheelHoveredIndex === toolIndex
     && !isCompactToolWheelActionDisabled(toolIndex)
       ? 'true'
       : 'false'
   );
-  const compactToolToggleVisible = isCompactSurface && !composerHidden;
   const compactToolToggleActsAsSubmit = effectiveCompactChatState === 'input' && compactInputHasPayload;
+  const compactToolToggleVisible = isCompactSurface
+    && !composerHidden
+    && (!catLocalTextOnly || compactToolToggleActsAsSubmit);
   const compactInputToolToggleButton = compactToolToggleVisible ? (
     <button
       className={`send-button-circle compact-input-tool-toggle${compactInputToolFanOpen ? ' is-open' : ''}`}
@@ -5030,7 +5099,11 @@ function CompactChatApp({
         scheduleCompactInputToolFanTransientClose();
         scheduleCompactInputCollapse();
       }}
-      onClick={compactToolToggleActsAsSubmit ? undefined : () => {
+      onClick={compactToolToggleActsAsSubmit ? (event) => {
+        // A real pointer click is explicit user intent to send, even if an IME
+        // composition is still active. Implicit keyboard submits have detail=0.
+        composerExplicitPointerSubmitRef.current = event.detail > 0;
+      } : () => {
         // 拖动文本框后补发的 click 已在 origin-drag 里置位抑制，这里消费掉，避免误展开/收起轮盘。
         if (compactToolOriginSuppressClickRef.current) {
           compactToolOriginSuppressClickRef.current = false;
@@ -5056,7 +5129,9 @@ function CompactChatApp({
       type="button"
       className="compact-chat-minimize-ball"
       aria-label={i18n('chat.reactWindowMinimize', 'Minimize')}
-      title={i18n('chat.reactWindowMinimize', 'Minimize')}
+      data-neko-tooltip={i18n('chat.reactWindowMinimize', 'Minimize')}
+      data-neko-tooltip-variant="compact-tool"
+      data-neko-tooltip-placement="top"
       data-compact-no-drag="true"
       data-compact-hit-region="true"
       data-compact-hit-region-id="input:minimize"
@@ -5098,7 +5173,7 @@ function CompactChatApp({
     </button>
   );
 
-  const compactInputToolFanNode = compactToolToggleVisible ? (
+  const compactInputToolFanNode = compactToolToggleVisible && !catLocalTextOnly ? (
     <div
       ref={compactInputToolFanRef}
       className="compact-input-tool-fan"
@@ -5142,7 +5217,9 @@ function CompactChatApp({
         ) {
           event.preventDefault();
           event.stopPropagation();
+          return;
         }
+        forwardCompactToolWheelBackgroundClick(event);
       }}
       onPointerDownCapture={(event) => {
         if (event.pointerType === 'mouse' && event.button !== 0) return;
@@ -5399,7 +5476,7 @@ function CompactChatApp({
             className="composer-tool-clear-btn"
             type="button"
             aria-label={clearAvatarToolAriaLabel}
-            title={clearAvatarToolAriaLabel}
+            data-neko-tooltip={clearAvatarToolAriaLabel}
             disabled={compactAvatarToolActionsDisabled}
             tabIndex={getCompactToolWheelTabIndex(1)}
             onClick={(event) => {
@@ -5450,7 +5527,7 @@ function CompactChatApp({
       ) : null}
     </div>
   ) : null;
-  const composerAttachmentPreviewNode = composerAttachments.length > 0 ? (
+  const composerAttachmentPreviewNode = !catLocalTextOnly && composerAttachments.length > 0 ? (
     <div
       className={`composer-attachment-viewport${isCompactSurface ? ' composer-attachment-viewport-compact' : ''}`}
       aria-label={composerAttachmentsAriaLabel}
@@ -5478,9 +5555,7 @@ function CompactChatApp({
                   onComposerRemoveAttachment?.(attachment.id);
                 }
               }}
-            >
-              <span className="composer-attachment-remove-icon" aria-hidden="true" />
-            </button>
+            />
           </figure>
         ))}
       </div>
@@ -5609,7 +5684,7 @@ function CompactChatApp({
               ? i18n('chat.miniGameInviteOptionsAriaLabel', 'Mini-game invite options')
               : choicePrompt.source === 'new_user_icebreaker'
                 ? i18n('chat.newUserIcebreakerOptionsAriaLabel', 'New user icebreaker options')
-              : galgameToggleButtonLabel}
+                : galgameToggleButtonLabel}
           >
             {choicePrompt.options.slice(0, 3).map((option, index) => (
               <button
@@ -5643,7 +5718,7 @@ function CompactChatApp({
       ) : null}
     </div>
   );
-  const compactChoiceLayerNode = isCompactSurface
+  const compactChoiceLayerNode = isCompactSurface && !catLocalTextOnly
     ? (typeof document !== 'undefined' ? createPortal(choiceLayerNode, document.body) : choiceLayerNode)
     : null;
   const compactExportHistoryMessages = compactExportHistoryOpen
@@ -5687,7 +5762,7 @@ function CompactChatApp({
       type="button"
       aria-label={compactExportHistoryToggleLabel}
       aria-expanded={compactExportHistoryOpen}
-      title={compactExportHistoryToggleLabel}
+      data-neko-tooltip={compactExportHistoryToggleLabel}
       disabled={composerDisabled}
       data-compact-geometry-owner="surface"
       data-compact-geometry-item="historyHandle"
@@ -5705,7 +5780,7 @@ function CompactChatApp({
   const compactMusicPlayerVisibility = 'open' as const;
   const closeMemeButtonAriaLabel = i18n('chat.closeMemeAriaLabel', 'Close image');
   const compactMemeOverlayImageLoadingProps = { loading: 'eager' as const, fetchpriority: 'high' as const };
-  const compactMemeOverlayNode = compactMemeOverlayVisible && compactMemeOverlay ? (
+  const compactMemeOverlayNode = !catLocalTextOnly && compactMemeOverlayVisible && compactMemeOverlay ? (
     <div
       className="compact-meme-overlay"
       data-compact-meme-overlay="compact-surface"
@@ -5744,7 +5819,7 @@ function CompactChatApp({
             data-compact-hit-region-id="meme:close"
             data-compact-hit-region-kind="meme-close"
             aria-label={closeMemeButtonAriaLabel}
-            title={closeMemeButtonAriaLabel}
+            data-neko-tooltip={closeMemeButtonAriaLabel}
             onClick={(event) => {
               event.stopPropagation();
               setDismissedMemeId(compactMemeOverlay.id);
@@ -5830,7 +5905,7 @@ function CompactChatApp({
           className="chat-surface-focus-indicator"
           role="status"
           aria-live="polite"
-          title={i18n('chat.focusIndicator', '凝神中')}
+          data-neko-tooltip={i18n('chat.focusIndicator', '凝神中')}
         >
           <span className="chat-surface-focus-indicator-label">
             {i18n('chat.focusIndicator', '凝神中')}
@@ -5879,6 +5954,17 @@ function CompactChatApp({
             {!isCompactSurface ? <div id="music-player-mount" className="composer-music-player-mount" /> : null}
             <form className="composer" onSubmit={(event) => {
               event.preventDefault();
+              const isExplicitPointerSubmit = composerExplicitPointerSubmitRef.current;
+              composerExplicitPointerSubmitRef.current = false;
+              // WebKit can dispatch an implicit form submit while Enter is
+              // still confirming an IME candidate. Keyboard submission is
+              // decided on keyup after the full composition cycle is known.
+              if (!isExplicitPointerSubmit
+                && (composerEnterCycleActiveRef.current
+                  || composerIsComposingRef.current
+                  || composerImeCommitPendingRef.current)) {
+                return;
+              }
               submitDraft();
             }}>
               {isCompactSurface ? (
@@ -5952,23 +6038,158 @@ function CompactChatApp({
                           placeholder={inputPlaceholder}
                           aria-label={inputPlaceholder}
                           rows={1}
-                          value={draft}
+                          value={visibleDraft}
                           readOnly={compactTextEntryLocked}
                           disabled={composerDisabled}
                           onChange={(event) => {
                             if (compactTextEntryLocked) return;
-                            setDraft(event.target.value);
+                            if (catLocalTextOnly) {
+                              setCatDraft(event.target.value);
+                            } else {
+                              setDraft(event.target.value);
+                            }
                             if (event.target.value.trim().length > 0) {
                               closeCompactInputToolFan();
                             }
                           }}
-                          onBlur={scheduleCompactInputCollapse}
-                          onKeyDown={(event) => {
-                            if (event.nativeEvent.isComposing) return;
-                            if (event.key === 'Enter' && !event.shiftKey) {
-                              event.preventDefault();
-                              submitDraft();
+                          onInput={(event) => {
+                            // Some macOS Chinese IMEs commit an ASCII candidate
+                            // without composition events or keyCode 229. Use
+                            // the input mutation to distinguish that commit
+                            // from WebKit inserting a line break for Enter.
+                            if (!composerEnterCycleActiveRef.current) return;
+
+                            const inputEvent = event.nativeEvent as InputEvent;
+                            const inputType = inputEvent.inputType;
+                            const isLineBreak = inputType === 'insertLineBreak'
+                              || inputType === 'insertParagraph';
+
+                            if (isLineBreak) {
+                              if (!composerEnterCycleShiftRef.current) {
+                                composerEnterCycleLineBreakRef.current = true;
+                              }
+                              return;
                             }
+
+                            if (inputEvent.isComposing
+                              || inputType === 'insertCompositionText'
+                              || inputType === 'insertText'
+                              || inputType === 'insertReplacementText'
+                              || composerImeCommitPendingRef.current) {
+                              composerEnterCycleImeRef.current = true;
+                              return;
+                            }
+
+                            const previousValue = composerEnterCycleDraftRef.current;
+                            const currentValue = event.currentTarget.value;
+                            const insertedOnlyOneLineBreak = hasSingleInsertedLineBreak(
+                              previousValue,
+                              currentValue,
+                            );
+
+                            if (insertedOnlyOneLineBreak && !composerEnterCycleShiftRef.current) {
+                              composerEnterCycleLineBreakRef.current = true;
+                            } else if (currentValue !== previousValue) {
+                              composerEnterCycleImeRef.current = true;
+                            }
+                          }}
+                          onCompositionStart={() => {
+                            composerIsComposingRef.current = true;
+                            composerImeCommitPendingRef.current = false;
+                          }}
+                          onCompositionEnd={() => {
+                            composerIsComposingRef.current = false;
+                            const endedDuringEnterCycle = composerEnterCycleActiveRef.current;
+                            composerImeCommitPendingRef.current = endedDuringEnterCycle;
+                            if (endedDuringEnterCycle) {
+                              composerEnterCycleImeRef.current = true;
+                            }
+                          }}
+                          onBeforeInput={(event) => {
+                            const inputEvent = event.nativeEvent as InputEvent;
+                            if (!composerEnterCycleActiveRef.current) return;
+
+                            if (inputEvent.isComposing
+                              || inputEvent.inputType === 'insertCompositionText'
+                              || composerImeCommitPendingRef.current) {
+                              composerEnterCycleImeRef.current = true;
+                              return;
+                            }
+
+                            if ((inputEvent.inputType === 'insertLineBreak'
+                              || inputEvent.inputType === 'insertParagraph')
+                              && !composerEnterCycleShiftRef.current) {
+                              composerEnterCycleLineBreakRef.current = true;
+                              event.preventDefault();
+                            }
+                          }}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter' && !event.repeat) {
+                              const nativeEvent = event.nativeEvent;
+                              const isImeEnter = nativeEvent.isComposing
+                                || nativeEvent.keyCode === 229
+                                || composerIsComposingRef.current
+                                || composerImeCommitPendingRef.current;
+
+                              composerEnterCycleActiveRef.current = true;
+                              composerEnterCycleShiftRef.current = event.shiftKey;
+                              composerEnterCycleImeRef.current = isImeEnter;
+                              composerEnterCycleLineBreakRef.current = false;
+                              composerEnterCycleDraftRef.current = event.currentTarget.value;
+                            }
+                          }}
+                          onKeyUp={(event) => {
+                            if (event.key !== 'Enter') {
+                              if (!composerIsComposingRef.current) {
+                                composerImeCommitPendingRef.current = false;
+                              }
+                              return;
+                            }
+
+                            const shouldSubmit = composerEnterCycleActiveRef.current
+                              && !composerEnterCycleShiftRef.current
+                              && !composerEnterCycleImeRef.current
+                              && !composerIsComposingRef.current
+                              && !composerImeCommitPendingRef.current;
+                            const draftBeforeEnter = composerEnterCycleDraftRef.current;
+                            const shouldRestoreDraft = composerEnterCycleLineBreakRef.current
+                              && !composerEnterCycleShiftRef.current;
+
+                            composerEnterCycleActiveRef.current = false;
+                            composerEnterCycleShiftRef.current = false;
+                            composerEnterCycleImeRef.current = false;
+                            composerEnterCycleLineBreakRef.current = false;
+                            composerEnterCycleDraftRef.current = '';
+                            composerImeCommitPendingRef.current = false;
+
+                            if (shouldRestoreDraft) {
+                              if (catLocalTextOnly) {
+                                setCatDraft(draftBeforeEnter);
+                              } else {
+                                setDraft(draftBeforeEnter);
+                              }
+                            }
+
+                            if (shouldSubmit) {
+                              event.preventDefault();
+                              submitDraft(shouldRestoreDraft ? draftBeforeEnter : undefined);
+                            }
+                          }}
+                          onPointerUp={() => {
+                            if (!composerIsComposingRef.current
+                              && !composerEnterCycleActiveRef.current) {
+                              composerImeCommitPendingRef.current = false;
+                            }
+                          }}
+                          onBlur={() => {
+                            composerIsComposingRef.current = false;
+                            composerImeCommitPendingRef.current = false;
+                            composerEnterCycleActiveRef.current = false;
+                            composerEnterCycleImeRef.current = false;
+                            composerEnterCycleShiftRef.current = false;
+                            composerEnterCycleLineBreakRef.current = false;
+                            composerEnterCycleDraftRef.current = '';
+                            scheduleCompactInputCollapse();
                           }}
                         />
                         {compactInputToolToggleButton}

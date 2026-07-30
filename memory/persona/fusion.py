@@ -18,7 +18,10 @@ WHY THIS EXISTS
 ---------------
 When persona is rendered into the system prompt there is a **strict token
 ceiling** (``PERSONA_RENDER_MAX_TOKENS``, shared by all non-protected entries in
-one pool). But OpenClaw / Hermes ``USER.md`` / ``SOUL.md`` are dozens of lines of
+one pool -- a scoped group render gives each subject its own pool instead, but
+external import only ever writes the legacy private corpus, so the single-pool
+figure is the one that binds here). But OpenClaw / Hermes ``USER.md`` /
+``SOUL.md`` are dozens of lines of
 free-form Markdown -- appending them entry-by-entry after exact dedup (as the old
 ``aimport_external_facts`` did) would quickly overflow the persona pool and crowd
 out the impressions the character has naturally accumulated in conversation. So
@@ -336,7 +339,7 @@ class ExternalFusionMixin:
         # entity 上（第一个已落盘）会让端点返 generic 500 而非 external_import_partial，
         # 丢掉前端重试所需的 partial 元数据（Codex P2）。
         try:
-            api_config = self._config_manager.get_model_api_config("correction")
+            api_config = await self._config_manager.aget_model_api_config("correction")
             llm = await create_chat_llm_async(
                 api_config["model"],
                 api_config["base_url"],

@@ -28,6 +28,23 @@ const dayGuideFiles = [
     'tutorial/yui-guide/days/day6-agent-guide.js'
 ];
 
+function getBalancedBlockFrom(source, startIndex) {
+    const openBraceIndex = source.indexOf('{', startIndex);
+    assert.notEqual(openBraceIndex, -1, 'expected block opening brace');
+    let depth = 0;
+    for (let index = openBraceIndex; index < source.length; index += 1) {
+        if (source[index] === '{') {
+            depth += 1;
+        } else if (source[index] === '}') {
+            depth -= 1;
+            if (depth === 0) {
+                return source.slice(startIndex, index + 1);
+            }
+        }
+    }
+    assert.fail('expected balanced block closing brace');
+}
+
 test('common guide helpers freeze config, register guides, and create locale audio maps', () => {
     const win = {};
     const nested = { day: 3, child: { label: 'x' } };
@@ -346,7 +363,7 @@ test('common helper creates a PC overlay run id before tutorial lifecycle start'
 test('tutorial start activates PC lifecycle before hiding the system cursor', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
     const emitBlock = managerSource.split('    emitTutorialStarted(page = this.currentPage, source = this.currentTutorialStartSource, options = {}) {')[1].split(
-        '    logPromptFlow',
+        '    logTutorialFlow',
         1
     )[0];
 
@@ -1085,24 +1102,23 @@ test('full tutorial pages load common helpers before the director', () => {
     }
 });
 
-test('lifecycle state store module is loaded before prompt and manager scripts', () => {
+test('lifecycle state store module is loaded before runtime and manager scripts', () => {
     const lifecyclePath = path.join(__dirname, 'tutorial/core/lifecycle-state-store.js');
     assert.ok(fs.existsSync(lifecyclePath), 'tutorial/core/lifecycle-state-store.js should exist');
     const source = fs.readFileSync(lifecyclePath, 'utf8');
     const stores = require('./tutorial/core/lifecycle-state-store.js');
 
-    for (const exportName of [
-        'TutorialLifecycleStateStore',
-        'HomeTutorialPromptLifecycleStateStore'
-    ]) {
+    for (const exportName of ['TutorialLifecycleStateStore']) {
         assert.equal(typeof stores[exportName], 'function', exportName + ' should be exported');
         assert.match(source, new RegExp('class ' + exportName));
     }
     assert.match(source, /root\.TutorialLifecycleStores = api/);
 
     const orderedScripts = [
-        ['templates/index.html', '/static/tutorial/core/app-prompt.js'],
+        ['templates/index.html', '/static/tutorial/core/home-tutorial-runtime.js'],
         ['templates/index.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/index.html', '/static/tutorial/avatar/floating-guide-reset.js'],
+        ['templates/index.html', '/static/tutorial/icebreaker/new-user-icebreaker.js'],
         ['templates/api_key_settings.html', '/static/tutorial/core/universal-manager.js'],
         ['templates/memory_browser.html', '/static/tutorial/core/universal-manager.js']
     ];
@@ -1115,6 +1131,27 @@ test('lifecycle state store module is loaded before prompt and manager scripts',
         assert.notEqual(lifecycleIndex, -1, templatePath + ' should load tutorial/core/lifecycle-state-store.js');
         assert.notEqual(consumerIndex, -1, templatePath + ' should load ' + consumerScript);
         assert.ok(lifecycleIndex < consumerIndex, templatePath + ' should load lifecycle stores before ' + consumerScript);
+    }
+});
+
+test('seven-day tutorial state loads before every runtime consumer', () => {
+    const orderedScripts = [
+        ['templates/index.html', '/static/tutorial/core/avatar-floating-boot-predictor.js'],
+        ['templates/index.html', '/static/tutorial/core/home-tutorial-runtime.js'],
+        ['templates/index.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/api_key_settings.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/memory_browser.html', '/static/tutorial/core/universal-manager.js'],
+        ['templates/memory_browser.html', '/static/tutorial/avatar/floating-guide-reset.js']
+    ];
+
+    for (const [templatePath, consumerScript] of orderedScripts) {
+        const templateSource = fs.readFileSync(path.join(repoRoot, templatePath), 'utf8');
+        const stateIndex = templateSource.indexOf('/static/tutorial/core/seven-day-state.js');
+        const consumerIndex = templateSource.indexOf(consumerScript);
+
+        assert.notEqual(stateIndex, -1, templatePath + ' should load seven-day tutorial state');
+        assert.notEqual(consumerIndex, -1, templatePath + ' should load ' + consumerScript);
+        assert.ok(stateIndex < consumerIndex, templatePath + ' should load seven-day state before ' + consumerScript);
     }
 });
 
@@ -1220,12 +1257,23 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /entry\.localSelectors\.some\(function \(selector\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
-    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\)/);
-    // 修改原因：胶囊输入框定位走 registry 的 capsuleBody，不新增 capsule-input 的 plain-capsule 特例。
-    assert.match(appInterpageSource, /function shouldAlignYuiGuideChatSpotlightToCapsuleText\(kind, variant\) \{\s*return kind === 'input' && variant === 'plain-capsule';\s*\}/);
-    assert.match(appInterpageSource, /function getYuiGuideChatSpotlightSourceRect\(kind, variant, rect\)/);
-    assert.match(appInterpageSource, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
-    assert.match(appInterpageSource, /return \{ rect: sourceRect \};/);
+    const shouldAlignFunctionStart = appInterpageSource.indexOf(
+        'function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics)'
+    );
+    const sourceRectFunctionStart = appInterpageSource.indexOf(
+        'function getYuiGuideChatSpotlightSourceRect(kind, variant, rect, metrics)'
+    );
+    assert.notEqual(shouldAlignFunctionStart, -1);
+    assert.notEqual(sourceRectFunctionStart, -1);
+    const shouldAlignFunction = getBalancedBlockFrom(appInterpageSource, shouldAlignFunctionStart);
+    const sourceRectFunction = getBalancedBlockFrom(appInterpageSource, sourceRectFunctionStart);
+    // 修改原因：普通 input 保留旧 plain-capsule 逻辑；capsule-input 仅在桌面宿主明确声明
+    // Wayland work-area carrier 时对齐文字，避免改变 X11/macOS 的 registry 几何。
+    assert.match(shouldAlignFunction, /kind === 'capsule-input'[\s\S]*metrics\.waylandWorkAreaCarrier === true/);
+    assert.match(sourceRectFunction, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
+    assert.match(sourceRectFunction, /width:\s*rect\.width/);
+    assert.doesNotMatch(sourceRectFunction, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
+    assert.match(sourceRectFunction, /return \{ rect: sourceRect \};/);
 });
 
 test('daily guide files consume common helpers instead of redeclaring shared helpers', () => {
@@ -1799,7 +1847,7 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     assert.match(day4IntroSceneBlock, /target:\s*'chat-capsule-input'/);
     assert.match(
         settingsTourFlowSource,
-        /runPanelNarrationEllipse[\s\S]*director\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
+        /runPanelNarrationEllipse[\s\S]*director\.releaseExternalizedChatCursorToHome\(\);[\s\S]*director\.cursor\.runPauseAwareEllipse/
     );
     assert.match(
         settingsTourFlowSource,
@@ -1811,11 +1859,11 @@ test('settings tour flow owns migrated settings tour concrete scene bodies', () 
     );
     assert.match(
         source,
-        /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToRect/
+        /async moveCursorToElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.releaseExternalizedChatCursorToHome\(\);[\s\S]*this\.cursor\.moveToRect/
     );
     assert.match(
         source,
-        /async moveCursorToTrackedElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.setHomePcCursorOutputSuppressedForExternalizedChat\(false\);[\s\S]*this\.cursor\.moveToPoint/
+        /async moveCursorToTrackedElement\(element,\s*durationMs,\s*options\) \{[\s\S]*this\.releaseExternalizedChatCursorToHome\(\);[\s\S]*this\.cursor\.moveToPoint/
     );
     assert.match(flowChatBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
     assert.match(flowModelBlock, /return this\.playPanelTourScene\(scene,\s*context,\s*this\.getPanelTourSchema\(scene\)\);/);
@@ -2263,7 +2311,7 @@ test('director routes scene and chat stream timers through scoped resources', ()
 
 test('manager keeps Yui-only lifecycle resources and excludes legacy driver tutorial code', () => {
     const source = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
-    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    logPromptFlow(', 1)[0];
+    const constructorBlock = source.split('class UniversalTutorialManager {')[1].split('    logTutorialFlow(', 1)[0];
     const destroyBlock = source.split("    async destroy(reason = 'destroy') {")[1].split(
         '    broadcastYuiGuideTerminationRequest',
         1
@@ -2273,7 +2321,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
         1
     )[0];
     const clearViewportWatcherBlock = source.split('    clearTutorialLive2dViewportPlacementWatcher() {')[1].split(
-        '    beginTutorialAvatarOverride() {',
+        '    beginTutorialAvatarOverride(options = {}) {',
         1
     )[0];
     const scrollBlock = source.split('    blockTutorialScroll() {')[1].split(
@@ -2316,7 +2364,7 @@ test('manager keeps Yui-only lifecycle resources and excludes legacy driver tuto
 
     assert.match(source, /getHomeAvatarFloatingGuideStartRound\(options = \{\}\) \{/);
     assert.match(source, /candidates\.push\(state\.pendingRound, state\.manualResetRound, 1\);/);
-    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideStartRound\(\);/);
+    assert.match(startBlock, /const round = this\.getHomeAvatarFloatingGuideLaunchRound\(\);/);
     assert.match(startBlock, /this\.startAvatarFloatingGuideRound\(round, \{/);
     assert.doesNotMatch(source, /startYuiGuideSceneSequence|getDirectYuiGuideSceneIdsForCurrentPage|getPendingYuiGuideResumeScene/);
     assert.doesNotMatch(source, /callYuiGuideDirector|notifyYuiGuideStepEnter|notifyYuiGuideStepLeave/);
@@ -2695,8 +2743,7 @@ test('avatar floating auto-start rechecks current due round before delayed launc
     assert.match(pendingCheckBlock, /const state = loadAvatarFloatingGuideState\(\);/);
     assert.match(pendingCheckBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound === round;[\s\S]*?\}/);
     assert.match(pendingCheckBlock, /return this\.getNextAvatarFloatingGuideAutoRound\(\) === round;/);
-    assert.match(pendingCheckBlock, /state\.completedRounds\.includes\(round\)/);
-    assert.match(pendingCheckBlock, /state\.skippedRounds\.includes\(round\)/);
+    assert.match(pendingCheckBlock, /getSevenDayTutorialStateApi\(\)\.isRoundSettled\(state, round\)/);
     assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound\s*\|\|/);
     assert.doesNotMatch(pendingCheckBlock, /state\.pendingRound === round/);
     assert.doesNotMatch(pendingCheckBlock, /state\.lastAutoShownRound === round/);
@@ -2715,20 +2762,27 @@ test('avatar floating auto-start reserves the round before long playback can be 
     assert.notEqual(autoReservationIndex, -1, 'auto round starts should reserve same-day playback before long narration');
     assert.notEqual(setCurrentIndex, -1, 'round starts should still persist current round state');
     assert.ok(autoReservationIndex < setCurrentIndex, 'auto reservation should be written before pending/current round state');
-    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round\);[\s\S]*?\}/);
+    assert.match(startRoundBlock, /if \(source === 'auto'\) \{[\s\S]*?this\.markAvatarFloatingGuideRoundAutoShown\(round, autoReservationId\);[\s\S]*?\}/);
+    assert.match(startRoundBlock, /this\.rollbackAvatarFloatingGuideRoundAutoShown\(round, autoReservationId\)/);
 });
 
 test('avatar floating auto due calculation ignores runtime pending round after refresh', () => {
     const managerSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/universal-manager.js'), 'utf8');
+    const stateSource = fs.readFileSync(path.join(repoRoot, 'static', 'tutorial/core/seven-day-state.js'), 'utf8');
     const nextAutoBlock = managerSource.split('    getNextAvatarFloatingGuideAutoRound() {')[1].split(
         '    getHomeAvatarFloatingGuideStartRound(options = {}) {',
         1
     )[0];
+    const sharedCalculationBlock = stateSource.split('    function getNextAutoRound(stateValue, todayValue) {')[1].split(
+        '    function markRoundOutcome(roundValue, outcome, options) {',
+        1
+    )[0];
 
-    assert.match(nextAutoBlock, /const pendingManualRound = state\.manualResetRound;/);
-    assert.doesNotMatch(nextAutoBlock, /state\.pendingRound\s*\|\|\s*state\.manualResetRound/);
+    assert.match(nextAutoBlock, /getSevenDayTutorialStateApi\(\)\.getNextAutoRound\(state\)/);
+    assert.match(sharedCalculationBlock, /if \(state\.manualResetRound\) \{[\s\S]*?return state\.manualResetRound;/);
+    assert.doesNotMatch(sharedCalculationBlock, /state\.pendingRound/);
     assert.ok(
-        nextAutoBlock.indexOf('if (pendingManualRound)') < nextAutoBlock.indexOf('if (state.lastAutoShownDate === today)'),
+        sharedCalculationBlock.indexOf('if (state.manualResetRound)') < sharedCalculationBlock.indexOf('if (state.lastAutoShownDate === today)'),
         'manual resets should still override same-day auto reservation'
     );
 });
@@ -2808,6 +2862,7 @@ test('PC global overlay cleanup notifies external chat windows to stop overlay r
     assert.match(lifecycleMessageBlock, /tutorialRunId:\s*tutorialRunId/);
     assert.match(appInterpageSource, /if \(message\.tutorialRunId && message\.action !== 'yui_guide_tutorial_lifecycle_ended'\) \{/);
     assert.match(appInterpageSource, /function getYuiGuideScreenCoordinateBounds\(metrics\) \{/);
+    assert.match(appInterpageSource, /metrics\.coordinateSpace === 'screen-dip'[\s\S]*metrics\.renderBounds/);
     assert.match(appInterpageSource, /return metrics && \(metrics\.bounds \|\| metrics\.contentBounds\) \|\| \{ x: 0, y: 0 \};/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayActive = false;/);
     assert.match(externalCleanupBlock, /yuiGuidePcOverlayReady = false;/);

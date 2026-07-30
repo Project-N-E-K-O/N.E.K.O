@@ -93,23 +93,6 @@ USER_AGENTS = [
     'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36 OPR/108.0.0.0',
 ]
 
-# 针对高强度反爬平台的现代浏览器指纹 (Chromium 132+)
-CH_HEADERS_CHROME = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/132.0.0.0 Safari/537.36',
-    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
-    'Accept-Language': 'en-US,en;q=0.9',
-    'Accept-Encoding': 'gzip, deflate, br',
-    'Sec-Ch-Ua': '"Not A(Brand";v="8", "Chromium";v="132", "Google Chrome";v="132"',
-    'Sec-Ch-Ua-Mobile': '?0',
-    'Sec-Ch-Ua-Platform': '"Windows"',
-    'Sec-Fetch-Dest': 'document',
-    'Sec-Fetch-Mode': 'navigate',
-    'Sec-Fetch-Site': 'cross-site',
-    'Sec-Fetch-User': '?1',
-    'Upgrade-Insecure-Requests': '1',
-    'Connection': 'keep-alive'
-}
-
 # ==================================================
 # 统一域名池：统一白名单池和爬虫池
 # 所有音乐源使用的域名都集中在这里管理
@@ -137,7 +120,7 @@ MUSIC_SOURCE_DOMAINS = {
     # Bandcamp
     'bandcamp.com', 'bcbits.com',
     # 通用图片
-    'dummyimage.com', 'i.imgur.com',
+    'i.imgur.com',
     # B站 (部分音乐)
     'hdslb.com', 'bilivideo.com',
     'gg.spriteapp.cn', 'mmusic.spriteapp.cn',
@@ -146,6 +129,60 @@ MUSIC_SOURCE_DOMAINS = {
 # 主动音乐推荐面向单曲播放。超长 DJ 合集、播客和整张专辑虽然通常有封面，
 # 但其音频直链经常受 CDN、试听权限或文件大小限制，不应进入歌曲播放器。
 MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60
+
+# 登录后的个性化音乐数据仅保存在内存，并限制读取数量。
+NETEASE_TASTE_SNAPSHOT_TTL_SECONDS = 30 * 60
+NETEASE_PLAYLIST_LIST_LIMIT = 100
+NETEASE_TASTE_TRACKS_PER_PLAYLIST = 5
+NETEASE_TASTE_SUBSCRIPTION_LIMIT = 10
+NETEASE_PERSONALIZATION_REQUEST_INTERVAL_SECONDS = 1.0
+NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS = 30 * 60
+NETEASE_AUTH_COOKIE_NAMES = frozenset({'MUSIC_U', 'MUSIC_A', '__csrf'})
+NETEASE_PERSONALIZATION_SOURCE_ORDER = ('liked', 'daily', 'liked', 'daily', 'liked', 'artist')
+
+
+def sync_pyncm_session_cookies(session, cookies: Dict[str, str]) -> bool:
+    """Update NetEase credentials without clearing unrelated session cookies."""
+    cookie_jars = []
+    seen_jars = set()
+    for cookie_jar in (
+        getattr(session, 'cookies', None),
+        getattr(getattr(session, 'client', None), 'cookies', None),
+    ):
+        if cookie_jar is None or id(cookie_jar) in seen_jars:
+            continue
+        if callable(getattr(cookie_jar, 'set', None)):
+            cookie_jars.append(cookie_jar)
+            seen_jars.add(id(cookie_jar))
+
+    synced = False
+    for cookie_jar in cookie_jars:
+        setter = cookie_jar.set
+        deleter = getattr(cookie_jar, 'delete', None)
+        try:
+            for name in NETEASE_AUTH_COOKIE_NAMES - cookies.keys():
+                if callable(deleter):
+                    try:
+                        deleter(name)
+                    except KeyError:
+                        pass
+                else:
+                    setter(name, '')
+            for key, value in cookies.items():
+                setter(key, value)
+        except Exception as exc:
+            logger.warning("[网易云音乐] pyncm Cookie 同步失败，尝试下一 CookieJar: %s", exc)
+            continue
+        synced = True
+
+    try:
+        session.csrf_token = str(cookies.get('__csrf') or '')
+    except Exception as exc:
+        logger.warning("[网易云音乐] pyncm CSRF 同步失败: %s", exc)
+
+    if not synced:
+        logger.warning("[网易云音乐] pyncm Session 不支持 Cookie 同步")
+    return synced
 
 
 def _parse_duration_seconds(value: Any, *, milliseconds: bool = False) -> float | None:
@@ -294,6 +331,13 @@ def anykw(tracks: List[Dict[str, Any]], keywords: List[str]) -> bool:
 # 全局缓存实例
 music_cache = MusicCache(expire_seconds=300)
 
+
+def mark_music_as_played(track: Dict[str, Any] | None) -> None:
+    """Record only the track that was actually selected for playback."""
+    if track:
+        music_cache.mark_as_played([track])
+
+
 def get_random_user_agent() -> str:
     """
     Get a random User-Agent
@@ -366,7 +410,8 @@ class BaseMusicCrawler:
             'name': name,
             'artist': artist,
             'url': url,
-            'cover': cover or f'https://dummyimage.com/150x150/44b7fe/fff&text={self.platform_name}',
+            # 缺失封面保持为空；视觉占位属于前端状态，不写进音乐数据。
+            'cover': cover or '',
             'theme': '#44b7fe'  # 统一使用蓝色主题
         }
         if duration_seconds is not None:
@@ -399,7 +444,56 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._vip_checked = False
         self._cookie_file_mtime = 0.0   # 记录 Cookie 文件最后修改时间
         self._cookie_invalid = False    # 音乐凭证有效性
+        self._cookies: Dict[str, str] = {}
+        self._account_profile: Dict[str, Any] = {}
+        self._taste_snapshot: Dict[str, Any] | None = None
+        self._taste_snapshot_at = 0.0
+        self._taste_snapshot_retry_after = 0.0
+        self._taste_snapshot_lock = asyncio.Lock()
+        self._visible_playlists: List[Dict[str, Any]] = []
+        self._visible_playlists_at = 0.0
+        self._visible_playlists_user_id = 0
+        self._visible_playlists_lock = asyncio.Lock()
+        self._playlist_tracks_cache: Dict[int, tuple[float, List[Dict[str, Any]]]] = {}
+        self._daily_recommend_tracks: List[Dict[str, Any]] = []
+        self._daily_recommend_date = ''
+        self._daily_recommend_user_id = 0
+        self._daily_recommend_retry_after = 0.0
+        self._daily_recommend_error_code = ''
+        self._daily_recommend_lock = asyncio.Lock()
+        self._exploration_tracks: List[Dict[str, Any]] = []
+        self._exploration_tracks_at = 0.0
+        self._exploration_keyword = ''
+        self._exploration_retry_after = 0.0
+        self._exploration_retry_keyword = ''
+        self._exploration_lock = asyncio.Lock()
+        self._personalization_api_lock = asyncio.Lock()
+        self._personalization_last_request_at = 0.0
+        self._personalization_source_index = 0
+        self._personalization_error_code = ''
         self._load_cookies()
+
+    def _invalidate_taste_snapshot(self) -> None:
+        self._taste_snapshot = None
+        self._taste_snapshot_at = 0.0
+        self._taste_snapshot_retry_after = 0.0
+        self._visible_playlists = []
+        self._visible_playlists_at = 0.0
+        self._visible_playlists_user_id = 0
+        self._playlist_tracks_cache = {}
+        self._daily_recommend_tracks = []
+        self._daily_recommend_date = ''
+        self._daily_recommend_user_id = 0
+        self._daily_recommend_retry_after = 0.0
+        self._daily_recommend_error_code = ''
+        self._exploration_tracks = []
+        self._exploration_tracks_at = 0.0
+        self._exploration_keyword = ''
+        self._exploration_retry_after = 0.0
+        self._exploration_retry_keyword = ''
+        self._account_profile = {}
+        self._personalization_source_index = 0
+        self._personalization_error_code = ''
 
     def _get_cookie_file_mtime(self) -> float:
         """Get the last-modified time of the NetEase cookie file; returns 0 when absent"""
@@ -420,16 +514,25 @@ class NeteaseCrawler(BaseMusicCrawler):
             if cookies:
                 cookie_str = "; ".join([f"{k}={v}" for k, v in cookies.items()])
                 self.client.headers.update({'Cookie': cookie_str})
+                self._cookies = dict(cookies)
                 self._has_cookies = True
                 self._cookie_file_mtime = self._get_cookie_file_mtime()
                 logger.info(f"[{self.platform_name}] 成功自适应加载媒体凭证 (MUSIC_U)")
             else:
                 # Cookie 文件被清空或删除，重置登录状态
-                if self._has_cookies:
+                had_cookies = self._has_cookies
+                if had_cookies:
                     self.client.headers.pop('Cookie', None)
                     self._has_cookies = False
                     logger.info(f"[{self.platform_name}] 凭证已被清除，回退到未登录状态")
+                self._cookies = {}
+                self._invalidate_taste_snapshot()
                 self._cookie_file_mtime = self._get_cookie_file_mtime()
+                if had_cookies:
+                    try:
+                        self._sync_personalization_session()
+                    except Exception as exc:
+                        logger.warning(f"[{self.platform_name}] 清理 pyncm 登录态失败: {exc}")
         except Exception as e:
             logger.warning(f"[{self.platform_name}] 加载 Cookie 失败 (此异常不影响服务启动): {e}")
 
@@ -442,13 +545,28 @@ class NeteaseCrawler(BaseMusicCrawler):
             self._cookie_invalid = False
             self._is_vip = False
             self._vip_checked = False
+            self._invalidate_taste_snapshot()
+
+    async def _personalization_http_get(self, url: str) -> httpx.Response:
+        """Run a direct account GET through the shared account request limiter."""
+        async with self._personalization_api_lock:
+            elapsed = time.monotonic() - self._personalization_last_request_at
+            wait_seconds = NETEASE_PERSONALIZATION_REQUEST_INTERVAL_SECONDS - elapsed
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            try:
+                return await self.client.get(url)
+            finally:
+                self._personalization_last_request_at = time.monotonic()
 
     async def _check_vip_status(self):
         """Asynchronously check the user's VIP status (lazily triggered on first search())"""
         if self._vip_checked:
             return
         try:
-            resp = await self.client.get('https://music.163.com/api/nuser/account/get')
+            resp = await self._personalization_http_get(
+                'https://music.163.com/api/nuser/account/get'
+            )
             data = resp.json()
             code = data.get('code')
 
@@ -464,6 +582,12 @@ class NeteaseCrawler(BaseMusicCrawler):
 
             profile = data.get('profile') or {}
             data_field = data.get('data', {}) or {}
+            account = data.get('account') or {}
+            user_id = profile.get('userId') or account.get('id') or data_field.get('userId') or 0
+            self._account_profile = {
+                'user_id': int(user_id or 0),
+                'nickname': str(profile.get('nickname') or ''),
+            }
 
             vip_type = profile.get('vipType', 0)
             alt_vip_type = data_field.get('vipType', 0)
@@ -482,6 +606,539 @@ class NeteaseCrawler(BaseMusicCrawler):
         except Exception as e:
             logger.warning(f"[{self.platform_name}] VIP 状态检查链路异常: {e}")
 
+    def _sync_personalization_session(self) -> None:
+        """Sync the current MUSIC_U cookies into pyncm_async's shared session."""
+        import pyncm_async
+
+        session = pyncm_async.GetCurrentSession()
+        sync_pyncm_session_cookies(session, self._cookies)
+
+    async def _personalization_api_call(self, call):
+        """Serialize account API calls and keep a minimum interval between them."""
+        async with self._personalization_api_lock:
+            elapsed = time.monotonic() - self._personalization_last_request_at
+            wait_seconds = NETEASE_PERSONALIZATION_REQUEST_INTERVAL_SECONDS - elapsed
+            if wait_seconds > 0:
+                await asyncio.sleep(wait_seconds)
+            self._sync_personalization_session()
+            try:
+                result = await call()
+            finally:
+                self._personalization_last_request_at = time.monotonic()
+            if isinstance(result, dict) and result.get('code') not in (None, 200):
+                code = result.get('code')
+                if code in (301, 302):
+                    self._cookie_invalid = True
+                raise RuntimeError(f"NetEase API code={code}")
+            return result
+
+    @staticmethod
+    def _normalize_library_track(song: Dict[str, Any]) -> Dict[str, Any] | None:
+        if not isinstance(song, dict):
+            return None
+        song_id = song.get('id')
+        name = str(song.get('name') or '').strip()
+        if not song_id or not name:
+            return None
+        artists = song.get('ar') or song.get('artists') or []
+        artist = ' / '.join(
+            str(item.get('name') or '').strip()
+            for item in artists
+            if isinstance(item, dict) and item.get('name')
+        )
+        album = song.get('al') or song.get('album') or {}
+        duration = _parse_duration_seconds(song.get('dt') or song.get('duration'), milliseconds=True)
+        if not _is_recommendable_duration(duration):
+            return None
+        track = {
+            'id': int(song_id),
+            'name': name,
+            'artist': artist,
+            'url': f"/api/music/play/netease/{song_id}",
+            'cover': (
+                str(album.get('picUrl') or '')
+                if isinstance(album, dict) else ''
+            ),
+            'theme': '#44b7fe',
+            'fee': song.get('fee'),
+        }
+        if duration is not None:
+            track['duration'] = duration
+        return track
+
+    async def _fetch_playlist_tracks(self, playlist_id: int) -> List[Dict[str, Any]]:
+        """Read at most five tracks from one visible playlist and cache them briefly."""
+        now = time.time()
+        cached = self._playlist_tracks_cache.get(playlist_id)
+        if cached and now - cached[0] < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS:
+            return [dict(item) for item in cached[1]]
+
+        from pyncm_async.apis.playlist import GetPlaylistInfo
+        from pyncm_async.apis.track import GetTrackDetail
+
+        playlist_info = await self._personalization_api_call(
+            lambda: GetPlaylistInfo(
+                playlist_id,
+                limit=NETEASE_TASTE_TRACKS_PER_PLAYLIST,
+            ),
+        )
+        track_ids = [
+            item['id']
+            for item in ((playlist_info or {}).get('playlist') or {}).get('trackIds') or []
+            if isinstance(item, dict) and item.get('id')
+        ][:NETEASE_TASTE_TRACKS_PER_PLAYLIST]
+        if not track_ids:
+            return []
+
+        payload = await self._personalization_api_call(lambda: GetTrackDetail(track_ids))
+        tracks: List[Dict[str, Any]] = []
+        for song in (payload or {}).get('songs') or []:
+            track = self._normalize_library_track(song)
+            if not track or (not self._is_vip and track.get('fee') not in (0, None)):
+                continue
+            tracks.append(track)
+        self._playlist_tracks_cache[playlist_id] = (time.time(), tracks)
+        return [dict(item) for item in tracks]
+
+    async def _fetch_visible_playlists(self, user_id: int) -> List[Dict[str, Any]]:
+        now = time.time()
+        if (
+            self._visible_playlists_user_id == user_id
+            and self._visible_playlists_at > 0
+            and now - self._visible_playlists_at < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS
+        ):
+            return [dict(item) for item in self._visible_playlists]
+
+        async with self._visible_playlists_lock:
+            now = time.time()
+            if (
+                self._visible_playlists_user_id == user_id
+                and self._visible_playlists_at > 0
+                and now - self._visible_playlists_at < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS
+            ):
+                return [dict(item) for item in self._visible_playlists]
+
+            from pyncm_async.apis.user import GetUserPlaylists
+
+            payload = await self._personalization_api_call(
+                lambda: GetUserPlaylists(user_id, limit=NETEASE_PLAYLIST_LIST_LIMIT),
+            )
+            playlists = [
+                {
+                    'id': int(item['id']),
+                    'name': str(item.get('name') or ''),
+                    'special_type': item.get('specialType'),
+                }
+                for item in (payload or {}).get('playlist') or []
+                if isinstance(item, dict) and item.get('id')
+            ]
+            self._visible_playlists = playlists
+            self._visible_playlists_at = time.time()
+            self._visible_playlists_user_id = user_id
+            return [dict(item) for item in playlists]
+
+    async def _build_taste_snapshot(self) -> Dict[str, Any] | None:
+        """Build a bounded snapshot from liked songs, visible playlists and artists."""
+        user_id = await self._get_personalization_user_id()
+        if not user_id:
+            return None
+
+        from pyncm_async.apis.user import GetUserArtistSubs
+
+        playlists = await self._fetch_visible_playlists(user_id)
+        artists_raw = await self._personalization_api_call(
+            lambda: GetUserArtistSubs(limit=NETEASE_TASTE_SUBSCRIPTION_LIMIT),
+        )
+        liked_playlist = next(
+            (item for item in playlists if str(item.get('special_type') or '') == '5'),
+            None,
+        )
+        liked_tracks = (
+            await self._fetch_playlist_tracks(int(liked_playlist['id']))
+            if liked_playlist else []
+        )
+        for track in liked_tracks:
+            track['recommendation_source'] = 'liked'
+
+        artists = list((artists_raw or {}).get('data') or (artists_raw or {}).get('artists') or [])
+        return {
+            'user_id': user_id,
+            'nickname': self._account_profile.get('nickname', ''),
+            'playlists': playlists,
+            'liked_playlist_id': int(liked_playlist['id']) if liked_playlist else 0,
+            'liked_tracks': liked_tracks,
+            'liked_track_ids': {item['id'] for item in liked_tracks},
+            'subscribed_artists': [
+                {'id': item.get('id'), 'name': item.get('name', '')}
+                for item in artists if isinstance(item, dict) and item.get('id')
+            ],
+        }
+
+    async def _get_personalization_user_id(self) -> int:
+        self._check_cookie_freshness()
+        if not self._has_cookies:
+            self._personalization_error_code = 'login_required'
+            return 0
+        if self._cookie_invalid:
+            self._personalization_error_code = 'cookie_invalid'
+            return 0
+        if not self._vip_checked:
+            await self._check_vip_status()
+        if self._cookie_invalid:
+            self._personalization_error_code = 'cookie_invalid'
+            return 0
+        user_id = int(self._account_profile.get('user_id') or 0)
+        if not user_id:
+            self._personalization_error_code = 'upstream_error'
+        return user_id
+
+    @staticmethod
+    def _resolve_playlist(
+        snapshot: Dict[str, Any],
+        playlist_id: int | None,
+        playlist_name: str,
+    ) -> Dict[str, Any] | None:
+        playlists = list(snapshot.get('playlists') or [])
+        if playlist_id:
+            return next(
+                (item for item in playlists if int(item.get('id') or 0) == int(playlist_id)),
+                None,
+            )
+        normalized_name = playlist_name.strip().casefold()
+        if not normalized_name:
+            return None
+        matches = [
+            item for item in playlists
+            if str(item.get('name') or '').strip().casefold() == normalized_name
+        ]
+        return matches[0] if len(matches) == 1 else None
+
+    async def get_daily_recommendations(self, user_id: int) -> List[Dict[str, Any]]:
+        """Fetch the account's real daily songs at most once per local calendar day."""
+        today = time.strftime('%Y-%m-%d')
+        if (
+            self._daily_recommend_tracks
+            and self._daily_recommend_date == today
+            and self._daily_recommend_user_id == user_id
+        ):
+            return [dict(item) for item in self._daily_recommend_tracks]
+        if time.time() < self._daily_recommend_retry_after:
+            self._personalization_error_code = self._daily_recommend_error_code
+            return []
+
+        async with self._daily_recommend_lock:
+            if (
+                self._daily_recommend_tracks
+                and self._daily_recommend_date == today
+                and self._daily_recommend_user_id == user_id
+            ):
+                return [dict(item) for item in self._daily_recommend_tracks]
+            if time.time() < self._daily_recommend_retry_after:
+                self._personalization_error_code = self._daily_recommend_error_code
+                return []
+
+            from pyncm_async.apis import WeapiCryptoRequest
+
+            @WeapiCryptoRequest
+            def GetDailyRecommendedSongs():
+                return '/api/v3/discovery/recommend/songs', {}
+
+            try:
+                payload = await self._personalization_api_call(GetDailyRecommendedSongs)
+            except Exception as exc:
+                self._daily_recommend_error_code = (
+                    'cookie_invalid' if self._cookie_invalid else 'upstream_error'
+                )
+                self._personalization_error_code = self._daily_recommend_error_code
+                self._daily_recommend_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+                logger.warning(
+                    "[%s] 每日推荐获取失败，已进入冷却: %s: %s",
+                    self.platform_name,
+                    type(exc).__name__,
+                    exc,
+                )
+                return []
+
+            songs = ((payload or {}).get('data') or {}).get('dailySongs') or []
+            tracks: List[Dict[str, Any]] = []
+            seen_ids = set()
+            for song in songs:
+                track = self._normalize_library_track(song)
+                if not track or track['id'] in seen_ids:
+                    continue
+                if not self._is_vip and track.get('fee') not in (0, None):
+                    continue
+                track['recommendation_source'] = 'daily'
+                seen_ids.add(track['id'])
+                tracks.append(track)
+
+            if not tracks:
+                self._daily_recommend_error_code = 'source_empty'
+                self._personalization_error_code = self._daily_recommend_error_code
+                self._daily_recommend_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+                return []
+            self._daily_recommend_tracks = tracks
+            self._daily_recommend_date = today
+            self._daily_recommend_user_id = user_id
+            self._daily_recommend_retry_after = 0.0
+            self._daily_recommend_error_code = ''
+            return [dict(item) for item in tracks]
+
+    async def get_taste_snapshot(self) -> Dict[str, Any] | None:
+        self._check_cookie_freshness()
+        if not self._has_cookies or self._cookie_invalid:
+            return None
+        now = time.time()
+        if now < self._taste_snapshot_retry_after:
+            return None
+        if self._taste_snapshot and now - self._taste_snapshot_at < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS:
+            return self._taste_snapshot
+        async with self._taste_snapshot_lock:
+            now = time.time()
+            if now < self._taste_snapshot_retry_after:
+                return None
+            if self._taste_snapshot and now - self._taste_snapshot_at < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS:
+                return self._taste_snapshot
+            try:
+                snapshot = await self._build_taste_snapshot()
+            except Exception as exc:
+                self._taste_snapshot_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+                logger.warning(f"[{self.platform_name}] 个性化音乐数据更新失败，已改用常规推荐: {type(exc).__name__}: {exc}")
+                return None
+            if snapshot:
+                self._taste_snapshot = snapshot
+                self._taste_snapshot_at = time.time()
+                self._taste_snapshot_retry_after = 0.0
+                logger.info(
+                    "[%s] 个性化音乐数据已更新：可见歌单=%d，我喜欢=%d，收藏歌手=%d",
+                    self.platform_name,
+                    len(snapshot['playlists']),
+                    len(snapshot['liked_tracks']),
+                    len(snapshot['subscribed_artists']),
+                )
+            else:
+                self._taste_snapshot_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+            return snapshot
+
+    async def _fetch_exploration_tracks(
+        self,
+        snapshot: Dict[str, Any],
+        keyword: str,
+        limit: int,
+    ) -> List[Dict[str, Any]]:
+        artists = list(snapshot.get('subscribed_artists') or [])
+        if not artists or limit <= 0:
+            return []
+        keyword_key = keyword.strip().casefold()
+        now = time.time()
+        if (
+            self._exploration_tracks
+            and self._exploration_keyword == keyword_key
+            and now - self._exploration_tracks_at < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS
+        ):
+            tracks = list(self._exploration_tracks)
+            random.shuffle(tracks)
+            return tracks[:limit]
+        if self._exploration_retry_keyword == keyword_key and now < self._exploration_retry_after:
+            return []
+        async with self._exploration_lock:
+            now = time.time()
+            if (
+                self._exploration_tracks
+                and self._exploration_keyword == keyword_key
+                and now - self._exploration_tracks_at < NETEASE_TASTE_SNAPSHOT_TTL_SECONDS
+            ):
+                tracks = list(self._exploration_tracks)
+                random.shuffle(tracks)
+                return tracks[:limit]
+            if self._exploration_retry_keyword == keyword_key and now < self._exploration_retry_after:
+                return []
+            matching = [
+                item for item in artists
+                if keyword_key and keyword_key in str(item.get('name') or '').casefold()
+            ]
+            artist = random.choice(matching or artists)
+            from pyncm_async.apis.artist import GetArtistTracks
+
+            try:
+                payload = await self._personalization_api_call(
+                    lambda: GetArtistTracks(
+                        str(artist['id']),
+                        limit=min(5, max(1, limit * 2)),
+                        order='hot',
+                    ),
+                )
+            except Exception:
+                self._exploration_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+                self._exploration_retry_keyword = keyword_key
+                raise
+            songs = (payload or {}).get('songs') or (payload or {}).get('hotSongs') or []
+            familiar_ids = set(snapshot.get('liked_track_ids') or set())
+            tracks: List[Dict[str, Any]] = []
+            for song in songs:
+                track = self._normalize_library_track(song)
+                if not track or track['id'] in familiar_ids:
+                    continue
+                if not self._is_vip and track.get('fee') not in (0, None):
+                    continue
+                track['recommendation_source'] = 'artist'
+                tracks.append(track)
+            self._exploration_tracks = tracks
+            self._exploration_tracks_at = time.time()
+            self._exploration_keyword = keyword_key
+            self._exploration_retry_after = (
+                0.0 if tracks else time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+            )
+            self._exploration_retry_keyword = '' if tracks else keyword_key
+            random.shuffle(tracks)
+            return tracks[:limit]
+
+    async def personalized_recommendations(
+        self,
+        keyword: str = "",
+        limit: int = 5,
+        *,
+        playlist_id: int | None = None,
+        playlist_name: str = "",
+        personalization_source: str = "auto",
+    ) -> List[Dict[str, Any]]:
+        """Return account candidates, optionally restricted to one visible playlist."""
+        self._personalization_error_code = ''
+        bounded_limit = max(1, int(limit))
+
+        if playlist_id or playlist_name:
+            user_id = await self._get_personalization_user_id()
+            if not user_id:
+                return []
+            playlists = await self._fetch_visible_playlists(user_id)
+            requested_playlist = self._resolve_playlist(
+                {'playlists': playlists},
+                playlist_id,
+                playlist_name,
+            )
+            if not requested_playlist:
+                normalized_name = playlist_name.strip().casefold()
+                exact_matches = [
+                    item for item in playlists
+                    if normalized_name
+                    and str(item.get('name') or '').strip().casefold() == normalized_name
+                ]
+                self._personalization_error_code = (
+                    'playlist_ambiguous' if len(exact_matches) > 1 else 'playlist_not_found'
+                )
+                logger.warning(
+                    "[%s] 指定歌单不存在或名称不唯一",
+                    self.platform_name,
+                )
+                return []
+            tracks = await self._fetch_playlist_tracks(int(requested_playlist['id']))
+            for track in tracks:
+                track['recommendation_source'] = 'playlist'
+                track['playlist_id'] = int(requested_playlist['id'])
+                track['playlist_name'] = requested_playlist.get('name', '')
+            random.shuffle(tracks)
+            if not tracks:
+                self._personalization_error_code = 'source_empty'
+            return tracks[:bounded_limit]
+
+        if personalization_source == 'daily':
+            user_id = await self._get_personalization_user_id()
+            if not user_id:
+                return []
+            daily = await self.get_daily_recommendations(user_id)
+            random.shuffle(daily)
+            if not daily and not self._personalization_error_code:
+                self._personalization_error_code = 'source_empty'
+            return daily[:bounded_limit]
+
+        if personalization_source == 'liked':
+            user_id = await self._get_personalization_user_id()
+            if not user_id:
+                return []
+            playlists = await self._fetch_visible_playlists(user_id)
+            liked_playlist = next(
+                (item for item in playlists if str(item.get('special_type') or '') == '5'),
+                None,
+            )
+            liked = (
+                await self._fetch_playlist_tracks(int(liked_playlist['id']))
+                if liked_playlist else []
+            )
+            for track in liked:
+                track['recommendation_source'] = 'liked'
+            random.shuffle(liked)
+            if not liked:
+                self._personalization_error_code = 'source_empty'
+            return liked[:bounded_limit]
+
+        snapshot = await self.get_taste_snapshot()
+        if not snapshot:
+            return []
+
+        liked = list(snapshot.get('liked_tracks') or [])
+        random.shuffle(liked)
+
+        daily = await self.get_daily_recommendations(int(snapshot['user_id']))
+        random.shuffle(daily)
+
+        try:
+            artist = await self._fetch_exploration_tracks(
+                snapshot,
+                keyword,
+                bounded_limit,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"[{self.platform_name}] 收藏歌手候选获取失败，继续使用我喜欢和日推: {type(exc).__name__}"
+            )
+            artist = []
+
+        keyword_key = keyword.strip().casefold()
+        has_artist_hint = bool(
+            keyword_key
+            and any(
+                keyword_key in str(item.get('name') or '').casefold()
+                for item in snapshot.get('subscribed_artists') or []
+            )
+        )
+        if has_artist_hint and artist:
+            lead_source = 'artist'
+        else:
+            lead_source = NETEASE_PERSONALIZATION_SOURCE_ORDER[
+                self._personalization_source_index % len(NETEASE_PERSONALIZATION_SOURCE_ORDER)
+            ]
+            self._personalization_source_index += 1
+        source_order = [lead_source] + [
+            source for source in ('liked', 'daily', 'artist')
+            if source != lead_source
+        ]
+        pools = {'liked': liked, 'daily': daily, 'artist': artist}
+        combined: List[Dict[str, Any]] = []
+        seen_ids = set()
+        while len(combined) < bounded_limit and any(pools.values()):
+            for source in source_order:
+                pool = pools[source]
+                while pool and pool[0].get('id') in seen_ids:
+                    pool.pop(0)
+                if not pool:
+                    continue
+                track = pool.pop(0)
+                seen_ids.add(track.get('id'))
+                combined.append(track)
+                if len(combined) >= bounded_limit:
+                    break
+        return combined[:bounded_limit]
+
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
         if not keyword:
@@ -498,10 +1155,12 @@ class NeteaseCrawler(BaseMusicCrawler):
 
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         search_url = "https://music.163.com/api/search/get/web"
-        data = {'s': keyword, 'type': 1, 'offset': 0, 'limit': 20} # 多获取一些用于筛选
+        search_limit = min(100, max(5, limit * 2))
+        data = {'s': keyword, 'type': 1, 'offset': 0, 'limit': search_limit}
         
         try:
-            response = await self.client.post(search_url, data=data)
+            # 搜索属于公开读取，不携带账号凭证；登录态仅用于个性化读取和播放鉴权。
+            response = await self.client.post(search_url, data=data, headers={'Cookie': ''})
             response.raise_for_status()
             result = response.json()
 
@@ -538,10 +1197,11 @@ class NeteaseCrawler(BaseMusicCrawler):
                 song_id = song.get("id")
                 song_name = song.get("name", "未知曲目")
                 artists = song.get("artists", [])
-                if artists:
-                    artist_name = artists[0].get("name", "未知")
-                else:
-                    artist_name = "未知"
+                artist_name = ' / '.join(
+                    str(artist.get('name') or '').strip()
+                    for artist in artists
+                    if isinstance(artist, dict) and artist.get('name')
+                ) or "未知"
                 cover_url = song.get("album", {}).get("picUrl", "")
                 # 使用本地代理路由，支持 VIP 歌曲解析重定向
                 audio_url = f"/api/music/play/netease/{song_id}"
@@ -791,24 +1451,7 @@ class MusopenCrawler(BaseMusicCrawler):
     Musopen classical-music crawler, providing background music when no clear keyword exists.
     """
     def __init__(self):
-        # 针对 Musopen 的特殊反爬，需要 HTTP/2 + 特殊 Headers
         super().__init__("Musopen")
-        # 关闭父类创建的默认 client，避免孤儿资源泄漏
-        # （虽然全局单例影响极小，但保持代码卫生）
-        _old_client = self.client
-        self.client = httpx.AsyncClient(
-            headers=CH_HEADERS_CHROME,
-            timeout=15.0,
-            follow_redirects=True,
-            http2=True  # 开启 HTTP/2 绕过 Cloudflare 基础检测
-        )
-        # 在后台安全关闭旧 client（同步上下文中无法 await）
-        import asyncio
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(_old_client.aclose())
-        except RuntimeError:
-            pass  # 没有 event loop 时旧 client 交由 GC 处理
 
     async def search(self, keyword: str = "", limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
@@ -873,6 +1516,66 @@ class MusopenCrawler(BaseMusicCrawler):
             logger.info(f"[{self.platform_name}] 无关键词，随机选择: {url}")
 
         try:
+            search_term = {
+                'https://musopen.org/music/43-nocturnes-op-9/': 'Chopin',
+                'https://musopen.org/music/801-claire-de-lune/': 'Debussy',
+                'https://musopen.org/music/449-the-four-seasons/': 'Vivaldi',
+                'https://musopen.org/music/707-symphony-no-5-in-c-minor-op-67/': 'Beethoven',
+                'https://musopen.org/music/466-eine-kleine-nachtmusik/': 'Mozart',
+                'https://musopen.org/music/25172-cello-suite-no-1-in-g-major-bwv-1007/': 'Bach',
+            }.get(url, keyword)
+            pieces = []
+            try:
+                search_response = await self.client.get(
+                    'https://api.musopen.org/v2/search/',
+                    params={'query': search_term},
+                )
+                search_response.raise_for_status()
+                pieces = [
+                    item for item in search_response.json().get('results', [])
+                    if item.get('entity') == 'piece' and item.get('id')
+                ]
+            except (httpx.HTTPError, AttributeError, TypeError, ValueError) as exc:
+                logger.warning(
+                    "[%s] API 搜索失败，尝试页面兜底: %s",
+                    self.platform_name,
+                    type(exc).__name__,
+                )
+            results = []
+            for piece in pieces[:limit * 3]:
+                try:
+                    recordings_response = await self.client.get(
+                        f"https://api.musopen.org/v2/pieces/{piece['id']}/recordings/"
+                    )
+                    recordings_response.raise_for_status()
+                except httpx.HTTPError as exc:
+                    logger.warning(
+                        "[%s] 曲目 %s 的录音接口失败，继续尝试其他曲目: %s",
+                        self.platform_name,
+                        piece['id'],
+                        type(exc).__name__,
+                    )
+                    continue
+                for recording in recordings_response.json().get('results', []):
+                    audio_url = recording.get('fileurl')
+                    duration_seconds = _parse_duration_seconds(recording.get('length'))
+                    if not audio_url or not _is_recommendable_duration(duration_seconds):
+                        continue
+                    performer = recording.get('performer') or {}
+                    results.append(self._format_item(
+                        name=recording.get('title') or piece.get('title') or '古典曲目',
+                        url=audio_url,
+                        artist=performer.get('name') or piece.get('description') or '古典音乐',
+                        cover=piece.get('image') or '',
+                        duration_seconds=duration_seconds,
+                    ))
+                    if len(results) >= limit:
+                        return results
+
+            if results:
+                return results
+
+            logger.warning(f"[{self.platform_name}] API 未找到与 '{search_term}' 相关的可播放录音，尝试页面兜底")
             response = await self.client.get(url)
             response.raise_for_status()
             # === Musopen 封面抓取 ===
@@ -922,6 +1625,13 @@ class MusopenCrawler(BaseMusicCrawler):
 
         except httpx.TimeoutException:
             logger.warning(f"[{self.platform_name}] 访问 {url} 超时")
+        except httpx.HTTPStatusError as exc:
+            logger.warning(
+                "[%s] 访问 %s 被拒绝（HTTP %s）",
+                self.platform_name,
+                url,
+                exc.response.status_code,
+            )
         except Exception as e:
             logger.error(f"[{self.platform_name}] 抓取失败: {e}", exc_info=True)
         
@@ -1030,12 +1740,93 @@ class BandcampCrawler(BaseMusicCrawler):
     def __init__(self):
         super().__init__("Bandcamp")
 
+    @staticmethod
+    def _normalize_autocomplete_url(value: str) -> str:
+        """Repair the duplicated host prefix emitted for some album results."""
+        first = value.find('https://')
+        second = value.find('https://', first + 1)
+        return value[second:] if second >= 0 else value
+
     async def search(self, keyword: str = "lofi", limit: int = 1) -> List[Dict[str, Any]]:
         self._refresh_user_agent()
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         results = []
+
+        async def fetch_track(target_url: str):
+            try:
+                track_res = await self.client.get(target_url)
+                if track_res.status_code != 200:
+                    return None
+                track_soup = await asyncio.to_thread(_get_beautifulsoup(), track_res.text, 'lxml')
+                script_data = track_soup.find('script', attrs={'data-tralbum': True})
+                if not script_data:
+                    return None
+
+                tralbum = json.loads(script_data['data-tralbum'])
+                tracks = tralbum.get('trackinfo', [])
+                if not tracks or not tracks[0].get('file') or 'mp3-128' not in tracks[0]['file']:
+                    return None
+
+                audio_url = tracks[0]['file']['mp3-128']
+                title = tracks[0].get('title', '独立曲目')
+                artist = tralbum.get('artist', 'Bandcamp 艺术家')
+                duration_seconds = _parse_duration_seconds(tracks[0].get('duration'))
+                if not _is_recommendable_duration(duration_seconds):
+                    logger.info(
+                        "[%s] 跳过超长候选: %s (%ss)",
+                        self.platform_name, title, int(duration_seconds),
+                    )
+                    return None
+
+                cover_art = track_soup.find('a', class_='popupImage')
+                cover_url = cover_art.get('href', '') if cover_art else ''
+                return self._format_item(
+                    name=title,
+                    url=audio_url,
+                    artist=artist,
+                    cover=cover_url,
+                    duration_seconds=duration_seconds,
+                )
+            except Exception as e:
+                logger.debug(f"[{self.platform_name}] 获取曲目失败: {e}")
+                return None
+
         try:
-            # 改用 Bandcamp 官方搜索页，并限定搜索类型为单曲 (item_type=t)
+            autocomplete = None
+            try:
+                autocomplete_url = 'https://bandcamp.com/api/fuzzysearch/2/app_autocomplete'
+                autocomplete = await self.client.get(autocomplete_url, params={'q': keyword})
+            except httpx.HTTPError as exc:
+                logger.warning(
+                    "[%s] 自动补全请求失败，尝试 HTML 搜索兜底: %s",
+                    self.platform_name,
+                    type(exc).__name__,
+                )
+            if autocomplete is not None and autocomplete.status_code == 200:
+                try:
+                    autocomplete_items = autocomplete.json().get('results') or []
+                except (AttributeError, ValueError):
+                    autocomplete_items = []
+                candidate_urls = []
+                for item in autocomplete_items:
+                    if item.get('type') not in {'a', 't'}:
+                        continue
+                    target_url = self._normalize_autocomplete_url(str(item.get('url') or ''))
+                    if target_url.startswith('https://') and target_url not in candidate_urls:
+                        candidate_urls.append(target_url)
+                    if len(candidate_urls) >= limit * 5:
+                        break
+                if candidate_urls:
+                    random.shuffle(candidate_urls)
+                    track_results = await asyncio.gather(
+                        *(fetch_track(url) for url in candidate_urls[:limit * 3]),
+                        return_exceptions=True,
+                    )
+                    results = [track for track in track_results if isinstance(track, dict)][:limit]
+                    if results:
+                        return results
+
+            # Legacy HTML search remains as a compatibility fallback.
             url = 'https://bandcamp.com/search'
             params = {'q': keyword, 'item_type': 't'}
             
@@ -1044,6 +1835,9 @@ class BandcampCrawler(BaseMusicCrawler):
                 return []
 
             soup = await asyncio.to_thread(_get_beautifulsoup(), response.text, 'lxml')
+            if soup.title and soup.title.get_text(strip=True) == 'Client Challenge':
+                logger.warning(f"[{self.platform_name}] 搜索页触发 Client Challenge")
+                return []
             
             # 搜索页的链接藏在 .heading a 里面
             items = soup.select('.heading a')
@@ -1055,57 +1849,11 @@ class BandcampCrawler(BaseMusicCrawler):
             top_items = items[:limit * 5]
             random.shuffle(top_items)
             
-            async def fetch_track(item):
-                target_url = item.get('href', '')
-                if target_url.startswith('http'):
-                    target_url = target_url.split('?')[0]
-                else:
-                    return None
-                
-                try:
-                    track_res = await self.client.get(target_url)
-                    track_soup = await asyncio.to_thread(_get_beautifulsoup(), track_res.text, 'lxml')
-                    
-                    script_data = track_soup.find('script', attrs={'data-tralbum': True})
-                    if not script_data:
-                        return None
-                        
-                    tralbum = json.loads(script_data['data-tralbum'])
-                    tracks = tralbum.get('trackinfo', [])
-                    
-                    if not tracks or not tracks[0].get('file') or 'mp3-128' not in tracks[0]['file']:
-                        return None
-                    
-                    audio_url = tracks[0]['file']['mp3-128']
-                    title = tracks[0].get('title', '独立曲目')
-                    artist = tralbum.get('artist', 'Bandcamp 艺术家')
-                    duration_seconds = _parse_duration_seconds(tracks[0].get('duration'))
-                    if not _is_recommendable_duration(duration_seconds):
-                        logger.info(
-                            "[%s] 跳过超长候选: %s (%ss)",
-                            self.platform_name, title, int(duration_seconds),
-                        )
-                        return None
-                    
-                    cover_art = track_soup.find('a', class_='popupImage')
-                    if cover_art:
-                        # 【核心修复】使用 .get 防止 <a> 标签缺少 href 属性时崩溃
-                        cover_url = cover_art.get('href', '')
-                    else:
-                        cover_url = ""
-                    
-                    return self._format_item(
-                        name=title,
-                        url=audio_url,
-                        artist=artist,
-                        cover=cover_url,
-                        duration_seconds=duration_seconds,
-                    )
-                except Exception as e:
-                    logger.debug(f"[{self.platform_name}] 获取曲目失败: {e}")
-                    return None
-            
-            track_tasks = [fetch_track(item) for item in top_items[:limit * 3]]
+            track_tasks = [
+                fetch_track(item.get('href', '').split('?')[0])
+                for item in top_items[:limit * 3]
+                if item.get('href', '').startswith('http')
+            ]
             track_results = await asyncio.gather(*track_tasks, return_exceptions=True)
             
             for track in track_results:
@@ -1171,7 +1919,18 @@ async def close_all_crawlers():
 # 4. 主调度函数
 # =======================================================
 
-async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str | None = None) -> Dict[str, Any]:
+async def fetch_music_content(
+    keyword: str,
+    limit: int = 1,
+    source_locale: str | None = None,
+    *,
+    personalized: bool = False,
+    playlist_id: int | None = None,
+    playlist_name: str = "",
+    personalization_source: str = "auto",
+    requested_song: str = "",
+    requested_artist: str = "",
+) -> Dict[str, Any]:
     """
     Fetch music content with staged fallback and locale-aware source ordering.
     """
@@ -1184,8 +1943,49 @@ async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str |
     # 使用懒加载访问器获取爬虫实例
     all_crawlers = get_music_crawlers()
     netease_used = False
+    personalization_error_code = ''
+    strict_request = bool(
+        playlist_id
+        or playlist_name
+        or requested_song
+        or requested_artist
+        or personalization_source != "auto"
+    )
+    use_account_personalization = personalized and not (requested_song or requested_artist)
+    strict_personalization = use_account_personalization and bool(
+        playlist_id
+        or playlist_name
+        or personalization_source != "auto"
+    )
 
-    if keyword:
+    # 明确点歌仍走公开搜索；其余个性化请求即使带关键词，也应尊重账号候选池。
+    if use_account_personalization:
+        netease_used = True
+        try:
+            personalized_results = await all_crawlers['netease'].personalized_recommendations(
+                keyword=keyword,
+                limit=limit,
+                playlist_id=playlist_id,
+                playlist_name=playlist_name,
+                personalization_source=personalization_source,
+            )
+        except Exception as exc:
+            logger.warning(f"[个性化推荐] 网易云账号候选获取失败，回退原调度: {type(exc).__name__}: {exc}")
+            personalized_results = []
+            personalization_error_code = (
+                'cookie_invalid'
+                if all_crawlers['netease']._cookie_invalid
+                else 'upstream_error'
+            )
+        else:
+            personalization_error_code = str(
+                all_crawlers['netease']._personalization_error_code or ''
+            )
+        if personalized_results:
+            all_results.extend(personalized_results)
+            logger.info(f"[个性化推荐] 使用网易云个性化候选 {len(personalized_results)} 首")
+
+    if not all_results and keyword and not strict_personalization:
         # 场景 A: 用户指定了明确关键词 -> 开启"梯队降级"机制
         kw_lower = keyword.lower()
         # 1. 【强古典词】确保正确路由至 Musopen
@@ -1325,7 +2125,7 @@ async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str |
                 except Exception as e:
                     logger.warning(f"[智能调度] 兜底源异常: {e}")
 
-    else: 
+    elif not all_results and not strict_request:
         # 场景 B: 纯背景音乐推荐 -> 并发盲抽
         tasks = []
         if china:
@@ -1377,9 +2177,15 @@ async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str |
 
     if not all_results:
         logger.warning("所有音乐源（含兜底）均未返回任何结果")
+        error_code = (
+            personalization_error_code
+            if strict_request and personalization_error_code
+            else 'track_not_found'
+        )
         return {
             'success': False,
             'error': '未能找到任何相关音乐',
+            'error_code': error_code,
             'data': [],
             'netease_cookie_invalid': netease_cookie_invalid,
         }
@@ -1401,12 +2207,54 @@ async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str |
         return {
             'success': False,
             'error': '去重后无可用音乐',
+            'error_code': 'track_not_found',
             'data': [],
             'netease_cookie_invalid': netease_cookie_invalid,
         }
+
+    if requested_song:
+        requested_match = _select_requested_song(
+            requested_song,
+            requested_artist,
+            unique_results,
+        )
+        if not requested_match:
+            logger.warning("指定歌曲未找到可靠候选: %s - %s", requested_song, requested_artist)
+            return {
+                'success': False,
+                'error': '未能找到指定歌曲',
+                'error_code': 'track_not_found',
+                'data': [],
+                'netease_cookie_invalid': netease_cookie_invalid,
+            }
+        unique_results = [requested_match]
+    elif requested_artist:
+        target_artist = _normalize_song_match_text(requested_artist)
+        unique_results = [
+            item
+            for item in unique_results
+            if target_artist
+            and target_artist
+            in _normalize_song_match_text(str(item.get('artist') or ''))
+        ]
+        if not unique_results:
+            logger.warning("指定歌手未找到可靠候选: %s", requested_artist)
+            return {
+                'success': False,
+                'error': '未能找到指定歌手的歌曲',
+                'error_code': 'track_not_found',
+                'data': [],
+                'netease_cookie_invalid': netease_cookie_invalid,
+            }
     
     # 【核心优化】获取搜索结果后立即鉴别最佳匹配，并重排列表顺序
-    best_match = identify_best_music_resource(target_song=keyword, search_results=unique_results)
+    match_target = " ".join(
+        part for part in (requested_song or keyword, requested_artist) if part
+    )
+    best_match = identify_best_music_resource(
+        target_song=match_target,
+        search_results=unique_results,
+    )
     
     if best_match['status'] == 'exact' and best_match['resource']:
         # 将最佳匹配项移到首位，确保 AI 提示词和链接卡片都优先展示它
@@ -1429,7 +2277,8 @@ async def fetch_music_content(keyword: str, limit: int = 1, source_locale: str |
     logger.info(f"[音乐日志] 实际下发歌曲: {log_items}")
     
     # 标记实际返回的歌曲为已播放（写入缓存）
-    music_cache.mark_as_played(final_results)
+    if not personalized:
+        music_cache.mark_as_played(final_results)
 
     return {
         'success': True,
@@ -1536,6 +2385,82 @@ def expand_style_keyword(keyword: str) -> List[str]:
         return [keyword] + lang_extras
     
     return [keyword]
+
+
+def _normalize_song_match_text(value: str) -> str:
+    return re.sub(r"[\s\-—_·,，。.!！?？:：'\"“”‘’《》〈〉「」『』【】()（）\[\]]+", "", value.casefold())
+
+
+def _is_song_title_boundary_prefix(requested: str, candidate: str) -> bool:
+    requested = requested.strip().casefold()
+    candidate = candidate.strip().casefold()
+    if not requested or not candidate.startswith(requested) or len(candidate) == len(requested):
+        return False
+    return candidate[len(requested)] in " \t-—_·([（【「『《〈"
+
+
+def _select_requested_song(
+    song_name: str,
+    song_artist: str,
+    search_results: List[Dict[str, Any]],
+) -> Dict[str, Any] | None:
+    target_name = _normalize_song_match_text(song_name)
+    target_artist = _normalize_song_match_text(song_artist)
+    if not target_name:
+        return None
+
+    best_item = None
+    best_score = 0.0
+    for item in search_results:
+        candidate_name = _normalize_song_match_text(str(item.get('name') or ''))
+        candidate_artist = _normalize_song_match_text(str(item.get('artist') or ''))
+        if not candidate_name:
+            continue
+
+        title_ratio = difflib.SequenceMatcher(None, target_name, candidate_name).ratio()
+        exact = target_name == candidate_name
+        boundary_prefix = _is_song_title_boundary_prefix(song_name, str(item.get('name') or ''))
+        single_typo = (
+            len(target_name) >= 4
+            and abs(len(target_name) - len(candidate_name)) <= 1
+            and title_ratio >= 0.8
+        )
+        fuzzy_title = len(target_name) >= 4 and title_ratio >= 0.88
+        if not (exact or boundary_prefix or single_typo or fuzzy_title):
+            continue
+
+        artist_score = 1.0
+        if target_artist:
+            if not candidate_artist:
+                continue
+            artist_score = difflib.SequenceMatcher(
+                None, target_artist, candidate_artist
+            ).ratio()
+            artist_matches = (
+                target_artist in candidate_artist
+                or (
+                    len(candidate_artist) >= 2
+                    and candidate_artist in target_artist
+                )
+                or (
+                    len(target_artist) >= 4
+                    and len(candidate_artist) >= 4
+                    and artist_score >= 0.8
+                )
+            )
+            if not artist_matches:
+                continue
+
+        title_score = 1.0 if exact else 0.95 if boundary_prefix else title_ratio
+        score = (
+            title_score
+            if not target_artist
+            else title_score * 0.75 + artist_score * 0.25
+        )
+        if score > best_score:
+            best_item = item
+            best_score = score
+    return best_item
 
 
 def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:

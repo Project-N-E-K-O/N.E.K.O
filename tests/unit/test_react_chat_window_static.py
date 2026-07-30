@@ -1,5 +1,7 @@
 import json
 import re
+
+import pytest
 from pathlib import Path
 from tests.static_app_parts import read_js_parts
 
@@ -72,6 +74,18 @@ def assert_no_layout_transition(block: str) -> None:
     transition_section = block.split("transition:", 1)[1].split(";", 1)[0] if "transition:" in block else ""
     for prop in ("width", "height", "max-height", "min-height", "padding", "margin", "top", "right", "bottom", "left"):
         assert prop not in transition_section
+
+
+def test_rps_result_hands_separate_smoothly_and_winner_is_already_above_on_approach():
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    assert ".avatar-tool-round-reveal.is-result .avatar-tool-round-reveal-hand.is-user" in styles
+    assert "animation: avatar-tool-rps-user-separate" in styles
+    assert "animation: avatar-tool-rps-avatar-separate" in styles
+    assert "@keyframes avatar-tool-rps-user-separate" in styles
+    assert "@keyframes avatar-tool-rps-avatar-separate" in styles
+    assert ".avatar-tool-round-reveal.is-user_win.is-approach .avatar-tool-round-reveal-hand.is-user" in styles
+    assert ".avatar-tool-round-reveal.is-avatar_win.is-approach .avatar-tool-round-reveal-hand.is-avatar" in styles
 
 
 def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
@@ -245,6 +259,31 @@ def test_chat_surface_mode_preference_is_shared_with_electron():
     assert "localStorage.setItem(CHAT_SURFACE_MODE_STORAGE_KEY, mode)" in persist_block
 
 
+def test_avatar_tool_result_name_tracks_the_current_catgirl():
+    geometry_path = (
+        Path(__file__).resolve().parents[2]
+        / "static"
+        / "app"
+        / "app-react-chat-window"
+        / "geometry-and-messages.js"
+    )
+    source = geometry_path.read_text(encoding="utf-8")
+
+    name_block = source.split("function getConfiguredAssistantName()", 1)[1].split(
+        "function getCurrentAssistantName()",
+        1,
+    )[0]
+    build_render_block = source.split("function buildRenderProps()", 1)[1].split(
+        "function showToast",
+        1,
+    )[0]
+
+    assert name_block.index("window.appState && window.appState.lanlan_name") < name_block.index(
+        "window.lanlan_config && window.lanlan_config.lanlan_name"
+    )
+    assert "assistantName: getConfiguredAssistantName() || undefined" in build_render_block
+
+
 def test_goodbye_composer_hidden_survives_surface_mode_switches():
     source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
 
@@ -287,6 +326,7 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "function syncComposerAttachmentsVisibility(previousVisible)" in source
     assert "!state.homeTutorialInputLocked" in effective_composer_hidden_block
     assert "state.composerHidden || state.goodbyeComposerHidden" in effective_composer_hidden_block
+    assert "isCatLocalChatActive" in effective_composer_hidden_block
     assert "composerHidden: getEffectiveComposerHidden()" in build_render_block
     assert "state.homeTutorialInteractionLocked" in submit_block
     assert "state.homeTutorialInputLocked" in submit_block
@@ -307,7 +347,11 @@ def test_goodbye_composer_hidden_survives_surface_mode_switches():
     assert "EVENT_PREFIX + 'set-goodbye-composer-hidden'" in source
     assert "window.addEventListener('live2d-goodbye-click'" in source
     assert "setGoodbyeComposerHidden(true, 'live2d-goodbye-click')" in source
-    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" in source
+    assert "window.addEventListener('neko:cat-return-complete'" in source
+    assert "source !== 'pngtuber-return-click'" in source
+    assert "source !== 'live2d-return-click'" in source
+    assert "setGoodbyeComposerHidden(false, 'return-complete')" in source
+    assert "setGoodbyeComposerHidden(false, 'live2d-return-click')" not in source
 
 
 def test_chat_full_endpoint_uses_chat_template_with_initial_full_surface():
@@ -1076,7 +1120,7 @@ def test_compact_tool_fan_uses_shell_local_anchor_not_fixed_viewport_position():
     assert "id: index === 0 ? 'toolFan:native' : 'toolFan:native:' + index" in script
 
 
-def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
+def test_compact_tool_fan_tooltips_stay_noninteractive_and_anchored():
     styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
 
     tooltip_block = css_block(
@@ -1095,35 +1139,45 @@ def test_compact_tool_fan_labels_are_plain_noninteractive_tags():
     dark_tooltip_block = css_block(
         styles,
         '[data-theme="dark"] .compact-input-tool-fan .compact-input-tool-tooltip {',
-        '[data-theme="dark"] .compact-input-tool-fan .avatar-tool-quickbar {',
+        # 终止标记必须是紧邻的下一条规则：原来那个 .avatar-tool-quickbar 隔了
+        # 很远，切片会把 .neko-chat-tooltip::after 一起吞进来，对它做的断言其实
+        # 在断别的规则。
+        '[data-theme="dark"] .neko-chat-tooltip::after {',
     )
 
-    assert "pointer-events: none;" in tooltip_block
+    # 只钉行为性质，不钉观感取值：#2447 把这个 tooltip 从「白底方角平面标签」
+    # 重设计成了带圆角/渐变/backdrop-filter 的玻璃质感，原来那几条
+    # border-radius: 0 / background: #ffffff / box-shadow: none / 暗色具体色值
+    # 全是被有意改掉的外观，留着只会在每次视觉迭代时假报警。
+    assert "pointer-events: none;" in tooltip_block, "tooltip 不能吃掉指针事件"
     assert "user-select: none;" in tooltip_block
-    assert "left: calc(100% + 5px);" in tooltip_block
+    assert "left: calc(100% + 5px);" in tooltip_block, "tooltip 锚点定在按钮右侧"
     assert "top: calc(100% - 6px);" in tooltip_block
-    assert "border-radius: 0;" in tooltip_block
-    assert "background: #ffffff;" in tooltip_block
-    assert "box-shadow: none;" in tooltip_block
-    assert "scale(" not in tooltip_block
     assert "transform-origin: 0 0;" in tooltip_block
+    # 显示态必须落在静止几何上（不残留位移/缩放），否则标签会停在偏移位置。
     assert "transform: translate(0, 0);" in visible_block
     assert "scale(" not in visible_block
-    assert "border-color: #8b949e;" in dark_tooltip_block
-    assert "background: #202124;" in dark_tooltip_block
-    assert "color: #f3f4f6;" in dark_tooltip_block
+    # 暗色必须自带一套，不能继承亮色的底与字色（不钉具体色值）。
+    assert "background:" in dark_tooltip_block
+    assert "color:" in dark_tooltip_block
 
 
 def test_compact_tool_wheel_rotate_request_is_present_in_host_and_built_bundle():
     host_source = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
     app_source = REACT_CHAT_APP_PATH.read_text(encoding="utf-8")
-    bundle_source = REACT_CHAT_IIFE_PATH.read_text(encoding="utf-8")
 
     assert "rotateCompactToolWheel: rotateCompactToolWheel" in host_source
     assert "compactToolWheelRotateRequest = null" in app_source
     assert "rotateCompactInputToolWheelSteps(request.direction, request.stepCount" in app_source
+
+    # 产物断言放在源码断言之后，并且产物缺席时跳过而不是红：
+    # static/react/neko-chat/ 是 .gitignore 的 vite 输出，只有本地构建过或
+    # 打包流水线里才有。它还会「假绿」——一份陈旧产物同样能匹配到这个符号。
+    # 真正每次重建并校验产物的是 build-desktop 流水线，那才是该盯它的地方。
+    if not REACT_CHAT_IIFE_PATH.is_file():
+        pytest.skip("react chat bundle not built (static/react/ is a gitignored vite output)")
+    bundle_source = REACT_CHAT_IIFE_PATH.read_text(encoding="utf-8")
     assert "compactToolWheelRotateRequest:" in bundle_source
-    assert "compactToolWheelRotateRequest" in bundle_source
 
 
 def test_compact_history_open_request_drives_export_panel():
@@ -1307,10 +1361,12 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
 
     assert "var pcOverlayAvailable = isYuiGuidePcOverlayAvailable();" in update_block
     assert "if (pcOverlayAvailable) {" in update_block
-    assert "var sourceRectInfo = rect ? getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect) : null;" in update_block
+    assert "var pcWindowMetrics = pcOverlayAvailable && typeof getYuiGuideWindowMetrics === 'function'" in update_block
+    assert "getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect, pcWindowMetrics)" in update_block
+    assert "metrics.waylandWorkAreaCarrier === true" in script
     assert "var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;" in update_block
     assert "toYuiGuideScreenRect({" in update_block
-    assert "}, kind, yuiGuideChatSpotlightVariant)" in update_block
+    assert "}, kind, yuiGuideChatSpotlightVariant, pcWindowMetrics)" in update_block
     assert "kind !== 'input' && isYuiGuidePcOverlayAvailable()" not in update_block
     assert "hideYuiGuideChatSpotlightElement" not in script
     assert "hideYuiGuideChatSpotlightElements" not in script
@@ -1835,6 +1891,104 @@ def test_compact_minimize_collapse_origin_matches_target():
     assert "originY = (targetTop - rect.top) / originDenomY;" in collapse_block
     assert "shell.style.transformOrigin = originX + 'px ' + originY + 'px';" in collapse_block
     assert "shell.style.removeProperty('transform-origin');" in collapse_block
+
+
+def test_compact_minimize_does_not_replay_full_shell_collapse_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    request_block = script.split("function handleCompactMinimizeRequest()", 1)[1].split(
+        "function handleMiniGameInviteChoice(option)",
+        1,
+    )[0]
+    assert request_block.count(
+        "setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });"
+    ) == 2
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "if (transitionOptions.skipShellCollapseAnimation === true" in set_mode_block
+    assert "&& previousMode === 'compact'" in set_mode_block
+    assert "&& !isElectronChatWindow()" in set_mode_block
+    assert "&& !window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellCollapseAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    instant_branch = minimize_block.split(
+        "if (transitionOptions.skipShellCollapseAnimation === true)",
+        1,
+    )[1].split("// 3. 计算缩放比", 1)[0]
+    assert "shell.classList.add('is-minimized');" in instant_branch
+    assert "shell.classList.add('is-collapsing');" not in instant_branch
+    assert "requestAnimationFrame" not in instant_branch
+
+
+def test_web_compact_restore_does_not_replay_full_shell_expand_animation():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+    styles = REACT_CHAT_STYLES_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    assert "previousMinimized" in set_mode_block
+    assert "normalized === 'compact'" in set_mode_block
+    assert "!isElectronChatWindow()" in set_mode_block
+    assert "!window.__LANLAN_IS_ELECTRON_PET__" in set_mode_block
+    assert "setMinimized(nextMinimized, { skipShellExpandAnimation: true });" in set_mode_block
+    assert "setMinimized(nextMinimized);" in set_mode_block
+
+    minimize_block = script.split("function setMinimized(nextMinimized)", 1)[1].split(
+        "// ---- 展开动画",
+        1,
+    )[0]
+    compact_restore = minimize_block.split(
+        "if (!willMinimize && transitionOptions.skipShellExpandAnimation === true)",
+        1,
+    )[1].split("if (willMinimize)", 1)[0]
+    assert "shell.style.visibility = 'hidden';" in compact_restore
+    assert "shell.classList.remove('is-mobile-content-capped', 'is-minimized');" in compact_restore
+    assert "syncCompactSurfaceAnchor();" in compact_restore
+    assert "scheduleMobileContentLayout();" in compact_restore
+    assert "COMPACT_EXPAND_WIPE_MS + COMPACT_EXPAND_TRANSITION_BUFFER_MS" in compact_restore
+    assert "shell.classList.add('is-expanding');" not in compact_restore
+    assert "scale(" not in compact_restore
+
+    host_duration = re.search(r"var COMPACT_EXPAND_WIPE_MS = (\d+);", script)
+    css_duration = re.search(
+        r"\.compact-chat-surface-shell\.neko-compact-expanding\s*\{[^}]*"
+        r"animation:\s*neko-compact-expand-wipe\s+(\d+)ms",
+        styles,
+        re.DOTALL,
+    )
+    assert host_duration is not None
+    assert css_duration is not None
+    assert host_duration.group(1) == css_duration.group(1)
+
+
+def test_queued_surface_mode_preserves_compact_transition_options():
+    script = APP_REACT_CHAT_WINDOW_PATH.read_text(encoding="utf-8")
+
+    set_mode_block = script.split("function setChatSurfaceMode(nextMode)", 1)[1].split(
+        "function cycleChatSurfaceMode()",
+        1,
+    )[0]
+    flush_block = script.split("function flushPendingChatSurfaceModeIfNeeded()", 1)[1].split(
+        "function setMinimized(nextMinimized)",
+        1,
+    )[0]
+
+    assert "pendingChatSurfaceMode = {" in set_mode_block
+    assert "mode: normalized," in set_mode_block
+    assert "transitionOptions: transitionOptions" in set_mode_block
+    assert "var pendingSurfaceMode = pendingChatSurfaceMode;" in flush_block
+    assert "var targetMode = pendingSurfaceMode.mode;" in flush_block
+    assert "setChatSurfaceMode(targetMode, pendingSurfaceMode.transitionOptions);" in flush_block
 
 
 def test_desktop_compact_layout_change_resets_anchor_only_when_base_surface_changes():
@@ -2630,7 +2784,10 @@ def test_chat_image_file_drop_uses_import_pipeline_and_blocks_browser_navigation
     assert "e.preventDefault();" in drop_block
     assert "e.stopPropagation();" in drop_block
     assert "showHomeTutorialLockedToast();" in drop_block
-    assert "mod.importImageFilesToPendingList(files, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "mod.importImageFilesToPendingList(imageFiles, { logPrefix: '[拖放图片]' });" in drop_block
+    assert "window.NekoAvatarDropParser" in drop_block
+    assert "parser.parseFiles(otherFiles)" in drop_block
+    assert "mod.sendAvatarDropPayload" in drop_block
 
 
 def test_chat_composer_user_images_use_text_attachment_input_type():
@@ -2668,7 +2825,7 @@ def test_chat_composer_user_images_use_text_attachment_input_type():
     assert "input_type: U.isMobile() ? 'camera' : 'screen'" not in send_block
 
 
-def test_text_mode_screenshot_payload_only_tags_paired_text_turn():
+def test_text_mode_screenshot_payload_always_tags_interaction_request():
     script = APP_BUTTONS_PATH.read_text(encoding="utf-8")
 
     screenshot_block = script.split("// Send screenshots first", 1)[1].split(
@@ -2680,7 +2837,7 @@ def test_text_mode_screenshot_payload_only_tags_paired_text_turn():
         1,
     )[0]
 
-    assert "request_id: requestId" not in screenshot_block
-    assert "if (text)" in screenshot_block
-    assert "msg.request_id = requestId" in screenshot_block
+    assert "request_id: requestId" in screenshot_block
+    assert "if (text)" not in screenshot_block
+    assert "msg.request_id = requestId" not in screenshot_block
     assert "request_id: requestId" in text_block

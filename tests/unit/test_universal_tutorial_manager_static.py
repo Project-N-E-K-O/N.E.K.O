@@ -19,7 +19,9 @@ YUI_GUIDE_COMMON_PATH = Path(__file__).resolve().parents[2] / "static" / "tutori
 COMMON_UI_PATH = Path(__file__).resolve().parents[2] / "static" / "common_ui.js"
 APP_AUDIO_CAPTURE_PATH = Path(__file__).resolve().parents[2] / "static" / "app" / "app-audio-capture.js"
 CHAT_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "templates" / "chat.html"
-APP_PROMPT_PATH = Path(__file__).resolve().parents[2] / "static" / "tutorial/core/app-prompt.js"
+HOME_TUTORIAL_RUNTIME_PATH = (
+    Path(__file__).resolve().parents[2] / "static" / "tutorial/core/home-tutorial-runtime.js"
+)
 AVATAR_FLOATING_BOOT_PREDICTOR_PATH = (
     Path(__file__).resolve().parents[2] / "static" / "tutorial/core/avatar-floating-boot-predictor.js"
 )
@@ -72,8 +74,8 @@ def _read_chat_template() -> str:
     return CHAT_TEMPLATE_PATH.read_text(encoding="utf-8")
 
 
-def _read_app_prompt() -> str:
-    return APP_PROMPT_PATH.read_text(encoding="utf-8")
+def _read_home_tutorial_runtime() -> str:
+    return HOME_TUTORIAL_RUNTIME_PATH.read_text(encoding="utf-8")
 
 
 def _read_avatar_floating_boot_predictor() -> str:
@@ -114,7 +116,7 @@ def test_universal_tutorial_manager_excludes_legacy_driver_tutorial_system():
 def test_home_tutorial_runtime_no_longer_uses_legacy_home_storage_key():
     for source in (
         _read_manager(),
-        _read_app_prompt(),
+        _read_home_tutorial_runtime(),
         _read_avatar_floating_boot_predictor(),
         _read_floating_guide_reset(),
         _read_character_personality_onboarding(),
@@ -193,6 +195,29 @@ def test_non_home_page_tutorials_are_restored_in_separate_driver_runtime():
     assert "hasCard || hasContainer" not in character_wait_block
 
 
+def test_memory_browser_tutorial_targets_current_responsive_surfaces():
+    page_source = _read_page_manager()
+    block = page_source.split("        getMemoryBrowserSteps() {", 1)[1].split(
+        "        isElementVisible(element) {",
+        1,
+    )[0]
+
+    selectors = [".editor", ".memory-global-actions"]
+    positions = [block.index(f"element: '{selector}'") for selector in selectors]
+    assert positions == sorted(positions)
+    assert "const roleLibraryTarget = document.body.dataset.memoryLayout === 'compact'" in block
+    assert "? '#memory-role-panel'" in block
+    assert ": '#memory-role-library';" in block
+    assert ".tips-container" not in block
+    assert block.count("this.setMemoryBrowserRolePanelOpen(true)") == 3
+    assert "this.setMemoryBrowserRolePanelOpen(false)" not in block
+    assert "this.setMemoryBrowserSettingsPanelOpen(true)" not in block
+    assert "this.prepareMemoryBrowserTutorialUi();" in page_source
+    assert "this.restoreMemoryBrowserTutorialUiState();" in page_source
+    assert "return viewportWidth >= 720;" in page_source
+    assert "this.waitForMemoryBrowserReady().then(() =>" in page_source
+
+
 def test_page_tutorial_manager_ignores_stale_yui_handoff_tokens():
     page_source = _read_page_manager()
 
@@ -232,17 +257,20 @@ def test_page_tutorial_manager_honors_mobile_viewport_bailout():
     assert "!this.shouldAllowCompactDesktopTutorial()" in manage_block
 
 
-def test_page_tutorial_manager_allows_voice_clone_desktop_popup_width():
+def test_page_tutorial_manager_allows_intentional_compact_desktop_pages():
     page_source = _read_page_manager()
 
     compact_block = page_source.split("        shouldAllowCompactDesktopTutorial() {", 1)[1].split(
-        "        }",
+        "        waitForDriver() {",
         1,
     )[0]
 
-    assert "this.currentPage !== 'voice_clone'" in compact_block
+    assert "this.currentPage === 'voice_clone'" in compact_block
+    assert "this.currentPage === 'memory_browser'" in compact_block
     assert "viewportWidth >= 640" in compact_block
+    assert "viewportWidth >= 720" in compact_block
     assert "screenWidth > 768" in compact_block
+    assert "return viewportWidth >= 720;" in compact_block
 
 
 def test_voice_clone_tutorial_targets_visible_dropdown_triggers():
@@ -444,7 +472,7 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
         1,
     )[0]
     i18n_block = source.split("    startTutorialWhenI18nReady(delayMs = 0) {", 1)[1].split(
-        "    shouldSkipAutomaticHomeTutorialStart() {",
+        "    shouldSkipAutomaticHomeTutorialStart(round = null) {",
         1,
     )[0]
 
@@ -461,8 +489,8 @@ def test_universal_tutorial_manager_starts_day1_through_yui_round_directly():
         "this.startAvatarFloatingGuideRound(round, {"
     )
     assert "this.startAvatarFloatingGuideRound(round, {" in start_block
-    assert "const round = this.getHomeAvatarFloatingGuideLaunchRound();" in i18n_block
-    assert "this.startAvatarFloatingGuideRound(round, { source })" in i18n_block
+    assert "const homeRound = this.currentPage === 'home'" in i18n_block
+    assert "this.startAvatarFloatingGuideRound(homeRound, { source })" in i18n_block
     assert "this.startAvatarFloatingGuideRound(1, {" not in source
     assert "this.startAvatarFloatingGuideRound(1, { source })" not in source
     assert "this.startYuiGuideSceneSequence(sceneIds" not in source
@@ -866,8 +894,9 @@ def test_avatar_floating_guide_waits_for_compact_chat_before_fixing_layout_and_r
         "this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')"
     )
     assert start_round_block.index("this.syncYuiGuideCompactChatFixedLayout(true, 'avatar-floating-guide-start')") < start_round_block.index(
-        "this.emitTutorialStarted('home', source, { lifecycleAlreadyStarted: true })"
+        "this.emitTutorialStarted('home', source, {"
     )
+    assert "day: round" in start_round_block
     assert "action: 'yui_guide_prepare_compact_chat'" in source
     assert "tutorialRunId: tutorialRunId" in source
     assert "neko:yui-guide:compact-chat-ready" in source

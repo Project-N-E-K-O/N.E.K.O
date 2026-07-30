@@ -3740,6 +3740,7 @@
             this._pngtuberControlsHover = false;
 
             this.updateFloatingButtonsPosition = () => {
+                this.syncResponsiveButtonVisibility(buttonsContainer);
                 if (isYuiGuideFloatingToolbarSuppressed()) {
                     buttonsContainer.style.display = 'none';
                     buttonsContainer.style.visibility = 'hidden';
@@ -3954,6 +3955,8 @@
                     } else if (config.id === 'goodbye') {
                         this._isInReturnState = true;
                         window.dispatchEvent(new CustomEvent('live2d-goodbye-click'));
+                    } else if (config.id === 'social') {
+                        window.dispatchEvent(new CustomEvent('live2d-social-click'));
                     }
                 });
 
@@ -4024,6 +4027,7 @@
                 buttonsContainer.appendChild(btnWrapper);
                 this._floatingButtons[config.id] = { button: btn, imgOff, imgOn, triggerButton: triggerBtn, triggerImg };
             });
+            applyResponsiveFloatingLayout();
 
             const returnHandler = () => {
                 this._isInReturnState = false;

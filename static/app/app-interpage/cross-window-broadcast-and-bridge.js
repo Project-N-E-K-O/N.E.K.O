@@ -916,6 +916,17 @@
                 }));
                 return true;
             }
+            case 'yui_guide_overlay_skip_request': {
+                if (I.isStandaloneChatPage()) return true;
+                window.dispatchEvent(new CustomEvent('neko:yui-guide:desktop-skip-request', {
+                    detail: {
+                        source: message.source || 'wayland-tutorial-overlay',
+                        tutorialRunId: message.tutorialRunId || '',
+                        timestamp: message.timestamp || Date.now()
+                    }
+                }));
+                return true;
+            }
             default:
                 return false;
         }

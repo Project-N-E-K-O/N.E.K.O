@@ -377,30 +377,44 @@ class OcrReaderManager(
         return (repo_root / path).resolve()
 
     def close(self) -> None:
-        self._release_rapidocr_backend()
-        classifier = self.vision_classifier
-        self.vision_classifier = None
-        close_classifier = getattr(classifier, "close", None)
-        if callable(close_classifier):
-            close_classifier()
+        # 顺序与 ocr_manager_poll.shutdown() 对偶：先停前台监听线程与 capture
+        # 线程池，再释放它们可能仍在用的重依赖。两步重依赖释放原本裸奔在最前
+        # 面，任一抛错就把下面几段守卫整个跳过、线程与线程池全漏 —— 正是这
+        # 些 try/except 当初要防的场景。
+        #
+        # 各步各自独立守卫，不合并：合并后任一步抛错都会把它后面的步骤连带
+        # 跳过，而异常又已经被吞掉，调用方看到的是「关成功了」，实际还留着
+        # 活着的资源（Codex P2）。
         try:
             self._stop_foreground_advance_monitor(join_timeout=1.0)
         except Exception as exc:
-            warning = getattr(getattr(self, "_logger", None), "warning", None)
-            if callable(warning):
-                try:
-                    warning("ocr_reader foreground advance monitor shutdown failed: {}", exc)
-                except Exception:
-                    pass
+            self._log_warning("ocr_reader foreground advance monitor shutdown failed: {}", exc)
+        inflight: list[Future[OcrExtractionResult]] = []
         try:
-            self._shutdown_capture_worker()
+            inflight = self._shutdown_capture_worker() or []
         except Exception as exc:
-            warning = getattr(getattr(self, "_logger", None), "warning", None)
-            if callable(warning):
-                try:
-                    warning("ocr_reader capture worker shutdown failed: {}", exc)
-                except Exception:
-                    pass
+            self._log_warning("ocr_reader capture worker shutdown failed: {}", exc)
+        # 关线程池不等于任务停了：已经在跑的那次 capture 还攥着下面要释放的
+        # RapidOCR runtime。先有界地等它退栈，再往下拆。
+        try:
+            self._drain_inflight_capture_workers(inflight)
+        except Exception as exc:
+            self._log_warning("ocr_reader in-flight capture drain failed: {}", exc)
+        try:
+            self._release_rapidocr_backend()
+        except Exception as exc:
+            self._log_warning("ocr_reader rapidocr backend release failed: {}", exc)
+        # 引用先摘掉再 close：close 失败也不能把一个已经宣告释放的 classifier
+        # 继续挂在 self 上。getattr 兜底与本文件对 _logger 的取法一致——收尾
+        # 路径不该假设自己被构造完整。
+        classifier = getattr(self, "vision_classifier", None)
+        self.vision_classifier = None
+        close_classifier = getattr(classifier, "close", None)
+        if callable(close_classifier):
+            try:
+                close_classifier()
+            except Exception as exc:
+                self._log_warning("ocr_reader vision classifier close failed: {}", exc)
 
     def __enter__(self) -> "OcrReaderManager":
         return self

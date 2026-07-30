@@ -41,6 +41,7 @@ import re
 import httpx
 from utils.frontend_utils import replace_blank, is_only_punctuation
 from utils.internal_http_client import get_internal_http_client
+from utils.language_utils import get_global_language_full
 from utils.logger_config import get_module_logger
 from main_logic.agent_event_bus import publish_analyze_request_reliably
 
@@ -644,7 +645,13 @@ async def _post_memory_server(
     client = get_internal_http_client()
     response = await client.post(
         url,
-        json={"input_history": json.dumps(payload, indent=2, ensure_ascii=False)},
+        json={
+            "input_history": json.dumps(payload, indent=2, ensure_ascii=False),
+            # main_server owns Steamworks. Forward its resolved Steam > system
+            # locale decision so the standalone memory_server does not fall
+            # back to its process-local C.UTF-8 environment.
+            "language": get_global_language_full(),
+        },
         timeout=timeout_s,
     )
     raw_body = response.text

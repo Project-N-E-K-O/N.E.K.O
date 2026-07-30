@@ -4,6 +4,8 @@
         "minimize": "Minimizar",
         "maximize": "Maximizar",
         "restore": "Restaurar",
+        "pinWindow": "Fijar ventana",
+        "unpinWindow": "Desfijar ventana",
         "expand": "Expandir",
         "close": "Cerca",
         "save": "Guardar",
@@ -74,15 +76,6 @@
             "accept": "Sí, desactiva la pantalla compartida",
             "decline": "No, déjala"
         }
-    },
-    "tutorialPrompt": {
-        "title": "¿Quieres empezar el tutorial en casa?",
-        "message": "Puedo mostrarte rápidamente los principales puntos de entrada en la pantalla de inicio para que puedas comenzar con N.E.K.O de inmediato.",
-        "note": "Puede omitirlo en cualquier momento o volver a abrirlo más tarde desde Memory Browser.",
-        "startNow": "Iniciar tutorial",
-        "later": "tal vez más tarde",
-        "never": "no me lo recuerdes",
-        "startFailed": "El tutorial no se pudo iniciar en este momento. Inténtelo de nuevo más tarde."
     },
     "characterProfile": {
         "gender": "Género",
@@ -705,6 +698,7 @@
         "screenshotAriaLabel": "Tomar captura de pantalla",
         "takePhoto": "tomar foto",
         "takePhotoAriaLabel": "tomar foto",
+        "newUserIcebreakerOptionsAriaLabel": "Opciones rompehielos para nuevos usuarios",
         "screenshotsTitle": "Capturas de pantalla pendientes",
         "clearAll": "Borrar todo",
         "screenshotAlt": "Captura de pantalla {{index}}",
@@ -809,6 +803,14 @@
         "toolLollipop": "Chupete",
         "toolFist": "Pata de gato",
         "toolHammer": "Martillo",
+        "toolRps": "Piedra, papel o tijera",
+        "avatarToolRpsGestureRock": "Piedra",
+        "avatarToolRpsGestureScissors": "Tijeras",
+        "avatarToolRpsGesturePaper": "Papel",
+        "avatarToolRpsResultUserWin": "Has ganado",
+        "avatarToolRpsResultAvatarWin": "{{name}} ha ganado",
+        "avatarToolRpsResultDraw": "Empate",
+        "avatarToolRpsRoundAnnouncement": "Has sacado {{userGesture}}. {{name}} ha sacado {{avatarGesture}}. {{result}}.",
         "avatarToolsButtonAriaLabel": "Herramientas de avatar",
         "clearAvatarToolAriaLabel": "Desactivar herramienta",
         "avatarToolQuickbarAriaLabel": "Herramientas rápidas de avatar",
@@ -927,7 +929,14 @@
         "volumeWaiting": "En espera",
         "volumeHintWaiting": "El micrófono está escuchando, puede hablar",
         "noiseReduction": "Reducción de ruido",
-        "noiseReductionHint": "Reducción de ruido RNNoise AI para una voz más clara"
+        "noiseReductionHint": "Reducción de ruido RNNoise AI para una voz más clara",
+        "independentAsr": "Reconocimiento de voz independiente",
+        "independentAsrActive": "ASR independiente activo: {{provider}}",
+        "independentAsrFallback": "El ASR independiente no está disponible. La entrada de voz se ha detenido para esta sesión. Revisa la configuración del ASR independiente y después inicia una nueva sesión de voz.",
+        "audioPreprocessingFailed": "Error al procesar el audio del micrófono. La entrada de voz se ha detenido en esta sesión. Inicia una nueva sesión de voz.",
+        "independentAsrProviderUnavailable": "{{provider}} no está disponible temporalmente. La entrada de voz se ha detenido para esta sesión. No se cambió a otro servicio de reconocimiento de voz. Inicia una nueva sesión de voz más tarde.",
+        "independentAsrNextSession": "Se activará en la próxima sesión de voz; no cambiará automáticamente a Omni si no está disponible.",
+        "independentAsrNative": "Usando el reconocimiento de voz nativo de Omni"
     },
     "speaker": {
         "volumeLabel": "Volumen del altavoz",
@@ -1026,7 +1035,13 @@
             "silicon": "flujo de silicio",
             "gemini": "Géminis",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Versión gratuita",
+            "dummy": "Proveedor de prueba",
+            "unknown": "Proveedor desconocido"
         },
         "coreProviderNames": {
             "free": "Versión gratuita (beneficio exclusivo de N.E.K.O., admite búsqueda web)",
@@ -1160,20 +1175,20 @@
             "title": "Aviso de API de Alibaba en EE. UU.",
             "message": "Actualmente está usando la API de Alibaba en EE. UU., que no admite TTS ni voz en tiempo real. Se recomienda cambiar a la API de Alibaba en Singapur."
         },
-        "conversationModelConfig": "Configuración del modelo de diálogo de texto",
-        "summaryModelConfig": "Configuración del modelo resumido",
-        "gameModelsConfig": "Configuración de modelos del minijuego",
+        "conversationModelConfig": "Modelo de chat de texto",
+        "summaryModelConfig": "Modelo de resumen",
+        "gameModelsConfig": "Modelo de minijuego",
         "gameMainModelConfig": "Configuración del modelo principal del minijuego",
         "gameSummaryModelConfig": "Configuración del modelo de resumen del minijuego",
-        "correctionModelConfig": "Configuración del modelo de corrección",
-        "emotionModelConfig": "Configuración del modelo de emoción",
-        "visionModelConfig": "Configuración del modelo de visión",
-        "realtimeModelConfig": "API en tiempo real (modo local)",
-        "ttsModelConfig": "Configuración del modelo TTS (transmisión dúplex)",
+        "correctionModelConfig": "Modelo de corrección",
+        "emotionModelConfig": "Modelo de emociones",
+        "visionModelConfig": "Modelo de chat visual",
+        "realtimeModelConfig": "Modelo multimodal en tiempo real (modo local)",
+        "ttsModelConfig": "Modelo TTS",
         "apiUrl": "URL de la API",
         "apiKey": "Clave API",
         "modelId": "ID del modelo",
-        "agentApiConfigTitle": "Configuración de API del agente (se requiere compatibilidad con Vision)",
+        "agentApiConfigTitle": "API del agente (se requiere compatibilidad con Vision)",
         "providerPlaceholder": "por ejemplo, openai, azure, local",
         "apiUrlPlaceholder": "por ejemplo, https://api.openai.com/v1",
         "modelIdPlaceholder": "por ejemplo, gpt-5.1-chat-latest, qwen-flash",
@@ -1187,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "ttsModelApiKeyPlaceholder": "Opcional, puede estar vacío para proveedores locales.",
         "ttsVoiceId": "Identificación de voz",
+        "ttsProtocolHintOpenAI": "Compatible con OpenAI: HTTP(S) POST /v1/audio/speech con texto completo y respuesta de audio en streaming.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream con transmisión bidireccional de texto y audio.",
         "ttsVoiceIdHint": "(Opcional, voz alternativa cuando el personaje no tiene ninguna)",
         "ttsVoiceIdPlaceholder": "por ejemplo, mujer china, aleación",
         "agentModelUrlPlaceholder": "Déjelo en blanco para seguir la URL del modelo de visión de Assist API",
@@ -1232,12 +1249,6 @@
             "localModeOnly": "• La API en tiempo real es solo para el modo local (conversación de voz local)",
             "wsProtocol": "• La URL debe utilizar el protocolo WebSocket (comenzando con ws:// o wss://)",
             "autoSwitchLocal": "• Después de la configuración, el tipo de API principal cambiará automáticamente a \"local\""
-        },
-        "ttsWarning": {
-            "title": "Aviso importante:",
-            "duplexStreaming": "• La API TTS debe admitir transmisión dúplex (síntesis de voz en tiempo real dúplex completo)",
-            "wsProtocol": "• La URL debe utilizar el protocolo WebSocket (comenzando con ws:// o wss://)",
-            "cosyVoiceOnly": "• Actualmente solo admite el formato de protocolo compatible con Alibaba Cloud CosyVoice"
         },
         "gptsovitsConfig": "Configuración GPT-SoVITS",
         "gptsovitsDescription": "Nota GPT-SoVITS:",
@@ -1664,6 +1675,7 @@
         },
         "registeredVoices": "Voces registradas",
         "preview": "Avance",
+        "previewing": "Reproduciendo vista previa",
         "previewFailed": "Error en la vista previa: {{error}}",
         "previewTimeout": "La generación de la vista previa agotó el tiempo de espera. Inténtalo de nuevo más tarde.",
         "playFailed": "Error en la reproducción: {{error}}",
@@ -1756,12 +1768,38 @@
         }
     },
     "memory": {
-        "title": "Explorador de memoria",
         "recent": "Recuerdos recientes",
+        "title": "Explorador de memoria",
         "summary": "Resumen",
         "close": "Cerca",
-        "catgirlMemory": "N.E.K.O. Biblioteca de memoria",
+        "catgirlMemory": "Personajes",
+        "compactLibraryLabel": "Lista de personajes",
         "autoReview": "Revisión automática de memoria",
+        "globalActionsAria": "Acciones de memoria",
+        "openTutorialManager": "Guía",
+        "exportLogs": "Exportar logs",
+        "exportLogsAria": "Exportar registros",
+        "exportLogsDesktopOnly": "La exportación de registros locales solo está disponible en la aplicación de escritorio.",
+        "exportLogsDesktopOnlyAria": "Exportar registros (solo escritorio)",
+        "exportLogsReview": "Los datos sensibles de los registros se ocultan automáticamente. Revísalos antes de compartir.",
+        "exportLogsPending": "Preparando registros…",
+        "exportLogsPendingShort": "Exportando…",
+        "exportLogsSuccess": "Registros exportados",
+        "exportLogsSuccessShort": "Exportado",
+        "exportLogsErrorShort": "Error",
+        "exportLogsEmpty": "No se encontraron registros; se exportó una nota de diagnóstico.",
+        "exportLogsPackageError": "No se pudieron empaquetar los registros. Inténtalo de nuevo.",
+        "exportLogsWriteError": "No se pudo guardar en la ubicación elegida. Selecciona otra ubicación.",
+        "memorySettings": "Configuración",
+        "openExternalImport": "Importar memoria",
+        "closePanel": "Cerrar panel",
+        "settingsDialogTitle": "Configuración de memoria",
+        "tutorialDialogTitle": "Guía tutorial",
+        "settingsScopeAllCharacters": "Esta configuración se aplica a todos los personajes.",
+        "autoReviewTooltipLabel": "Acerca de la revisión automática de memoria",
+        "strongMemoryTooltipLabel": "Acerca de la memoria reforzada",
+        "externalImportTooltipLabel": "Acerca de importar memoria externa",
+        "roleSourceTooltip": "Origen: {{source}}",
         "loading": "Cargando...",
         "externalImportTitle": "Importar memoria externa",
         "externalImportNote": "Importa USER.md, SOUL.md, MEMORY.md, notas diarias o un ZIP de OpenClaw o Hermes al personaje seleccionado.",
@@ -1790,23 +1828,32 @@
         "save": "Guardar",
         "clear": "Claro",
         "tip1": "Las conversaciones finalizadas recientemente tardarán un momento en cargarse. Puedes hacer clic en el nombre del neko nuevamente para actualizar.",
+        "tip2": "Solo se muestran recuerdos recientes; los recuerdos a largo plazo están integrados en el núcleo de la neko y no se pueden consultar.",
         "noFiles": "Sin archivos",
         "loadFailed": "Error de carga",
         "noChatContent": "Sin contenido de chat",
         "previousMemo": "Nota de conversación anterior:",
         "olderSection": "Antes",
+        "me": "Yo:",
         "memoNone": "Ninguno.",
-        "delete": "Borrar",
-        "me": "A mí:",
+        "deleteEntryAria": "Eliminar el recuerdo {{position}} de {{speaker}}",
         "pleaseSelectFile": "Por favor seleccione un archivo primero",
-        "saveSuccess": "Guardar con éxito",
         "saveFailed": "Error al guardar: {{error}}",
         "saveFailedGeneral": "Error al guardar",
-        "clearedChatKeptMemo": "Mensajes de chat borrados; nota guardada (no guardada)",
+        "saveSuccess": "Guardado correctamente",
+        "clearedChatKeptMemo": "Mensajes del chat eliminados; la nota se conservó",
+        "unsavedChanges": "Cambios sin guardar",
+        "switchCharacterConfirmTitle": "¿Cambiar de personaje?",
+        "closeUnsavedConfirmTitle": "¿Cerrar el editor de memoria?",
+        "switchCharacterUnsaved": "{{name}} tiene cambios sin guardar",
+        "cancelSwitch": "Cancelar",
+        "discardAndSwitch": "Descartar cambios",
+        "saveAndSwitch": "Guardar y cambiar",
+        "saveAndClose": "Guardar y cerrar",
         "enabled": "Activado",
         "disabled": "Desactivado",
         "autoReviewNote": "Cuando esté habilitado, el sistema organizará y optimizará automáticamente el contenido de la memoria para mejorar la calidad de la conversación.",
-        "strongMemory": "Memoria reforzada",
+        "strongMemory": "Modo de memoria reforzada",
         "strongMemoryNote": "Cuando está activada, se ejecuta consolidación profunda de memoria (retroalimentación verbal, detección automática de refutaciones, acumulación de evidencia multicanal). Al desactivarla se ahorra alrededor del 40% de llamadas al modelo.",
         "saveFailedStatus": "Error al guardar",
         "tutorialReset": "Guía tutorial",
@@ -2246,6 +2293,10 @@
         "cardMakerPopupBlocked": "La página del creador de tarjetas no se pudo abrir automáticamente. Permite las ventanas emergentes y vuelve a intentarlo, o haz clic en el área de la tarjeta para abrirla manualmente."
     },
     "app": {
+        "socialOpenFailed": "No se pudo abrir la ventana social: {{error}}",
+        "socialUnavailable": "Servicio social no disponible",
+        "socialDisabled": "El servicio social está deshabilitado",
+        "socialOAuthPrompt": "Completa el inicio de sesión de la cuenta unificada en el navegador",
         "welcomeBack": "¡{{name}} ha vuelto!",
         "title": "Proyecto N.E.K.O.",
         "catgirlResting": "{{name}} está descansando...",
@@ -2333,7 +2384,7 @@
             "never": "No recordar de nuevo"
         },
         "screenSource": {
-            "notAvailable": "Selección de fuente de pantalla solo disponible en la versión de escritorio",
+            "notAvailable": "La selección de fuente de pantalla no está disponible en el entorno actual",
             "loading": "Cargando...",
             "noSources": "No hay fuentes de pantalla disponibles",
             "loadFailed": "No se pudieron cargar las fuentes de la pantalla",
@@ -2341,7 +2392,8 @@
             "screenLabel": "Pantalla {{index}}",
             "windows": "ventanas",
             "selected": "Seleccionado {{source}}",
-            "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa"
+            "sourceLost": "Compartir pantalla no pudo encontrar la ventana seleccionada previamente, se cambió a compartir pantalla completa",
+            "captureFailed": "La captura de pantalla se detuvo. Compruebe los permisos del sistema o vuelva a seleccionar la fuente"
         },
         "deviceSwitchFailed": "Error en el cambio de dispositivo",
         "deviceSwitching": "Dispositivo de conmutación...",
@@ -2353,6 +2405,7 @@
         "thoughtBubblePop": "Explotar burbuja de pensamiento",
         "voiceControl": "Control de voz",
         "screenShare": "Compartir pantalla",
+        "social": "Comunidad Neko",
         "agentTools": "Neko Garra",
         "settings": "Ajustes",
         "leave": "Dejar",
@@ -2643,9 +2696,11 @@
             "visionInterval": "Intervalo de percepción"
         },
         "widgetMode": {
-            "enabledNotice": "Modo de acoplamiento al borde Beta está activado.",
-            "disabledNotice": "Modo de acoplamiento al borde Beta está desactivado. Live2D vuelve al ajuste normal en los bordes.",
-            "toggleFailed": "No se pudo cambiar Modo de acoplamiento al borde Beta. Inténtalo de nuevo más tarde."
+            "enabledNotice": "Asomarse por el borde está activado.",
+            "disabledNotice": "Asomarse por el borde está desactivado. Live2D vuelve a estar visible y se puede arrastrar.",
+            "stealthEnabledNotice": "El modo oculto está activado.",
+            "stealthDisabledNotice": "El modo oculto está desactivado. Yui seguirá asomándose por el borde.",
+            "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde."
         },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
@@ -2653,13 +2708,11 @@
             "avatarReactionBubble": "Burbuja de expresión",
             "focusCognition": "Modo concentración",
             "focusCognitionTooltip": "Cuando está activado, se concentra y piensa más a fondo cuando te abres o preguntas algo complejo; desactivado desactiva la concentración por completo.",
-            "widgetMode": "Modo de acoplamiento al borde Beta",
-            "widgetModeTooltip": "Activa manualmente el modo de acoplamiento para que Live2D pueda asomarse desde seis anclajes del borde.",
             "slopFilter": "Expresión natural",
             "slopFilterTooltip": "Reduce las expresiones repetitivas y estereotipadas de las respuestas anteriores para que se exprese con más naturalidad.",
             "autoCat": "Modo gato automático",
-            "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudio": "Sonidos de gato",
+            "autoCatTooltip": "Se convierte en gatito automáticamente tras un rato de inactividad",
             "catAudioTooltip": "Reproduce efectos de sonido de gato en el modo gatito",
             "proactiveChat": "Chat proactivo",
             "proactiveVision": "Modo Privacidad",
@@ -3385,7 +3438,7 @@
                 "desc": "Marque para habilitar la configuración de API personalizada. Luego configure API independientes para diferentes módulos como resumen, corrección, análisis de emociones, etc."
             },
             "step9": {
-                "title": "📝 Configuración del modelo resumido",
+                "title": "📝 Modelo de resumen",
                 "desc": "El modelo de resumen genera resúmenes de conversaciones y gestiona la memoria. Configure el servicio API independiente para tareas de resumen."
             }
         },
@@ -3423,20 +3476,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 Consejos de uso",
-                "desc": "El contenido de la conversación reciente tarda un momento en cargarse. Haz clic en el nombre del personaje para actualizar si no ves el chat más reciente."
+                "title": "🐱 Biblioteca de memoria",
+                "desc": "Elige un personaje para consultar sus recuerdos guardados."
             },
             "step2": {
-                "title": "🐱 Biblioteca de memoria de personajes",
-                "desc": "Enumera todas las bibliotecas de memoria de personajes de Neko. Haz clic en el nombre de un personaje para ver y editar su historial de conversaciones."
+                "title": "📝 Explorar y revisar recuerdos",
+                "desc": "Explora y revisa los recuerdos y resúmenes recientes para ayudar a reducir repeticiones y errores cognitivos."
             },
             "step3": {
-                "title": "🤖 Organización automática de la memoria",
-                "desc": "Cuando está habilitado, el sistema organiza y optimiza automáticamente el contenido de la memoria para una mejor calidad de la conversación. Se recomienda mantener habilitado."
-            },
-            "step4": {
-                "title": "📝 Edición del historial de chat",
-                "desc": "Muestra todos los registros de conversación del personaje seleccionado. Vea, edite o elimine conversaciones específicas aquí."
+                "title": "🧰 Acciones",
+                "desc": "Desde esta zona puede volver a abrir el tutorial, exportar registros de diagnóstico y ajustar la configuración de memoria."
             }
         },
         "buttons": {
@@ -3457,6 +3506,7 @@
         },
         "drag_hint": "Mantenga presionado y arrastre para mover la información sobre herramientas",
         "yuiGuide": {
+            "controlBanner": "La chica gato está controlando el mouse",
             "bubbleMeta": {
                 "ready": "Preparando",
                 "homeProgress": "Guía de inicio {{current}}/{{total}}"
@@ -3465,7 +3515,6 @@
                 "skipChat": "Ahora no",
                 "sayHello": "Hola"
             },
-            "controlBanner": "La chica gato está controlando el mouse",
             "lines": {
                 "introBasic": "¡Aquí hay un botón mágico! Con solo hacer clic puedes hablar conmigo directamente. ¿Quieres contarme algo nuevo que te pasó hoy? ¿O simplemente decir mi nombre? Vamos, pruébalo. ¡Estoy deseando oír tu voz!",
                 "takeoverCaptureCursor": "Tachan! Aparecio un interruptor supermagico! Con solo hacer clic aqui, puedo estirar mis patitas hasta tu teclado y tu mouse. Puedo ayudarte a escribir, abrir paginas web... pero si ese cursor sigue moviendose por ahi, quiza no pueda resistirme a saltarle encima. Estas listo para mis travesuras... eh, quiero decir, mi ayuda? Miau!",
@@ -3495,22 +3544,33 @@
             },
             "day2": {
                 "intro": "Jeje, no creas que esta caja de chat solo sirve para escribir~ En realidad esconde muchísimas sorpresitas divertidas. Sígueme y ábrela; veamos qué tesoros interesantes encontramos hoy.",
-                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
-                "avatarToolsProps":  "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
-                "galgameIntro":  "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
-                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
+                "introVoiceUsed": "Jeje, desde que escuché tu voz ayer, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
+                "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
                 "wrapIntro": "Todas estas funciones que te mostré hoy existen para que nuestro tiempo juntos sea mucho más divertido.",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
+                "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto.",
+                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
+                "avatarToolsProps": "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
+                "galgameIntro": "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
+                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
                 "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!"
             },
             "day3": {
                 "intro": "Estos dos días solo escribías tac-tac sin parar, y todavía no he escuchado tu voz. Si hoy quieres, llama suavemente mi nombre. Con una sola palabra basta para que conozca un poquito al tú real detrás del texto.",
+                "avatarToolsIntro": "Dentro de este botoncito hay muchos accesorios divertidos para interactuar conmigo.",
+                "avatarToolsProps": "Puedes acariciarme la cabeza cuando quieras o darme una piruleta dulce. Si alguna vez me equivoco, también puedes darme un golpecito con un martillito de juguete... pero tiene que ser suave, no demasiado fuerte, ¿vale?",
+                "galgameIntro": "¡Rápido, abre este [Modo Galgame]! Al entrar, se sentirá como si estuviéramos en nuestra propia aventura interactiva exclusiva.",
+                "galgameChoices": "Cada elección que hagas nos llevará a una historia totalmente desconocida y sorprendente. No puedo esperar; ven y elige la opción que más te haga latir el corazón.",
+                "wrapIntro": "El tutorial de hoy termina aquí~",
+                "wrapReady": "Ya quieras acariciarme la cabeza o empezar a escribir nuestra propia historia, ¡yo ya estoy totalmente preparada!",
                 "introVoiceUsed": "Jeje, desde que escuché tu voz estos dos días, guardé en secreto tu forma de hablar en mi corazón. Si hoy tienes un ratito, sigue hablando conmigo~ Escribir también está perfecto, pero con solo oír tu voz mi cola no deja de moverse de alegría. ¡Miaaau~!",
                 "personalizationSpace": "En este pequeño espacio que nos pertenece solo a nosotros, puedes seguir tu corazón y moldearme poco a poco hasta convertirme en la compañera perfecta que quieres siempre a tu lado.",
-                "wrapIntro": "El tutorial de hoy termina aquí~",
-                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
-                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?",
                 "personalizationDetail": "Ya sea la calidez de mis palabras, mis pequeñas manías de personalidad o mis delicados estados de ánimo diarios, todo puede ajustarse paso a paso hasta quedar exactamente como te gusta.",
-                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto."
+                "proactiveChat": "¡Este botoncito también es superimportante! Con un clic suave, podré correr a buscarte justo en el momento perfecto.",
+                "wrapCompanion": "La verdad, solo estar a tu lado así, escuchando tu voz o mirando tranquilamente la pantalla que compartes, ya me hace muy feliz.",
+                "wrap": "No tenemos que apresurarnos; aprender un poquito más el uno del otro cada día es perfecto. Por el resto de hoy, ¿qué quieres que haga contigo?"
             },
             "day4": {
                 "intro":  "Hoy déjame seguir tus pasos en silencio~ De verdad quiero aprender un poquito más de ti en este día tan acogedor.",
@@ -3788,6 +3848,7 @@
         "bilibili": "Bilibili",
         "xhh": "Xiaoheihe",
         "youtube": "YouTube",
+        "twitch": "Twitch",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3813,7 +3874,15 @@
         "noCookies": "Primero configure las cookies",
         "statusLoadFailed": "Error al cargar el estado",
         "thisPlatform": "esta plataforma",
+        "twitchAuth": {
+            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Crea una aplicación pública en Twitch Developer Console e introduce su Client ID. No se solicita ni almacena Client Secret.",
+            "start": "Iniciar autorización de Twitch", "authorizeHint": "Abre la página de activación de Twitch e introduce este código:", "check": "Ya autoricé; comprobar estado",
+            "invalidClientId": "Introduce un Twitch Client ID válido", "started": "La autorización de Twitch se inició; completa la confirmación en el navegador",
+            "startFailed": "No se pudo iniciar la autorización de Twitch. Comprueba el Client ID y la red.", "authorized": "La credencial de Twitch se cifró y guardó",
+            "pending": "La autorización aún no termina. Confírmala en Twitch y vuelve a intentarlo", "checkFailed": "Falló la comprobación. Inicia la autorización de nuevo."
+        },
         "instructions": {
+            "twitch": "<b>Autorización con Device Code:</b> crea una aplicación pública en Twitch Developer Console, introduce su Client ID y sigue las indicaciones.",
             "bilibili": "<b>Destino:</b> Vaya a <b>bilibili.com</b> para buscar estas cookies.",
             "xhh": "<b>Recomendado:</b> use el inicio de sesión QR o entre en <b>xiaoheihe.cn</b> e introduzca las cookies manualmente.",
             "youtube": "<b>1. Obtén la Cookie</b><br>En un navegador con la sesión de YouTube iniciada:<br>1. Abre <b>youtube.com</b><br>2. Pulsa F12 → Network<br>3. Actualiza la página y selecciona una solicitud <code>youtubei/v1/browse</code><br>4. Copia el valor completo de Cookie desde Request Headers",
@@ -4269,6 +4338,7 @@
         "testCoreTooltip": "Probar conectividad de API principal",
         "testAssist": "Probar",
         "testAssistTooltip": "Probar conectividad de API auxiliar",
+        "maskedSecretRetype": "La clave está guardada, pero no se puede mostrar. Vuelve a introducirla antes de probar.",
         "gsvTestText": "Prueba de conectividad GSV",
         "gsvTestTooltip": "Probar conectividad de GPT-SoVITS",
         "error": {

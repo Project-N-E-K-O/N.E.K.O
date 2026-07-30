@@ -82,25 +82,20 @@
 
 主动消息响应使用 `action: chat` 或 `action: pass`，并通过稳定的 `reason_code`/`stage` 表达忙碌、来源为空、重复、投递抢占、超时或成功投递等结果。不存在单独可调用的“第一阶段筛选”路由。
 
-## 教程与自启动提示
+## 七日教程与自启动提示
 
-这些是主页状态机使用的内部接口：
+这些是主页教程和自启动流程使用的内部接口：
 
 | 方法和路径 | 用途 |
 |---|---|
-| `GET /api/tutorial-prompt/state` | 读取教程提示状态。 |
-| `POST /api/tutorial-prompt/heartbeat` | 记录空闲/交互并判断是否应提示。 |
-| `POST /api/tutorial-prompt/shown` | 记录提示已展示。 |
-| `POST /api/tutorial-prompt/decision` | 记录用户决策。 |
-| `POST /api/tutorial-prompt/reset` | 重置教程提示状态。 |
-| `POST /api/tutorial-prompt/tutorial-started` | 记录教程开始。 |
-| `POST /api/tutorial-prompt/tutorial-completed` | 记录教程完成。 |
+| `GET /api/seven-day-tutorial/state` | 读取后端权威的 Day 1–7 进度。 |
+| `PUT /api/seven-day-tutorial/state` | `expectedRevision` 匹配时替换 Day 1–7 权威进度。 |
 | `GET /api/autostart-prompt/state` | 读取自启动提示状态。 |
 | `POST /api/autostart-prompt/heartbeat` | 记录主页状态并判断是否应提示。 |
 | `POST /api/autostart-prompt/shown` | 记录展示。 |
 | `POST /api/autostart-prompt/decision` | 记录用户的自启动决策。 |
 
-该组所有 POST 都要求通过本地写请求校验。请求体属于第一方 UI 状态，不是稳定的第三方 schema。
+该组所有写接口都要求通过本地写请求校验。七日教程 PUT 请求体包含 `state` 和最近读取的 `expectedRevision`；版本过期时返回 `409` 及当前权威状态。请求体属于第一方 UI 状态，不是稳定的第三方 schema。
 
 ## Steam 状态
 
@@ -135,17 +130,12 @@ GET  /api/meme/proxy-image
 POST /api/mini_game/invite/respond
 POST /api/proactive_chat
 POST /api/proactive/music_played_through
-GET  /api/tutorial-prompt/state
-POST /api/tutorial-prompt/heartbeat
-POST /api/tutorial-prompt/shown
-POST /api/tutorial-prompt/decision
-POST /api/tutorial-prompt/reset
+GET  /api/seven-day-tutorial/state
+PUT  /api/seven-day-tutorial/state
 GET  /api/autostart-prompt/state
 POST /api/autostart-prompt/heartbeat
 POST /api/autostart-prompt/shown
 POST /api/autostart-prompt/decision
-POST /api/tutorial-prompt/tutorial-started
-POST /api/tutorial-prompt/tutorial-completed
 GET  /api/get_window_title
 POST /api/screenshot
 POST /api/screenshot/interactive

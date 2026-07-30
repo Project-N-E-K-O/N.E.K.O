@@ -77,7 +77,7 @@ Reason 必须是稳定机器码，不能直接写异常文本或用户数据。�
 
 - 准备与控制：`room_not_configured`、`live_room_offline`、`live_disabled`、`manual_paused`、`output_channel_unavailable`；
 - 安全与限流：`cooldown`、`safety_degraded`、`safety_tripped`；
-- ingest：`ingest.duplicate_support_event`；
+- ingest：`ingest.duplicate_support_event`、`ingest.invalid_twitch_projection`、`ingest.ignored_twitch_notification`；
 - selection：`selection.low_value_danmaku`、`selection.quiet_low_priority`、`selection.queue_limit`、`selection.lower_score`；
 - dispatcher：`dispatcher.dry_run`、`dispatcher.pushed`、`dispatcher.skipped`、`dispatcher.failed`；
 - signal/support：`signal_only.<type>`、`support.<type>`；
@@ -86,6 +86,23 @@ Reason 必须是稳定机器码，不能直接写异常文本或用户数据。�
 新增原因前先判断是否能复用已有语义；新增后同步代码白名单、测试、Dashboard/monitor 解释和本文。
 
 未知 reason 不应原样投影。异常最多归一为安全类别，详细堆栈只留在不含隐私的开发日志中。
+
+### 人猫同播参与策略
+
+人猫同播策略的稳定 reason code 用于解释 allow、defer、skip 和 downgrade 决策，不代表已经产生 Dispatcher Outcome：
+
+- `co_stream.policy.solo_passthrough`
+- `co_stream.policy.capability_off`
+- `co_stream.policy.host_speaking`
+- `co_stream.policy.host_holding`
+- `co_stream.policy.turn_yielded`
+- `co_stream.policy.turn_unknown`
+- `co_stream.policy.host_support_only`
+- `co_stream.policy.nonverbal_safe`
+
+Dashboard 可投影能力 ID、requested/effective participation level、activation、bounded priority、host-turn state、reliability、confidence 和安全来源枚举。不得投影音频、转写、平台 raw payload、观众正文或私人对话上下文。
+
+当前投影必须保持 `read_only=true`、`enforced=false`，不得消费或修改最新话轮信号，也不得解释为 Event Outcome 或 Dispatcher Outcome。`solo_stream` 中出现 `co_stream.policy.solo_passthrough` 只用于证明隔离契约，不会阻断或改变独播链路。当前没有手动交棒 action、专用输出模块或真实自动开口路径；`conditional_auto` 只有在专用 consent version 精确匹配时才可视为已确认。
 
 ## Freshness
 

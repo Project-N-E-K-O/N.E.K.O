@@ -1088,9 +1088,11 @@ def test_goodbye_idle_breathing_ball_shape_contract_is_present():
     _assert_source_order(
         app_auto_goodbye_listener_block,
         "breathing ball state change sends one desktop bridge payload",
+        "const container = getVisibleIdleReturnBallContainer();",
         "if (getNekoGoodbyeIdleAppearance() === NEKO_GOODBYE_IDLE_APPEARANCE_BALL) {",
         "syncGoodbyeIdleAppearanceForReturnButtons('goodbye-idle-appearance-visual-tier');",
-        "return;\n        }\n        scheduleIdleReturnBallDesktopBridge(",
+        "return;\n        }\n        if (container && container.__nekoLive2DPeekEdgeAnchor) {",
+        "scheduleIdleReturnBallDesktopBridge(",
     )
     dispatch_return_ball_block = _source_slice_between(
         app_ui_source,
@@ -2954,6 +2956,19 @@ def test_idle_thought_bubble_is_sound_triggered_with_fade():
     assert "returnBtn.addEventListener('mouseenter', (event) => {" in source
     assert "if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;" in source
     assert "_playNekoIdleHoverArt(returnArt, tier, { userInitiated: true });" in source
+    hover_leave_block = _source_slice_between(
+        source,
+        "returnBtn.addEventListener('mouseleave', () => {",
+        "returnBtn.addEventListener('click', (e) => {",
+        "return button hover leave completion",
+    )
+    assert "_isNekoIdleThoughtBubbleEventHit" not in hover_leave_block
+    _assert_source_order(
+        hover_leave_block,
+        "return button only completes an active hover",
+        "if (!returnArt.__nekoIdleHoverSrc) return;",
+        "_finishNekoIdleHoverArtAfterPlayback(returnArt, tier);",
+    )
     native_drag_block = _source_slice_between(
         app_ui_source,
         "function isThoughtBubbleEventTarget(event) {",
@@ -3191,7 +3206,7 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     app_ui_source = read_js_parts(PROJECT_ROOT / "static" / "app" / "app-ui")
 
     assert "_NEKO_IDLE_CAT1_SUBSTATE_WALKING = 'walking-to-chat'" in source
-    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH = 'stretch-near-chat'" in source
+    assert "_NEKO_IDLE_CAT1_SUBSTATE_STRETCH" not in source
     assert '_NEKO_IDLE_CAT1_CHAT_GAP_PX = 24' in source
     assert '_NEKO_IDLE_CAT1_MINIMIZED_RIGHT_TO_LEFT_APPROACH_PX = 0' in source
     assert 'function _getNekoIdleCat1MinimizedSideApproachOffsetPx(facingRight, chatRect)' in source
@@ -3338,9 +3353,10 @@ def test_cat1_walk_to_minimized_chat_contract_is_present():
     assert 'state.substate === profile.idleSubstate && !state.actionSettled' in source
     assert 'state.actionSettled = true' in source
     assert 'state.substate === profile.walkingSubstate && target.distance > profile.target.exitDistancePx' in source
-    assert '_scheduleNekoIdleReturnSubactionSettle' in source
-    assert '_settleNekoIdleReturnSubactionToIdle' in source
-    assert 'durationMs - elapsedMs) + profile.settle.finalHoldMs' in source
+    assert 'function _playNekoIdleCat1StretchAction(button, options = {})' in source
+    assert '_scheduleNekoIdleReturnSubactionSettle' not in source
+    assert '_settleNekoIdleReturnSubactionToIdle' not in source
+    assert '_NEKO_IDLE_CAT1_STRETCH_FINAL_HOLD_MS' in source
     assert 'containerObserver' in source
     assert "attributeFilter: ['style', 'data-dragging']" in source
     assert '_scheduleNekoIdleCat1JourneySyncForContainer' in source

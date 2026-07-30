@@ -14,7 +14,7 @@
   frames.NNN.jsonl[.gz]  定频快照（默认 1Hz），已剔除 hud_events/chat/hud_notices/combat.feed/
                           proximity.events（这些累积数组改走下方增量流）
   hudmsg.jsonl           增量新 HUD 事件（击杀/通知的原始来源，可离线再解析）
-  chat.jsonl             增量新聊天
+  原始聊天不会落盘；录制只保留不含对话正文的轮询计数/生命周期标记
   proximity.jsonl        敌军接近边沿事件
   events.jsonl           录制生命周期标记（session_start/stop、battle_reset）
   meta.json              会话元信息（起止/间隔/各流计数/服务版本）
@@ -33,6 +33,7 @@ import time
 from typing import Any, Callable
 
 _MIN_SEGMENT_BYTES = 1 << 20  # 1MB
+_DEFAULT_MAX_SESSION_BYTES = 2 << 30  # 2GB 未压缩；超限自动停录，避免无声写满磁盘
 
 
 def _gzip_file(path: str) -> None:
@@ -65,10 +66,13 @@ class _Stream:
         self.path = path
         self._fh = open(path, "a", encoding="utf-8", buffering=1)
         self.count = 0
+        self.bytes_written = 0
 
     def write(self, rec: dict[str, Any]) -> None:
-        self._fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+        line = json.dumps(rec, ensure_ascii=False) + "\n"
+        self._fh.write(line)
         self.count += 1
+        self.bytes_written += len(line.encode("utf-8"))
 
     def close(self, gzip_on_close: bool = True) -> None:
         try:
@@ -89,6 +93,7 @@ class _RollingStream:
         self.seg_idx = 0
         self.count = 0
         self._bytes = 0
+        self.bytes_written = 0  # 本会话累计写入的未压缩字节（用于会话总量上限）
         self._compression_threads: list[threading.Thread] = []
         self._fh = open(self._seg_path(), "a", encoding="utf-8", buffering=1)
 
@@ -99,7 +104,9 @@ class _RollingStream:
         line = json.dumps(rec, ensure_ascii=False) + "\n"
         self._fh.write(line)
         self.count += 1
-        self._bytes += len(line.encode("utf-8"))
+        size = len(line.encode("utf-8"))
+        self._bytes += size
+        self.bytes_written += size
         if self._bytes >= self.segment_bytes:
             self._rotate()
 
@@ -135,7 +142,7 @@ class _RollingStream:
 class SessionRecorder:
     """会话级录制器：定频写快照 + 增量写事件流。默认不录，需显式 start()。"""
 
-    _EVENT_STREAMS = ("hudmsg", "chat", "proximity", "events")
+    _EVENT_STREAMS = ("hudmsg", "proximity", "events")
 
     def __init__(
         self,
@@ -143,11 +150,17 @@ class SessionRecorder:
         interval: float = 1.0,
         segment_bytes: int = 32 * 1024 * 1024,
         server_version: str = "",
+        max_session_bytes: int = _DEFAULT_MAX_SESSION_BYTES,
     ) -> None:
         self.root_dir = root_dir
         self.interval = max(0.05, interval)
         self.segment_bytes = max(_MIN_SEGMENT_BYTES, segment_bytes)
         self.server_version = server_version
+        # 会话总量上限（未压缩字节）。frames 会分段 gzip，但历史段永不清理，
+        # 三条事件流更是完全不滚动——长期开着 --record 会把盘写满且毫无提示。
+        # 超限时自动停录并在 status/meta 里标注原因，而不是静默继续写。
+        # 0 或负值表示不限制（保留给显式要求长录的场景）。
+        self.max_session_bytes = int(max_session_bytes)
 
         self._lock = threading.Lock()
         self._recording = False
@@ -156,6 +169,8 @@ class SessionRecorder:
         self._streams: dict[str, _Stream] = {}
         self._started_at = 0.0
         self._last_frame_ts = 0.0
+        self._stopped_reason: str | None = None
+        self._final_session_bytes = 0
 
     @property
     def recording(self) -> bool:
@@ -186,6 +201,8 @@ class SessionRecorder:
             }
             self._started_at = time.time()
             self._last_frame_ts = 0.0
+            self._stopped_reason = None  # 新会话清掉上次的配额停录标记
+            self._final_session_bytes = 0
             self._recording = True
             self._streams["events"].write({
                 "ts": round(self._started_at, 3),
@@ -200,19 +217,24 @@ class SessionRecorder:
         with self._lock:
             if not self._recording:
                 return self._status_locked()
-            self._streams["events"].write({"ts": round(time.time(), 3), "_event": "session_stop"})
-            self._write_meta_locked(active=False)
-            status = self._status_locked()  # 关闭前取计数（含 session_dir）
-            status["recording"] = False     # 本次调用结束后即为停止态
-            for s in self._streams.values():
-                s.close(gzip_on_close=True)
-            if self._frames is not None:
-                self._frames.close()
-            self._recording = False
-            self._frames = None
-            self._streams = {}
-            self._session_dir = None
-            return status
+            return self._stop_locked()
+
+    def _stop_locked(self) -> dict[str, Any]:
+        """收尾并落盘（调用方需已持锁且处于录制态）。手动 stop 与配额停录共用。"""
+        self._streams["events"].write({"ts": round(time.time(), 3), "_event": "session_stop"})
+        self._write_meta_locked(active=False)
+        self._final_session_bytes = self._session_bytes_locked()
+        status = self._status_locked()  # 关闭前取计数（含 session_dir）
+        status["recording"] = False     # 本次调用结束后即为停止态
+        for s in self._streams.values():
+            s.close(gzip_on_close=True)
+        if self._frames is not None:
+            self._frames.close()
+        self._recording = False
+        self._frames = None
+        self._streams = {}
+        self._session_dir = None
+        return status
 
     # -- 写入 --------------------------------------------------------------
 
@@ -240,6 +262,7 @@ class SessionRecorder:
         with self._lock:
             if self._recording and self._frames is frames:
                 frames.write(rec)
+                self._enforce_quota_locked()
 
     def write_events(self, stream: str, items: list[Any]) -> None:
         """把一批新事件追加到指定增量流。items 非 dict 时包成 {"value": ...}。"""
@@ -255,6 +278,7 @@ class SessionRecorder:
                 if "ts" not in rec:
                     rec = {"ts": ts, **rec}
                 s.write(rec)
+            self._enforce_quota_locked()
 
     def mark(self, event: dict[str, Any]) -> None:
         """写一条生命周期标记到 events 流（如 battle_reset）。"""
@@ -264,6 +288,33 @@ class SessionRecorder:
             s = self._streams.get("events")
             if s is not None:
                 s.write({"ts": round(time.time(), 3), **event})
+
+    # -- 会话配额 ----------------------------------------------------------
+
+    def _session_bytes_locked(self) -> int:
+        if self._frames is not None or self._streams:
+            total = self._frames.bytes_written if self._frames is not None else 0
+            return total + sum(s.bytes_written for s in self._streams.values())
+        return self._final_session_bytes
+
+    def _enforce_quota_locked(self) -> None:
+        """超出会话总量上限则自动停录，并把原因写进 meta/status。
+
+        调用方需已持锁且处于录制态。停录本身走 _stop_locked，与手动 stop 同路径，
+        保证收尾段照常 gzip、meta 照常落盘。
+        """
+        if self.max_session_bytes <= 0 or not self._recording:
+            return
+        if self._session_bytes_locked() < self.max_session_bytes:
+            return
+        self._stopped_reason = "max_session_bytes_reached"
+        self._streams["events"].write({
+            "ts": round(time.time(), 3),
+            "_event": "session_quota_reached",
+            "max_session_bytes": self.max_session_bytes,
+            "session_bytes": self._session_bytes_locked(),
+        })
+        self._stop_locked()
 
     # -- 状态 / 元信息 -----------------------------------------------------
 
@@ -277,12 +328,15 @@ class SessionRecorder:
             "session_dir": os.path.abspath(self._session_dir) if self._session_dir else None,
             "interval_sec": self.interval,
             "segment_bytes": self.segment_bytes,
+            "max_session_bytes": self.max_session_bytes,
+            "session_bytes": self._session_bytes_locked(),
+            "stopped_reason": self._stopped_reason,
             "started_at": self._started_at if self._recording else None,
             "elapsed_sec": round(time.time() - self._started_at, 1) if self._recording else None,
             "counts": {
                 "frames": self._frames.count if self._frames else 0,
                 "hudmsg": self._streams["hudmsg"].count if self._streams else 0,
-                "chat": self._streams["chat"].count if self._streams else 0,
+                "chat": 0,
                 "proximity": self._streams["proximity"].count if self._streams else 0,
             },
         }
@@ -297,10 +351,13 @@ class SessionRecorder:
             "ended_at": None if active else time.time(),
             "interval_sec": self.interval,
             "segment_bytes": self.segment_bytes,
+            "max_session_bytes": self.max_session_bytes,
+            "session_bytes": self._session_bytes_locked(),
+            "stopped_reason": self._stopped_reason,
             "counts": {
                 "frames": self._frames.count if self._frames else 0,
                 "hudmsg": self._streams["hudmsg"].count if self._streams else 0,
-                "chat": self._streams["chat"].count if self._streams else 0,
+                "chat": 0,
                 "proximity": self._streams["proximity"].count if self._streams else 0,
             },
             "updated_at": time.time(),

@@ -12,6 +12,7 @@
 
 - B 站直播间登录、查询、确认、连接和弹幕接入；
 - 实验性抖音只读 bridge 接入；
+- Twitch 首阶段只读接入，包含 Device Code 授权、Helix 频道查询和 EventSub 聊天/支持事件；
 - 新观众锐评、后续弹幕接话；
 - Gift / SC / Guard 可信支持事件的短句致谢；
 - 暖场、冷场陪播和主动营业；
@@ -66,6 +67,8 @@ Live Provider / Developer Sandbox
 
 抖音 v1 只消费本地 bridge 清洗后的只读事件；不在插件内恢复 protobuf 直连、JS 签名、自动登录或浏览器自动化。详细边界见 [douyin_live_ingest](modules/douyin_live_ingest.md)。
 
+Twitch 首阶段使用用户自备 Client ID 的 Device Code Flow，授权账号与目标频道分离；只接收聊天和聊天中可见的支持事件，不提供平台写能力。凭据、去重、安全投影与降级边界见 [twitch_live_ingest](modules/twitch_live_ingest.md)。
+
 ### 2.4 Provider-neutral update
 
 `modules/live_events/provider_event.py` 是共享的 provider-neutral 适配层：typed provider events 和 already-sanitized dict events are both accepted，room-topic prompt examples must use those helpers，不能重新读取 provider raw payload。
@@ -99,8 +102,8 @@ bridge connection plan 只接受通过校验的公开 bridge URL，禁止携带 
 
 | 子系统 | 主要职责 |
 |---|---|
-| `bili_live_ingest` / `douyin_live_ingest` | 平台连接、解析、清洗和事件发布 |
-| `bili_identity` / `douyin_identity` | 从已清洗字段构造安全观众身份 |
+| `bili_live_ingest` / `douyin_live_ingest` / `twitch_live_ingest` | 平台连接、解析、清洗和事件发布 |
+| `bili_identity` / `douyin_identity` / `twitch_identity` | 从已清洗字段构造安全观众身份 |
 | `live_events` | 候选窗口、价值选择、低质与重复过滤 |
 | `avatar_roast` / `danmaku_response` | 首次出场与后续弹幕请求构造 |
 | `live_support_events` | 可信支持事件去重、连击、优先调度与短句致谢 |
@@ -147,6 +150,16 @@ Pipeline 负责身份、权限、安全、路由、请求构造、派发和结�
 - `rate_limit_seconds`、`activity_level`、选择窗口与支持事件调度共同控制节奏，不能各自建立互不知情的限流器。
 
 回复形状与质量边界见 [output_contract](modules/output_contract.md)。
+
+### 5.1 人猫同播参与策略（只读阶段）
+
+`core/host_turn.py` 定义 `speaking`、`likely_holding`、`yielded`、`unknown` 四类标准化主播话轮信号，只保存可靠性、置信度和安全来源枚举，不采集或投影音频、转写、弹幕正文或私人对话。
+
+`core/live_interaction_policy.py` 是纯决策层：根据直播模式、能力激活方式、参与等级和主播话轮信号输出 `allow`、`defer`、`skip` 或 `downgrade`。不可靠或未知信号会把自动 L3 保守降为 L2；`solo_stream` 始终 passthrough，不能被人猫同播策略改变。
+
+`core/co_stream_capabilities.py` 当前只注册默认关闭的 `host_pause_fill` 候选能力。`conditional_auto` 必须匹配专用 consent version；通用配置更新不能写入 consent。`core/runtime_co_stream_policy.py` 仅向 Dashboard 投影 `read_only=true`、`enforced=false` 的解释事实，不调度输出、不提供手动交棒 action，也不新增 Pipeline route。
+
+未来若接入真实开口，仍必须经过 Selection → Pipeline → Safety Guard → Dispatcher，并在新增宿主接口、轮询、队列、token/context 或存储成本前单独完成成本决策。当前阶段不增加这些成本；回滚方式是保持能力 `off` 或移除只读 runtime 接线。定向验证位于 `test_host_turn.py`、`test_live_interaction_policy.py`、`test_co_stream_capabilities.py` 和 `test_runtime_co_stream_policy.py`。
 
 ## 6. 可信支持事件
 

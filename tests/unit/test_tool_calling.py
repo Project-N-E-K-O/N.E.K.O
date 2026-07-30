@@ -1893,6 +1893,36 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
 
 
 @pytest.mark.asyncio
+async def test_notify_response_discarded_prefers_request_bound_callback():
+    """Per-stream callbacks must not fall back to the shared session callback."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    shared_calls = []
+    bound_calls = []
+
+    async def shared_callback(*args):
+        shared_calls.append(args)
+
+    async def bound_callback(*args):
+        bound_calls.append(args)
+
+    client.on_response_discarded = shared_callback
+
+    await client._notify_response_discarded(
+        "guard",
+        1,
+        3,
+        False,
+        None,
+        callback=bound_callback,
+    )
+
+    assert len(bound_calls) == 1
+    assert shared_calls == []
+
+
+@pytest.mark.asyncio
 async def test_stream_text_maps_incorrect_api_key_keyword_to_structured_status(monkeypatch):
     """Raw provider auth errors should not leak the full exception into UI text."""
     from main_logic.omni_offline_client import OmniOfflineClient
@@ -2882,7 +2912,10 @@ async def test_realtime_glm_tool_result_must_not_carry_call_id():
         "GLM function_call_output 不能带 call_id —— 文档示例只有 output 字段，"
         "合成的 glm_xxx 仅供内部追踪"
     )
-    assert sent[1] == {"type": "response.create"}
+    # The arbiter stamps a client event_id at enqueue time (previously
+    # send_event added the same field at send time), so compare without it.
+    assert sent[1]["type"] == "response.create"
+    assert set(sent[1]) <= {"type", "event_id"}
 
 
 @pytest.mark.asyncio

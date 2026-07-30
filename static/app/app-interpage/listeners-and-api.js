@@ -158,7 +158,7 @@
         }
     });
 
-    // Model-saved / reload_model from model_manager window (postMessage fallback)
+    // Model-saved / reload_model / window geometry from model_manager (postMessage fallback)
     window.addEventListener('message', async function (event) {
         // Security: same-origin check
         if (event.origin !== window.location.origin) {
@@ -176,6 +176,7 @@
             event.data.action === 'model_saved'
             || event.data.action === 'reload_model'
             || event.data.action === 'reload_model_parameters'
+            || event.data.action === 'model_manager_window_state'
         )) {
             // Deduplicate: same message arrives via both BC and postMessage
             if (
@@ -187,6 +188,10 @@
             }
             if (event.data.action === 'reload_model_parameters') {
                 await I.handleReloadModelParametersMessage(event.data);
+                return;
+            }
+            if (event.data.action === 'model_manager_window_state') {
+                I.handleModelManagerWindowState(event.data);
                 return;
             }
             console.log('[Model] 通过 postMessage 收到模型重载通知');
@@ -203,8 +208,15 @@
         } catch (_) {
             return;
         }
-        if (!message || message.action !== 'reload_model_parameters') return;
+        if (!message || (
+            message.action !== 'reload_model_parameters'
+            && message.action !== 'model_manager_window_state'
+        )) return;
         if (I.isDuplicateMessage(message.action, message.timestamp)) return;
+        if (message.action === 'model_manager_window_state') {
+            I.handleModelManagerWindowState(message);
+            return;
+        }
         await I.handleReloadModelParametersMessage(message);
     });
 
@@ -231,9 +243,9 @@
 
     window.addEventListener('neko:config-injected', function (event) {
         var detail = (event && event.detail) || {};
-        I.consumePendingVoiceChatComposerHiddenMessage(
-            I.getCurrentLanlanName() || detail.lanlan_name || ''
-        );
+        var lanlanName = I.getCurrentLanlanName() || detail.lanlan_name || '';
+        I.consumePendingVoiceChatComposerHiddenMessage(lanlanName);
+        I.consumePendingGoodbyeChatComposerHiddenMessage(lanlanName);
     });
 
     window.addEventListener('message', function (event) {
@@ -381,6 +393,7 @@
     I.mod.handleGoodbyeChatComposerHiddenMessage = I.handleGoodbyeChatComposerHiddenMessage;
     I.mod.postGoodbyeChatComposerHiddenState = I.postGoodbyeChatComposerHiddenState;
     I.mod.requestGoodbyeChatComposerHiddenState = I.requestGoodbyeChatComposerHiddenState;
+    I.mod.postCatLocalTextSubmit = I.postCatLocalTextSubmit;
     I.mod.postIcebreakerBridgeEvent = I.postIcebreakerBridgeEvent;
     I.mod.postIcebreakerChoiceSelected = I.postIcebreakerChoiceSelected;
     I.mod.postIcebreakerFreeTextSubmitted = I.postIcebreakerFreeTextSubmitted;
@@ -403,6 +416,7 @@
     window.applyGoodbyeChatComposerHidden = I.applyGoodbyeChatComposerHidden;
     window.postGoodbyeChatComposerHiddenState = I.postGoodbyeChatComposerHiddenState;
     window.requestGoodbyeChatComposerHiddenState = I.requestGoodbyeChatComposerHiddenState;
+    window.postCatLocalTextSubmit = I.postCatLocalTextSubmit;
     window.isVoiceConfigSwitching = I.isVoiceConfigSwitching;
     window.waitForVoiceConfigSwitchReady = I.waitForVoiceConfigSwitchReady;
 

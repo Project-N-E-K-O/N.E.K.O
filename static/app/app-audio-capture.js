@@ -11,6 +11,144 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const MIC_LEASE = Object.freeze({
+        NONE: 'none',
+        GAME: 'game',
+        CORE: 'core'
+    });
+    let voiceLeaseGeneration = 0;
+    let lastVoiceLeaseFingerprint = '';
+    // Cancellation token for an IN-FLIGHT microphone start (Codex P2).
+    // S.isRecording only flips at the very END of startAudioWorklet, after
+    // getUserMedia() and audioWorklet.addModule() have both awaited — so every
+    // "stop the mic" guard keyed on S.isRecording === true is a no-op for the
+    // whole startup window. The pending start then completed anyway, set
+    // recording true and re-claimed through refreshMicLease() the very lease the
+    // backend had just revoked, uploading PCM into a blocked route. Bumping this
+    // invalidates any start still inside that window.
+    //
+    // The token each attempt compares against is a LOCAL const in
+    // startMicCapture, deliberately not a module field. A module-level
+    // "pending token" is re-armed by the NEXT startMicCapture: attempt #1 is
+    // invalidated (generation moves past its token), attempt #2 then writes
+    // both the token and the generation to the same new value, and #1's guard
+    // compares equal again and commits -- re-claiming through refreshMicLease()
+    // the exact lease this counter exists to protect.
+    let micStartGeneration = 0;
+
+    function invalidatePendingMicStart() {
+        micStartGeneration += 1;
+    }
+
+    function currentVoiceInputControlState() {
+        return {
+            owner: resolveMicLeaseOwner(),
+            hard_muted: S.isMicMuted === true,
+            focus_suppressed: (
+                S.focusModeEnabled === true
+                && S.isPlaying === true
+            ),
+            // Engagement marker for the backend voice-connection claim gate:
+            // the onopen force-sync also fires from windows that merely
+            // opened (second /chat_full window). A snapshot stamped
+            // engaged: false is provably passive — neither recording nor
+            // starting a voice session — and must not steal the voice
+            // connection identity from a window that is actively recording.
+            engaged: (
+                S.isRecording === true
+                || S.voiceStartPending === true
+                || window.isMicStarting === true
+            )
+        };
+    }
+
+    function sendVoiceInputControlState(force) {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+        const state = currentVoiceInputControlState();
+        const fingerprint = JSON.stringify(state);
+        if (force !== true && fingerprint === lastVoiceLeaseFingerprint) return true;
+        voiceLeaseGeneration += 1;
+        S.socket.send(JSON.stringify({
+            action: 'voice_input_control',
+            event: 'lease_sync',
+            owner: state.owner,
+            hard_muted: state.hard_muted,
+            focus_suppressed: state.focus_suppressed,
+            engaged: state.engaged,
+            lease_generation: voiceLeaseGeneration
+        }));
+        lastVoiceLeaseFingerprint = fingerprint;
+        return true;
+    }
+
+    function syncVoiceInputControlState(socket) {
+        if (socket && socket !== S.socket) return false;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+
+        // 每条 WebSocket 都有独立的 generation scope；第一条消息就是完整状态。
+        voiceLeaseGeneration = 0;
+        lastVoiceLeaseFingerprint = '';
+        return sendVoiceInputControlState(true);
+    }
+
+    function setVoiceInputLifecycleState(state) {
+        const allowed = new Set([
+            'off', 'local_listen', 'prewarming', 'active', 'draining',
+            'warm_idle', 'deep_sleep', 'backoff', 'blocked', 'suspended'
+        ]);
+        if (!allowed.has(state) || S.voiceInputLifecycleState === state) return;
+        S.voiceInputLifecycleState = state;
+        document.documentElement.setAttribute('data-voice-input-state', state);
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {
+            detail: { state, route_mode: S.independentAsrActive ? 'independent' : 'blocked' }
+        }));
+    }
+
+    window.addEventListener('voice-input-socket-open', function (event) {
+        syncVoiceInputControlState(event && event.detail && event.detail.socket);
+    });
+
+    function setMicLeaseOwner(owner) {
+        if (!Object.values(MIC_LEASE).includes(owner)) {
+            throw new Error(`Invalid microphone lease owner: ${owner}`);
+        }
+        if (S.micLeaseOwner !== owner) {
+            S.micLeaseOwner = owner;
+            window.dispatchEvent(new CustomEvent('mic-lease-changed', {
+                detail: { owner }
+            }));
+        }
+        if (owner === MIC_LEASE.NONE || S.isMicMuted === true) {
+            setVoiceInputLifecycleState('off');
+        } else if (owner === MIC_LEASE.GAME) {
+            setVoiceInputLifecycleState('suspended');
+        } else if (
+            S.voiceInputLifecycleState === 'off'
+            || S.voiceInputLifecycleState === 'suspended'
+        ) {
+            setVoiceInputLifecycleState('local_listen');
+        }
+        sendVoiceInputControlState(false);
+        return owner;
+    }
+
+    function resolveMicLeaseOwner() {
+        if (!S.isRecording) return MIC_LEASE.NONE;
+        if (S.gameVoiceSttGateActive) return MIC_LEASE.GAME;
+        return MIC_LEASE.CORE;
+    }
+
+    function refreshMicLease() {
+        // setMicLeaseOwner() already sends the (fingerprint-deduped) control
+        // snapshot — no extra send here.
+        return setMicLeaseOwner(resolveMicLeaseOwner());
+    }
+
+    function canUploadOrdinaryMicFrame() {
+        if (refreshMicLease() !== MIC_LEASE.CORE) return false;
+        const state = currentVoiceInputControlState();
+        return !state.hard_muted && !state.focus_suppressed;
+    }
 
     // ======================== DOM 辅助 ========================
 
@@ -20,6 +158,344 @@
     function stopButton()         { return document.getElementById('stopButton'); }
     function resetSessionButton() { return document.getElementById('resetSessionButton'); }
     function statusElement()      { return document.getElementById('status'); }
+
+    // ======================== 屏幕共享开关按钮（设置面板内嵌） ========================
+    // 开关按钮从屏幕源子窗口底部移到「屏幕共享」与「选择麦克风」两个设置项中间；
+    // 启用时播放像素扫过动画（参考视频按钮的像素填充效果）。
+    // 共享状态以隐藏的 #screenButton 的 .active class 为准（见 common_ui.js）。
+
+    var shareToggleButtonRegistry = [];
+    var shareToggleStateObserver = null;
+    var shareToggleObserverRetryTimer = null;
+
+    function isScreenShareActive() {
+        var btn = screenButton();
+        return !!(btn && btn.classList.contains('active'));
+    }
+
+    function injectShareToggleStyles() {
+        if (document.getElementById('neko-share-toggle-styles')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-share-toggle-styles';
+        style.textContent = [
+            // 未启用：白色胶囊轨道（仿参考视频）
+            '.neko-share-toggle-btn{position:relative;overflow:hidden;width:100%;box-sizing:border-box;min-height:44px;padding:10px 48px;margin:4px 0 6px;border:1px solid rgba(0,0,0,.07);border-radius:999px;background:#f4f4f7;color:var(--neko-popup-text,#333);cursor:pointer;font-size:14px;font-weight:600;pointer-events:auto;transition:color .2s ease,box-shadow .2s ease,transform .1s ease;}',
+            '.neko-share-toggle-btn:hover{box-shadow:inset 0 0 0 1px rgba(0,0,0,.05);}',
+            '.neko-share-toggle-btn:active{transform:scale(.97);}',
+            '.neko-share-toggle-btn:disabled{opacity:.6;cursor:default;}',
+            // 未开语音会话时点击的抖动提示（明确反馈「点到了但不能用」）
+            '@keyframes nekoShareToggleNudge{0%,100%{transform:translateX(0);}25%{transform:translateX(-3px);}75%{transform:translateX(3px);}}',
+            '.neko-share-toggle-btn.is-nudged{animation:nekoShareToggleNudge .12s ease 2;}',
+            '.neko-share-toggle-btn.is-active{color:#fff;}',
+            // 右端的紫色目标点
+            '.neko-share-toggle-btn .neko-share-toggle-goal{position:absolute;z-index:0;top:50%;right:16px;width:6px;height:6px;margin-top:-3px;border-radius:50%;background:#8a5ce8;pointer-events:none;}',
+            '.neko-share-toggle-btn .neko-share-toggle-label{position:relative;z-index:1;display:block;text-align:center;pointer-events:none;transition:color .2s ease;}',
+            // 文字延迟变白：等像素填充波前扫到中部再切换，避免白字落在白轨道上
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-label{transition:color .3s ease .35s;}',
+            // 白色滑块：默认在左端，启用后滑到右端（始终盖在像素层之上）
+            '.neko-share-toggle-btn .neko-share-toggle-knob{position:absolute;z-index:2;top:4px;bottom:4px;left:4px;width:32px;border-radius:10px;background:#fff;box-shadow:0 1px 3px rgba(0,0,0,.18);pointer-events:none;transition:left .4s ease;}',
+            '.neko-share-toggle-btn.is-active .neko-share-toggle-knob{left:calc(100% - 36px);}',
+            // 像素填充画布：低分辨率画布经 CSS 放大 + pixelated，呈现马赛克块感
+            '.neko-share-toggle-btn canvas.neko-share-toggle-fill{position:absolute;inset:0;z-index:0;width:100%;height:100%;pointer-events:none;opacity:0;transition:opacity .12s linear;image-rendering:pixelated;}',
+            '.neko-share-toggle-btn.is-active canvas.neko-share-toggle-fill{opacity:1;}',
+            // 迷你版：嵌在「屏幕共享」设置行右侧的行内胶囊开关（未开启为灰色轨道 + 白色旋钮）
+            '.neko-share-toggle-btn.neko-share-toggle-mini{display:inline-block;width:64px;min-height:26px;height:26px;padding:0;margin:0;flex-shrink:0;align-self:center;cursor:pointer;background:#e2e2e8;border-color:rgba(0,0,0,.05);}',
+            '.neko-share-toggle-mini .neko-share-toggle-label{display:none;}',
+            '.neko-share-toggle-mini .neko-share-toggle-knob{width:18px;top:3px;bottom:3px;left:3px;border-radius:7px;}',
+            '.neko-share-toggle-mini.is-active .neko-share-toggle-knob{left:calc(100% - 21px);}',
+            '.neko-share-toggle-mini .neko-share-toggle-goal{right:8px;width:5px;height:5px;margin-top:-2.5px;}',
+            '.neko-share-toggle-btn.is-busy{opacity:.6;cursor:default;}'
+        ].join('\n');
+        document.head.appendChild(style);
+    }
+
+    // ---- 像素溶解引擎：仿参考视频的随机马赛克扫过效果 ----
+    // 色板以中深紫为主，浅紫仅作零星高光（与参考视频一致）
+    var SHARE_PIXEL_PALETTE = ['#8a5ce8', '#8f63ec', '#9772f0', '#9772f0', '#a181f5', '#a181f5', '#b79fff', '#cdbdff'];
+    var SHARE_PIXEL_CELL_PX = 3;      // 每个像素块的 CSS 尺寸
+    var SHARE_PIXEL_JITTER = 0.2;     // 填充前沿的随机抖动幅度（产生锯齿边缘与前置散点）
+    var SHARE_PIXEL_FADE = 0.15;      // 前沿软过渡宽度（像素透明度渐显，形成渐变边）
+    var SHARE_PIXEL_MIN_ALPHA = 0.3;  // 左端最终透明度上限（形成视频的浅紫渐变尾）
+    var SHARE_PIXEL_FILL_MS = 1300;   // 启用扫过时长
+    var SHARE_PIXEL_SHIMMER_MS = 100; // 填满后像素闪烁间隔
+
+    function createSharePixelFx(canvas) {
+        var ctx = canvas.getContext('2d');
+        var cols = 0;
+        var rows = 0;
+        var seeds = null;   // 前沿抖动随机数
+        var tints = null;   // 每格颜色索引
+        var spans = null;   // 少量格子画成 2x2，模拟视频里大小不一的块
+        var progress = 0;
+        var rafId = null;
+        var shimmerTimer = null;
+
+        function resize() {
+            var host = canvas.parentElement;
+            var w = host ? host.clientWidth : 0;
+            var h = host ? host.clientHeight : 0;
+            var nextCols = Math.max(1, Math.round(w / SHARE_PIXEL_CELL_PX));
+            var nextRows = Math.max(1, Math.round(h / SHARE_PIXEL_CELL_PX));
+            if (nextCols === cols && nextRows === rows && seeds) return;
+            cols = nextCols;
+            rows = nextRows;
+            canvas.width = cols;
+            canvas.height = rows;
+            var count = cols * rows;
+            seeds = new Float32Array(count);
+            tints = new Uint8Array(count);
+            spans = new Uint8Array(count);
+            for (var i = 0; i < count; i++) {
+                seeds[i] = Math.random();
+                tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
+                spans[i] = Math.random() < 0.12 ? 1 : 0;
+            }
+        }
+
+        function draw() {
+            resize();
+            ctx.clearRect(0, 0, cols, rows);
+            if (progress <= 0) return;
+            var spread = 1 - SHARE_PIXEL_JITTER;
+            for (var y = 0; y < rows; y++) {
+                for (var x = 0; x < cols; x++) {
+                    var i = y * cols + x;
+                    var xNorm = cols <= 1 ? 1 : x / (cols - 1);
+                    // 从右向左推进；阈值叠加随机抖动形成不规则前沿
+                    var threshold = (1 - xNorm) * spread + seeds[i] * SHARE_PIXEL_JITTER;
+                    // 前沿软过渡：刚越线的像素半透明，逐渐加深（视频的渐变边）
+                    var fade = (progress - threshold) / SHARE_PIXEL_FADE;
+                    if (fade > 0) {
+                        var alpha = fade >= 1 ? 1 : fade;
+                        // 越靠左透明度越低，填满后左端保留浅紫渐变尾
+                        alpha *= SHARE_PIXEL_MIN_ALPHA + (1 - SHARE_PIXEL_MIN_ALPHA) * xNorm;
+                        ctx.globalAlpha = alpha;
+                        ctx.fillStyle = SHARE_PIXEL_PALETTE[tints[i]];
+                        var big = spans[i];
+                        ctx.fillRect(x, y, big ? 2 : 1, big ? 2 : 1);
+                    }
+                }
+            }
+            ctx.globalAlpha = 1;
+        }
+
+        function stopShimmer() {
+            if (shimmerTimer) { clearInterval(shimmerTimer); shimmerTimer = null; }
+        }
+
+        function startShimmer() {
+            stopShimmer();
+            // 闪烁点随机出现，但整体沿一个从右向左移动的波前依次点亮（仿参考视频）
+            var sweepX = cols - 1;
+            var band = Math.max(2, Math.round(cols * 0.15));
+            shimmerTimer = setInterval(function () {
+                if (!canvas.isConnected) { stopShimmer(); return; }
+                // 随机改写少量格子的色阶，形成填满后的闪烁感（位置集中在波前附近）
+                var twinkles = Math.max(1, Math.round(cols * rows * 0.025));
+                for (var n = 0; n < twinkles; n++) {
+                    var x = sweepX + ((Math.random() * band) | 0);
+                    if (x >= cols) x = cols - 1;
+                    var y = (Math.random() * rows) | 0;
+                    var i = y * cols + x;
+                    tints[i] = (Math.random() * SHARE_PIXEL_PALETTE.length) | 0;
+                }
+                draw();
+                sweepX -= Math.max(1, Math.round(cols * 0.12));
+                if (sweepX < 0) sweepX = cols - 1;
+            }, SHARE_PIXEL_SHIMMER_MS);
+        }
+
+        function cancelAnimation() {
+            if (rafId) { cancelAnimationFrame(rafId); rafId = null; }
+        }
+
+        function animateTo(target, done) {
+            cancelAnimation();
+            var from = progress;
+            var distance = Math.abs(target - from);
+            if (distance <= 0) { if (done) done(); return; }
+            var duration = SHARE_PIXEL_FILL_MS * distance;
+            var startTime = null;
+            function frame(now) {
+                if (!canvas.isConnected) { rafId = null; return; }
+                if (startTime === null) startTime = now;
+                var t = Math.min(1, (now - startTime) / duration);
+                progress = from + (target - from) * t;
+                draw();
+                if (t < 1) {
+                    rafId = requestAnimationFrame(frame);
+                } else {
+                    rafId = null;
+                    if (done) done();
+                }
+            }
+            rafId = requestAnimationFrame(frame);
+        }
+
+        return {
+            activate: function (instant) {
+                resize();
+                stopShimmer();
+                if (instant) {
+                    cancelAnimation();
+                    progress = 1;
+                    draw();
+                    startShimmer();
+                } else {
+                    animateTo(1, startShimmer);
+                }
+            },
+            deactivate: function (instant, done) {
+                stopShimmer();
+                if (instant) {
+                    cancelAnimation();
+                    progress = 0;
+                    draw();
+                    if (done) done();
+                } else {
+                    animateTo(0, done);
+                }
+            },
+            // 已处于开启状态时再次点击：从头重播一次开启扫过动画
+            replay: function () {
+                resize();
+                stopShimmer();
+                progress = 0;
+                draw();
+                animateTo(1, startShimmer);
+            }
+        };
+    }
+
+    function syncShareToggleButtons(instant) {
+        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        var active = isScreenShareActive();
+        shareToggleButtonRegistry.forEach(function (btn) {
+            if (typeof btn._nekoSetShareActive === 'function') btn._nekoSetShareActive(active, !!instant);
+        });
+    }
+
+    function ensureShareToggleStateObserver() {
+        if (shareToggleStateObserver) return;
+        var target = screenButton();
+        if (!target) {
+            if (!shareToggleObserverRetryTimer) {
+                shareToggleObserverRetryTimer = setTimeout(function () {
+                    shareToggleObserverRetryTimer = null;
+                    ensureShareToggleStateObserver();
+                }, 500);
+            }
+            return;
+        }
+        shareToggleStateObserver = new MutationObserver(function () { syncShareToggleButtons(false); });
+        shareToggleStateObserver.observe(target, { attributes: true, attributeFilter: ['class'] });
+    }
+
+    function createScreenShareToggleButton(options) {
+        injectShareToggleStyles();
+        ensureShareToggleStateObserver();
+
+        var mini = !!(options && options.mini);
+        // 用 span + role=button：迷你版会嵌在设置行 <button> 内，原生 button 嵌套是非法 HTML
+        var button = document.createElement('span');
+        button.className = 'neko-share-toggle-btn' + (mini ? ' neko-share-toggle-mini' : '');
+        button.setAttribute('role', 'button');
+        button.setAttribute('tabindex', '0');
+        button.dataset.nekoScreenShareAction = 'toggle';
+
+        var fill = document.createElement('canvas');
+        fill.className = 'neko-share-toggle-fill';
+        fill.setAttribute('aria-hidden', 'true');
+
+        var goal = document.createElement('span');
+        goal.className = 'neko-share-toggle-goal';
+        goal.setAttribute('aria-hidden', 'true');
+
+        var label = document.createElement('span');
+        label.className = 'neko-share-toggle-label';
+
+        var knob = document.createElement('span');
+        knob.className = 'neko-share-toggle-knob';
+        knob.setAttribute('aria-hidden', 'true');
+
+        button.appendChild(fill);
+        button.appendChild(goal);
+        button.appendChild(label);
+        button.appendChild(knob);
+
+        function shareLabel() { return window.t ? window.t('buttons.screenShare') : 'Screen Share'; }
+        function stopLabel() { return window.t ? window.t('voiceControl.stopShare') : 'Stop Sharing'; }
+
+        var pixelFx = createSharePixelFx(fill);
+        button._nekoSetShareActive = function (active, instant) {
+            label.textContent = active ? stopLabel() : shareLabel();
+            button.setAttribute('aria-pressed', active ? 'true' : 'false');
+            if (button._nekoShareActive === active) return;
+            button._nekoShareActive = active;
+            if (active) {
+                button.classList.add('is-active');
+                pixelFx.activate(!!instant);
+            } else {
+                // 反向溶解期间保持画布可见，结束后再隐藏
+                pixelFx.deactivate(!!instant, function () {
+                    if (!button._nekoShareActive) button.classList.remove('is-active');
+                });
+                if (instant) button.classList.remove('is-active');
+            }
+        };
+
+        async function handleToggleClick(event) {
+            event.stopPropagation();
+            if (button._nekoShareBusy) return;
+            var active = isScreenShareActive();
+            console.log('[屏幕共享开关] 点击, 当前状态:', active ? '共享中' : '未共享', ', 语音会话:', !!window.isRecording);
+            if (active) {
+                // 开启状态下每次点击都重播一次开启时的像素扫过动画
+                pixelFx.replay();
+            }
+            button._nekoShareBusy = true;
+            button.classList.add('is-busy');
+            try {
+                if (active && typeof window.stopScreenSharing === 'function') {
+                    await window.stopScreenSharing();
+                } else if (!active && typeof window.startScreenSharing === 'function') {
+                    if (!window.isRecording) {
+                        // 抖动提示 + Toast，明确告知需要先开语音会话
+                        button.classList.remove('is-nudged');
+                        void button.offsetWidth;
+                        button.classList.add('is-nudged');
+                        setTimeout(function () { button.classList.remove('is-nudged'); }, 300);
+                        if (typeof window.showStatusToast === 'function') {
+                            window.showStatusToast(
+                                window.t ? window.t('app.screenShareRequiresVoice') : '屏幕分享仅用于音视频通话',
+                                3000
+                            );
+                        }
+                        return;
+                    }
+                    await window.startScreenSharing();
+                }
+            } finally {
+                button._nekoShareBusy = false;
+                button.classList.remove('is-busy');
+                syncShareToggleButtons(false);
+            }
+        }
+
+        button.addEventListener('click', handleToggleClick);
+        button.addEventListener('keydown', function (event) {
+            if (event.key === 'Enter' || event.key === ' ') {
+                event.preventDefault();
+                handleToggleClick(event);
+            }
+        });
+
+        shareToggleButtonRegistry = shareToggleButtonRegistry.filter(function (btn) { return btn.isConnected; });
+        shareToggleButtonRegistry.push(button);
+        // 每次重新显示（弹窗重渲染）时，若共享处于开启状态则重播一次开启动画；未开启则直接落位
+        button._nekoSetShareActive(isScreenShareActive(), !isScreenShareActive());
+        return button;
+    }
 
     // ======================== 游戏语音 STT Gate ========================
 
@@ -184,6 +660,7 @@
         if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
             return false;
         }
+        setMicLeaseOwner(MIC_LEASE.GAME);
         if (S.gameVoiceSttListening) {
             releaseOrdinaryMicCaptureForGameVoiceSttGate();
             return true;
@@ -273,6 +750,18 @@
         recognition.onerror = function (event) {
             const errorCode = (event && event.error) || 'unknown';
             console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
+            // Same staleness guard its onstart/onend siblings carry, which this
+            // handler was missing. An abandoned recognizer still fires onerror,
+            // and the not-allowed branch below calls
+            // restoreOrdinaryMicCaptureAfterGameVoiceSttFailure -> a fresh
+            // startMicCapture: a permission toast for a recognizer nobody uses
+            // any more, plus a microphone restart over a healthy live pipeline.
+            // Logged before returning so the diagnostics this handler exists
+            // for survive; only the side effects are gated.
+            if (S.gameVoiceSttRecognition !== recognition) {
+                console.warn('[GameVoiceSTT] ignoring error from a superseded recognizer');
+                return;
+            }
             if (errorCode === 'no-speech') {
                 console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
             }
@@ -345,6 +834,7 @@
         if (!keepActive && restoreOrdinaryMic) {
             restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
         }
+        refreshMicLease();
     }
 
     // ======================== 麦克风设备选择 ========================
@@ -426,8 +916,28 @@
                 }
                 S.workletNode = null;
 
+                // Snapshot the cancellation counter BEFORE the delay below.
+                // wasRecording was taken even earlier, so on its own it cannot
+                // see a teardown that lands during the wait -- and the restart
+                // then MINTS A NEWER TOKEN, which defeats the very
+                // invalidation that teardown performed. An auto_close_mic, a
+                // text-session takeover or a plain stopRecording() inside this
+                // window would be silently overridden and the hardware
+                // microphone reopened, re-claiming a lease the backend had
+                // already released (Codex P2).
+                //
+                // This function's own teardown above closes the graph directly
+                // rather than through stopRecording(), so it does not bump the
+                // counter and cannot cancel its own restart.
+                const restartGeneration = micStartGeneration;
+
                 // 等待一小段时间，确保选择提示显示出来
                 await new Promise(resolve => setTimeout(resolve, 500));
+
+                if (micStartGeneration !== restartGeneration) {
+                    console.log('[App] microphone switch superseded during the restart delay; not reopening');
+                    return;
+                }
 
                 if (wasRecording) {
                     await startMicCapture();
@@ -760,12 +1270,54 @@
 
     // ======================== AudioWorklet ========================
 
-    async function startAudioWorklet(mediaStream) {
+    /**
+     * Open the capture pipeline for ONE microphone-start attempt.
+     *
+     * ``startToken`` is that attempt's identity, taken from micStartGeneration
+     * before its first await. Returns true when the pipeline was committed and
+     * false when the attempt was superseded and unwound -- the caller MUST
+     * check, because an unwound attempt has torn the hardware down and must not
+     * continue into its success path.
+     *
+     * A caller that passes no token cannot prove it is current, so it unwinds.
+     * That is deliberate: this whole subsystem is fail-closed, and the only
+     * consumer is startMicCapture below (the module export exists for tests).
+     */
+    async function startAudioWorklet(mediaStream, startToken) {
+        // Entry gate, before ANY shared state is touched. An attempt can be
+        // superseded while it is still in startMicCapture's getUserMedia (a
+        // cold device open is slow; the newer attempt hits a warm one and
+        // commits first), and it then arrives here already having lost. The
+        // teardown immediately below is not otherwise token-aware, so it would
+        // close the WINNER's freshly published AudioContext -- verified: the
+        // winner is left recording with a closed context, S.audioContext null
+        // and a microphone that has stopped producing, while the UI still says
+        // recording. Nothing has been allocated yet at this point, so bailing
+        // costs only this attempt's own device handle.
+        if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            console.log('[App] microphone start was superseded before opening; unwinding');
+            try {
+                if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (_) {
+                // best-effort teardown
+            }
+            return false;
+        }
+
         // 先清理旧的音频上下文，防止多个 worklet 同时发送数据导致 QPS 超限
-        if (S.audioContext) {
-            if (S.audioContext.state !== 'closed') {
+        //
+        // Pinned to a local across the await: `await S.audioContext.close()`
+        // yields, and another attempt can publish a NEW pipeline during it.
+        // Nulling the shared fields afterwards without re-checking would then
+        // erase the handles to that live pipeline while its worklet keeps
+        // uploading -- an unstoppable microphone with every handle null.
+        const previousContext = S.audioContext;
+        if (previousContext) {
+            if (previousContext.state !== 'closed') {
                 try {
-                    await S.audioContext.close();
+                    await previousContext.close();
                 } catch (e) {
                     console.warn('关闭旧音频上下文时出错:', e);
                     // 强制复位所有状态，防止状态不一致
@@ -788,106 +1340,375 @@
                     throw e;
                 }
             }
-            S.audioContext = null;
-            S.workletNode = null;
+            if (S.audioContext === previousContext) {
+                // Still the pipeline we just closed. Clear ALL of it: leaving
+                // micGainNode / inputAnalyser behind kept nodes from a closed
+                // context addressable, so the volume meter and the gain slider
+                // went on reading and poking a graph that no longer exists.
+                S.audioContext = null;
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+                // Reconcile the recording flag with what just happened. The
+                // pipeline that was feeding it is closed, so leaving
+                // S.isRecording true describes a microphone that no longer
+                // exists: the mic button keeps its recording/active styling and
+                // the floating button stays lit, canUploadOrdinaryMicFrame's
+                // callers still believe frames are flowing, and if THIS attempt
+                // then unwinds (superseded, fail-closed, addModule failure)
+                // nothing ever puts it right -- the caller's UI restore is
+                // skipped precisely because S.isRecording is true.
+                //
+                // The winning attempt sets it back to true at its own commit,
+                // so a successful restart is unchanged; only the window between
+                // teardown and commit now tells the truth.
+                if (S.isRecording) {
+                    S.isRecording = false;
+                    window.isRecording = false;
+                    if (typeof window.syncFloatingMicButtonState === 'function') {
+                        window.syncFloatingMicButtonState(false);
+                    }
+                }
+            }
         }
 
         // 创建音频上下文，强制使用 48kHz 采样率
-        S.audioContext = new AudioContext({ sampleRate: 48000 });
-        console.log("音频上下文采样率 (强制48kHz):", S.audioContext.sampleRate);
+        //
+        // Everything this attempt builds stays ATTEMPT-LOCAL until the token
+        // gate below says it won; only then is it published into S.*. Those
+        // fields are module globals shared by every concurrent attempt, and
+        // building through them directly cost two separate defects:
+        //
+        //   * the unwind reset them blindly, so a loser stopped the WINNER's
+        //     tracks and nulled its context, and the winner then threw on
+        //     S.audioContext.sampleRate -- no microphone at all;
+        //   * even with the teardown scoped, the loser's post-await SETUP
+        //     still ran through them (Codex P2): resuming from addModule() it
+        //     built its worklet on the winner's context, overwrote
+        //     S.workletNode and spliced itself into the winner's gain node --
+        //     two live worklets on one microphone, both uploading duplicate
+        //     PCM, with the winner's own node orphaned where no later
+        //     teardown could reach it.
+        //
+        // One publish point at the end removes the whole class: before the
+        // gate this attempt is invisible, after it the four fields describe
+        // exactly one pipeline.
+        const ownContext = new AudioContext({ sampleRate: 48000 });
+        console.log("音频上下文采样率 (强制48kHz):", ownContext.sampleRate);
 
-        // 创建媒体流源
-        const source = S.audioContext.createMediaStreamSource(mediaStream);
+        let source = null;
+        let ownGainNode = null;
+        let ownAnalyser = null;
+        try {
+            // 创建媒体流源
+            source = ownContext.createMediaStreamSource(mediaStream);
 
-        // 创建增益节点用于麦克风音量放大
-        S.micGainNode = S.audioContext.createGain();
-        const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
-        S.micGainNode.gain.value = linearGain;
-        console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
+            // 创建增益节点用于麦克风音量放大
+            ownGainNode = ownContext.createGain();
+            const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
+            ownGainNode.gain.value = linearGain;
+            console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
 
-        // 创建analyser节点用于监测输入音量
-        S.inputAnalyser = S.audioContext.createAnalyser();
-        S.inputAnalyser.fftSize = 2048;
-        S.inputAnalyser.smoothingTimeConstant = 0.8;
+            // 创建analyser节点用于监测输入音量
+            ownAnalyser = ownContext.createAnalyser();
+            ownAnalyser.fftSize = 2048;
+            ownAnalyser.smoothingTimeConstant = 0.8;
 
-        // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
-        source.connect(S.micGainNode);
-        S.micGainNode.connect(S.inputAnalyser);
+            // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
+            source.connect(ownGainNode);
+            ownGainNode.connect(ownAnalyser);
+        } catch (graphError) {
+            // The context is already constructed but nothing is published and
+            // discardOwnPipeline is not defined yet, so a throw from any of
+            // these node constructors would strand a live AudioContext that no
+            // teardown path can reach -- and Blink caps them at about six per
+            // document, so a repeating failure eventually makes `new
+            // AudioContext()` itself throw (Codex P2). The caller's catch
+            // releases the microphone track; this releases the context.
+            if (ownContext.state !== 'closed') {
+                ownContext.close();
+            }
+            throw graphError;
+        }
+
+        let ownWorkletNode = null;
+
+        // Dispose of everything this attempt built. Shared by the supersede /
+        // fail-closed gate and by the catch below: an attempt that never
+        // publishes is unreachable from S.*, so nothing else can ever close
+        // its AudioContext or stop its microphone track. Touches the shared
+        // fields only where they provably still describe THIS attempt.
+        const discardOwnPipeline = () => {
+            try {
+                if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (_) {
+                // best-effort teardown
+            }
+            if (S.stream && S.stream === mediaStream) {
+                // Already stopped above; only drop the reference, and only
+                // while it is still OUR stream.
+                S.stream = null;
+            }
+            try {
+                if (ownWorkletNode) {
+                    // Kill the handler before disconnecting: an in-flight port
+                    // message must not upload a frame from a pipeline that
+                    // just lost.
+                    ownWorkletNode.port.onmessage = null;
+                    ownWorkletNode.disconnect();
+                }
+                // Nullable since the graph construction above can throw
+                // partway; that path closes the context and rethrows without
+                // reaching here, but the guards keep this honest.
+                if (ownGainNode) ownGainNode.disconnect();
+                if (ownAnalyser) ownAnalyser.disconnect();
+                if (source) source.disconnect();
+            } catch (_) {
+                // best-effort teardown
+            }
+            if (ownContext.state !== 'closed') {
+                ownContext.close();
+            }
+            if (S.audioContext === null) {
+                // No pipeline is live at all (the fail-closed route case, or a
+                // supersede with nothing committed since). The graph fields
+                // still name the pipeline the top of this function tore down,
+                // so clear them rather than leave nodes from a closed context
+                // addressable. When a winner IS live, S.audioContext is its
+                // context and none of this runs.
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+                stopSilenceDetection();
+            }
+        };
 
         try {
             // 加载AudioWorklet处理器
-            await S.audioContext.audioWorklet.addModule('/static/audio-processor.js');
+            await ownContext.audioWorklet.addModule('/static/audio-processor.js');
 
             // 根据连接类型确定目标采样率
             const isMobile = window.appUtils.isMobile;
             const targetSampleRate = isMobile() ? 16000 : 48000;
-            console.log(`音频采样率配置: 原始=${S.audioContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
+            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
 
             // 创建AudioWorkletNode
-            S.workletNode = new AudioWorkletNode(S.audioContext, 'audio-processor', {
+            ownWorkletNode = new AudioWorkletNode(ownContext, 'audio-processor', {
                 processorOptions: {
-                    originalSampleRate: S.audioContext.sampleRate,
+                    originalSampleRate: ownContext.sampleRate,
                     targetSampleRate: targetSampleRate
                 }
             });
 
             // 监听处理器发送的消息
-            S.workletNode.port.onmessage = (event) => {
+            ownWorkletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
-                if (S.isMicMuted) {
-                    return;
-                }
-
-                if (S.focusModeEnabled === true && S.isPlaying === true) {
-                    return;
-                }
-
-                if (S.gameVoiceSttGateActive) {
+                if (!canUploadOrdinaryMicFrame()) {
                     return;
                 }
 
                 if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: Array.from(audioData),
-                        input_type: 'audio'
-                    }));
+                    // 8-byte header: ASCII "NEKO" + little-endian sample rate，
+                    // 后续直接附 PCM16，避免每帧 JSON 数组的带宽与 GC 开销。
+                    const pcm16 = audioData instanceof Int16Array
+                        ? audioData
+                        : new Int16Array(audioData);
+                    const frame = new ArrayBuffer(8 + pcm16.byteLength);
+                    const header = new DataView(frame);
+                    header.setUint8(0, 0x4E);
+                    header.setUint8(1, 0x45);
+                    header.setUint8(2, 0x4B);
+                    header.setUint8(3, 0x4F);
+                    header.setUint32(4, targetSampleRate, true);
+                    // 字节级拷贝按平台字节序输出 PCM，而 wire 格式要求
+                    // little-endian。所有主流浏览器 / JS 引擎都是 LE，这里
+                    // 显式依赖该假设以保持每帧热路径零逐样本开销；若未来
+                    // 出现 BE 平台，需改为 DataView 逐样本 setInt16(LE)。
+                    new Uint8Array(frame, 8).set(new Uint8Array(
+                        pcm16.buffer,
+                        pcm16.byteOffset,
+                        pcm16.byteLength
+                    ));
+                    S.socket.send(frame);
                 }
             };
 
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
-            S.micGainNode.connect(S.workletNode);
+            ownGainNode.connect(ownWorkletNode);
+
+            // Last gate before the commit. Everything above only awaited; this
+            // is where the microphone actually becomes live and where
+            // refreshMicLease() would re-claim the lease. A text takeover (or
+            // any fail-closed verdict) that landed while getUserMedia() and
+            // addModule() were in flight found S.isRecording still false, so its
+            // stopRecording() early-returned and could not prevent this. Unwind
+            // instead of committing: without this the pending start re-claims a
+            // lease the backend just revoked and feeds a blocked route.
+            if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+                console.log('[App] microphone start was superseded while opening; unwinding');
+                // Nothing above was published, so this tears down ONLY what
+                // this attempt built. There is no re-entrancy guard on
+                // startMicCapture and several callers are fire-and-forget (the
+                // two game-STT restore paths above, and app-websocket.js's
+                // mic-pipeline repair), so a winner may well be live in S.*
+                // right now -- and it must not be touched here.
+                discardOwnPipeline();
+                // Deliberately NOT refreshMicLease(): the lease is the
+                // backend's now, and re-emitting a snapshot from a window that
+                // never started recording is exactly the re-claim being
+                // prevented. S.isRecording was never set, so nothing to reset.
+                //
+                // false, not a bare return: the caller awaits this and would
+                // otherwise run its whole success path -- disabling the mic
+                // button, toasting "speaking", lighting the floating button and
+                // silencing proactive chat -- against hardware that no longer
+                // exists.
+                return false;
+            }
+
+            // This attempt won. Publish the pipeline as one unit -- the only
+            // place S.* learns about it, so the five fields are always the
+            // same live graph and never a mix of two attempts.
+            //
+            // The gain is re-read here rather than trusted from construction
+            // time: setMicrophoneGain writes S.microphoneGainDb and then pokes
+            // S.micGainNode, which this attempt was deliberately absent from
+            // for the whole open window, so a slider move during it would
+            // otherwise persist and display the new dB while the live
+            // microphone stayed at the old one until the next restart.
+            ownGainNode.gain.value = window.appUtils.dbToLinear(S.microphoneGainDb);
+            S.stream = mediaStream;
+            S.audioContext = ownContext;
+            S.micGainNode = ownGainNode;
+            S.inputAnalyser = ownAnalyser;
+            S.workletNode = ownWorkletNode;
 
             // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
             // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
             // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
             // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
             // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
+            // Moved below the gate with the publish: a superseded attempt has
+            // no business clearing the winner's playback guard.
             S.isPlaying = false;
 
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
+            refreshMicLease();
+            return true;
 
         } catch (err) {
             console.error('加载AudioWorklet失败:', err);
             console.dir(err);
             window.showStatusToast(window.t ? window.t('app.audioWorkletFailed') : 'AudioWorklet加载失败', 5000);
-            stopSilenceDetection();
+            // Nothing was published, so this graph is unreachable from S.* --
+            // without an explicit discard its AudioContext and the microphone
+            // track would leak on every failed addModule(), with no later
+            // attempt able to find and close them. (The old code leaked the
+            // stream too, and reached stopSilenceDetection() unconditionally,
+            // which would stop a concurrent WINNER's detection; discard only
+            // does that when no pipeline is live.)
+            discardOwnPipeline();
+            // RETHROW. `false` means "this attempt was deliberately cancelled"
+            // -- superseded, or the route came back fail-closed -- and the
+            // caller treats it as benign: it restores the pre-start UI and
+            // returns without error. A real setup failure returned the same
+            // value, so app-buttons.js sailed past `await startMicCapture()`
+            // into the success path: ready-to-speak toast, proactive vision,
+            // the neko:voice-session-started event, and never the error path
+            // that sends end_session -- announcing a live voice call with no
+            // capture pipeline behind it (Codex P2).
+            //
+            // Marked so startMicCapture's own catch does not stack a generic
+            // "cannot access microphone" toast on top of the accurate one
+            // already shown above.
+            err.voiceWorkletSetupFailed = true;
+            throw err;
         }
     }
 
     // ======================== 录音开始/停止 ========================
 
     // 开麦，按钮on click
+    function abortVoiceStartForBlockedRoute() {
+        // Unwind the "starting voice" UI after startMicCapture refused a
+        // fail-closed route. Deliberately NOT a thrown error: the generic
+        // catch would replace the accurate ASR failure toast with a generic
+        // "session start failed".
+        const _mic = micButton();
+        const _mute = muteButton();
+        const _screen = screenButton();
+        if (_mic) {
+            _mic.classList.remove('recording');
+            _mic.classList.remove('active');
+            _mic.disabled = false;
+        }
+        if (_mute) _mute.disabled = true;
+        if (_screen) _screen.disabled = true;
+        // Also cancel a start still inside its getUserMedia/addModule window:
+        // clearing S.isRecording cannot reach one that has not set it yet.
+        invalidatePendingMicStart();
+        S.isRecording = false;
+        window.isRecording = false;
+        S.voiceChatActive = false;
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+        const textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+        if (typeof window.syncFloatingMicButtonState === 'function') {
+            window.syncFloatingMicButtonState(false);
+        }
+        refreshMicLease();
+    }
+
     async function startMicCapture() {
+        // Refuse to open the hardware microphone onto a route the backend has
+        // already fail-closed. This is THE guard that closes the startup-failure
+        // hole: on a cold voice start the mic is opened only AFTER
+        // session_started, i.e. after the ASR_INDEPENDENT_* failure status, so a
+        // server-side lease revoke has nothing to revoke yet -- and this
+        // function's own refreshMicLease() would re-claim the lease from
+        // scratch anyway (_handle_voice_input_control enforces only generation
+        // monotonicity, and the revoke reset the generation to -1, so the next
+        // client snapshot wins unconditionally). Placed at the top rather than
+        // at the two await-sessionStartPromise call sites because three more
+        // callers -- the device-change restore paths below -- can also reopen
+        // the mic on a dead route, and one guard covers all five.
+        if (S.voiceInputRouteBlocked === true) {
+            console.log('[App] voice route is fail-closed; refusing to open the microphone');
+            return;
+        }
+        // Claim this attempt BEFORE the first await. Anything that invalidates
+        // pending starts from here on makes the commit at the end of
+        // startAudioWorklet a no-op, which is the only way to cover the
+        // getUserMedia() half of the window as well.
+        micStartGeneration += 1;
+        const micStartToken = micStartGeneration;
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
         const _stop = stopButton();
         const _reset = resetSessionButton();
 
+        // Declared OUTSIDE the try so the catch below can still reach it.
+        // `const` inside the try block is invisible to `catch (err)` -- a
+        // separate block scope -- and the stream is deliberately not published
+        // to S.stream until the attempt wins, so on any throw between
+        // acquisition and the commit (a failing `new AudioContext()`, which
+        // Blink caps at ~6 per document, the source/gain/analyser setup, or
+        // the previous context's close()) NOTHING could stop its tracks: the
+        // UI reported a failed start while the browser microphone stayed live.
+        let ownStream = null;
         try {
             // 开始录音前添加录音状态类到两个按钮
             if (_mic) _mic.classList.add('recording');
@@ -926,10 +1747,22 @@
                     : baseAudioConstraints
             };
 
-            S.stream = await navigator.mediaDevices.getUserMedia(constraints);
+            // Attempt-local, for the same reason the audio graph is: publishing
+            // the stream here put it OUTSIDE the single publish point in
+            // startAudioWorklet, and this write lands after an await, so it is
+            // unordered with respect to the token. Two overlapping starts whose
+            // getUserMedia settle out of token order let the LOSER write
+            // S.stream last; its unwind then legitimately sees
+            // `S.stream === mediaStream` and nulls it, leaving the winner
+            // recording with S.stream === null -- stopRecording's `if (S.stream)`
+            // never stops those tracks, so the OS microphone indicator stays lit
+            // for the life of the page, and the `S.stream && S.audioContext &&
+            // S.workletNode` liveness probes read dead against a live pipeline
+            // and open a second microphone on top of it.
+            ownStream = await navigator.mediaDevices.getUserMedia(constraints);
 
             // 检查音频轨道状态
-            const audioTracks = S.stream.getAudioTracks();
+            const audioTracks = ownStream.getAudioTracks();
             console.log(window.t('console.audioTrackCount'), audioTracks.length);
             console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => ({
                 label: track.label,
@@ -945,10 +1778,45 @@
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
                 }
+                // Never published, so nothing else can reach it to release it.
+                try {
+                    ownStream.getTracks().forEach(track => track.stop());
+                } catch (_) {
+                    // best-effort teardown
+                }
                 throw new Error('没有可用的音频轨道');
             }
 
-            await startAudioWorklet(S.stream);
+            const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);
+            if (!micStartCommitted) {
+                // Superseded or fail-closed while opening: the hardware is
+                // already torn down, so restore the pre-start UI and leave
+                // WITHOUT the success path below. Not an error -- no toast, and
+                // nothing to throw at a caller who did nothing wrong.
+                //
+                // Skipped when a newer attempt has since COMMITTED: this UI is
+                // global, same as the S.* fields the unwind is careful about,
+                // and painting "not recording" over a window that is recording
+                // is the display-plane half of the same bug.
+                if (S.isRecording === true) {
+                    return;
+                }
+                if (_mic) {
+                    _mic.classList.remove('recording');
+                    _mic.classList.remove('active');
+                }
+                const cancelledTextInputArea = document.getElementById('text-input-area');
+                if (cancelledTextInputArea) {
+                    cancelledTextInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
+                if (typeof window.syncFloatingMicButtonState === 'function') {
+                    window.syncFloatingMicButtonState(false);
+                }
+                return;
+            }
             if (S.gameVoiceSttGateActive) {
                 startGameVoiceSttGate();
             }
@@ -977,7 +1845,25 @@
             }
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
-            window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            // A worklet setup failure already showed its own, more accurate
+            // toast before rethrowing; do not stack "cannot access microphone"
+            // on top of "AudioWorklet failed to load" -- microphone access
+            // demonstrably succeeded in that case.
+            if (!(err && err.voiceWorkletSetupFailed)) {
+                window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            }
+
+            // Release a device this attempt opened but never published. Guarded
+            // on `S.stream !== ownStream` so a throw from the SUCCESS path (the
+            // UI updates and startGameVoiceSttGate() below the commit) cannot
+            // stop the microphone of a pipeline that is now live and owned.
+            if (ownStream && S.stream !== ownStream) {
+                try {
+                    ownStream.getTracks().forEach(track => track.stop());
+                } catch (_) {
+                    // best-effort teardown
+                }
+            }
 
             const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
@@ -1101,10 +1987,38 @@
             window.stopScreening();
         }
         stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (typeof window.removeExternalAsrPreview === 'function') {
+            window.removeExternalAsrPreview();
+        }
+        // Ordinary user stop must also drop the independent-ASR route flags.
+        // Only failure paths (BLOCKED / terminal ASR_INDEPENDENT_* statuses in
+        // app-websocket.js) reset them otherwise, so the mic settings hint
+        // would keep claiming "Independent ASR active" after the session
+        // ended. The next voice session re-derives both fields from fresh
+        // ASR_INDEPENDENT_* status events (lifecycle.py _start_session_activate
+        // re-runs the route on every start_session).
+        S.independentAsrActive = false;
+        S.independentAsrProvider = '';
+        // Cancel a start still inside its getUserMedia()/addModule() window,
+        // BEFORE the isRecording early-out below. S.isRecording only flips at
+        // the very end of startAudioWorklet, so every "stop the mic" path --
+        // the user pressing stop, the server's auto_close_mic, a websocket
+        // close -- used to early-return here and leave the in-flight attempt to
+        // commit afterwards: the UI flipped back to recording and the client
+        // re-claimed the lease from a backend that had just released it. Only
+        // the text-takeover and blocked-route aborts bumped this counter, so
+        // every other teardown was unable to cancel a start it had every right
+        // to cancel.
+        //
+        // Safe for the restart flows: each of them calls startMicCapture()
+        // afterwards, which mints its own token, so invalidating here cannot
+        // cancel the start they are about to make.
+        invalidatePendingMicStart();
         if (!S.isRecording) return;
 
         S.isRecording = false;
         window.isRecording = false;
+        refreshMicLease();
         window.currentGeminiMessage = null;
 
         // 重置语音模式用户转录合并追踪
@@ -1347,6 +2261,8 @@
     // ======================== 暴露到 window（向后兼容） ========================
     window.startMicCapture = startMicCapture;
     window.stopMicCapture = stopMicCapture;
+    window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
+    window.invalidatePendingMicStart = invalidatePendingMicStart;
     window.stopRecording = stopRecording;
     window.startSilenceDetection = startSilenceDetection;
     window.stopSilenceDetection = stopSilenceDetection;
@@ -1376,6 +2292,7 @@
             return S.isMicMuted;
         }
         S.isMicMuted = !S.isMicMuted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 立刻清掉"用户最近在说话"的时间戳。否则 mute 前最后一帧
@@ -1407,6 +2324,7 @@
 
     window.setMicMuted = function(muted, showToast = false) {
         S.isMicMuted = muted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
@@ -1452,21 +2370,95 @@
     mod.startAudioWorklet = startAudioWorklet;
     mod.startMicCapture = startMicCapture;
     mod.stopMicCapture = stopMicCapture;
+    mod.invalidatePendingMicStart = invalidatePendingMicStart;
     mod.stopRecording = stopRecording;
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
     mod.startGameVoiceSttGate = startGameVoiceSttGate;
     mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
+    mod.refreshMicLease = refreshMicLease;
+    mod.sendVoiceInputControlState = sendVoiceInputControlState;
+    mod.canUploadOrdinaryMicFrame = canUploadOrdinaryMicFrame;
+    mod.setVoiceInputLifecycleState = setVoiceInputLifecycleState;
 
     // ======================== 麦克风设备列表 UI ========================
 
     var micPermissionGranted = false;
     var cachedMicDevices = null;
 
+    function ensureMicPopupScrollbarStyle() {
+        if (document.getElementById('neko-mic-popup-scrollbar-style')) return;
+        var style = document.createElement('style');
+        style.id = 'neko-mic-popup-scrollbar-style';
+        style.textContent = [
+            '#live2d-popup-mic.neko-mic-popup-surface,',
+            '#vrm-popup-mic.neko-mic-popup-surface,',
+            '#mmd-popup-mic.neko-mic-popup-surface{overflow-y:hidden!important;scrollbar-width:none;}',
+            '#live2d-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#vrm-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '#mmd-popup-mic.neko-mic-popup-surface::-webkit-scrollbar,',
+            '.neko-mic-popup-scroll::-webkit-scrollbar{width:0;height:0;}',
+            '.neko-mic-popup-scroll{scrollbar-width:none;-ms-overflow-style:none;}',
+            '.neko-mic-popup-scrollbar-thumb{position:absolute;right:3px;top:0;width:4px;min-height:18px;border-radius:999px;background:rgba(128,128,128,0.55);opacity:0;transition:opacity 120ms ease;pointer-events:none;z-index:2;}',
+            '.neko-mic-popup-scrollbar-thumb.is-visible{opacity:1;}'
+        ].join('');
+        document.head.appendChild(style);
+    }
+
+    function attachTransientMicPopupScrollbar(scrollNode, hostNode) {
+        var thumb = document.createElement('div');
+        thumb.className = 'neko-mic-popup-scrollbar-thumb';
+        hostNode.appendChild(thumb);
+        var hideTimer = null;
+        var frameId = null;
+        var updateThumb = function () {
+            frameId = null;
+            var maxScroll = Math.max(0, scrollNode.scrollHeight - scrollNode.clientHeight);
+            if (maxScroll <= 0) {
+                thumb.classList.remove('is-visible');
+                return;
+            }
+            var scrollRect = scrollNode.getBoundingClientRect();
+            var hostRect = hostNode.getBoundingClientRect();
+            var trackTop = scrollRect.top - hostRect.top;
+            var trackHeight = scrollNode.clientHeight;
+            var thumbHeight = Math.max(18, Math.round((scrollNode.clientHeight / scrollNode.scrollHeight) * trackHeight));
+            var thumbTop = trackTop + Math.round((scrollNode.scrollTop / maxScroll) * Math.max(0, trackHeight - thumbHeight));
+            thumb.style.height = thumbHeight + 'px';
+            thumb.style.transform = 'translateY(' + thumbTop + 'px)';
+        };
+        var showScrollbar = function () {
+            thumb.classList.add('is-visible');
+            if (!frameId) frameId = window.requestAnimationFrame(updateThumb);
+            if (hideTimer) window.clearTimeout(hideTimer);
+            hideTimer = window.setTimeout(function () {
+                thumb.classList.remove('is-visible');
+                hideTimer = null;
+            }, 850);
+        };
+        scrollNode.addEventListener('scroll', showScrollbar, { passive: true });
+        scrollNode.addEventListener('wheel', showScrollbar, { passive: true });
+        scrollNode.addEventListener('touchmove', showScrollbar, { passive: true });
+        return function cleanupTransientMicPopupScrollbar() {
+            if (hideTimer) {
+                window.clearTimeout(hideTimer);
+                hideTimer = null;
+            }
+            if (frameId) {
+                window.cancelAnimationFrame(frameId);
+                frameId = null;
+            }
+            scrollNode.removeEventListener('scroll', showScrollbar);
+            scrollNode.removeEventListener('wheel', showScrollbar);
+            scrollNode.removeEventListener('touchmove', showScrollbar);
+            if (thumb.parentNode) thumb.parentNode.removeChild(thumb);
+        };
+    }
+
     /** 请求麦克风权限并缓存设备列表 */
     async function ensureMicrophonePermission() {
-        if (micPermissionGranted && cachedMicDevices) {
+        if (micPermissionGranted && cachedMicDevices && cachedMicDevices.length > 0) {
             return cachedMicDevices;
         }
         try {
@@ -1520,18 +2512,37 @@
         if (!isPopupAvailable()) return false;
 
         try {
-            var audioInputs = await ensureMicrophonePermission();
+            ensureMicPopupScrollbarStyle();
+            micPopup.classList.add('neko-mic-popup-surface');
+            micPopup.style.minWidth = '220px';
+            micPopup.style.width = '220px';
+            micPopup.style.maxWidth = '220px';
+            micPopup.style.boxSizing = 'border-box';
+            micPopup.style.overflowY = 'hidden';
+            var audioInputs = cachedMicDevices;
+            if (!audioInputs || audioInputs.length === 0 || !micPermissionGranted) {
+                audioInputs = await ensureMicrophonePermission();
+            }
             if (!isPopupAvailable()) return false;
+if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
+                micPopup.__nekoMicScrollbarCleanup();
+                micPopup.__nekoMicScrollbarCleanup = null;
+            }
             micPopup.innerHTML = '';
 
             var hasMicrophoneDevices = audioInputs.length > 0;
 
             // ===== 双栏布局 =====
             var leftColumn = document.createElement('div');
-            Object.assign(leftColumn.style, { flex: '1', minWidth: '180px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            leftColumn.className = 'neko-mic-popup-scroll';
+            Object.assign(leftColumn.style, { flex: '0 0 100%', width: '100%', minWidth: '0', minHeight: '0', maxWidth: '100%', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            micPopup.__nekoMicScrollbarCleanup = attachTransientMicPopupScrollbar(leftColumn, micPopup);
 
-            var rightColumn = document.createElement('div');
-            Object.assign(rightColumn.style, { flex: '1', minWidth: '160px', display: 'flex', flexDirection: 'column', overflowY: 'auto' });
+            if (micPopup.id) {
+                document.querySelectorAll('[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+            }
 
             // ===== 左栏 1. 扬声器音量 =====
             var speakerContainer = document.createElement('div');
@@ -1771,6 +2782,102 @@
             nrContainer.appendChild(nrHint);
             leftColumn.appendChild(nrContainer);
 
+            // ===== 独立 ASR 开关（下次语音 session 生效） =====
+            var asrContainer = document.createElement('div');
+            asrContainer.style.padding = '8px 12px';
+
+            var asrRow = document.createElement('div');
+            Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+
+            var asrLabel = document.createElement('span');
+            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
+            asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
+            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+
+            var asrToggle = document.createElement('label');
+            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
+            var asrInput = document.createElement('input');
+            asrInput.type = 'checkbox';
+            asrInput.checked = S.independentAsrEnabled === true;
+            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
+            var asrSlider = document.createElement('span');
+            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
+            var asrKnob = document.createElement('span');
+            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
+            asrSlider.appendChild(asrKnob);
+            asrToggle.appendChild(asrInput);
+            asrToggle.appendChild(asrSlider);
+
+            function renderAsrHint() {
+                if (!asrHint) return;
+                var hintKey = S.independentAsrActive
+                    ? 'microphone.independentAsrActive'
+                    : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
+                var hintParams = { providerKey: S.independentAsrProvider || 'unknown' };
+                asrHint.setAttribute('data-i18n', hintKey);
+                asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));
+                asrHint.textContent = window.t
+                    ? window.t(hintKey, hintParams)
+                    : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            }
+
+            asrInput.addEventListener('change', function () {
+                S.independentAsrEnabled = asrInput.checked;
+                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
+                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
+                // The confirmation text has to follow the switch it confirms.
+                renderAsrHint();
+                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                    if (typeof window.appSettings.syncSettingsToServer === 'function') {
+                        // Session start reads the SERVER-persisted value (asr_runtime.py
+                        // _start_independent_asr_if_enabled -> aload_global_conversation_settings),
+                        // so the fire-and-forget POST inside saveSettings() can race a
+                        // mic start and silently keep the previous route. Persist
+                        // locally first, then run the POST ourselves and publish it as
+                        // S.pendingSettingsSyncPromise; ensureWebSocketOpen()
+                        // (app-websocket.js) awaits it before any start_session send.
+                        // userInitiated: true marks settings hydrated so the
+                        // start_session handshake stamps this explicit choice
+                        // even while the settings GET is failing.
+                        // syncSettingsToServer serializes its POSTs internally
+                        // and snapshots settings at send time, so flipping the
+                        // toggle twice quickly cannot let the older request
+                        // finish last and persist the stale value; the newer
+                        // promise published below also resolves only after any
+                        // predecessor POST completed.
+                        window.appSettings.saveSettings({ skipServerSync: true });
+                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer({ userInitiated: true }))
+                            .catch(function () { /* syncSettingsToServer already logs failures */ })
+                            .then(function () {
+                                if (S.pendingSettingsSyncPromise === syncPromise) {
+                                    S.pendingSettingsSyncPromise = null;
+                                }
+                            });
+                        S.pendingSettingsSyncPromise = syncPromise;
+                    } else {
+                        window.appSettings.saveSettings();
+                    }
+                }
+            });
+
+            asrRow.appendChild(asrLabel);
+            asrRow.appendChild(asrToggle);
+            asrContainer.appendChild(asrRow);
+
+            var asrHint = document.createElement('div');
+            // Single renderer, called at build time AND from the toggle's change
+            // handler above (function declarations hoist, so it is reachable
+            // there). The hint used to be computed once here, so flipping the
+            // switch with the popup open left "Using Omni native speech
+            // recognition" on screen after enabling -- and the inverse stale
+            // text after disabling -- until the popup was rebuilt: the
+            // confirmation contradicted the choice the user had just made
+            // (Codex P2).
+            renderAsrHint();
+            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
+            asrContainer.appendChild(asrHint);
+            leftColumn.appendChild(asrContainer);
+
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });
             leftColumn.appendChild(sep1b);
@@ -1872,61 +2979,425 @@
             volumeContainer.appendChild(volumeHint);
             leftColumn.appendChild(volumeContainer);
 
-            // ===== 右栏：设备列表 =====
-            var deviceTitle = document.createElement('div');
-            Object.assign(deviceTitle.style, { padding: '8px 12px 6px', fontSize: '13px', fontWeight: '600', color: '#4f8cff', display: 'flex', alignItems: 'center', gap: '6px', borderBottom: '1px solid var(--neko-popup-separator)', marginBottom: '4px' });
-            var deviceTitleIcon = document.createElement('span');
-            deviceTitleIcon.textContent = '🎙️';
-            deviceTitleIcon.style.fontSize = '14px';
-            var deviceTitleText = document.createElement('span');
-            deviceTitleText.textContent = window.t ? window.t('microphone.deviceTitle') : '选择麦克风设备';
-            deviceTitleText.setAttribute('data-i18n', 'microphone.deviceTitle');
-            deviceTitle.appendChild(deviceTitleIcon);
-            deviceTitle.appendChild(deviceTitleText);
-            rightColumn.appendChild(deviceTitle);
+            var MIC_ACTION_HOVER_COLLAPSE_MS = 260;
+            var activeMicActionKey = null;
+            var micActionHoverCollapseTimer = null;
+            var micActionHoverOpenGeneration = 0;
 
-            // 默认麦克风选项
-            if (hasMicrophoneDevices) {
-                var defaultOption = document.createElement('button');
-                defaultOption.className = 'mic-option';
-                defaultOption.textContent = window.t ? window.t('microphone.defaultDevice') : '系统默认麦克风';
-                if (S.selectedMicrophoneId === null) defaultOption.classList.add('selected');
-                Object.assign(defaultOption.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === null ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === null ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === null ? '500' : '400' });
-                defaultOption.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'var(--neko-popup-hover)'; });
-                defaultOption.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== null) defaultOption.style.background = 'transparent'; });
-                defaultOption.addEventListener('click', async function () { await selectMicrophone(null); updateMicListSelection(); });
-                rightColumn.appendChild(defaultOption);
-
-                var sep3 = document.createElement('div');
-                Object.assign(sep3.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
-                rightColumn.appendChild(sep3);
-
-                // 各个设备选项
-                audioInputs.forEach(function (device, idx) {
-                    var option = document.createElement('button');
-                    option.className = 'mic-option';
-                    option.dataset.deviceId = device.deviceId;
-                    option.textContent = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : '麦克风 ' + (idx + 1));
-                    if (S.selectedMicrophoneId === device.deviceId) option.classList.add('selected');
-                    Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: S.selectedMicrophoneId === device.deviceId ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: S.selectedMicrophoneId === device.deviceId ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: S.selectedMicrophoneId === device.deviceId ? '500' : '400' });
-                    option.addEventListener('mouseenter', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'var(--neko-popup-hover)'; });
-                    option.addEventListener('mouseleave', function () { if (S.selectedMicrophoneId !== device.deviceId) option.style.background = 'transparent'; });
-                    option.addEventListener('click', async function () { await selectMicrophone(device.deviceId); updateMicListSelection(); });
-                    rightColumn.appendChild(option);
-                });
-            } else {
-                var noMicItem = document.createElement('div');
-                noMicItem.textContent = window.t ? window.t('microphone.noDevices') : '没有检测到麦克风设备';
-                Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
-                rightColumn.appendChild(noMicItem);
+            function getOwnedMicSubwindow() {
+                var ownerSelector = micPopup.id
+                    ? '[data-neko-sidepanel-owner="' + micPopup.id + '"].neko-mic-subwindow'
+                    : '.neko-mic-subwindow';
+                return document.querySelector(ownerSelector);
             }
+
+            function clearMicActionHoverCollapseTimer() {
+                if (micActionHoverCollapseTimer) {
+                    clearTimeout(micActionHoverCollapseTimer);
+                    micActionHoverCollapseTimer = null;
+                }
+            }
+
+            function isMicActionHoverSurfaceActive() {
+                var hoveredAction = leftColumn.querySelector('[data-neko-mic-main-action]:hover');
+                if (hoveredAction) return true;
+                var panel = getOwnedMicSubwindow();
+                return !!(panel && panel.isConnected && panel.matches(':hover'));
+            }
+
+            function closeMicSubwindow() {
+                clearMicActionHoverCollapseTimer();
+                activeMicActionKey = null;
+                var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
+                document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+            }
+
+            function scheduleMicActionHoverCollapse() {
+                clearMicActionHoverCollapseTimer();
+                micActionHoverCollapseTimer = setTimeout(function () {
+                    micActionHoverCollapseTimer = null;
+                    if (isMicActionHoverSurfaceActive()) return;
+                    closeMicSubwindow();
+                    leftColumn.querySelectorAll('[data-neko-mic-main-action]').forEach(function (btn) {
+                        btn.style.background = 'transparent';
+                    });
+                }, MIC_ACTION_HOVER_COLLAPSE_MS);
+            }
+
+            function wireMicSubwindowHoverBridge(panel) {
+                if (!panel || panel._nekoMicHoverBridgeWired) return;
+                panel._nekoMicHoverBridgeWired = true;
+                panel.addEventListener('mouseenter', function () {
+                    clearMicActionHoverCollapseTimer();
+                });
+                panel.addEventListener('mouseleave', function () {
+                    scheduleMicActionHoverCollapse();
+                });
+            }
+
+            function openMicActionPanel(actionKey, openFn) {
+                clearMicActionHoverCollapseTimer();
+                var existing = getOwnedMicSubwindow();
+                if (activeMicActionKey === actionKey && existing && existing.isConnected) {
+                    wireMicSubwindowHoverBridge(existing);
+                    return Promise.resolve(existing);
+                }
+                activeMicActionKey = actionKey;
+                var generation = ++micActionHoverOpenGeneration;
+                return Promise.resolve(openFn()).then(function () {
+                    if (generation !== micActionHoverOpenGeneration || activeMicActionKey !== actionKey) return null;
+                    var panel = getOwnedMicSubwindow();
+                    if (panel) {
+                        panel.setAttribute('data-neko-mic-action-key', actionKey);
+                        wireMicSubwindowHoverBridge(panel);
+                    }
+                    return panel;
+                });
+            }
+
+            function positionMicSubwindow(panel) {
+                if (!panel || !micPopup || !micPopup.isConnected) return;
+                var rect = micPopup.getBoundingClientRect();
+                var panelWidth = panel.offsetWidth || 320;
+                var panelHeight = panel.offsetHeight || 360;
+                var gap = 8;
+                var left = rect.right + gap;
+                var opensLeft = micPopup.dataset && micPopup.dataset.opensLeft === 'true';
+                if (opensLeft || left + panelWidth > window.innerWidth - gap) {
+                    left = rect.left - panelWidth - gap;
+                }
+                left = Math.max(gap, Math.min(left, window.innerWidth - panelWidth - gap));
+                var top = Math.max(gap, Math.min(rect.top, window.innerHeight - panelHeight - gap));
+                panel.style.left = left + 'px';
+                panel.style.top = top + 'px';
+            }
+
+            function createMicSubwindow(title, iconText, width) {
+                // Keep activeMicActionKey; only tear down the previous DOM panel.
+                clearMicActionHoverCollapseTimer();
+                var ownerSelector = micPopup.id ? '[data-neko-sidepanel-owner="' + micPopup.id + '"]' : '.neko-mic-subwindow';
+                document.querySelectorAll(ownerSelector + '.neko-mic-subwindow').forEach(function (panel) {
+                    panel.remove();
+                });
+                var panel = document.createElement('div');
+                panel.className = 'neko-mic-subwindow';
+                if (micPopup.id) panel.setAttribute('data-neko-sidepanel-owner', micPopup.id);
+                panel.setAttribute('data-neko-sidepanel', '');
+                Object.assign(panel.style, {
+                    position: 'fixed',
+                    zIndex: '100003',
+                    width: width || '320px',
+                    maxHeight: 'min(420px, calc(100vh - 16px))',
+                    overflowY: 'hidden',
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    padding: '8px',
+                    boxSizing: 'border-box',
+                    background: 'var(--neko-popup-bg, rgba(255, 255, 255, 0.82))',
+                    backdropFilter: 'saturate(180%) blur(20px)',
+                    border: 'var(--neko-popup-border, 1px solid rgba(255, 255, 255, 0.18))',
+                    borderRadius: '8px',
+                    boxShadow: 'var(--neko-popup-shadow, 0 8px 24px rgba(0,0,0,0.16))',
+                    pointerEvents: 'auto',
+                    cursor: 'default',
+                    color: 'var(--neko-popup-text)'
+                });
+
+                var stopSubwindowEvent = function (e) {
+                    if (document.body.classList.contains('neko-model-dragging')) return;
+                    e.stopPropagation();
+                };
+                ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'mousemove', 'mouseup', 'touchstart', 'touchmove', 'touchend'].forEach(function (evt) {
+                    panel.addEventListener(evt, stopSubwindowEvent, true);
+                });
+                panel.addEventListener('click', stopSubwindowEvent);
+
+                var header = document.createElement('div');
+                Object.assign(header.style, {
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    gap: '8px',
+                    padding: '4px 6px 8px',
+                    borderBottom: '1px solid var(--neko-popup-separator)',
+                    marginBottom: '4px',
+                    flexShrink: '0'
+                });
+
+                var titleWrap = document.createElement('div');
+                Object.assign(titleWrap.style, { display: 'flex', alignItems: 'center', gap: '6px', minWidth: '0', color: '#4f8cff', fontSize: '13px', fontWeight: '600' });
+                var icon = document.createElement('span');
+                icon.textContent = iconText;
+                icon.style.fontSize = '14px';
+                var titleEl = document.createElement('span');
+                titleEl.textContent = title;
+                Object.assign(titleEl.style, { overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                titleWrap.appendChild(icon);
+                titleWrap.appendChild(titleEl);
+
+                var closeBtn = document.createElement('button');
+                closeBtn.type = 'button';
+                closeBtn.textContent = 'x';
+                closeBtn.setAttribute('aria-label', 'Close');
+                Object.assign(closeBtn.style, {
+                    width: '24px',
+                    height: '24px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--neko-popup-text-sub)',
+                    cursor: 'pointer',
+                    flexShrink: '0'
+                });
+                closeBtn.addEventListener('mouseenter', function () { closeBtn.style.background = 'var(--neko-popup-hover)'; });
+                closeBtn.addEventListener('mouseleave', function () { closeBtn.style.background = 'transparent'; });
+                closeBtn.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    closeMicSubwindow();
+                });
+
+                header.appendChild(titleWrap);
+                header.appendChild(closeBtn);
+                panel.appendChild(header);
+
+                var body = document.createElement('div');
+                body.className = 'neko-mic-popup-scroll neko-mic-subwindow-body';
+                Object.assign(body.style, {
+                    display: 'flex',
+                    flex: '1 1 auto',
+                    flexDirection: 'column',
+                    gap: '4px',
+                    minHeight: '0',
+                    overflowY: 'auto'
+                });
+                panel.appendChild(body);
+                panel._nekoMicSubwindowBody = body;
+                attachTransientMicPopupScrollbar(body, panel);
+
+                document.body.appendChild(panel);
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                return panel;
+            }
+
+            function createMainActionButton(iconText, label, subLabel, actionKey, onClick, hoverGuard) {
+                var button = document.createElement('button');
+                button.type = 'button';
+                button.dataset.nekoMicMainAction = actionKey;
+                Object.assign(button.style, {
+                    width: '100%',
+                    minWidth: '0',
+                    maxWidth: '100%',
+                    boxSizing: 'border-box',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '8px',
+                    padding: '9px 10px',
+                    border: 'none',
+                    borderRadius: '6px',
+                    background: 'transparent',
+                    color: 'var(--neko-popup-text)',
+                    cursor: 'pointer',
+                    textAlign: 'left',
+                    transition: 'background 0.2s ease'
+                });
+                var icon = document.createElement('span');
+                icon.textContent = iconText;
+                icon.style.fontSize = '15px';
+                var textWrap = document.createElement('span');
+                Object.assign(textWrap.style, { display: 'flex', flexDirection: 'column', minWidth: '0', width: '0', maxWidth: '100%', flex: '1 1 0%', overflow: 'hidden' });
+                var labelEl = document.createElement('span');
+                labelEl.textContent = label;
+                Object.assign(labelEl.style, { display: 'block', maxWidth: '100%', fontSize: '13px', fontWeight: '600', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                var subEl = document.createElement('span');
+                subEl.className = 'neko-mic-action-sub-label';
+                subEl.textContent = subLabel || '';
+                Object.assign(subEl.style, { display: 'block', maxWidth: '100%', fontSize: '11px', color: 'var(--neko-popup-text-sub)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' });
+                // Match settings menu chevron (Chat Settings / Animation / Advanced).
+                var arrow = document.createElement('span');
+                arrow.textContent = '\u203A';
+                Object.assign(arrow.style, {
+                    fontSize: '16px',
+                    color: 'var(--neko-popup-text-sub, #999)',
+                    lineHeight: '1',
+                    flexShrink: '0'
+                });
+                textWrap.appendChild(labelEl);
+                if (subLabel) textWrap.appendChild(subEl);
+                button.appendChild(icon);
+                button.appendChild(textWrap);
+                button.appendChild(arrow);
+
+                function openActionPanel() {
+                    // 悬停守卫：指针在内嵌开关（如屏幕共享开关）上时不展开子面板，避免干扰点击
+                    if (typeof hoverGuard === 'function' && hoverGuard()) {
+                        return Promise.resolve(null);
+                    }
+                    button.style.background = 'var(--neko-popup-hover)';
+                    return openMicActionPanel(actionKey, onClick).catch(function (error) {
+                        console.error('[麦克风弹窗] 子窗口打开失败:', error);
+                    });
+                }
+
+                // Hover-to-expand like settings side panels.
+                button.addEventListener('mouseenter', function () {
+                    openActionPanel();
+                });
+                button.addEventListener('mouseleave', function () {
+                    button.style.background = 'transparent';
+                    scheduleMicActionHoverCollapse();
+                });
+                button.addEventListener('click', function (e) {
+                    e.stopPropagation();
+                    openActionPanel();
+                });
+                return button;
+            }
+
+            function createMicDeviceOption(label, deviceId) {
+                var option = document.createElement('button');
+                option.type = 'button';
+                option.className = 'mic-option';
+                if (deviceId !== null) option.dataset.deviceId = deviceId;
+                option.textContent = label;
+                var isSelected = (deviceId === null && S.selectedMicrophoneId === null) || deviceId === S.selectedMicrophoneId;
+                if (isSelected) option.classList.add('selected');
+                Object.assign(option.style, { padding: '8px 12px', cursor: 'pointer', border: 'none', background: isSelected ? 'var(--neko-popup-selected-bg)' : 'transparent', borderRadius: '6px', transition: 'background 0.2s ease', fontSize: '13px', width: '100%', textAlign: 'left', color: isSelected ? '#4f8cff' : 'var(--neko-popup-text)', fontWeight: isSelected ? '500' : '400' });
+                option.addEventListener('mouseenter', function () { if (!option.classList.contains('selected')) option.style.background = 'var(--neko-popup-hover)'; });
+                option.addEventListener('mouseleave', function () { if (!option.classList.contains('selected')) option.style.background = 'transparent'; });
+                option.addEventListener('click', async function (e) {
+                    e.stopPropagation();
+                    await selectMicrophone(deviceId);
+                    updateMicListSelection();
+                    document.querySelectorAll('[data-neko-mic-action="device"] .neko-mic-action-sub-label').forEach(function (labelEl) {
+                        labelEl.textContent = label;
+                    });
+                });
+                return option;
+            }
+
+            async function openMicDeviceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('microphone.deviceTitle') : 'Select Microphone',
+                    '\uD83C\uDFA4',
+                    '280px'
+                );
+                panel.classList.add('neko-mic-device-subwindow');
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var listBody = document.createElement('div');
+                Object.assign(listBody.style, { display: 'flex', flexDirection: 'column', gap: '4px' });
+                panelBody.appendChild(listBody);
+
+                var loadingItem = document.createElement('div');
+                loadingItem.textContent = window.t ? window.t('app.screenSource.loading') : 'Loading...';
+                Object.assign(loadingItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                listBody.appendChild(loadingItem);
+                positionMicSubwindow(panel);
+
+                var devices = cachedMicDevices;
+                if (!devices || devices.length === 0 || !micPermissionGranted) {
+                    devices = await ensureMicrophonePermission();
+                }
+                listBody.innerHTML = '';
+
+                var defaultLabel = window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone';
+                listBody.appendChild(createMicDeviceOption(defaultLabel, null));
+
+                if (!devices || devices.length === 0) {
+                    var noMicItem = document.createElement('div');
+                    noMicItem.textContent = window.t ? window.t('microphone.noDevices') : 'No microphone devices detected';
+                    Object.assign(noMicItem.style, { padding: '8px 12px', color: 'var(--neko-popup-text-sub)', fontSize: '13px' });
+                    listBody.appendChild(noMicItem);
+                    requestAnimationFrame(function () { positionMicSubwindow(panel); });
+                    return;
+                }
+
+                var sep = document.createElement('div');
+                Object.assign(sep.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '5px 0' });
+                listBody.appendChild(sep);
+
+                devices.forEach(function (device, idx) {
+                    var label = device.label || (window.t ? window.t('microphone.deviceLabel', { index: idx + 1 }) : 'Microphone ' + (idx + 1));
+                    listBody.appendChild(createMicDeviceOption(label, device.deviceId));
+                });
+                requestAnimationFrame(function () { positionMicSubwindow(panel); });
+            }
+
+            async function openScreenSourceSubwindow() {
+                var panel = createMicSubwindow(
+                    window.t ? window.t('buttons.screenShare') : 'Screen Share',
+                    '\uD83D\uDDA5\uFE0F',
+                    '360px'
+                );
+                var panelBody = panel._nekoMicSubwindowBody || panel;
+                var screenSourceList = document.createElement('div');
+                screenSourceList.id = micPopup.id ? micPopup.id + '-screen-sources' : 'neko-mic-popup-screen-sources';
+                screenSourceList.className = 'neko-mic-popup-screen-sources';
+                Object.assign(screenSourceList.style, {
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: '2px',
+                    minHeight: '80px'
+                });
+                panelBody.appendChild(screenSourceList);
+                // 开始/停止共享开关已移至设置面板「屏幕共享」与「选择麦克风」之间
+                // （createScreenShareToggleButton），子窗口仅保留屏幕/窗口源列表。
+                positionMicSubwindow(panel);
+                if (typeof window.renderFloatingScreenSourceList === 'function') {
+                    await window.renderFloatingScreenSourceList(screenSourceList, { requireVisible: false });
+                    positionMicSubwindow(panel);
+                }
+            }
+
+            var deviceButtonLabel = window.t ? window.t('microphone.deviceTitle') : 'Select Microphone';
+            var currentMicLabel = S.selectedMicrophoneId === null
+                ? (window.t ? window.t('microphone.defaultDevice') : 'System Default Microphone')
+                : (audioInputs.find(function (device) { return device.deviceId === S.selectedMicrophoneId; }) || {}).label || deviceButtonLabel;
+            var screenButtonLabel = window.t ? window.t('buttons.screenShare') : 'Screen Share';
+
+            var firstContent = leftColumn.firstChild;
+            // 悬停守卫：指针落在行内开关上时不展开屏幕源面板，避免面板弹出干扰点击开关
+            var shareToggleButtonHolder = { current: null };
+            function screenRowHoverGuard() {
+                var toggle = shareToggleButtonHolder.current;
+                return !!(toggle && toggle.matches(':hover'));
+            }
+            var screenActionButton = createMainActionButton(
+                '\uD83D\uDDA5\uFE0F',
+                screenButtonLabel,
+                window.t ? window.t('app.screenSource.screens') : 'Screens',
+                'screen',
+                openScreenSourceSubwindow,
+                screenRowHoverGuard
+            );
+            leftColumn.insertBefore(screenActionButton, firstContent);
+            // 合并为一行：行右侧嵌入迷你胶囊开关（替换原来的 chevron 箭头），
+            // 点击行其余位置仍展开屏幕源选择，点击开关本身开始/停止共享
+            var shareToggleButton = createScreenShareToggleButton({ mini: true });
+            shareToggleButtonHolder.current = shareToggleButton;
+            screenActionButton.replaceChild(shareToggleButton, screenActionButton.lastChild);
+            // 屏幕共享行：标题允许换行显示（去掉省略号截断），
+            // 保证葡语 "Compartilhamento de tela"、俄语 "Демонстрация экрана" 等长文案也能完整显示
+            var screenTextWrap = screenActionButton.children[1];
+            if (screenTextWrap && screenTextWrap.firstChild) {
+                screenTextWrap.firstChild.style.whiteSpace = 'normal';
+                screenTextWrap.firstChild.style.lineHeight = '1.2';
+                screenTextWrap.firstChild.style.overflow = 'visible';
+            }
+            var micActionButton = createMainActionButton(
+                '\uD83C\uDFA4',
+                deviceButtonLabel,
+                currentMicLabel,
+                'device',
+                openMicDeviceSubwindow
+            );
+            micActionButton.dataset.nekoMicAction = 'device';
+            leftColumn.insertBefore(micActionButton, firstContent);
 
             // 组装
             micPopup.appendChild(leftColumn);
-            var verticalDivider = document.createElement('div');
-            Object.assign(verticalDivider.style, { width: '1px', backgroundColor: 'var(--neko-popup-separator)', alignSelf: 'stretch', margin: '8px 0' });
-            micPopup.appendChild(verticalDivider);
-            micPopup.appendChild(rightColumn);
 
             startMicVolumeVisualization();
             return true;
@@ -1944,9 +3415,7 @@
 
     /** 轻量级更新：仅更新选中状态 */
     function updateMicListSelection() {
-        var micPopup = document.getElementById('live2d-popup-mic') || document.getElementById('vrm-popup-mic') || document.getElementById('mmd-popup-mic');
-        if (!micPopup) return;
-        var options = micPopup.querySelectorAll('.mic-option');
+        var options = document.querySelectorAll('#live2d-popup-mic .mic-option, #vrm-popup-mic .mic-option, #mmd-popup-mic .mic-option, .neko-mic-device-subwindow .mic-option');
         options.forEach(function (option) {
             var deviceId = option.dataset.deviceId;
             var isSelected = (deviceId === undefined && S.selectedMicrophoneId === null) ||

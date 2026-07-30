@@ -58,8 +58,12 @@ Object.assign(AvatarButtonMixin.methods, {
                 }
             });
 
-            returnBtn.addEventListener('mouseleave', (event) => {
-                if (_isNekoIdleThoughtBubbleEventHit(returnBtn, event)) return;
+            returnBtn.addEventListener('mouseleave', () => {
+                if (!returnArt.__nekoIdleHoverSrc) return;
+                // The active thought bubble is a child of the return button. When its
+                // pop animation disables pointer events, Chromium emits the button's
+                // real mouseleave at the bubble coordinates. Reusing the bubble hit
+                // guard here would suppress the only hover-completion signal.
                 const tier = returnBtn.getAttribute('data-neko-idle-tier');
                 if (tier && tier !== 'none') {
                     _finishNekoIdleHoverArtAfterPlayback(returnArt, tier);
@@ -89,6 +93,7 @@ Object.assign(AvatarButtonMixin.methods, {
                 e.stopPropagation();
                 _clearNekoIdleCat1QuestionMark(returnBtn);
                 _cancelNekoIdleCat1EatAction(returnBtn, { restoreArt: false });
+                _cancelNekoIdleCat1StretchAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1PlayAction(returnBtn, { restoreArt: false });
                 _finishNekoIdleReturnDragAction(returnBtn, { restoreArt: false });
                 _cancelNekoIdleCat1Journey(returnBtn);

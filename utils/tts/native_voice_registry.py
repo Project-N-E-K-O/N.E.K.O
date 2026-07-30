@@ -188,8 +188,9 @@ def make_native_tts_resolver(
         - ``'tts_default_api_key'`` for providers using the TTS slot the
           user configured separately (StepFun, free-mode lanlan TTS).
     * `worker_kwargs` (optional) — bound via `partial` for variants that
-      share a worker but flip a mode flag (e.g. `free_mode=True` for the
-      free-tier StepFun route).
+      intentionally share one worker with small routing differences. Providers
+      with distinct ownership, such as StepFun and Lanlan free, register
+      dedicated worker callables instead.
 
     Future providers whose api key sourcing falls outside these two
     branches can register a hand-written resolver directly via

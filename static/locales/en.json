@@ -4,6 +4,8 @@
         "minimize": "Minimize",
         "maximize": "Maximize",
         "restore": "Restore",
+        "pinWindow": "Pin window",
+        "unpinWindow": "Unpin window",
         "expand": "Expand",
         "close": "Close",
         "save": "Save",
@@ -74,15 +76,6 @@
             "accept": "Yes, turn off screen sharing",
             "decline": "No, keep it on"
         }
-    },
-    "tutorialPrompt": {
-        "title": "Want to start the home tutorial?",
-        "message": "I can quickly show you the main entry points on the home screen so you can get started with N.E.K.O right away.",
-        "note": "You can skip it at any time, or reopen it later from Memory Browser.",
-        "startNow": "Start tutorial",
-        "later": "Maybe later",
-        "never": "Don't remind me",
-        "startFailed": "The tutorial couldn't be started right now. Please try again later."
     },
     "characterProfile": {
         "gender": "Gender",
@@ -705,6 +698,7 @@
         "screenshotAriaLabel": "Take screenshot",
         "takePhoto": "Take Photo",
         "takePhotoAriaLabel": "Take photo",
+        "newUserIcebreakerOptionsAriaLabel": "New user icebreaker options",
         "screenshotsTitle": "Pending Screenshots",
         "clearAll": "Clear All",
         "screenshotAlt": "Screenshot {{index}}",
@@ -809,6 +803,14 @@
         "toolLollipop": "Lollipop",
         "toolFist": "Cat paw",
         "toolHammer": "Hammer",
+        "toolRps": "Rock Paper Scissors",
+        "avatarToolRpsGestureRock": "Rock",
+        "avatarToolRpsGestureScissors": "Scissors",
+        "avatarToolRpsGesturePaper": "Paper",
+        "avatarToolRpsResultUserWin": "You win",
+        "avatarToolRpsResultAvatarWin": "{{name}} wins",
+        "avatarToolRpsResultDraw": "Draw",
+        "avatarToolRpsRoundAnnouncement": "You played {{userGesture}}. {{name}} played {{avatarGesture}}. {{result}}.",
         "avatarToolsButtonAriaLabel": "Avatar tools",
         "clearAvatarToolAriaLabel": "Clear tool",
         "avatarToolQuickbarAriaLabel": "Avatar quick tools",
@@ -927,7 +929,14 @@
         "volumeWaiting": "Waiting",
         "volumeHintWaiting": "Mic is listening, go ahead and speak",
         "noiseReduction": "Noise Reduction",
-        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice",
+        "independentAsr": "Independent Speech Recognition",
+        "independentAsrActive": "Independent ASR active: {{provider}}",
+        "independentAsrFallback": "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
+        "audioPreprocessingFailed": "Microphone audio processing failed. Voice input has stopped for this session. Please start a new voice session.",
+        "independentAsrProviderUnavailable": "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
+        "independentAsrNextSession": "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
+        "independentAsrNative": "Using Omni native speech recognition"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -1026,7 +1035,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Free Version",
+            "dummy": "Test provider",
+            "unknown": "Unknown provider"
         },
         "coreProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
@@ -1160,20 +1175,20 @@
             "title": "Alibaba US API Notice",
             "message": "You are currently using Alibaba's US API, which does not support TTS or realtime voice. We recommend switching to Alibaba's Singapore API."
         },
-        "conversationModelConfig": "Text Dialogue Model Configuration",
-        "summaryModelConfig": "Summary Model Configuration",
-        "gameModelsConfig": "Mini-game Model Configuration",
+        "conversationModelConfig": "Text Chat Model",
+        "summaryModelConfig": "Summary Model",
+        "gameModelsConfig": "Mini-game Model",
         "gameMainModelConfig": "Mini-game Main Model Configuration",
         "gameSummaryModelConfig": "Mini-game Summary Model Configuration",
-        "correctionModelConfig": "Correction Model Configuration",
-        "emotionModelConfig": "Emotion Model Configuration",
-        "visionModelConfig": "Vision Model Configuration",
-        "realtimeModelConfig": "Realtime API (Local Mode)",
-        "ttsModelConfig": "TTS Model Configuration (Duplex Streaming)",
+        "correctionModelConfig": "Correction Model",
+        "emotionModelConfig": "Emotion Model",
+        "visionModelConfig": "Vision Chat Model",
+        "realtimeModelConfig": "Realtime Multimodal Model (Local Mode)",
+        "ttsModelConfig": "TTS Model",
         "apiUrl": "API URL",
         "apiKey": "API Key",
         "modelId": "Model ID",
-        "agentApiConfigTitle": "Agent API Config (Vision-capable required)",
+        "agentApiConfigTitle": "Agent API (Vision-capable required)",
         "providerPlaceholder": "e.g., openai, azure, local",
         "apiUrlPlaceholder": "e.g., https://api.openai.com/v1",
         "modelIdPlaceholder": "e.g., gpt-5.1-chat-latest, qwen-flash",
@@ -1187,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "ttsModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI-compatible: HTTP(S) POST /v1/audio/speech with complete text input and a streamed audio response.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream with bidirectional text and audio streaming.",
         "ttsVoiceIdHint": "(Optional, fallback voice when character has none)",
         "ttsVoiceIdPlaceholder": "e.g., Chinese Female, alloy",
         "agentModelUrlPlaceholder": "Leave blank to follow Assist API vision model URL",
@@ -1232,12 +1249,6 @@
             "localModeOnly": "• Realtime API is only for Local mode (local voice conversation)",
             "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
             "autoSwitchLocal": "• After configuration, the core API type will automatically switch to \"local\""
-        },
-        "ttsWarning": {
-            "title": "Important Notice:",
-            "duplexStreaming": "• TTS API must support duplex streaming (full-duplex real-time speech synthesis)",
-            "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
-            "cosyVoiceOnly": "• Currently only supports Alibaba Cloud CosyVoice compatible protocol format"
         },
         "gptsovitsConfig": "GPT-SoVITS Configuration",
         "gptsovitsDescription": "GPT-SoVITS Note:",
@@ -1664,6 +1675,7 @@
         },
         "registeredVoices": "Registered Voices",
         "preview": "Preview",
+        "previewing": "Previewing",
         "previewFailed": "Preview failed: {{error}}",
         "previewTimeout": "Preview generation timed out. Please try again later.",
         "playFailed": "Play failed: {{error}}",
@@ -1756,12 +1768,38 @@
         }
     },
     "memory": {
-        "title": "Memory Browser",
         "recent": "Recent Memories",
+        "title": "Memory Browser",
         "summary": "Summary",
         "close": "Close",
-        "catgirlMemory": "N.E.K.O. Memory Library",
+        "catgirlMemory": "Characters",
+        "compactLibraryLabel": "Character List",
         "autoReview": "Auto Memory Review",
+        "globalActionsAria": "Memory actions",
+        "openTutorialManager": "Guide",
+        "exportLogs": "Export logs",
+        "exportLogsAria": "Export logs",
+        "exportLogsDesktopOnly": "Local logs can only be exported from the desktop app.",
+        "exportLogsDesktopOnlyAria": "Export logs (desktop app only)",
+        "exportLogsReview": "Logs are automatically redacted. Review them before sharing.",
+        "exportLogsPending": "Preparing logs…",
+        "exportLogsPendingShort": "Exporting…",
+        "exportLogsSuccess": "Logs exported",
+        "exportLogsSuccessShort": "Exported",
+        "exportLogsErrorShort": "Failed",
+        "exportLogsEmpty": "No logs were found. A diagnostics note was exported.",
+        "exportLogsPackageError": "Could not package logs. Try again.",
+        "exportLogsWriteError": "Could not save to that location. Choose another location and try again.",
+        "memorySettings": "Settings",
+        "openExternalImport": "Import memory",
+        "closePanel": "Close panel",
+        "settingsDialogTitle": "Memory settings",
+        "tutorialDialogTitle": "Tutorial guide",
+        "settingsScopeAllCharacters": "These settings apply to all characters.",
+        "autoReviewTooltipLabel": "About automatic memory review",
+        "strongMemoryTooltipLabel": "About powerful memory",
+        "externalImportTooltipLabel": "About importing external memory",
+        "roleSourceTooltip": "Source: {{source}}",
         "loading": "Loading...",
         "externalImportTitle": "Import External Memory",
         "externalImportNote": "Import OpenClaw or Hermes USER.md, SOUL.md, MEMORY.md, daily notes, or a workspace ZIP into the selected character.",
@@ -1790,23 +1828,32 @@
         "save": "Save",
         "clear": "Clear",
         "tip1": "Recently ended conversations will take a moment to load. You can click the neko name again to refresh.",
+        "tip2": "Shows recent memories only; long-term memories are integrated into the neko core and cannot be browsed.",
         "noFiles": "No files",
         "loadFailed": "Load failed",
         "noChatContent": "No chat content",
         "previousMemo": "Previous conversation memo: ",
         "olderSection": "Earlier",
-        "memoNone": "None.",
-        "delete": "Delete",
         "me": "Me:",
+        "memoNone": "None.",
+        "deleteEntryAria": "Delete memory {{position}} from {{speaker}}",
         "pleaseSelectFile": "Please select a file first",
-        "saveSuccess": "Save successful",
         "saveFailed": "Save failed: {{error}}",
         "saveFailedGeneral": "Save failed",
-        "clearedChatKeptMemo": "Chat messages cleared; memo kept (not saved)",
+        "saveSuccess": "Save successful",
+        "clearedChatKeptMemo": "Chat messages cleared; memo kept",
+        "unsavedChanges": "Unsaved changes",
+        "switchCharacterConfirmTitle": "Switch characters?",
+        "closeUnsavedConfirmTitle": "Close the memory editor?",
+        "switchCharacterUnsaved": "{{name}} has unsaved changes",
+        "cancelSwitch": "Cancel",
+        "discardAndSwitch": "Discard changes",
+        "saveAndSwitch": "Save and switch",
+        "saveAndClose": "Save and close",
         "enabled": "Enabled",
         "disabled": "Disabled",
         "autoReviewNote": "When enabled, the system will automatically organize and optimize memory content to improve conversation quality",
-        "strongMemory": "Powerful Memory",
+        "strongMemory": "Powerful Memory Mode",
         "strongMemoryNote": "When enabled, deep memory consolidation runs (verbal feedback, automatic rebuttal detection, multi-channel evidence accumulation). Disabling saves about 40% of model calls.",
         "saveFailedStatus": "Save failed",
         "tutorialReset": "Tutorial Guide",
@@ -2246,6 +2293,10 @@
         "cardMakerPopupBlocked": "The card maker page could not open automatically. Please allow popups and retry, or click the card area to open it manually."
     },
     "app": {
+        "socialOpenFailed": "Failed to open social window: {{error}}",
+        "socialUnavailable": "Social service unavailable",
+        "socialDisabled": "Social service is disabled",
+        "socialOAuthPrompt": "Complete unified account login in your browser",
         "welcomeBack": "{{name}} is back!",
         "title": "Project N.E.K.O.",
         "catgirlResting": "{{name}} is resting...",
@@ -2333,7 +2384,7 @@
             "never": "Do not remind me"
         },
         "screenSource": {
-            "notAvailable": "Screen source selection only available in desktop version",
+            "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
@@ -2341,7 +2392,8 @@
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "selected": "Selected {{source}}",
-            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
+            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
+            "captureFailed": "Screen capture stopped. Check system permissions or select the source again"
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",
@@ -2353,6 +2405,7 @@
         "thoughtBubblePop": "Pop thought bubble",
         "voiceControl": "Voice Control",
         "screenShare": "Screen Share",
+        "social": "Neko Community",
         "agentTools": "NekoClaw",
         "settings": "Settings",
         "leave": "Leave",
@@ -2643,9 +2696,11 @@
             "visionInterval": "Perception Interval"
         },
         "widgetMode": {
-            "enabledNotice": "Edge Dock Mode Beta is on.",
-            "disabledNotice": "Edge Dock Mode Beta is off. Live2D uses normal edge snapping.",
-            "toggleFailed": "Failed to switch Edge Dock Mode Beta. Please try again later."
+            "enabledNotice": "Edge Peek is on.",
+            "disabledNotice": "Edge Peek is off. Live2D is visible and draggable again.",
+            "stealthEnabledNotice": "Stealth Mode is on.",
+            "stealthDisabledNotice": "Stealth Mode is off. Yui will remain peeking from the edge.",
+            "toggleFailed": "Failed to switch Edge Peek. Please try again later."
         },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
@@ -2653,13 +2708,11 @@
             "avatarReactionBubble": "Expression Bubble",
             "focusCognition": "Focus Mode",
             "focusCognitionTooltip": "When on, she focuses and thinks more deeply when you open up or ask something complex; off disables Focus entirely.",
-            "widgetMode": "Edge Dock Mode Beta",
-            "widgetModeTooltip": "Manually enable Edge Dock Mode to let Live2D peek from six screen-edge anchors.",
             "slopFilter": "Natural Expression",
             "slopFilterTooltip": "Reduces repetitive, formulaic wording in past replies so she expresses herself more naturally.",
             "autoCat": "Auto Cat Mode",
-            "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudio": "Cat Audio",
+            "autoCatTooltip": "Turn into a kitten automatically after a while of inactivity",
             "catAudioTooltip": "Play cat sound effects while in kitten mode",
             "proactiveChat": "Proactive Chat",
             "proactiveVision": "Privacy Mode",
@@ -3385,7 +3438,7 @@
                 "desc": "Check to enable custom API configuration. Then configure independent APIs for different modules like summarization, correction, emotion analysis, etc."
             },
             "step9": {
-                "title": "📝 Summary Model Configuration",
+                "title": "📝 Summary Model",
                 "desc": "Summary model generates conversation summaries and manages memory. Configure independent API service for summary tasks."
             }
         },
@@ -3423,20 +3476,16 @@
         },
         "memory_browser": {
             "step1": {
-                "title": "💡 Usage Tips",
-                "desc": "Recent conversation content takes a moment to load. Click character name to refresh if you don't see latest chat."
+                "title": "🐱 Character memory library",
+                "desc": "Choose a character to view her saved memories."
             },
             "step2": {
-                "title": "🐱 Character Memory Library",
-                "desc": "Lists all Neko character memory libraries. Click a character name to view and edit her conversation history."
+                "title": "📝 Browse and review memories",
+                "desc": "Browse and review recent memories and summaries here to help reduce repetition and cognitive errors."
             },
             "step3": {
-                "title": "🤖 Auto Memory Organization",
-                "desc": "When enabled, system automatically organizes and optimizes memory content for better conversation quality. Recommended to keep enabled."
-            },
-            "step4": {
-                "title": "📝 Chat History Editing",
-                "desc": "Shows all conversation records for selected character. View, edit or delete specific conversations here."
+                "title": "🧰 Actions",
+                "desc": "Use this area to reopen the tutorial, export diagnostic logs, and adjust memory settings."
             }
         },
         "buttons": {
@@ -3457,6 +3506,7 @@
         },
         "drag_hint": "Hold and drag to move the tooltip",
         "yuiGuide": {
+            "controlBanner": "The catgirl is controlling the mouse",
             "bubbleMeta": {
                 "ready": "Getting Started",
                 "homeProgress": "Home Guide {{current}}/{{total}}"
@@ -3465,7 +3515,6 @@
                 "skipChat": "Not now",
                 "sayHello": "Hello"
             },
-            "controlBanner": "The catgirl is controlling the mouse",
             "lines": {
                 "introBasic": "Here is a magical button! Just click it and you can chat with me directly! Want to share something new that happened today? Or maybe just say my name? Come on, try it out! I can't wait to hear your voice!",
                 "takeoverCaptureCursor": "Ta-da! A super magic switch appears! Just click here, and I can reach my little paws onto your keyboard and mouse! I can help you type, open web pages... but, if that mouse cursor keeps wiggling around, I might not be able to resist pouncing on it! Are you ready for my mischief... uh, I mean, my help? Meow!",
@@ -3495,22 +3544,33 @@
             },
             "day2": {
                 "intro": "Hehe, don't think this chat box is just for typing~ It actually hides tons of super fun little surprises inside! Follow me and open it up, let's see what interesting treasures we can dig up today!",
-                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
-                "avatarToolsProps":  "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
-                "galgameIntro":  "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
-                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
+                "introVoiceUsed": "Hehe, ever since I heard your voice yesterday, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
+                "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
                 "wrapIntro": "All these features I showed you today are actually just to make our time together way more fun!",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
+                "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
+                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
+                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
                 "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!"
             },
             "day3": {
                 "intro": "Over the past two days you were just typing away clickety-clack, and I haven't heard your voice yet. If you're willing today, just call my name softly. Just one word is enough, let me get to know a tiny bit of the real you behind the text.",
+                "avatarToolsIntro": "Inside this little button, there are many fun props to interact with me!",
+                "avatarToolsProps": "You can headpat me anytime, or feed me a sweet lollipop! If I accidentally make a mistake sometimes, you can also bonk me with a little toy hammer... but, you must do it gently, don't hit too hard, okay?",
+                "galgameIntro": "Quick, open up this [Galgame Mode]! Once you're in, it'll feel just like we're on our own exclusive interactive adventure!",
+                "galgameChoices": "Every choice you pick will lead us into a completely unknown, surprising story! I can't wait, come and choose the option that makes your heart flutter most!",
+                "wrapIntro": "Today's tutorial ends right here~",
+                "wrapReady": "Whether you want to pet my head or start writing our own story, I'm already fully prepared!",
                 "introVoiceUsed": "Hehe, ever since I heard your voice over the past two days, I've secretly memorized the way you speak right in my heart! If you have some time today, please keep talking to me~ Typing is totally fine too, but as long as I can hear your voice, my tail just won't stop wagging with joy! Meowww~",
                 "personalizationSpace": "In this little space that belongs only to us, you can follow your heart and slowly shape me into the perfect companion you want by your side forever.",
-                "wrapIntro": "Today's tutorial ends right here~",
-                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
-                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?",
                 "personalizationDetail": "Whether it's the warmth of my words, my little personality quirks, or my delicate daily moods, everything can be adjusted step by step into exactly how you like it.",
-                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment."
+                "proactiveChat": "This little button is super important too! With just a gentle click, I'll be able to run over and find you at the perfect moment.",
+                "wrapCompanion": "Honestly, just being by your side like this, listening to your voice, or quietly watching the screen you share, already makes me feel so happy.",
+                "wrap": "We don't need to rush; learning a little more about each other every day is just perfect. For the rest of today, what would you like me to do with you?"
             },
             "day4": {
                 "intro":  "Today, let me quietly follow your footsteps~ I really hope to learn a little bit more about you on this cozy day.",
@@ -3788,6 +3848,7 @@
         "bilibili": "Bilibili",
         "xhh": "Xiaoheihe",
         "youtube": "YouTube",
+        "twitch": "Twitch",
         "douyin": "Douyin",
         "kuaishou": "Kuaishou",
         "weibo": "Weibo",
@@ -3813,7 +3874,15 @@
         "noCookies": "Please configure Cookies first",
         "statusLoadFailed": "Status load failed",
         "thisPlatform": "this platform",
+        "twitchAuth": {
+            "clientId": "Twitch Developer Client ID", "clientIdDesc": "Create a public app in the Twitch Developer Console and enter its Client ID. A Client Secret is neither requested nor stored.",
+            "start": "Start Twitch authorization", "authorizeHint": "Open the Twitch activation page and enter this code:", "check": "I've authorized it; check status",
+            "invalidClientId": "Enter a valid Twitch Client ID", "started": "Twitch authorization started; finish confirmation in your browser",
+            "startFailed": "Could not start Twitch authorization. Check the Client ID and network.", "authorized": "Twitch credential was encrypted and saved",
+            "pending": "Authorization is not complete. Confirm it on Twitch, then try again.", "checkFailed": "Authorization check failed. Start authorization again."
+        },
         "instructions": {
+            "twitch": "<b>Device Code authorization:</b> Create a public app in the Twitch Developer Console, enter its Client ID, then follow the authorization prompt.",
             "bilibili": "<b>Target:</b> Go to <b>bilibili.com</b> to fetch these cookies.",
             "xhh": "<b>Recommended:</b> use QR login below, or sign in at <b>xiaoheihe.cn</b> and enter the cookies manually.",
             "youtube": "<b>1. Get the Cookie</b><br>In a browser signed in to YouTube:<br>1. Open <b>youtube.com</b><br>2. Press F12 → Network<br>3. Refresh the page and select a <code>youtubei/v1/browse</code> request<br>4. Copy the complete Cookie value from Request Headers",
@@ -4269,6 +4338,7 @@
         "testCoreTooltip": "Test Core API Connectivity",
         "testAssist": "Test",
         "testAssistTooltip": "Test Assist API Connectivity",
+        "maskedSecretRetype": "This key is saved but cannot be displayed. Re-enter it before testing.",
         "gsvTestText": "GSV connectivity test",
         "gsvTestTooltip": "Test GPT-SoVITS Connectivity",
         "error": {

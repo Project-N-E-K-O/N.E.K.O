@@ -440,7 +440,7 @@ class MemoryRefineEngine:
         # tier + thinking + 长 timeout。对齐 PersonaManager.resolve_corrections
         # 的调用配置。
         set_call_type("memory_refine")
-        api_config = self._cm.get_model_api_config('correction')
+        api_config = await self._cm.aget_model_api_config('correction')
         from config import LLM_OUTPUT_GUARD_MAX_TOKENS
         llm = await create_chat_llm_async(
             api_config['model'],

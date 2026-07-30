@@ -25,7 +25,7 @@ from config import GSV_VOICE_PREFIX
 from utils.config_manager import _as_bool, get_config_manager
 from utils.gptsovits_config import gsv_ws_url_from_http_base, is_valid_http_url, normalize_gsv_api_url, redact_url_for_log
 
-from .._infra import TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
+from .._infra import AudioDoneEmitter, TTS_SHUTDOWN_SENTINEL, _resample_audio, _enqueue_error
 from .._telemetry import _record_tts_telemetry
 from utils.logger_config import get_module_logger
 
@@ -207,6 +207,9 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
         receive_task = None
         current_speech_id = None
         resampler = None
+        # close_session(send_end=True) 返回时接收协程已经结束（正常收完 done 或被
+        # cancel），本轮不会再有音频进队列，那一刻才是本轮音频流的关闭点。
+        audio_done = AudioDoneEmitter(response_queue)
 
         async def receive_loop(ws_conn):
             """Independent receive coroutine: handles audio chunks and JSON messages returned by the WS"""
@@ -328,11 +331,16 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
                 if sid == "__interrupt__":
                     # 打断：立即关闭连接，不发 end、不等推理完成
-                    if _ws_is_open(ws):
-                        await close_session(ws, receive_task, send_end=False)
-                        ws = None
-                        receive_task = None
-                    current_speech_id = None
+                    audio_done.begin_interrupt()  # 打断轮不发 audio_done（走独立 cancel 通道）
+                    try:
+                        if _ws_is_open(ws):
+                            await close_session(ws, receive_task, send_end=False)
+                            ws = None
+                            receive_task = None
+                        current_speech_id = None
+                        audio_done.reset()
+                    finally:
+                        audio_done.end_interrupt()
                     continue
 
                 # speech_id 变化 → 打断旧会话，创建新连接
@@ -343,6 +351,7 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
                         ws = None
                         receive_task = None
                     current_speech_id = sid
+                    audio_done.reset()  # 新轮次重置 audio_done 去重标记
                     for _retry in range(3):
                         try:
                             await create_connection()
@@ -358,10 +367,14 @@ def gptsovits_tts_worker(request_queue, response_queue, audio_api_key, voice_id)
 
                 if sid is None:
                     # 正常结束：发送 end 关闭会话（v3 end 会自动 flush 剩余文本）
+                    # 先捕获本轮 sid：close_session 会让出，返回后 current_speech_id 要清掉。
+                    finished_speech_id = current_speech_id
                     if _ws_is_open(ws):
                         await close_session(ws, receive_task, send_end=True)
                         ws = None
                         receive_task = None
+                        # 会话已关且接收协程已停，本轮不会再有音频
+                        audio_done.emit(finished_speech_id)
                     current_speech_id = None
                     continue
 

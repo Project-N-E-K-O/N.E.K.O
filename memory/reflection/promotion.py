@@ -112,6 +112,12 @@ class PromotionMixin:
         # round-trip — RFC §3.3.3 outer-async-inner-sync chain breaks down
         # if we hold across the LLM await.
         await self._aauto_promote_score_driven(lanlan_name)
+        # 简化群记忆管线：scoped reflection 不产生 evidence 信号，score-driven
+        # 两个 pass 都跳过它们；其生命周期（含历史遗留的 scoped pending）由
+        # 零 LLM 成本的 time-driven pass 按年龄推进。挂在这里让四个既有
+        # caller（evidence_loops / post_turn / routes / signal_extraction）
+        # 不需要感知模式差异。
+        await self.aauto_promote_time_driven(lanlan_name, scoped_only=True)
         return transitions
 
     async def _aauto_promote_score_driven(self, lanlan_name: str) -> int:
@@ -131,11 +137,18 @@ class PromotionMixin:
         # slightly stale view (any concurrent state change will just mean
         # we attempt promote on a no-longer-confirmed reflection, which
         # the inner lock + status recheck will catch).
+        from memory.scopes import is_legacy_private_entry
+
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
         attempts = 0
         for r in reflections:
             if r.get('status') != 'confirmed':
+                continue
+            if not is_legacy_private_entry(r):
+                # scoped reflection 走 time-driven 简化生命周期，不参与
+                # score-driven 晋升（它们没有 evidence 信号来源）；损坏的
+                # 部分 subject 描述符 fail-closed，绝不许合入 legacy persona。
                 continue
             if evidence_score(r, now) < EVIDENCE_PROMOTED_THRESHOLD:
                 continue
@@ -163,6 +176,8 @@ class PromotionMixin:
         this loop reads the updated view to decide promotions). The caller
         is responsible for that ordering — see memory_server background loops.
         """
+        from memory.scopes import is_legacy_private_entry
+
         reflections = await self._aload_reflections_full(lanlan_name)
         now = datetime.now()
         transitions = 0
@@ -170,6 +185,11 @@ class PromotionMixin:
 
         for r in reflections:
             if r.get('status') != 'pending':
+                continue
+            if not is_legacy_private_entry(r):
+                # scoped pending（正常不该存在——scoped 合成直出 confirmed；
+                # 兜历史遗留）由 time-driven scoped pass 按年龄确认；损坏
+                # 描述符 fail-closed，不推进。
                 continue
             if evidence_score(r, now) < EVIDENCE_CONFIRMED_THRESHOLD:
                 continue
@@ -197,8 +217,19 @@ class PromotionMixin:
                 )
         return transitions
 
-    async def aauto_promote_time_driven(self, lanlan_name: str) -> int:
-        """Time-driven fallback for the "strong memory OFF" mode.
+    @staticmethod
+    def _apply_time_driven_promotion(reflection, rid, now, promoted_ids) -> None:
+        """Mark a reflection promoted (shared by the write and retry paths)."""
+        reflection['status'] = 'promoted'
+        reflection['promoted_at'] = now.isoformat()
+        if rid:
+            promoted_ids.append(rid)
+
+    async def aauto_promote_time_driven(
+        self, lanlan_name: str, *, scoped_only: bool = False,
+    ) -> int:
+        """Time-driven lifecycle: the "strong memory OFF" fallback, and the
+        one-and-only lifecycle for scoped (group/member) reflections.
 
         Zero LLM cost. Mimics pre-RFC behavior, advancing the lifecycle purely
         by reflection age:
@@ -211,14 +242,21 @@ class PromotionMixin:
 
         Returns: total number of pending→confirmed + confirmed→promoted transitions.
 
-        Mutually exclusive with ``aauto_promote_stale`` — the caller picks one
-        based on the strong-memory switch. This method never reads
-        evidence_score; missing/zero evidence fields have no effect.
+        ``scoped_only=True`` restricts both passes to scoped reflections —
+        used by ``aauto_promote_stale`` (strong-memory mode) so scoped entries
+        advance by age while legacy entries stay score-driven. With
+        ``scoped_only=False`` (weak-memory caller) every legacy and scoped
+        reflection advances by age. Corrupt partial subject descriptors are
+        excluded in both modes (fail-closed, never written to any persona).
+        This method never reads evidence_score; missing/zero evidence fields
+        have no effect.
         """
         from config import (
             WEAK_MEMORY_AUTO_CONFIRM_DAYS,
             WEAK_MEMORY_AUTO_PROMOTE_DAYS,
         )
+
+        from memory.scopes import is_legacy_private_entry, subject_from_entry
 
         from memory.persona import PersonaManager
         async with self._get_alock(lanlan_name):
@@ -232,6 +270,13 @@ class PromotionMixin:
             # Pass 1: pending → confirmed by created_at age
             for r in reflections:
                 if r.get('status') != 'pending':
+                    continue
+                subj = subject_from_entry(r)
+                if scoped_only and subj is None:
+                    continue
+                if subj is None and not is_legacy_private_entry(r):
+                    # 损坏的部分 subject 描述符：两种模式都 fail-closed，
+                    # 不按年龄推进（对齐 scopes.py 的读路径排除语义）。
                     continue
                 created_iso = r.get('created_at')
                 if not created_iso:
@@ -252,7 +297,8 @@ class PromotionMixin:
                 transitions += 1
                 logger.info(
                     f"[Reflection] {lanlan_name}: pending→confirmed "
-                    f"(time-driven, {int(age_days)}d): {r.get('text', '')[:50]}..."
+                    f"(time-driven, {int(age_days)}d): "
+                    + (f"{rid}" if subj is not None else f"{r.get('text', '')[:50]}...")
                 )
 
             # Pass 2: confirmed → promoted/denied by confirmed_at age
@@ -260,6 +306,12 @@ class PromotionMixin:
             # 命中 14 天阈值——所以同一条 reflection 不会一轮内 pending→promoted。
             for r in reflections:
                 if r.get('status') != 'confirmed':
+                    continue
+                promote_subject = subject_from_entry(r)
+                if scoped_only and promote_subject is None:
+                    continue
+                if promote_subject is None and not is_legacy_private_entry(r):
+                    # 同 Pass 1：损坏描述符绝不许零成本合入任何 persona。
                     continue
                 confirmed_iso = r.get('confirmed_at')
                 if not confirmed_iso:
@@ -280,12 +332,39 @@ class PromotionMixin:
                 #     reflection 留在 confirmed，下轮再试。属于已知的轻度
                 #     "记忆失活" case；rare（启发式 ratio ≥0.4 才命中）。
                 rid = r.get('id')
+                already_applied = bool(
+                    promote_subject is not None
+                    and rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
+                )
+                if already_applied:
+                    # 上一轮 persona 已写入、只是 reflections 落盘失败：重试
+                    # 时**不能**再调 aadd_fact——同样的文本会被当成与自己
+                    # 矛盾，durable 地排进一条自我修正，correction LLM 之后
+                    # 可能把条目改写掉或抹掉 source_id 溯源。查在写之前。
+                    code = PersonaManager.FACT_ADDED
+                    logger.info(
+                        f"[Reflection] {lanlan_name}/{rid}: scoped 提升已存在，"
+                        f"跳过重复写入"
+                    )
+                    self._apply_time_driven_promotion(
+                        r, rid, now, promoted_ids,
+                    )
+                    transitions += 1
+                    continue
                 try:
+                    promote_kwargs = (
+                        {'subject': promote_subject}
+                        if promote_subject is not None else {}
+                    )
                     code = await self._persona_manager.aadd_fact(
                         lanlan_name, r.get('text', ''),
                         entity=r.get('entity', 'relationship'),
                         source='reflection_time_driven',
                         source_id=rid,
+                        **promote_kwargs,
                     )
                 except Exception as e:
                     logger.warning(
@@ -293,16 +372,33 @@ class PromotionMixin:
                     )
                     continue
 
+                if (
+                    code == PersonaManager.FACT_QUEUED_CORRECTION
+                    and promote_subject is not None
+                    and rid
+                    and await self._ascoped_promotion_already_applied(
+                        lanlan_name, rid, promote_subject,
+                    )
+                ):
+                    # 幂等重试：persona 条目上轮已写入（source_id 命中），
+                    # 只是 reflections 落盘失败让状态停在 confirmed。若照常
+                    # 留在 confirmed，下一轮又会与自己的条目"矛盾"排一次
+                    # correction，无限自我修正。按已提升处理。
+                    code = PersonaManager.FACT_ADDED
+                    logger.info(
+                        f"[Reflection] {lanlan_name}/{rid}: scoped 提升已存在，"
+                        f"按幂等完成处理"
+                    )
                 if code == PersonaManager.FACT_ADDED:
-                    r['status'] = 'promoted'
-                    r['promoted_at'] = now.isoformat()
-                    if rid:
-                        promoted_ids.append(rid)
+                    self._apply_time_driven_promotion(r, rid, now, promoted_ids)
                     transitions += 1
                     logger.info(
                         f"[Reflection] {lanlan_name}: confirmed→promoted "
                         f"(time-driven, {int(age_days)}d, no LLM): "
-                        f"{r.get('text', '')[:50]}..."
+                        + (
+                            f"{rid}" if promote_subject is not None
+                            else f"{r.get('text', '')[:50]}..."
+                        )
                     )
                 elif code == PersonaManager.FACT_REJECTED_CARD:
                     r['status'] = 'denied'
@@ -334,6 +430,34 @@ class PromotionMixin:
                     )
 
         return transitions
+
+    async def _ascoped_promotion_already_applied(
+        self, lanlan_name: str, reflection_id: str, subject,
+    ) -> bool:
+        """True when this reflection already produced a scoped persona entry.
+
+        The persona write and the reflection status flip are two stores; a
+        failure between them leaves a durable entry whose retry would be
+        rejected as a self-contradiction forever."""
+        try:
+            persona = await self._persona_manager.aensure_persona(lanlan_name)
+        except Exception:
+            return False
+        if not isinstance(persona, dict):
+            return False
+        from memory.scopes import entry_matches_subject
+
+        for section in persona.values():
+            if not isinstance(section, dict):
+                continue
+            for fact in section.get('facts') or []:
+                if not isinstance(fact, dict):
+                    continue
+                if fact.get('source_id') != reflection_id:
+                    continue
+                if entry_matches_subject(fact, subject):
+                    return True
+        return False
 
     async def _abump_reflection_recheck_attempts(
         self, lanlan_name: str, rid: str, reason: str,
@@ -480,7 +604,7 @@ class PromotionMixin:
         try:
             from utils.llm_client import create_chat_llm_async
             set_call_type("memory_recheck_reflection")
-            api_config = self._config_manager.get_model_api_config('summary')
+            api_config = await self._config_manager.aget_model_api_config('summary')
             from config import LLM_OUTPUT_GUARD_MAX_TOKENS
             llm = await create_chat_llm_async(
                 api_config['model'],
@@ -578,15 +702,30 @@ class PromotionMixin:
         Avoids the jarring experience of "user enabled it for a while, turned
         it off, and old confirmed entries immediately hit the 14-day mark and
         promote in bulk". Returns the number of affected entries.
+
+        Scoped reflections are exempt: their time-driven clock runs in both
+        modes (see ``aauto_promote_time_driven``), so the on→off rationale
+        does not apply to them. Corrupt partial descriptors are exempt too —
+        they are excluded from every lifecycle pass, so mutating them here
+        would be a pointless write to otherwise-quarantined rows.
         """
+        from memory.scopes import is_legacy_private_entry
+
         async with self._get_alock(lanlan_name):
             reflections = await self._aload_reflections_full(lanlan_name)
             now_iso = datetime.now().isoformat()
             count = 0
             for r in reflections:
-                if r.get('status') == 'confirmed':
-                    r['confirmed_at'] = now_iso
-                    count += 1
+                if r.get('status') != 'confirmed':
+                    continue
+                if not is_legacy_private_entry(r):
+                    # scoped reflection 与强弱模式无关、恒走 time-driven：
+                    # 切换开关前它的晋升时钟本来就在跑，重置属于误伤
+                    # （反复切换可无限推迟 scoped 晋升）。损坏描述符同样
+                    # 不碰——它已被所有生命周期 pass 隔离。
+                    continue
+                r['confirmed_at'] = now_iso
+                count += 1
             if count:
                 active = [
                     r for r in reflections

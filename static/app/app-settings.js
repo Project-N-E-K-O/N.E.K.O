@@ -15,6 +15,141 @@
 
     // 定时同步到服务器的 timer ID
     let _syncTimerId = null;
+    // 周期同步因「设置未水合」被跳过时只 log 一次，避免 GET 持续失败刷屏
+    let _periodicSyncSkippedUnhydratedLogged = false;
+    // Field-level user authority (Codex P2): _dirtySettingsKeys records which
+    // conversation-settings keys the user explicitly changed since boot. Every
+    // userInitiated sync diffs the current settings against _settingsBaseline
+    // (snapshotted right before the boot GET, rolled forward on every diff and
+    // after the server merge) and adds the keys that diverged. The boot GET's
+    // merge callback applies server values to NON-dirty keys only and
+    // preserves the dirty ones, so changing one unrelated preference while
+    // the GET is in flight no longer makes the whole boot-default snapshot
+    // authoritative (the earlier whole-merge-drop design let a boot-default
+    // independentAsrEnabled clobber the server-persisted ASR choice and later
+    // handshakes then stamped the wrong route).
+    const _dirtySettingsKeys = new Set();
+    let _settingsBaseline = null;
+    // Cross-window write metadata (Codex P2): saveSettings() writes EVERY
+    // conversation key into the shared localStorage snapshot, so a receiving
+    // window cannot tell a real independentAsrEnabled toggle from the
+    // incidental copy that rides along with an unrelated preference save.
+    // Inferring intent from a value difference alone let an UNHYDRATED
+    // window's unrelated save (carrying a pre-merge boot default) look like an
+    // explicit ASR flip to a window that had already merged the server value:
+    // the receiver adopted the stale value, marked the key user-dirty and
+    // stamped the wrong route on the next handshake. Every write now carries
+    // the keys the writing user EXPLICITLY changed plus a monotonic write id,
+    // and the listener grants ASR authority only on that evidence.
+    const _SHARED_WRITE_META_KEY = '_sharedWriteMeta';
+    let _lastSharedWriteId = 0;
+    let _lastAppliedSharedWriteId = 0;
+    // Window-unique second sort key for concurrent shared-settings writes. Per
+    // document load; stability across reloads is not needed because every
+    // comparison reads the id off the write itself, and sessionStorage would be
+    // WORSE -- the browser copies it into a duplicated tab, destroying the
+    // uniqueness this depends on.
+    const _SHARED_WRITER_ID = (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+    // (writeId, writerId, value) of the newest EXPLICIT independentAsrEnabled
+    // write this window knows about, INCLUDING ITS OWN. _lastAppliedSharedWriteId
+    // records only writes RECEIVED here, so it cannot order this window's own
+    // pending toggle against a concurrent one from another window: without this,
+    // two windows holding divergent values that both write before observing each
+    // other each adopt the other and stay swapped forever. That needs no
+    // millisecond tie at all -- a strictly older foreign write still wins.
+    let _lastAsrDecision = null;
+    function _noteAsrDecision(writeId, writerId, value) {
+        // A write that merely re-asserts the value already decided is not a new
+        // choice: _dirtySettingsKeys is monotone, so every later save from a
+        // window that once toggled declares the key explicit, and treating those
+        // as fresh intent would shield this window from a genuinely newer toggle.
+        if (_lastAsrDecision && _lastAsrDecision.value === value) return;
+        if (_lastAsrDecision
+            && !(writeId > _lastAsrDecision.writeId
+                || (writeId === _lastAsrDecision.writeId && writerId > _lastAsrDecision.writerId))) {
+            return;
+        }
+        _lastAsrDecision = { writeId: writeId, writerId: writerId || '', value: value };
+    }
+    function _asrWriteOutranksLocalChoice(meta) {
+        if (!_lastAsrDecision) return true;
+        // Order on the DECISION that produced this value, not on the id of the
+        // write that happens to carry it. _dirtySettingsKeys is monotone and
+        // every save copies independentAsrEnabled, so once a window has toggled
+        // once, each later UNRELATED save re-declares the key explicit with a
+        // fresh id -- and would outrank a genuinely newer toggle in another
+        // window. That needs no race at all, which makes it strictly more
+        // reachable than the same-millisecond tie this ordering was added for.
+        const decision = meta.asrDecision
+            || (meta.changedKeys.indexOf('independentAsrEnabled') !== -1 ? meta : null);
+        // No tuple AND not declared explicit: an incidental copy of whatever
+        // this writer happened to hold. It must never outrank an explicit local
+        // choice. Previous-build snapshots that DO declare the key keep today's
+        // writeId ordering through the fallback above.
+        if (!decision) return false;
+        if (decision.writeId > _lastAsrDecision.writeId) return true;
+        if (decision.writeId < _lastAsrDecision.writeId) return false;
+        // Equal ids are unordered in time; break on the window-unique key so
+        // both windows pick the SAME winner. An absent writerId (previous
+        // build) reads as '' and loses, keeping this window's own choice.
+        return (decision.writerId || '') > _lastAsrDecision.writerId;
+    }
+    // Bounded gate for the boot settings GET: settings POST bodies are built
+    // at send time AFTER awaiting this gate, so once the GET settled the merge
+    // has already run and fields the user never touched carry server truth
+    // instead of boot defaults. Starts resolved (no GET in flight yet) and
+    // never rejects, so the sync chain can never stall on it.
+    let _settingsGetGate = Promise.resolve();
+    const SETTINGS_GET_GATE_TIMEOUT_MS = 3000;
+    // Whether server values were actually MERGED into the local settings view.
+    // Deliberately NOT "the boot GET attempt finished" (Codex P2, round 16):
+    // those are different facts, and only the merge licenses a full-snapshot
+    // write. The bound above only preserves liveness — it must never turn into
+    // authority: while no merge has happened the local snapshot still holds
+    // pre-merge boot/localStorage values for untouched keys, and a FULL write
+    // would overwrite the server-persisted preferences (independentAsrEnabled
+    // included). That is true whether the GET is still in flight OR resolved to
+    // null (HTTP error, bad JSON, success:false, empty body) — a failed read
+    // teaches this client nothing about server truth, so it must not re-enable
+    // full writes. The backend also resolves telemetry BEFORE reading the
+    // settings file (main_routers/config_router/preferences.py
+    // get_conversation_settings), so a slow GET would resume by reading back
+    // the file such a POST just overwrote and the field-level merge could no
+    // longer restore the originals.
+    // While this flag is false every POST carries ONLY the user-dirty keys
+    // (see _pickDirtySettings), which loses nothing: the backend MERGES partial
+    // payloads, so each user change is persisted per key and untouched keys
+    // simply keep server truth. It starts false (nothing merged yet; loadSettings
+    // arms the boot GET at module load, below) and flips to true only inside the
+    // merge callback, i.e. exactly when a usable server result was applied —
+    // late-settling boots therefore still resume full writes and converge the
+    // server. A permanently failing GET keeps this window dirty-only for the
+    // whole session on purpose: that mode never blocks persistence, and the
+    // alternative (re-fetching from the periodic timer) would trade a
+    // guaranteed-safe path for extra requests without persisting anything the
+    // dirty-only path does not already persist. A fresh page load re-runs the
+    // GET and restores full writes on its first successful merge.
+    let _settingsMergedFromServer = false;
+    // Serialization tail for conversation-settings POSTs (Codex P2): rapid
+    // successive syncSettingsToServer calls used to issue concurrent POSTs,
+    // and the backend saves each one in its own asyncio.to_thread, so the
+    // OLDER request could finish LAST and persist a stale toggle value. Every
+    // sync now queues behind this tail; runSync never rejects, so the tail
+    // can never become a permanently rejected promise that stalls the chain.
+    //
+    // Scope, so this is not read as more than it is (Codex P2, acknowledged and
+    // deliberately NOT fixed in this PR): the tail is per-JS-realm, so it
+    // orders one window's POSTs only. Two windows toggling during each other's
+    // in-flight request still overlap, and save_global_conversation_settings is
+    // an unversioned read-modify-write, so the older choice can land last. The
+    // windows themselves still converge on the newer choice through the
+    // localStorage decision tuple (asrDecision) -- which is localStorage
+    // metadata only: the POST body carries plain values, and the storage
+    // listener deliberately issues no corrective POST -- so the divergence
+    // surfaces only after a reload. Closing it needs a versioned write protocol
+    // on an endpoint shared by every preference and every client build, which
+    // is a wider change than this PR should carry.
+    let _syncChainTail = Promise.resolve();
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
     // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
@@ -35,6 +170,7 @@
         'mergeMessagesEnabled',
         'focusModeEnabled',
         'focusCognitionEnabled',
+        'independentAsrEnabled',
         'avatarReactionBubbleEnabled',
         'slopFilterEnabled',
         'proactiveChatInterval',
@@ -75,6 +211,7 @@
             mergeMessagesEnabled: S.mergeMessagesEnabled,
             focusModeEnabled: S.focusModeEnabled,
             focusCognitionEnabled: S.focusCognitionEnabled,
+            independentAsrEnabled: S.independentAsrEnabled,
             avatarReactionBubbleEnabled: S.avatarReactionBubbleEnabled,
             slopFilterEnabled: S.slopFilterEnabled,
             proactiveChatInterval: S.proactiveChatInterval,
@@ -87,6 +224,191 @@
             settings.userLanguage = S.userLanguage;
         }
         return settings;
+    }
+
+    /**
+     * Record which conversation-settings keys the user explicitly changed by
+     * diffing the current state against _settingsBaseline, then roll the
+     * baseline forward. Runs synchronously inside every userInitiated sync,
+     * so a toggle-and-back still leaves its key dirty (the set is monotone —
+     * a key the user touched stays user-authoritative for the boot merge).
+     */
+    function _markUserDirtySettings() {
+        const current = getConversationSettings();
+        if (_settingsBaseline) {
+            const keys = new Set(
+                Object.keys(current).concat(Object.keys(_settingsBaseline))
+            );
+            keys.forEach((key) => {
+                const cur = Object.prototype.hasOwnProperty.call(current, key)
+                    ? current[key]
+                    : undefined;
+                const base = Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+                    ? _settingsBaseline[key]
+                    : undefined;
+                if (cur !== base) {
+                    _dirtySettingsKeys.add(key);
+                }
+            });
+        }
+        _settingsBaseline = current;
+    }
+
+    /**
+     * Monotonic id for shared-settings writes. The wall clock keeps ids
+     * comparable across windows (same browser profile, one clock) and the
+     * max()-style bump keeps them strictly increasing inside a window when two
+     * saves land in the same millisecond. Ids are NOT globally unique: two
+     * windows saving in the same millisecond before observing each other mint
+     * the same id, which is unavoidable at mint time. A receiver can therefore
+     * tell strictly-older from strictly-newer, and resolves an exact tie on
+     * explicit intent instead (see the asrWriteIsNewer tie rule in the storage
+     * listener).
+     */
+    function _nextSharedWriteId() {
+        let now = 0;
+        try { now = Date.now(); } catch (_) { now = 0; }
+        // Floor the mint by the highest id this window has ever APPLIED, not
+        // just the highest it has minted. Without it, a window that already
+        // applied another window's write could mint an id at or below it and
+        // have its own write read as superseded — discarding a genuine
+        // cross-window ASR toggle, not just an incidental copy.
+        // This covers only the case where the other write was already OBSERVED
+        // here. A genuinely CONCURRENT same-millisecond tie (neither window has
+        // processed the other's storage event yet) cannot be broken at mint
+        // time at all; the listener resolves it on explicit intent instead.
+        const idFloor = Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId);
+        _lastSharedWriteId = now > idFloor ? now : idFloor + 1;
+        return _lastSharedWriteId;
+    }
+
+    /**
+     * Keys of `snapshot` this window may claim explicit user authority over:
+     * the monotone _dirtySettingsKeys set plus keys that diverge from the
+     * current dirty-diff baseline. The divergence term matters because the
+     * independent-ASR toggle handler persists locally (saveSettings with
+     * skipServerSync) BEFORE its userInitiated sync runs _markUserDirtySettings,
+     * so at write time the diff is the only evidence the key was just toggled.
+     */
+    function _collectExplicitSharedKeys(snapshot) {
+        const keys = [];
+        _SHARED_SETTINGS_KEYS.forEach((key) => {
+            if (!Object.prototype.hasOwnProperty.call(snapshot, key)) return;
+            const divergedFromBaseline = !!_settingsBaseline
+                && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
+                && _settingsBaseline[key] !== snapshot[key];
+            if (_dirtySettingsKeys.has(key) || divergedFromBaseline) {
+                keys.push(key);
+            }
+        });
+        return keys;
+    }
+
+    /**
+     * Persist the shared settings snapshot with its write metadata.
+     * `hydrated` records whether this window held ANY authoritative settings
+     * event when it wrote — informational only, because it also flips on a
+     * user edit that never touched the ASR key. `asrAuthoritative` is the
+     * per-key fact a receiver actually needs: whether THIS window's
+     * independentAsrEnabled came from a merged server GET, an explicit ASR
+     * toggle, or a cross-window ASR flip (S.independentAsrAuthoritative, the
+     * same latch the start_session handshake gates on). Without it a window
+     * whose boot GET never merged flips `hydrated` true on any unrelated edit
+     * and then stamps its pre-merge boot ASR default as trustworthy, and a
+     * window that HAD merged the server value adopts it, mis-stamps its next
+     * handshake, and POSTs the wrong value back on its next full sync.
+     */
+    function _writeSharedSettings(snapshot, explicitKeys) {
+        const payload = Object.assign({}, snapshot);
+        payload[_SHARED_WRITE_META_KEY] = {
+            writeId: _nextSharedWriteId(),
+            writerId: _SHARED_WRITER_ID,
+            changedKeys: explicitKeys || [],
+            hydrated: S.settingsHydrated === true,
+            asrAuthoritative: S.independentAsrAuthoritative === true
+        };
+        const ownMeta = payload[_SHARED_WRITE_META_KEY];
+        if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
+            _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
+        }
+        // Stamp the ASR key with the id of the decision that PRODUCED this
+        // value. _noteAsrDecision already refuses to advance the LOCAL decision
+        // for a mere re-assertion; the TRANSMITTED id must agree, or an
+        // unrelated save re-stamps a stale choice with a fresh id and reverts a
+        // newer toggle in another window. Omitted when the local decision does
+        // not describe the value being written, so receivers fall back to the
+        // write id exactly as they do for previous-build snapshots.
+        if (_lastAsrDecision
+            && _lastAsrDecision.value === snapshot.independentAsrEnabled) {
+            ownMeta.asrDecision = {
+                writeId: _lastAsrDecision.writeId,
+                writerId: _lastAsrDecision.writerId,
+                value: _lastAsrDecision.value
+            };
+        }
+        localStorage.setItem('project_neko_settings', JSON.stringify(payload));
+    }
+
+    /**
+     * Read the write metadata of an incoming shared snapshot. Returns null for
+     * payloads that carry none — a window still running the previous build —
+     * so those keep falling back to the legacy value-difference detection.
+     */
+    function _readSharedWriteMeta(settings) {
+        const meta = settings ? settings[_SHARED_WRITE_META_KEY] : null;
+        if (!meta || typeof meta !== 'object') return null;
+        if (typeof meta.writeId !== 'number' || !isFinite(meta.writeId)) return null;
+        return {
+            writeId: meta.writeId,
+            // Absent on snapshots written by the previous build: '' sorts below
+            // every live writer id, so an untagged concurrent write never
+            // outranks this window's own explicit choice.
+            writerId: typeof meta.writerId === 'string' ? meta.writerId : '',
+            changedKeys: Array.isArray(meta.changedKeys) ? meta.changedKeys : [],
+            hydrated: meta.hydrated === true,
+            // Absent on snapshots written by the previous build: default false
+            // (fail closed). Such a writer's non-explicit ASR value is simply
+            // not adopted by an already-hydrated receiver; a GENUINE toggle
+            // from that build still carries independentAsrEnabled in
+            // changedKeys and keeps flowing through asrChangedByOtherWindow.
+            asrAuthoritative: meta.asrAuthoritative === true,
+            // Absent on previous-build snapshots and on writers with no
+            // matching decision: null routes the comparison back to
+            // (writeId, writerId), i.e. today's behaviour.
+            asrDecision: (meta.asrDecision
+                && typeof meta.asrDecision.writeId === 'number'
+                && isFinite(meta.asrDecision.writeId))
+                ? {
+                    writeId: meta.asrDecision.writeId,
+                    writerId: typeof meta.asrDecision.writerId === 'string'
+                        ? meta.asrDecision.writerId
+                        : '',
+                    value: meta.asrDecision.value
+                }
+                : null
+        };
+    }
+
+    /**
+     * Build the POST body for a sync that runs before any server merge landed
+     * (GET still in flight, or it failed and none ever will): only the keys the
+     * user explicitly changed are authoritative, every other local value is a
+     * pre-merge boot value that must not overwrite the server copy. Safe
+     * because the backend MERGES
+     * partial payloads instead of replacing the entry wholesale — see
+     * utils/preferences.py save_global_conversation_settings, which copies the
+     * existing global entry and applies `global_pref.update(filtered_settings)`
+     * (fields absent from the request keep their persisted values), and
+     * validates per field, so omitted keys are simply left alone.
+     */
+    function _pickDirtySettings(settings) {
+        const partial = {};
+        _dirtySettingsKeys.forEach((key) => {
+            if (Object.prototype.hasOwnProperty.call(settings, key)) {
+                partial[key] = settings[key];
+            }
+        });
+        return partial;
     }
 
     function applySharedRuntimeSettings(settings) {
@@ -196,35 +518,108 @@
     /**
      * 将对话设置同步到服务器（异步，不阻塞）
      * 用于定期备份和跨会话持久化
+     *
+     * @param {{ userInitiated?: boolean }} [options] 用户显式改设置的路径必须传
+     *   userInitiated: true——只有这类调用才把设置标记为已水合（S.settingsHydrated）。
+     *   周期同步 startPeriodicSync 不传，永远不标记。
      */
-    async function syncSettingsToServer() {
-        try {
-            const controller = window.NekoHomeTutorialFeatureController;
-            if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
-                console.log('[app-settings] home tutorial suppression active, skip conversation settings sync');
+    async function syncSettingsToServer(options) {
+        const userInitiated = !!(options && options.userInitiated);
+        // 只有用户显式改设置的路径（saveSettings 完整路径、app-audio-capture.js 的独立
+        // ASR 开关 handler，均传 userInitiated: true）才标记设置已水合
+        // （S.settingsHydrated，见 app-state.js）：用户动作即使发生在 server GET 之前
+        // 也是权威值，且本 POST 会把完整本地设置对象覆写到服务器；POST 失败也要立刻
+        // 算权威，否则 start_session 握手退回省略字段、后端读到的还是用户刚改掉的旧
+        // 持久化值，握手兜底（attachStartSessionHandshake）就失效了，所以在 await 前
+        // 同步标记。周期同步 startPeriodicSync 不传 userInitiated、不标记——GET 持续
+        // 失败（catch/finally 也会启动 periodic）时它跑的是未水合的启动默认值，标记
+        // 会让握手把 boot 默认 false 盖掉后端持久化的 true。
+        // 首启初始化那次 saveSettings 走 skipServerSync 不进这里，不会误标记。
+        if (userInitiated) {
+            S.settingsHydrated = true;
+            // Synchronously (before any await) record WHICH keys this user
+            // change touched: the in-flight boot GET's merge preserves exactly
+            // these dirty keys while still hydrating every untouched field
+            // from the server, instead of dropping the whole merge.
+            _markUserDirtySettings();
+            // Per-key authority for the one key the start_session handshake
+            // carries. An unrelated user change (settings popup, subtitle
+            // toggle, chat-window translate toggle) also sets settingsHydrated,
+            // but that says nothing about independentAsrEnabled: while the boot
+            // GET is pending or permanently failing it is still the boot
+            // default, and stamping it would override the backend's persisted
+            // choice. Mark ASR authority only when THIS user change actually
+            // touched the ASR key, synchronously before any await so the very
+            // next start_session already carries it.
+            if (_dirtySettingsKeys.has('independentAsrEnabled')) S.independentAsrAuthoritative = true;
+        }
+        // Serialize the POST behind any in-flight sync (Codex P2): the
+        // settings snapshot is built inside runSync, at SEND time — after the
+        // predecessor completed — so the last-issued request always carries
+        // the final local state and at most one request is in flight, making
+        // completion order equal issue order (a stale body can never win the
+        // backend persistence race). The hydration/dirty-key marks above
+        // stay synchronous at call time so the handshake stamp and the
+        // field-level merge guard keep their pre-await semantics.
+        const runSync = async () => {
+            // Wait (bounded, never rejecting) for the boot settings GET to
+            // settle before building the send-time snapshot: after the merge,
+            // fields the user never touched carry server truth, so this POST
+            // cannot overwrite persisted preferences with boot defaults. When
+            // the GET outlives the bound (or fails outright) the POST still
+            // goes out (liveness), but restricted to the user-dirty keys —
+            // see _settingsMergedFromServer.
+            await _settingsGetGate;
+            try {
+                const controller = window.NekoHomeTutorialFeatureController;
+                if (controller && typeof controller.isActive === 'function' && controller.isActive()) {
+                    console.log('[app-settings] home tutorial suppression active, skip conversation settings sync');
+                    return;
+                }
+            } catch (_) {
+                // keep settings sync best-effort if the tutorial controller is unavailable
+            }
+            const settings = getConversationSettings();
+            // Full snapshot only once server values were actually merged. If
+            // the gate opened on its timeout instead — or the GET resolved to
+            // null and merged nothing — a full body would clobber every
+            // untouched server-persisted preference with this boot's values
+            // (and a still-pending GET would then read the overwritten file
+            // back, so the merge could not restore them). Send the dirty keys
+            // alone — the backend merges partial payloads — and let the merge
+            // writeback converge the rest if/once the GET lands.
+            const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);
+            if (Object.keys(payload).length === 0) {
+                // Nothing the user explicitly changed yet, and no server truth
+                // to echo back: writing anything here could only overwrite
+                // persisted preferences with pre-merge values.
                 return;
             }
-        } catch (_) {
-            // keep settings sync best-effort if the tutorial controller is unavailable
-        }
-        const settings = getConversationSettings();
-        try {
-            const response = await fetch('/api/config/conversation-settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(settings)
-            });
-            if (!response.ok) {
-                console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
-                return;
+            try {
+                const response = await fetch('/api/config/conversation-settings', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                if (!response.ok) {
+                    console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                    return;
+                }
+                const data = await response.json();
+                if (!data.success) {
+                    console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                }
+            } catch (err) {
+                console.error('[app-settings] 同步设置到服务器失败:', err);
             }
-            const data = await response.json();
-            if (!data.success) {
-                console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
-            }
-        } catch (err) {
-            console.error('[app-settings] 同步设置到服务器失败:', err);
-        }
+        };
+        // runSync swallows its own failures, so chaining with it on both
+        // fulfillment and rejection keeps the returned promise — the one the
+        // toggle handler publishes as S.pendingSettingsSyncPromise for the
+        // ensureWebSocketOpen gate — always resolving, never rejecting.
+        const chained = _syncChainTail.then(runSync, runSync);
+        _syncChainTail = chained;
+        return chained;
     }
 
     /**
@@ -234,10 +629,22 @@
      * POST：否则会把首启本地默认值抢先推到服务器，下次 GET 读到自家 echo 误判「云端已有
      * 偏好」、干扰设置合并与首启决议时序。用户主动改设置走的 saveSettings 不受影响（那条
      * 路径就是要持久化用户显式选择）。
+     *
+     * 设置未水合（S.settingsHydrated 为 false：GET 从没成功、用户也没改过设置）时同样
+     * 跳过：GET 持续失败时 catch/finally 也会启动 periodic，若照常 POST 会把 boot 默认
+     * 值（如 independentAsrEnabled=false）覆写掉服务器持久化的用户偏好。水合后（任一
+     * 来源）恢复正常同步。
      */
     function startPeriodicSync() {
         if (_syncTimerId !== null) return; // 防止重复启动
         _syncTimerId = setInterval(() => {
+            if (S.settingsHydrated !== true) {
+                if (!_periodicSyncSkippedUnhydratedLogged) {
+                    _periodicSyncSkippedUnhydratedLogged = true;
+                    console.log('[app-settings] 设置尚未水合（server GET 未成功且用户未改过设置），跳过周期同步，避免用启动默认值覆盖服务器设置');
+                }
+                return;
+            }
             try {
                 if (localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1') {
                     return;
@@ -310,6 +717,7 @@
         const currentFocusCognition = typeof window.focusCognitionEnabled !== 'undefined'
             ? window.focusCognitionEnabled
             : S.focusCognitionEnabled;
+        const currentIndependentAsr = S.independentAsrEnabled === true;
         const currentProactiveChatInterval = typeof window.proactiveChatInterval !== 'undefined'
             ? window.proactiveChatInterval
             : S.proactiveChatInterval;
@@ -381,6 +789,7 @@
             mergeMessagesEnabled: currentMerge,
             focusModeEnabled: currentFocus,
             focusCognitionEnabled: currentFocusCognition,
+            independentAsrEnabled: currentIndependentAsr,
             avatarReactionBubbleEnabled: currentAvatarReactionBubble,
             slopFilterEnabled: currentSlopFilter,
             proactiveChatInterval: currentProactiveChatInterval,
@@ -395,7 +804,11 @@
             subtitleEnabled: currentSubtitleEnabled,
             userLanguage: currentUserLanguage
         };
-        localStorage.setItem('project_neko_settings', JSON.stringify(settings));
+        // Stamp the keys the user explicitly changed (plus a monotonic write id)
+        // into the shared snapshot: every save copies independentAsrEnabled
+        // along, so the receiving window needs this metadata to tell a real
+        // cross-window toggle from an unrelated save's incidental copy.
+        _writeSharedSettings(settings, _collectExplicitSharedKeys(settings));
 
         // 同步回共享状态，保持一致性
         S.proactiveChatEnabled = currentProactive;
@@ -410,6 +823,7 @@
         S.mergeMessagesEnabled = currentMerge;
         S.focusModeEnabled = currentFocus;
         S.focusCognitionEnabled = currentFocusCognition;
+        S.independentAsrEnabled = currentIndependentAsr;
         S.avatarReactionBubbleEnabled = currentAvatarReactionBubble;
         S.slopFilterEnabled = currentSlopFilter;
         S.proactiveChatInterval = currentProactiveChatInterval;
@@ -430,9 +844,13 @@
             });
         }
 
-        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST
+        // 同步到服务器（异步，不阻塞）；首启走 skipServerSync 等 branch 解析后再 POST。
+        // userInitiated: true——不走 skipServerSync 的 saveSettings 调用要么来自用户显式
+        // 改设置的 UI 路径（设置弹窗、字幕开关、聊天窗翻译开关等），要么来自 server merge
+        // 成功后的回写（那时 settingsHydrated 已在 merge 回调里标记，重复标记无副作用），
+        // 都是合法的水合来源。
         if (!skipServerSync) {
-            syncSettingsToServer();
+            syncSettingsToServer({ userInitiated: true });
         }
     }
 
@@ -449,6 +867,19 @@
             const saved = localStorage.getItem('project_neko_settings');
             if (saved) {
                 const settings = JSON.parse(saved);
+                // A booting window has by definition already "applied" the
+                // snapshot it is loading, so seed the applied-id floor from it.
+                // Otherwise this window's first write can mint an id at or
+                // below one another window already published, and the strict
+                // freshness test drops it.
+                const bootMeta = _readSharedWriteMeta(settings);
+                if (bootMeta && bootMeta.writeId > _lastAppliedSharedWriteId) {
+                    _lastAppliedSharedWriteId = bootMeta.writeId;
+                }
+                if (bootMeta && bootMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
+                    const bootDecision = bootMeta.asrDecision || bootMeta;
+                    _noteAsrDecision(bootDecision.writeId, bootDecision.writerId, settings.independentAsrEnabled);
+                }
 
                 // 迁移逻辑：检测旧版设置并迁移到新字段
                 // 如果旧版 proactiveChatEnabled=true 但新字段未定义，则迁移
@@ -485,9 +916,11 @@
                     }
                 }
 
-                // 如果进行了迁移，持久化更新后的设置
+                // 如果进行了迁移，持久化更新后的设置。走 _writeSharedSettings 带上写入
+                // 元数据：迁移发生在水合之前、也不是用户显式改动，其他窗口据此不会把这份
+                // 快照里的 independentAsrEnabled 当成一次跨窗口开关翻转
                 if (needsSave) {
-                    localStorage.setItem('project_neko_settings', JSON.stringify(settings));
+                    _writeSharedSettings(settings, []);
                 }
 
                 // 使用 ?? 运算符提供更好的默认值处理（避免将 false 误判为需要使用默认值）
@@ -503,6 +936,7 @@
                 S.mergeMessagesEnabled = settings.mergeMessagesEnabled ?? false;
                 S.focusModeEnabled = settings.focusModeEnabled ?? false;
                 S.focusCognitionEnabled = settings.focusCognitionEnabled ?? true;
+                S.independentAsrEnabled = settings.independentAsrEnabled ?? false;
                 S.avatarReactionBubbleEnabled = settings.avatarReactionBubbleEnabled ?? true;
                 S.slopFilterEnabled = settings.slopFilterEnabled ?? true;
                 S.proactiveChatInterval = settings.proactiveChatInterval ?? C.DEFAULT_PROACTIVE_CHAT_INTERVAL;
@@ -641,9 +1075,42 @@
         const _firstLaunchPending = (() => {
             try { return localStorage.getItem(_FIRST_LAUNCH_PENDING_KEY) === '1'; } catch (_) { return false; }
         })();
+        // Snapshot the pre-GET settings as the dirty-diff baseline: keys the
+        // user changes while the GET is in flight diverge from this snapshot,
+        // get recorded in _dirtySettingsKeys, and are preserved by the
+        // field-level merge below.
+        _settingsBaseline = getConversationSettings();
+        // No re-arming of _settingsMergedFromServer here: it already starts
+        // false, and once a merge HAS happened the local snapshot holds server
+        // truth for untouched keys — a later re-read does not make that
+        // knowledge stale enough to justify dropping back to partial writes.
+        // Until the first merge lands, POST bodies stay restricted to the
+        // user-dirty keys so they cannot overwrite the server-persisted
+        // preferences this client has not read yet.
         try {
-            loadSettingsFromServer().then(serverResult => {
+            const mergeSettled = loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
+                // server GET 成功返回：前端从此持有权威设置视图，标记水合
+                // （S.settingsHydrated，见 app-state.js），start_session 握手才允许携带
+                // independent_asr_enabled。GET 永久失败时 serverResult 为 null，这里
+                // 不会执行——字段保持省略、由后端持久化值兜底，正是期望行为。
+                S.settingsHydrated = true;
+                // The GET merged server values into S, so independentAsrEnabled
+                // now holds either server truth or a user change the field-level
+                // merge preserved — authoritative for the handshake either way.
+                S.independentAsrAuthoritative = true;
+                // Distinct from the hydration mark above (which a user action
+                // also sets, because a user choice is authoritative for the
+                // handshake even before any GET): THIS flag means server values
+                // were really merged into the local view, which is the only
+                // evidence that licenses full-snapshot POSTs. Set before the
+                // merge/writeback below so the writeback saveSettings() already
+                // posts the converged full snapshot. A serverResult with a
+                // telemetry branch but no settings counts too: the server holds
+                // no persisted conversation settings at all, so there is
+                // nothing a full write could clobber (and the first-launch
+                // forced push below depends on it).
+                _settingsMergedFromServer = true;
                 const serverSettings = serverResult.settings;
                 const telemetryBranch = serverResult.telemetryBranch;
                 let hasUpdate = false;
@@ -665,21 +1132,35 @@
                 }
 
                 if (serverSettings) {
-                    // 用服务器设置覆盖本地设置
+                    // Field-level merge (Codex P2): apply server values to the
+                    // keys the user never touched, preserve the dirty ones. A
+                    // user change during the in-flight GET therefore keeps its
+                    // own keys authoritative while every other field still
+                    // hydrates from the server — the old whole-merge-drop let
+                    // one unrelated toggle turn the entire boot-default
+                    // snapshot into the POSTed truth.
                     for (const key of Object.keys(serverSettings)) {
-                        if (serverSettings[key] !== undefined && S[key] !== serverSettings[key]) {
+                        if (serverSettings[key] === undefined) continue;
+                        if (_dirtySettingsKeys.has(key)) continue;
+                        if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
                             hasUpdate = true;
                         }
                     }
-                    // 同步字幕设置到 subtitle.js（内部闭包变量）
-                    if (serverSettings.subtitleEnabled !== undefined && window.subtitleBridge) {
+                    // Subtitle bridge mirrors follow the same dirty gating so
+                    // a user-changed subtitle preference survives the merge.
+                    if (serverSettings.subtitleEnabled !== undefined && !_dirtySettingsKeys.has('subtitleEnabled') && window.subtitleBridge) {
                         window.subtitleBridge.setSubtitleEnabled(serverSettings.subtitleEnabled);
                     }
-                    if (serverSettings.userLanguage !== undefined && window.subtitleBridge) {
+                    if (serverSettings.userLanguage !== undefined && !_dirtySettingsKeys.has('userLanguage') && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
                     }
                 }
+
+                // Roll the baseline to the merged state BEFORE the writeback
+                // save below: server-applied values must not be misattributed
+                // as user-dirty by the writeback's own userInitiated diff.
+                _settingsBaseline = getConversationSettings();
 
                 if (hasUpdate) {
                     console.log('[app-settings] 已从服务器合并对话设置');
@@ -723,13 +1204,33 @@
                     }));
                 }
             }).finally(() => {
+                // Runs on both the merged and the failed path — which is
+                // exactly why it must NOT touch _settingsMergedFromServer: on
+                // the failure path (serverResult === null) nothing was merged,
+                // so re-enabling full snapshots here would let the next user
+                // edit POST the whole boot snapshot and overwrite every
+                // untouched persisted preference. The merged path already set
+                // the flag inside the callback above, before mergeSettled
+                // resolves, so a sync woken by the gate observes it.
                 // 必须等 GET 解析后再起 periodic sync：否则 60s 间隔的 POST 可能比 GET 先到，
                 // 把首启本地默认值写到服务器；GET 回来读到自家 echo 误判「云端已有偏好」、干扰
                 // 设置合并，marker 也可能错误留存。GET 走 finally 后周期同步才安全
                 startPeriodicSync();
             });
+            // Gate settings POSTs (bounded) behind the GET+merge so their
+            // send-time snapshots carry server truth for untouched fields;
+            // the catch keeps the gate non-rejecting if the merge throws.
+            _settingsGetGate = Promise.race([
+                mergeSettled.catch(() => { }),
+                new Promise((resolve) => { setTimeout(resolve, SETTINGS_GET_GATE_TIMEOUT_MS); })
+            ]);
         } catch (error) {
             console.error('服务器设置同步启动失败:', error);
+            // The GET never got off the ground, so nothing was merged either:
+            // _settingsMergedFromServer stays false and POSTs stay dirty-only.
+            // (No in-flight read can be clobbered here, but the local snapshot
+            // is still pre-merge, so a full write would overwrite server-side
+            // preferences with this boot's values just the same.)
             // GET 链路本身就挂了，至少把 periodic sync 起来兜底，
             // 避免用户的本地修改永远上不了服务器
             startPeriodicSync();
@@ -742,7 +1243,112 @@
         if (event.key !== 'project_neko_settings' || !event.newValue) return;
         try {
             const settings = JSON.parse(event.newValue);
-            const changed = applySharedRuntimeSettings(settings);
+            // Cross-window independent-ASR flips are authoritative (Codex P2):
+            // detect the flip BEFORE applySharedRuntimeSettings mutates S.
+            const meta = _readSharedWriteMeta(settings);
+            const asrValueDiffers =
+                Object.prototype.hasOwnProperty.call(settings, 'independentAsrEnabled') &&
+                S.independentAsrEnabled !== settings.independentAsrEnabled;
+            const asrMarkedExplicit = !!meta
+                && meta.changedKeys.indexOf('independentAsrEnabled') !== -1;
+            const asrWriteIsNewer = !meta
+                || meta.writeId > _lastAppliedSharedWriteId
+                || (meta.writeId === _lastAppliedSharedWriteId && asrMarkedExplicit);
+            // With metadata, a value difference alone proves nothing — every
+            // saveSettings() copies independentAsrEnabled into the snapshot.
+            // Require the writer to have marked the key as an explicit user
+            // change AND the write to be newer than the last one applied here
+            // (out-of-order or replayed snapshots must not re-flip a route).
+            // An EQUAL id is not supersession, though: two windows saving in
+            // the same millisecond before either observed the other's storage
+            // event both mint that millisecond (the applied-id floor in
+            // _nextSharedWriteId only rises once the other write has been
+            // APPLIED here), and a strict `>` would drop whichever arrived
+            // second — silently discarding a genuine ASR toggle and leaving
+            // this window to stamp the pre-toggle route on its next handshake.
+            // Concurrent writes are unordered, so break the tie on INTENT
+            // rather than the clock: an explicitly toggled key wins, which
+            // makes both delivery orders converge on the user's choice. A
+            // strictly OLDER write is still refused, and no new metadata field
+            // is involved, so windows on the previous build are unaffected.
+            // Metadata-less payloads come from a window still running the
+            // previous build: keep the legacy value-difference behaviour so a
+            // genuine toggle from such a window is not silently dropped.
+            const asrOutranksLocalChoice = !meta || _asrWriteOutranksLocalChoice(meta);
+            const asrChangedByOtherWindow = meta
+                ? (asrValueDiffers && asrMarkedExplicit && asrWriteIsNewer
+                    && asrOutranksLocalChoice)
+                : asrValueDiffers;
+            // Drop the key from the apply set when the snapshot's ASR value
+            // carries neither user intent nor trustworthy server truth: an
+            // already-superseded write, or one made before its own window
+            // hydrated (pre-merge boot default for every key the user did not
+            // touch) while this window already merged the server value. A
+            // hydrated writer's non-explicit value still propagates as before,
+            // and every other shared key keeps syncing untouched.
+            const asrValueIsStale = !!meta
+                && !asrChangedByOtherWindow
+                && (!asrWriteIsNewer || !asrOutranksLocalChoice
+                    || (!meta.asrAuthoritative && S.settingsHydrated === true));
+            if (meta && meta.writeId > _lastAppliedSharedWriteId) {
+                _lastAppliedSharedWriteId = meta.writeId;
+            }
+            let incoming = settings;
+            if (asrValueIsStale) {
+                incoming = Object.assign({}, settings);
+                delete incoming.independentAsrEnabled;
+            }
+            const changed = applySharedRuntimeSettings(incoming);
+            // Roll the dirty-diff baseline for every key just adopted from
+            // another window. _markUserDirtySettings diffs against this
+            // baseline, so without the roll a value this window merely
+            // RECEIVED looks like a local user edit on the next unrelated
+            // save: the key gets marked dirty, that dirty mark grants
+            // S.independentAsrAuthoritative, the key rides out in changedKeys
+            // as an explicit toggle other windows then trust, and the still
+            // pending settings GET skips it as user-owned. A received value
+            // laundered into user intent that way can pin a whole window to a
+            // stale ASR route and POST it back over the server's. Keys this
+            // window really did touch stay dirty and keep their authority.
+            // for...of rather than a forEach callback on purpose: the
+            // callback's closing punctuation would truncate the listener slice
+            // that test_cross_window_asr_flip_marks_hydration_and_asr_dirty
+            // extracts by string split.
+            if (_settingsBaseline) {
+                for (const key of _SHARED_SETTINGS_KEYS) {
+                    if (_dirtySettingsKeys.has(key)) continue;
+                    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+                    _settingsBaseline[key] = S[key];
+                }
+            }
+            if (asrChangedByOtherWindow) {
+                // The writer marked independentAsrEnabled as an explicit user
+                // change (or is a metadata-less legacy window, where a value
+                // difference is the only signal available). Either way this is
+                // a real cross-window toggle, not the incidental copy an
+                // unrelated save carries. Treat it exactly like a local user
+                // change: mark hydration so the next start_session handshake stamps the new
+                // value (app-websocket.js attachStartSessionHandshake gates on
+                // S.settingsHydrated; without it the backend would read the OLD
+                // persisted value while the other window's POST is in flight),
+                // and mark the key dirty so this window's still-pending settings
+                // GET preserves the flip during its field-level merge instead of
+                // overwriting it and POSTing the old value back via
+                // saveSettings(). Deliberately no
+                // POST from here: the originating window owns persistence, and a
+                // receiving-window POST would duplicate writes and loop storage
+                // events. Other shared keys stay non-authoritative — they never
+                // reach the handshake, and marking hydration for them would let
+                // a first-launch write in another window arm this window's
+                // periodic sync with non-authoritative boot values.
+                S.settingsHydrated = true;
+                _dirtySettingsKeys.add('independentAsrEnabled');
+                S.independentAsrAuthoritative = true;
+                if (meta) {
+                    const adopted = meta.asrDecision || meta;
+                    _noteAsrDecision(adopted.writeId, adopted.writerId, settings.independentAsrEnabled);
+                }
+            }
             stopVisionAfterPrivacyEnabled();
             if (changed && typeof window.scheduleProactiveChat === 'function') {
                 window.scheduleProactiveChat();

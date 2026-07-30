@@ -739,6 +739,20 @@ class WarThunderClient:
 
     # -- 细粒度采集（供分频轮询使用） --------------------------------------
 
+    def get_indicators_with_status(
+        self,
+    ) -> tuple[bool, ConnectionState, Indicators, MapInfo]:
+        """拉取战局探针，并保留传输是否成功，避免把请求失败当成真实离局。"""
+        connected, data = self._fetch("/indicators")
+        if not connected or not isinstance(data, dict):
+            return False, ConnectionState.OFFLINE, Indicators(valid=False), MapInfo(valid=False)
+        ind = self._parse_indicators(data)
+        map_connected, minfo = self.get_map_info_with_status()
+        if not map_connected:
+            return False, ConnectionState.OFFLINE, ind, MapInfo(valid=False)
+        state = ConnectionState.IN_BATTLE if minfo.valid else ConnectionState.NOT_IN_BATTLE
+        return True, state, ind, minfo
+
     def get_indicators(self) -> tuple[ConnectionState, Indicators, MapInfo]:
         """拉取 /indicators + /map_info，作为状态探针。
 
@@ -749,30 +763,38 @@ class WarThunderClient:
 
         返回 (状态, indicators, map_info)；map_info 一并返回供调用方缓存复用。
         """
-        connected, data = self._fetch("/indicators")
-        if not connected:
-            return ConnectionState.OFFLINE, Indicators(valid=False), MapInfo(valid=False)
-        ind = self._parse_indicators(data)
-        minfo = self.get_map_info()
-        state = (
-            ConnectionState.IN_BATTLE if minfo.valid else ConnectionState.NOT_IN_BATTLE
-        )
+        _ok, state, ind, minfo = self.get_indicators_with_status()
         return state, ind, minfo
+
+    def get_state_with_status(self) -> tuple[bool, VehicleState]:
+        """拉取 /state，并区分传输失败与服务端返回 valid=false。"""
+        connected, data = self._fetch("/state")
+        return connected and isinstance(data, dict), self._parse_state(data)
 
     def get_state(self) -> VehicleState:
         """拉取 /state（载具仪表）。"""
-        _, data = self._fetch("/state")
-        return self._parse_state(data)
+        _connected, state = self.get_state_with_status()
+        return state
+
+    def get_map_objects_with_status(self) -> tuple[bool, list[MapObject]]:
+        """拉取地图物体，并区分传输失败与真实空列表。"""
+        connected, data = self._fetch("/map_obj.json")
+        return connected and isinstance(data, list), _parse_map_objects(data)
 
     def get_map_objects(self) -> list[MapObject]:
         """拉取 /map_obj.json（地图物体）。"""
-        _, data = self._fetch("/map_obj.json")
-        return _parse_map_objects(data)
+        _connected, objects = self.get_map_objects_with_status()
+        return objects
+
+    def get_map_info_with_status(self) -> tuple[bool, MapInfo]:
+        """拉取地图信息，并区分传输失败与真实 valid=false。"""
+        connected, data = self._fetch("/map_info.json")
+        return connected and isinstance(data, dict), self._parse_map_info(data)
 
     def get_map_info(self) -> MapInfo:
         """拉取 /map_info.json（坐标换算参数）。"""
-        _, data = self._fetch("/map_info.json")
-        return self._parse_map_info(data)
+        _connected, info = self.get_map_info_with_status()
+        return info
 
     def get_mission(self) -> tuple[str | None, Any]:
         """拉取 /mission.json，返回 (status, objectives)。"""
@@ -781,35 +803,62 @@ class WarThunderClient:
             return data.get("status"), data.get("objectives")
         return None, None
 
-    def get_hud(self) -> list[HudMessage]:
-        """增量拉取 /hudmsg（击杀/受损事件），自动推进 lastEvt/lastDmg 游标。"""
-        _, data = self._fetch(
+    def get_hud_with_status(self) -> tuple[bool, list[HudMessage]]:
+        """增量拉取 HUD，并报告响应是否为有效对象。"""
+        connected, data = self._fetch(
             f"/hudmsg?lastEvt={self._last_evt}&lastDmg={self._last_dmg}"
         )
-        return self._parse_hudmsg(data)
+        valid = connected and isinstance(data, dict)
+        return valid, self._parse_hudmsg(data)
 
-    def drain_hud(self) -> int:
-        """排空当前 hudmsg 积压：把 lastEvt/lastDmg 游标推进到最新但丢弃事件。
+    def get_hud(self) -> list[HudMessage]:
+        """增量拉取 /hudmsg（击杀/受损事件），自动推进 lastEvt/lastDmg 游标。"""
+        _ok, messages = self.get_hud_with_status()
+        return messages
 
-        用途：8111 的 /hudmsg 是跨对局保留的滚动缓冲，且 id 不随换局归零。
-        服务(重)启/重连后游标为 0，进入对局时首拉会把上一局残留整批返回，
-        若直接喂给 KillTracker 会把别人/上一局的击杀阵亡错算进本局。
-        进入对局时调用本方法先排空积压（这些都早于本局开始，必为旧事件），
-        之后再正常增量拉取即可。返回被丢弃的事件条数（便于日志/记录）。
-        """
-        return len(self.get_hud())
+    # 注：排空积压由 wt_server._poll_events 直接编排（reset → get_*_with_status →
+    # 按结果决定 restore/保留），因为它必须知道请求成败才能决定是丢弃还是恢复边界。
+    # 曾经的 drain_hud/drain_chat/reset_incremental_cursors 便捷方法吞掉了成败信息，
+    # 已随该改造删除，不要重新引入。
+    def reset_hud_cursors(self) -> None:
+        """重置 HUD 事件与伤害游标。"""
+        self._last_evt = 0
+        self._last_dmg = 0
 
-    def get_chat(self) -> list[dict[str, Any]]:
-        """增量拉取 /gamechat，自动推进 lastId 游标。"""
-        _, data = self._fetch(f"/gamechat?lastId={self._last_chat}")
+    def restore_hud_cursors(self, state: dict[str, int]) -> None:
+        """恢复 HUD 游标，供首次排空失败后从原边界继续增量读取。"""
+        self._last_evt = max(0, _safe_int(state.get("last_evt")))
+        self._last_dmg = max(0, _safe_int(state.get("last_dmg")))
+
+    def reset_chat_cursor(self) -> None:
+        """重置聊天游标。"""
+        self._last_chat = 0
+
+    def incremental_cursor_state(self) -> dict[str, int]:
+        """返回不含内容的增量游标诊断快照。"""
+        return {
+            "last_evt": self._last_evt,
+            "last_dmg": self._last_dmg,
+            "last_chat": self._last_chat,
+        }
+
+    def get_chat_with_status(self) -> tuple[bool, list[dict[str, Any]]]:
+        """增量拉取聊天，并报告响应是否为有效列表。"""
+        connected, data = self._fetch(f"/gamechat?lastId={self._last_chat}")
+        valid = connected and isinstance(data, list)
         if not isinstance(data, list):
-            return []
+            return valid, []
         out: list[dict[str, Any]] = []
         for msg in data:
             if isinstance(msg, dict):
                 self._last_chat = max(self._last_chat, _safe_int(msg.get("id")))
                 out.append(msg)
-        return out
+        return valid, out
+
+    def get_chat(self) -> list[dict[str, Any]]:
+        """增量拉取 /gamechat，自动推进 lastId 游标。"""
+        _ok, messages = self.get_chat_with_status()
+        return messages
 
     # -- 对外主方法 --------------------------------------------------------
 
@@ -907,16 +956,10 @@ class WarThunderClient:
         self._last_map_gen = gen
         return path
 
-    # -- 坐标换算工具 ------------------------------------------------------
 
-    @staticmethod
-    def to_meters(
-        nx: float, ny: float, map_info: MapInfo
-    ) -> tuple[float, float] | None:
-        """把 0~1 归一化坐标换算成真实米坐标，缺少 grid_size 时返回 None。"""
-        if map_info.grid_size is None:
-            return None
-        return (nx * map_info.grid_size[0], ny * map_info.grid_size[1])
+# 坐标换算不在本模块：归一化坐标 -> 米必须用 map_max-map_min 作跨度，
+# grid_size 只是网格参考区域（实测约为整图的 1/2.5），用它换算会系统性低估距离。
+# 正确实现见 wt_geo.to_meters / wt_geo._world_span。
 
 
 # ---------------------------------------------------------------------------

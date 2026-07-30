@@ -59,7 +59,7 @@ export default function AvatarToolQuickbar({
               data-avatar-tool-id={tool.id}
               aria-label={label}
               aria-pressed={activeAvatarToolId === tool.id}
-              title={label}
+              data-neko-tooltip={label}
               disabled={disabled}
               onClick={(event) => onToolClick(tool, event)}
             >
@@ -84,7 +84,7 @@ export default function AvatarToolQuickbar({
         className="avatar-tool-quickbar-edit"
         type="button"
         aria-label={i18n('chat.avatarToolEdit', 'Edit quick tools')}
-        title={i18n('chat.avatarToolEdit', 'Edit quick tools')}
+        data-neko-tooltip={i18n('chat.avatarToolEdit', 'Edit quick tools')}
         disabled={disabled}
         onClick={onEditClick}
       >

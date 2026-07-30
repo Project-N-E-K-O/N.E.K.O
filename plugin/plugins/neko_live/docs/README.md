@@ -33,6 +33,7 @@
 - [output_contract](modules/output_contract.md)：回复长度、质量与唯一输出边界。
 - [viewer_stores](modules/viewer_stores.md)：观众档案、审计与凭据边界。
 - [douyin_live_ingest](modules/douyin_live_ingest.md)：实验性抖音只读 bridge 接入。
+- [twitch_live_ingest](modules/twitch_live_ingest.md)：TwitchIO Helix/EventSub 只读接入、Device Code Flow、加密 token、账号与目标频道分离，以及首阶段明确不做的首页/写能力边界。
 
 模块文档只描述该模块拥有的契约、数据、安全边界、测试和降级策略。跨模块总规则仍以 `development.md` 为准。
 

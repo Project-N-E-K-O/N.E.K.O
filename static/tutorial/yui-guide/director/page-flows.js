@@ -1081,7 +1081,7 @@
 
         async moveCursorToElement(element, durationMs, options) {
             const normalizedOptions = options || {};
-            this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            this.releaseExternalizedChatCursorToHome();
             while (!this.isStopping()) {
                 await this.waitUntilSceneResumed();
                 const rect = this.getElementRect(element);
@@ -1174,7 +1174,7 @@
 
         async moveCursorToTrackedElement(element, durationMs, options) {
             const normalizedOptions = options || {};
-            this.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+            this.releaseExternalizedChatCursorToHome();
             const totalDurationMs = Number.isFinite(durationMs) ? durationMs : DEFAULT_CURSOR_DURATION_MS;
             const exactDuration = normalizedOptions.exactDuration === true;
             const firstLegMs = exactDuration
@@ -1431,7 +1431,7 @@
         async waitForHomeMainUIReady(timeoutMs) {
             if (typeof window.handleShowMainUI === 'function') {
                 try {
-                    window.handleShowMainUI();
+                    window.handleShowMainUI({ owner: 'yui-page-handoff' });
                 } catch (error) {
                     console.warn('[YuiGuide] 恢复主界面失败:', error);
                 }
@@ -2698,7 +2698,7 @@
             this.closePluginDashboardWindowIfCreatedByGuide('终止');
             if (typeof window.handleShowMainUI === 'function') {
                 try {
-                    window.handleShowMainUI();
+                    window.handleShowMainUI({ owner: 'yui-page-handoff' });
                 } catch (error) {
                     console.warn('[YuiGuide] 终止时恢复主界面失败:', error);
                 }

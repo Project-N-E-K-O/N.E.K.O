@@ -29,4 +29,4 @@ The JSON also contains keybook/provider metadata, an API-key registry, default-m
 - Update all eight locale files for user-visible text.
 - Run provider/config tests and the documentation build.
 
-See [API provider field reference](/api_providers_fields) for the schema contract.
+See [API provider field reference](/api_providers_fields) for the schema contract. For user-facing differences between the bundled free path, bring-your-own keys, and local components, see [Cost and providers](/guide/cost-and-providers).

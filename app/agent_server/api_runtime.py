@@ -541,6 +541,20 @@ async def startup():
         browser_use=None,
         openclaw=Modules.openclaw,
     )
+    # TaskDeduper 在 __init__ 里就把 summary 路由的 base_url 定死并缓存 client，整
+    # 个进程生命周期不再复议。agent_server 作为独立进程跑时不经过 main_server 的
+    # GeoIP 预热，海外用户于是被那一瞬的大陆兜底钉住——而 summary 是区域敏感路由
+    # （不同于有意豁免改写的 agent 专用 URL）。构造前先落定。
+    try:
+        from utils.config_manager import get_config_manager as _get_cm
+        # 用启动预热原语而不是会话级 aensure：上面 ComputerUseAdapter 构造时已读过
+        # 配置、起了探测，首探在网络未就绪时快速失败进 30s 退避——aensure 不 kick、
+        # 不穿退避（1.5s 也短于单次 3s 请求），撞上退避就放弃；awarmup 会催醒退避
+        # 并用启动级窗口等结论，与 main_server / memory_server 的启动路径对偶。
+        if not await _get_cm().awarmup_region_check():
+            logger.warning("[GeoIP] Agent 去重器构造前区域判定仍未落定，本进程按大陆线路构造")
+    except Exception as e:
+        logger.warning(f"[GeoIP] Agent 去重器构造前区域落定失败，按当前配置继续: {e}")
     Modules.deduper = TaskDeduper()
     Modules.throttled_logger = ThrottledLogger(logger, interval=30.0)
     _rewire_computer_use_dependents()

@@ -16,10 +16,10 @@ relative_deg,icon,type），避免重复计算。
 from __future__ import annotations
 
 import math
+from collections.abc import Callable
 from typing import Any
 
 from wt_geo import clock_position, compass_8
-from wt_processor import _merge_profile
 
 
 def _pos_num(v: Any) -> float | None:
@@ -30,7 +30,7 @@ def resolve_proximity_thresholds(
     profiles: dict[str, Any] | None,
     domain: str | None,
     vtype: str | None,
-    family_rules: list[dict[str, Any]] | None = None,
+    resolve_profile: Callable[[str | None, str | None], tuple[dict[str, Any], bool, str, str | None]] | None = None,
 ) -> tuple[float | None, float | None]:
     """解析接近告警距离，返回 (对空中敌人, 对地面/海面敌人) 两个阈值(米)。
 
@@ -48,9 +48,15 @@ def resolve_proximity_thresholds(
     prox = prox if isinstance(prox, dict) else {}
 
     if domain in ("air", "heli"):
-        cfg, matched, _source, _family = _merge_profile(
-            profiles, vtype, "air" if domain == "air" else None, family_rules or []
-        )
+        if resolve_profile is None:
+            # 没有注入解析器时只看精确 profile；家族规则归 TelemetryProcessor 所有，
+            # 这里不再自行重建（也不再掏它的私有属性）。
+            exact = profiles.get(vtype) if vtype else None
+            cfg, matched = (exact, True) if isinstance(exact, dict) else ({}, False)
+        else:
+            cfg, matched, _source, _family = resolve_profile(
+                vtype, "air" if domain == "air" else None
+            )
         t = _pos_num(cfg.get("proximity_warn_m")) if matched else None
         if t is None:
             key = "heli_default" if domain == "heli" else "air_default"
@@ -70,14 +76,20 @@ class ProximityTracker:
     map 组轮询约 0.5s，0.06 对应地图边长的 6%，足以覆盖高速目标的一帧位移。
     """
 
-    def __init__(self, assoc_dist: float = 0.06) -> None:
+    def __init__(
+        self,
+        assoc_dist: float = 0.06,
+        exit_hysteresis_ratio: float = 1.12,
+    ) -> None:
         self.assoc_dist = assoc_dist
+        self.exit_hysteresis_ratio = max(1.0, float(exit_hysteresis_ratio))
         self.reset()
 
     def reset(self) -> None:
         self._tracks: list[dict[str, Any]] = []
         self._primed = False  # 首次 update 仅建立基线，不报（避免进场/刷新刷屏）
         self._seq = 0
+        self._track_seq = 0
 
     def update(
         self,
@@ -94,46 +106,137 @@ class ProximityTracker:
         两者均为 None/越界时仍会更新轨迹基线，只是不产生事件。
         """
         events: list[dict[str, Any]] = []
-        used: set[int] = set()
         new_tracks: list[dict[str, Any]] = []
+        matches = self._associate(enemies)
 
-        for e in enemies:
+        for enemy_index, e in enumerate(enemies):
             ex, ey = e.get("x"), e.get("y")
             dist = e.get("distance_m")
             icon = e.get("icon")
-            is_air = e.get("type") == "aircraft"
+            target_type = e.get("type")
+            is_air = target_type == "aircraft"
             thr = thr_air if is_air else thr_ground
-            in_range = thr is not None and dist is not None and dist <= thr
+            event_kind: str | None = None
 
-            # 关联：在未匹配的旧轨迹中，找同图标且位移最小者
-            best_i: int | None = None
-            best_d = self.assoc_dist
-            if ex is not None and ey is not None:
-                for i, t in enumerate(self._tracks):
-                    if i in used or t["icon"] != icon:
-                        continue
-                    if t["x"] is None or t["y"] is None:
-                        continue
-                    d = math.hypot(ex - t["x"], ey - t["y"])
-                    if d < best_d:
-                        best_d = d
-                        best_i = i
+            best_i = matches.get(enemy_index)
 
             if best_i is not None:
-                used.add(best_i)
-                prev_in = self._tracks[best_i]["in_range"]
+                previous = self._tracks[best_i]
+                track_id = int(previous["track_id"])
+                samples = int(previous.get("samples") or 1) + 1
+                first_seen = float(previous.get("first_seen") or now)
+                closing_speed = self._closing_speed(previous, dist, now, is_air)
+                prev_in = bool(previous["in_range"])
+                exit_threshold = (
+                    thr * self.exit_hysteresis_ratio if thr is not None else None
+                )
+                active_threshold = exit_threshold if prev_in else thr
+                in_range = (
+                    active_threshold is not None
+                    and dist is not None
+                    and dist <= active_threshold
+                )
                 if in_range and not prev_in:  # 边沿：范围外 -> 范围内
-                    events.append(self._make_event(e, thr, now, "enter"))
+                    event_kind = "enter"
             else:
+                self._track_seq += 1
+                track_id = self._track_seq
+                samples = 1
+                first_seen = now
+                closing_speed = None
+                in_range = thr is not None and dist is not None and dist <= thr
                 # 新单位：仅在已建立基线后、且一出现就在范围内时报告
                 if self._primed and in_range:
-                    events.append(self._make_event(e, thr, now, "appear"))
+                    event_kind = "appear"
 
-            new_tracks.append({"x": ex, "y": ey, "icon": icon, "in_range": in_range})
+            approaching_threshold = 20.0 if is_air else 3.0
+            approaching = (
+                closing_speed is not None and closing_speed >= approaching_threshold
+            )
+            e["track_id"] = track_id
+            e["track_samples"] = samples
+            e["track_age_seconds"] = round(max(0.0, now - first_seen), 2)
+            e["closing_speed_mps"] = (
+                round(closing_speed, 1) if closing_speed is not None else None
+            )
+            e["approaching"] = approaching if closing_speed is not None else None
+            if event_kind is not None:
+                events.append(self._make_event(e, thr, now, event_kind))
+
+            new_tracks.append({
+                "x": ex,
+                "y": ey,
+                "icon": icon,
+                "type": target_type,
+                "distance_m": dist,
+                "in_range": in_range,
+                "track_id": track_id,
+                "samples": samples,
+                "first_seen": first_seen,
+                "ts": now,
+                "closing_speed_mps": closing_speed,
+            })
 
         self._tracks = new_tracks
         self._primed = True
         return events
+
+    def _associate(self, enemies: list[dict[str, Any]]) -> dict[int, int]:
+        """Associate a dense frame without making list order decide identity."""
+        pairs: list[tuple[float, int, int]] = []
+        for enemy_index, enemy in enumerate(enemies):
+            ex, ey = enemy.get("x"), enemy.get("y")
+            if ex is None or ey is None:
+                continue
+            for track_index, track in enumerate(self._tracks):
+                if (
+                    track.get("icon") != enemy.get("icon")
+                    or track.get("type") != enemy.get("type")
+                    or track.get("x") is None
+                    or track.get("y") is None
+                ):
+                    continue
+                displacement = math.hypot(ex - track["x"], ey - track["y"])
+                if displacement < self.assoc_dist:
+                    pairs.append((displacement, enemy_index, track_index))
+
+        matches: dict[int, int] = {}
+        used_tracks: set[int] = set()
+        for _distance, enemy_index, track_index in sorted(pairs):
+            if enemy_index in matches or track_index in used_tracks:
+                continue
+            matches[enemy_index] = track_index
+            used_tracks.add(track_index)
+        return matches
+
+    @staticmethod
+    def _closing_speed(
+        previous: dict[str, Any],
+        distance_m: Any,
+        now: float,
+        is_air: bool,
+    ) -> float | None:
+        """Return positive m/s when a matched contact is closing.
+
+        Map objects have no stable game-provided id. Implausible jumps are
+        discarded instead of being exposed as a confident approach signal.
+        """
+        try:
+            previous_distance = float(previous.get("distance_m"))
+            current_distance = float(distance_m)
+            dt = now - float(previous.get("ts"))
+        except (TypeError, ValueError):
+            return None
+        if not (0.1 <= dt <= 5.0):
+            return None
+        instant = (previous_distance - current_distance) / dt
+        plausible_limit = 2000.0 if is_air else 250.0
+        if not math.isfinite(instant) or abs(instant) > plausible_limit:
+            return None
+        old = previous.get("closing_speed_mps")
+        if isinstance(old, (int, float)) and math.isfinite(float(old)):
+            return float(old) * 0.6 + instant * 0.4
+        return instant
 
     def _make_event(
         self, e: dict[str, Any], threshold_m: float | None, now: float, kind: str
@@ -155,4 +258,10 @@ class ProximityTracker:
             "relative_deg": rel,         # 相对自身航向（-180~180，负左正右）
             "clock": clock_position(rel),  # 时钟方位（12=正前）
             "threshold_m": round(threshold_m) if threshold_m else None,
+            "track_id": e.get("track_id"),
+            "track_samples": e.get("track_samples"),
+            "track_age_seconds": e.get("track_age_seconds"),
+            "closing_speed_mps": e.get("closing_speed_mps"),
+            "approaching": e.get("approaching"),
+            "nose_to_player_deg": e.get("nose_to_player_deg"),
         }

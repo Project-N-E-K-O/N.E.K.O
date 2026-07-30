@@ -1,0 +1,282 @@
+import re
+import struct
+from pathlib import Path
+
+import pytest
+from tests.static_app_parts import read_js_parts
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+APP_UI_PATH = PROJECT_ROOT / "static" / "app" / "app-ui"
+FORGE_DROP_OVERLAY_PATH = PROJECT_ROOT / "static" / "forge-drop-overlay.js"
+FORGE_DROP_TOKENS_PATH = PROJECT_ROOT / "static" / "forge-drop-tokens.js"
+FORGE_SOUND_DIR = PROJECT_ROOT / "static" / "sounds" / "forge"
+
+
+@pytest.mark.unit
+def test_social_open_request_is_deduped_before_fetching_config():
+    source = read_js_parts(APP_UI_PATH)
+
+    assert "const SOCIAL_OPEN_DEDUPE_MS = 1200;" in source
+    assert "window.__nekoSocialOpenState" in source
+    assert "function shouldIgnoreSocialOpenRequest()" in source
+    assert "function releaseSocialOpenRequest()" in source
+
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
+    listener = source[listener_start:listener_end]
+
+    assert listener.index("if (shouldIgnoreSocialOpenRequest()) {") < listener.index(
+        "fetch('/api/system/social/config')"
+    )
+    assert "let socialOpenRequestReleased = false;" in listener
+    assert listener.count("releaseSocialOpenRequest();") == 2
+    assert "if (!socialOpenRequestReleased)" in listener
+    # Community opens in-app (Electron framed child / browser tab); OAuth may still use openExternal.
+    assert "window.open(String(targetUrl), 'neko-social')" in listener
+    assert "openElectronSocialWindow(url)" in listener
+    assert listener.index("releaseSocialOpenRequest();") > listener.index("openElectronSocialWindow(url)")
+    assert "fetch('/api/card-drop/sync-ticket', {" in listener
+    assert "hashParams.set('native_sync', syncTicket)" in listener
+    assert "fetch('/api/card-drop/native-delegate', {" in listener
+    assert "hashParams.set('native_delegate', nativeDelegate)" in listener
+    assert "const nativeDelegatePromise = fetchNativeDelegate();" not in listener
+    assert "const syncTicket = await fetchNativeSyncTicket();" in listener
+    assert "await Promise.all([" not in listener
+    assert listener.count("setTimeout(() => controller.abort(), 4000)") == 2
+    assert listener.count("signal: controller.signal") == 2
+    assert listener.count("clearTimeout(timeoutId)") == 2
+    assert "native session sync ticket fetch failed: HTTP" in listener
+    assert "native delegate fetch failed (non-fatal):" in listener
+    assert "targetUrl.searchParams.set('cid', cidJson.client_id)" in listener
+    assert "social_base_url" in listener
+    assert "/feed" in listener
+    # Feed first; Desktop OAuth only after open when not logged in.
+    assert "fetch('/api/card-drop/auth-status', { cache: 'no-store' })" in listener
+    assert "fetch('/api/card-drop/oauth/start'" in listener
+    assert "请在浏览器完成统一账号登录" in listener
+    assert listener.index("openElectronSocialWindow(url)") < listener.index(
+        "fetch('/api/card-drop/auth-status'"
+    )
+    assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
+        "fetch('/api/card-drop/oauth/start'"
+    )
+    assert "openExternal(authUrl)" in listener
+    protocol_guard = "targetUrl.protocol !== 'http:' && targetUrl.protocol !== 'https:'"
+    assert protocol_guard in listener
+    assert listener.index(protocol_guard) < listener.index(
+        "await attachNativeSyncTicket(targetUrl)"
+    )
+    # A slow delegate must not delay the initial Electron or browser Community navigation.
+    assert listener.index("openElectronSocialWindow(url)") < listener.index(
+        "await completeInitialCommunityHandoff("
+    )
+    helper_start = listener.index(
+        "const completeInitialCommunityHandoff = async (targetUrl) => {"
+    )
+    helper_end = listener.index("\n            try {", helper_start)
+    helper = listener[helper_start:helper_end]
+    assert helper.index("navigateBrowserPopup(targetUrl, { keepReference: true })") < helper.index(
+        "const nativeDelegate = await fetchNativeDelegate();"
+    )
+    assert helper.index("const nativeDelegate = await fetchNativeDelegate();") < helper.index(
+        "openElectronSocialWindow(delegateTargetUrl.toString())"
+    )
+    assert re.search(
+        r"const delegateTargetUrl = await attachNativeSyncTicket\(\s*"
+        r"new URL\(targetUrl, window\.location\.href\)\s*\);",
+        listener,
+    )
+    assert "attachNativeDelegate(delegateTargetUrl, nativeDelegate);" in listener
+    assert "const completeInitialCommunityHandoff = async (targetUrl) => {" in listener
+    assert listener.count(
+        "await completeInitialCommunityHandoff("
+    ) == 2
+    main_flow = listener[helper_end:]
+    assert main_flow.index("fetch('/api/card-drop/auth-status'") < main_flow.index(
+        "await completeInitialCommunityHandoff("
+    )
+    assert re.search(
+        r"else \{\s*await completeInitialCommunityHandoff\(url\);\s*\}",
+        listener,
+    )
+
+
+@pytest.mark.unit
+def test_social_browser_fallback_preopens_popup_before_async_fetches():
+    source = read_js_parts(APP_UI_PATH)
+
+    listener_start = source.index("window.addEventListener('live2d-social-click', async () => {")
+    listener_end = source.index("// 睡觉按钮（请她离开）", listener_start)
+    listener = source[listener_start:listener_end]
+
+    preopen = "popupRef = window.open('about:blank', '_blank');"
+    assert preopen in listener
+    assert listener.index(preopen) < listener.index(
+        "const cfgRes = await fetch('/api/system/social/config');"
+    )
+    assert "oauthPopupRef" not in listener
+    assert "const navigateBrowserPopup = (targetUrl, options = {}) => {" in listener
+    assert listener.count("window.open('about:blank', '_blank')") == 1
+    assert "currentPopup.opener = null;" in listener
+    assert "currentPopup.location.replace(targetUrl);" in listener
+    assert "if (navigated && !options.keepReference)" in listener
+    assert "const waitForOAuthCompletion = async (timeoutMs, requirePopup) => {" in listener
+    assert "if (requirePopup)" in listener
+    assert "let pollDelayMs = 1000;" in listener
+    assert "Math.min(Math.ceil(pollDelayMs * 1.5), 5000)" in listener
+    assert "fetch('/api/card-drop/oauth/status', { cache: 'no-store' })" in listener
+    assert "navigateBrowserPopup(authUrl, { keepReference: true })" in listener
+    assert "await waitForOAuthCompletion(" in listener
+    assert "const refreshedTargetUrl = await attachNativeSyncTicket(" in listener
+    assert "const refreshedDelegatePromise = fetchNativeDelegate();" in listener
+    assert re.search(
+        r"attachNativeDelegate\(\s*refreshedTargetUrl,\s*await refreshedDelegatePromise\s*\)",
+        listener,
+    )
+    assert "navigateBrowserPopup(refreshedTargetUrl.toString())" in listener
+    assert "openElectronSocialWindow(refreshedTargetUrl.toString())" in listener
+    assert "const shouldWaitForOAuth = (isElectron && oauthLaunched)" in listener
+    assert "|| (!isElectron && browserOAuthStarted);" in listener
+    assert re.search(
+        r"await waitForOAuthCompletion\(\s*browserOAuthTimeoutMs,\s*!isElectron\s*\)",
+        listener,
+    )
+    assert "navigateBrowserPopup(targetUrl, { keepReference: true })" in listener
+    assert listener.index("fetch('/api/card-drop/auth-status'") < listener.index(
+        "navigateBrowserPopup(authUrl, { keepReference: true })"
+    )
+    assert listener.index("navigateBrowserPopup(authUrl, { keepReference: true })") < listener.index(
+        "await waitForOAuthCompletion("
+    )
+    assert re.search(
+        r"else if \(!navigateBrowserPopup\(authUrl, \{ keepReference: true \}\)\) \{\s*"
+        r"closePopup\(\);",
+        listener,
+    )
+    assert listener.index("releaseSocialOpenRequest();") < listener.index(
+        "await waitForOAuthCompletion("
+    )
+    assert listener.index("await waitForOAuthCompletion(") < listener.index(
+        "navigateBrowserPopup(refreshedTargetUrl.toString())"
+    )
+    assert "window.open(authUrl, '_blank'" not in listener
+    assert "closePopup();" in listener
+
+
+@pytest.mark.unit
+def test_credit_drop_event_plays_forge_overlay_animation():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    handler_start = source.index("function onCreditDropEvent(event) {")
+    handler_end = source.index("function boot() {", handler_start)
+    handler = source[handler_start:handler_end]
+
+    assert "cachedCredits = Math.max(0, detail.active_count - 1);" in handler
+    assert "play(queuedDetail);" in handler
+
+
+@pytest.mark.unit
+def test_credit_drop_uses_yui_ticket_art_for_every_drop_rarity():
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    tokens = FORGE_DROP_TOKENS_PATH.read_text(encoding="utf-8")
+
+    assert "ticketArt.className = 'ticket-art';" in overlay
+    assert "t.ticketPath(rarity)" in overlay
+    assert "var CARD_MAX_W = 360;" in overlay
+    assert "var CARD_MARGIN = 12;" in overlay
+    assert "var CARD_ASPECT = 1192 / 445;" in overlay
+    assert "window.innerWidth - CARD_MARGIN * 2" in overlay
+    assert "ticketAuraArt.className = 'ticket-aura-art';" in overlay
+    assert "spark.textContent" not in overlay
+    assert "className = 'rk'" not in overlay
+    assert "className = 'meta'" not in overlay
+
+    expected_assets = {
+        "N": "forge-ticket-n.png",
+        "R": "forge-ticket-r.png",
+        "SR": "forge-ticket-sr.png",
+        "SSR": "forge-ticket-ssr.png",
+        "UR": "forge-ticket-ur.png",
+    }
+    for rarity, filename in expected_assets.items():
+        version = "20260718-hd" if rarity == "UR" else "20260717-hd"
+        assert f"{rarity}: '/static/assets/forge-tickets/{filename}?v={version}'" in tokens
+        asset = PROJECT_ROOT / "static" / "assets" / "forge-tickets" / filename
+        assert asset.is_file()
+        png_header = asset.read_bytes()[:24]
+        assert png_header[:8] == b"\x89PNG\r\n\x1a\n"
+        width, height = struct.unpack(">II", png_header[16:24])
+        assert width >= 1000
+        assert height >= 400
+
+
+@pytest.mark.unit
+def test_credit_drop_preloads_and_plays_the_supplied_rarity_sounds():
+    overlay = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    tokens = FORGE_DROP_TOKENS_PATH.read_text(encoding="utf-8")
+
+    expected_sounds = {
+        "N": "rarity-n.mp3",
+        "R": "rarity-r.mp3",
+        "SR": "rarity-sr.wav",
+        "SSR": "rarity-ssr.mp3",
+        "UR": "rarity-ur.mp3",
+    }
+    for rarity, filename in expected_sounds.items():
+        assert f"{rarity}: '/static/sounds/forge/{filename}?v=20260718-user'" in tokens
+        audio = FORGE_SOUND_DIR / filename
+        assert audio.is_file()
+        assert audio.stat().st_size > 1_000
+        header = audio.read_bytes()[:12]
+        if audio.suffix == ".wav":
+            assert header[:4] == b"RIFF"
+            assert header[8:12] == b"WAVE"
+        else:
+            assert header[:3] == b"ID3" or header[:1] == b"\xff"
+
+    assert "function preloadDropSounds()" in overlay
+    assert "function playDropSound(rarity)" in overlay
+    assert "audio.preload = 'auto';" in overlay
+    assert "audio.currentTime = 0;" in overlay
+    assert "var playResult = audio.play();" in overlay
+    assert "playResult.catch(function () {});" in overlay
+    assert "playDropSound(rarity);" in overlay
+    assert "preloadDropSounds();" in overlay
+
+
+@pytest.mark.unit
+def test_credit_badge_uses_bounded_retry_and_low_frequency_reconciliation():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+
+    assert "fetch('/api/card-drop/credits/local-summary'" in source
+    assert "fetch('/api/card-drop/credits'," not in source
+    assert "var STARTUP_RETRY_DELAYS_MS = [2000, 10000, 30000];" in source
+    assert "startupRetryIndex >= STARTUP_RETRY_DELAYS_MS.length" in source
+    assert "var PASSIVE_REFRESH_MS = 10 * 60 * 1000;" in source
+    assert "}, PASSIVE_REFRESH_MS);" in source
+    assert "window.addEventListener('focus', requestInteractiveRefresh);" in source
+    assert "document.addEventListener('visibilitychange'" in source
+    assert "scheduleExpiryRefresh(data.next_expires_at);" in source
+    assert "earliest - now + 1000" in source
+
+
+@pytest.mark.unit
+def test_credit_badge_caches_count_before_button_mount():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+    render_start = source.index("function renderForgeBadge(count, bump) {")
+    render_end = source.index("function startForgeBadgeObserver()", render_start)
+    render = source[render_start:render_end]
+
+    assert render.index("cachedCredits = n;") < render.index("if (!badge) return;")
+
+
+@pytest.mark.unit
+def test_authoritative_credit_refresh_cannot_be_overwritten_by_queued_animation():
+    source = FORGE_DROP_OVERLAY_PATH.read_text(encoding="utf-8")
+
+    assert "creditStateRevision += 1;" in source
+    assert "__credit_state_revision: creditStateRevision" in source
+    assert "payloadRevision === creditStateRevision" in source
+    assert "requestRevision !== creditStateRevision" in source
+    assert "creditRefreshAfterInFlight = true;" in source
+    assert "cache: 'no-store'" in source

@@ -46,6 +46,9 @@ async def test_translation_service_llm_client_creation_is_single_flight(
     monkeypatch,
 ) -> None:
     class _ConfigManager:
+        async def aget_model_api_config(self, _group, *, core_config=None):
+            return self.get_model_api_config(_group)
+
         def get_model_api_config(self, _group: str) -> dict[str, str]:
             return {
                 "api_key": "test-key",

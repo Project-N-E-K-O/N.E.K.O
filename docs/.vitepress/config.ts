@@ -2,6 +2,8 @@ import { defineConfig } from 'vitepress'
 import { readdirSync } from 'node:fs'
 import { dirname, relative, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { isNoindexRoute } from './indexing-policy.mjs'
+import { buildSeoHead, buildSeoPageData, SITE_ORIGIN } from './seo'
 
 const DOCS_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 const SRC_EXCLUDE = new Set([
@@ -16,6 +18,13 @@ const SRC_EXCLUDE = new Set([
   'zh-CN/guide/openclaw_guide.zh-TW.md',
 ])
 const SOURCE_DIR_EXCLUDE = new Set(['.vitepress', 'node_modules', 'public'])
+
+function filterSitemapItems<T extends { url: string }>(items: T[]): T[] {
+  return items.filter((item) => {
+    const route = new URL(item.url, `${SITE_ORIGIN}/`).pathname
+    return !isNoindexRoute(route)
+  })
+}
 
 function collectPageRoutes(directory = DOCS_ROOT): string[] {
   const routes: string[] = []
@@ -43,6 +52,7 @@ function collectPageRoutes(directory = DOCS_ROOT): string[] {
 }
 
 const availablePageRoutes = collectPageRoutes()
+const availablePageRouteSet = new Set(availablePageRoutes)
 
 /* ------------------------------------------------------------------ */
 /*  Shared sidebar definitions (reused across locales)                */
@@ -54,16 +64,25 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'Getting Started',
       intro: 'Introduction', prereq: 'Prerequisites', dev: 'Development Setup',
       quick: 'Quick Start', struct: 'Project Structure', linux: 'Linux Desktop Runtime',
+      buyerGroup: 'Evaluate N.E.K.O.',
+      cost: 'Cost & Providers', offline: 'Local & Offline',
+      privacy: 'Data & Privacy', install: 'Install Options',
     },
     'zh-CN': {
       group: '快速上手',
       intro: '简介', prereq: '前置条件', dev: '开发环境搭建',
       quick: '快速开始', struct: '项目结构', linux: 'Linux 桌面运行时',
+      buyerGroup: '使用前评估',
+      cost: '费用与 Provider', offline: '本地与离线',
+      privacy: '数据与隐私', install: '安装渠道',
     },
     ja: {
       group: 'はじめに',
       intro: 'はじめに', prereq: '前提条件', dev: '開発環境の構築',
       quick: 'クイックスタート', struct: 'プロジェクト構造', linux: 'Linux デスクトップランタイム',
+      buyerGroup: '利用前ガイド',
+      cost: '料金と Provider', offline: 'ローカルとオフライン',
+      privacy: 'データとプライバシー', install: '導入方法',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
@@ -78,6 +97,15 @@ function guideSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.quick, link: `${p}/guide/quick-start` },
         ...linuxDesktopItems,
         { text: t.struct, link: `${p}/guide/project-structure` },
+      ],
+    },
+    {
+      text: t.buyerGroup,
+      items: [
+        { text: t.cost, link: `${p}/guide/cost-and-providers` },
+        { text: t.offline, link: `${p}/guide/local-and-offline` },
+        { text: t.privacy, link: `${p}/guide/data-and-privacy` },
+        { text: t.install, link: `${p}/guide/install-options` },
       ],
     },
   ]
@@ -134,7 +162,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     en: {
       ref: 'API Reference', overview: 'Overview',
       rest: 'REST Endpoints', config: 'Config', chars: 'Characters', pages: 'Web Pages',
-      live2d: 'Live2D Models', vrm: 'VRM Models', mmd: 'MMD Models', pngtuber: 'PNGTuber Models', mem: 'Memory',
+      live2d: 'Live2D Models', vrm: 'VRM Models', vmc: 'VMC Output', mmd: 'MMD Models', pngtuber: 'PNGTuber Models', mem: 'Memory',
       agent: 'Agent', workshop: 'Steam Workshop', cloudsave: 'Cloud Save', tools: 'Runtime Tools', capture: 'Capture Bridge', sys: 'System',
       music: 'Music', jukebox: 'Jukebox', game: 'Minigames', galgame: 'GalGame', icebreaker: 'Icebreaker', proactive: 'Proactive Chat',
       ws: 'WebSocket', proto: 'Protocol', msg: 'Message Types', audio: 'Audio Streaming',
@@ -143,7 +171,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     'zh-CN': {
       ref: 'API 参考', overview: '概览',
       rest: 'REST 接口', config: '配置', chars: '角色', pages: 'Web 页面',
-      live2d: 'Live2D 模型', vrm: 'VRM 模型', mmd: 'MMD 模型', pngtuber: 'PNGTuber 模型', mem: '记忆',
+      live2d: 'Live2D 模型', vrm: 'VRM 模型', vmc: 'VMC 动作输出', mmd: 'MMD 模型', pngtuber: 'PNGTuber 模型', mem: '记忆',
       agent: 'Agent', workshop: 'Steam 创意工坊', cloudsave: '云存档', tools: '运行时工具', capture: '截图桥', sys: '系统',
       music: '音乐', jukebox: '点歌台', game: '小游戏', galgame: 'GalGame', icebreaker: '破冰', proactive: '主动搭话',
       ws: 'WebSocket', proto: '协议', msg: '消息类型', audio: '音频流',
@@ -152,7 +180,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
     ja: {
       ref: 'API リファレンス', overview: '概要',
       rest: 'REST エンドポイント', config: '設定', chars: 'キャラクター', pages: 'Web ページ',
-      live2d: 'Live2D モデル', vrm: 'VRM モデル', mmd: 'MMD モデル', pngtuber: 'PNGTuber モデル', mem: 'メモリ',
+      live2d: 'Live2D モデル', vrm: 'VRM モデル', vmc: 'VMC モーション出力', mmd: 'MMD モデル', pngtuber: 'PNGTuber モデル', mem: 'メモリ',
       agent: 'エージェント', workshop: 'Steam Workshop', cloudsave: 'クラウドセーブ', tools: 'ランタイムツール', capture: 'キャプチャブリッジ', sys: 'システム',
       music: '音楽', jukebox: 'ジュークボックス', game: 'ミニゲーム', galgame: 'ギャルゲー', icebreaker: 'アイスブレイク', proactive: 'プロアクティブチャット',
       ws: 'WebSocket', proto: 'プロトコル', msg: 'メッセージ型', audio: 'オーディオストリーミング',
@@ -174,6 +202,7 @@ function apiSidebar(lang: 'en' | 'zh-CN' | 'ja') {
         { text: t.pages, link: `${p}/api/rest/pages` },
         { text: t.live2d, link: `${p}/api/rest/live2d` },
         { text: t.vrm, link: `${p}/api/rest/vrm` },
+        { text: t.vmc, link: `${p}/api/rest/vmc` },
         { text: t.mmd, link: `${p}/api/rest/mmd` },
         { text: t.pngtuber, link: `${p}/api/rest/pngtuber` },
         { text: t.mem, link: `${p}/api/rest/memory` },
@@ -414,21 +443,27 @@ function contributingSidebar(lang: 'en' | 'zh-CN' | 'ja') {
       group: 'Contributing', overview: 'Overview', dev: 'Developer Notes',
       test: 'Testing', code: 'Code Style', road: 'Roadmap', ai: 'AI-Assisted Dev',
       nuitka: 'Nuitka Packaging', docs: 'Documentation Maintenance', miner: 'Natural-Expression Miner',
+      dataforseo: 'DataForSEO SEO Monitoring',
     },
     'zh-CN': {
       group: '贡献指南', overview: '概览', dev: '开发者须知',
       test: '测试', code: '代码风格', road: '路线图', ai: 'AI 辅助开发',
       nuitka: 'Nuitka 打包注意事项', docs: '文档维护规范', miner: '自然表达候选挖掘器',
+      dataforseo: 'DataForSEO SEO 监控',
     },
     ja: {
       group: 'コントリビュート', overview: '概要', dev: '開発者ノート',
       test: 'テスト', code: 'コードスタイル', road: 'ロードマップ', ai: 'AI支援開発',
       nuitka: 'Nuitka パッケージング', docs: 'ドキュメント保守', miner: '自然表現候補マイナー',
+      dataforseo: 'DataForSEO SEO モニタリング',
     },
   }[lang]
   const p = lang === 'en' ? '' : `/${lang}`
   const maintainerTools = lang === 'en'
-    ? [{ text: t.miner, link: '/contributing/natural-expression-candidate-miner' }]
+    ? [
+        { text: t.miner, link: '/contributing/natural-expression-candidate-miner' },
+        { text: t.dataforseo, link: '/contributing/dataforseo-seo-monitoring' },
+      ]
     : []
   return [
     {
@@ -557,6 +592,16 @@ export default defineConfig({
 
   lastUpdated: true,
   cleanUrls: true,
+  sitemap: {
+    hostname: SITE_ORIGIN,
+    transformItems: filterSitemapItems,
+  },
+  transformPageData(pageData) {
+    return buildSeoPageData(pageData, DOCS_ROOT)
+  },
+  transformHead(context) {
+    return buildSeoHead(context, availablePageRouteSet)
+  },
 
   // Keep this list in sync with SRC_EXCLUDE in
   // scripts/check_docs_no_relative_paths.py.

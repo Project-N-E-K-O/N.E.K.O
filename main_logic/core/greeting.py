@@ -49,10 +49,51 @@ class GreetingMixin:
         self._recent_avatar_interaction_ids.append(interaction_id)
         self._recent_avatar_interaction_id_set.add(interaction_id)
 
+    @staticmethod
+    def _avatar_interaction_ingress_time(payload: dict) -> float:
+        captured_at = payload.get("_user_input_ingress_time")
+        if isinstance(captured_at, (int, float)):
+            return float(captured_at)
+        return time.time()
+
+    @staticmethod
+    def _avatar_interaction_contract_payload(payload: dict) -> dict:
+        """Hide server transport metadata from the strict public contract."""
+        if not isinstance(payload, dict):
+            return {}
+        return {
+            key: value
+            for key, value in payload.items()
+            if key not in {
+                "_user_input_ingress_time",
+                "_avatar_interaction_ingress_reserved",
+            }
+        }
+
+    def note_avatar_interaction_ingress(self, payload: dict) -> bool:
+        """Expose validated avatar engagement before background dispatch."""
+        raw = normalize_avatar_interaction_payload(
+            self._avatar_interaction_contract_payload(payload),
+            sanitize_text_context=_sanitize_avatar_interaction_text_context,
+        )
+        if not raw:
+            return False
+        interaction_id = raw["interaction_id"]
+        if interaction_id in self._recent_avatar_interaction_id_set:
+            return False
+        # The WebSocket dispatch loop calls this synchronously. Reserve before
+        # scheduling the handler so a second frame with the same ID is already
+        # a duplicate even when the first task has not started yet.
+        self.note_user_engagement(
+            at=self._avatar_interaction_ingress_time(payload)
+        )
+        self._remember_avatar_interaction_id(interaction_id)
+        return True
+
     async def handle_avatar_interaction(self, payload: dict) -> dict:
         raw_interaction_id = str(payload.get("interaction_id") or payload.get("interactionId") or "").strip() if isinstance(payload, dict) else ""
         raw = normalize_avatar_interaction_payload(
-            payload,
+            self._avatar_interaction_contract_payload(payload),
             sanitize_text_context=_sanitize_avatar_interaction_text_context,
         )
         if not raw:
@@ -62,11 +103,22 @@ class GreetingMixin:
 
         interaction_id = raw["interaction_id"]
         now_ms = int(time.time() * 1000)
+        ingress_reserved = (
+            payload.get("_avatar_interaction_ingress_reserved") is True
+        )
 
-        if interaction_id in self._recent_avatar_interaction_id_set:
+        if (
+            interaction_id in self._recent_avatar_interaction_id_set
+            and not ingress_reserved
+        ):
             logger.debug("[%s] handle_avatar_interaction: duplicate interaction_id=%s", self.lanlan_name, interaction_id)
             await self.send_avatar_interaction_ack(interaction_id, False, "duplicate")
             return {"accepted": False, "reason": "duplicate", "interaction_id": interaction_id}
+
+        if not ingress_reserved:
+            self.note_user_engagement(
+                at=self._avatar_interaction_ingress_time(payload)
+            )
 
         if now_ms - self._last_avatar_interaction_at < self.avatar_interaction_cooldown_ms:
             logger.debug("[%s] handle_avatar_interaction: cooldown skip interaction_id=%s", self.lanlan_name, interaction_id)
@@ -200,13 +252,24 @@ class GreetingMixin:
             self._pending_turn_meta = None
 
         if accepted:
-            logger.info(
-                "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
-                self.lanlan_name,
-                interaction_id,
-                raw["tool_id"],
-                raw["action_id"],
-            )
+            if "action_id" in raw:
+                logger.info(
+                    "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s action=%s",
+                    self.lanlan_name,
+                    interaction_id,
+                    raw["tool_id"],
+                    raw["action_id"],
+                )
+            else:
+                logger.info(
+                    "[%s] handle_avatar_interaction: delivered interaction_id=%s tool=%s round=%s/%s result=%s",
+                    self.lanlan_name,
+                    interaction_id,
+                    raw["tool_id"],
+                    raw["user_gesture"],
+                    raw["avatar_gesture"],
+                    raw["round_result"],
+                )
             return {"accepted": True, "interaction_id": interaction_id}
 
         logger.debug(
@@ -384,20 +447,18 @@ class GreetingMixin:
         tier: str,
         was_auto: bool,
         episode: dict | None = None,
-        *,
-        has_started_autonomous_action: bool = False,
     ) -> None:
         """When transforming back from cat form to catgirl (asking her back), trigger one dedicated greeting based on "behavior (tier) × time spent as a cat".
 
         Dual of trigger_greeting, but with independent timing: it doesn't query
-        last_conversation_gap, instead using the cat-dwell duration measured and
-        passed in by the frontend (the datetime gap is "since the last
+        last_conversation_gap, instead using the server-observed cat-dwell
+        duration passed in by the websocket router (the datetime gap is "since the last
         conversation", this is "how long she stayed a cat" — two clocks that don't
         interfere). A valid episode has already passed the router enum
         allowlist and remains request-local; it becomes the factual cat-form
         scene for this one prompt without altering guards or persistent state.
-        A literal verified runner-start bit can only open the short-return
-        delivery gate; it never turns a non-completed action into a scene.
+        Cat Mind activity may enrich a return after the normal dwell threshold,
+        but it never shortens or bypasses that threshold.
         Flow: pick the behavior/duration tier → build the guiding prompt →
         proactively start a text session → deliver.
         """
@@ -421,19 +482,12 @@ class GreetingMixin:
             get_cat_greeting_episode_prompt, get_cat_greeting_episode_scene,
             get_cat_greeting_prompt,
             get_cat_greeting_reason_hint,
-            get_cat_greeting_started_return_prompt,
         )
         from utils.time_format import format_elapsed as _format_elapsed
         episode_scene = get_cat_greeting_episode_scene(episode, _lang)
-        has_started_autonomous_action = has_started_autonomous_action is True
-        short_return = duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS
-        # A strict runner start permits a short return to be delivered, but
-        # only strict done evidence may become ``episode_scene``. Without a
-        # scene, use the neutral wrapper rather than legacy templates that
-        # would invent waiting, sleep, or a completed action.
-        if short_return and not has_started_autonomous_action:
+        if duration_seconds < CAT_GREETING_SILENT_BELOW_SECONDS:
             logger.debug(
-                "[%s] trigger_cat_greeting: duration %.0fs below threshold without a started action, skipping",
+                "[%s] trigger_cat_greeting: duration %.0fs below unified threshold, skipping",
                 self.lanlan_name,
                 duration_seconds,
             )
@@ -443,10 +497,7 @@ class GreetingMixin:
                 behavior,
                 duration_seconds,
                 _lang,
-                allow_short_started=has_started_autonomous_action,
             )
-        elif short_return:
-            template = get_cat_greeting_started_return_prompt(_lang)
         else:
             template = get_cat_greeting_prompt(behavior, duration_seconds, _lang)
         if not template:
@@ -477,9 +528,7 @@ class GreetingMixin:
 
         # reason_hint 先 format 好 {master} 再注入猫形态 return 模板。
         reason_hint = get_cat_greeting_reason_hint(was_auto, _lang).format(master=self.master_name)
-        # The short started path has no duration wording at all. Do not turn
-        # a ten-second action into a fabricated one-minute return sentence.
-        elapsed = "" if short_return else _format_elapsed(_lang, duration_seconds)
+        elapsed = _format_elapsed(_lang, duration_seconds)
         # Cat return is a closed experience prompt. Do not import the general
         # proactive time-of-day hint here: its meal/late-night suggestions can
         # replace the actual cat-form episode with an unrelated greeting.
@@ -503,12 +552,11 @@ class GreetingMixin:
                     episode_marker += ":" + str(episode_highlight)
         logger.info(
             "[%s] trigger_cat_greeting: behavior=%s duration=%.0fs was_auto=%s "
-            "started_action=%s elapsed=%s episode=%s, delivering",
+            "elapsed=%s episode=%s, delivering",
             self.lanlan_name,
             behavior,
             duration_seconds,
             was_auto,
-            has_started_autonomous_action,
             elapsed,
             episode_marker,
         )

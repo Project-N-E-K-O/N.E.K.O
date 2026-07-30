@@ -782,8 +782,8 @@
                 await Promise.race([narrationSettledPromise, delayPromise]);
             };
             const ellipsePromise = (async () => {
-                if (typeof director.setHomePcCursorOutputSuppressedForExternalizedChat === 'function') {
-                    director.setHomePcCursorOutputSuppressedForExternalizedChat(false);
+                if (typeof director.releaseExternalizedChatCursorToHome === 'function') {
+                    director.releaseExternalizedChatCursorToHome();
                 }
                 while (!isPanelFlowStale() && !narrationDone) {
                     const moved = await director.cursor.runPauseAwareEllipse(

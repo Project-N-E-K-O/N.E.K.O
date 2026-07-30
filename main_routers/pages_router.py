@@ -61,6 +61,8 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/libs/driver.min.css",
     _PROJECT_ROOT / "static/libs/driver.min.js",
     _PROJECT_ROOT / "static/css/index.css",
+    _PROJECT_ROOT / "static/css/window_controls.css",
+    _PROJECT_ROOT / "static/js/window_controls.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day1-home-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day2-screen-voice-guide.js",
     _PROJECT_ROOT / "static/tutorial/yui-guide/days/day3-interaction-guide.js",
@@ -76,6 +78,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/tutorial/avatar/yui-stage.js",
     _PROJECT_ROOT / "static/tutorial/avatar/standin-controller.js",
     _PROJECT_ROOT / "static/tutorial/core/interaction-takeover.js",
+    _PROJECT_ROOT / "static/tutorial/core/seven-day-state.js",
     _PROJECT_ROOT / "static/tutorial/core/avatar-floating-boot-predictor.js",
     _PROJECT_ROOT / "static/tutorial/core/skip-controller.js",
     _PROJECT_ROOT / "static/tutorial/avatar/reload-controller.js",
@@ -85,18 +88,24 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/live2d/live2d-interaction.js",
     _PROJECT_ROOT / "static/live2d/live2d-init.js",
     _PROJECT_ROOT / "static/live2d/live2d-ui-buttons.js",
-    _PROJECT_ROOT / "static/vrm/vrm-ui-buttons.js",
+    *sorted(_PROJECT_ROOT.glob("static/vrm/*.js")),
     _PROJECT_ROOT / "static/mmd/mmd-ui-buttons.js",
     _PROJECT_ROOT / "static/pngtuber-core.js",
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app/app-widget-mode.js",
+    _PROJECT_ROOT / "static/app/app-widget-interaction.js",
     _PROJECT_ROOT / "static/app/app-cat-mind.js",
     _PROJECT_ROOT / "static/app/app-cat-mind-debug.js",
     *_PROJECT_ROOT.glob("static/app/app-interpage/*.js"),
     *_PROJECT_ROOT.glob("static/app/app-ui/*.js"),
     _PROJECT_ROOT / "static/common_ui.js",
     _PROJECT_ROOT / "static/common-ui-hud.js",
+    _PROJECT_ROOT / "static/jukebox/music_ui.js",
+    _PROJECT_ROOT / "static/css/music_ui.css",
+    _PROJECT_ROOT / "static/assets/music/music-cover-placeholder.png",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.css",
+    _PROJECT_ROOT / "static/game/games/soccer/soccer-demo.js",
     *_PROJECT_ROOT.glob("static/app/app-react-chat-window/*.js"),
     _PROJECT_ROOT / "static/app/app-chat-export.js",
     *_AVATAR_UI_BUTTON_ASSET_PATHS,
@@ -123,6 +132,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cloud-thought-bubble.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cloud-thought-bubble-pop.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/sleeping-zzz.gif",
+    _PROJECT_ROOT / "static/assets/neko-idle/thought-items/cat1-chat-angry.gif",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/catnip-pouch.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/fish-cookie.png",
     _PROJECT_ROOT / "static/assets/neko-idle/thought-items/toy-mouse.png",
@@ -132,6 +142,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice3.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-eat.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-funny.mp3",
+    _PROJECT_ROOT / "static/assets/neko-idle/cat1-voice-chat-angry.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep1.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat2-sleep2.mp3",
     _PROJECT_ROOT / "static/assets/neko-idle/cat3-sleep1.mp3",
@@ -260,6 +271,7 @@ async def soccer_demo(request: Request):
     return templates.TemplateResponse("templates/soccer_demo.html", {
         "request": request,
         **_vrm_defaults_ctx(),
+        **_static_assets_ctx(),
     })
 
 
@@ -440,7 +452,10 @@ async def get_card_maker_page(request: Request):
 async def get_jukebox_page(request: Request):
     """Standalone jukebox window page (loaded by Electron)."""
     templates = get_templates()
-    return templates.TemplateResponse("templates/jukebox.html", {"request": request})
+    return templates.TemplateResponse("templates/jukebox.html", {
+        "request": request,
+        **_static_assets_ctx(),
+    })
 
 
 @router.get("/jukebox/manager", response_class=HTMLResponse)

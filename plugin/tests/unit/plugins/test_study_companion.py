@@ -58,6 +58,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Python < 3.11
     import tomli as tomllib  # type: ignore[no-redef]
 
+from tests.fake_clock import patch_module_clock
+
 from plugin.core.ui_manifest import normalize_plugin_ui_manifest
 from plugin.plugins import study_companion as study_companion_module
 from plugin.plugins.study_companion import StudyCompanionPlugin
@@ -606,7 +608,9 @@ async def test_start_awareness_loop_primes_first_push_before_uptime_interval(
         )
     )
     plugin._ocr_pipeline = object()
-    monkeypatch.setattr(study_companion_module.time, "monotonic", lambda: 10.0)
+    # start_awareness_loop() 和 _should_push_context() 都在 study_companion 包的
+    # __init__ 里读 time.monotonic()，所以假时钟打在这个模块上。
+    patch_module_clock(monkeypatch, study_companion_module, monotonic=lambda: 10.0)
 
     plugin.start_awareness_loop()
     try:

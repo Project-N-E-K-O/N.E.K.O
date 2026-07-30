@@ -15,49 +15,38 @@
 
 """Shared helpers for minigame prompt modules (soccer, badminton).
 
-config/prompts deliberately keeps two locale-normalization schemes side by side.
-This module owns the SHORT-locale normalizer (``_normalize_prompt_lang``), which
-collapses every Chinese variant to ``zh`` and is used by soccer plus every
-system/pregame prompt. Badminton quick-lines instead use the FULL-locale
-normalizer (``normalize_badminton_prompt_locale`` in prompts_badminton), which
-keeps ``zh-CN`` and ``zh-TW`` apart. Do not merge the two schemes: collapsing
-full locales back to short would regress the Traditional Chinese fallbacks.
+config/prompts deliberately keeps two locale-key schemes side by side. This
+module's ``_normalize_prompt_lang`` produces SHORT keys (every Chinese variant
+collapses to ``zh``) for soccer plus every system/pregame prompt; badminton
+quick-lines use FULL keys (``normalize_badminton_prompt_locale``), which keep
+``zh-CN`` and ``zh-TW`` apart.
 
-See docs/contributing/developer-notes.md #7 and PR #2000.
+Both now delegate to ``config.prompts._locale.normalize_prompt_locale`` and
+differ only in the keyword arguments they pass. The schemes themselves are
+still separate on purpose: collapsing badminton's full locales back to short
+would regress its Traditional Chinese fallbacks.
+
+See docs/contributing/developer-notes.md #7, PR #2000, and issue #2500.
 """
 
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc
 
 
-# SHORT-locale normalizer: collapses every Chinese variant to zh (soccer + all
-# system/pregame prompts). Deliberately NOT the same as prompts_badminton.
-# normalize_badminton_prompt_locale, which keeps zh-CN and zh-TW apart for the
-# badminton quick-lines. See docs/contributing/developer-notes.md #7 and PR #2000.
 def _normalize_prompt_lang(lang: str | None) -> str:
-    value = str(lang or "").strip().lower().replace("_", "-")
-    if not value:
-        # Stays "zh" intentionally: the soccer/game module hardcodes
-        # Chinese-flavored helpers (e.g. fullwidth "；" in
-        # ``_apply_soccer_anger_pressure_cap``) and helpers such as
-        # ``_apply_soccer_anger_pressure_cap`` don't accept a language
-        # parameter at all. Module-internal default is Chinese; cross-module
-        # fallback (resolve_global_language) is English.
-        return "zh"
-    if value.startswith("zh") or value in {"schinese", "tchinese"}:
-        return "zh"
-    if value.startswith("ja") or value == "japanese":
-        return "ja"
-    if value.startswith("ko") or value in {"korean", "koreana"}:
-        return "ko"
-    if value.startswith("ru") or value == "russian":
-        return "ru"
-    if value.startswith("es") or value in {"spanish", "latam"}:
-        return "es"
-    if value.startswith("pt") or value in {"portuguese", "brazilian"}:
-        return "pt"
-    if value.startswith("en") or value == "english":
-        return "en"
-    return "en"
+    """Normalize a language code to a SHORT prompt-dict key.
+
+    ``default="zh"`` is intentional and not a copy of the other prompt modules:
+    the soccer/game module hardcodes Chinese-flavored helpers (e.g. the fullwidth
+    "；" in ``_apply_soccer_anger_pressure_cap``, which takes no language
+    parameter at all), so the module-internal default is Chinese while the
+    cross-module fallback (``resolve_global_language``) stays English.
+
+    ``keep_traditional=False`` because no dict reached through this normalizer
+    carries a ``'zh-TW'`` template yet. Flip it together with the templates.
+    See issue #2500.
+    """
+    return normalize_prompt_locale(lang, default="zh", simplified="zh", keep_traditional=False)
 
 
 def _localized_template(templates: dict[str, str], lang: str | None) -> str:

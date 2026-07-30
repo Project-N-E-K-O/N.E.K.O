@@ -273,7 +273,6 @@ async function autoSaveMasterField(input) {
                 if (saveBtn) saveBtn.style.display = 'none';
                 if (cancelBtn) cancelBtn.style.display = 'none';
             }
-            showAutoSaveToast(window.t ? window.t('character.autoSaved') : '已自动保存设定');
         }
     } catch (e) {
         console.error('自动保存主人字段失败:', e);
@@ -318,27 +317,10 @@ async function panelAutoSaveCatgirlField(input, catgirlName) {
                 if (saveBtn) saveBtn.style.display = 'none';
                 if (cancelBtn) cancelBtn.style.display = 'none';
             }
-            showAutoSaveToast(window.t ? window.t('character.autoSaved') : '已自动保存设定');
         }
     } catch (e) {
         console.error('自动保存猫娘字段失败:', e);
     }
-}
-
-let _autoSaveToastTimer = null;
-let _autoSaveToastEl = null;
-function showAutoSaveToast(message) {
-    if (!_autoSaveToastEl) {
-        _autoSaveToastEl = document.createElement('div');
-        _autoSaveToastEl.className = 'auto-save-toast';
-        document.body.appendChild(_autoSaveToastEl);
-    }
-    _autoSaveToastEl.textContent = message;
-    _autoSaveToastEl.classList.add('visible');
-    if (_autoSaveToastTimer) clearTimeout(_autoSaveToastTimer);
-    _autoSaveToastTimer = setTimeout(() => {
-        if (_autoSaveToastEl) _autoSaveToastEl.classList.remove('visible');
-    }, 2000);
 }
 
 async function addMasterField() {

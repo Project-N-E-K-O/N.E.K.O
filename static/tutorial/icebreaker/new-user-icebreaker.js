@@ -4,7 +4,6 @@
     var SOURCE = 'new_user_icebreaker';
     var ICEBREAKER_API_BASE = '/api/icebreaker';
     var STORAGE_KEY = 'neko.new_user_icebreaker.v1';
-    var AVATAR_FLOATING_GUIDE_STORAGE_KEY = 'neko_avatar_floating_guide_v1';
     var ICEBREAKER_BRIDGE_STORAGE_KEY = 'neko_new_user_icebreaker_bridge_event';
     var SCRIPT_URL = '/static/tutorial/icebreaker/icebreaker_scripts.json';
     var LOCALE_BASE_URL = '/static/tutorial/icebreaker/locales/';
@@ -1505,11 +1504,8 @@
     }
 
     function readPersistedAvatarGuideState() {
-        try {
-            return safeJsonParse(window.localStorage.getItem(AVATAR_FLOATING_GUIDE_STORAGE_KEY), {});
-        } catch (_) {
-            return {};
-        }
+        var stateApi = window.NekoSevenDayTutorialState || null;
+        return stateApi ? stateApi.loadState() : {};
     }
 
     function resolveRecentPersistedEndState() {

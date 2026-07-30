@@ -175,10 +175,20 @@ from main_routers.storage_location_router import router as storage_location_rout
 from main_routers.system_router import router as system_router  # noqa
 from main_routers.tool_router import router as tool_router  # noqa
 from main_routers.vrm_router import router as vrm_router  # noqa
+from main_routers.vmc_router import router as vmc_router  # noqa
 from main_routers.websocket_router import router as websocket_router  # noqa
 from main_routers.workshop_router import router as workshop_router  # noqa
 from main_routers.cookies_login_router import router as cookies_login_router  # noqa
 from main_routers.game_router import router as game_router  # noqa
+from main_routers.card_drop_router import (  # noqa
+    _facts_cors_headers as _card_drop_cors_headers,
+    _local_mutation_origin_allowed as _card_drop_mutation_origin_allowed,
+    router as card_drop_router,
+)
+from main_routers.community_oauth import (  # noqa
+    callback_router as community_oauth_callback_router,
+    router as community_oauth_router,
+)
 from main_routers.debug_router import (
     router as debug_router,
     start_watchdog as _start_debug_health_watchdog,
@@ -195,6 +205,88 @@ async def health():
     from config import INSTANCE_ID
 
     return build_health_response("main", instance_id=INSTANCE_ID)
+
+
+# ── Card-drop cross-process active-character snapshot ──────────────────────
+# Community-card native delegation reads this snapshot for the current
+# character identity and optional avatar/reference images.
+_card_drop_active_character: dict[str, str] = {}
+
+
+async def _fallback_active_character_identity() -> tuple[str, str]:
+    """Use the configured active character when Pet has not posted a snapshot."""
+    try:
+        master_name, lanlan_name, *_rest = await _config_manager.aget_character_data()
+    except Exception:
+        return "", ""
+    return str(lanlan_name or "").strip(), str(master_name or "").strip()
+
+
+def _active_character_cors_headers(request: Request) -> dict[str, str] | None:
+    """Preserve native local reads; restrict browser reads to the social origin."""
+    if not (request.headers.get("origin") or "").strip():
+        return {"Cache-Control": "no-store", "Pragma": "no-cache"}
+    return _card_drop_cors_headers(request)
+
+
+@app.post("/api/card-drop/active-character")
+async def set_card_drop_active_character(request: Request, payload: dict):
+    """Apply supplied fields, dropping avatar payloads that belong to a prior name."""
+    if not _card_drop_mutation_origin_allowed(request):
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    if not isinstance(payload, dict):
+        return {"ok": True}
+    if "name" in payload:
+        next_name = str(payload.get("name") or "")
+        if next_name != _card_drop_active_character.get("name", ""):
+            for avatar_field in ("dataUrl", "characterReferenceDataUrl"):
+                if avatar_field not in payload:
+                    _card_drop_active_character.pop(avatar_field, None)
+        _card_drop_active_character["name"] = next_name
+    if "dataUrl" in payload:
+        _card_drop_active_character["dataUrl"] = str(payload.get("dataUrl") or "")
+    if "characterReferenceDataUrl" in payload:
+        _card_drop_active_character["characterReferenceDataUrl"] = str(
+            payload.get("characterReferenceDataUrl") or ""
+        )
+    return {"ok": True}
+
+
+@app.options("/api/card-drop/active-character")
+async def active_character_options(request: Request):
+    """Allow only the configured community origin to read the local snapshot."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@app.get("/api/card-drop/active-character")
+async def get_card_drop_active_character(
+    request: Request, include_avatar: bool = False
+):
+    """Return the active name and optionally the larger avatar payloads."""
+    cors = _active_character_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    name = str(_card_drop_active_character.get("name", "") or "").strip()
+    master_name = ""
+    # Community forge used to treat an empty live snapshot as "本体未连接" even
+    # when the local ledger/credits were healthy. Fall back to the configured
+    # current catgirl so ticket selection can proceed before Pet avatar sync.
+    used_fallback = False
+    if not name:
+        name, master_name = await _fallback_active_character_identity()
+        used_fallback = True
+    payload: dict[str, str] = {"name": name}
+    if master_name:
+        payload["master_name"] = master_name
+    if include_avatar and not used_fallback:
+        payload["dataUrl"] = _card_drop_active_character.get("dataUrl", "")
+        payload["characterReferenceDataUrl"] = _card_drop_active_character.get(
+            "characterReferenceDataUrl", ""
+        )
+    return JSONResponse(payload, headers=cors)
 
 
 @app.post("/api/beacon/shutdown")
@@ -397,6 +489,12 @@ app.include_router(icebreaker_router)
 app.include_router(game_router)
 app.include_router(card_assist_router)
 app.include_router(capture_router)
+app.include_router(card_drop_router)  # Must precede the pages fallback router.
+app.include_router(community_oauth_router)
+app.include_router(community_oauth_callback_router)  # Exact /oauth/callback before pages.
+# VMC Protocol OSC sender: REST control plane plus an isolated per-frame
+# WebSocket data plane at /api/vmc/ws (kept off the chat/session channel).
+app.include_router(vmc_router)
 app.include_router(
     cookies_login_router
 )  # Cookies登录相关路由，放在最后以避免与其他API路由冲突

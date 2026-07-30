@@ -149,7 +149,7 @@
         }
     }
 
-    I.clampPosition = function clampPosition(left, top) {
+    I.clampPosition = function clampPosition(left, top, options) {
         var shell = I.getShell();
         if (!shell) {
             return { left: left, top: top };
@@ -158,13 +158,57 @@
         var rect = shell.getBoundingClientRect();
         var width = rect.width || 960;
         var headerHeight = 52;
+        var visibleHeight = options && options.fullHeight === true
+            ? (rect.height || headerHeight)
+            : headerHeight;
         var maxLeft = Math.max(0, window.innerWidth - width);
-        var maxTop = Math.max(0, window.innerHeight - headerHeight);
+        var maxTop = Math.max(0, window.innerHeight - visibleHeight);
 
         return {
             left: Math.max(0, Math.min(maxLeft, left)),
             top: Math.max(0, Math.min(maxTop, top))
         };
+    }
+
+    I.ensureChatSurfaceVisible = function ensureChatSurfaceVisible() {
+        var mode = I.getCurrentChatSurfaceMode();
+        if (mode === 'compact' && !I.minimized) {
+            var currentCompactRect = I.getCurrentCompactSurfaceRect();
+            var compactTarget = I.getCompactSurfaceTarget();
+            if (!currentCompactRect || !compactTarget) return false;
+
+            var compactHeight = compactTarget.height || I.COMPACT_SURFACE_DEFAULT_HEIGHT;
+            var compactChanged = Math.abs(compactTarget.left - currentCompactRect.left) >= 0.5
+                || Math.abs(compactTarget.top - currentCompactRect.top) >= 0.5
+                || Math.abs(compactTarget.width - currentCompactRect.width) >= 0.5
+                || Math.abs(compactHeight - currentCompactRect.height) >= 0.5;
+            if (!compactChanged) return false;
+
+            return !!I.applyCompactSurfaceRect(
+                compactTarget.left,
+                compactTarget.top,
+                compactTarget.width,
+                compactHeight,
+                { persist: false }
+            );
+        }
+
+        if (mode !== 'full' || I.minimized) return false;
+        var shell = I.getShell();
+        if (!shell) return false;
+
+        var rect = shell.getBoundingClientRect();
+        if (!(rect.width > 0) || !(rect.height > 0)) return false;
+
+        var clamped = I.clampPosition(rect.left, rect.top, { fullHeight: true });
+        if (Math.abs(clamped.left - rect.left) < 0.5 && Math.abs(clamped.top - rect.top) < 0.5) {
+            return false;
+        }
+
+        shell.style.left = clamped.left + 'px';
+        shell.style.top = clamped.top + 'px';
+        shell.style.transform = 'none';
+        return true;
     }
 
     I.applyPosition = function applyPosition(left, top) {
@@ -308,6 +352,14 @@
             text: payload && typeof payload.text === 'string' ? payload.text : '',
             requestId: requestId
         };
+
+        if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
+            if (!detail.text.trim()) return;
+            if (typeof I.submitCatLocalChatText === 'function') {
+                I.submitCatLocalChatText(detail);
+            }
+            return;
+        }
 
         var hasAttachments = I.state.composerAttachments && I.state.composerAttachments.length > 0;
         if (!detail.text.trim() && !hasAttachments) return;
@@ -1197,6 +1249,11 @@
         if (normalized === 'input' && (I.state.homeTutorialInputLocked || I.isHomeTutorialInteractionLocked())) {
             return;
         }
+        if (typeof I.isCatLocalChatActive === 'function'
+            && I.isCatLocalChatActive()
+            && normalized !== 'input') {
+            return;
+        }
         I.setCompactChatState(normalized);
     }
 
@@ -1210,7 +1267,7 @@
     // (b) 给 root 设 inline opacity:0 做淡出，频繁点击时 setMinimized 因状态 desync 提前 return、
     //     跳过 opacity 复位 → root 卡在 0 = 输入框隐身。
     // 这套机制竞态太重，已回退。现仅保留一个安全增强：给按下的毛绒球补「按下挤压」动画（CSS），
-    // 留一个短延时让挤压动画露出来再瞬时折叠（折叠本体走原有 PRE_COLLAPSE_DIM 瞬时路径，零竞态）。
+    // 留一个短延时让挤压/擦除动画播完，再直接提交 minimized 最终态；不要复用 full surface 的整窗缩放。
     // 独立球出现时的「放大长出」靠球自身入场动画（neko-ball-appear），与此处解耦。
     var COMPACT_MINIMIZE_PRESS_MS = 280; // = neko-compact-collapse-wipe 擦除时长：擦完再瞬时折叠
     var compactMinimizePressTimer = 0;
@@ -1242,7 +1299,7 @@
             reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
         } catch (e) {}
         if (reduceMotion) {
-            I.setChatSurfaceMode('minimized');
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
             return;
         }
         // 给按下的毛绒球补「按下挤压」弹性动画（CSS index.css neko-compact-minimize-press）。
@@ -1269,7 +1326,7 @@
             // ('full') / setViewProps 直写 state 绕过清理）。只有「仍处于 compact」才执行这次
             // 延迟折叠，否则会用陈旧的 minimized 覆盖更新后的模式（Codex P2）。两端通用。
             if (I.getCurrentChatSurfaceMode() !== 'compact') return;
-            I.setChatSurfaceMode('minimized');
+            I.setChatSurfaceMode('minimized', { skipShellCollapseAnimation: true });
         }, COMPACT_MINIMIZE_PRESS_MS);
     }
 
@@ -1767,7 +1824,11 @@
         var restoredEffectiveComposer = wasEffectiveHidden && !isEffectiveHidden;
         I.syncComposerAttachmentsVisibility(previousAttachmentsVisible);
         if (next) {
-            I.resetCompactChatState();
+            if (typeof I.isCatLocalChatActive === 'function' && I.isCatLocalChatActive()) {
+                I.setCompactChatState('input');
+            } else {
+                I.resetCompactChatState();
+            }
             I.invalidatePendingGalgameRequest();
         }
         if (wasEffectiveHidden !== isEffectiveHidden) {

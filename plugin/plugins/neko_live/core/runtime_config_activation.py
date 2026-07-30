@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import deque
 from typing import Any
 
+from .co_stream_capabilities import normalize_activation_mode
 from .contracts import LiveConfig, normalize_live_platform, parse_room_id
 
 
@@ -17,6 +18,13 @@ def clean_config_updates(updates: dict[str, Any]) -> dict[str, Any]:
         clean["live_platform"] = normalize_live_platform(clean["live_platform"])
     if "live_room_ref" in clean:
         clean["live_room_ref"] = str(clean["live_room_ref"] or "").strip()
+    if "co_stream_host_pause_fill_activation" in clean:
+        clean["co_stream_host_pause_fill_activation"] = normalize_activation_mode(
+            clean["co_stream_host_pause_fill_activation"]
+        )
+    # Automatic speech consent is only writable by a future dedicated,
+    # user-confirmed action. Generic settings updates may never arm it.
+    clean.pop("co_stream_host_pause_fill_auto_consent_version", None)
     return clean
 
 

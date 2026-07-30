@@ -4,14 +4,17 @@ import asyncio
 import gc
 import weakref
 from dataclasses import replace
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
 import main_logic.asr_client as asr_client
 import main_logic.asr_client._infra as asr_infra
+import main_logic.asr_client.runtime as asr_runtime_module
 from main_logic.asr_client import AsrSessionConfig, create_asr_session
 from main_logic.asr_client._infra import (
+    _AsrRequestQueue,
     _AsrWorkerEvent,
     _AsrWorkerRequest,
     _RealtimeAsrSessionImpl,
@@ -21,6 +24,19 @@ from main_logic.asr_client._registry_meta import (
     CORE_ASR_ROUTES,
 )
 from main_logic.asr_client.workers.dummy import dummy_asr_worker
+from main_logic.asr_client.lifecycle import (
+    VoiceInputLifecycleController,
+    VoiceLifecycleEvent,
+    VoiceRouteMode,
+)
+from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.asr_client.runtime import (
+    AsrRuntimeCallbacks,
+    AsrStartStatus,
+    IndependentAsrRuntime,
+)
+from main_logic.asr_client.transcript import TranscriptDispatcher
+from main_logic.voice_turn.contracts import SpeechActivityEvent
 
 
 async def _scripted_worker(request_queue, response_queue, api_key, config):
@@ -38,17 +54,12 @@ async def _scripted_worker(request_queue, response_queue, api_key, config):
                 await response_queue.put(
                     _AsrWorkerEvent(kind="partial", text="draft", **common)
                 )
-                if request.utterance_id == 1:
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="final", text="   ", **common)
-                    )
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="final", text="conflict", **common)
-                    )
-                else:
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="final", text=" second ", **common)
-                    )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text=" first ", **common)
+                )
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="final", text="conflict", **common)
+                )
             elif api_key == "error":
                 await response_queue.put(
                     _AsrWorkerEvent(
@@ -141,6 +152,8 @@ def test_public_exports_are_frozen():
 
 def test_routes_fail_synchronously_without_dummy(monkeypatch):
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
     callback = AsyncMock()
 
     with pytest.raises(RuntimeError, match="ASR_UNKNOWN_CORE"):
@@ -203,15 +216,21 @@ def test_phase2_registry_routes_and_capabilities():
         "openai",
         "step",
         "grok",
+        "glm",
+        "gemini",
+        "soniox",
     }
     assert CORE_ASR_ROUTES["qwen"].provider_key == "qwen"
     assert CORE_ASR_ROUTES["qwen"].credential_field == "ASSIST_API_KEY_QWEN"
     assert CORE_ASR_ROUTES["qwen"].region == "cn"
-    assert CORE_ASR_ROUTES["qwen"].default_endpointing_mode == "manual"
+    assert CORE_ASR_ROUTES["qwen"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["qwen_intl"].credential_field == ("ASSIST_API_KEY_QWEN_INTL")
     assert CORE_ASR_ROUTES["qwen_intl"].region == "intl"
+    assert CORE_ASR_ROUTES["qwen_intl"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["openai"].credential_field == "ASSIST_API_KEY_OPENAI"
+    assert CORE_ASR_ROUTES["openai"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["step"].credential_field == "ASSIST_API_KEY_STEP"
+    assert CORE_ASR_ROUTES["step"].default_endpointing_mode == "provider"
     assert CORE_ASR_ROUTES["grok"].credential_field == "ASSIST_API_KEY_GROK"
     assert CORE_ASR_ROUTES["grok"].default_endpointing_mode == "provider"
 
@@ -220,22 +239,466 @@ def test_phase2_registry_routes_and_capabilities():
         "provider",
     }
     assert ASR_PROVIDER_REGISTRY["openai"].wire_sample_rate_hz == 24_000
-    assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"manual"}
+    assert ASR_PROVIDER_REGISTRY["openai"].supported_endpointing_modes == {"provider"}
     assert ASR_PROVIDER_REGISTRY["grok"].supported_endpointing_modes == {"provider"}
-    for provider_key in ("qwen", "openai", "step", "grok"):
-        assert (
-            ASR_PROVIDER_REGISTRY[provider_key].implementation_status
-            == "blocked_credentials"
-        )
+    assert ASR_PROVIDER_REGISTRY["step"].supported_endpointing_modes == {"provider"}
+    assert ASR_PROVIDER_REGISTRY["step"].implementation_status == "implemented"
+    assert ASR_PROVIDER_REGISTRY["grok"].implementation_status == "implemented"
+    assert ASR_PROVIDER_REGISTRY["openai"].implementation_status == "implemented"
+    assert ASR_PROVIDER_REGISTRY["qwen"].implementation_status == "implemented"
+    assert ASR_PROVIDER_REGISTRY["openai"].requires_smart_turn is False
+    assert ASR_PROVIDER_REGISTRY["step"].requires_smart_turn is False
+    assert ASR_PROVIDER_REGISTRY["qwen"].requires_smart_turn is False
+    for provider_key in ("glm", "gemini"):
+        meta = ASR_PROVIDER_REGISTRY[provider_key]
+        assert meta.implementation_status == "implemented"
+        assert meta.requires_smart_turn is True
+    soniox_meta = ASR_PROVIDER_REGISTRY["soniox"]
+    assert soniox_meta.implementation_status == "implemented"
+    assert soniox_meta.supported_endpointing_modes == {"manual", "provider"}
+    assert soniox_meta.requires_smart_turn is False
+
+
+def test_phase3_selection_prefers_soniox_only_for_explicit_intl_region(
+    monkeypatch,
+):
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"SONIOX_API_KEY": "configured", "SONIOX_REGION": "eu"},
+        raising=False,
+    )
+
+    intl = asr_client._resolve_asr_selection("gemini", user_region="intl")
+    unknown = asr_client._resolve_asr_selection("gemini", user_region="unknown")
+    mainland = asr_client._resolve_asr_selection("gemini", user_region="cn")
+
+    assert (intl.provider_key, intl.endpointing_mode, intl.soniox_region) == (
+        "soniox",
+        "provider",
+        "eu",
+    )
+    assert unknown.provider_key == "gemini"
+    assert mainland.provider_key == "gemini"
+
+
+def test_phase3_selection_does_not_treat_key_as_region(monkeypatch):
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"SONIOX_API_KEY": "configured"},
+        raising=False,
+    )
+
+    selection = asr_client._resolve_asr_selection("qwen")
+
+    assert selection.provider_key == "qwen"
+    assert selection.endpointing_mode == "provider"
+
+
+def test_openai_core_resolves_to_provider_endpointing_without_smart_turn(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_OPENAI": "openai-key"},
+        raising=False,
+    )
+
+    selection = asr_client._resolve_asr_selection("openai", user_region="cn")
+    session = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+
+    assert selection.provider_key == "openai"
+    assert selection.endpointing_mode == "provider"
+    assert session._voice_turn_factory is None
+
+
+def test_step_core_resolves_to_provider_endpointing_without_smart_turn(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_STEP": "step-key"},
+        raising=False,
+    )
+
+    selection = asr_client._resolve_asr_selection("step", user_region="cn")
+    session = asr_client._create_asr_session_from_selection(
+        "step",
+        selection=selection,
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+
+    assert selection.provider_key == "step"
+    assert selection.endpointing_mode == "provider"
+    assert session._voice_turn_factory is None
+
+
+def test_soniox_selection_captures_environment_credential_once(monkeypatch):
+    reads: dict[str, int] = {}
+
+    def fake_getenv(name, default=""):
+        reads[name] = reads.get(name, 0) + 1
+        if name == "SONIOX_API_KEY":
+            return "soniox-env-key"
+        if name == "SONIOX_REGION":
+            return "us"
+        return default
+
+    monkeypatch.setattr(asr_client, "_load_core_config", lambda: {})
+    monkeypatch.setattr(asr_client.os, "getenv", fake_getenv)
+
+    selection = asr_client._resolve_asr_selection("gemini", user_region="intl")
+
+    assert selection.provider_key == "soniox"
+    assert selection.endpointing_mode == "provider"
+    assert reads["SONIOX_API_KEY"] == 1
+    assert "soniox-env-key" not in repr(selection)
+
+
+def test_public_factory_resolves_once_and_builds_from_exact_selection(monkeypatch):
+    callback = AsyncMock()
+    selection = asr_client._AsrSelection(
+        provider_key="dummy",
+        endpointing_mode="manual",
+    )
+    resolver = MagicMock(return_value=selection)
+    built_session = object()
+    builder = MagicMock(return_value=built_session)
+
+    monkeypatch.setattr(asr_client, "_resolve_asr_selection", resolver)
+    monkeypatch.setattr(
+        asr_client,
+        "_create_asr_session_from_selection",
+        builder,
+        raising=False,
+    )
+    # Keep the legacy path constructible so the failure is specifically that
+    # it bypasses the new builder, rather than an unrelated credential error.
+    monkeypatch.setattr(
+        asr_client,
+        "_get_asr_worker",
+        lambda *_args, **_kwargs: (dummy_asr_worker, "", "dummy"),
+    )
+
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session is built_session
+    resolver.assert_called_once_with("qwen", user_region=None)
+    assert builder.call_args.kwargs["selection"] is selection
+
+
+def test_builder_uses_resolved_snapshot_without_rereading_routing_config(
+    monkeypatch,
+):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_QWEN": "snapshot-key"},
+    )
+    selection = asr_client._resolve_asr_selection("qwen")
+
+    assert "snapshot-key" not in repr(selection)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: (_ for _ in ()).throw(AssertionError("config reread")),
+    )
+    monkeypatch.setattr(
+        asr_client.os,
+        "getenv",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("environment reread")
+        ),
+    )
+
+    session = asr_client._create_asr_session_from_selection(
+        "qwen",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session._api_key == "snapshot-key"
+    assert session._config.endpointing_mode == "provider"
+    assert session._voice_turn_factory is None
+
+
+@pytest.mark.parametrize(
+    ("provider_key", "user_language", "expected"),
+    [
+        ("qwen", "zh-CN", "zh-CN"),
+        ("qwen", "ja", "ja"),
+        ("qwen", "AUTO", "auto"),
+        ("qwen", None, "auto"),
+        ("qwen", "   ", "auto"),
+        ("qwen", "not a language!!", "auto"),
+        # Valid BCP-47 shape but outside the Qwen matrix must not fail the
+        # session; it degrades to provider-side detection.
+        ("qwen", "tlh", "auto"),
+        ("openai", "zh-CN", "zh-CN"),
+        ("openai", "en-US", "en-US"),
+        ("openai", "ja", "auto"),
+        ("step", "en", "en"),
+        ("step", "ja", "auto"),
+        ("grok", "zh", "zh"),
+        ("grok", "ko", "auto"),
+        ("soniox", "ja", "ja"),
+        ("gemini", "ko", "ko"),
+        ("dummy", "ja", "ja"),
+    ],
+)
+def test_session_language_resolves_against_provider_matrix(
+    provider_key,
+    user_language,
+    expected,
+):
+    resolved = asr_client._resolve_session_language(provider_key, user_language)
+
+    assert resolved == expected
+
+
+def test_builder_maps_user_language_onto_session_config(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.delenv("ASR_USER_REGION", raising=False)
+    monkeypatch.delenv("SONIOX_API_KEY", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {"ASSIST_API_KEY_OPENAI": "openai-key"},
+    )
+    selection = asr_client._resolve_asr_selection("openai")
+
+    supported = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="zh-CN",
+    )
+    unsupported = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="ja",
+    )
+    unset = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+    explicit = asr_client._create_asr_session_from_selection(
+        "openai",
+        selection=selection,
+        config=AsrSessionConfig(language="en", endpointing_mode="provider"),
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="ja",
+    )
+
+    assert supported._config.language == "zh-CN"
+    assert unsupported._config.language == "auto"
+    assert unset._config.language == "auto"
+    # An explicit config always wins over the user-language hint.
+    assert explicit._config.language == "en"
+
+
+def test_public_factory_forwards_user_language(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+        user_language="ja",
+    )
+
+    assert session._config.language == "ja"
+
+
+@pytest.mark.parametrize(
+    ("provider_key", "endpointing_mode", "requires_smart_turn"),
+    [
+        ("dummy", "manual", True),
+        ("qwen", "manual", True),
+        ("qwen", "provider", False),
+        ("openai", "provider", False),
+        ("step", "provider", False),
+        ("grok", "provider", False),
+        ("glm", "manual", True),
+        ("gemini", "manual", True),
+        ("soniox", "provider", False),
+        ("soniox", "manual", True),
+    ],
+)
+def test_builder_selects_endpoint_runtime_from_provider_mode(
+    provider_key,
+    endpointing_mode,
+    requires_smart_turn,
+):
+    callback = AsyncMock()
+    selection = asr_client._AsrSelection(
+        provider_key=provider_key,
+        endpointing_mode=endpointing_mode,
+        _worker_fn=dummy_asr_worker,
+        _api_key="" if provider_key == "dummy" else "test-key",
+    )
+
+    session = asr_client._create_asr_session_from_selection(
+        "qwen",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert (session._voice_turn_factory is not None) is requires_smart_turn
+
+
+@pytest.mark.parametrize("provider_key", ["dummy", "qwen", "glm", "gemini"])
+def test_builder_marks_policy_required_smart_turn_as_strict(provider_key):
+    callback = AsyncMock()
+    selection = asr_client._AsrSelection(
+        provider_key=provider_key,
+        endpointing_mode="manual",
+        _worker_fn=dummy_asr_worker,
+        _api_key="" if provider_key == "dummy" else "test-key",
+    )
+
+    session = asr_client._create_asr_session_from_selection(
+        "qwen",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session._voice_turn_factory is not None
+    assert session._voice_turn_factory.keywords["smart_turn_required"] is True
+
+
+def test_core_follow_selection_ignores_soniox_and_dev_routing(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.setenv("ASR_PROVIDER", "dummy")
+    monkeypatch.setenv("ASR_USER_REGION", "intl")
+    monkeypatch.setenv("SONIOX_REGION", "eu")
+    monkeypatch.setattr(
+        asr_client,
+        "_load_core_config",
+        lambda: {
+            "SONIOX_API_KEY": "soniox-key",
+            "ASSIST_API_KEY_GEMINI": "gemini-key",
+        },
+    )
+
+    selection = asr_client._resolve_core_follow_selection("gemini")
+    session = asr_client._create_asr_session_from_selection(
+        "gemini",
+        selection=selection,
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert selection.provider_key == "gemini"
+    assert selection.endpointing_mode == "manual"
+    assert session._voice_turn_factory is not None
+
+
+def test_dummy_selection_reads_dev_override_once_and_uses_smart_turn(monkeypatch):
+    callback = AsyncMock()
+    reads = 0
+
+    def fake_getenv(name, default=""):
+        nonlocal reads
+        if name == "ASR_PROVIDER":
+            reads += 1
+            return "dummy"
+        return default
+
+    monkeypatch.setattr(asr_client.os, "getenv", fake_getenv)
+    session = create_asr_session(
+        "qwen",
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert reads == 1
+    assert session._config.endpointing_mode == "manual"
+    assert session._voice_turn_factory is not None
+
+
+def test_provider_endpoint_does_not_install_smart_turn_factory(monkeypatch):
+    callback = AsyncMock()
+    monkeypatch.delenv("ASR_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        asr_client,
+        "_resolve_asr_selection",
+        lambda *_args, **_kwargs: asr_client._AsrSelection(
+            provider_key="qwen",
+            endpointing_mode="provider",
+            _worker_fn=dummy_asr_worker,
+            _api_key="test-key",
+        ),
+        raising=False,
+    )
+    monkeypatch.setitem(
+        ASR_PROVIDER_REGISTRY,
+        "qwen",
+        replace(
+            ASR_PROVIDER_REGISTRY["qwen"],
+            implementation_status="implemented",
+            requires_smart_turn=True,
+        ),
+    )
+
+    session = create_asr_session(
+        "qwen",
+        config=AsrSessionConfig(endpointing_mode="provider"),
+        on_input_transcript=callback,
+        on_connection_error=callback,
+    )
+
+    assert session._voice_turn_factory is None
 
 
 def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatch):
     callback = AsyncMock()
     observed_modes: list[tuple[str, str]] = []
 
-    def fake_get_asr_worker(core_type, endpointing_mode="manual"):
+    def fake_get_asr_worker(core_type, endpointing_mode="manual", **kwargs):
         observed_modes.append((core_type, endpointing_mode))
-        return dummy_asr_worker, "", "dummy"
+        provider_key = (
+            kwargs.get("provider_key_override")
+            or CORE_ASR_ROUTES[core_type].provider_key
+        )
+        return dummy_asr_worker, "test-key", provider_key
 
     monkeypatch.delenv("ASR_PROVIDER", raising=False)
     monkeypatch.setattr(asr_client, "_get_asr_worker", fake_get_asr_worker)
@@ -252,8 +715,10 @@ def test_endpointing_contract_is_provider_neutral_and_route_defaulted(monkeypatc
     )
 
     assert grok_session._config.endpointing_mode == "provider"
-    assert qwen_session._config.endpointing_mode == "manual"
-    assert observed_modes == [("grok", "provider"), ("qwen", "manual")]
+    assert qwen_session._config.endpointing_mode == "provider"
+    assert grok_session._voice_turn_factory is None
+    assert qwen_session._voice_turn_factory is None
+    assert observed_modes == [("grok", "provider"), ("qwen", "provider")]
     with pytest.raises(ValueError, match="manual.*provider"):
         AsrSessionConfig(endpointing_mode="server_vad")
 
@@ -266,6 +731,9 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
             return {
                 "ASSIST_API_KEY_QWEN": "qwen-cn-key",
                 "ASSIST_API_KEY_QWEN_INTL": "qwen-intl-key",
+                "ASSIST_API_KEY_OPENAI": "openai-key",
+                "ASSIST_API_KEY_STEP": "step-key",
+                "ASSIST_API_KEY_GROK": "grok-key",
                 "AUDIO_API_KEY": "must-not-be-used",
             }
 
@@ -291,8 +759,42 @@ def test_phase2_factory_resolves_credentials_and_qwen_region(monkeypatch):
     assert cn_worker.keywords == {"region": "cn"}
     assert intl_worker.keywords == {"region": "intl"}
 
+    openai_worker, openai_key, openai_provider = asr_client._get_asr_worker(
+        "openai", "provider"
+    )
+    assert (openai_key, openai_provider) == ("openai-key", "openai")
+    assert openai_worker is asr_client._IMPLEMENTED_WORKERS["openai"]
+
+    step_worker, step_key, step_provider = asr_client._get_asr_worker(
+        "step", "provider"
+    )
+    assert (step_key, step_provider) == ("step-key", "step")
+    assert step_worker is asr_client._IMPLEMENTED_WORKERS["step"]
+
+    grok_worker, grok_key, grok_provider = asr_client._get_asr_worker(
+        "grok", "provider"
+    )
+    assert (grok_key, grok_provider) == ("grok-key", "grok")
+    assert grok_worker is asr_client._IMPLEMENTED_WORKERS["grok"]
+
     with pytest.raises(RuntimeError, match="ASR_ENDPOINTING_NOT_SUPPORTED"):
+        asr_client._get_asr_worker("openai", "manual")
+
+    class MissingOpenAIConfigManager:
+        def get_core_config(self):
+            return {"ASSIST_API_KEY_QWEN": "another-provider-key"}
+
+    monkeypatch.setattr(
+        config_manager,
+        "get_config_manager",
+        lambda: MissingOpenAIConfigManager(),
+    )
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: openai"):
         asr_client._get_asr_worker("openai", "provider")
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: step"):
+        asr_client._get_asr_worker("step", "provider")
+    with pytest.raises(RuntimeError, match="ASR_CREDENTIALS_MISSING: grok"):
+        asr_client._get_asr_worker("grok", "provider")
 
     class AudioOnlyConfigManager:
         def get_core_config(self):
@@ -319,6 +821,7 @@ async def test_connect_ready_status_and_idempotent_close(monkeypatch):
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
         on_status_message=statuses.put,
+        external_endpointing_runtime=True,
     )
 
     await session.connect()
@@ -342,6 +845,7 @@ async def test_dummy_handles_multiple_utterances(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.signal_user_activity_end()
@@ -367,6 +871,7 @@ async def test_pcm_16k_and_48k_are_accepted_and_rate_is_locked(monkeypatch):
             config=AsrSessionConfig(input_sample_rate_hz=sample_rate),
             on_input_transcript=transcripts.put,
             on_connection_error=AsyncMock(),
+            external_endpointing_runtime=True,
         )
         await session.connect()
         await session.stream_audio(b"\x00\x00" * sample_count)
@@ -419,6 +924,7 @@ async def test_pcm_validation_and_empty_chunk(monkeypatch):
         "qwen",
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"")
@@ -437,6 +943,7 @@ async def test_duplicate_final_is_delivered_once(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
@@ -456,6 +963,7 @@ async def test_delayed_final_is_dropped_after_clear_and_close(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
@@ -483,6 +991,7 @@ async def test_callback_failure_does_not_break_session(monkeypatch):
         "qwen",
         on_input_transcript=failing_callback,
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.connect()
     for _ in range(2):
@@ -525,6 +1034,7 @@ async def test_update_session_is_locked_after_connect(monkeypatch):
         "qwen",
         on_input_transcript=AsyncMock(),
         on_connection_error=AsyncMock(),
+        external_endpointing_runtime=True,
     )
     await session.update_session({"language": "en-US", "instructions": "ignored"})
     with pytest.raises(ValueError, match="unknown session field"):
@@ -731,7 +1241,7 @@ async def test_manual_finals_are_delivered_in_commit_order():
     await session.close()
 
 
-async def test_empty_final_retires_utterance_without_blocking_later_final():
+async def test_partial_empty_duplicate_and_conflicting_finals_are_filtered():
     transcripts: asyncio.Queue[str] = asyncio.Queue()
     session = _RealtimeAsrSessionImpl(
         worker_fn=_scripted_worker,
@@ -743,49 +1253,71 @@ async def test_empty_final_retires_utterance_without_blocking_later_final():
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
     await session.signal_user_activity_end()
+    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
     await asyncio.sleep(0.05)
     assert transcripts.empty()
-    await session.stream_audio(b"\x00\x00" * 160)
-    await session.signal_user_activity_end()
-    assert await asyncio.wait_for(transcripts.get(), 1) == "second"
     await session.close()
 
 
-async def test_cancelled_connect_closes_worker_and_dispatch_tasks():
-    async def never_ready_worker(request_queue, response_queue, api_key, config):
+async def test_optional_partial_callback_receives_preview_without_history_write():
+    previews: asyncio.Queue[str] = asyncio.Queue()
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_scripted_worker,
+        api_key="events",
+        config=AsrSessionConfig(),
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
+    )
+    asr_client._attach_partial_callback(session, previews.put)
+
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
+
+    assert await asyncio.wait_for(previews.get(), 1) == "draft"
+    assert await asyncio.wait_for(transcripts.get(), 1) == "first"
+    assert previews.empty()
+    assert transcripts.empty()
+    await session.close()
+
+
+async def test_empty_final_is_delivered_as_turn_completion() -> None:
+    async def empty_worker(request_queue, response_queue, api_key, config):
         del api_key, config
+        await response_queue.put(_AsrWorkerEvent(kind="ready", generation=0))
         while True:
             request = await request_queue.get()
-            try:
-                if request.kind == "shutdown":
-                    await response_queue.put(
-                        _AsrWorkerEvent(kind="closed", generation=request.generation)
+            if request.kind == "commit":
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="final",
+                        generation=request.generation,
+                        buffer_epoch=request.buffer_epoch,
+                        utterance_id=request.utterance_id,
+                        text="",
                     )
-                    return
-            finally:
-                request_queue.task_done()
+                )
+            elif request.kind == "shutdown":
+                await response_queue.put(
+                    _AsrWorkerEvent(kind="closed", generation=request.generation)
+                )
+                return
 
-    on_error = AsyncMock()
+    transcripts: asyncio.Queue[str] = asyncio.Queue()
     session = _RealtimeAsrSessionImpl(
-        worker_fn=never_ready_worker,
+        worker_fn=empty_worker,
         api_key="",
         config=AsrSessionConfig(),
-        on_input_transcript=AsyncMock(),
-        on_connection_error=on_error,
+        on_input_transcript=transcripts.put,
+        on_connection_error=AsyncMock(),
     )
-    connect_task = asyncio.create_task(session.connect())
-    while session._worker_task is None:
-        await asyncio.sleep(0)
+    await session.connect()
+    await session.stream_audio(b"\x00\x00" * 160)
+    await session.signal_user_activity_end()
 
-    connect_task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await connect_task
-
-    assert session.is_ready is False
-    assert session._worker_task.done()
-    assert session._response_task is not None and session._response_task.done()
-    assert session._callback_task is not None and session._callback_task.done()
-    on_error.assert_not_awaited()
+    assert await asyncio.wait_for(transcripts.get(), 1) == ""
+    await session.close()
 
 
 async def test_stale_utterance_error_is_dropped_after_clear():
@@ -817,15 +1349,91 @@ async def test_close_unblocks_request_backpressure(monkeypatch):
         on_connection_error=AsyncMock(),
     )
     await session.connect()
-    for _ in range(asr_infra._REQUEST_QUEUE_SIZE):
-        await session.stream_audio(b"\x00\x00")
+    one_second = b"\x00\x00" * 16_000
+    for _ in range(asr_infra._ACTIVE_QUEUE_MAX_AUDIO_MS // 1_000):
+        await session.stream_audio(one_second)
 
-    blocked_producer = asyncio.create_task(session.stream_audio(b"\x00\x00"))
+    blocked_producer = asyncio.create_task(session.stream_audio(one_second))
     await asyncio.sleep(0)
     assert blocked_producer.done() is False
     await asyncio.wait_for(session.close(), 1)
     with pytest.raises(RuntimeError, match="ASR_SESSION_NOT_READY"):
         await blocked_producer
+
+
+async def test_request_queue_hold_atomically_keeps_dequeued_audio_in_budget():
+    queue = _AsrRequestQueue()
+    one_second = b"\x00\x00" * 16_000
+    request = _AsrWorkerRequest(kind="audio", generation=0, audio=one_second)
+    queue.put_nowait(request)
+
+    assert queue.waiting_audio_bytes == len(one_second)
+    assert queue.waiting_audio_items == 1
+    dequeued, hold = await queue.get_with_audio_hold()
+
+    assert dequeued is request
+    assert hold is not None
+    assert queue.waiting_audio_bytes == len(one_second)
+    assert queue.waiting_audio_items == 1
+    assert queue.held_audio_bytes == len(one_second)
+    assert queue.held_audio_items == 1
+
+    hold.release()
+    hold.release()
+    queue.task_done()
+    assert queue.waiting_audio_bytes == 0
+    assert queue.waiting_audio_items == 0
+    assert queue.held_audio_bytes == 0
+    assert queue.held_audio_items == 0
+
+    for kind in ("commit", "clear", "shutdown"):
+        queue.put_nowait(_AsrWorkerRequest(kind=kind, generation=0))
+    assert queue.waiting_audio_bytes == 0
+    assert queue.waiting_audio_items == 0
+    for _ in range(3):
+        queue.get_nowait()
+        queue.task_done()
+
+
+async def test_request_backpressure_limits_tiny_audio_item_count(monkeypatch):
+    monkeypatch.setattr(asr_infra, "_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(asr_infra, "_WORKER_CLOSE_TIMEOUT_SECONDS", 0.02)
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_non_consuming_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    for _ in range(asr_infra._ACTIVE_QUEUE_MAX_AUDIO_ITEMS):
+        await session.stream_audio(b"\x00\x00")
+
+    with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
+        await session.stream_audio(b"\x00\x00")
+
+    await session.close()
+
+
+async def test_sustained_request_backpressure_blocks_the_turn(monkeypatch):
+    monkeypatch.setattr(asr_infra, "_REQUEST_BACKPRESSURE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(asr_infra, "_WORKER_CLOSE_TIMEOUT_SECONDS", 0.02)
+    session = _RealtimeAsrSessionImpl(
+        worker_fn=_non_consuming_worker,
+        api_key="",
+        config=AsrSessionConfig(),
+        on_input_transcript=AsyncMock(),
+        on_connection_error=AsyncMock(),
+    )
+    await session.connect()
+    one_second = b"\x00\x00" * 16_000
+    for _ in range(asr_infra._ACTIVE_QUEUE_MAX_AUDIO_MS // 1_000):
+        await session.stream_audio(one_second)
+
+    with pytest.raises(RuntimeError, match="ASR_STREAM_BACKPRESSURE"):
+        await session.stream_audio(one_second)
+
+    await session.close()
 
 
 async def test_invalid_ready_generation_times_out(monkeypatch):
@@ -984,6 +1592,7 @@ async def test_dummy_close_cancels_long_delayed_final(monkeypatch):
         "qwen",
         on_input_transcript=transcripts.put,
         on_connection_error=errors,
+        external_endpointing_runtime=True,
     )
 
     await session.connect()
@@ -1012,6 +1621,7 @@ async def test_transcript_callback_can_close_session(monkeypatch):
         "qwen",
         on_input_transcript=close_from_callback,
         on_connection_error=errors,
+        external_endpointing_runtime=True,
     )
     await session.connect()
     await session.stream_audio(b"\x00\x00" * 160)
@@ -1207,3 +1817,865 @@ async def test_worker_exception_during_close_is_not_reported():
 
     assert session.is_ready is False
     errors.assert_not_awaited()
+
+
+class _RuntimeStartCandidate:
+    def __init__(
+        self,
+        *,
+        connect_gate: asyncio.Event | None = None,
+        connect_error: Exception | None = None,
+    ) -> None:
+        self.connect_started = asyncio.Event()
+        self._connect_gate = connect_gate
+        self._connect_error = connect_error
+        self.is_ready = True
+        self.close = AsyncMock()
+
+    async def connect(self) -> None:
+        self.connect_started.set()
+        if self._connect_gate is not None:
+            await self._connect_gate.wait()
+        if self._connect_error is not None:
+            raise self._connect_error
+
+
+def _runtime_selection():
+    return type(
+        "Selection",
+        (),
+        {
+            "provider_key": "qwen",
+            "endpointing_mode": "provider",
+        },
+    )()
+
+
+def _runtime_callbacks(
+    *,
+    on_prepare_turn=None,
+    on_lifecycle=None,
+    failures: list | None = None,
+    statuses: list | None = None,
+) -> AsrRuntimeCallbacks:
+    captured_failures = failures if failures is not None else []
+    captured_statuses = statuses if statuses is not None else []
+
+    async def capture_failure(event) -> None:
+        captured_failures.append(event)
+
+    async def capture_status(event) -> None:
+        captured_statuses.append(event)
+
+    return AsrRuntimeCallbacks(
+        display_name=lambda: "runtime-test",
+        on_prepare_turn=on_prepare_turn or AsyncMock(return_value=True),
+        on_partial=AsyncMock(),
+        on_final=AsyncMock(),
+        on_turn_abandoned=AsyncMock(),
+        on_failure=capture_failure,
+        on_status=capture_status,
+        on_lifecycle=on_lifecycle or AsyncMock(),
+    )
+
+
+def _patch_runtime_start(
+    monkeypatch,
+    candidates: list[_RuntimeStartCandidate],
+) -> None:
+    selection = _runtime_selection()
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(side_effect=candidates),
+    )
+
+
+async def test_runtime_start_closed_during_lifecycle_returns_stale_without_ready(
+    monkeypatch,
+) -> None:
+    lifecycle_entered = asyncio.Event()
+    release_lifecycle = asyncio.Event()
+    statuses = []
+
+    async def block_lifecycle(_event) -> None:
+        lifecycle_entered.set()
+        await release_lifecycle.wait()
+
+    candidate = _RuntimeStartCandidate()
+    _patch_runtime_start(monkeypatch, [candidate])
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_lifecycle=block_lifecycle,
+            statuses=statuses,
+        )
+    )
+
+    start_task = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(lifecycle_entered.wait(), 1)
+    await asyncio.wait_for(runtime.close(), 1)
+    release_lifecycle.set()
+    result = await asyncio.wait_for(start_task, 1)
+
+    assert result.status is AsrStartStatus.FAILED
+    assert result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is None
+    assert [event.code for event in statuses] == []
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_new_runtime_start_survives_old_connect_success(monkeypatch) -> None:
+    first_release = asyncio.Event()
+    first = _RuntimeStartCandidate(connect_gate=first_release)
+    second = _RuntimeStartCandidate()
+    statuses = []
+    _patch_runtime_start(monkeypatch, [first, second])
+    runtime = IndependentAsrRuntime(_runtime_callbacks(statuses=statuses))
+
+    old_start = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(first.connect_started.wait(), 1)
+    current_result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+    )
+    first_release.set()
+    old_result = await asyncio.wait_for(old_start, 1)
+
+    assert current_result.status is AsrStartStatus.READY
+    assert old_result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is second
+    assert runtime._asr_provider == "qwen"
+    assert runtime._asr_lifecycle is not None
+    assert runtime._asr_session_factory is not None
+    assert runtime._asr_transport_selection is not None
+    assert [event.code for event in statuses] == ["ASR_INDEPENDENT_READY"]
+    first.close.assert_awaited_once_with()
+    second.close.assert_not_awaited()
+    await runtime.close()
+
+
+async def test_old_connect_failure_after_new_start_has_no_failure_status(
+    monkeypatch,
+) -> None:
+    first_release = asyncio.Event()
+    first = _RuntimeStartCandidate(
+        connect_gate=first_release,
+        connect_error=RuntimeError("old connect failed"),
+    )
+    second = _RuntimeStartCandidate()
+    statuses = []
+    _patch_runtime_start(monkeypatch, [first, second])
+    runtime = IndependentAsrRuntime(_runtime_callbacks(statuses=statuses))
+
+    old_start = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(first.connect_started.wait(), 1)
+    current_result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+    )
+    first_release.set()
+    old_result = await asyncio.wait_for(old_start, 1)
+
+    assert current_result.status is AsrStartStatus.READY
+    assert old_result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is second
+    assert [event.code for event in statuses] == ["ASR_INDEPENDENT_READY"]
+    first.close.assert_awaited_once_with()
+    second.close.assert_not_awaited()
+    await runtime.close()
+
+
+async def test_runtime_start_threads_user_language_into_session_factory(
+    monkeypatch,
+) -> None:
+    candidates = [_RuntimeStartCandidate(), _RuntimeStartCandidate()]
+    selection = _runtime_selection()
+    builder_calls: list[dict] = []
+
+    def builder(_core_type, **kwargs):
+        builder_calls.append(kwargs)
+        return candidates[len(builder_calls) - 1]
+
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        builder,
+    )
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+
+    result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+        user_language="ja",
+    )
+
+    assert result.status is AsrStartStatus.READY
+    assert builder_calls[0]["user_language"] == "ja"
+    # Recovery candidates built from the stored factory must keep the
+    # start-time language.
+    factory = runtime._asr_session_factory
+    assert factory is not None
+    factory(selection)
+    assert builder_calls[1]["user_language"] == "ja"
+    await runtime.close()
+
+
+async def test_runtime_start_defaults_user_language_to_unset(
+    monkeypatch,
+) -> None:
+    candidate = _RuntimeStartCandidate()
+    selection = _runtime_selection()
+    builder_calls: list[dict] = []
+
+    def builder(_core_type, **kwargs):
+        builder_calls.append(kwargs)
+        return candidate
+
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        builder,
+    )
+    runtime = IndependentAsrRuntime(_runtime_callbacks())
+
+    result = await runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+    )
+
+    assert result.status is AsrStartStatus.READY
+    assert builder_calls[0]["user_language"] is None
+    await runtime.close()
+
+
+def _install_runtime_prepare_state(
+    runtime: IndependentAsrRuntime,
+) -> None:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "provider"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    runtime._asr_session = type("Session", (), {"is_ready": True})()
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = object()
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+
+
+@pytest.mark.parametrize("raises", [False, True])
+async def test_stale_prepare_unwind_only_releases_old_reservation(raises) -> None:
+    prepare_entered = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    async def delayed_prepare(_token) -> bool:
+        prepare_entered.set()
+        await release_prepare.wait()
+        if raises:
+            raise RuntimeError("old prepare failed")
+        return False
+
+    runtime = IndependentAsrRuntime(_runtime_callbacks(on_prepare_turn=delayed_prepare))
+    _install_runtime_prepare_state(runtime)
+    old_dispatcher = runtime._asr_transcript_dispatcher
+    prepare_task = asyncio.create_task(
+        runtime._prepare_independent_asr_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(prepare_entered.wait(), 1)
+    old_final_key = runtime._asr_reserved_final_key
+    assert old_final_key is not None
+
+    new_dispatcher = TranscriptDispatcher(runtime._dispatch_asr_transcript_envelope)
+    runtime._asr_transcript_dispatcher = new_dispatcher
+    new_final_key = replace(old_final_key, turn_id=old_final_key.turn_id + 1)
+    runtime._asr_reserved_final_key = new_final_key
+    runtime._asr_turn_prepared = True
+    release_prepare.set()
+    await asyncio.wait_for(prepare_task, 1)
+
+    assert runtime._asr_transcript_dispatcher is new_dispatcher
+    assert runtime._asr_reserved_final_key == new_final_key
+    assert runtime._asr_turn_prepared is True
+    assert old_final_key not in old_dispatcher._reservations
+
+
+@pytest.mark.parametrize("raises", [False, True])
+async def test_current_prepare_failure_releases_current_reservation(raises) -> None:
+    async def reject_prepare(_token) -> bool:
+        if raises:
+            raise RuntimeError("current prepare failed")
+        return False
+
+    runtime = IndependentAsrRuntime(_runtime_callbacks(on_prepare_turn=reject_prepare))
+    _install_runtime_prepare_state(runtime)
+    dispatcher = runtime._asr_transcript_dispatcher
+    turn_token = runtime._capture_turn_token(runtime._asr_lifecycle)
+    final_key = asr_runtime_module.FinalKey.from_turn(turn_token)
+
+    await runtime._prepare_independent_asr_turn(runtime._asr_session_epoch)
+
+    assert runtime._asr_reserved_final_key is None
+    assert runtime._asr_turn_prepared is False
+    assert final_key not in dispatcher._reservations
+
+
+class _RuntimeDetectorStub:
+    def __init__(
+        self,
+        *,
+        on_endpointing_failure=None,
+        bind_candidate=None,
+        release_deferred_turn=None,
+    ) -> None:
+        self.on_endpointing_failure = on_endpointing_failure
+        self.close = AsyncMock()
+        self.reset = AsyncMock()
+        self.bind_candidate = bind_candidate or AsyncMock(return_value=object())
+        self.release_deferred_turn = release_deferred_turn or AsyncMock()
+        self._turn_token = None
+
+    async def prepare_endpointing(self, turn_token):
+        self._turn_token = turn_token
+        return SimpleNamespace(token=turn_token, release=AsyncMock())
+
+    def endpointing_ready(self, turn_token) -> bool:
+        return self._turn_token == turn_token
+
+
+def _patch_runtime_detector_start(
+    monkeypatch,
+    candidates: list[_RuntimeStartCandidate],
+) -> list[_RuntimeDetectorStub]:
+    detectors: list[_RuntimeDetectorStub] = []
+    selection = SimpleNamespace(provider_key="qwen", endpointing_mode="manual")
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_resolve_asr_selection",
+        MagicMock(return_value=selection),
+    )
+    monkeypatch.setattr(
+        asr_runtime_module,
+        "_create_asr_session_from_selection",
+        MagicMock(side_effect=candidates),
+    )
+
+    def create_detector(**kwargs):
+        detector = _RuntimeDetectorStub(
+            on_endpointing_failure=kwargs.get("on_endpointing_failure"),
+        )
+        detectors.append(detector)
+        return detector
+
+    monkeypatch.setattr(asr_runtime_module, "DetectorRuntime", create_detector)
+    return detectors
+
+
+def _install_pending_runtime_state(
+    runtime: IndependentAsrRuntime,
+    detector: _RuntimeDetectorStub,
+) -> None:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
+    lifecycle.mark_pending_turn_speech()
+    lifecycle.accept_audio(b"\x01\x00" * 160, sample_rate_hz=16_000)
+    lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+    runtime._asr_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+    runtime._asr_pending_detector_candidate = object()
+
+
+def _install_active_runtime_state(
+    runtime: IndependentAsrRuntime,
+    detector: _RuntimeDetectorStub,
+) -> None:
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    runtime._asr_session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=1,
+    )
+
+
+def _replace_runtime_identity_same_epoch(
+    runtime: IndependentAsrRuntime,
+) -> tuple[object, VoiceInputLifecycleController, _RuntimeDetectorStub]:
+    runtime._asr_audio_generation += 1
+    session = SimpleNamespace(is_ready=True, close=AsyncMock())
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=resolve_provider_policy("qwen", "manual"),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    detector = _RuntimeDetectorStub()
+    runtime._asr_session = session
+    runtime._asr_provider = "qwen"
+    runtime._asr_lifecycle = lifecycle
+    runtime._asr_detector = detector
+    runtime._asr_current_ingress_token = runtime.capture_ingress_token(
+        connection_id="connection",
+        lease_generation=1,
+        route_generation=2,
+    )
+    return session, lifecycle, detector
+
+
+async def test_stale_detector_failure_callback_cannot_close_new_runtime(
+    monkeypatch,
+) -> None:
+    failures = []
+    statuses = []
+    first = _RuntimeStartCandidate()
+    second = _RuntimeStartCandidate()
+    detectors = _patch_runtime_detector_start(monkeypatch, [first, second])
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    old_detector = detectors[0]
+    callback = old_detector.on_endpointing_failure
+    assert callback is not None
+    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    new_session = runtime._asr_session
+    new_lifecycle = runtime._asr_lifecycle
+    new_detector = runtime._asr_detector
+    current_epoch = runtime._asr_session_epoch
+
+    await callback()
+
+    assert runtime._asr_session_epoch == current_epoch
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert failures == []
+    assert [event.code for event in statuses].count("ASR_ENDPOINTING_FAILED") == 0
+    old_detector.close.assert_awaited_once_with()
+    await runtime.close()
+
+
+async def test_current_detector_failure_callback_fails_closed_once(monkeypatch) -> None:
+    failures = []
+    statuses = []
+    detectors = _patch_runtime_detector_start(
+        monkeypatch,
+        [_RuntimeStartCandidate()],
+    )
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    await runtime.start(route_key="qwen", resource_optimization_enabled=True)
+    callback = detectors[0].on_endpointing_failure
+    assert callback is not None
+
+    await callback()
+    await asyncio.sleep(0)
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses].count("ASR_ENDPOINTING_FAILED") == 1
+
+
+async def test_stale_pending_candidate_bind_none_cannot_fail_new_runtime() -> None:
+    bind_entered = asyncio.Event()
+    release_bind = asyncio.Event()
+
+    async def bind_none(_candidate, _turn_token):
+        bind_entered.set()
+        await release_bind.wait()
+        return None
+
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        bind_candidate=AsyncMock(side_effect=bind_none),
+    )
+    _install_pending_runtime_state(runtime, detector)
+    activate = asyncio.create_task(
+        runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(bind_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_bind.set()
+    await asyncio.wait_for(activate, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert failures == []
+    assert statuses == []
+
+
+async def test_current_pending_candidate_bind_none_fails_closed_once() -> None:
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        bind_candidate=AsyncMock(return_value=None),
+    )
+    _install_pending_runtime_state(runtime, detector)
+
+    await runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses] == ["ASR_ENDPOINTING_FAILED"]
+
+
+async def test_stale_deferred_turn_release_error_cannot_fail_new_runtime() -> None:
+    release_entered = asyncio.Event()
+    release_error = asyncio.Event()
+
+    async def fail_release() -> None:
+        release_entered.set()
+        await release_error.wait()
+        raise RuntimeError("old detector release failed")
+
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        release_deferred_turn=AsyncMock(side_effect=fail_release),
+    )
+    _install_active_runtime_state(runtime, detector)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    final = asyncio.create_task(
+        runtime._handle_independent_asr_final("final", epoch, "qwen")
+    )
+    await asyncio.wait_for(release_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_error.set()
+    await asyncio.wait_for(final, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert failures == []
+    assert statuses == []
+
+
+async def test_current_deferred_turn_release_error_fails_closed_once() -> None:
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(failures=failures, statuses=statuses)
+    )
+    detector = _RuntimeDetectorStub(
+        release_deferred_turn=AsyncMock(
+            side_effect=RuntimeError("current detector release failed")
+        ),
+    )
+    _install_active_runtime_state(runtime, detector)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+
+    await runtime._handle_independent_asr_final("final", epoch, "qwen")
+
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in failures] == ["ASR_ENDPOINTING_FAILED"]
+    assert [event.code for event in statuses] == ["ASR_ENDPOINTING_FAILED"]
+
+
+@pytest.mark.parametrize("teardown", ["abort", "suspend"])
+async def test_runtime_start_transport_teardown_returns_stale_without_ready(
+    monkeypatch,
+    teardown: str,
+) -> None:
+    release_connect = asyncio.Event()
+    candidate = _RuntimeStartCandidate(connect_gate=release_connect)
+    statuses = []
+    _patch_runtime_start(monkeypatch, [candidate])
+    runtime = IndependentAsrRuntime(_runtime_callbacks(statuses=statuses))
+
+    start_task = asyncio.create_task(
+        runtime.start(
+            route_key="qwen",
+            resource_optimization_enabled=True,
+        )
+    )
+    await asyncio.wait_for(candidate.connect_started.wait(), 1)
+    if teardown == "suspend":
+        await runtime.suspend("game_takeover")
+    else:
+        await runtime.abort("hard_mute")
+    release_connect.set()
+    result = await asyncio.wait_for(start_task, 1)
+
+    assert result.status is AsrStartStatus.FAILED
+    assert result.failure_code == "ASR_START_STALE"
+    assert runtime._asr_session is None
+    assert runtime._asr_lifecycle is None
+    assert runtime._asr_detector is None
+    assert [event.code for event in statuses] == []
+    candidate.close.assert_awaited_once_with()
+
+
+async def test_stale_pending_lifecycle_callback_cannot_fail_reconnected_runtime() -> (
+    None
+):
+    lifecycle_entered = asyncio.Event()
+    release_lifecycle = asyncio.Event()
+    failures = []
+    statuses = []
+
+    async def block_active_lifecycle(_event) -> None:
+        lifecycle_entered.set()
+        await release_lifecycle.wait()
+
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_lifecycle=block_active_lifecycle,
+            failures=failures,
+            statuses=statuses,
+        )
+    )
+    detector = _RuntimeDetectorStub()
+    _install_pending_runtime_state(runtime, detector)
+    runtime._asr_lifecycle.provider_policy = resolve_provider_policy(
+        "qwen",
+        "provider",
+    )
+    runtime._ensure_smart_turn_ready = AsyncMock(return_value=True)
+    activate = asyncio.create_task(
+        runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(lifecycle_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_lifecycle.set()
+    await asyncio.wait_for(activate, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert runtime._asr_audio_bytes == 0
+    assert failures == []
+    assert statuses == []
+
+
+async def test_stale_pending_prepare_callback_cannot_fail_reconnected_runtime() -> None:
+    prepare_entered = asyncio.Event()
+    release_prepare = asyncio.Event()
+    failures = []
+    statuses = []
+
+    async def block_prepare(_token) -> bool:
+        prepare_entered.set()
+        await release_prepare.wait()
+        return True
+
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_prepare_turn=block_prepare,
+            failures=failures,
+            statuses=statuses,
+        )
+    )
+    detector = _RuntimeDetectorStub()
+    _install_pending_runtime_state(runtime, detector)
+    runtime._asr_lifecycle.provider_policy = resolve_provider_policy(
+        "qwen",
+        "provider",
+    )
+    activate = asyncio.create_task(
+        runtime._activate_pending_independent_turn(runtime._asr_session_epoch)
+    )
+    await asyncio.wait_for(prepare_entered.wait(), 1)
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+
+    release_prepare.set()
+    await asyncio.wait_for(activate, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert runtime._asr_audio_bytes == 0
+    assert failures == []
+    assert statuses == []
+
+
+async def test_stale_final_lease_unwind_uses_old_dispatcher_only() -> None:
+    lifecycle_callback = AsyncMock()
+    failures = []
+    statuses = []
+    runtime = IndependentAsrRuntime(
+        _runtime_callbacks(
+            on_lifecycle=lifecycle_callback,
+            failures=failures,
+            statuses=statuses,
+        )
+    )
+    detector = _RuntimeDetectorStub()
+    _install_active_runtime_state(runtime, detector)
+    epoch = runtime._asr_session_epoch
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+    await runtime._handle_independent_asr_endpoint(epoch)
+    old_dispatcher = runtime._asr_transcript_dispatcher
+    old_final_key = runtime._asr_reserved_final_key
+    old_lease = runtime._asr_smart_turn_lease
+    assert old_final_key is not None
+    assert old_lease is not None
+    release_started = asyncio.Event()
+    release_lease = asyncio.Event()
+
+    async def block_release() -> None:
+        release_started.set()
+        await release_lease.wait()
+
+    old_lease.release = AsyncMock(side_effect=block_release)
+    final = asyncio.create_task(
+        runtime._handle_independent_asr_final("final", epoch, "qwen")
+    )
+    await asyncio.wait_for(release_started.wait(), 1)
+    await runtime.abort("hard_mute")
+    new_session, new_lifecycle, new_detector = _replace_runtime_identity_same_epoch(
+        runtime
+    )
+    new_dispatcher = TranscriptDispatcher(runtime._dispatch_asr_transcript_envelope)
+    new_dispatcher.submit = MagicMock(wraps=new_dispatcher.submit)
+    runtime._asr_transcript_dispatcher = new_dispatcher
+    lifecycle_callback.reset_mock()
+
+    release_lease.set()
+    await asyncio.wait_for(final, 1)
+
+    assert runtime._asr_session is new_session
+    assert runtime._asr_lifecycle is new_lifecycle
+    assert runtime._asr_detector is new_detector
+    assert old_final_key not in old_dispatcher._reservations
+    new_dispatcher.submit.assert_not_called()
+    lifecycle_callback.assert_not_awaited()
+    assert failures == []
+    assert statuses == []
+
+
+def test_asr_connect_retry_budget_cannot_outlive_the_frontend_start_deadline():
+    # Codex P1. Each connect attempt can burn _READY_TIMEOUT_SECONDS before
+    # ASR_CONNECT_TIMEOUT, and _start_session_activate awaits the WHOLE retry
+    # loop before sending session_started -- while the frontend cancels the
+    # start and fires end_session at its deadline. With Soniox's three attempts
+    # a sustained outage always had the frontend tear the session down mid-retry,
+    # so the user saw a generic start timeout instead of the fail-closed ASR
+    # verdict the backend was busy producing.
+    #
+    # Constants-and-structure, deliberately: driving the start loop to a real
+    # timeout would need a multi-second test. What this pins is that the budget
+    # stays tight enough to matter, and that the check gates the retry.
+    import inspect
+
+    from main_logic.asr_client import runtime as runtime_module
+    from main_logic.asr_client._infra import _READY_TIMEOUT_SECONDS
+
+    assert (
+        runtime_module._CONNECT_TOTAL_BUDGET_SECONDS
+        < runtime_module._FRONTEND_START_DEADLINE_SECONDS
+    ), "the ASR connect phase must finish before the client stops listening"
+
+    # One timed-out attempt already consumes _READY_TIMEOUT_SECONDS, so a second
+    # full-timeout attempt must not fit -- otherwise the budget is decorative.
+    worst_case_second_attempt = _READY_TIMEOUT_SECONDS + _READY_TIMEOUT_SECONDS
+    assert worst_case_second_attempt > runtime_module._CONNECT_TOTAL_BUDGET_SECONDS, (
+        "the budget must refuse a second attempt that could not finish in time"
+    )
+
+    # The guard has to sit before the backoff sleep, not after it.
+    source = inspect.getsource(runtime_module)
+    start_loop = source.split("connect_started_at = time.monotonic()", 1)[1].split(
+        "if asr_session is None:", 1
+    )[0]
+    assert "_CONNECT_TOTAL_BUDGET_SECONDS" in start_loop, (
+        "the start connect loop must consult the aggregate budget"
+    )
+    assert start_loop.index("_CONNECT_TOTAL_BUDGET_SECONDS") < start_loop.index(
+        "await asyncio.sleep(backoff)"
+    ), "the budget check must refuse the retry before sleeping for it"

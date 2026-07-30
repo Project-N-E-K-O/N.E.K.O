@@ -54,12 +54,20 @@ from ._shared import (
     logger,
 )
 from .platform_helpers import _get_bilibili_credential, _get_platform_cookies
+from .bilibili_content import (
+    enrich_bilibili_video,
+    fetch_bilibili_home,
+    fetch_bilibili_hot,
+    fetch_bilibili_radar,
+    format_bilibili_phase2_context,
+)
 from .trending_content import (
     _fetch_content_by_region,
     _fetch_twitter_trending_fallback,
     _fetch_weibo_trending_fallback,
     _format_bilibili_videos,
     _format_reddit_posts,
+    _format_twitch_live_streams,
     _format_youtube_videos,
     _format_score,
     _format_twitter_trending,
@@ -80,6 +88,7 @@ from .trending_content import (
     format_xhh_feed,
     normalize_xhh_feed,
 )
+from .twitch_feed import fetch_twitch_live_streams
 from .youtube_feed import fetch_youtube_home_feed
 from .window_context import (
     _SEARCH_TEXT_WS_RE,

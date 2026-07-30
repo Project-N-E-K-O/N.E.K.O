@@ -2,7 +2,7 @@
 setlocal
 chcp 65001 >nul 2>&1
 
-rem Build all frontend projects.
+rem Build frontend projects shipped with production distributions.
 set "ROOT_DIR=%~dp0"
 if "%ROOT_DIR:~-1%"=="\" set "ROOT_DIR=%ROOT_DIR:~0,-1%"
 
@@ -105,5 +105,5 @@ if not exist "%RC_DIST%\neko-chat-window.iife.js" (
 echo [build_frontend] react-neko-chat done: %RC_DIST%
 
 echo.
-echo [build_frontend] all frontend projects built successfully.
+echo [build_frontend] all production frontend projects built successfully.
 exit /b 0

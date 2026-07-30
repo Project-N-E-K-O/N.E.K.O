@@ -38,6 +38,7 @@ from utils.logger_config import get_module_logger
 from fastapi import APIRouter, Body, HTTPException, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse
 import httpx
+from .pages_router import _static_assets_ctx
 from .shared_state import get_session_manager, get_config_manager, get_templates
 from config import TOOL_SERVER_PORT, USER_PLUGIN_BASE
 from main_logic.agent_event_bus import publish_session_event
@@ -238,8 +239,16 @@ def _get_http_client() -> httpx.AsyncClient:
 async def _close_http_client():
     global _HTTP_CLIENT
     if _HTTP_CLIENT is not None:
-        await _HTTP_CLIENT.aclose()
-        _HTTP_CLIENT = None
+        # 关连接失败不许拖垮整个 shutdown：这个 handler 挂在合并 lifespan 链上，
+        # 抛出去会中断后面所有 router 的收尾。最典型的触发是 client 建在另一个
+        # 已经关掉的事件循环上（aclose 走 call_soon 撞上 closed loop）。无论成败
+        # 都把引用清掉，下次 startup 在当前循环上重建。
+        try:
+            await _HTTP_CLIENT.aclose()
+        except Exception as exc:
+            logger.warning(f"关闭 agent_router HTTP client 失败，继续收尾: {exc}")
+        finally:
+            _HTTP_CLIENT = None
 
 
 @router.post('/flags')
@@ -483,6 +492,7 @@ async def openclaw_guide_page(request: Request):
     templates = get_templates()
     return templates.TemplateResponse("templates/openclaw_guide.html", {
         "request": request,
+        **_static_assets_ctx(),
     })
 
 

@@ -9,6 +9,8 @@ from typing import Any
 
 from .contracts_public import public_bool, public_text
 from .contracts_types import ActivityLevel, LiveMode, RoastStrength
+from .co_stream_capabilities import normalize_activation_mode
+from .live_interaction_policy import ActivationMode
 
 
 _LIVE_ROOM_URL_RE = re.compile(
@@ -44,6 +46,8 @@ def normalize_live_platform(value: Any) -> str:
         return "bilibili"
     if platform in {"douyin", "dy"}:
         return "douyin"
+    if platform in {"twitch", "tv"}:
+        return "twitch"
     return "bilibili"
 
 
@@ -52,6 +56,7 @@ class LiveConfig:
     live_platform: str = "bilibili"
     live_room_ref: str = ""
     live_room_id: int = 0
+    twitch_client_id: str = ""
     live_mode: LiveMode = "co_stream"
     live_enabled: bool = False
     avatar_roast_enabled: bool = True
@@ -67,6 +72,8 @@ class LiveConfig:
     viewer_memory_enabled: bool = True
     roast_strength: RoastStrength = "normal"
     activity_level: ActivityLevel = "standard"
+    co_stream_host_pause_fill_activation: ActivationMode = "off"
+    co_stream_host_pause_fill_auto_consent_version: int = 0
     co_stream_output_policy: str = "auto_low_interrupt"
     solo_output_policy: str = "auto_rate_limited"
     avatar_fetch_timeout_seconds: float = 8.0
@@ -112,6 +119,7 @@ class LiveConfig:
             live_platform=live_platform,
             live_room_ref=live_room_ref,
             live_room_id=live_room_id,
+            twitch_client_id=_safe_optional_text(raw.get("twitch_client_id"), max_len=80),
             live_mode=live_mode,  # type: ignore[arg-type]
             live_enabled=_safe_bool(raw.get("live_enabled"), default=False),
             avatar_roast_enabled=_safe_bool(raw.get("avatar_roast_enabled"), default=True),
@@ -129,6 +137,12 @@ class LiveConfig:
             ),
             roast_strength=roast_strength,  # type: ignore[arg-type]
             activity_level=activity_level,  # type: ignore[arg-type]
+            co_stream_host_pause_fill_activation=normalize_activation_mode(
+                raw.get("co_stream_host_pause_fill_activation")
+            ),
+            co_stream_host_pause_fill_auto_consent_version=_safe_consent_version(
+                raw.get("co_stream_host_pause_fill_auto_consent_version"),
+            ),
             co_stream_output_policy=_safe_text(
                 raw.get("co_stream_output_policy"),
                 default="auto_low_interrupt",
@@ -204,6 +218,7 @@ class LiveConfig:
             "live_platform": live_platform,
             "live_room_ref": live_room_ref,
             "live_room_id": live_room_id,
+            "twitch_client_id": public_text(self.twitch_client_id, max_len=80),
             "live_mode": self.live_mode if isinstance(self.live_mode, str) and self.live_mode in {"co_stream", "solo_stream"} else "co_stream",
             "live_enabled": public_bool(self.live_enabled),
             "avatar_roast_enabled": public_bool(self.avatar_roast_enabled, default=True),
@@ -221,6 +236,9 @@ class LiveConfig:
             ),
             "roast_strength": self.roast_strength if isinstance(self.roast_strength, str) and self.roast_strength in {"gentle", "normal", "sharp"} else "normal",
             "activity_level": self.activity_level if isinstance(self.activity_level, str) and self.activity_level in {"quiet", "standard", "active"} else "standard",
+            "co_stream_host_pause_fill_activation": normalize_activation_mode(
+                self.co_stream_host_pause_fill_activation
+            ),
             "co_stream_output_policy": public_text(self.co_stream_output_policy) or "auto_low_interrupt",
             "solo_output_policy": public_text(self.solo_output_policy) or "auto_rate_limited",
             "avatar_fetch_timeout_seconds": _safe_float(
@@ -287,6 +305,19 @@ def _safe_bool(value: Any, *, default: bool) -> bool:
         if text in {"false", "0", "no", "off"}:
             return False
     return default
+
+
+def _safe_consent_version(value: Any) -> int:
+    """Preserve exact versions so an unknown value can never clamp into consent."""
+
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value if 0 <= value <= 100 else 0
+    if isinstance(value, str) and re.fullmatch(r"\d+", value.strip()):
+        parsed = int(value.strip())
+        return parsed if 0 <= parsed <= 100 else 0
+    return 0
 
 
 def _safe_int(value: Any, *, default: int, minimum: int, maximum: int) -> int:
