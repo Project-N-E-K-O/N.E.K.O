@@ -13,15 +13,24 @@
 # limitations under the License.
 
 import asyncio
+from contextlib import contextmanager
+from dataclasses import dataclass
 import json
 import os
+from pathlib import Path
+import threading
 from typing import Dict, Any, Optional, List
+
+import portalocker
+
 from utils.config_manager import get_config_manager
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import atomic_write_json
 
 # 初始化配置管理器
 _config_manager = get_config_manager()
+_PREFERENCES_THREAD_LOCK = threading.RLock()
+_PREFERENCES_LOCK_TIMEOUT_SECONDS = 10
 
 
 def _get_preferences_read_path() -> str:
@@ -37,6 +46,20 @@ def _get_active_preferences_path() -> str:
     if os.path.exists(write_path):
         return write_path
     return _get_preferences_read_path()
+
+
+@contextmanager
+def _locked_preferences_store():
+    """Serialize every user_preferences.json read-modify-write."""
+    write_path = Path(_get_preferences_write_path())
+    write_path.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = write_path.with_name(f"{write_path.name}.lock")
+    with _PREFERENCES_THREAD_LOCK, portalocker.Lock(
+        str(lock_path),
+        mode="a+",
+        timeout=_PREFERENCES_LOCK_TIMEOUT_SECONDS,
+    ):
+        yield
 
 
 # 用户偏好文件路径（从配置管理器获取）
@@ -80,6 +103,13 @@ async def aload_user_preferences() -> List[Dict[str, Any]]:
     return await asyncio.to_thread(_sync_load)
 
 
+def _save_user_preferences_unlocked(preferences: List[Dict[str, Any]]) -> None:
+    """Write an already-prepared preference list while the caller holds the lock."""
+    global PREFERENCES_FILE
+    PREFERENCES_FILE = _get_preferences_write_path()
+    atomic_write_json(PREFERENCES_FILE, preferences, ensure_ascii=False, indent=2)
+
+
 def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
     """
     Save user preferences
@@ -94,11 +124,8 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
         # 确保配置目录存在
         _config_manager.ensure_config_directory()
-        # 更新路径（可能已迁移）
-        global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_preferences_write_path()
-        
-        atomic_write_json(PREFERENCES_FILE, preferences, ensure_ascii=False, indent=2)
+        with _locked_preferences_store():
+            _save_user_preferences_unlocked(preferences)
         return True
     except MaintenanceModeError:
         raise
@@ -107,6 +134,23 @@ def save_user_preferences(preferences: List[Dict[str, Any]]) -> bool:
         return False
 
 def update_model_preferences(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
+    """Update one model without racing another preference-file writer."""
+    try:
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+        _config_manager.ensure_config_directory()
+        with _locked_preferences_store():
+            return _update_model_preferences_unlocked(
+                model_path, position, scale, parameters, display, rotation,
+                viewport, camera_position,
+            )
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        print(f"更新模型偏好失败: {e}")
+        return False
+
+
+def _update_model_preferences_unlocked(model_path: str, position: Dict[str, float], scale: Dict[str, float], parameters: Optional[Dict[str, float]] = None, display: Optional[Dict[str, float]] = None, rotation: Optional[Dict[str, float]] = None, viewport: Optional[Dict[str, float]] = None, camera_position: Optional[Dict[str, float]] = None) -> bool:
     """
     Update preferences of the given model
 
@@ -202,8 +246,9 @@ def update_model_preferences(model_path: str, position: Dict[str, float], scale:
             # 添加新模型的偏好到列表开头（作为首选）
             current_preferences.insert(0, new_model_pref)
         
-        # 保存更新后的偏好
-        return save_user_preferences(current_preferences)
+        # 保存更新后的偏好；外层持有覆盖 load→save 的锁。
+        _save_user_preferences_unlocked(current_preferences)
+        return True
     except Exception as e:
         if isinstance(e, MaintenanceModeError):
             raise
@@ -282,6 +327,20 @@ def validate_model_preferences(preferences: Dict[str, Any]) -> bool:
     return True
 
 def move_model_to_top(model_path: str) -> bool:
+    """Move a model while holding the same lock as conversation settings."""
+    try:
+        assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
+        _config_manager.ensure_config_directory()
+        with _locked_preferences_store():
+            return _move_model_to_top_unlocked(model_path)
+    except MaintenanceModeError:
+        raise
+    except Exception as e:
+        print(f"移动模型到顶部失败: {e}")
+        return False
+
+
+def _move_model_to_top_unlocked(model_path: str) -> bool:
     """
     Move the given model to the top of the list (make it preferred)
     
@@ -305,7 +364,8 @@ def move_model_to_top(model_path: str) -> bool:
             # 将模型移动到顶部
             model_pref = preferences.pop(model_index)
             preferences.insert(0, model_pref)
-            return save_user_preferences(preferences)
+            _save_user_preferences_unlocked(preferences)
+            return True
         else:
             # 如果模型不存在，返回False
             return False
@@ -331,6 +391,137 @@ _ALLOWED_CONVERSATION_SETTINGS = {
     'textGuardMaxLength', 'noiseReductionEnabled', 'independentAsrEnabled',
     'voiceInputResourceOptimizationEnabled'
 }
+_CONVERSATION_SETTINGS_REVISION_KEY = "_conversation_settings_revision"
+_CONVERSATION_SETTINGS_ASR_DECISION_KEY = "_independent_asr_decision"
+
+
+@dataclass(frozen=True)
+class ConversationSettingsSnapshot:
+    settings: Dict[str, Any]
+    revision: int
+    asr_decision: Optional[Dict[str, Any]]
+
+
+@dataclass(frozen=True)
+class ConversationSettingsWriteResult:
+    success: bool
+    conflict: bool
+    snapshot: ConversationSettingsSnapshot
+
+
+def _normalize_conversation_settings_revision(value: Any) -> int:
+    if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+        return value
+    return 0
+
+
+def _normalize_asr_decision(value: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(value, dict):
+        return None
+    write_id = value.get("writeId")
+    writer_id = value.get("writerId")
+    decision_value = value.get("value")
+    if (
+        not isinstance(write_id, int)
+        or isinstance(write_id, bool)
+        or write_id < 0
+        or not isinstance(writer_id, str)
+        or not writer_id
+        or len(writer_id) > 128
+        or not isinstance(decision_value, bool)
+    ):
+        return None
+    return {
+        "writeId": write_id,
+        "writerId": writer_id,
+        "value": decision_value,
+    }
+
+
+def _asr_decision_key(decision: Dict[str, Any]) -> tuple[int, str]:
+    return decision["writeId"], decision["writerId"]
+
+
+def _snapshot_from_preferences_data(data: Any) -> ConversationSettingsSnapshot:
+    if isinstance(data, dict):
+        data = [data]
+    if isinstance(data, list):
+        for pref in data:
+            if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
+                settings = {
+                    key: value
+                    for key, value in pref.items()
+                    if key in _ALLOWED_CONVERSATION_SETTINGS
+                }
+                decision = _normalize_asr_decision(
+                    pref.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
+                )
+                if (
+                    decision is not None
+                    and settings.get("independentAsrEnabled") != decision["value"]
+                ):
+                    decision = None
+                return ConversationSettingsSnapshot(
+                    settings=settings,
+                    revision=_normalize_conversation_settings_revision(
+                        pref.get(_CONVERSATION_SETTINGS_REVISION_KEY)
+                    ),
+                    asr_decision=decision,
+                )
+    return ConversationSettingsSnapshot(settings={}, revision=0, asr_decision=None)
+
+
+def _validate_conversation_settings(settings: Dict[str, Any]) -> Dict[str, Any]:
+    filtered_settings = {
+        key: value
+        for key, value in settings.items()
+        if key in _ALLOWED_CONVERSATION_SETTINGS
+    }
+    bool_fields = {
+        'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
+        'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
+        'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
+        'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
+        'avatarReactionBubbleEnabled', 'slopFilterEnabled', 'subtitleEnabled',
+        'noiseReductionEnabled', 'independentAsrEnabled',
+        'voiceInputResourceOptimizationEnabled'
+    }
+    int_interval_fields = {'proactiveChatInterval', 'proactiveVisionInterval'}
+    string_fields = {'userLanguage'}
+    int_limit_fields = {'textGuardMaxLength'}
+
+    validated = {}
+    for key, value in filtered_settings.items():
+        if key in bool_fields:
+            if isinstance(value, bool):
+                validated[key] = value
+        elif key in int_interval_fields:
+            if isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= 3600:
+                validated[key] = value
+        elif key in string_fields:
+            if isinstance(value, str) and value:
+                validated[key] = value
+        elif key in int_limit_fields:
+            if isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= 2000:
+                validated[key] = value
+    return validated
+
+
+def load_global_conversation_settings_snapshot(
+    *, strict: bool = False
+) -> ConversationSettingsSnapshot:
+    """Load settings together with the server revision and ASR decision token."""
+    try:
+        global PREFERENCES_FILE
+        PREFERENCES_FILE = _get_active_preferences_path()
+        if os.path.exists(PREFERENCES_FILE):
+            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
+                return _snapshot_from_preferences_data(json.load(f))
+    except Exception as e:
+        if strict:
+            raise
+        print(f"加载全局对话设置失败: {e}")
+    return ConversationSettingsSnapshot(settings={}, revision=0, asr_decision=None)
 
 
 def load_global_conversation_settings(*, strict: bool = False) -> Dict[str, Any]:
@@ -351,27 +542,22 @@ def load_global_conversation_settings(*, strict: bool = False) -> Dict[str, Any]
     Returns:
         Dict[str, Any]: conversation settings dict; empty dict when absent
     """
-    try:
-        global PREFERENCES_FILE
-        PREFERENCES_FILE = _get_active_preferences_path()
-        if os.path.exists(PREFERENCES_FILE):
-            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-                if isinstance(data, list):
-                    for pref in data:
-                        if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
-                            # 提取对话设置：仅返回白名单字段，防止泄露无关数据
-                            return {k: v for k, v in pref.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
-    except Exception as e:
-        if strict:
-            raise
-        print(f"加载全局对话设置失败: {e}")
-    return {}
+    return load_global_conversation_settings_snapshot(strict=strict).settings
 
 
 async def aload_global_conversation_settings(*, strict: bool = False) -> Dict[str, Any]:
     """Async version of load_global_conversation_settings: for async paths, offloading sync IO."""
     return await asyncio.to_thread(load_global_conversation_settings, strict=strict)
+
+
+async def aload_global_conversation_settings_snapshot(
+    *, strict: bool = False
+) -> ConversationSettingsSnapshot:
+    """Async wrapper for the versioned conversation-settings read."""
+    return await asyncio.to_thread(
+        load_global_conversation_settings_snapshot,
+        strict=strict,
+    )
 
 
 def load_ui_language_override() -> Optional[str]:
@@ -417,112 +603,118 @@ async def ais_privacy_mode_enabled() -> bool:
     return not settings.get('proactiveVisionEnabled', True)
 
 
-def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
-    """
-    Save global conversation settings (written into the global entry of user_preferences.json)
-    Uses whitelist filtering, saving only allowed fields; model_path is pinned to the sentinel value
+def _load_preferences_data_for_write_unlocked() -> List[Dict[str, Any]]:
+    """Load the latest write-root snapshot while the caller holds the lock."""
+    global PREFERENCES_FILE
+    write_path = _get_preferences_write_path()
+    read_path = _get_preferences_read_path()
+    if os.path.exists(write_path):
+        PREFERENCES_FILE = write_path
+        with open(write_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+    elif os.path.exists(read_path):
+        with open(read_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+        PREFERENCES_FILE = write_path
+    else:
+        PREFERENCES_FILE = write_path
+        data = []
 
-    Args:
-        settings (Dict[str, Any]): conversation settings dict to save
+    if isinstance(data, dict):
+        return [data]
+    if isinstance(data, list):
+        return data
+    return []
 
-    Returns:
-        bool: True on success, False on failure
-    """
+
+def save_global_conversation_settings_versioned(
+    settings: Dict[str, Any],
+    *,
+    expected_revision: Optional[int] = None,
+    asr_decision: Optional[Dict[str, Any]] = None,
+) -> ConversationSettingsWriteResult:
+    """Compare-and-set a partial conversation-settings update."""
+    empty_snapshot = ConversationSettingsSnapshot(
+        settings={}, revision=0, asr_decision=None
+    )
     try:
         assert_cloudsave_writable(_config_manager, operation="save", target="user_preferences.json")
-        # 确保配置目录存在，并使用最新路径（与 save_user_preferences 保持一致）
         _config_manager.ensure_config_directory()
-        global PREFERENCES_FILE
+        validated = _validate_conversation_settings(settings)
+        incoming_decision = _normalize_asr_decision(asr_decision)
+        if (
+            incoming_decision is not None
+            and validated.get("independentAsrEnabled") != incoming_decision["value"]
+        ):
+            incoming_decision = None
 
-        write_path = _get_preferences_write_path()
-        read_path = _get_preferences_read_path()
+        with _locked_preferences_store():
+            data = _load_preferences_data_for_write_unlocked()
+            current = _snapshot_from_preferences_data(data)
+            if expected_revision is not None and expected_revision != current.revision:
+                return ConversationSettingsWriteResult(
+                    success=False, conflict=True, snapshot=current
+                )
 
-        # 优先从写路径读取；若不存在则回退读路径（迁移旧版只读偏好数据）
-        if os.path.exists(write_path):
-            PREFERENCES_FILE = write_path
-            with open(PREFERENCES_FILE, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-        elif os.path.exists(read_path):
-            with open(read_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-            PREFERENCES_FILE = write_path
-        else:
-            PREFERENCES_FILE = write_path
-            data = []
+            if incoming_decision is not None and current.asr_decision is not None:
+                incoming_key = _asr_decision_key(incoming_decision)
+                current_key = _asr_decision_key(current.asr_decision)
+                if incoming_key < current_key or (
+                    incoming_key == current_key
+                    and incoming_decision["value"] != current.asr_decision["value"]
+                ):
+                    return ConversationSettingsWriteResult(
+                        success=False, conflict=True, snapshot=current
+                    )
 
-        if isinstance(data, dict):
-            # 兼容旧 dict 格式：包装为列表
-            data = [data]
-        elif not isinstance(data, list):
-            data = []
+            global_index = -1
+            for index, pref in enumerate(data):
+                if isinstance(pref, dict) and pref.get("model_path") == GLOBAL_CONVERSATION_KEY:
+                    global_index = index
+                    break
+            global_pref = data[global_index].copy() if global_index >= 0 else {}
+            previous_asr_value = global_pref.get("independentAsrEnabled")
+            changed = global_index < 0
+            for key, value in validated.items():
+                if global_pref.get(key) != value:
+                    changed = True
+                global_pref[key] = value
 
-        # 查找全局对话设置条目的索引
-        global_index = -1
-        for i, pref in enumerate(data):
-            if pref.get('model_path') == GLOBAL_CONVERSATION_KEY:
-                global_index = i
-                break
+            if "independentAsrEnabled" in validated:
+                if incoming_decision is not None:
+                    if (
+                        global_pref.get(_CONVERSATION_SETTINGS_ASR_DECISION_KEY)
+                        != incoming_decision
+                    ):
+                        changed = True
+                    global_pref[_CONVERSATION_SETTINGS_ASR_DECISION_KEY] = incoming_decision
+                elif previous_asr_value != validated["independentAsrEnabled"]:
+                    if _CONVERSATION_SETTINGS_ASR_DECISION_KEY in global_pref:
+                        changed = True
+                        global_pref.pop(_CONVERSATION_SETTINGS_ASR_DECISION_KEY, None)
 
-        # 白名单过滤：只保留允许的字段，防止恶意覆盖
-        filtered_settings = {k: v for k, v in settings.items() if k in _ALLOWED_CONVERSATION_SETTINGS}
+            global_pref["model_path"] = GLOBAL_CONVERSATION_KEY
+            if changed:
+                global_pref[_CONVERSATION_SETTINGS_REVISION_KEY] = current.revision + 1
+                if global_index >= 0:
+                    data[global_index] = global_pref
+                else:
+                    data.append(global_pref)
+                _save_user_preferences_unlocked(data)
 
-        # 值级别验证：确保字段类型和范围正确
-        _BOOL_FIELDS = {
-            'proactiveChatEnabled', 'proactiveVisionEnabled', 'proactiveVisionChatEnabled',
-            'proactiveNewsChatEnabled', 'proactiveVideoChatEnabled', 'proactivePersonalChatEnabled',
-            'proactiveMusicEnabled', 'proactiveMemeEnabled', 'proactiveMiniGameInviteEnabled',
-            'mergeMessagesEnabled', 'focusModeEnabled', 'focusCognitionEnabled',
-            'avatarReactionBubbleEnabled', 'slopFilterEnabled', 'subtitleEnabled',
-            'noiseReductionEnabled', 'independentAsrEnabled',
-            'voiceInputResourceOptimizationEnabled'
-        }
-        _INT_INTERVAL_FIELDS = {'proactiveChatInterval', 'proactiveVisionInterval'}
-        _STRING_FIELDS = {'userLanguage'}
-        _INT_LIMIT_FIELDS = {'textGuardMaxLength'}
-
-        validated = {}
-        for k, v in filtered_settings.items():
-            if k in _BOOL_FIELDS:
-                if isinstance(v, bool):
-                    validated[k] = v
-            elif k in _INT_INTERVAL_FIELDS:
-                # 单位：秒，与前端 ``app-state.js`` 的 S.proactive*Interval 一致；
-                # 前端使用时再 ×1000 转毫秒喂给 setTimeout。
-                if isinstance(v, int) and not isinstance(v, bool) and 1 <= v <= 3600:
-                    validated[k] = v
-            elif k in _STRING_FIELDS:
-                if isinstance(v, str) and v:
-                    validated[k] = v
-            elif k in _INT_LIMIT_FIELDS:
-                if isinstance(v, int) and not isinstance(v, bool) and 0 <= v <= 2000:
-                    validated[k] = v
-        filtered_settings = validated
-
-        # 合并到现有全局对话设置条目（保留未传入的字段，model_path 固定不可篡改）
-        if global_index >= 0:
-            global_pref = data[global_index].copy()
-        else:
-            global_pref = {}
-        global_pref['model_path'] = GLOBAL_CONVERSATION_KEY
-        global_pref.update(filtered_settings)
-
-        if global_index >= 0:
-            # 更新现有条目（保留其他模型偏好不变）
-            data[global_index] = global_pref
-        else:
-            # 添加新条目到列表末尾
-            data.append(global_pref)
-
-        atomic_write_json(PREFERENCES_FILE, data, ensure_ascii=False, indent=2)
-        # 注意：settings_state telemetry **不**在这里打。instrument_counters 按
-        # (stat_date, device_id, metric_key) 累加 UPSERT，若每次 save 都打点，
-        # 同一设备一天内切几次设置就会给多个 settings_state|... key 各 +1，
-        # dashboard 看到的是"观测次数"而非"用户当前/惯用设置"（CodeRabbit 指出）。
-        # 改为只在 record_app_start 打一次启动快照——"用户本次启动时的设置"，
-        # 跨多次启动按 device 看 mode 即可反推惯用档，语义干净得多。
-        return True
+            snapshot = _snapshot_from_preferences_data(data) if changed else current
+            return ConversationSettingsWriteResult(
+                success=True, conflict=False, snapshot=snapshot
+            )
     except MaintenanceModeError:
         raise
     except Exception as e:
         print(f"保存全局对话设置失败: {e}")
-        return False
+        return ConversationSettingsWriteResult(
+            success=False, conflict=False, snapshot=empty_snapshot
+        )
+
+
+def save_global_conversation_settings(settings: Dict[str, Any]) -> bool:
+    """Backward-compatible unconditional wrapper for internal writers."""
+    return save_global_conversation_settings_versioned(settings).success

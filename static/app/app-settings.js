@@ -94,6 +94,76 @@
         // build) reads as '' and loses, keeping this window's own choice.
         return (decision.writerId || '') > _lastAsrDecision.writerId;
     }
+    function _normalizeServerAsrDecision(value) {
+        if (!value || typeof value !== 'object') return null;
+        if (typeof value.writeId !== 'number' || !isFinite(value.writeId)) return null;
+        if (typeof value.writerId !== 'string' || !value.writerId) return null;
+        if (typeof value.value !== 'boolean') return null;
+        return {
+            writeId: value.writeId,
+            writerId: value.writerId,
+            value: value.value
+        };
+    }
+    function _asrDecisionOutranks(candidate, current) {
+        if (!candidate) return false;
+        if (!current) return true;
+        if (candidate.writeId > current.writeId) return true;
+        if (candidate.writeId < current.writeId) return false;
+        return candidate.writerId > current.writerId;
+    }
+    function _serverAsrDecision(data) {
+        const decisions = data && data.decisions;
+        return _normalizeServerAsrDecision(
+            decisions && decisions.independentAsrEnabled
+        );
+    }
+    function _responseEtag(response) {
+        try {
+            return response && response.headers && typeof response.headers.get === 'function'
+                ? response.headers.get('ETag')
+                : null;
+        } catch (_) {
+            return null;
+        }
+    }
+    function _adoptServerAsrDecision(data) {
+        const decision = _serverAsrDecision(data);
+        if (!_asrDecisionOutranks(decision, _lastAsrDecision)) return false;
+        _lastAsrDecision = decision;
+        const serverSettings = data && data.settings;
+        if (serverSettings
+            && typeof serverSettings.independentAsrEnabled === 'boolean'
+            && serverSettings.independentAsrEnabled === decision.value) {
+            applySharedRuntimeSettings({
+                independentAsrEnabled: serverSettings.independentAsrEnabled
+            });
+            S.settingsHydrated = true;
+            if (_settingsBaseline) {
+                _settingsBaseline.independentAsrEnabled = S.independentAsrEnabled;
+            }
+        }
+        return true;
+    }
+    function _mergeConversationSettingsConflict(data) {
+        const adoptedAsr = _adoptServerAsrDecision(data);
+        const serverSettings = data && data.settings;
+        if (!serverSettings || typeof serverSettings !== 'object') return;
+        for (const key of Object.keys(serverSettings)) {
+            if (key === 'independentAsrEnabled' && adoptedAsr) continue;
+            if (_dirtySettingsKeys.has(key)) continue;
+            if (serverSettings[key] !== undefined) S[key] = serverSettings[key];
+        }
+        _settingsMergedFromServer = true;
+        if (_settingsBaseline) {
+            for (const key of Object.keys(serverSettings)) {
+                if (_dirtySettingsKeys.has(key)) continue;
+                if (serverSettings[key] !== undefined) {
+                    _settingsBaseline[key] = S[key];
+                }
+            }
+        }
+    }
     // Bounded gate for the boot settings GET: settings POST bodies are built
     // at send time AFTER awaiting this gate, so once the GET settled the merge
     // has already run and fields the user never touched carry server truth
@@ -137,19 +207,12 @@
     // sync now queues behind this tail; runSync never rejects, so the tail
     // can never become a permanently rejected promise that stalls the chain.
     //
-    // Scope, so this is not read as more than it is (Codex P2, acknowledged and
-    // deliberately NOT fixed in this PR): the tail is per-JS-realm, so it
-    // orders one window's POSTs only. Two windows toggling during each other's
-    // in-flight request still overlap, and save_global_conversation_settings is
-    // an unversioned read-modify-write, so the older choice can land last. The
-    // windows themselves still converge on the newer choice through the
-    // localStorage decision tuple (asrDecision) -- which is localStorage
-    // metadata only: the POST body carries plain values, and the storage
-    // listener deliberately issues no corrective POST -- so the divergence
-    // surfaces only after a reload. Closing it needs a versioned write protocol
-    // on an endpoint shared by every preference and every client build, which
-    // is a wider change than this PR should carry.
+    // The tail remains per-JS-realm, so cross-window requests can overlap.
+    // Their server persistence is ordered separately by the ETag CAS protocol
+    // below plus the same ASR decision tuple localStorage already uses.
     let _syncChainTail = Promise.resolve();
+    let _conversationSettingsEtag = null;
+    const _CONVERSATION_SETTINGS_MAX_ATTEMPTS = 3;
     // 同步间隔（毫秒）：60秒
     const SYNC_INTERVAL_MS = 60000;
     // 「首启等 settings/telemetry 决议」专属 marker：只有 localStorage 走过首启分支才会写
@@ -504,10 +567,13 @@
             if (!data.success) return null;
             const hasSettings = data.settings && Object.keys(data.settings).length > 0;
             const telemetryBranch = (typeof data.telemetryBranch === 'string' && data.telemetryBranch) || null;
-            if (!hasSettings && !telemetryBranch) return null;
+            const etag = _responseEtag(response);
+            if (!hasSettings && !telemetryBranch && !etag) return null;
             return {
                 settings: hasSettings ? data.settings : null,
-                telemetryBranch
+                telemetryBranch,
+                etag,
+                decisions: data.decisions || null
             };
         } catch (e) {
             console.warn('[app-settings] 从服务器加载设置失败:', e);
@@ -579,38 +645,62 @@
             } catch (_) {
                 // keep settings sync best-effort if the tutorial controller is unavailable
             }
-            const settings = getConversationSettings();
-            // Full snapshot only once server values were actually merged. If
-            // the gate opened on its timeout instead — or the GET resolved to
-            // null and merged nothing — a full body would clobber every
-            // untouched server-persisted preference with this boot's values
-            // (and a still-pending GET would then read the overwritten file
-            // back, so the merge could not restore them). Send the dirty keys
-            // alone — the backend merges partial payloads — and let the merge
-            // writeback converge the rest if/once the GET lands.
-            const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);
-            if (Object.keys(payload).length === 0) {
-                // Nothing the user explicitly changed yet, and no server truth
-                // to echo back: writing anything here could only overwrite
-                // persisted preferences with pre-merge values.
-                return;
-            }
-            try {
-                const response = await fetch('/api/config/conversation-settings', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
-                });
-                if (!response.ok) {
-                    console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+            for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS; attempt += 1) {
+                const settings = getConversationSettings();
+                // Full snapshot only once server values were actually merged. If
+                // the gate opened on its timeout instead — or the GET resolved to
+                // null and merged nothing — a full body would clobber every
+                // untouched server-persisted preference with this boot's values.
+                // Rebuild on every CAS retry so a newer cross-window ASR decision
+                // adopted from the conflict response replaces the stale body.
+                const payload = _settingsMergedFromServer ? settings : _pickDirtySettings(settings);
+                if (Object.keys(payload).length === 0) {
                     return;
                 }
-                const data = await response.json();
-                if (!data.success) {
-                    console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                const requestDecision = (
+                    Object.prototype.hasOwnProperty.call(payload, 'independentAsrEnabled')
+                    && _lastAsrDecision
+                    && _lastAsrDecision.value === payload.independentAsrEnabled
+                ) ? {
+                    writeId: _lastAsrDecision.writeId,
+                    writerId: _lastAsrDecision.writerId,
+                    value: _lastAsrDecision.value
+                } : null;
+                const headers = { 'Content-Type': 'application/json' };
+                if (_conversationSettingsEtag) {
+                    headers['If-Match'] = _conversationSettingsEtag;
                 }
-            } catch (err) {
-                console.error('[app-settings] 同步设置到服务器失败:', err);
+                if (requestDecision) {
+                    headers['X-Conversation-Settings-ASR-Decision'] =
+                        JSON.stringify(requestDecision);
+                }
+                try {
+                    const response = await fetch('/api/config/conversation-settings', {
+                        method: 'POST',
+                        headers,
+                        body: JSON.stringify(payload)
+                    });
+                    const data = await response.json();
+                    const nextEtag = _responseEtag(response);
+                    if (nextEtag) _conversationSettingsEtag = nextEtag;
+                    if (response.status === 412) {
+                        _mergeConversationSettingsConflict(data);
+                        if (attempt + 1 < _CONVERSATION_SETTINGS_MAX_ATTEMPTS) {
+                            continue;
+                        }
+                    }
+                    if (!response.ok) {
+                        console.error('[app-settings] 同步设置到服务器失败: HTTP', response.status);
+                        return;
+                    }
+                    if (!data.success) {
+                        console.error('[app-settings] 同步设置到服务器失败:', data.error || '未知错误');
+                    }
+                    return;
+                } catch (err) {
+                    console.error('[app-settings] 同步设置到服务器失败:', err);
+                    return;
+                }
             }
         };
         // runSync swallows its own failures, so chaining with it on both
@@ -1113,6 +1203,9 @@
                 _settingsMergedFromServer = true;
                 const serverSettings = serverResult.settings;
                 const telemetryBranch = serverResult.telemetryBranch;
+                if (serverResult.etag) {
+                    _conversationSettingsEtag = serverResult.etag;
+                }
                 let hasUpdate = false;
 
                 // 只要 server 给了 branch，本次首启决议就算完成，清掉 pending marker；下次
@@ -1154,6 +1247,16 @@
                     }
                     if (serverSettings.userLanguage !== undefined && !_dirtySettingsKeys.has('userLanguage') && window.subtitleBridge) {
                         window.subtitleBridge.setUserLanguage(serverSettings.userLanguage);
+                    }
+                }
+                if (serverResult.decisions) {
+                    const previousAsr = S.independentAsrEnabled;
+                    _adoptServerAsrDecision({
+                        settings: serverSettings,
+                        decisions: serverResult.decisions
+                    });
+                    if (S.independentAsrEnabled !== previousAsr) {
+                        hasUpdate = true;
                     }
                 }
 

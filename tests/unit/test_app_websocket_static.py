@@ -931,6 +931,35 @@ def test_settings_posts_serialize_so_a_stale_body_cannot_win_persistence():
     assert sync_fn.index("_markUserDirtySettings();") < run_sync_index
 
 
+def test_cross_window_settings_posts_use_cas_and_persist_asr_decision_order():
+    settings_source = APP_SETTINGS_PATH.read_text(encoding="utf-8")
+    sync_fn = settings_source.split(
+        "async function syncSettingsToServer(options)", 1
+    )[1].split("function startPeriodicSync()", 1)[0]
+
+    assert "let _conversationSettingsEtag = null;" in settings_source
+    assert "headers['If-Match'] = _conversationSettingsEtag;" in sync_fn
+    assert "response.status === 412" in sync_fn
+    assert "_mergeConversationSettingsConflict(data);" in sync_fn
+    assert "_CONVERSATION_SETTINGS_MAX_ATTEMPTS" in sync_fn
+    assert "headers['X-Conversation-Settings-ASR-Decision']" in sync_fn
+    assert "JSON.stringify(requestDecision)" in sync_fn
+
+    # Both the state snapshot and the ASR token are rebuilt inside the retry
+    # loop. An older window that loses the server decision comparison must not
+    # resend its stale pre-conflict body.
+    retry_loop = sync_fn.split(
+        "for (let attempt = 0; attempt < _CONVERSATION_SETTINGS_MAX_ATTEMPTS;",
+        1,
+    )[1]
+    assert retry_loop.index("const settings = getConversationSettings();") < retry_loop.index(
+        "await fetch("
+    )
+    assert retry_loop.index("const requestDecision = (") < retry_loop.index(
+        "await fetch("
+    )
+
+
 def test_cross_window_asr_flip_marks_hydration_and_asr_dirty():
     # Codex P2: a cross-window independent-ASR toggle arrives via the
     # 'storage' listener, which used to copy the value into S without marking
@@ -1205,6 +1234,181 @@ def test_rapid_asr_toggle_double_flip_persists_final_state_harness():
         f"stderr:\n{result.stderr}"
     )
     assert "HARNESS_OK" in result.stdout
+
+
+def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness():
+    harness = textwrap.dedent(
+        """
+        const fs = require('node:fs');
+        const vm = require('node:vm');
+        const source = fs.readFileSync(__APP_SETTINGS_PATH__, 'utf8');
+
+        function assert(cond, msg) {
+          if (!cond) throw new Error('ASSERT: ' + msg);
+        }
+        function response(ok, status, etag, data) {
+          return {
+            ok,
+            status,
+            headers: {
+              get(name) { return name.toLowerCase() === 'etag' ? etag : null; },
+            },
+            json: async () => data,
+          };
+        }
+        const tick = () => new Promise((resolve) => setImmediate(resolve));
+
+        function makeContext() {
+          const store = new Map([
+            ['project_neko_settings', JSON.stringify({ independentAsrEnabled: false })],
+          ]);
+          const postCalls = [];
+          const sandbox = {
+            console: { log() {}, warn() {}, error() {} },
+            setInterval() { return 0; },
+            clearInterval() {},
+            setTimeout(fn, ms) {
+              const timer = setTimeout(fn, ms);
+              if (timer && typeof timer.unref === 'function') timer.unref();
+              return timer;
+            },
+            clearTimeout,
+            localStorage: {
+              getItem(key) { return store.has(key) ? store.get(key) : null; },
+              setItem(key, value) { store.set(key, String(value)); },
+              removeItem(key) { store.delete(key); },
+            },
+            document: { getElementById() { return null; } },
+            fetch(url, opts) {
+              if (opts && opts.method === 'POST') {
+                return new Promise((resolve) => {
+                  postCalls.push({ url, opts, resolve });
+                });
+              }
+              return Promise.resolve(response(
+                true,
+                200,
+                '"conversation-settings-0"',
+                {
+                  success: true,
+                  settings: { independentAsrEnabled: false },
+                  telemetryBranch: null,
+                  decisions: {},
+                }
+              ));
+            },
+          };
+          sandbox.window = {
+            appState: { independentAsrEnabled: false, settingsHydrated: false },
+            appConst: {},
+            appUtils: { mapRenderQualityToFollowPerf() { return 'medium'; } },
+            addEventListener() {},
+            removeEventListener() {},
+          };
+          vm.createContext(sandbox);
+          vm.runInContext(source, sandbox);
+          return {
+            S: sandbox.window.appState,
+            mod: sandbox.window.appSettings,
+            postCalls,
+          };
+        }
+
+        async function runScenario(serverDecisionIsNewer) {
+          const ctx = makeContext();
+          await tick();
+          await tick();
+          assert(ctx.S.settingsHydrated === true, 'boot GET must hydrate settings');
+
+          ctx.S.independentAsrEnabled = true;
+          ctx.mod.saveSettings({ skipServerSync: true });
+          const syncPromise = ctx.mod.syncSettingsToServer({ userInitiated: true });
+          await tick();
+          assert(ctx.postCalls.length === 1, 'first CAS POST must be issued');
+          const first = ctx.postCalls[0];
+          const firstBody = JSON.parse(first.opts.body);
+          const localDecision = JSON.parse(
+            first.opts.headers['X-Conversation-Settings-ASR-Decision']
+          );
+          assert(
+            first.opts.headers['If-Match'] === '"conversation-settings-0"',
+            'boot ETag must guard the first POST'
+          );
+          assert(localDecision.value === true, 'first request carries local ASR intent');
+
+          const serverDecision = {
+            writeId: serverDecisionIsNewer
+              ? localDecision.writeId + 1
+              : Math.max(0, localDecision.writeId - 1),
+            writerId: serverDecisionIsNewer ? 'window-z' : 'window-a',
+            value: false,
+          };
+          first.resolve(response(
+            false,
+            412,
+            '"conversation-settings-1"',
+            {
+              success: false,
+              settings: { independentAsrEnabled: false },
+              revision: 1,
+              decisions: { independentAsrEnabled: serverDecision },
+            }
+          ));
+          await tick();
+          await tick();
+          assert(ctx.postCalls.length === 2, 'a CAS conflict must retry once');
+          const retry = ctx.postCalls[1];
+          const retryBody = JSON.parse(retry.opts.body);
+          assert(
+            retry.opts.headers['If-Match'] === '"conversation-settings-1"',
+            'retry must use the conflict response ETag'
+          );
+          assert(
+            retryBody.independentAsrEnabled === !serverDecisionIsNewer,
+            'retry body must use the winning decision value'
+          );
+          const retryDecision =
+            JSON.parse(retry.opts.headers['X-Conversation-Settings-ASR-Decision']);
+          assert(
+            retryDecision.writeId === (
+              serverDecisionIsNewer ? serverDecision.writeId : localDecision.writeId
+            ),
+            'retry must carry the winning decision token'
+          );
+          retry.resolve(response(
+            true,
+            200,
+            '"conversation-settings-2"',
+            {
+              success: true,
+              settings: { independentAsrEnabled: retryBody.independentAsrEnabled },
+              revision: 2,
+              decisions: { independentAsrEnabled: retryDecision },
+            }
+          ));
+          await syncPromise;
+        }
+
+        async function main() {
+          await runScenario(false);
+          await runScenario(true);
+          console.log('CAS_HARNESS_OK');
+          process.exitCode = 0;
+        }
+        main().catch((err) => {
+          console.error(err && err.stack ? err.stack : String(err));
+          process.exitCode = 1;
+        });
+        """
+    ).replace("__APP_SETTINGS_PATH__", json.dumps(str(APP_SETTINGS_PATH)))
+
+    result = _run_settings_node_harness(harness)
+    assert result.returncode == 0, (
+        "settings CAS harness failed\n"
+        f"stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
+    )
+    assert "CAS_HARNESS_OK" in result.stdout
 
 
 def test_cross_window_asr_flip_authoritative_over_pending_get_harness():

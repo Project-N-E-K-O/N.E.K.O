@@ -69,6 +69,17 @@ Both take the connection settings used by the setup UI and return a `success` en
 
 Preference validation failures are usually represented as `{ "success": false, "error": "..." }`. Storage maintenance mode can instead surface an HTTP service-unavailable response.
 
+`GET /api/config/conversation-settings` returns a revision in both the JSON
+body and an `ETag` header. Send that ETag back as `If-Match` on `POST`; a stale
+revision returns `412 Precondition Failed` with the current settings, revision,
+decision metadata, and ETag so the caller can merge and retry. Omitting
+`If-Match` remains supported for older clients, but current clients should use
+the conditional write.
+For `independentAsrEnabled`, the bundled UI also sends
+`X-Conversation-Settings-ASR-Decision` with its JSON
+`{writeId, writerId, value}` decision tuple; this lets the server reject an
+older window's request even when it finishes last.
+
 ## Page and language data
 
 | Method and path | Purpose |

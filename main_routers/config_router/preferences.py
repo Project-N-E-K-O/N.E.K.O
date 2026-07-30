@@ -21,10 +21,50 @@ Split out of the former monolithic ``main_routers/config_router.py``.
 from ._shared import logger, router
 
 import asyncio
-from fastapi import Request
+import json
+import re
+
+from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from ..shared_state import get_session_manager
-from utils.preferences import aload_user_preferences, update_model_preferences, validate_model_preferences, move_model_to_top, aload_global_conversation_settings, save_global_conversation_settings, GLOBAL_CONVERSATION_KEY
+from utils.preferences import (
+    GLOBAL_CONVERSATION_KEY,
+    aload_global_conversation_settings_snapshot,
+    aload_user_preferences,
+    move_model_to_top,
+    save_global_conversation_settings_versioned,
+    update_model_preferences,
+    validate_model_preferences,
+)
 from utils.cloudsave_runtime import MaintenanceModeError
+
+
+_CONVERSATION_SETTINGS_ASR_DECISION_HEADER = "x-conversation-settings-asr-decision"
+_CONVERSATION_SETTINGS_ETAG_RE = re.compile(r'^(?:W/)?"conversation-settings-(\d+)"$')
+
+
+def _conversation_settings_etag(revision: int) -> str:
+    return f'"conversation-settings-{revision}"'
+
+
+def _parse_conversation_settings_if_match(value: str | None) -> int | None:
+    if value is None:
+        return None
+    match = _CONVERSATION_SETTINGS_ETAG_RE.fullmatch(value.strip())
+    if match is None:
+        raise ValueError("If-Match 格式无效")
+    return int(match.group(1))
+
+
+def _conversation_settings_response_payload(snapshot) -> dict:
+    decisions = {}
+    if snapshot.asr_decision is not None:
+        decisions["independentAsrEnabled"] = snapshot.asr_decision
+    return {
+        "settings": snapshot.settings,
+        "revision": snapshot.revision,
+        "decisions": decisions,
+    }
 
 
 async def _apply_noise_reduction_to_active_sessions(enabled: bool):
@@ -152,7 +192,7 @@ async def set_preferred_model(request: Request):
 
 
 @router.get("/conversation-settings")
-async def get_conversation_settings():
+async def get_conversation_settings(response: Response):
     """Get global conversation settings (read from the user_preferences.json synced backup).
 
     Also returns the telemetry A/B test branch, so the frontend can pick default
@@ -176,8 +216,14 @@ async def get_conversation_settings():
             # 下次 fetch 成功再决议
             logger.exception("解析 telemetry branch 失败，返回 null 让前端保留 pending marker")
             telemetry_branch = None
-        settings = await aload_global_conversation_settings()
-        return {"success": True, "settings": settings, "telemetryBranch": telemetry_branch}
+        snapshot = await aload_global_conversation_settings_snapshot()
+        response.headers["ETag"] = _conversation_settings_etag(snapshot.revision)
+        response.headers["Cache-Control"] = "no-store"
+        return {
+            "success": True,
+            **_conversation_settings_response_payload(snapshot),
+            "telemetryBranch": telemetry_branch,
+        }
     except Exception as e:
         logger.exception(f"获取对话设置失败: {e}")
         return {"success": False, "error": "Internal server error", "settings": {}}
@@ -185,19 +231,75 @@ async def get_conversation_settings():
 
 @router.post("/conversation-settings")
 async def save_conversation_settings(request: Request):
-    """Save global conversation settings (synced to the user_preferences.json backup)."""
+    """CAS-save global conversation settings with legacy-client compatibility."""
     try:
         data = await request.json()
         if not isinstance(data, dict):
             return {"success": False, "error": "请求体必须为对象"}
 
-        if not await asyncio.to_thread(save_global_conversation_settings, data):
+        asr_decision = None
+        raw_asr_decision = request.headers.get(
+            _CONVERSATION_SETTINGS_ASR_DECISION_HEADER
+        )
+        if raw_asr_decision:
+            try:
+                parsed_asr_decision = json.loads(raw_asr_decision)
+            except (TypeError, ValueError):
+                return JSONResponse(
+                    status_code=400,
+                    content={"success": False, "error": "ASR decision header 格式无效"},
+                )
+            if isinstance(parsed_asr_decision, dict):
+                asr_decision = parsed_asr_decision
+        try:
+            expected_revision = _parse_conversation_settings_if_match(
+                request.headers.get("if-match")
+            )
+        except ValueError as exc:
+            return JSONResponse(
+                status_code=400,
+                content={"success": False, "error": str(exc)},
+            )
+
+        result = await asyncio.to_thread(
+            save_global_conversation_settings_versioned,
+            data,
+            expected_revision=expected_revision,
+            asr_decision=asr_decision,
+        )
+        response_payload = _conversation_settings_response_payload(result.snapshot)
+        response_headers = {
+            "ETag": _conversation_settings_etag(result.snapshot.revision),
+            "Cache-Control": "no-store",
+        }
+        if result.conflict:
+            return JSONResponse(
+                status_code=412,
+                headers=response_headers,
+                content={
+                    "success": False,
+                    "error": "conversation settings version conflict",
+                    **response_payload,
+                },
+            )
+        if not result.success:
             return {"success": False, "error": "保存失败"}
 
-        if 'noiseReductionEnabled' in data:
+        if (
+            isinstance(data.get("noiseReductionEnabled"), bool)
+            and result.snapshot.settings.get("noiseReductionEnabled")
+            == data["noiseReductionEnabled"]
+        ):
             await _apply_noise_reduction_to_active_sessions(data['noiseReductionEnabled'])
 
-        return {"success": True, "message": "对话设置已保存"}
+        return JSONResponse(
+            headers=response_headers,
+            content={
+                "success": True,
+                "message": "对话设置已保存",
+                **response_payload,
+            },
+        )
     except MaintenanceModeError:
         raise
     except Exception as e:

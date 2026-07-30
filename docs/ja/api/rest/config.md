@@ -69,6 +69,16 @@ POST body は `coreApi`、`coreApiKey`、`assistApi` など同梱設定 UI の f
 
 検証失敗は通常 `{ "success": false, "error": "..." }`、storage maintenance 中は HTTP service unavailable になる場合があります。
 
+`GET /api/config/conversation-settings` は JSON body と `ETag` header の
+両方で revision を返します。`POST` ではその ETag を `If-Match` として送り返してください。
+revision が古い場合は `412 Precondition Failed` とともに現在の設定、revision、decision
+metadata、ETag が返るため、caller は merge 後に retry できます。旧 client との互換性の
+ため `If-Match` 省略も受け付けますが、現行 client は conditional write を使用します。
+`independentAsrEnabled` の更新時、bundled UI は
+`X-Conversation-Settings-ASR-Decision` に JSON
+`{writeId, writerId, value}` decision tuple も送り、古い window request が最後に完了しても
+server が古い decision を拒否できるようにします。
+
 ## ページ・言語データ
 
 | メソッドとパス | 用途 |
