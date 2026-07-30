@@ -43,7 +43,7 @@ from config.prompts.prompts_emotion import (
     get_heuristic_contrast_conjunctions_flat,
     get_emotion_label_aliases_flat,
 )
-from utils.language_utils import detect_language, normalize_language_code
+from utils.language_utils import detect_prompt_language
 
 
 # 统一的表情包图源白名单由 utils.meme_fetcher 维护，本文件仅用于引入
@@ -451,11 +451,9 @@ def _infer_emotion_from_text(text):
 
 
 def _resolve_emotion_prompt_language(text):
-    try:
-        detected_lang = detect_language(str(text or ""))
-        return normalize_language_code(detected_lang, format='short')
-    except Exception:
-        return 'zh'
+    # detect_language 分不出繁简（都是 zh），所以繁中使用者过去一律拿到简体 prompt。
+    # detect_prompt_language 在 zh 这一支上用界面语言细分，其余语种原样短码。
+    return detect_prompt_language(text)
 
 
 @router.post('/emotion/analysis')

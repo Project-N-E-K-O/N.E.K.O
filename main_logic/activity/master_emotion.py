@@ -327,10 +327,13 @@ class MasterEmotionTracker:
 
     @staticmethod
     def _resolve_lang(text: str) -> str:
-        # Prompt language follows the language the user spoke in.
+        # Prompt language follows the language the user spoke in — except for
+        # Traditional vs Simplified Chinese, which no detector can tell apart from
+        # the text alone, so detect_prompt_language settles that one with the UI
+        # language.
         try:
-            from utils.language_utils import detect_language, normalize_language_code
-            return normalize_language_code(detect_language(text), format="short")
+            from utils.language_utils import detect_prompt_language
+            return detect_prompt_language(text)
         except Exception:
             return "zh"
 

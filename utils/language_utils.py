@@ -1630,6 +1630,42 @@ def detect_language(text: str) -> str:
         return 'unknown'
 
 
+def detect_prompt_language(text: str, default: str = 'zh') -> str:
+    """
+    Pick the prompt locale for a prompt whose subject is the user's own words.
+
+    detect_language reports script families rather than orthographies: Traditional
+    and Simplified Chinese are both 'zh', because they share every code point the
+    detector counts. A Chinese detection is therefore refined with the configured
+    UI language, which is the only signal that tells the two apart -- without it a
+    Traditional-Chinese user is analyzed with the Simplified prompt no matter what
+    they typed, and any zh-TW template stays unreachable.
+
+    Detections other than Chinese are returned as short codes unchanged; the UI
+    language is not consulted, because what the user actually wrote is the better
+    signal for these prompts and the short code is what the templates are keyed by.
+
+    Args:
+        text: the user text the prompt will be asked about
+        default: returned when detection is unavailable
+
+    Returns:
+        Prompt language code -- a short code, or 'zh-TW' for Traditional Chinese
+    """
+    try:
+        detected = normalize_language_code(detect_language(str(text or '')), format='short')
+    except Exception:
+        return default
+    if detected != 'zh':
+        return detected
+    try:
+        # Reads a process-level cache after first call, and a context var before
+        # that, so this stays cheap on a per-request path.
+        return 'zh-TW' if get_global_language_full() == 'zh-TW' else detected
+    except Exception:
+        return detected
+
+
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:
     """
     Translate text into the target language
