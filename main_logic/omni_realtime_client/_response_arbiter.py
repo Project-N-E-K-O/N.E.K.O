@@ -60,6 +60,11 @@ _DEFAULT_RESPONSE_DONE_TIMEOUT = 60.0
 # provider-side pre-creation failure cannot wedge the lane until the much
 # longer running-response timeout tears down an otherwise healthy connection.
 _SERVER_VAD_RESPONSE_STARTED_TIMEOUT = 5.0
+# Ceiling on the host's abandoned-turn finalization. Escalations raised inside
+# ``_process`` run it on the sole queue consumer, so an unbounded callback
+# would stall every later dispatch; short because the work it fronts (ending a
+# turn, rotating a speech id) is local bookkeeping plus one frontend send.
+_STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -931,9 +936,26 @@ class RealtimeResponseArbiter:
         # would spend the connection we just saved: the host would treat the
         # session as busy, and on providers without server VAD it would also
         # never rotate the speech id, which silently drops all later TTS text.
+        #
+        # Bounded, because escalations originating in ``_process`` run this on
+        # the sole queue consumer: an unbounded host callback (the wired one
+        # reaches a frontend send) would block every later dispatch right after
+        # the lane was marked idle — the same wedge the stalled-write guard
+        # exists to prevent, just moved into project code. Awaited rather than
+        # detached so the host has finished ending this turn before the next
+        # one dispatches; the bound is what keeps that from becoming a hang.
         if self._on_stuck_release is not None:
             try:
-                await self._on_stuck_release(reason)
+                await asyncio.wait_for(
+                    self._on_stuck_release(reason),
+                    _STUCK_RELEASE_NOTIFY_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "stuck-release host notification exceeded %.1fs; "
+                    "continuing without it",
+                    _STUCK_RELEASE_NOTIFY_TIMEOUT,
+                )
             except Exception as exc:
                 logger.debug(
                     "stuck-release host notification failed: %s",
@@ -967,7 +989,13 @@ class RealtimeResponseArbiter:
         # still streaming — so a third response.create overlaps it. Providers
         # that omit response ids are explicitly supported elsewhere in this
         # module, so this is a real shape, not a hypothetical one.
-        uncorrelatable_owner = (
+        # A pending server-VAD response is the same shape without an owner:
+        # it has been announced but has not yet supplied an id, and its
+        # ``cancel_current`` timeout (3s) is shorter than the missing-created
+        # backstop (5s), so an escalation can land while it is still
+        # uncorrelated. Releasing there would credit its later created/done to
+        # whichever ticket dispatches next.
+        uncorrelatable_owner = self._server_vad_response_pending or (
             owner is not None
             and owner.ticket.started.done()
             and owner.response_id is None

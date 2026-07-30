@@ -896,6 +896,39 @@ class _TransportMixin:
 
         return False
 
+    def _reset_per_turn_output_state(self) -> None:
+        """Clear the transport state scoped to one response.
+
+        Shared by ``response.done`` and by the abandoned-turn path, because
+        every one of these leaks into the NEXT turn if the terminal never
+        arrives: a stale ``_image_sent_this_turn`` makes ``stream_image``
+        suppress the next turn's visual context entirely, a stale transcript
+        buffer gets flushed against the wrong turn, and ``_audio_delta_count``
+        drives the "did this turn actually speak" checks.
+
+        Kept as one function on purpose — four review rounds each found
+        another field the abandoned path had forgotten, which is what
+        re-deriving this list in two places produces.
+        """
+
+        self._audio_delta_count = 0
+        # 确保 buffer 被清空
+        self._output_transcript_buffer = ""
+        self._print_input_transcript = False
+        if self._supports_native_image:
+            self._image_recognized_this_turn = False
+        elif (
+            self._latest_image_b64 is None
+            or self._proactive_image_consumed
+        ):
+            # Standard StepFun analyzes only while this sentinel is
+            # present. Rearm after a consumed/absent frame, but keep
+            # a completed annotation generation-bound to an
+            # unconsumed cached frame across unrelated responses.
+            self._image_recognized_this_turn = False
+            self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
+        self._image_sent_this_turn = False
+
     async def _on_arbiter_stuck_release(self, reason: str) -> None:
         """Finalize a turn the arbiter abandoned, the way its terminal would.
 
@@ -949,6 +982,11 @@ class _TransportMixin:
             reason,
         )
         self._is_responding = False
+        # The same per-turn reset the terminal path performs. Skipping it
+        # leaks this turn's state into the next one — most visibly
+        # ``_image_sent_this_turn``, which would make ``stream_image``
+        # withhold the next turn's visual context for its whole duration.
+        self._reset_per_turn_output_state()
         # Each hook is isolated: a host that raises while closing one turn
         # must not stop the other hook from running, and neither may
         # propagate into the arbiter's release path.
@@ -1229,23 +1267,7 @@ class _TransportMixin:
                             self._output_transcript_buffer, self._is_first_transcript_chunk
                         )
                         self._is_first_transcript_chunk = False
-                    self._audio_delta_count = 0
-                    # 确保 buffer 被清空
-                    self._output_transcript_buffer = ""
-                    self._print_input_transcript = False
-                    if self._supports_native_image:
-                        self._image_recognized_this_turn = False
-                    elif (
-                        self._latest_image_b64 is None
-                        or self._proactive_image_consumed
-                    ):
-                        # Standard StepFun analyzes only while this sentinel is
-                        # present. Rearm after a consumed/absent frame, but keep
-                        # a completed annotation generation-bound to an
-                        # unconsumed cached frame across unrelated responses.
-                        self._image_recognized_this_turn = False
-                        self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
-                    self._image_sent_this_turn = False
+                    self._reset_per_turn_output_state()
                     if self.on_response_done:
                         await self.on_response_done()
                     # No-server-VAD providers (Gemini-proxy: lanlan.app+free /

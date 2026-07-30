@@ -803,6 +803,120 @@ async def test_a_server_vad_route_is_not_rotated_by_the_release(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_the_release_resets_per_turn_transport_state(client_rig):
+    # Codex P2 on PR #2592. The abandoned turn's per-turn state leaks into the
+    # next one unless the release performs the same reset the terminal path
+    # performs. _image_sent_this_turn is the visible one: left raised, the
+    # stream_image gate withholds the NEXT turn's visual context for its whole
+    # duration, so that response answers about a screen it cannot see.
+    client_rig.client._image_sent_this_turn = True
+    client_rig.client._audio_delta_count = 7
+    client_rig.client._output_transcript_buffer = "leftover"
+    client_rig.client._print_input_transcript = True
+
+    raised = await client_rig.drive_to_escalation()
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    assert client_rig.client._image_sent_this_turn is False, (
+        "a stale image flag silently blinds the next turn"
+    )
+    assert client_rig.client._audio_delta_count == 0
+    assert client_rig.client._output_transcript_buffer == ""
+    assert client_rig.client._print_input_transcript is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_slow_host_callback_cannot_wedge_the_queue_consumer(caplog):
+    # Codex P2 on PR #2592, and a defect this PR introduced in its previous
+    # round: making the release notification awaitable put it on the sole
+    # queue consumer for escalations raised inside _process. An unbounded host
+    # callback there blocks every later dispatch right after the lane was
+    # marked idle — the stalled-write wedge again, moved into project code.
+    released = asyncio.Event()
+
+    async def _never_returns(reason: str) -> None:
+        await released.wait()
+
+    sent: list[dict] = []
+
+    async def _send(event: dict) -> None:
+        sent.append(event)
+
+    arbiter = RealtimeResponseArbiter(
+        _send,
+        abort_transport=None,
+        fail_open=True,
+        on_stuck_release=_never_returns,
+    )
+    monkeypatched = 0.05
+    import main_logic.omni_realtime_client._response_arbiter as arbiter_module
+
+    original = arbiter_module._STUCK_RELEASE_NOTIFY_TIMEOUT
+    arbiter_module._STUCK_RELEASE_NOTIFY_TIMEOUT = monkeypatched
+    try:
+        # response_started_timeout drives the _process-side escalation, so the
+        # notification really does run on the consumer.
+        stuck = await arbiter.enqueue(
+            source="native",
+            response_started_timeout=0.05,
+            cancel_timeout=0.05,
+        )
+        await asyncio.wait_for(stuck.sent, timeout=1)
+
+        with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+            with pytest.raises(Exception):
+                await asyncio.wait_for(stuck.done, timeout=2)
+            await _settle()
+
+        assert any(
+            "exceeded" in record.getMessage() for record in caplog.records
+        ), "the bound must be visible, not silently swallowed"
+
+        # The consumer is free: the next request dispatches while the host
+        # callback is still hanging.
+        follow_up = await arbiter.enqueue(source="native-after")
+        await asyncio.wait_for(follow_up.sent, timeout=1)
+        assert sent[-1]["type"] == "response.create"
+    finally:
+        arbiter_module._STUCK_RELEASE_NOTIFY_TIMEOUT = original
+        released.set()
+        await arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_pending_server_vad_response_makes_fail_open_stand_down(caplog):
+    # Codex P2 on PR #2592. A pending server-VAD response is announced but has
+    # not supplied an id yet, and cancel_current's 3s bound is shorter than the
+    # 5s missing-created backstop — so an escalation can land while it is still
+    # uncorrelated. Releasing there would credit its later created/done to
+    # whichever ticket dispatches next.
+    harness = _Harness(fail_open=True)
+    try:
+        harness.arbiter.notify_server_vad_response_pending()
+        await _settle()
+        assert harness.arbiter._server_vad_response_pending is True
+
+        with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+            raised = await _stick_a_cancel(harness)
+
+        assert isinstance(raised, asyncio.TimeoutError)
+        assert harness.aborted, (
+            "fail-open must decline while an announced VAD response has no id"
+        )
+        assert harness.arbiter._connection_available is False
+        assert any(
+            "uncorrelatable_owner=True" in record.getMessage()
+            for record in caplog.records
+        )
+    finally:
+        await harness.arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_an_uncorrelatable_owner_makes_fail_open_stand_down(caplog):
     # Codex P2 on PR #2592. An owner that reached response.created without an
     # id leaves nothing to quarantine its late terminal by: after release, that
