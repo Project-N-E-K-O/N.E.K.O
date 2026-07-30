@@ -932,7 +932,7 @@ Object.assign(AvatarButtonMixin.methods, {
                         isDragging = false;
                         dragActiveDispatched = false;
                         clearDragCropHoldPending();
-                        finishDragState(false, safetyToken, true);
+                        finishDragState(true, safetyToken, true);
                     }, 600);
                     return;
                 }

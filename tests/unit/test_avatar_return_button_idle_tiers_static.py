@@ -3809,7 +3809,11 @@ def test_cat1_walk_is_blocked_while_return_ball_drag_is_active_or_pending():
     _assert_source_contains(handle_end, "const safetyToken = dragSafetyToken;", "return button drag end handler")
     _assert_source_contains(handle_end, "if (movedPastThreshold && dragCropHoldPending) {", "return button drag end handler")
     _assert_source_contains(handle_end, "dragReleasePending = true;", "return button drag end handler")
-    _assert_source_contains(handle_end, "finishDragState(false, safetyToken, true);", "return button drag end handler")
+    _assert_source_contains(
+        handle_end,
+        "finishDragState(true, safetyToken, true);",
+        "crop hold timeout preserves the completed drag terminal event",
+    )
     _assert_source_contains(
         handle_end,
         "finishDragState(true, safetyToken);",

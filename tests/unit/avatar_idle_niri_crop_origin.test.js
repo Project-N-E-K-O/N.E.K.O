@@ -692,7 +692,7 @@ test('CAT1 drag writes virtual coordinates without subtracting the crop offset t
     );
     assert.match(
         handleEndSource,
-        /if \(movedPastThreshold && dragCropHoldPending\)[\s\S]*?dragReleasePending = true[\s\S]*?finishDragState\(false, safetyToken, true\)/
+        /if \(movedPastThreshold && dragCropHoldPending\)[\s\S]*?dragReleasePending = true[\s\S]*?finishDragState\(true, safetyToken, true\)/
     );
     assert.match(
         cropStateAppliedSource,
