@@ -136,12 +136,18 @@ def test_published_stable_release_is_the_only_update_service_sync_trigger() -> N
     workflow = _load_workflow(SYNC_UPDATE_WORKFLOW)
     condition = workflow["jobs"]["sync"]["if"]
 
-    assert "github.event.release.draft" in condition
-    assert "github.event.release.prerelease" in condition
+    assert "!github.event.release.draft" in condition
+    assert "!github.event.release.prerelease" in condition
     assert "startsWith(github.event.release.tag_name, 'v')" in condition
     validate = _steps_by_name(workflow, "sync")["Validate stable release assets"]
-    assert '"N.E.K.O_${VERSION}_win_manifest.json.sig"' in validate["run"]
-    assert '"N.E.K.O_${VERSION}_linux_x64_appimage_manifest.json.sig"' in validate["run"]
+    expected_signatures = (
+        "N.E.K.O_${VERSION}_win_manifest.json.sig",
+        "N.E.K.O_${VERSION}_mac_x64_manifest.json.sig",
+        "N.E.K.O_${VERSION}_mac_arm64_manifest.json.sig",
+        "N.E.K.O_${VERSION}_linux_x64_manifest.json.sig",
+        "N.E.K.O_${VERSION}_linux_x64_appimage_manifest.json.sig",
+    )
+    assert all(f'"{asset}"' in validate["run"] for asset in expected_signatures)
 
 
 def test_portable_manifest_signing_is_required_for_nightly_and_local_stable_builds() -> None:
@@ -173,6 +179,14 @@ def test_local_release_build_clears_stale_electron_dist_output() -> None:
     assert local_script.index("Portable output already exists") < local_script.index(
         "Remove-Item -LiteralPath $distDirectory -Recurse -Force"
     )
+
+
+def test_local_release_build_rejects_unsupported_architecture_and_handles_missing_linux_config() -> None:
+    local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+
+    assert "$buildPlatform -ne 'macos' -and $Architecture -ne 'x64'" in local_script
+    assert "$package.PSObject.Properties['build']" in local_script
+    assert "$buildConfig.Value.PSObject.Properties['linux']" in local_script
 
 
 def test_delta_baseline_selects_a_preceding_stable_release() -> None:

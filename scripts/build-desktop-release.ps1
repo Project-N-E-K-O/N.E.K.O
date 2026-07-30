@@ -146,6 +146,9 @@ function Sign-PortableManifests {
 
 $buildPlatform = Get-HostPlatform
 $target = Get-PortableTarget -BuildPlatform $buildPlatform
+if ($buildPlatform -ne 'macos' -and $Architecture -ne 'x64') {
+    throw "-Architecture $Architecture is only supported for macOS. Windows and Linux builds are x64 only."
+}
 $ElectronPath = (Resolve-Path -LiteralPath $ElectronPath).Path
 $ManifestSigningKeyPath = (Resolve-Path -LiteralPath $ManifestSigningKeyPath).Path
 $backendPath = Get-BackendPath -BuildPlatform $buildPlatform
@@ -186,8 +189,16 @@ try {
     $package = Get-Content -Raw -Encoding UTF8 -LiteralPath $packagePath | ConvertFrom-Json
     $package.version = $Version
     if ($buildPlatform -eq 'linux') {
-        if (-not $package.build.linux) { $package.build | Add-Member -NotePropertyName linux -NotePropertyValue ([pscustomobject]@{}) }
-        $package.build.linux | Add-Member -Force -NotePropertyName maintainer -NotePropertyValue 'Project N.E.K.O. <projectneko@yahoo.com>'
+        $buildConfig = $package.PSObject.Properties['build']
+        if ($null -eq $buildConfig) {
+            throw "Electron package does not contain a build configuration: $packagePath"
+        }
+        $linuxConfig = $buildConfig.Value.PSObject.Properties['linux']
+        if ($null -eq $linuxConfig) {
+            $buildConfig.Value | Add-Member -NotePropertyName linux -NotePropertyValue ([pscustomobject]@{})
+            $linuxConfig = $buildConfig.Value.PSObject.Properties['linux']
+        }
+        $linuxConfig.Value | Add-Member -Force -NotePropertyName maintainer -NotePropertyValue 'Project N.E.K.O. <projectneko@yahoo.com>'
     }
     Write-Utf8File -Path $packagePath -Content (($package | ConvertTo-Json -Depth 100) + "`n")
 
