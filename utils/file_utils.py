@@ -22,6 +22,7 @@ import tempfile
 import threading
 import time
 import unicodedata
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -499,84 +500,81 @@ def robust_json_loads(raw: str) -> Any:
 
 
 # 崩后残留 tmp 的清扫。mkstemp 与 os.replace 之间被硬杀（taskkill、断电、OOM）会留下
-# 一个 `.<目标名>.<随机>.tmp`：没人读它，但会一直攒在用户的 config / memory 目录里。
+# 一个 tmp：没人读它，但会一直攒在用户的 config / memory 目录里。
 #
-# 摊销策略是「每个**目录**在本进程内扫一次」，而不是每个目标一次。按目标记账有两个
-# 毛病：同一目录下每多一个目标就多扫一遍整个目录（归档分片是一个目录几百个各自独立
-# 的目标），而且一个「再也不会被写第二次」的目标（写完就沉底的老分片）留下的残留
-# 永远扫不到。
+# 按**目录节流**，不是「每个目录一辈子扫一次」。清理型 sweeper 的正确不变量是「隔一段
+# 时间再看一眼」而不是「只看一次」：只看一次的话，本次写自己泄漏的 tmp（清扫跑在
+# mkstemp 之前）、扫描当时还太年轻的 tmp、以及扫描本身瞬时失败的目录，都会留到进程
+# 退出。换成「上次扫描时刻 + 最小间隔」之后这三类自然都被下一个窗口兜住，泄漏存活
+# 时间有上界（≤ 年龄门槛 + 间隔），而且不需要撤记账 / CAS / 重试计数这一串补丁。
+# 按目录而不是按目标记账：同一目录下每多一个目标就多扫一遍整个目录（archive_shards
+# 是一个目录几百个各自独立的目标，cloudsave 的 bindings/<角色>.json 同理），而且
+# 「写完就沉底、再也不会被写第二次」的目标留下的残留按目标记账永远扫不到。
 #
-# 按目录扫就不能再靠目标名来认自己的 tmp，而"形状 + mtime"证明不了所有权：别的程序、
-# 插件或用户在同一个目录里放的旧文件只要撞上同一个形状就会被永久删掉（Greptile P1）。
-# 所以给自己的 tmp 名里嵌一个所有权标记 `_TMP_OWNER_TAG`，只清带这个标记的文件 ——
-# 这是可证明的所有权，不是概率论。install_source 的 `plugins.lock.json.<pid>.<uuid>.tmp`
-# 是同一个思路。代价：本次改动之前的旧版留下的 tmp 没有标记，永远扫不到；宁可漏清，
-# 也不能删自己证明不了归属的文件。
+# 按目录扫就不能靠目标名认自己的 tmp，而「形状 + mtime」证明不了所有权：别的程序、
+# 插件或用户放在同一个目录里的旧文件只要撞上同一个形状就会被永久删掉。所以自己的
+# tmp 名里嵌一个所有权标记，只清带标记的文件 —— 可证明的所有权，不是概率论。
+# install_source 的 `plugins.lock.json.<pid>.<uuid>.tmp` 是同一个思路。代价：本次改动
+# 之前的旧版残留没有标记、永远扫不到；宁可漏清，也不删自己证明不了归属的文件。
 #
-# 记账允许有界重试：瞬时失败（目录被短暂锁住、某个 tmp 一时删不掉）不该把这个目录的
-# 唯一机会用掉，但也不能每次写都重扫——永久性失败（只读文件、ACL）会变成每次写盘都
-# 多一次 scandir。所以最多扫 _STALE_TMP_SWEEP_ATTEMPTS 次，扫干净了就提前收工。
-#
-# 年龄门槛是防误删。它不能证明 tmp 已经没有主人（一个写者理论上可以在 mkstemp 之后
-# 被冻结超过这个时长），所以还有两道兜底：
-#   - Windows 上活写者的 tmp 句柄一直开着，unlink 会被拒（实测 WinError 32），
-#     下面的 except OSError 直接跳过它 —— 物理上抢不走；
-#   - POSIX 上 unlink 会成功，但后果是那次写的 os.replace 抛 FileNotFoundError，
-#     一个诚实的异常，不是静默损坏。门槛取 24h 是让这个场景（写盘中途被冻结一整天）
-#     退到不现实的量级；代价是崩溃残留最多多留一天才被清掉。
-# 只有本模块产出的 tmp 会带这个标记。带了标记之后随机段的长度和字符集就不重要了，
-# 不必再依赖 tempfile._RandomNameSequence 的实现细节（8 位 [a-z0-9_]）。
+# 年龄门槛防误删。它不能证明 tmp 没有主人（写者理论上能在 mkstemp 之后被冻结很久），
+# 所以还有两道兜底：Windows 上活写者的句柄一直开着，unlink 会被拒（实测
+# PermissionError winerror=32）—— 物理上抢不走；POSIX 上 unlink 会成功，但后果是那次
+# 写的 os.replace 抛 FileNotFoundError，一个诚实的异常而不是静默损坏。
 _TMP_OWNER_TAG = "nkatmp"
+# 带了所有权标记之后随机段的长度和字符集就不重要了，不必再依赖
+# tempfile._RandomNameSequence 的实现细节（8 位 [a-z0-9_]）。
 _STALE_TMP_RE = re.compile(rf"^\..+\.{_TMP_OWNER_TAG}[a-z0-9_]+\.tmp$")
 _STALE_TMP_MIN_AGE_S = 86400.0
-_STALE_TMP_SWEEP_ATTEMPTS = 3
-_swept_tmp_dirs: dict[str, int] = {}
+_STALE_TMP_SWEEP_INTERVAL_S = 3600.0
+# 记账容量上限：cloudsave 的 staging 每次导出都 mkdtemp 出一批新目录（含 per-character
+# 子目录），永久留着会随操作次数无界增长。丢掉一条记账最坏只是多扫一次，所以到顶之后
+# 直接丢一半最旧的。
+_STALE_TMP_MEMO_MAX = 512
+_swept_tmp_dirs: dict[str, float] = {}
 _swept_tmp_dirs_lock = threading.Lock()
+# tmp 名里嵌完整目标名是为了可诊断（os.replace 失败的回显能直接看出是哪个目标），但要
+# 给 NAME_MAX（多数文件系统 255 字节）留余量：`.` + 名字 + `.` + 标记(6) + 随机(8) +
+# `.tmp`(4)。按 UTF-8 字节截断而不是字符 —— CJK 一个字符占 3 字节，按字符截会超。
+_TMP_NAME_MAX_BYTES = 200
 
 
-def _sweep_stale_tmp_once(target_path: Path) -> None:
+def _tmp_prefix(target_name: str) -> str:
+    """mkstemp prefix carrying the owner tag, truncated to stay under NAME_MAX."""
+    encoded = target_name.encode("utf-8", "surrogatepass")
+    if len(encoded) > _TMP_NAME_MAX_BYTES:
+        target_name = encoded[:_TMP_NAME_MAX_BYTES].decode("utf-8", "ignore")
+    return f".{target_name}.{_TMP_OWNER_TAG}"
+
+
+def _sweep_stale_tmp_if_due(target_path: Path) -> None:
     """Best-effort removal of abandoned temp files in this target's directory. Never fatal."""
     parent = str(target_path.parent)
+    now = time.monotonic()
     with _swept_tmp_dirs_lock:
-        attempts = _swept_tmp_dirs.get(parent, 0)
-        if attempts >= _STALE_TMP_SWEEP_ATTEMPTS:
+        last = _swept_tmp_dirs.get(parent)
+        if last is not None and now - last < _STALE_TMP_SWEEP_INTERVAL_S:
             return
-        claimed = attempts + 1
-        _swept_tmp_dirs[parent] = claimed
+        # 先记账再扫：并发的两个首写只有一个会真扫，另一个直接跳过；扫描失败也照样
+        # 记账，下一个间隔到了自然重试，不需要单独的重试计数。
+        _swept_tmp_dirs[parent] = now
+        if len(_swept_tmp_dirs) > _STALE_TMP_MEMO_MAX:
+            oldest = sorted(_swept_tmp_dirs, key=_swept_tmp_dirs.__getitem__)
+            for stale in oldest[: _STALE_TMP_MEMO_MAX // 2]:
+                _swept_tmp_dirs.pop(stale, None)
 
     try:
         entries = list(os.scandir(parent))
     except OSError:
-        return  # 本次尝试已计数，下次写这个目录里的任何目标时还会再试
+        return
 
     cutoff = time.time() - _STALE_TMP_MIN_AGE_S
-    swept_clean = True
     for entry in entries:
         if not _STALE_TMP_RE.match(entry.name):
             continue
-        try:
+        with suppress(OSError):
             if entry.stat().st_mtime < cutoff:
                 os.unlink(entry.path)
-        except OSError:
-            swept_clean = False
-    if swept_clean:
-        with _swept_tmp_dirs_lock:
-            # 只在记账还是自己刚占下的那个值时才写「已扫干净」。本次扫描期间别的写者
-            # 可能泄漏了一个 tmp 并调 _rearm_tmp_sweep 撤掉记账 —— 无条件覆盖会把那次
-            # 撤记账（对应一个真实泄漏）抹掉，泄漏就永远不会被清。CAS 失败最多是白扫
-            # 一轮（上限 3 次照旧），代价远小于漏清。
-            if _swept_tmp_dirs.get(parent) == claimed:
-                _swept_tmp_dirs[parent] = _STALE_TMP_SWEEP_ATTEMPTS
-
-
-def _rearm_tmp_sweep(target_path: Path) -> None:
-    """Undo the sweep bookkeeping for this directory so a later write scans again."""
-    # 清扫发生在 mkstemp **之前**，所以本次调用自己泄漏出来的 tmp（replace 失败且
-    # 兜底的 remove 也被拒 —— 正是本模块要容忍的那个 Windows 场景）落在已经记账为
-    # 「扫过」的目录里，本进程再也不会去清它。长寿进程（桌面端一开一整天）里这就是
-    # 永久泄漏。这里把记账撤掉，让后续任何一次写这个目录时重扫。
-    with _swept_tmp_dirs_lock:
-        _swept_tmp_dirs.pop(str(target_path.parent), None)
 
 
 def _reset_tmp_sweep_state_after_fork() -> None:
@@ -597,11 +595,11 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    _sweep_stale_tmp_once(target_path)
+    _sweep_stale_tmp_if_due(target_path)
 
     fd, temp_path = tempfile.mkstemp(
         # 前缀里带所有权标记：清扫器靠它证明这个 tmp 是本模块产的，而不是靠猜形状。
-        prefix=f".{target_path.name}.{_TMP_OWNER_TAG}",
+        prefix=_tmp_prefix(target_path.name),
         suffix=".tmp",
         dir=str(target_path.parent),
     )
@@ -617,13 +615,10 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
         # 目标被别的句柄占着（杀软扫描、资源管理器预览）会让 os.replace 抛
         # PermissionError，而紧随其后的 os.remove 往往被同一个原因拒掉，于是调用方
         # 看到的是 remove 的异常、真实原因退到 __context__ 里去了，同时 tmp 还是留盘。
-        try:
+        # 删不掉就成了残留：清扫跑在本次写之前，所以清不了这一个。它会被这个目录的
+        # 下一个清扫窗口兜住（这正是把「只扫一次」换成「按间隔节流」的原因之一）。
+        with suppress(OSError):
             os.remove(temp_path)
-        except OSError:
-            # tmp 删不掉（目标/tmp 被句柄占着、权限不足），它就成了残留。清扫在本次
-            # 写之前已经跑过并把这个目录记账为「扫过」，所以要撤掉记账，否则本进程
-            # 再也不会清它。
-            _rearm_tmp_sweep(target_path)
         raise
 
 
