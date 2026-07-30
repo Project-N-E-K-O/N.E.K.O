@@ -2329,52 +2329,10 @@ def test_documented_blind_spots_around_scope_and_reachability(src):
     assert _violations(src) == []
 
 
-@pytest.mark.parametrize("src,expected", [
-    ('for T in ({"en": "e", "zh": "s"},):\n    T["zh-TW"] = "t"', []),
-    ('for T in [{"en": "e", "zh": "s"}, {"en": "e2", "zh": "s2"}]:\n    T["zh-TW"] = "t"', []),
-    # not a literal iterable: nothing is knowable, so nothing is bound
-    ('for T in tables():\n    T["zh-TW"] = "t"\nU = {"en": "e", "zh": "s"}', [3]),
-])
-def test_a_loop_over_a_literal_binds_its_target(src, expected):
-    """Every element of a literal iterable is a binding of the loop target.
-
-    The same pairing as unpacking, which is where the helper comes from.
-    """
-    tree, comments = MOD._parse_source(src, "t.py")
-    assert MOD.find_violations(tree, comments) == expected
 
 
-def test_loop_alternatives_are_only_closed_over_when_one_is_exempt():
-    """Grouping says "a backfill completes them all", not "they are all fine".
-
-    Without a backfill in the body every element is still its own offender.
-    """
-    src = (
-        "for T in [\n"
-        '    {"en": "e", "zh": "s"},\n'
-        '    {"en": "e2", "zh": "s2"},\n'
-        "]:\n"
-        "    pass"
-    )
-    tree, comments = MOD._parse_source(src, "t.py")
-    assert MOD.find_violations(tree, comments) == [2, 3]
 
 
-def test_loop_alternatives_are_grouped_per_target():
-    """`for T, U in ((a, b), (c, d))` makes a/c alternatives of T, b/d of U.
-
-    Pooling every value the loop binds would let a backfill through one target
-    excuse the tables bound to the other.
-    """
-    src = (
-        "for T, U in (\n"
-        '    ({"en": "e", "zh": "s"}, {"en": "e2", "zh": "s2"}),\n'
-        '    ({"en": "e3", "zh": "s3"}, {"en": "e4", "zh": "s4"}),\n'
-        "):\n"
-        '    T["zh-TW"] = "t"'
-    )
-    tree, comments = MOD._parse_source(src, "t.py")
-    assert MOD.find_violations(tree, comments) == [2, 3]
 
 
 @pytest.mark.parametrize("src,expected", [
@@ -2391,29 +2349,8 @@ def test_a_mapping_view_may_sit_on_any_expression(src, expected):
     assert MOD.find_violations(tree, comments) == expected
 
 
-def test_popitem_invalidates_the_backfill():
-    """It removes a key without naming one, so nothing is left to claim.
-
-    Recorded like `clear()` — the fourth spelling of "this table lost keys" that
-    this gate had to be told about one at a time.
-    """
-    src = 'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\nT.popitem()'
-    tree, comments = MOD._parse_source(src, "t.py")
-    assert MOD.find_violations(tree, comments) == [1]
 
 
-@pytest.mark.parametrize("src,expected", [
-    # inside the body: every iteration completes its own element
-    ('for T in (\n    {"en": "e", "zh": "s"},\n    {"en": "e2", "zh": "s2"},\n):\n'
-     + '    T["zh-TW"] = "t"', []),
-    # after the loop: only whatever the last iteration left is completed
-    ('for T in (\n    {"en": "e", "zh": "s"},\n    {"en": "e2", "zh": "s2"},\n):\n'
-     + '    pass\nT["zh-TW"] = "t"', [2]),
-])
-def test_loop_closure_needs_the_backfill_inside_the_body(src, expected):
-    """Closing over the alternatives unconditionally excused the earlier elements."""
-    tree, comments = MOD._parse_source(src, "t.py")
-    assert MOD.find_violations(tree, comments) == expected
 
 
 @pytest.mark.parametrize("src,expected", [
@@ -2425,3 +2362,50 @@ def test_a_payload_may_be_an_assignment_expression(src, expected):
     """A walrus evaluates to the mapping it binds."""
     tree, comments = MOD._parse_source(src, "t.py")
     assert MOD.find_violations(tree, comments) == expected
+
+
+def test_popitem_is_out_of_scope():
+    """Which key it removes depends on the dict's insertion order.
+
+    Recording it as "everything is gone" reported a table that is compliant at
+    runtime, and modelling the order is the analysis this gate declines. Silence
+    is the accepted answer: the shape does not occur under config/prompts.
+    """
+    src = (
+        'T = {"en": "e", "zh": "s"}\nT["zh-TW"] = "t"\n'
+        + 'T["ja"] = "j"\nT.popitem()'
+    )
+    assert _violations(src) == []
+
+
+@pytest.mark.parametrize("src,expected", [
+    ('for T in ({"en": "e", "zh": "s"},):\n    T["zh-TW"] = "t"', [1]),
+    ('A = {"en": "e", "zh": "s"}\nB = {"en": "e2", "zh": "s2"}\n'
+     + 'for T in (A, B):\n    T["zh-TW"] = "t"', [1, 2]),
+])
+def test_loop_targets_are_out_of_scope(src, expected):
+    """Reading a `for` target needs the loop's iteration semantics.
+
+    Its bindings are alternatives, not a sequence, and only a backfill inside the
+    body reaches them all. Supporting it for one round produced two follow-up
+    defects — cross-target leakage and an after-the-loop backfill — so the gate
+    stops here. The shape does not occur under config/prompts, and what it costs
+    is one comment: see the next test.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == expected
+
+
+@pytest.mark.parametrize("src", [
+    'for T in ({"en": "e", "zh": "s"},):  # noqa: PROMPT_ZH_TW\n    T["zh-TW"] = "t"',
+    'A = {"en": "e", "zh": "s"}  # noqa: PROMPT_ZH_TW\n'
+    + 'B = {"en": "e2", "zh": "s2"}  # noqa: PROMPT_ZH_TW\n'
+    + 'for T in (A, B):\n    T["zh-TW"] = "t"',
+])
+def test_the_escape_hatch_covers_what_is_out_of_scope(src):
+    """The hatch is the design, so it has to actually work on these shapes.
+
+    Documenting a limit without checking that the stated remedy applies would
+    leave whoever hits it with no way out.
+    """
+    assert _violations(src) == []

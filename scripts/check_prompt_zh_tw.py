@@ -101,7 +101,7 @@ exemption is deliberately keyed on the mutation *demonstrably supplying zh-TW*:
 exempting on any mutation would let an unrelated ``T["other"] = x`` excuse a real
 offender, trading one rare false positive for a broad blind spot.
 
-Five accepted blind spots:
+Six accepted blind spots:
 
   * The exemption is not ordered against *other* uses of the name, so a copy taken
     before the backfill is not judged::
@@ -135,6 +135,14 @@ Five accepted blind spots:
     Knowing that A and T are the same object is alias analysis -- a set of names
     per object, maintained across rebinding -- rather than the per-name timeline
     everything else here uses.
+  * ``for`` targets and ``popitem()`` are not read at all. A loop target's
+    bindings are alternatives rather than a sequence, and only a backfill inside
+    the body reaches them all; which key ``popitem()`` removes depends on the
+    dict's insertion order. Both were supported for one round and both produced
+    follow-up defects — a backfill through one loop target excusing another's
+    tables, and ``popitem()`` revoking an exemption for a table that was still
+    compliant. Neither shape occurs under config/prompts, so the gate stays with
+    what it can prove and the escape hatch covers the rest.
   * A table assembled from fragments that are each *individually* fine is not
     judged::
 
@@ -656,9 +664,6 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     preceding binding is right in either nesting direction.
     """
     assignments: dict[str, list[tuple[tuple[int, int], ast.AST]]] = {}
-    # (body span, alternatives) — the span is what tells a backfill inside the
-    # loop from one that runs after it, where only the last binding survives.
-    loop_alternatives: list[tuple[tuple[tuple[int, int], tuple[int, int]], set[int]]] = []
     for node in ast.walk(tree):
         name: str | None = None
         if isinstance(node, ast.Assign):
@@ -671,34 +676,6 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                     assignments.setdefault(bound, []).append(
                         (_source_position(value), value)
                     )
-            continue
-        if isinstance(node, (ast.For, ast.AsyncFor)) and isinstance(
-            node.iter, (ast.Tuple, ast.List, ast.Set)
-        ):
-            # `for T in ({...}, {...}): T["zh-TW"] = t` — a literal iterable makes
-            # every element a binding of the loop target. Anything else (a name, a
-            # call, a range) is not knowable and binds nothing.
-            # One group per target name: `for T, U in ((a, b), (c, d))` makes a
-            # and c alternatives of T, b and d alternatives of U. Pooling them
-            # would let a backfill through T excuse U's tables as well.
-            groups: dict[str, set[int]] = {}
-            for item in node.iter.elts:
-                for bound, value in _unpacked_bindings(node.target, item):
-                    assignments.setdefault(bound, []).append(
-                        (_source_position(value), value)
-                    )
-                    groups.setdefault(bound, set()).add(id(value))
-            # The body runs once per element, so a target's bindings are
-            # alternatives rather than a sequence: a backfill in the body
-            # completes every one of them, not just the last. A single-element
-            # group is kept rather than filtered — closing over it is a no-op.
-            last = node.body[-1]
-            span = (
-                _source_position(node.body[0]),
-                (getattr(last, "end_lineno", last.lineno) or last.lineno,
-                 getattr(last, "end_col_offset", 0) or 0),
-            )
-            loop_alternatives.extend((span, group) for group in groups.values())
             continue
         if isinstance(node, ast.NamedExpr) and isinstance(node.target, ast.Name):
             # `if (T := {...}): T["zh-TW"] = t` binds T as much as a statement does.
@@ -765,11 +742,7 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
             and isinstance(node.func, ast.Attribute)
             and isinstance(node.func.value, ast.Name)
         ):
-            if node.func.attr == "popitem":
-                # Removes a key without naming one, so nothing this gate could
-                # still claim survives: recorded the same way as `clear()`.
-                _record(node.func.value.id, at, set(), None)
-            elif node.func.attr == "clear" and not node.args:
+            if node.func.attr == "clear" and not node.args:
                 # `TW.clear()` empties it, so anything recorded before is gone.
                 # `None` rather than a key set: there is no list of keys to name.
                 _record(node.func.value.id, at, set(), None)
@@ -887,11 +860,6 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
                 continue
             walked.add(id(value))
             exempt.add(id(value))
-            for (lo, hi), group in loop_alternatives:
-                # Only a backfill written *inside* the loop reaches every element.
-                # One placed after it sees only whatever the last iteration left.
-                if id(value) in group and lo <= at <= hi:
-                    exempt.update(group)
             for part in _fragment_parts(value):
                 if isinstance(part, ast.Name):
                     pending.append((part.id, bound_at, True))
