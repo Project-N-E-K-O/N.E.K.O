@@ -24,17 +24,25 @@ TRADITIONAL_ONLY = "開興歡愛難傷嗚遺喪負氣煩惱惡會這麼貼嬌並
 # 合法的繁体词条判成违规。`裡` 只在繁体侧出现，所以只放在上面那一串里。
 SIMPLIFIED_ONLY = "开兴欢爱难伤呜遗丧负气烦恼恶会这么贴娇并仅过惊愤静闭怜别没"
 
-FLAT_TABLES = [
-    "EMOTION_KEYWORDS_BY_LANG",
-    "ANGRY_ATTACK_PATTERNS_BY_LANG",
-    "SAD_VULNERABLE_PATTERNS_BY_LANG",
-    "HAPPY_PLAYFUL_PATTERNS_BY_LANG",
-    "HEURISTIC_NEGATION_TOKENS_BY_LANG",
-    "HEURISTIC_TIGHT_NEGATION_TOKENS_BY_LANG",
-    "HEURISTIC_NEGATION_BLOCKLIST_BY_LANG",
-    "HEURISTIC_CONTRAST_CONJUNCTIONS_BY_LANG",
-    "EMOTION_LABEL_ALIASES_BY_LANG",
-]
+def _chinese_tables():
+    """Every `*_BY_LANG` table in the module that has a Chinese block.
+
+    Discovered rather than listed: a hand-written list only covers the tables
+    that existed when it was written, which is how 320 prompt dicts came to be
+    missing zh-TW in the first place. Tables with no `zh` block (a Korean-only
+    phenomenon, say) are not in scope and drop out on their own.
+    """
+    found = []
+    for name in dir(P):
+        if not name.endswith("_BY_LANG"):
+            continue
+        table = getattr(P, name)
+        if isinstance(table, dict) and "zh" in table:
+            found.append(name)
+    return sorted(found)
+
+
+FLAT_TABLES = _chinese_tables()
 
 
 def _entries(block):
@@ -590,3 +598,81 @@ def test_undetectable_text_falls_back_to_the_caller_default(text):
     """
     assert detect_prompt_language(text) == "zh"
     assert detect_prompt_language(text, default="en") == "en"
+
+
+def test_table_discovery_actually_finds_them():
+    """The discovery above is only useful if it finds something.
+
+    A typo in the suffix would make every table-shaped test below vacuous —
+    parametrized over an empty list, reported as passing.
+    """
+    assert len(FLAT_TABLES) >= 9, FLAT_TABLES
+    assert "EMOTION_KEYWORDS_BY_LANG" in FLAT_TABLES
+    assert "EMOTION_NEGATION_PREFIXES_BY_LANG" in FLAT_TABLES
+
+
+def test_no_language_table_has_a_duplicate_key():
+    """A repeated key in a dict literal is silent — the later one simply wins.
+
+    It happened while writing this PR: a second `zh-TW` entry appended to the
+    heuristic blocklist quietly discarded the first, and ruff does not flag it.
+    """
+    import ast
+    import collections
+    import pathlib
+
+    tree = ast.parse(pathlib.Path(P.__file__).read_text(encoding="utf-8"))
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Dict):
+            continue
+        keys = [k.value for k in node.keys if isinstance(k, ast.Constant)]
+        repeated = [k for k, n in collections.Counter(keys).items() if n > 1]
+        if repeated:
+            offenders.append((node.lineno, repeated))
+    assert not offenders, offenders
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "不會開心", "不会开心", "不算開心", "不算开心",
+    "未必驚訝", "未必惊讶", "不再生氣", "不再生气",
+    "不至於難過", "不至于难过", "談不上開心", "算不上生氣",
+])
+def test_compound_negations_are_recognized(label, confidence):
+    """These open with a character that is a negation only in combination.
+
+    The single character alone is not followed by an alias, so nothing matches
+    until the whole compound form is in the negation table.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("text,expected", [
+    # the keyword heuristic runs on the user's own words, where these are common
+    ("我今天特別開心", "happy"), ("我今天特别开心", "happy"),
+    ("個別的時候很生氣", "angry"), ("差不多開心", "happy"),
+    ("告別了很難過", "sad"), ("分別的時候好難過", "sad"),
+])
+def test_ordinary_words_do_not_negate_the_keyword_heuristic(text, expected):
+    """These used to score zero.
+
+    Each opens with an ordinary word whose last character is a single-character
+    negation, sitting right against the emotion word — which is exactly the span
+    the tight negation lookback covers. The blocklist is the mechanism that was
+    already there for the "not only" family; this is the same idea applied to
+    ordinary words that merely end in one of those characters.
+    """
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    emotion, score = _infer_emotion_from_text(text)
+    assert emotion == expected, (text, emotion, score)
+
+
+@pytest.mark.parametrize("text", [
+    "我今天不開心", "我今天不太開心", "別生氣了", "不要生氣", "我不是很開心",
+])
+def test_real_negation_still_suppresses_the_keyword_heuristic(text):
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    assert _infer_emotion_from_text(text)[0] is None
