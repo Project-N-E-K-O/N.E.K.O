@@ -24,6 +24,7 @@ from main_logic.asr_client.lifecycle import (
 )
 from main_logic.asr_client.lifecycle import VoiceInputLifecycleController
 from main_logic.asr_client.provider_policy import resolve_provider_policy
+from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from main_logic.voice_turn.contracts import (
     AsrFailureEvent,
@@ -986,11 +987,13 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
     runtime._independent_asr_provider = "qwen"
     route_audio = AsyncMock(return_value=True)
     runtime._route_microphone_audio = route_audio
+    evidence = RnnoiseEvidence(True, 3, 0.9, 0.6, 0.2, 0.55)
     processed = ProcessedVoiceFrame(
         pcm16=b"\x01\x00" * 160,
         sample_rate_hz=16_000,
         speech_probability=0.8,
         rnnoise_available=True,
+        rnnoise_evidence=evidence,
     )
     runtime._voice_input_audio_pipeline.process = AsyncMock(return_value=processed)
     token = runtime._capture_ingress_token()
@@ -1010,6 +1013,7 @@ async def test_game_consumer_accepts_real_pcm_through_pipeline(
         sample_rate_hz=processed.sample_rate_hz,
         speech_probability=processed.speech_probability,
         rnnoise_available=processed.rnnoise_available,
+        rnnoise_evidence=evidence,
         ingress_token=token,
     )
 
@@ -1036,11 +1040,13 @@ async def test_game_consumer_submit_preserves_owner_identity(monkeypatch) -> Non
         return_value=AsrSubmitResult(AsrSubmitStatus.ACCEPTED)
     )
     token = runtime._capture_ingress_token()
+    evidence = RnnoiseEvidence(True, 3, 0.9, 0.6, 0.2, 0.55)
     processed = ProcessedVoiceFrame(
         pcm16=b"\x01\x00" * 160,
         sample_rate_hz=16_000,
         speech_probability=0.8,
         rnnoise_available=True,
+        rnnoise_evidence=evidence,
     )
 
     await runtime._route_microphone_audio(
@@ -1048,6 +1054,7 @@ async def test_game_consumer_submit_preserves_owner_identity(monkeypatch) -> Non
         sample_rate_hz=processed.sample_rate_hz,
         speech_probability=processed.speech_probability,
         rnnoise_available=processed.rnnoise_available,
+        rnnoise_evidence=evidence,
         ingress_token=token,
     )
 
@@ -1055,6 +1062,82 @@ async def test_game_consumer_submit_preserves_owner_identity(monkeypatch) -> Non
         processed,
         ingress_token=token,
     )
+
+
+async def test_hot_swap_cache_replay_preserves_rnnoise_evidence() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = True
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "qwen"
+    evidence = RnnoiseEvidence(True, 3, 0.9, 0.6, 0.2, 0.55)
+    processed = ProcessedVoiceFrame(
+        pcm16=b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=evidence.peak,
+        rnnoise_available=True,
+        rnnoise_evidence=evidence,
+    )
+    runtime._voice_input_audio_pipeline.process = AsyncMock(return_value=processed)
+    route_audio = AsyncMock(return_value=True)
+    runtime._route_microphone_audio = route_audio
+    token = runtime._capture_ingress_token()
+
+    await runtime._process_microphone_stream_data(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 160,
+        },
+        ingress_token=token,
+    )
+
+    assert len(runtime.hot_swap_audio_cache) == 1
+    route_audio.assert_not_awaited()
+    runtime.is_hot_swap_imminent = False
+    await runtime._flush_hot_swap_audio_cache()
+
+    route_audio.assert_awaited_once_with(
+        processed.pcm16,
+        sample_rate_hz=processed.sample_rate_hz,
+        speech_probability=processed.speech_probability,
+        rnnoise_available=processed.rnnoise_available,
+        rnnoise_evidence=evidence,
+        ingress_token=token,
+    )
+
+
+async def test_stale_audio_epoch_rejects_processed_rnnoise_evidence() -> None:
+    runtime = _Runtime()
+    runtime.is_active = True
+    runtime.is_hot_swap_imminent = False
+    runtime.is_flushing_hot_swap_cache = False
+    runtime._set_microphone_route("independent")
+    runtime._independent_asr_provider = "qwen"
+    evidence = RnnoiseEvidence(True, 3, 0.9, 0.6, 0.2, 0.55)
+    processed = ProcessedVoiceFrame(
+        pcm16=b"\x01\x00" * 160,
+        sample_rate_hz=16_000,
+        speech_probability=evidence.peak,
+        rnnoise_available=True,
+        rnnoise_evidence=evidence,
+    )
+    runtime._voice_input_audio_pipeline.process = AsyncMock(return_value=processed)
+    route_audio = AsyncMock(return_value=True)
+    runtime._route_microphone_audio = route_audio
+
+    await runtime._process_microphone_stream_data(
+        {
+            "input_type": "audio",
+            "sample_rate_hz": 16_000,
+            "data": [1] * 160,
+        },
+        ingress_token=runtime._capture_ingress_token(),
+        audio_stream_epoch=runtime._audio_stream_epoch + 1,
+    )
+
+    runtime._voice_input_audio_pipeline.process.assert_awaited_once()
+    route_audio.assert_not_awaited()
 
 
 async def test_game_consumer_failure_never_falls_back_to_core(
