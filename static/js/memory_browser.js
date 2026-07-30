@@ -4049,6 +4049,10 @@
         var myId = ++_componentRequestId;
         if (tab === _activeMemoryTab) return;
 
+        if (_activeMemoryTab === 'recent') {
+            memoryFileRequestId++;
+        }
+
         // Preserve unsaved edits when switching away from recent tab
         if (_activeMemoryTab === 'recent' && memoryHasUnsavedChanges) {
             var saved = await saveCurrentMemory();
