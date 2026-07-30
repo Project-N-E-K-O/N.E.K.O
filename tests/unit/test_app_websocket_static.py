@@ -831,7 +831,9 @@ def test_user_dirty_keys_survive_boot_get_merge_field_level():
     assert "!_dirtySettingsKeys.has('subtitleEnabled')" in merge_block
     assert "!_dirtySettingsKeys.has('userLanguage')" in merge_block
     roll_index = merge_block.index("_settingsBaseline = getConversationSettings();")
-    assert skip_index < roll_index < merge_block.index("saveSettings();")
+    assert skip_index < roll_index < merge_block.index(
+        "saveSettings({ serverMerged: true });"
+    )
     # The whole-merge drop is gone: no early return between the null-guard
     # and the hydration mark, and the old drop log no longer exists.
     after_null_guard = null_guard_index + len("if (!serverResult) return;")
@@ -2013,6 +2015,7 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "changedKeys: explicitKeys || []," in write_fn
     assert "hydrated: S.settingsHydrated === true" in write_fn
     assert "pendingRecovery: pendingRecovery === true" in write_fn
+    assert "ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();" in write_fn
     assert "localStorage.setItem('project_neko_settings', JSON.stringify(payload));" in write_fn
 
     # The write id must be strictly increasing within a window and comparable
@@ -2029,13 +2032,15 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "Math.max(_lastSharedWriteId, _lastAppliedSharedWriteId)" in id_fn
     assert "_lastSharedWriteId = now > idFloor ? now : idFloor + 1;" in id_fn
 
-    # Explicit keys = the monotone dirty set PLUS the divergence from the
-    # dirty-diff baseline (the ASR toggle handler persists locally before its
-    # userInitiated sync rolls that baseline).
+    # Explicit keys = still-pending writes PLUS divergence from the dirty-diff
+    # baseline (the ASR toggle handler persists locally before its userInitiated
+    # sync rolls that baseline). The monotone boot-merge dirty set must not mint
+    # a new per-key token for an already-acknowledged value.
     collect_fn = settings_source.split("function _collectExplicitSharedKeys(snapshot) {", 1)[
         1
     ].split("\n    }", 1)[0]
-    assert "_dirtySettingsKeys.has(key)" in collect_fn
+    assert "_pendingSettingsKeys.has(key)" in collect_fn
+    assert "_dirtySettingsKeys.has(key)" not in collect_fn
     assert "_settingsBaseline[key] !== snapshot[key]" in collect_fn
     # Negative: only shared keys may be claimed, never the whole snapshot.
     assert "_SHARED_SETTINGS_KEYS.forEach" in collect_fn
@@ -2053,6 +2058,7 @@ def test_shared_settings_writes_carry_explicit_change_metadata():
     assert "Date.now() + _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS" in id_validator
     assert "Number.MAX_SAFE_INTEGER - 1" in id_validator
     assert "Array.isArray(meta.changedKeys) ? meta.changedKeys : []" in read_fn
+    assert "knownKeyWritesPresent" in read_fn
 
     listener_block = settings_source.split(
         "window.addEventListener('storage', function (event) {", 1
@@ -2455,6 +2461,64 @@ def test_unrelated_save_from_unhydrated_window_is_not_an_asr_toggle_harness():
             'ordinary user writes must not be marked as recovery'
           );
 
+          // ---- Scenario 9: a merge envelope minted later does not make a
+          // stale field newer than an explicit edit the sender never observed.
+          const editor = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          editor.win.focusModeEnabled = true;
+          editor.mod.saveSettings({ skipServerSync: true });
+          const explicitPayload = editor.lastSharedWrite();
+          const explicitMeta = JSON.parse(explicitPayload)._sharedWriteMeta;
+
+          const observer = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          observer.fireStorage(explicitPayload);
+          assert(observer.S.focusModeEnabled === true, 'observer accepts the explicit edit');
+
+          const staleMerger = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          staleMerger.mod.saveSettings({
+            skipServerSync: true,
+            serverMerged: true,
+          });
+          const staleMerge = JSON.parse(staleMerger.lastSharedWrite());
+          staleMerge._sharedWriteMeta.writeId = explicitMeta.writeId + 100;
+          assert(
+            Object.keys(staleMerge._sharedWriteMeta.knownKeyWrites).length === 0,
+            'the stale sender must declare that it never observed the edit'
+          );
+          observer.fireStorage(JSON.stringify(staleMerge));
+          assert(
+            observer.S.focusModeEnabled === true,
+            'a high envelope id must not roll back a newer per-key edit'
+          );
+
+          const mergeAfterEdit = makeContext({
+            independentAsrEnabled: false,
+            focusModeEnabled: false,
+          });
+          mergeAfterEdit.fireStorage(explicitPayload);
+          mergeAfterEdit.getCalls[0].resolve({
+            ok: true,
+            json: async () => ({
+              success: true,
+              settings: { independentAsrEnabled: false, focusModeEnabled: false },
+              telemetryBranch: null,
+            }),
+          });
+          await tick();
+          await tick();
+          assert(
+            mergeAfterEdit.S.focusModeEnabled === true,
+            'a boot GET started before the cross-window edit must preserve that edit'
+          );
+
           console.log('HARNESS_OK');
           // Every sandbox timer is harness-controlled, so the process exits
           // naturally once main() returns and piped stdout is fully flushed.
@@ -2675,7 +2739,7 @@ def test_settings_get_gate_timeout_downgrades_post_to_dirty_keys_only():
         "_settingsMergedFromServer = true;"
     )
     assert merge_cb.index("_settingsMergedFromServer = true;") < merge_cb.index(
-        "saveSettings();"
+        "saveSettings({ serverMerged: true });"
     )
     # Negative: the failure paths must NOT re-enable full snapshots. The
     # finally runs for merged AND failed GETs, so it may not touch the flag;

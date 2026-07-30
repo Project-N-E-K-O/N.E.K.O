@@ -46,6 +46,12 @@
     const _ASR_WRITE_ID_MAX_FUTURE_SKEW_MS = 365 * 24 * 60 * 60 * 1000;
     let _lastSharedWriteId = 0;
     let _lastAppliedSharedWriteId = 0;
+    // Latest explicit non-ASR write token this window has incorporated per
+    // shared key. A server-merge snapshot gets a fresh envelope writeId, but
+    // that does not prove its field values observed every earlier user edit.
+    // Carrying these per-key source tokens lets receivers compare the data's
+    // actual provenance instead of mistaking the envelope timestamp for it.
+    const _knownSharedKeyWrites = Object.create(null);
     // Window-unique second sort key for concurrent shared-settings writes. Per
     // document load; stability across reloads is not needed because every
     // comparison reads the id off the write itself, and sessionStorage would be
@@ -120,6 +126,45 @@
         if (candidate.writeId > current.writeId) return true;
         if (candidate.writeId < current.writeId) return false;
         return candidate.writerId > current.writerId;
+    }
+    function _sharedWriteTokenOutranks(candidate, current) {
+        if (!candidate) return false;
+        if (!current) return true;
+        if (candidate.writeId > current.writeId) return true;
+        if (candidate.writeId < current.writeId) return false;
+        return (candidate.writerId || '') > (current.writerId || '');
+    }
+    function _rememberSharedKeyWrites(keys, token, acceptedSettings) {
+        if (!Array.isArray(keys) || !token) return;
+        for (const key of keys) {
+            if (key === 'independentAsrEnabled') continue;
+            if (_SHARED_SETTINGS_KEYS.indexOf(key) === -1) continue;
+            if (acceptedSettings
+                && !Object.prototype.hasOwnProperty.call(acceptedSettings, key)) continue;
+            const candidate = {
+                writeId: token.writeId,
+                writerId: token.writerId || ''
+            };
+            if (_sharedWriteTokenOutranks(candidate, _knownSharedKeyWrites[key])) {
+                _knownSharedKeyWrites[key] = candidate;
+            }
+        }
+    }
+    function _rememberKnownSharedKeyWrites(knownWrites, acceptedSettings) {
+        if (!knownWrites) return;
+        for (const key of Object.keys(knownWrites)) {
+            _rememberSharedKeyWrites([key], knownWrites[key], acceptedSettings);
+        }
+    }
+    function _knownSharedKeyWritesSnapshot() {
+        const snapshot = {};
+        for (const key of Object.keys(_knownSharedKeyWrites)) {
+            snapshot[key] = {
+                writeId: _knownSharedKeyWrites[key].writeId,
+                writerId: _knownSharedKeyWrites[key].writerId
+            };
+        }
+        return snapshot;
     }
     function _serverAsrDecision(data) {
         const decisions = data && data.decisions;
@@ -404,8 +449,10 @@
 
     /**
      * Keys of `snapshot` this window may claim explicit user authority over:
-     * the monotone _dirtySettingsKeys set plus keys that diverge from the
-     * current dirty-diff baseline. The divergence term matters because the
+     * still-pending keys plus keys that diverge from the current dirty-diff
+     * baseline. Do not use the monotone _dirtySettingsKeys set here: after an
+     * acknowledged edit, a later unrelated save must not mint a fresh per-key
+     * token for an old value. The divergence term matters because the
      * independent-ASR toggle handler persists locally (saveSettings with
      * skipServerSync) BEFORE its userInitiated sync runs _markUserDirtySettings,
      * so at write time the diff is the only evidence the key was just toggled.
@@ -417,7 +464,7 @@
             const divergedFromBaseline = !!_settingsBaseline
                 && Object.prototype.hasOwnProperty.call(_settingsBaseline, key)
                 && _settingsBaseline[key] !== snapshot[key];
-            if (_dirtySettingsKeys.has(key) || divergedFromBaseline) {
+            if (_pendingSettingsKeys.has(key) || divergedFromBaseline) {
                 keys.push(key);
             }
         });
@@ -453,6 +500,8 @@
             pendingRecovery: pendingRecovery === true
         };
         const ownMeta = payload[_SHARED_WRITE_META_KEY];
+        _rememberSharedKeyWrites(ownMeta.changedKeys, ownMeta);
+        ownMeta.knownKeyWrites = _knownSharedKeyWritesSnapshot();
         if (ownMeta.changedKeys.indexOf('independentAsrEnabled') !== -1) {
             _noteAsrDecision(ownMeta.writeId, ownMeta.writerId, snapshot.independentAsrEnabled);
         }
@@ -483,6 +532,23 @@
         const meta = settings ? settings[_SHARED_WRITE_META_KEY] : null;
         if (!meta || typeof meta !== 'object') return null;
         if (!_isValidAsrWriteId(meta.writeId)) return null;
+        const knownKeyWrites = {};
+        const rawKnownKeyWrites = meta.knownKeyWrites;
+        const knownKeyWritesPresent = !!rawKnownKeyWrites
+            && typeof rawKnownKeyWrites === 'object';
+        if (knownKeyWritesPresent) {
+            for (const key of Object.keys(rawKnownKeyWrites)) {
+                const token = rawKnownKeyWrites[key];
+                if (!token || typeof token !== 'object') continue;
+                if (!_isValidAsrWriteId(token.writeId)) continue;
+                knownKeyWrites[key] = {
+                    writeId: token.writeId,
+                    writerId: typeof token.writerId === 'string'
+                        ? token.writerId
+                        : ''
+                };
+            }
+        }
         return {
             writeId: meta.writeId,
             // Absent on snapshots written by the previous build: '' sorts below
@@ -498,6 +564,8 @@
             // changedKeys and keeps flowing through asrChangedByOtherWindow.
             asrAuthoritative: meta.asrAuthoritative === true,
             pendingRecovery: meta.pendingRecovery === true,
+            knownKeyWrites,
+            knownKeyWritesPresent,
             // Absent on previous-build snapshots and on writers with no
             // matching decision: null routes the comparison back to
             // (writeId, writerId), i.e. today's behaviour.
@@ -1122,6 +1190,10 @@
                 if (bootMeta && bootMeta.writeId > _lastAppliedSharedWriteId) {
                     _lastAppliedSharedWriteId = bootMeta.writeId;
                 }
+                if (bootMeta) {
+                    _rememberKnownSharedKeyWrites(bootMeta.knownKeyWrites, settings);
+                    _rememberSharedKeyWrites(bootMeta.changedKeys, bootMeta, settings);
+                }
                 if (bootMeta && bootMeta.asrDecision
                     && settings.independentAsrEnabled === bootMeta.asrDecision.value) {
                     // A server-merge snapshot intentionally has no changedKeys:
@@ -1341,6 +1413,7 @@
         // Until the first merge lands, POST bodies stay restricted to the
         // user-dirty keys so they cannot overwrite the server-persisted
         // preferences this client has not read yet.
+        const mutationVersionAtGetStart = _crossWindowMutationVersion;
         try {
             const mergeSettled = loadSettingsFromServer().then(serverResult => {
                 if (!serverResult) return;
@@ -1408,6 +1481,8 @@
                     for (const key of Object.keys(serverSettings)) {
                         if (serverSettings[key] === undefined) continue;
                         if (_dirtySettingsKeys.has(key)) continue;
+                        if ((_crossWindowKeyMutationVersions[key] || 0)
+                            > mutationVersionAtGetStart) continue;
                         if (key === 'independentAsrEnabled' && preserveLocalAsrDecision) continue;
                         if (S[key] !== serverSettings[key]) {
                             S[key] = serverSettings[key];
@@ -1460,7 +1535,7 @@
                     window.proactiveVisionInterval = S.proactiveVisionInterval;
                     window.textGuardMaxLength = S.textGuardMaxLength;
                     // 同步回 localStorage
-                    saveSettings();
+                    saveSettings({ serverMerged: true });
                     // 重新初始化主动搭话调度器（使用最新标志）
                     if (typeof window.appProactive !== 'undefined' && window.appProactive.scheduleProactiveChat) {
                         window.appProactive.scheduleProactiveChat();
@@ -1581,16 +1656,39 @@
             }
             const serverMergePredatesLocalWrite = !!meta
                 && meta.changedKeys.length === 0
+                && !meta.knownKeyWritesPresent
                 && meta.writeId <= writeIdFloorBeforeIncoming;
             if (serverMergePredatesLocalWrite) {
                 if (incoming === settings) incoming = Object.assign({}, settings);
-                // Non-ASR server-merge fields have no per-key decision token.
-                // Once this window has written a newer snapshot, an older merge
-                // arriving late must not roll confirmed local values back. ASR
+                // Compatibility for snapshots written before knownKeyWrites:
+                // once this window has written a newer snapshot, an older merge
+                // arriving late must not roll confirmed local values back. New
+                // peers use the per-key provenance check below instead. ASR
                 // keeps its independent decision-tuple ordering above.
                 for (const key of _SHARED_SETTINGS_KEYS) {
                     if (key === 'independentAsrEnabled') continue;
                     delete incoming[key];
+                }
+            }
+            if (meta && meta.changedKeys.length === 0
+                && meta.knownKeyWritesPresent) {
+                for (const key of _SHARED_SETTINGS_KEYS) {
+                    if (key === 'independentAsrEnabled') continue;
+                    if (!Object.prototype.hasOwnProperty.call(incoming, key)) continue;
+                    const localToken = _knownSharedKeyWrites[key];
+                    const mergeToken = meta.knownKeyWrites[key];
+                    // The merge envelope may be newer while this particular
+                    // field still predates an explicit write already accepted
+                    // here. Apply only when the sender's per-key provenance is
+                    // at least as new as ours.
+                    if (localToken
+                        && !_sharedWriteTokenOutranks(mergeToken, localToken)
+                        && !(mergeToken
+                            && mergeToken.writeId === localToken.writeId
+                            && mergeToken.writerId === localToken.writerId)) {
+                        if (incoming === settings) incoming = Object.assign({}, settings);
+                        delete incoming[key];
+                    }
                 }
             }
             const pendingKeysToReassert = [];
@@ -1610,6 +1708,10 @@
             }
             _noteCrossWindowMutations(incoming, meta ? meta.changedKeys : null);
             const changed = applySharedRuntimeSettings(incoming);
+            if (meta) {
+                _rememberKnownSharedKeyWrites(meta.knownKeyWrites, incoming);
+                _rememberSharedKeyWrites(meta.changedKeys, meta, incoming);
+            }
             if (meta && meta.asrDecision
                 && Object.prototype.hasOwnProperty.call(
                     incoming,
