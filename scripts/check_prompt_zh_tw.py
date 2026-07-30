@@ -356,6 +356,47 @@ def _merge_operands(node: ast.AST) -> list[ast.AST]:
     return []
 
 
+def _directly_visible_keys(node: ast.AST) -> set[str]:
+    """Keys an expression states itself, ignoring what it merges in by name.
+
+    Answers "does this construction demonstrably supply zh-TW?" — the condition for
+    treating its named inputs as fragments. ``{**T, "zh-TW": ...}`` does;
+    ``dict(T)`` and ``{**T, "ja": ...}`` do not, and their T stays subject to the
+    rule.
+
+    Unlike ``resolve_keys`` this never gives up: an unknowable part contributes
+    nothing instead of poisoning the whole result.
+    """
+    if isinstance(node, ast.Dict):
+        keys = {
+            key.value
+            for key in node.keys
+            if isinstance(key, ast.Constant) and isinstance(key.value, str)
+        }
+        for key, value in zip(node.keys, node.values):
+            if key is None:
+                keys |= _directly_visible_keys(value)
+        return keys
+    if (
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "dict"
+    ):
+        keys = {kw.arg for kw in node.keywords if kw.arg is not None}
+        for kw in node.keywords:
+            if kw.arg is None:
+                keys |= _directly_visible_keys(kw.value)
+        for arg in node.args:
+            keys |= _directly_visible_keys(arg)
+            pairs = _pair_sequence_keys(arg)
+            if pairs:
+                keys |= pairs
+        return keys
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
+        return _directly_visible_keys(node.left) | _directly_visible_keys(node.right)
+    return set()
+
+
 def _exempt_table_nodes(tree: ast.AST) -> set[int]:
     """ids of tables that must not be judged on their own.
 
@@ -454,11 +495,21 @@ def _exempt_table_nodes(tree: ast.AST) -> set[int]:
         if keys and TRADITIONAL_KEY in keys:
             _exempt_binding_before(target, node.lineno)
 
-    # A name used as a merge operand is a fragment by the same argument as an
-    # inline one: `_FRAGMENT = {"en": .., "zh": ..}` / `T = {**_FRAGMENT, "zh-TW":
-    # ..}` assembles a compliant table, so reporting _FRAGMENT is a false positive.
+    # A name merged into a construction that *demonstrably supplies zh-TW* is a
+    # fragment of a compliant table: `_F = {"en": .., "zh": ..}` /
+    # `T = {**_F, "zh-TW": ..}` — reporting _F there is a false positive.
+    #
+    # The zh-TW condition is what keeps this from becoming a blind spot. Exempting
+    # every named operand meant `U = dict(T)` excused T, so an offender plus a copy
+    # of it counted as zero: T exempt as an "operand", U unresolvable because
+    # resolve_keys does not follow names.
     for node in ast.walk(tree):
-        for operand in _merge_operands(node):
+        operands = _merge_operands(node)
+        if not operands:
+            continue
+        if TRADITIONAL_KEY not in _directly_visible_keys(node):
+            continue
+        for operand in operands:
             if isinstance(operand, ast.Name):
                 _exempt_binding_before(operand.id, node.lineno)
 

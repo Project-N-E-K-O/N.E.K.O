@@ -1441,3 +1441,58 @@ def test_annotated_binding_without_a_value_is_ignored():
 def test_annotated_offender_is_still_reported():
     """The exemption is about mutations, not about annotations."""
     assert _violations('T: dict[str, str] = {"en": "e", "zh": "s"}') == [1]
+
+
+@pytest.mark.parametrize("src", [
+    'T = {"en": "e", "zh": "s"}\nU = dict(T)',
+    'T = {"en": "e", "zh": "s"}\nU = {**T}',
+    'T = {"en": "e", "zh": "s"}\nU = {**T, "ja": "j"}',
+])
+def test_copying_an_offender_does_not_exempt_it(src):
+    """Being merged somewhere is not enough — the merge must supply zh-TW.
+
+    Exempting every named operand meant an offender plus a copy of it counted as
+    zero: the original was excused as an "operand" while the copy was unresolvable,
+    because resolve_keys does not follow names.
+    """
+    tree, comments = MOD._parse_source(src, "t.py")
+    assert MOD.find_violations(tree, comments) == [1]
+
+
+@pytest.mark.parametrize("src", [
+    '_F = {"en": "e", "zh": "s"}\nT = {**_F, "zh-TW": "t"}',
+    '_F = {"en": "e", "zh": "s"}\nT = _F | {"zh-TW": "t"}',
+    '_F = {"en": "e", "zh": "s"}\nT = dict(_F, **{"zh-TW": "t"})',
+    '_F = {"en": "e", "zh": "s"}\nT = dict(_F, **dict([("zh-TW", "t")]))',
+])
+def test_named_fragment_exempt_only_when_zh_tw_is_supplied(src):
+    assert _violations(src) == []
+
+
+def test_directly_visible_keys_ignores_unknowable_parts():
+    """Unlike resolve_keys, an unknowable operand contributes nothing, not None."""
+    import ast as _ast
+    visible = MOD._directly_visible_keys(
+        _ast.parse('{**UNKNOWN, "zh-TW": "t"}', mode="eval").body
+    )
+    assert visible == {"zh-TW"}
+    assert MOD._directly_visible_keys(
+        _ast.parse('dict(UNKNOWN)', mode="eval").body
+    ) == set()
+
+
+def test_zh_tw_supplied_through_a_nested_spread_still_exempts():
+    """The supplying key can itself sit inside a spread, not just be a direct key.
+
+    `{**_F, **{"zh-TW": ...}}` completes _F as surely as `{**_F, "zh-TW": ...}`
+    does, so the visibility scan has to recurse into spread values.
+    """
+    assert _violations('_F = {"en": "e", "zh": "s"}\nT = {**_F, **{"zh-TW": "t"}}') == []
+
+
+def test_directly_visible_keys_recurses_into_spreads():
+    import ast as _ast
+    visible = MOD._directly_visible_keys(
+        _ast.parse('{**OTHER, **{"zh-TW": "t"}}', mode="eval").body
+    )
+    assert visible == {"zh-TW"}
