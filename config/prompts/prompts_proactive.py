@@ -22,6 +22,7 @@ getter functions, and proactive-related injection fragments.
 
 from __future__ import annotations
 
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc, get_avatar_annotation_ignore_hint
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
@@ -1288,24 +1289,14 @@ proactive_generate_ru = """Ваша роль:
 
 
 def _normalize_prompt_language(lang: str) -> str:
-    if not lang:
-        return "en"
-    lang_lower = lang.lower()
-    if lang_lower.startswith("zh"):
-        return "zh"
-    if lang_lower.startswith("ja"):
-        return "ja"
-    if lang_lower.startswith("en"):
-        return "en"
-    if lang_lower.startswith("ko"):
-        return "ko"
-    if lang_lower.startswith("ru"):
-        return "ru"
-    if lang_lower.startswith("es"):
-        return "es"
-    if lang_lower.startswith("pt"):
-        return "pt"
-    return "en"
+    """Normalize a language code to a proactive-prompt dict key.
+
+    ``keep_traditional=False`` because no dict in this module carries a
+    ``'zh-TW'`` template yet; resolving to ``zh-TW`` here would send Traditional
+    Chinese users straight to the English fallback. Flip it together with the
+    templates. See issue #2500.
+    """
+    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=False)
 
 
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
