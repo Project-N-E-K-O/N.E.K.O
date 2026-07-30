@@ -558,9 +558,10 @@ def test_peeling_stops_at_a_clause_boundary(label, expected, confidence):
 def test_intensifiers_are_not_read_as_negations(label, expected, confidence):
     """The other direction: reaching further left must not invent a negation.
 
-    `非常生氣` is the one that matters most — it is the most ordinary way for a
-    model to answer, and a single leading character (`非`) used to be enough to
-    fuzzy-match the rest against the alias and call the whole thing negated.
+    The plain intensifier + emotion form is the one that matters most -- it is
+    the most ordinary way for a model to answer, and a single leading character
+    used to be enough to fuzzy-match the rest against the alias and call the
+    whole thing negated.
     """
     assert _label(label, confidence) == expected
 
