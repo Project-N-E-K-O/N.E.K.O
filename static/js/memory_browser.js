@@ -3348,17 +3348,26 @@
             editDiv.innerHTML = '<div style="color:#e74c3c; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.loadFailed') : '加载失败') + '</div>';
         }
     }
+    var _savePromise = Promise.resolve();
+
     async function saveCurrentMemory() {
         if (!currentMemoryFile) {
             showSaveStatus(window.t ? window.t('memory.pleaseSelectFile') : '请先选择文件', false);
             return false;
         }
-        // 处理备忘录为空的情况
+        var promise = _savePromise.then(function () {
+            return _doSave();
+        });
+        _savePromise = promise.then(function () {}, function () {});
+        return promise;
+    }
+
+    async function _doSave() {
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
-        chatData.forEach(msg => {
+        chatData.forEach(function (msg) {
             if (msg.role === 'system') {
-                let text = msg.text || '';
+                var text = msg.text || '';
                 if (text.startsWith(memoPrefix)) {
                     text = text.slice(memoPrefix.length);
                 }
@@ -3379,39 +3388,8 @@
             if (data.success) {
                 setMemoryDirty(false);
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
-
-                // 通知父窗口刷新对话上下文
                 if (data.need_refresh) {
-                    let broadcastSent = false;
-                    
-                    // 优先使用 BroadcastChannel（跨页面通信）
-                    if (typeof BroadcastChannel !== 'undefined') {
-                        let channel = null;
-                        try {
-                            channel = new BroadcastChannel('neko_page_channel');
-                            channel.postMessage({
-                                action: 'memory_edited',
-                                catgirl_name: data.catgirl_name
-                            });
-                            console.log('[MemoryBrowser] 已通过 BroadcastChannel 发送 memory_edited 消息');
-                            broadcastSent = true;
-                        } catch (e) {
-                            console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
-                        } finally {
-                            if (channel) {
-                                channel.close();
-                            }
-                        }
-                    }
-                    
-                    // 仅当 BroadcastChannel 不可用时，使用 postMessage 作为后备（iframe 场景）
-                    if (!broadcastSent && window.parent && window.parent !== window) {
-                        window.parent.postMessage({
-                            type: 'memory_edited',
-                            catgirl_name: data.catgirl_name
-                        }, PARENT_ORIGIN);
-                        console.log('[MemoryBrowser] 已通过 postMessage 发送 memory_edited 消息（后备方案）');
-                    }
+                    _broadcastMemoryEdit(data.catgirl_name);
                 }
                 return true;
             } else {
@@ -3422,6 +3400,25 @@
         } catch (e) {
             showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
             return false;
+        }
+    }
+
+    function _broadcastMemoryEdit(catgirlName) {
+        var broadcastSent = false;
+        if (typeof BroadcastChannel !== 'undefined') {
+            var channel = null;
+            try {
+                channel = new BroadcastChannel('neko_page_channel');
+                channel.postMessage({ action: 'memory_edited', catgirl_name: catgirlName });
+                broadcastSent = true;
+            } catch (e) {
+                console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
+            } finally {
+                if (channel) channel.close();
+            }
+        }
+        if (!broadcastSent && window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'memory_edited', catgirl_name: catgirlName }, PARENT_ORIGIN);
         }
     }
     document.getElementById('save-memory-btn').onclick = saveCurrentMemory;
