@@ -320,6 +320,59 @@ def test_only_the_busy_winerrors_are_retried(tmp_path, monkeypatch, make_error):
     assert spy.delays == []
 
 
+@pytest.mark.asyncio
+async def test_the_backoff_never_sleeps_on_the_event_loop(tmp_path, monkeypatch):
+    # 二十多处 `async def` 在裸调同步的 atomic_write_*（memory/anti_repeat.py 与
+    # memory/user_directives.py 甚至是 per-turn 的，跟音频同在一条循环上）。在那里
+    # 睡 155ms 就是掐音频；scripts/check_async_blocking.py 也早就把 time.sleep 列为
+    # 禁止出现在 async 可达路径上的调用。上环调用者必须拿到改动前的行为：第一次
+    # busy 就抛，一次 sleep 都不许有。
+    target = tmp_path / "state.json"
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def always_busy(src, dst):
+        attempts.append(src)
+        raise _busy_error(32)
+
+    monkeypatch.setattr(os, "replace", always_busy)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    with pytest.raises(PermissionError):
+        atomic_write_json(target, {"v": 1})
+
+    assert len(attempts) == 1, "事件循环上不许重试"
+    assert spy.delays == [], "事件循环上一次 sleep 都不许有"
+    assert _tmp_siblings(target) == []
+
+
+@pytest.mark.asyncio
+async def test_a_worker_thread_still_gets_the_full_backoff(tmp_path, monkeypatch):
+    # 对偶面，也是本次 flake 修复真正落地的地方：制造 flake 的落盘全部跑在
+    # to_thread 的工作线程里，那里没有 running loop，退避必须原样生效。
+    target = tmp_path / "state.json"
+    atomic_write_json(target, {"v": 1})
+
+    real_replace = os.replace
+    attempts: list[str] = []
+    spy = _SleepSpy()
+
+    def busy_twice(src, dst):
+        attempts.append(src)
+        if len(attempts) <= 2:
+            raise _busy_error(32)
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", busy_twice)
+    monkeypatch.setattr(file_utils, "time", spy)
+
+    await asyncio.to_thread(atomic_write_json, target, {"v": 2})
+
+    assert read_json(target) == {"v": 2}
+    assert len(attempts) == 3
+    assert spy.delays == [0.005, 0.01]
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows-only handle semantics")
 def test_windows_really_refuses_to_replace_a_target_held_open(tmp_path):
     # 这条钉的是重试列表的**前提**：Windows 上「目标被打开着」到底报哪个码。哪天
