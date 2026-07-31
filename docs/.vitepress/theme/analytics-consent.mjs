@@ -16,7 +16,6 @@ export const ANALYTICS_CAMPAIGN_PARAMETERS = Object.freeze([
 const GOOGLE_TAG_SCRIPT_ID = 'neko-google-analytics'
 const STEAM_STORE_HOSTNAME = 'store.steampowered.com'
 const STEAM_APP_PATH = '/app/4099310'
-const DOCS_HOSTNAME = new URL(SITE_ORIGIN).hostname
 const CONSENT_VERSION = 1
 const CONSENT_TTL_MILLISECONDS = 180 * 24 * 60 * 60 * 1000
 const DENIED_CONSENT = Object.freeze({
@@ -208,10 +207,8 @@ export function isDocsHomeUrl(
     const currentPath = normalizedDocsPath(current.pathname)
     const destinationPath = normalizedDocsPath(destination.pathname)
     return (
-      current.protocol === 'https:'
-      && current.hostname === DOCS_HOSTNAME
-      && destination.protocol === 'https:'
-      && destination.hostname === DOCS_HOSTNAME
+      current.origin === SITE_ORIGIN
+      && destination.origin === SITE_ORIGIN
       && LOCALE_HOME_PATHS.has(destinationPath)
       && !LOCALE_HOME_PATHS.has(currentPath)
     )

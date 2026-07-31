@@ -285,6 +285,17 @@ test('recognizes locale home navigation only when leaving a concrete docs page',
     analytics.isDocsHomeUrl('https://project-neko.cn/', 'https://project-neko.online/guide/'),
     false,
   )
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online:8443/guide/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl(
+      'https://project-neko.online:8443/',
+      'https://project-neko.online/guide/',
+    ),
+    false,
+  )
 })
 
 test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
