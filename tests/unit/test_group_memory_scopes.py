@@ -2495,6 +2495,68 @@ async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
         results = await fs.extract_facts_batch(segments, "Neko")
     assert [r["status"] for r in results] == ["ok", "ok"]
 
+    # text 本身裹着内容但不是字符串：读不成事实，可内容确实在里面——
+    # 旁挂检查把 text 一并排除掉的实现会把它当成"本段无事实"，桶被 pop、
+    # 内容消失。
+    async def _non_string_text(prompt, lanlan_name, **kwargs):
+        return [
+            {"segment": 1, "text": ["Alice 养猫"]},
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _non_string_text
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+    assert [r["status"] for r in results] == ["failed", "ok"], (
+        "text 不是字符串但裹着内容的段对象被当成「本段无事实」了"
+    )
+    assert results[0]["created"] == []
+
+
+@pytest.mark.asyncio
+async def test_flat_fact_own_schema_fields_are_not_stray_text(tmp_path):
+    """扁平事实自己的字段不是"没读懂的旁挂文字"。
+
+    段对象被收作一条事实时，**整个 dict 原样交给 persist**（event_when /
+    entity / source 由那边自己读，认不得的键直接忽略），所以它身上根本没有
+    "被丢弃的内容"——"剩下的键里还有文字"这个检查的前提在这条分支上不成立。
+
+    照查的话，``event_when`` 里的 "day"、``entity`` 的 "master" 都会被当成
+    旁挂文字：**每一条带时间线索或实体标注的扁平事实**都判成 failed，事实
+    落了盘、桶却被保留，调用方永远在重抽同一个桶（Codex P2）。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {
+                "segment": 1, "text": "Alice 昨晚没睡好", "importance": 6,
+                "event_when": {"start": {"offset": -1, "unit": "day"}},
+            },
+            {
+                "segment": 2, "text": "Bob 喜欢咖啡", "importance": 7,
+                "entity": "master", "source": "user_observation",
+            },
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "ok"], (
+        "扁平事实自己的 schema 字段被当成旁挂文字，段被判 failed——"
+        "事实落了盘、桶还留着，调用方会一直重抽同一个桶"
+    )
+    assert [f["text"] for f in results[0]["created"]] == ["Alice 昨晚没睡好"]
+    assert [f["text"] for f in results[1]["created"]] == ["Bob 喜欢咖啡"]
+    # 时间线索真的被下游读走了（证明这些字段确实是"被消费"而不是无人问津）。
+    assert results[0]["created"][0].get("event_start_at")
+
 
 def test_carries_unused_text_separates_empty_shells_from_wrapped_content():
     """`dropped`（空壳）与 `suspect`（看不懂但有内容）的分界单元契约。"""  # noqa: DOCSTRING_CJK

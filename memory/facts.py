@@ -962,7 +962,9 @@ class FactStore:
           这是合法的"本段无事实"结论，不是漏标）；
         - 旧的扁平事实：``{"segment": n, "text": ...}``，**含与 facts 数组
           同时出现的情形**——两种约定混用时归属并无歧义（都挂在这一个段
-          对象上），元素自带的 text 必须一起收下，不能被 list 分支吃掉；
+          对象上），元素自带的 text 必须一起收下，不能被 list 分支吃掉。
+          这种形态整个 dict 原样交给 persist（event_when / entity / source
+          等字段那边自己读），所以它身上没有"被丢弃的内容"可言；
         - ``facts`` 里的裸字符串（见 :meth:`_as_fact_entry`）。
         ``facts`` 存在但不是数组 = 形状坏了且可能带内容 → 放不下去。"""  # noqa: DOCSTRING_CJK
         if not isinstance(item, dict):
@@ -988,15 +990,19 @@ class FactStore:
         own_fact = cls._as_fact_entry(item)
         if own_fact is not None:
             kept.append(own_fact)
-        # 段对象上除了 segment/facts（以及被收下的 text）之外还挂着文字：
-        # 这个形状我们没读懂，别把它当成"本段的结论"。
-        leftovers = {
+        elif cls._carries_unused_text({
             key: value for key, value in item.items()
             if key not in ('segment', 'facts')
-        }
-        if own_fact is not None:
-            leftovers.pop('text', None)
-        if cls._carries_unused_text(leftovers):
+        }):
+            # 段对象没能当成事实读下来，可它剩下的键里还攥着文字：这个形状
+            # 我们没读懂，别把它当成"本段的结论"。
+            #
+            # ⚠️ 只在读不下来时查。item 被收作事实时整个 dict 原样交给
+            # persist（认不得的键那边直接忽略），**没有任何东西是"被丢弃
+            # 的"**——这个检查的前提在那条分支上根本不成立。照查的话，
+            # event_when 里的 "day"、entity 的 "master" 都会被当成没读懂的
+            # 旁挂文字，于是每一条带时间线索或实体标注的扁平事实都判成
+            # failed，调用方永远重抽同一个桶（Codex P2）。
             suspect += 1
         return index, kept, dropped, suspect
 
