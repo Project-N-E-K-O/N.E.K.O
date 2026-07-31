@@ -31,6 +31,7 @@ from typing import Any
 from utils.file_utils import atomic_write_json
 from utils.recent_file import (
     acquire_recent_file_locks,
+    activate_recent_paths,
     clear_recent_deletions,
     clear_recent_redirects,
     fence_recent_deletions_and_clear_redirects,
@@ -41,6 +42,7 @@ from utils.recent_file import (
     release_recent_file_locks,
     restore_recent_deletions,
     restore_recent_redirects,
+    restore_recent_registry_state,
     set_recent_pending_unlocked,
     snapshot_recent_deletions,
 )
@@ -368,17 +370,23 @@ def import_cloudsave_character_unit(
     overwrite: bool = False,
     backup_before_overwrite: bool = True,
     retain_recent_locks: bool = False,
+    use_cloud_apply_fence: bool = True,
 ) -> dict[str, Any]:
     if is_cloudsave_disabled():
         _raise_cloudsave_disabled("single_character_download", character_name=character_name)
     bootstrap_local_cloudsave_environment(config_manager)
     _assert_single_character_name_safe(character_name, context="single_character_download")
 
-    with cloud_apply_fence(
-        config_manager,
-        mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
-        reason=f"single_character_download:{character_name}",
-    ):
+    fence_scope = (
+        cloud_apply_fence(
+            config_manager,
+            mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+            reason=f"single_character_download:{character_name}",
+        )
+        if use_cloud_apply_fence
+        else nullcontext()
+    )
+    with fence_scope:
         cloud_unit = _load_cloudsave_character_unit(config_manager, character_name)
         if cloud_unit is None:
             raise CloudsaveOperationError(
@@ -464,9 +472,9 @@ def import_cloudsave_character_unit(
         }
         ownership_transferred = False
         try:
-            redirect_snapshot = clear_recent_redirects([recent_target])
-            deletion_snapshot = snapshot_recent_deletions([recent_target])
-            clear_recent_deletions([recent_target])
+            redirect_snapshot, activation_scope, deletion_snapshot = (
+                activate_recent_paths([recent_target])
+            )
             pending_snapshot = {
                 recent_target: get_recent_pending_unlocked(recent_target),
             }
@@ -502,14 +510,16 @@ def import_cloudsave_character_unit(
                     set_recent_pending_unlocked(
                         recent_target, pending_snapshot[recent_target],
                     )
-                    restore_recent_redirects(redirect_snapshot)
-                    restore_recent_deletions([recent_target], deletion_snapshot)
+                    restore_recent_registry_state(
+                        list(activation_scope), redirect_snapshot, deletion_snapshot,
+                    )
                 raise
             set_recent_pending_unlocked(recent_target, [])
             recent_transaction.update({
                 "pending_snapshot": pending_snapshot,
                 "redirect_snapshot": redirect_snapshot,
                 "deletion_snapshot": deletion_snapshot,
+                "activation_scope": activation_scope,
             })
             if not retain_recent_locks:
                 release_recent_file_locks(held_locks)

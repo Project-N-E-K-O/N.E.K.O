@@ -40,6 +40,7 @@ from utils.file_utils import atomic_write_json
 __all__ = [
     "RecentFileDeletedError",
     "acquire_recent_file_locks",
+    "activate_recent_paths",
     "clear_recent_deletions",
     "clear_recent_redirects",
     "fence_recent_deletions_and_clear_redirects",
@@ -52,6 +53,7 @@ __all__ = [
     "read_recent_text_unlocked",
     "release_recent_file_locks",
     "restore_recent_deletions",
+    "restore_recent_registry_state",
     "set_recent_pending_unlocked",
     "snapshot_recent_redirects",
     "snapshot_recent_deletions",
@@ -97,6 +99,7 @@ _PENDING: dict[str, list[Any]] = {}
 _PENDING_GUARD = threading.Lock()
 _REDIRECTS: dict[str, str] = {}
 _DELETED: set[str] = set()
+_GENERATIONS: dict[str, int] = {}
 
 
 def _lock_key(path: Any) -> str:
@@ -127,6 +130,8 @@ def recent_file_lock(path: Any) -> threading.Lock:
 def recent_file_access(path: Any) -> Iterator[str]:
     """Lock a path and retry if a completed rename redirected it while waiting."""
     original_key = _lock_key(path)
+    with _LOCKS_GUARD:
+        access_generation = _GENERATIONS.get(original_key, 0)
     while True:
         with _LOCKS_GUARD:
             resolved_key = _resolve_key_unlocked(original_key)
@@ -139,13 +144,15 @@ def recent_file_access(path: Any) -> Iterator[str]:
             latest_key = _resolve_key_unlocked(original_key)
             latest_lock = _LOCKS.get(latest_key)
             stable = latest_key == resolved_key and latest_lock is lock
+            stale = _GENERATIONS.get(original_key, 0) != access_generation
             deleted = latest_key in _DELETED
         if not stable:
             lock.release()
             continue
-        if deleted:
+        if stale or deleted:
             lock.release()
-            raise RecentFileDeletedError(f"recent path belongs to a deleted character: {latest_key}")
+            reason = "reused character name" if stale else "deleted character"
+            raise RecentFileDeletedError(f"recent path belongs to a {reason}: {latest_key}")
         try:
             yield resolved_key
         finally:
@@ -293,6 +300,22 @@ def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
     return removed
 
 
+def activate_recent_paths(
+    paths: list[Any],
+) -> tuple[dict[str, str], set[str], set[str]]:
+    """Atomically activate reused names and invalidate accesses from older identities."""
+    keys = {_lock_key(path) for path in paths}
+    with _LOCKS_GUARD:
+        redirect_keys = _redirect_keys_touching_unlocked(keys)
+        activation_scope = keys | redirect_keys
+        deletion_snapshot = activation_scope & _DELETED
+        redirects = {key: _REDIRECTS.pop(key) for key in redirect_keys}
+        _DELETED.difference_update(keys)
+        for key in activation_scope:
+            _GENERATIONS[key] = _GENERATIONS.get(key, 0) + 1
+    return redirects, activation_scope, deletion_snapshot
+
+
 def fence_recent_deletions_and_clear_redirects(
     paths: list[Any],
 ) -> tuple[dict[str, str], set[str], set[str]]:
@@ -314,6 +337,24 @@ def restore_recent_redirects(redirects: dict[str, str]) -> None:
             _lock_key(source): _lock_key(target)
             for source, target in redirects.items()
         })
+
+
+def restore_recent_registry_state(
+    paths: list[Any], redirects: dict[str, str], deletion_snapshot: set[str],
+) -> None:
+    """Atomically restore redirect/deletion state while invalidating in-flight access."""
+    keys = {_lock_key(path) for path in paths}
+    with _LOCKS_GUARD:
+        for key in _redirect_keys_touching_unlocked(keys):
+            _REDIRECTS.pop(key, None)
+        _REDIRECTS.update({
+            _lock_key(source): _lock_key(target)
+            for source, target in redirects.items()
+        })
+        _DELETED.difference_update(keys)
+        _DELETED.update(deletion_snapshot)
+        for key in keys:
+            _GENERATIONS[key] = _GENERATIONS.get(key, 0) + 1
 
 
 def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:

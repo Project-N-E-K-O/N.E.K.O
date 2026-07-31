@@ -22,16 +22,16 @@ from typing import Any
 
 from utils.recent_file import (
     acquire_recent_file_locks,
-    clear_recent_deletions,
-    clear_recent_redirects,
+    activate_recent_paths,
     fence_recent_deletions_and_clear_redirects,
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
     recent_file_lock,
     redirect_recent_paths,
     release_recent_file_locks,
-    restore_recent_redirects,
     restore_recent_deletions,
+    restore_recent_redirects,
+    restore_recent_registry_state,
     set_recent_pending_unlocked,
     snapshot_recent_redirects,
     snapshot_recent_deletions,
@@ -325,11 +325,11 @@ def rename_character_memory_storage(
     recent_paths = transaction["recent_paths"]
     redirect_snapshot = snapshot_recent_redirects(recent_paths)
     deletion_snapshot = snapshot_recent_deletions(recent_paths)
+    activation_scope: set[str] = set()
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
-        clear_recent_redirects([target_recent])
-        clear_recent_deletions([target_recent])
+        _, activation_scope, _ = activate_recent_paths([target_recent])
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_paths
@@ -376,14 +376,17 @@ def rename_character_memory_storage(
             "pending_snapshot": pending_snapshot,
             "redirect_snapshot": redirect_snapshot,
             "deletion_snapshot": deletion_snapshot,
+            "activation_scope": activation_scope,
         })
         if not keep_recent_locks:
             release_character_recent_transaction(transaction)
         return result
     except BaseException:
-        clear_recent_redirects(recent_paths)
-        restore_recent_redirects(redirect_snapshot)
-        restore_recent_deletions(recent_paths, deletion_snapshot)
+        restore_recent_registry_state(
+            list(set(recent_paths) | activation_scope),
+            redirect_snapshot,
+            deletion_snapshot,
+        )
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
         if not keep_recent_locks:
@@ -401,14 +404,15 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
     transaction = result.get("_recent_rename_transaction") or {}
     snapshot = transaction.get("pending_snapshot") or {}
     recent_paths = transaction.get("recent_paths") or list(snapshot)
+    activation_scope = transaction.get("activation_scope") or set()
     held_locks = transaction.get("held_locks") or []
     if not held_locks:
         held_locks = acquire_recent_file_locks(recent_paths)
     try:
-        clear_recent_redirects(recent_paths)
-        restore_recent_redirects(transaction.get("redirect_snapshot") or {})
-        restore_recent_deletions(
-            recent_paths, transaction.get("deletion_snapshot") or set(),
+        restore_recent_registry_state(
+            list(set(recent_paths) | set(activation_scope)),
+            transaction.get("redirect_snapshot") or {},
+            transaction.get("deletion_snapshot") or set(),
         )
         for path, messages in snapshot.items():
             set_recent_pending_unlocked(path, messages)
@@ -420,8 +424,7 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
 def clear_character_recent_redirects(config_manager, character_name: str) -> None:
     """Detach obsolete path redirects before a newly created name starts writing."""
     recent_paths = list_character_recent_paths(config_manager, character_name)
-    clear_recent_redirects(recent_paths)
-    clear_recent_deletions(recent_paths)
+    activate_recent_paths(recent_paths)
 
 
 def delete_character_memory_storage(
@@ -490,7 +493,6 @@ def rollback_character_recent_delete(result: dict[str, Any]) -> None:
         held_locks = acquire_recent_file_locks(recent_paths)
         result["held_locks"] = held_locks
     try:
-        clear_recent_redirects(list(deletion_scope))
         restore_recent_redirects(result.get("redirect_snapshot") or {})
         restore_recent_deletions(
             list(deletion_scope), result.get("deletion_snapshot") or set(),

@@ -416,7 +416,11 @@ async def unsubscribe_workshop_item(request: Request):
                     _build_character_tombstones_state,
                     notify_memory_server_reload,
                 )
-                from utils.character_memory import delete_character_memory_storage
+                from utils.character_memory import (
+                    delete_character_memory_storage,
+                    finalize_character_recent_delete,
+                    rollback_character_recent_delete,
+                )
                 from ..shared_state import get_remove_one_catgirl
             except Exception as exc:
                 logger.error(
@@ -471,27 +475,29 @@ async def unsubscribe_workshop_item(request: Request):
                     "details": {"character_name": current_catgirl_now},
                 }, status_code=400)
 
-            async def _delete_memory_with_retry(name: str) -> list:
+            async def _delete_memory_with_retry(name: str) -> tuple[list, dict]:
                 """Windows file locks → one retry after 300ms as a safety net."""
                 try:
-                    return list(
-                        await asyncio.to_thread(
-                            delete_character_memory_storage, config_mgr, name
-                        )
-                        or []
+                    removed_paths, transaction = await asyncio.to_thread(
+                        delete_character_memory_storage,
+                        config_mgr,
+                        name,
+                        capture_pending=True,
                     )
+                    return list(removed_paths or []), transaction
                 except PermissionError as exc:
                     logger.warning(
                         f"同步清理: delete_character_memory_storage({name}) "
                         f"PermissionError: {exc}，300ms 后重试"
                     )
                     await asyncio.sleep(0.3)
-                    return list(
-                        await asyncio.to_thread(
-                            delete_character_memory_storage, config_mgr, name
-                        )
-                        or []
+                    removed_paths, transaction = await asyncio.to_thread(
+                        delete_character_memory_storage,
+                        config_mgr,
+                        name,
+                        capture_pending=True,
                     )
+                    return list(removed_paths or []), transaction
 
             async def _write_tombstone(name: str) -> None:
                 await asyncio.to_thread(
@@ -507,6 +513,7 @@ async def unsubscribe_workshop_item(request: Request):
                     await fn(name)
 
             pending_del_names: list[str] = []
+            recent_delete_transactions: list[dict] = []
             catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
             target_item_id_str = str(item_id_int)
             for name in candidate_names:
@@ -574,10 +581,12 @@ async def unsubscribe_workshop_item(request: Request):
                         "error": str(rm_paths_or_exc),
                     })
                 else:
-                    for entry_path in rm_paths_or_exc:
+                    removed_paths, recent_transaction = rm_paths_or_exc
+                    recent_delete_transactions.append(recent_transaction)
+                    for entry_path in removed_paths:
                         logger.info(f"取消订阅同步清理: 已删除记忆 {entry_path}")
                         cleanup_summary["removed_memory_paths"].append(str(entry_path))
-                    if not rm_paths_or_exc:
+                    if not removed_paths:
                         logger.warning(
                             f"取消订阅同步清理: delete_memory({name}) 未返回任何路径 "
                             f"(memory_dir={getattr(config_mgr, 'memory_dir', None)})"
@@ -659,6 +668,16 @@ async def unsubscribe_workshop_item(request: Request):
                 for err in cleanup_summary.get("errors") or []
             )
             if local_config_cleanup_failed or delete_config_failed:
+                for transaction in recent_delete_transactions:
+                    try:
+                        await asyncio.to_thread(
+                            rollback_character_recent_delete, transaction,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            f"取消订阅同步清理: recent 删除事务回滚失败: {exc}",
+                            exc_info=True,
+                        )
                 logger.error(
                     f"取消订阅同步清理: 本地角色配置清理失败（item_id={item_id_int}），"
                     f"已中止 Steam UnsubscribeItem 请求以避免配置-订阅不一致"
@@ -669,6 +688,11 @@ async def unsubscribe_workshop_item(request: Request):
                     "error": "本地角色配置清理失败，已取消本次 Steam 退订请求，请修复后重试。",
                     "cleanup_summary": cleanup_summary,
                 }, status_code=500)
+
+            for transaction in recent_delete_transactions:
+                await asyncio.to_thread(
+                    finalize_character_recent_delete, transaction,
+                )
 
             # 通知 memory_server 重新加载（一次即可）
             try:

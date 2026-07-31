@@ -1475,3 +1475,113 @@ async def test_cloudsave_worker_wait_recovers_result_after_cancellation():
 
     assert result["_recent_import_transaction"] == {"held_locks": []}
     assert cancelled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_keeps_cloud_fence_through_reload_and_lock_finalize():
+    from utils.cloudsave_runtime import (
+        MaintenanceModeError,
+        ROOT_MODE_BOOTSTRAP_IMPORTING,
+        assert_cloudsave_writable,
+        get_root_mode,
+    )
+
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+        observed_modes = []
+
+        async def _reload(name):
+            observed_modes.append(("reload", get_root_mode(cm)))
+            with pytest.raises(MaintenanceModeError):
+                assert_cloudsave_writable(
+                    cm, operation="save", target="memory/小满/recent.json",
+                )
+            return True, ""
+
+        def _finalize(result):
+            observed_modes.append(("finalize", get_root_mode(cm)))
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={"detail": {}, "backup_path": ""},
+            ) as import_mock, patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                side_effect=_reload,
+            ), patch.object(
+                cloudsave_router_module,
+                "finalize_cloudsave_character_import",
+                side_effect=_finalize,
+            ):
+                response = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "force": True}),
+                )
+
+        assert response["success"] is True
+        assert observed_modes == [
+            ("reload", ROOT_MODE_BOOTSTRAP_IMPORTING),
+            ("finalize", ROOT_MODE_BOOTSTRAP_IMPORTING),
+        ]
+        assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING
+        assert import_mock.call_args.kwargs["use_cloud_apply_fence"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_download_finishes_reload_before_propagating_cancel():
+    from utils.cloudsave_runtime import ROOT_MODE_BOOTSTRAP_IMPORTING, get_root_mode
+
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        reload_mock = AsyncMock(return_value=(True, ""))
+        finalized_modes = []
+
+        def _import(*args, **kwargs):
+            worker_started.set()
+            assert worker_release.wait(3)
+            return {"detail": {}, "backup_path": ""}
+
+        def _finalize(result):
+            finalized_modes.append(get_root_mode(cm))
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                side_effect=_import,
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                reload_mock,
+            ), patch.object(
+                cloudsave_router_module,
+                "finalize_cloudsave_character_import",
+                side_effect=_finalize,
+            ):
+                operation = asyncio.create_task(
+                    cloudsave_router_module.post_cloudsave_character_download(
+                        "小满",
+                        _DummyRequest({"overwrite": True, "force": True}),
+                    ),
+                )
+                assert await asyncio.to_thread(worker_started.wait, 3)
+                operation.cancel()
+                worker_release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await operation
+
+        reload_mock.assert_awaited_once_with("小满")
+        assert finalized_modes == [ROOT_MODE_BOOTSTRAP_IMPORTING]
+        assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING

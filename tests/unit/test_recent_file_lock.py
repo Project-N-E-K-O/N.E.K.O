@@ -47,11 +47,13 @@ def _reset_recent_file_locks():
     recent_file._PENDING.clear()
     recent_file._REDIRECTS.clear()
     recent_file._DELETED.clear()
+    recent_file._GENERATIONS.clear()
     yield
     recent_file._LOCKS.clear()
     recent_file._PENDING.clear()
     recent_file._REDIRECTS.clear()
     recent_file._DELETED.clear()
+    recent_file._GENERATIONS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -312,6 +314,40 @@ def test_waiting_writer_through_renamed_alias_is_rejected_after_delete(tmp_path)
     assert redirects
     assert not old_path.exists()
     assert not new_path.exists()
+
+
+def test_reused_name_rejects_writer_waiting_on_old_redirect_target(tmp_path):
+    old_path = tmp_path / "A" / "recent.json"
+    renamed_path = tmp_path / "B" / "recent.json"
+    renamed_path.parent.mkdir(parents=True)
+    recent_file.write_recent_payload(renamed_path, [{"content": "old-character"}])
+    recent_file.redirect_recent_paths([old_path], renamed_path)
+    lock = recent_file.recent_file_lock(renamed_path)
+    lock.acquire()
+    errors = []
+
+    def _old_writer():
+        try:
+            recent_file.write_recent_payload(old_path, [{"content": "delayed-old-turn"}])
+        except recent_file.RecentFileDeletedError as exc:
+            errors.append(exc)
+
+    writer = threading.Thread(target=_old_writer)
+    writer.start()
+    time.sleep(0.05)
+    recent_file.activate_recent_paths([old_path])
+    recent_file.write_recent_payload(old_path, [{"content": "new-character"}])
+    lock.release()
+    writer.join(3)
+
+    assert not writer.is_alive()
+    assert len(errors) == 1
+    assert json.loads(old_path.read_text(encoding="utf-8")) == [
+        {"content": "new-character"},
+    ]
+    assert json.loads(renamed_path.read_text(encoding="utf-8")) == [
+        {"content": "old-character"},
+    ]
 
 
 # ─────────────── T3: failed persist keeps the batch and flushes it later ───────────────
@@ -904,6 +940,44 @@ def test_delete_rollback_restores_redirect_chain(tmp_path):
     assert recent_file._resolve_key_unlocked(recent_file._lock_key(old_alias)) == (
         recent_file._lock_key(recent_path)
     )
+
+
+def test_released_delete_transaction_can_rollback_after_config_failure(tmp_path):
+    from utils.character_memory import (
+        delete_character_memory_storage,
+        rollback_character_recent_delete,
+    )
+
+    alias_path = tmp_path / "Old" / "recent.json"
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    _write_disk(str(recent_path), [HumanMessage(content="disk")])
+    recent_file.redirect_recent_paths([alias_path], recent_path)
+    with recent_file.recent_file_lock(recent_path):
+        recent_file.set_recent_pending_unlocked(
+            recent_path, [HumanMessage(content="pending-before-delete")],
+        )
+
+    class _DeleteConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    _, transaction = delete_character_memory_storage(
+        _DeleteConfig(), "Role", capture_pending=True,
+    )
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(recent_path, [])
+
+    rollback_character_recent_delete(transaction)
+    assert [message.content for message in recent_file.get_recent_pending(recent_path)] == [
+        "pending-before-delete",
+    ]
+    recent_path.parent.mkdir(parents=True, exist_ok=True)
+    recent_file.write_recent_payload(alias_path, [{"content": "after-rollback"}])
+
+    assert json.loads(recent_path.read_text(encoding="utf-8")) == [
+        {"content": "after-rollback"},
+    ]
 
 
 # ─────────────── T9: review persist failure must report exactly ('failed', None) ───────────────

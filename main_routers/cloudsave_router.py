@@ -46,8 +46,10 @@ from utils.cloudsave_autocloud import (
 from utils.cloudsave_runtime import (
     CloudsaveOperationError,
     MaintenanceModeError,
+    ROOT_MODE_BOOTSTRAP_IMPORTING,
     build_cloudsave_character_detail,
     build_cloudsave_summary,
+    cloud_apply_fence,
     export_cloudsave_character_unit,
     finalize_cloudsave_character_import,
     import_cloudsave_character_unit,
@@ -64,6 +66,18 @@ router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
 async def _await_thread_call_to_completion(func, *args, **kwargs):
     """Return a worker result and whether cancellation arrived while it ran."""
     operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
+
+
+async def _await_coroutine_to_completion(coro):
+    """Finish an async transaction despite cancellation and report that cancellation."""
+    operation = asyncio.create_task(coro)
     try:
         return await asyncio.shield(operation), False
     except asyncio.CancelledError:
@@ -440,6 +454,49 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     }
 
 
+async def _complete_cloudsave_character_download(config_manager, name: str, result: dict):
+    """Reload an applied import or roll it back, then release its retained lock."""
+    backup_path = str(result.get("backup_path") or "")
+    try:
+        try:
+            reload_ok, reload_error = await _reload_after_character_download(name)
+            if not reload_ok:
+                raise RuntimeError(reload_error or "reload failed")
+        except Exception as exc:
+            rollback_attempted = False
+            rollback_error = ""
+            rollback_notify_ok = False
+            try:
+                if backup_path:
+                    rollback_attempted = True
+                    restore_cloudsave_operation_backup(
+                        config_manager, backup_path, recent_locks_held=True,
+                    )
+                    initialize_character_data = get_initialize_character_data()
+                    await initialize_character_data()
+                    rollback_notify_ok = await notify_memory_server_reload(
+                        reason=f"云存档下载回滚: {name}",
+                    )
+                    if not rollback_notify_ok:
+                        rollback_error = "notify_memory_server_reload returned False"
+            except Exception as rollback_exc:
+                rollback_error = str(rollback_exc)
+            return _cloudsave_error_response(
+                "LOCAL_RELOAD_FAILED_ROLLED_BACK",
+                f"The download was applied, but local reload failed: {exc}",
+                status_code=500,
+                character_name=name,
+                message_params={"message": str(exc)},
+                extra={
+                    "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
+                    "rollback_error": rollback_error,
+                },
+            )
+        return None
+    finally:
+        finalize_cloudsave_character_import(result)
+
+
 @router.post("/character/{name}/download")
 async def post_cloudsave_character_download(name: str, request: Request):
     config_manager = get_config_manager()
@@ -545,14 +602,27 @@ async def post_cloudsave_character_download(name: str, request: Request):
             )
 
     try:
-        result, cancelled = await _await_thread_call_to_completion(
-            import_cloudsave_character_unit,
+        # Windows mutex ownership is thread-affine. This non-blocking acquire and
+        # release must stay on the event-loop thread while the worker performs IO.
+        with cloud_apply_fence(
             config_manager,
-            name,
-            overwrite=overwrite,
-            backup_before_overwrite=backup_before_overwrite,
-            retain_recent_locks=True,
-        )
+            mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+            reason=f"single_character_download:{name}",
+        ):
+            result, import_cancelled = await _await_thread_call_to_completion(
+                import_cloudsave_character_unit,
+                config_manager,
+                name,
+                overwrite=overwrite,
+                backup_before_overwrite=backup_before_overwrite,
+                retain_recent_locks=True,
+                use_cloud_apply_fence=False,
+            )
+            reload_error_response, completion_cancelled = (
+                await _await_coroutine_to_completion(
+                    _complete_cloudsave_character_download(config_manager, name, result),
+                )
+            )
     except MaintenanceModeError as exc:
         return _maintenance_mode_error_response(exc, character_name=name)
     except CloudsaveOperationError as exc:
@@ -571,53 +641,18 @@ async def post_cloudsave_character_download(name: str, request: Request):
             character_name=name,
         )
 
-    if cancelled:
-        finalize_cloudsave_character_import(result)
+    if import_cancelled or completion_cancelled:
         raise asyncio.CancelledError
+    if reload_error_response is not None:
+        return reload_error_response
 
     backup_path = str(result.get("backup_path") or "")
-    try:
-        try:
-            reload_ok, reload_error = await _reload_after_character_download(name)
-            if not reload_ok:
-                raise RuntimeError(reload_error or "reload failed")
-        except Exception as exc:
-            rollback_attempted = False
-            rollback_error = ""
-            rollback_notify_ok = False
-            try:
-                if backup_path:
-                    rollback_attempted = True
-                    restore_cloudsave_operation_backup(
-                        config_manager, backup_path, recent_locks_held=True,
-                    )
-                    initialize_character_data = get_initialize_character_data()
-                    await initialize_character_data()
-                    rollback_notify_ok = await notify_memory_server_reload(reason=f"云存档下载回滚: {name}")
-                    if not rollback_notify_ok:
-                        rollback_error = "notify_memory_server_reload returned False"
-            except Exception as rollback_exc:
-                rollback_error = str(rollback_exc)
-            return _cloudsave_error_response(
-                "LOCAL_RELOAD_FAILED_ROLLED_BACK",
-                f"The download was applied, but local reload failed: {exc}",
-                status_code=500,
-                character_name=name,
-                message_params={"message": str(exc)},
-                extra={
-                    "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
-                    "rollback_error": rollback_error,
-                },
-            )
-
-        refreshed_detail = build_cloudsave_character_detail(config_manager, name) or result.get("detail")
-        return {
-            "success": True,
-            "character_name": name,
-            "detail": await _enrich_cloudsave_payload_with_workshop_status(refreshed_detail),
-            "backup_path": backup_path,
-            "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
-            "steam_autocloud": _build_steam_autocloud_payload(config_manager),
-        }
-    finally:
-        finalize_cloudsave_character_import(result)
+    refreshed_detail = build_cloudsave_character_detail(config_manager, name) or result.get("detail")
+    return {
+        "success": True,
+        "character_name": name,
+        "detail": await _enrich_cloudsave_payload_with_workshop_status(refreshed_detail),
+        "backup_path": backup_path,
+        "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
+        "steam_autocloud": _build_steam_autocloud_payload(config_manager),
+    }
