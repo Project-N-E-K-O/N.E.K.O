@@ -34,8 +34,13 @@ class QQMessageDispatcher:
             # admin reserved by this process's bootstrap may inherit that
             # bootstrap receipt.
             if getattr(self, "_open_platform_bootstrap_admin_id", None) == sender_id:
-                message["_private_permission_level_at_receipt"] = "admin"
-                return
+                if permission_mgr.get_permission_level(sender_id) == "admin":
+                    message["_private_permission_level_at_receipt"] = "admin"
+                    return
+                # Permission changes are authoritative.  Expire the bootstrap
+                # shortcut immediately so a removed/demoted first user can
+                # never read owner memory through a stale receipt override.
+                self._open_platform_bootstrap_admin_id = None
             if permission_mgr.list_users():
                 return
             permission_mgr.add_user(

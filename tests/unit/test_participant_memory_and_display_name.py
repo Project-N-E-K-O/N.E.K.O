@@ -3098,6 +3098,19 @@ async def test_open_platform_bootstrap_preserves_same_winner_for_queued_messages
         for msg in messages
     ) == 1
 
+    # The shortcut is only for the still-live bootstrap admin. A later
+    # demotion must expire it before context selection can reach owner memory.
+    levels["1001"] = "trusted"
+    levels["2002"] = "admin"
+    after_demotion = {
+        "message_type": "private", "user_id": "1001",
+        "user_nickname": "first", "content": "three",
+        "_private_permission_level_at_receipt": "none",
+    }
+    await dispatcher.handle_message(after_demotion)
+    assert after_demotion["_private_permission_level_at_receipt"] == "none"
+    assert dispatcher._open_platform_bootstrap_admin_id is None
+
 
 @pytest.mark.asyncio
 async def test_open_platform_bootstrap_skips_blacklisted_first_sender():
