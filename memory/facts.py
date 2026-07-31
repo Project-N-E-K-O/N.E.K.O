@@ -55,7 +55,10 @@ from config.prompts.prompts_memory import (
 from memory.evidence import evidence_score
 from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language, get_global_language_full
+from utils.language_utils import (
+    detect_prompt_language,
+    get_global_language_full,
+)
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
     atomic_write_json,
@@ -1958,7 +1961,11 @@ class FactStore:
         if not budgeted_observations:
             return []
         obs_text = "\n".join(line for _, line in budgeted_observations)
-        prompt = get_signal_detection_prompt(get_global_language()) \
+        prompt_lang = detect_prompt_language(
+            f"{new_facts_text}\n{obs_text}",
+            ui_language=get_global_language_full(),
+        )
+        prompt = get_signal_detection_prompt(prompt_lang) \
             .replace('{NEW_FACTS}', new_facts_text) \
             .replace('{EXISTING_OBSERVATIONS}', obs_text) \
             .replace('{LANLAN_NAME}', lanlan_name)

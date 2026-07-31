@@ -37,6 +37,7 @@ from config.prompts.prompts_sys import (
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _LANGS = ("zh", "en", "ja", "ko", "ru", "es", "pt")
+_MEMORY_LANGS = _LANGS + ("zh-TW",)
 
 
 # ── scoped 渲染不得泄漏私聊对象的名字 ────────────────────────────────
@@ -116,7 +117,7 @@ async def test_scoped_past_memory_block_never_names_the_private_counterpart():
         ("en", "Unless someone brings them up first", "Unless 老张 brings them up first"),
     ):
         with patch(
-            "utils.language_utils.get_global_language", return_value=lang,
+            "utils.language_utils.get_global_language_full", return_value=lang,
         ):
             rendered_sync = harness.render_persona_markdown(
                 "小天", None, [scoped],
@@ -165,8 +166,12 @@ def test_scoped_past_memory_block_is_localized_everywhere():
         render_past_memory_block,
     )
 
-    assert set(PAST_MEMORY_BLOCK_SCOPED) == set(PAST_MEMORY_BLOCK) == set(_LANGS)
-    for lang in _LANGS:
+    assert (
+        set(PAST_MEMORY_BLOCK_SCOPED)
+        == set(PAST_MEMORY_BLOCK)
+        == set(_MEMORY_LANGS)
+    )
+    for lang in _MEMORY_LANGS:
         assert "{MASTER_NAME}" not in PAST_MEMORY_BLOCK_SCOPED[lang]
         assert "{AI_NAME}" in PAST_MEMORY_BLOCK_SCOPED[lang]
         assert "{ITEMS}" in PAST_MEMORY_BLOCK_SCOPED[lang]
@@ -416,7 +421,9 @@ def test_recall_entry_tag_is_localized_and_covers_the_scoped_kinds():
 
     for table in (RECALL_ENTRY_TIER_LABEL, RECALL_ENTRY_ENTITY_LABEL):
         for key, entry in table.items():
-            assert set(entry) == set(_LANGS), f"{key} 缺语言：{set(_LANGS) - set(entry)}"
+            assert set(entry) == set(_MEMORY_LANGS), (
+                f"{key} 缺语言：{set(_MEMORY_LANGS) - set(entry)}"
+            )
 
     # scoped 写入把 entity 强制成 subject.kind，这几个必须在表里。
     for kind in ("group_chat", "participant", "group_participant"):
@@ -433,7 +440,7 @@ def test_qq_recall_render_has_no_internal_enum_left():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace(logger=MagicMock()))
-    with patch("utils.language_utils.get_global_language", return_value="zh"):
+    with patch("utils.language_utils.get_global_language_full", return_value="zh"):
         rendered = bridge.render_relevant_memory([
             {
                 "text": "群里在聊露营",

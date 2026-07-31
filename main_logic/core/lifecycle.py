@@ -1288,6 +1288,7 @@ class LifecycleMixin:
         try:
             resp = await _mem_client.get(
                 f"http://127.0.0.1:{port}/new_dialog/{lanlan_name}",
+                params={"language": self.user_language},
                 timeout=5.0,
             )
         except httpx.ConnectError:
@@ -1800,6 +1801,7 @@ class LifecycleMixin:
             try:
                 resp = await _hs_client.get(
                     f"http://127.0.0.1:{self.memory_server_port}/new_dialog/{self.lanlan_name}",
+                    params={"language": self.user_language},
                     timeout=5.0,
                 )
             except httpx.ConnectError:

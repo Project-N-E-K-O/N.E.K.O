@@ -69,6 +69,7 @@ Schema:
     'last_a_msg_ts': datetime,    # path A 实际处理过的最晚 msg ts (path B 上游边界)
     'last_b_check_ts': datetime,  # ISO cursor for path B window start
     'b_tick_counter': int,        # ticks since last path B trigger
+    'language': str | None,       # latest frontend session locale
     # Liveness counters (in-memory only)：cursor key → 连续失败次数。
     # 成功 mark_done 时清空对应 path 的 counter。重启清零是有意为之的"软兜底"
     # ——重启后再试 MEMORY_LIVENESS_MAX_ATTEMPTS 次再 dead-letter，避免内存
@@ -96,9 +97,13 @@ def _signal_check_should_run(name: str, now: datetime) -> bool:
     return False
 
 
-def _signal_check_record_turn(name: str) -> None:
+def _signal_check_record_turn(name: str, *, language: str | None = None) -> None:
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
+    if language:
+        from utils.language_utils import is_supported_language_code, normalize_language_code
+        if is_supported_language_code(language):
+            state['language'] = normalize_language_code(language, format='full')
 
 
 def _signal_check_mark_done(name: str, now: datetime) -> None:
@@ -584,6 +589,13 @@ async def _periodic_signal_extraction_loop():
         now = datetime.now()
 
         async def _signal_check_one(name: str):
+            from utils.language_utils import language_context
+
+            selected = _signal_check_state.get(name, {}).get('language')
+            with language_context(selected):
+                return await _signal_check_one_with_locale(name)
+
+        async def _signal_check_one_with_locale(name: str):
             """Stage-1 + Stage-2 + signal dispatch for a single character. Characters are
             mutually independent (per-char event_log lock / files); the outer gather runs
             them in parallel. A failure doesn't block other characters, and the cursor
@@ -823,4 +835,3 @@ async def _amaybe_trigger_negative_keyword_hook(
         logger.info(
             f"[NegKW] {lanlan_name}: 关键词触发 {len(signals)} 个 disputation 信号"
         )
-

@@ -1208,11 +1208,21 @@ async def handle_proactive_chat(
 
         raw_memory_context = ""
         try:
+            proactive_lang = _resolve_proactive_locale(command, mgr)
+        except Exception:
+            proactive_lang = "zh"
+        topic_hook_lang = _resolve_topic_hook_locale(
+            command,
+            mgr,
+            fallback=proactive_lang,
+        )
+        try:
             from utils.internal_http_client import get_internal_http_client
 
             _pt_client = get_internal_http_client()
             resp = await _pt_client.get(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{lanlan_name}",
+                params={"language": topic_hook_lang},
                 timeout=5.0,
             )
             resp.raise_for_status()  # Check for HTTP errors explicitly
@@ -1260,16 +1270,6 @@ async def handle_proactive_chat(
         # ========== 2. 选择语言 ==========
         # 与 mini-game 邀请短路同源：request body → mgr.user_language → 全局缓存。
         # 见 _resolve_proactive_locale 的 docstring。
-        try:
-            proactive_lang = _resolve_proactive_locale(command, mgr)
-        except Exception:
-            proactive_lang = "zh"
-        topic_hook_lang = _resolve_topic_hook_locale(
-            command,
-            mgr,
-            fallback=proactive_lang,
-        )
-
         # ========== 3. 注入近期搭话记录 ==========
         proactive_chat_history_prompt = _format_recent_proactive_chats(
             lanlan_name, proactive_lang

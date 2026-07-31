@@ -1972,7 +1972,7 @@ async def test_extraction_prompt_uses_speaker_label(tmp_path):
     fs._allm_call_with_retries = _capture
     msg = SimpleNamespace(type="human", content="我对花生过敏")
 
-    with patch("memory.facts.get_global_language", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         await fs._allm_extract_facts("Neko", [msg])
         assert "主人 | 我对花生过敏" in captured["prompt"]
 
@@ -2002,7 +2002,7 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         return None
 
     fs._allm_call_with_retries = _terminal_failure
-    with patch("memory.facts.get_global_language", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         with pytest.raises(FactExtractionFailed):
             await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert await fs.extract_facts([msg], "Neko") == []
@@ -3019,8 +3019,7 @@ async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_pa
     segment = _batch_segment(
         "7788", "1001", "Alice(1001)", ["我对花生过敏"], trust=1.0,
     )
-    with patch("memory.facts.get_global_language", return_value="zh"), \
-            patch("memory.facts.get_global_language_full", return_value="zh"):
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch([segment], "Neko")
 
     assert [r["status"] for r in results] == ["ok"]

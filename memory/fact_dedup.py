@@ -436,7 +436,7 @@ class FactDedupResolver:
     async def _aresolve_locked(self, name: str) -> int:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import detect_prompt_language, get_global_language_full
         from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -514,7 +514,12 @@ class FactDedupResolver:
             for i, item in enumerate(batch)
         )
         prompt = (
-            get_fact_dedup_prompt(get_global_language())
+            get_fact_dedup_prompt(
+                detect_prompt_language(
+                    pairs_text,
+                    ui_language=get_global_language_full(),
+                )
+            )
             .replace('{PAIRS}', pairs_text)
             .replace('{COUNT}', str(len(batch)))
         )

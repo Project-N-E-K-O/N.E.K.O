@@ -138,7 +138,10 @@ async def _run_post_turn_signals(
     # memory；只有 user 印证过的才升级到神明降临层。
     try:
         if user_msgs:
-            signal_extraction._signal_check_record_turn(lanlan_name)
+            signal_extraction._signal_check_record_turn(
+                lanlan_name,
+                language=language,
+            )
     except Exception as e:
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
@@ -260,10 +263,10 @@ async def _run_post_turn_signals(
             # 3.5 负面关键词 hook（§3.4.5）——命中就派个异步小 LLM 任务
             # 强力记忆关 → 整段不跑（这是 evidence-RFC 引入的额外 LLM 路径）
             if user_msgs:
-                from utils.language_utils import get_global_language
+                from utils.language_utils import get_global_language_full
                 runtime._spawn_background_task(
                     signal_extraction._amaybe_trigger_negative_keyword_hook(
-                        lanlan_name, user_msgs, get_global_language(),
+                        lanlan_name, user_msgs, get_global_language_full(),
                     )
                 )
         except Exception as e:

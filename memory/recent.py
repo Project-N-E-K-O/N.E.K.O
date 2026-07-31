@@ -27,7 +27,11 @@ from config.prompts.prompts_memory import (
     get_summary_stale_hint,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.language_utils import get_global_language
+from utils.language_utils import (
+    detect_prompt_language,
+    get_global_language,
+    get_global_language_full,
+)
 from utils.tokenize import acount_tokens
 from config import (
     LLM_OUTPUT_GUARD_MAX_TOKENS,
@@ -531,7 +535,10 @@ class CompressedRecentHistoryManager:
         做：它是 user-controlled，含 ``%`` 会让先前的 ``%`` formatting 崩溃；含
         ``%s`` 会被先前的 ``.replace("%s", ...)`` 二次替换（codex P2）。
         """
-        lang = get_global_language()
+        lang = detect_prompt_language(
+            messages_text,
+            ui_language=get_global_language_full(),
+        )
         master_name = self.name_mapping['human']
         if not detailed:
             return (
@@ -685,7 +692,10 @@ class CompressedRecentHistoryManager:
                 return None
             messages_text = reduced
 
-        lang = get_global_language()
+        lang = detect_prompt_language(
+            messages_text,
+            ui_language=get_global_language_full(),
+        )
         prompt = self._build_summary_prompt(messages_text, detailed)
 
         # Past block 时间衰减：距上次"实际更新 past block"超过
@@ -898,7 +908,15 @@ class CompressedRecentHistoryManager:
                 try:
                     response_content = (await llm.ainvoke(
                         # codex P2：先 % 再 .replace，否则 master_name 含 % 会崩
-                        (get_further_summarize_prompt(get_global_language()) % initial_summary)
+                        (
+                            get_further_summarize_prompt(
+                                detect_prompt_language(
+                                    initial_summary,
+                                    ui_language=get_global_language_full(),
+                                )
+                            )
+                            % initial_summary
+                        )
                         .replace("{MASTER_NAME}", self.name_mapping['human']),
                         max_completion_tokens=stage2_cap,
                     )).content
@@ -1074,7 +1092,12 @@ class CompressedRecentHistoryManager:
                     # codex P2：先 % formatting 再 .replace，否则 master_name 含 %
                     # 会让 5-arg `% (...)` 把它当格式符崩溃
                     (
-                        get_history_review_prompt(get_global_language())
+                        get_history_review_prompt(
+                            detect_prompt_language(
+                                history_text,
+                                ui_language=get_global_language_full(),
+                            )
+                        )
                         % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])
                     )
                     .replace("{MASTER_NAME}", self.name_mapping['human'])

@@ -1175,6 +1175,11 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     f"ws://127.0.0.1:{MONITOR_SERVER_PORT}",
                     {"bullet": False, "monitor": True},
                     _status_cb,
+                    user_language_provider=(
+                        lambda _name=k: getattr(
+                            _get_session_manager(_name), "user_language", None,
+                        )
+                    ),
                 ),
                 name=f"SyncConnector-{k}",
             )

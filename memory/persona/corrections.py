@@ -176,7 +176,7 @@ class CorrectionsMixin:
         - The final "re-read corrections file → filter processed_keys → save"
           already protects corrections newly added during the LLM call
         """
-        from config.prompts.prompts_memory import persona_correction_prompt
+        from config.prompts.prompts_memory import get_persona_correction_prompt
 
         # ── 串行 resolve（独立锁，与 data lock 不互锁） ──
         async with self._get_resolve_alock(name):
@@ -254,7 +254,13 @@ class CorrectionsMixin:
                 f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
                 for i, item in pairs
             )
-            prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))
+            from utils.language_utils import detect_prompt_language, get_global_language_full
+            prompt = get_persona_correction_prompt(
+                detect_prompt_language(
+                    batch_text,
+                    ui_language=get_global_language_full(),
+                )
+            ).format(pairs=batch_text, count=len(pairs))
 
             # ── LLM (锁外) ──
             try:

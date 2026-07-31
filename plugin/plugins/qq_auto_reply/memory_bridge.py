@@ -186,10 +186,10 @@ class QQMemoryBridge:
             RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
         from config.prompts.prompts_memory import render_recall_entry_tag
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.tokenize import take_lines_within_token_budget, truncate_to_tokens
 
-        lang = get_global_language()
+        lang = get_global_language_full()
         lines: list[str] = []
         for index, item in enumerate(results, start=1):
             text = str(item.get("text") or "").strip()

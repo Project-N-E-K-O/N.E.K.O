@@ -38,10 +38,10 @@ from config.prompts.prompts_memory import (
     MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
+    _normalize_memory_prompt_lang,
 )
 from utils.frontend_utils import get_timestamp
 from utils.language_utils import (
-    get_global_language,
     get_global_language_full,
     is_supported_language_code,
     language_context,
@@ -83,6 +83,7 @@ class ExternalMemoryImportRequest(BaseModel):
     imported_files: list[str]
     candidates: list[dict]
     warning_count: int = 0
+    language: str | None = None
 
 
 @app.post("/internal/memory/import_external_markdown")
@@ -186,15 +187,16 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
     # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
     persona_entities = list(persona_candidates_by_entity.items())
-    fusion_outcomes = await asyncio.gather(
-        *(
-            runtime.persona_manager.afuse_external_facts(
-                name, entity, entity_candidates, request.source_format,
-            )
-            for entity, entity_candidates in persona_entities
-        ),
-        return_exceptions=True,
-    )
+    with language_context(_activate_request_language(request.language)):
+        fusion_outcomes = await asyncio.gather(
+            *(
+                runtime.persona_manager.afuse_external_facts(
+                    name, entity, entity_candidates, request.source_format,
+                )
+                for entity, entity_candidates in persona_entities
+            ),
+            return_exceptions=True,
+        )
     added_persona = sum(r["added"] for r in fusion_outcomes if isinstance(r, dict))
     skipped_persona = sum(r["skipped"] for r in fusion_outcomes if isinstance(r, dict))
     fusion_errors = [r for r in fusion_outcomes if isinstance(r, BaseException)]
@@ -695,9 +697,9 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
 
 
 @app.get("/get_recent_history/{lanlan_name}")
-async def get_recent_history(lanlan_name: str):
+async def get_recent_history(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _lang = get_global_language()
+    _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
     # 检查角色是否存在于配置中
     try:
         character_data = await runtime._config_manager.aload_characters()
@@ -727,14 +729,18 @@ async def get_recent_history(lanlan_name: str):
     return result
 
 @app.get("/search_for_memory/{lanlan_name}/{query}")
-async def get_memory(query: str, lanlan_name: str):
+async def get_memory(
+    query: str,
+    lanlan_name: str,
+    language: str | None = None,
+):
     """**Deprecated** — the old GET endpoint is kept only to avoid breaking old
     callers; new callers use POST ``/query_memory/{lanlan_name}`` for structured
     results. This endpoint keeps returning placeholder text to discourage the old
     path from coming back (semantic recall was taken off this GET long ago).
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    _lang = get_global_language()
+    _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
     return (
         _loc(MEMORY_RECALL_HEADER, _lang).format(name=lanlan_name)
         + query
@@ -833,6 +839,7 @@ class QueryMemoryRequest(BaseModel):
     # An explicit empty list is a caller contract bug and is rejected 422 at
     # the endpoint (fail-closed) — it must never fall back to legacy private.
     subjects: list[MemorySubjectRequest] | None = None
+    language: str | None = None
 
 
 @app.post("/internal/memory/{lanlan_name}/scoped_facts")
@@ -1274,25 +1281,27 @@ async def query_memory(lanlan_name: str, req: QueryMemoryRequest):
             elif not query_text:
                 # 只给 time、没 query → 按时间邻近返回最接近的若干条。
                 from memory.hybrid_recall import recall_by_time
-                return await recall_by_time(
-                    lanlan_name=lanlan_name,
-                    time_spec=time_spec,
-                    fact_store=runtime.fact_store,
-                    reflection_engine=runtime.reflection_engine,
-                    subjects=subjects,
-                )
+                with language_context(_activate_request_language(req.language)):
+                    return await recall_by_time(
+                        lanlan_name=lanlan_name,
+                        time_spec=time_spec,
+                        fact_store=runtime.fact_store,
+                        reflection_engine=runtime.reflection_engine,
+                        subjects=subjects,
+                    )
         # query（+ 可选 time_window）→ 语义检索；time_window 非空即"语义 +
         # 时间"联合检索（窗口内按 query 排序）。
         from memory.hybrid_recall import hybrid_recall
-        return await hybrid_recall(
-            lanlan_name=lanlan_name,
-            query=query_text,
-            fact_store=runtime.fact_store,
-            reflection_engine=runtime.reflection_engine,
-            config_manager=runtime._config_manager,
-            time_window=time_window,
-            subjects=subjects,
-        )
+        with language_context(_activate_request_language(req.language)):
+            return await hybrid_recall(
+                lanlan_name=lanlan_name,
+                query=query_text,
+                fact_store=runtime.fact_store,
+                reflection_engine=runtime.reflection_engine,
+                config_manager=runtime._config_manager,
+                time_window=time_window,
+                subjects=subjects,
+            )
     except Exception as exc:
         # 永不让一次召回失败把 tool call 整死——返回空 results，main_server
         # 那边的 handler 会把空 results 翻译成 "没有找到相关记忆"，模型可以
@@ -1428,7 +1437,12 @@ async def cancel_correction(lanlan_name: str):
     return {"status": "no_task"}
 
 @app.get("/new_dialog/{lanlan_name}")
-async def new_dialog(lanlan_name: str):
+async def new_dialog(lanlan_name: str, language: str | None = None):
+    with language_context(_activate_request_language(language)):
+        return await _new_dialog(lanlan_name, language)
+
+
+async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
 
@@ -1457,7 +1471,7 @@ async def new_dialog(lanlan_name: str):
         brackets_pattern = re.compile(r'(\[.*?\]|\(.*?\)|（.*?）|【.*?】|\{.*?\}|<.*?>)')
         master_name, _, _, _, name_mapping, _, _, _, _ = await runtime._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
-        _lang = get_global_language()
+        _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
         # pending + confirmed 反思也注入上下文（分区标注）

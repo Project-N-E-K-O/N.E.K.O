@@ -335,7 +335,7 @@ class PromotionMergeMixin:
         skip_retry_pending per §3.9.4.
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import detect_prompt_language, get_global_language_full
         from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
@@ -361,7 +361,12 @@ class PromotionMergeMixin:
         from utils.tokenize import truncate_to_tokens
         pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
 
-        prompt = get_promotion_merge_prompt(get_global_language()).format(
+        prompt = get_promotion_merge_prompt(
+            detect_prompt_language(
+                f"{R.get('text', '')}\n{pool_text}",
+                ui_language=get_global_language_full(),
+            )
+        ).format(
             AI_NAME=lanlan_name,
             MASTER_NAME=master_name,
             R_TEXT=R.get('text', ''),

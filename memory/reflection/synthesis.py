@@ -162,7 +162,6 @@ class SynthesisMixin:
             losing side returns [] without polluting the caller's view.
         """
         from config.prompts.prompts_memory import get_reflection_prompt
-        from utils.language_utils import get_global_language
         from utils.llm_client import create_chat_llm_async
 
         from memory.scopes import coerce_subject
@@ -255,7 +254,13 @@ class SynthesisMixin:
         related_block = await self._build_related_context_block(
             lanlan_name, unabsorbed, subject=memory_subject,
         )
-        reflection_prompt = get_reflection_prompt(get_global_language())
+        from utils.language_utils import detect_prompt_language, get_global_language_full
+        reflection_prompt = get_reflection_prompt(
+            detect_prompt_language(
+                f"{facts_text}\n{related_block}",
+                ui_language=get_global_language_full(),
+            )
+        )
         prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
         prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)

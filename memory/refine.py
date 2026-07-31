@@ -425,10 +425,15 @@ class MemoryRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_memory_refine_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import detect_prompt_language, get_global_language_full
         from utils.llm_client import create_chat_llm_async
 
-        template = get_memory_refine_prompt(get_global_language())
+        template = get_memory_refine_prompt(
+            detect_prompt_language(
+                cluster_text,
+                ui_language=get_global_language_full(),
+            )
+        )
         prompt = (
             template
             .replace('{ENTITY}', entity)
