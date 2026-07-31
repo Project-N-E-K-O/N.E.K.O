@@ -371,7 +371,8 @@ async def test_scoped_forget_purges_pending_text_and_rejects_stale_enqueue(
     pending = await resolver.aload_pending("小天")
     assert any(
         item.get("candidate_id") == "o1"
-        and item.get("candidate_text") == "keep one"
+        and "candidate_text" not in item
+        and "existing_text" not in item
         for item in pending if isinstance(item, dict)
     )
     assert not any(
@@ -428,7 +429,10 @@ async def test_scoped_forget_purges_legacy_archive_only_dedup_rows(tmp_path):
     assert await resolver.aforget_subject("小天", target) == {
         "pending_dedup": 1,
     }
-    assert await resolver.aload_pending("小天") == [other_pair]
+    expected_other = dict(other_pair)
+    expected_other.pop("candidate_text")
+    expected_other.pop("existing_text")
+    assert await resolver.aload_pending("小天") == [expected_other]
 
 
 # ── aresolve: action handling ────────────────────────────────────────

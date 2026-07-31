@@ -3084,16 +3084,19 @@ async def test_ai_disclosure_does_not_inherit_participant_provenance(tmp_path):
     fs._config_manager = mock_cm
 
     async def _llm(prompt, lanlan_name, **kwargs):
-        return [
-            {
-                "text": "用户喜欢爵士乐", "importance": 5,
-                "source": "user_observation",
-            },
-            {
-                "text": "助手说自己喜欢雨天", "importance": 5,
-                "source": "ai_disclosure",
-            },
-        ]
+        return [{
+            "segment": 1,
+            "facts": [
+                {
+                    "text": "用户喜欢爵士乐", "importance": 5,
+                    "source": "user_observation",
+                },
+                {
+                    "text": "助手说自己喜欢雨天", "importance": 5,
+                    "source": "ai_disclosure",
+                },
+            ],
+        }]
 
     fs._allm_call_with_retries = _llm
     segment = _batch_segment(

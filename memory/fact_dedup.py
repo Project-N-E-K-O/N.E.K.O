@@ -403,9 +403,23 @@ class FactDedupResolver:
                     item.get('candidate_id'), item.get('existing_id'),
                 }))
 
-            kept = [item for item in pending if not _matches(item)]
+            kept: list = []
+            scrubbed = False
+            for item in pending:
+                if _matches(item):
+                    continue
+                if isinstance(item, dict):
+                    item = dict(item)
+                    if 'candidate_text' in item or 'existing_text' in item:
+                        item.pop('candidate_text', None)
+                        item.pop('existing_text', None)
+                        scrubbed = True
+                kept.append(item)
             removed = len(pending) - len(kept)
-            if removed and not await self._asave_pending(name, kept):
+            if (
+                (removed or scrubbed)
+                and not await self._asave_pending(name, kept)
+            ):
                 raise RuntimeError(
                     "facts_pending_dedup not writable during forget"
                 )
