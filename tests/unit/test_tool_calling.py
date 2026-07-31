@@ -464,54 +464,6 @@ async def test_openai_cancellation_stops_before_buffered_tool_execution():
 
 
 @pytest.mark.asyncio
-async def test_openai_cancellation_during_tool_batch_stops_remaining_calls():
-    """Cancellation during one handler must prevent later calls in the batch."""
-    from utils.llm_client import LLMStreamChunk
-    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
-
-    handler_calls: list[str] = []
-    client = None
-
-    async def handler(call: ToolCall) -> ToolResult:
-        handler_calls.append(call.call_id)
-        client._is_responding = False
-        return ToolResult(call_id=call.call_id, name=call.name, output={})
-
-    tool = ToolDefinition(name="lookup", description="", handler=handler)
-    chunks = [
-        LLMStreamChunk(
-            content="",
-            tool_call_deltas=[
-                {
-                    "index": 0,
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {"name": "lookup", "arguments": "{}"},
-                },
-                {
-                    "index": 1,
-                    "id": "call_2",
-                    "type": "function",
-                    "function": {"name": "lookup", "arguments": "{}"},
-                },
-            ],
-        ),
-        LLMStreamChunk(content="", finish_reason="tool_calls"),
-    ]
-    fake_llm = _FakeLLM([chunks])
-    client = _bare_tool_client(fake_llm, tool, handler, cap=3)
-    client._is_responding = True
-    messages = [{"role": "user", "content": "lookup twice"}]
-
-    async for _ in client._astream_with_tools(messages):
-        pass
-
-    assert handler_calls == ["call_1"]
-    assert len(fake_llm.calls) == 1
-    assert messages == [{"role": "user", "content": "lookup twice"}]
-
-
-@pytest.mark.asyncio
 async def test_openai_tool_round_discards_leak_filter_tail():
     from utils.llm_client import LLMStreamChunk
     from main_logic.omni_offline_client import OmniOfflineClient
@@ -1255,45 +1207,6 @@ async def test_genai_cancellation_stops_before_buffered_tool_execution(
 
 
 @pytest.mark.asyncio
-async def test_genai_cancellation_during_tool_batch_stops_remaining_calls(
-    monkeypatch,
-):
-    """The GenAI path must stop a multi-call batch at the same boundary."""
-    from main_logic.tool_calling import ToolCall, ToolResult
-
-    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
-    handler_calls: list[str] = []
-    client = None
-
-    async def handler(call: ToolCall) -> ToolResult:
-        handler_calls.append(call.call_id)
-        client._is_responding = False
-        return ToolResult(call_id=call.call_id, name=call.name, output={})
-
-    client, calls = _bare_genai_client(
-        [[
-            _GenaiPart(function_call=_GenaiFunctionCall(
-                "recall_memory", {"query": "first"}, id_="call_1",
-            )),
-            _GenaiPart(function_call=_GenaiFunctionCall(
-                "recall_memory", {"query": "second"}, id_="call_2",
-            )),
-        ]],
-        handler,
-        cap=3,
-    )
-    client._is_responding = True
-    messages = [{"role": "user", "content": "lookup twice"}]
-
-    async for _ in client._astream_genai_with_tools(messages):
-        pass
-
-    assert handler_calls == ["call_1"]
-    assert len(calls) == 1
-    assert messages == [{"role": "user", "content": "lookup twice"}]
-
-
-@pytest.mark.asyncio
 async def test_genai_messages_to_contents_preserves_text_with_tool_calls():
     """Legacy histories may still contain text next to tool calls."""
     pytest.importorskip("google.genai")
@@ -2000,12 +1913,12 @@ async def test_offline_no_silent_fallback_after_genai_emitted_text(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_stream_text_notifies_discarded_when_partial_text_then_error(monkeypatch):
-    """Discard a partial response when the provider fails after emitting text.
+    """stream_text 通用 except Exception 分支必须识别"已吐文本但失败"
+    的场景，调用 _notify_response_discarded 让前端清空半截气泡——否则
+    用户会看到一段被中断的文本永远停在那。这是 _astream_with_tools
+    新契约 (genai_emitted_text 后 raise) 真正生效的关键。
 
-    This protects the stream contract introduced during the ninth CodeRabbit
-    review round on PR #1035: the failure must clear the incomplete UI bubble
-    instead of leaving a permanently truncated response visible.
-    """
+    回归保护：CodeRabbit PR #1035 第 9 轮 review."""
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk, SystemMessage
 

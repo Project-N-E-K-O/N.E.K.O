@@ -610,12 +610,12 @@ class _GenaiMixin:
                     }
                     for i, (tc_id, tc_name, _args, tc_raw) in enumerate(collected_tool_calls)
                 ]
-                assistant_turn = {
+                messages.append({
                     "role": "assistant",
                     "content": "",
                     "tool_calls": tool_calls_dict,
-                }
-                tool_turns = []
+                })
+                executed_tool_calls += len(collected_tool_calls)
                 for i, (tc_id, tc_name, tc_args, tc_raw) in enumerate(collected_tool_calls):
                     tool_call = ToolCall(
                         name=tc_name,
@@ -633,17 +633,12 @@ class _GenaiMixin:
                             output={"error": f"{type(e).__name__}: {e}"},
                             is_error=True, error_message=str(e),
                         )
-                    if _cancelled():
-                        return
-                    tool_turns.append({
+                    messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.call_id,
                         "name": tc_name,
                         "content": result.output_as_json_string(),
                     })
-                messages.append(assistant_turn)
-                messages.extend(tool_turns)
-                executed_tool_calls += len(collected_tool_calls)
                 # Loop again to let the model produce a final answer. Any text
                 # that accompanied this tool call stayed inside buffered_chunks
                 # and is intentionally discarded.

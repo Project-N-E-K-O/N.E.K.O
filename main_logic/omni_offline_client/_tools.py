@@ -77,13 +77,11 @@ class _ToolingMixin:
         result JSON. Both shapes follow the OpenAI Chat Completions spec
         so the next astream invocation sees a valid history.
 
-        Returns the number of calls committed to history — 0 when every slot
-        was a nameless fragment or cancellation interrupted the batch. Tool
-        history is appended atomically so cancellation cannot leave an
-        assistant turn with only a subset of its required results. Text
-        emitted by the provider in the same turn is intentionally absent
-        here: the streaming loop buffers it until the turn type is known and
-        drops it for tool rounds.
+        Returns the number of calls actually executed — 0 when every slot
+        was a nameless fragment and nothing was appended. Text emitted by
+        the provider in the same turn is intentionally absent here: the
+        streaming loop buffers it until the turn type is known and drops
+        it for tool rounds.
 
         ``assistant_reasoning`` is the thinking model's reasoning chain for
         this turn (``reasoning_content``). Endpoints like DeepSeek-R /
@@ -119,7 +117,7 @@ class _ToolingMixin:
         }
         if assistant_reasoning:
             assistant_turn["reasoning_content"] = assistant_reasoning
-        tool_turns = []
+        messages.append(assistant_turn)
         for i, c in enumerate(calls):
             tool_call = ToolCall(
                 name=c.name,
@@ -147,9 +145,7 @@ class _ToolingMixin:
                         output={"error": f"{type(e).__name__}: {e}"},
                         is_error=True, error_message=str(e),
                     )
-            if hasattr(self, "_is_responding") and not self._is_responding:
-                return 0
-            tool_turns.append({
+            messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.call_id,
                 # 写入 ``name`` 让 Gemini 路径能直接用（FunctionResponse.name
@@ -158,8 +154,6 @@ class _ToolingMixin:
                 "name": tool_call.name,
                 "content": result.output_as_json_string(),
             })
-        messages.append(assistant_turn)
-        messages.extend(tool_turns)
         return len(calls)
 
     async def _notify_reasoning_active(self) -> None:
@@ -496,10 +490,6 @@ class _ToolingMixin:
                     messages, calls,
                     assistant_reasoning=streamed_reasoning_buffer,
                 )
-                if _cancelled():
-                    if tool_leak_filter is not None:
-                        tool_leak_filter.reset()
-                    return
                 executed_tool_calls += executed_this_round
                 # Keep per-round telemetry while dropping every ambiguous text
                 # or tool-delta chunk from the user-facing stream.
