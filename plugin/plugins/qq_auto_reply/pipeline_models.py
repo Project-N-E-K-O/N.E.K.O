@@ -193,6 +193,9 @@ class QQReplyContext:
 @dataclass(slots=True)
 class QQModelResult:
     reply_text: str | None = None
+    # Exact visible prefix emitted before the tool-call turn. Postprocess uses
+    # this structural boundary instead of guessing from literal <msg> text.
+    pre_tool_text: str = ""
     source: str = "none"
     used_fallback: bool = False
     timed_out: bool = False

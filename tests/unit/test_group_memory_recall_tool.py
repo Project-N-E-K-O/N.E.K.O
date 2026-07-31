@@ -830,10 +830,11 @@ async def test_pre_tool_text_remains_in_the_outbound_message():
     client = _RecallToolClient(_script)
     reply_chunks: list = []
     client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
     result = await service._run_session_generation(
         context=_group_context(),
         session_key="group:7788",
-        user_data={"lock": asyncio.Lock()},
+        user_data=user_data,
         user_session=client,
         reply_chunks=reply_chunks,
     )
@@ -841,6 +842,45 @@ async def test_pre_tool_text_remains_in_the_outbound_message():
     history = client._conversation_history
     assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
     assert history[-1].content == "我查一下查到了，是不剧透"
+    assert user_data["current_pre_tool_text"] == "我查一下"
+
+
+@pytest.mark.asyncio
+async def test_primary_result_carries_the_pre_tool_boundary():
+    """Postprocess receives the boundary captured from tool-round history."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    context = _group_context(ephemeral_session=False, group_scene_mode="")
+    user_data = {
+        "memory_enabled": False,
+        "human_row_accepted": False,
+    }
+    client = SimpleNamespace(_conversation_history=[])
+    reply_chunks: list[str] = []
+    plugin.session_bootstrap_service = SimpleNamespace(
+        ensure_generation_session=AsyncMock(return_value=user_data)
+    )
+    plugin.session_runtime_service = SimpleNamespace(
+        build_generation_session_key=lambda _context: "group:7788",
+        prime_generation_session_state=lambda *_args, **_kwargs: (
+            client,
+            reply_chunks,
+        ),
+    )
+
+    async def _generate(**_kwargs):
+        user_data["current_pre_tool_text"] = "literal <msg> prefix "
+        return "literal <msg> prefix <msg><text>answer</text></msg>"
+
+    service._run_session_generation = AsyncMock(side_effect=_generate)
+    service._sync_memory_after_success = AsyncMock()
+
+    result = await service.run_primary_session_call(context)
+
+    assert result.pre_tool_text == "literal <msg> prefix "
+    assert result.reply_text == (
+        "literal <msg> prefix <msg><text>answer</text></msg>"
+    )
 
 
 @pytest.mark.asyncio

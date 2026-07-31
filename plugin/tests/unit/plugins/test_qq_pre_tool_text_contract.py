@@ -6,6 +6,7 @@ import pytest
 
 from plugin.plugins.qq_auto_reply import reply_generation_service as reply_module
 from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
+from plugin.plugins.qq_auto_reply.pipeline_models import QQModelResult
 from plugin.plugins.qq_auto_reply.reply_generation_service import (
     QQReplyGenerationService,
 )
@@ -156,3 +157,30 @@ async def test_prefixed_malformed_xml_still_uses_repair():
     node._repair_xml.assert_awaited_once_with("<msg><sticker>5</msg>")
     assert [block.text for block in outcome.blocks] == ["我查一下", ""]
     assert outcome.blocks[1].sticker == "5"
+
+
+@pytest.mark.asyncio
+async def test_structural_boundary_preserves_literal_msg_example_in_pre_tool():
+    """Literal msg markup before the tool boundary remains assistant text."""
+    prefix = "show <msg><text>literal</text></msg> syntax: "
+    final_xml = "<msg><text>answer</text></msg>"
+    plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _sanitize_generated_reply=lambda text: text,
+        _emit_log=MagicMock(),
+    )
+    node = QQReplyPostprocessNode(plugin)
+
+    outcome = await node.finalize(
+        SimpleNamespace(ephemeral_session=False),
+        QQModelResult(
+            reply_text=prefix + final_xml,
+            pre_tool_text=prefix,
+            source="session",
+        ),
+    )
+
+    assert [block.text for block in outcome.blocks] == [
+        prefix.strip(),
+        "answer",
+    ]

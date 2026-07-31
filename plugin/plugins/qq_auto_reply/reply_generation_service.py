@@ -132,6 +132,9 @@ class QQReplyGenerationService:
                     user_session=user_session,
                     reply_chunks=reply_chunks,
                 )
+                pre_tool_text = str(
+                    user_data.pop("current_pre_tool_text", "") or ""
+                )
             finally:
                 # 成员发言的收集绑定"会话已接受该 human 行"（stream_text 在
                 # 发起网络流之前就把它追加进历史），不绑回复非空、也不绑
@@ -172,7 +175,12 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)
-            return QQModelResult(reply_text=ai_reply, source="session", traces=[stage_trace])
+            return QQModelResult(
+                reply_text=ai_reply,
+                pre_tool_text=pre_tool_text,
+                source="session",
+                traces=[stage_trace],
+            )
 
         except asyncio.TimeoutError:
             # discard_session 内部会先结算群 scoped 缓冲再丢弃（集中抢救）。
@@ -225,6 +233,7 @@ class QQReplyGenerationService:
     ) -> str | None:
         async with user_data["lock"]:
             reply_chunks.clear()
+            user_data["current_pre_tool_text"] = ""
 
             queued_images = await self.plugin._queue_attachment_images(user_session, context.attachments)
             self.plugin.logger.info(f"发送消息到 AI (会话: {session_key}, length: {len(context.prompt_message)}, images: {queued_images})")
@@ -350,12 +359,13 @@ class QQReplyGenerationService:
                     # 行里的 pre-tool 可见文本先折叠进最终 ai 行，再删掉携带
                     # tool metadata 的裸 dict，保证用户看到的文本与后续上下文
                     # 一致。
-                    self._strip_tool_round_rows(
+                    _, current_pre_tool_text = self._strip_tool_round_rows(
                         history_now,
                         history_before,
                         create_missing_ai_row=generation_completed,
                         outbound_text="".join(reply_chunks),
                     )
+                    user_data["current_pre_tool_text"] = current_pre_tool_text
                 appended = list(history_now)[history_before:]
                 user_data["human_row_accepted"] = any(
                     getattr(row, "type", "") == "human" for row in appended
@@ -515,7 +525,7 @@ class QQReplyGenerationService:
         *,
         create_missing_ai_row: bool = False,
         outbound_text: str = "",
-    ) -> int:
+    ) -> tuple[int, str]:
         """Fold visible pre-tool text into the final AI row, then remove tool rows.
 
         Only rows appended at or after ``start_index`` are considered —
@@ -525,15 +535,17 @@ class QQReplyGenerationService:
         range is then empty and nothing is touched.
         """
         start = max(start_index, 0)
-        persisted_pre_tool_text = "".join(
-            str(row.get("content") or "")
-            for row in history[start:]
+        assistant_tool_rows = [
+            row for row in history[start:]
             if (
                 isinstance(row, dict)
                 and row.get("role") == "assistant"
                 and row.get("tool_calls")
                 and isinstance(row.get("content"), str)
             )
+        ]
+        persisted_pre_tool_text = "".join(
+            str(row.get("content") or "") for row in assistant_tool_rows
         )
         final_ai_row = next(
             (
@@ -580,7 +592,7 @@ class QQReplyGenerationService:
             if self._is_tool_round_row(history[index]):
                 del history[index]
                 removed += 1
-        return removed
+        return removed, pre_tool_text if assistant_tool_rows else ""
 
     async def _run_memory_housekeeping(
         self, session_key: str, user_data: dict[str, Any],

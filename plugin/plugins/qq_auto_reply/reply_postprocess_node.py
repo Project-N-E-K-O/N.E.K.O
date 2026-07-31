@@ -11,6 +11,24 @@ class QQReplyPostprocessNode:
         self.plugin = plugin
 
     @staticmethod
+    def _clean_dynamic_prefix(text: str) -> str:
+        """Remove dynamic-format directives surrounding a literal prefix."""
+        import re as _re
+
+        cleaned = _re.sub(
+            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
+            "",
+            text,
+            flags=_re.IGNORECASE,
+        )
+        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
+        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
+        cleaned = _re.sub(
+            r"```(?:xml)?\s*$", "", cleaned, flags=_re.IGNORECASE,
+        )
+        return cleaned.strip()
+
+    @staticmethod
     def _split_dynamic_xml(text: str) -> tuple[str, str] | None:
         """Separate literal assistant text from the dynamic XML document."""
         import re as _re
@@ -19,19 +37,8 @@ class QQReplyPostprocessNode:
         if msg_start is None:
             return None
         leading_raw = text[:msg_start.start()]
-        leading_raw = _re.sub(
-            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
-            "",
-            leading_raw,
-            flags=_re.IGNORECASE,
-        )
-        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
-        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
-        leading_raw = _re.sub(
-            r"```(?:xml)?\s*$", "", leading_raw, flags=_re.IGNORECASE,
-        )
         xml_text = _re.sub(r"\s*```\s*$", "", text[msg_start.start():])
-        return leading_raw.strip(), xml_text
+        return QQReplyPostprocessNode._clean_dynamic_prefix(leading_raw), xml_text
 
     @staticmethod
     def _parse_blocks(raw_text: str) -> list[QQMessageBlock]:
@@ -257,14 +264,25 @@ class QQReplyPostprocessNode:
             if wm:
                 # 保留 raw_reply_text 中的 <wait> 标签（不清理），让 buffer 能读到
                 pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
-            dynamic_parts = self._split_dynamic_xml(reply_text)
+            explicit_prefix = ""
+            parse_text = reply_text
+            known_pre_tool = str(
+                getattr(model_result, "pre_tool_text", "") or ""
+            )
+            if known_pre_tool and reply_text.startswith(known_pre_tool):
+                explicit_prefix = self._clean_dynamic_prefix(known_pre_tool)
+                parse_text = reply_text[len(known_pre_tool):]
+
+            dynamic_parts = self._split_dynamic_xml(parse_text)
             parse_failed = False
             if dynamic_parts is not None:
                 try:
                     ET.fromstring(f"<root>{dynamic_parts[1]}</root>")
                 except ET.ParseError:
                     parse_failed = True
-            blocks = self._parse_blocks(reply_text)
+            blocks = self._parse_blocks(parse_text)
+            if explicit_prefix:
+                blocks.insert(0, QQMessageBlock(text=explicit_prefix))
             # 解析失败必须显式进入修复；带 pre-tool 时 fallback 会产生两个
             # 纯文本块，不能再用 len(blocks) == 1 猜测解析状态。
             if parse_failed and dynamic_parts is not None:
@@ -273,10 +291,12 @@ class QQReplyPostprocessNode:
                 if repaired:
                     repaired_blocks = self._parse_blocks(repaired)
                     if repaired_blocks:
-                        blocks = (
-                            [QQMessageBlock(text=leading_text)]
-                            if leading_text else []
-                        ) + repaired_blocks
+                        prefix_blocks = [
+                            QQMessageBlock(text=value)
+                            for value in (explicit_prefix, leading_text)
+                            if value
+                        ]
+                        blocks = prefix_blocks + repaired_blocks
                         reply_text = repaired
             # 构建人类可读的 reply_text（首个块的文本）
             first_text = blocks[0].text if blocks else ""
