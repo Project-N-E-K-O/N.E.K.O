@@ -1018,10 +1018,20 @@ class FactStore:
         if not isinstance(fact, dict):
             return []
         return sorted(
-            str(key) for key, value in fact.items()
+            str(key)[:64] for key, value in fact.items()
             if key not in cls._PERSISTED_FACT_FIELDS
             and key not in always_consumed
-            and cls._carries_unused_text(value)
+            # 键与值一视同仁（与 _carries_unused_text 同口径）：
+            # {"text": "A", "Bob 的生日是 3 月 5 日": 7} 里文本全在键上，
+            # 只查值的话这条内容连一行日志都留不下。
+            and (
+                (
+                    isinstance(key, str)
+                    and key.strip()
+                    and not cls._FIELD_NAME_RE.match(key)
+                )
+                or cls._carries_unused_text(value)
+            )
         )
 
     @classmethod
@@ -1095,6 +1105,12 @@ class FactStore:
         #   这种内容裹在非字符串里），一个都不能排除。
         if own_fact is not None:
             kept.append(own_fact)
+        # 段对象"答过了"= 给了自己的事实、或给了 facts 数组（哪怕是空的——
+        # 空数组正是"本段无事实"这个合法结论）。答过了就跟被收下的事实同
+        # 一档：旁挂字段只记日志。{"segment": 1, "facts": [],
+        # "reason": "..."} 判 failed 换不回任何东西，模型只要习惯性带上这个
+        # 字段，这个成员就永远结算不掉（Codex）。
+        if own_fact is not None or isinstance(raw_facts, list):
             unread_fields.extend(cls._unread_fields_of_accepted_fact(
                 item, always_consumed=('segment', 'facts'),
             ))

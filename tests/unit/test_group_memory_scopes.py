@@ -2453,22 +2453,22 @@ async def test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment(
 async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
     tmp_path,
 ):
-    """文字挂在**段对象本身**而不是 facts 里时，同样不能当成本段的结论。
+    """段对象**没给出任何结论**、却还攥着文字时才判 failed。
 
-    与上一条同一条不变式，只是位置不同：``{"segment": 1, "facts": [...],
-    "note": "…"}`` 里的 note 我们没读懂也没用上。只查 facts 数组、不查段
-    对象剩下的键，这条内容照样会连着桶一起消失。"""  # noqa: DOCSTRING_CJK
+    判据是"这一条到底答没答"：给了自己的事实、或给了 ``facts`` 数组（哪怕
+    是空的——那正是「本段无事实」这个合法结论），都算答过了，旁挂字段只
+    记日志（见
+    ``test_extra_fields_on_an_accepted_fact_are_logged_not_retried``）。
+    两者都没有、只剩一截没人读的文字，才是"什么都没抽出来"，重抽有可能
+    救回来，值得保留桶。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
 
     async def _llm(prompt, lanlan_name, **kwargs):
         return [
-            {
-                "segment": 1,
-                "facts": [{"text": "认得出的事实", "importance": 5}],
-                "note": "这段旁挂的内容没人读",
-            },
+            # 既没有 facts 数组、也读不成事实，只有一截旁挂文字。
+            {"segment": 1, "note": "Alice 养猫"},
             {"segment": 2, "facts": []},
         ]
 
@@ -2481,9 +2481,23 @@ async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
         results = await fs.extract_facts_batch(segments, "Neko")
 
     assert [r["status"] for r in results] == ["failed", "ok"]
-    assert [f["text"] for f in results[0]["created"]] == ["认得出的事实"]
+    assert results[0]["created"] == []
 
-    # 对照：段对象上只有评分之类的非文本旁挂键，不是内容，本段照常 ok。
+    # 对照一：给了 facts 数组就算答过了（哪怕空数组 = 本段无事实），旁挂
+    # 的解释性字段只记日志——模型习惯性带上 reason 的话，判 failed 会让
+    # 这个成员永远结算不掉。
+    async def _answered_with_metadata(prompt, lanlan_name, **kwargs):
+        return [
+            {"segment": 1, "facts": [], "reason": "本段没有值得记的事实"},
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _answered_with_metadata
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+    assert [r["status"] for r in results] == ["ok", "ok"]
+
+    # 对照二：段对象上只有评分之类的非文本旁挂键，不是内容，本段照常 ok。
     async def _numeric_leftover(prompt, lanlan_name, **kwargs):
         return [
             {"segment": 1, "facts": [{"text": "认得出的事实", "importance": 5}],
@@ -2638,6 +2652,11 @@ def _capture_memory_logs():
     {"segment": 1, "text": "Alice 喜欢猫", "importance": 7,
      "note": "Bob 的生日是 3 月 5 日", "confidence": 0.9,
      "facts": [{"text": "Alice 会法语"}]},
+    # 文本全在**键**上：只查值的话连日志都留不下。
+    {"segment": 1, "facts": [
+        {"text": "Alice 喜欢猫", "note": "Bob 的生日是 3 月 5 日"},
+        {"text": "Alice 会法语", "confidence": 0.9},
+    ]},
 ])
 async def test_extra_fields_on_an_accepted_fact_are_logged_not_retried(
     tmp_path, payload,
