@@ -31,6 +31,8 @@ from .detector import (
     DetectorSubmitStatus,
     DetectorTransportPrewarmEvent,
     DetectorTurnEvent,
+    ProviderCandidateFence,
+    SmartTurnCompletionFence,
 )
 from .silero_vad import SileroActivityGate, SileroVad
 from .smart_turn_v3 import SmartTurnV3
@@ -102,6 +104,10 @@ class _VoiceTurnAdapter:
         gate: SileroActivityGate,
         coordinator: TurnCoordinator,
         on_commit: Callable[[int, int, int], Awaitable[None]],
+        on_completion_fence: Callable[
+            [int, int, int, DetectorIngressIdentity], _Identity
+        ]
+        | None = None,
         on_activity: Callable[[SpeechActivityEvent], Awaitable[None]] | None = None,
         on_scoped_commit: Callable[
             [int, int, int, DetectorIngressIdentity], Awaitable[None]
@@ -139,6 +145,7 @@ class _VoiceTurnAdapter:
         self._gate = gate
         self._coordinator = coordinator
         self._on_commit = on_commit
+        self._on_completion_fence = on_completion_fence
         self._on_activity = on_activity
         self._on_scoped_commit = on_scoped_commit
         self._on_scoped_activity = on_scoped_activity
@@ -148,6 +155,9 @@ class _VoiceTurnAdapter:
                 max_frames=queue_maxsize,
             )
         )
+        self._evaluation_tail_capacity_us = queue_capacity_ms * 1_000
+        self._evaluation_tail: list[_AudioItem] = []
+        self._evaluation_tail_duration_us = 0
         self._continuation_timeout_seconds = continuation_timeout_seconds
         self._max_endpoint_wait_seconds = max_endpoint_wait_seconds
         self._smart_turn_required = smart_turn_required
@@ -181,6 +191,7 @@ class _VoiceTurnAdapter:
         self._resources_closed = False
         self._closed = False
         self._commit_dispatched: set[_Identity] = set()
+        self._successor_audio_fence: tuple[_Identity, int, _Identity] | None = None
         self._smart_turn_pin_count = 0
 
     async def start(self) -> None:
@@ -278,6 +289,18 @@ class _VoiceTurnAdapter:
         duration_us = (
             samples * 1_000_000 + sample_rate_hz - 1
         ) // sample_rate_hz
+        if (
+            self._evaluation_task is not None
+            and self._evaluation_tail_duration_us
+            + self._queue.audio_duration_us
+            + duration_us
+            > self._evaluation_tail_capacity_us
+        ):
+            # Surface the shared duration budget at ingress so DetectorRuntime
+            # can use its existing whole-candidate backpressure recovery. Once
+            # an item reaches the consumer it must remain replayable if the
+            # in-flight evaluation completes the predecessor turn.
+            raise asyncio.QueueFull
         self._queue.put_audio_nowait(
             _AudioItem(
                 (generation, buffer_epoch, utterance_id),
@@ -433,7 +456,18 @@ class _VoiceTurnAdapter:
         if self._identity is None:
             self._identity = item.identity
         if item.identity != self._identity:
-            return
+            fence = self._successor_audio_fence
+            if (
+                fence is None
+                or item.detector_identity is None
+                or item.identity != fence[0]
+                or self._identity != fence[2]
+                or item.detector_identity.sequence_no <= fence[1]
+            ):
+                return
+        if self._evaluation_task is not None:
+            self._evaluation_tail.append(item)
+            self._evaluation_tail_duration_us += item.duration_us
         self._latest_detector_identity = item.detector_identity
         self._coordinator.push_audio(item.pcm16)
         if self._vad_degraded:
@@ -575,6 +609,9 @@ class _VoiceTurnAdapter:
     async def _process_evaluation_result(self, item: _EvaluationResultItem) -> None:
         self._smart_turn_evaluation_ms = item.evaluation_ms
         self._evaluation_task = None
+        evaluation_tail = tuple(self._evaluation_tail)
+        self._evaluation_tail.clear()
+        self._evaluation_tail_duration_us = 0
         reevaluate = self._reevaluation_requested
         reevaluation_reason = self._reevaluation_reason or item.reason
         self._reevaluation_requested = False
@@ -617,7 +654,41 @@ class _VoiceTurnAdapter:
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.COMPLETE:
             self._strict_endpoint_deadline = None
-            self._dispatch_commit(item.identity, item.detector_identity)
+            active_identity = item.identity
+            if (
+                self._on_completion_fence is not None
+                and item.detector_identity is not None
+            ):
+                active_identity = self._on_completion_fence(
+                    *item.identity,
+                    item.detector_identity,
+                )
+                if active_identity != item.identity:
+                    await self._process_reset(
+                        active_identity,
+                        requester=asyncio.current_task(),
+                    )
+                    self._successor_audio_fence = (
+                        item.identity,
+                        item.detector_identity.sequence_no,
+                        active_identity,
+                    )
+            completion_published = self._dispatch_commit(
+                item.identity,
+                item.detector_identity,
+                active_identity=active_identity,
+            )
+            if completion_published is not None:
+                await completion_published
+            for tail_item in evaluation_tail:
+                await self._process_audio(
+                    _AudioItem(
+                        identity=active_identity,
+                        pcm16=tail_item.pcm16,
+                        duration_us=tail_item.duration_us,
+                        detector_identity=tail_item.detector_identity,
+                    )
+                )
             return
         if status is EvaluationStatus.OK and decision is TurnDecision.INCOMPLETE:
             if reevaluate:
@@ -676,6 +747,9 @@ class _VoiceTurnAdapter:
         self._reevaluation_reason = None
         self._strict_endpoint_deadline = None
         self._latest_detector_identity = None
+        self._evaluation_tail.clear()
+        self._evaluation_tail_duration_us = 0
+        self._successor_audio_fence = None
         await self._coordinator.reset()
         await asyncio.to_thread(self._gate.reset)
         self._commit_dispatched.clear()
@@ -825,34 +899,56 @@ class _VoiceTurnAdapter:
         self,
         identity: _Identity,
         detector_identity: DetectorIngressIdentity | None = None,
-    ) -> None:
-        if self._closed or identity != self._identity:
-            return
+        *,
+        active_identity: _Identity | None = None,
+    ) -> asyncio.Future[None] | None:
+        expected_identity = active_identity or identity
+        if self._closed or expected_identity != self._identity:
+            return None
         if identity in self._commit_dispatched:
-            return
+            return None
         self._commit_dispatched.add(identity)
+        completion_published = asyncio.get_running_loop().create_future()
 
         async def commit() -> None:
             try:
-                if self._closed or self._failed or identity != self._identity:
+                if (
+                    self._closed
+                    or self._failed
+                    or expected_identity != self._identity
+                ):
                     return
                 if self._on_scoped_commit is not None and detector_identity is not None:
                     await self._on_scoped_commit(*identity, detector_identity)
-                    if self._closed or self._failed or identity != self._identity:
+                    if (
+                        self._closed
+                        or self._failed
+                        or expected_identity != self._identity
+                    ):
                         return
-                if self._closed or self._failed or identity != self._identity:
+                if not completion_published.done():
+                    completion_published.set_result(None)
+                if (
+                    self._closed
+                    or self._failed
+                    or expected_identity != self._identity
+                ):
                     return
                 await self._on_commit(*identity)
             except asyncio.CancelledError:
                 raise
             except Exception:
                 self._report_failure("runtime_error", "consumer")
+            finally:
+                if not completion_published.done():
+                    completion_published.set_result(None)
 
         task = asyncio.create_task(
             commit(), name="asr-voice-turn-commit"
         )
         self._callback_tasks.add(task)
         task.add_done_callback(self._callback_tasks.discard)
+        return completion_published
 
 
 def _create_voice_turn_adapter(
@@ -923,6 +1019,7 @@ class DetectorRuntime:
         resource_optimization_enabled: bool = True,
         provider_policy: AsrProviderPolicy | None = None,
         coordinator: TurnCoordinator | None = None,
+        throttle_policy: VoiceThrottlePolicy | None = None,
         on_turn_complete: Callable[[], Awaitable[None]] | None = None,
         on_endpointing_failure: Callable[[], Awaitable[None]] | None = None,
         on_event: Callable[[DetectorEvent], Awaitable[None]] | None = None,
@@ -946,7 +1043,7 @@ class DetectorRuntime:
         self._closed = False
         self._rnnoise_onset_probability = rnnoise_onset_probability
         self._resource_optimization_enabled = bool(resource_optimization_enabled)
-        self._throttle_policy = VoiceThrottlePolicy(
+        self._throttle_policy = throttle_policy or VoiceThrottlePolicy(
             resource_optimization_enabled=self._resource_optimization_enabled,
             bootstrap_onset=rnnoise_onset_probability,
         )
@@ -979,6 +1076,11 @@ class DetectorRuntime:
         self._deferred_completions: dict[
             DetectorCandidateKey, DetectorIngressIdentity
         ] = {}
+        self._completion_fences: dict[
+            tuple[int, int, int], SmartTurnCompletionFence
+        ] = {}
+        self._provider_candidate_fence: ProviderCandidateFence | None = None
+        self._provider_discarded_through_sequence_no: int | None = None
         if (
             provider_policy is not None
             and provider_policy.endpoint_authority == "smart_turn"
@@ -997,26 +1099,62 @@ class DetectorRuntime:
             )
             self._semantic_coordinator = semantic_coordinator
 
-            async def commit(_generation: int, _buffer_epoch: int, _turn_id: int) -> None:
-                self._candidate_open = False
+            def completion_fence(
+                generation: int,
+                buffer_epoch: int,
+                turn_id: int,
+                identity: DetectorIngressIdentity,
+            ) -> _Identity:
+                successor_present = self._sequence_no > identity.sequence_no
+                fence = SmartTurnCompletionFence(
+                    detector_epoch=identity.detector_epoch,
+                    candidate_generation=self._candidate_generation,
+                    through_sequence_no=identity.sequence_no,
+                    semantic_generation=generation,
+                    semantic_turn_id=turn_id,
+                    successor_candidate_generation=self._candidate_generation + 1,
+                    successor_present=successor_present,
+                )
+                self._completion_fences[(generation, buffer_epoch, turn_id)] = fence
+                self._semantic_generation += 1
+                self._semantic_turn_id += 1
+                self._candidate_generation = fence.successor_candidate_generation
                 self._policy_event_candidate = None
-                self._throttle_policy.reset_candidate_activity()
+                if not successor_present:
+                    self._candidate_open = False
+                    self._throttle_policy.reset_candidate_activity()
+                return (
+                    self._semantic_generation,
+                    buffer_epoch,
+                    self._semantic_turn_id,
+                )
+
+            async def commit(generation: int, buffer_epoch: int, turn_id: int) -> None:
+                fence = self._completion_fences.pop(
+                    (generation, buffer_epoch, turn_id),
+                    None,
+                )
+                if fence is None:
+                    self._candidate_open = False
+                    self._policy_event_candidate = None
+                    self._throttle_policy.reset_candidate_activity()
                 if self._defer_turn_complete:
                     self._deferred_turn_complete = True
                     return
                 # 当前轮 seal 后立即把检测身份推进到下一轮。旧 provider final
                 # 到达前，新语音只做本地语义判断，完成信号延迟发布。
                 self._defer_turn_complete = True
-                self._semantic_generation += 1
-                self._semantic_turn_id += 1
-                self._candidate_generation += 1
-                adapter = self._semantic_adapter
-                if adapter is not None:
-                    await adapter.reset(
-                        generation=self._semantic_generation,
-                        buffer_epoch=0,
-                        utterance_id=self._semantic_turn_id,
-                    )
+                if fence is None:
+                    self._semantic_generation += 1
+                    self._semantic_turn_id += 1
+                    self._candidate_generation += 1
+                    adapter = self._semantic_adapter
+                    if adapter is not None:
+                        await adapter.reset(
+                            generation=self._semantic_generation,
+                            buffer_epoch=0,
+                            utterance_id=self._semantic_turn_id,
+                        )
                 if on_turn_complete is not None:
                     await on_turn_complete()
 
@@ -1041,35 +1179,33 @@ class DetectorRuntime:
                 )
 
             async def scoped_commit(
-                _generation: int,
-                _buffer_epoch: int,
-                _turn_id: int,
+                generation: int,
+                buffer_epoch: int,
+                turn_id: int,
                 identity: DetectorIngressIdentity,
             ) -> None:
                 if self._on_event is None or identity.detector_epoch != self._detector_epoch:
                     return
-                candidate = DetectorCandidateKey(
-                    identity.detector_epoch,
-                    self._candidate_generation,
+                fence = self._completion_fences.get(
+                    (generation, buffer_epoch, turn_id)
                 )
-                bound_turn = self._bound_turns.get(candidate)
-                if bound_turn is None:
-                    self._deferred_completions[candidate] = identity
-                    return
-                await self._on_event(
-                    DetectorTurnEvent(
-                        ingress=identity,
-                        bound_turn=bound_turn,
-                        kind="complete",
+                candidate = (
+                    fence.candidate
+                    if fence is not None
+                    else DetectorCandidateKey(
+                        identity.detector_epoch,
+                        self._candidate_generation,
                     )
                 )
-                self._bound_turns.pop(candidate, None)
+                if not await self._publish_bound_completion(candidate, identity):
+                    self._deferred_completions[candidate] = identity
 
             self._semantic_adapter = _VoiceTurnAdapter(
                 vad=self._vad,
                 gate=self._gate,
                 coordinator=semantic_coordinator,
                 on_commit=commit,
+                on_completion_fence=completion_fence,
                 on_activity=activity,
                 on_scoped_commit=scoped_commit,
                 on_scoped_activity=scoped_activity,
@@ -1137,16 +1273,26 @@ class DetectorRuntime:
         self._bound_turns[candidate] = bound
         deferred = self._deferred_completions.pop(candidate, None)
         if deferred is not None:
-            if self._on_event is not None:
-                await self._on_event(
-                    DetectorTurnEvent(
-                        ingress=deferred,
-                        bound_turn=bound,
-                        kind="complete",
-                    )
-                )
-            self._bound_turns.pop(candidate, None)
+            await self._publish_bound_completion(candidate, deferred)
         return bound
+
+    async def _publish_bound_completion(
+        self,
+        candidate: DetectorCandidateKey,
+        identity: DetectorIngressIdentity,
+    ) -> bool:
+        bound_turn = self._bound_turns.pop(candidate, None)
+        if bound_turn is None:
+            return False
+        if self._on_event is not None:
+            await self._on_event(
+                DetectorTurnEvent(
+                    ingress=identity,
+                    bound_turn=bound_turn,
+                    kind="complete",
+                )
+            )
+        return True
 
     async def force_speech_started(
         self,
@@ -1333,6 +1479,9 @@ class DetectorRuntime:
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            self._completion_fences.clear()
+            self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             # A deferred completion belongs to the invalidated epoch; keeping
             # the flags would let release_deferred_turn spuriously advance the
             # fresh epoch's first candidate.
@@ -1439,9 +1588,12 @@ class DetectorRuntime:
                 speech_probability,
                 available=bool(rnnoise_available),
             )
+            candidate_admission_open = bool(
+                self._candidate_open or self._provider_candidate_fence is not None
+            )
             throttle = self._throttle_policy.decide(
                 evidence,
-                candidate_open=self._candidate_open,
+                candidate_open=candidate_admission_open,
                 allow_baseline_update=allow_baseline_update,
             )
             if throttle.action is ThrottleAction.SKIP_IDLE_PCM:
@@ -1505,6 +1657,81 @@ class DetectorRuntime:
             True,
             throttle_action=throttle.action,
         )
+
+    async def seal_provider_candidate(self) -> ProviderCandidateFence | None:
+        """Seal local detector activity after a streaming Provider endpoint."""
+
+        async with self._lock:
+            if self._closed or self._semantic_adapter is not None:
+                return None
+            existing = self._provider_candidate_fence
+            if existing is not None:
+                return existing
+            fence = ProviderCandidateFence(
+                detector_epoch=self._detector_epoch,
+                candidate_generation=self._candidate_generation,
+                through_sequence_no=self._sequence_no,
+            )
+            self._provider_candidate_fence = fence
+            self._provider_discarded_through_sequence_no = None
+            self._candidate_generation += 1
+            self._candidate_open = False
+            self._speech_active = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
+            return fence
+
+    async def discard_provider_successor(
+        self,
+        fence: ProviderCandidateFence,
+    ) -> bool:
+        """Discard only successor activity while preserving the sealed fence."""
+
+        async with self._lock:
+            if (
+                self._closed
+                or self._semantic_adapter is not None
+                or fence != self._provider_candidate_fence
+                or fence.detector_epoch != self._detector_epoch
+            ):
+                return False
+            await asyncio.to_thread(self._gate.reset)
+            self._provider_discarded_through_sequence_no = self._sequence_no
+            self._candidate_generation += 1
+            self._candidate_open = False
+            self._speech_active = False
+            self._policy_event_candidate = None
+            self._throttle_policy.reset_candidate_activity()
+            return True
+
+    async def complete_provider_candidate(
+        self,
+        fence: ProviderCandidateFence,
+    ) -> bool | None:
+        """Consume one Provider fence and report whether successor PCM exists."""
+
+        async with self._lock:
+            if (
+                self._closed
+                or fence != self._provider_candidate_fence
+                or fence.detector_epoch != self._detector_epoch
+            ):
+                return None
+            self._provider_candidate_fence = None
+            successor_floor = max(
+                fence.through_sequence_no,
+                self._provider_discarded_through_sequence_no
+                or fence.through_sequence_no,
+            )
+            self._provider_discarded_through_sequence_no = None
+            successor_present = self._sequence_no > successor_floor
+            if not successor_present:
+                self._candidate_open = False
+                self._speech_active = False
+                self._policy_event_candidate = None
+                self._throttle_policy.reset_candidate_activity()
+            return successor_present
+
     async def submit_audio(
         self,
         pcm16: bytes,
@@ -1613,6 +1840,9 @@ class DetectorRuntime:
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            self._completion_fences.clear()
+            self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             self._defer_turn_complete = False
             self._deferred_turn_complete = False
             self._semantic_generation += 1
@@ -1711,6 +1941,9 @@ class DetectorRuntime:
             self._throttle_policy.reset_candidate_activity()
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            self._completion_fences.clear()
+            self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             self._speech_active = False
             self._prepare_token = None
             self._prepare_epoch = None
@@ -1750,15 +1983,8 @@ class DetectorRuntime:
                 return
             self._defer_turn_complete = False
             if self._deferred_turn_complete:
-                completed_candidate = DetectorCandidateKey(
-                    self._detector_epoch,
-                    self._candidate_generation,
-                )
                 self._deferred_turn_complete = False
                 self._defer_turn_complete = True
-                self._bound_turns.pop(completed_candidate, None)
-                self._deferred_completions.pop(completed_candidate, None)
-                self._candidate_generation += 1
                 self._semantic_generation += 1
                 self._semantic_turn_id += 1
                 await self._semantic_adapter.reset(
@@ -1788,6 +2014,9 @@ class DetectorRuntime:
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            self._completion_fences.clear()
+            self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             watch_task, self._failure_watch_task = self._failure_watch_task, None
             if watch_task is not None:
                 watch_task.cancel()
@@ -1827,6 +2056,9 @@ class DetectorRuntime:
             self._ingress_token = None
             self._bound_turns.clear()
             self._deferred_completions.clear()
+            self._completion_fences.clear()
+            self._provider_candidate_fence = None
+            self._provider_discarded_through_sequence_no = None
             self._smart_turn_readiness = SmartTurnReadiness.FAILED
             callback = self._on_endpointing_failure
             if callback is not None and not self._closed:
