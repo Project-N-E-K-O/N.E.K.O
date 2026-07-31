@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 # ── language → country code mapping ──────────────────────────────────
 _LANG_TO_COUNTRY: dict[str, str] = {
     'zh': 'CN',
+    'zh-TW': 'TW',
     'en': 'US',
     'ja': 'JP',
     'ko': 'KR',
@@ -132,11 +133,13 @@ _FETCH_TIMEOUT = 10.0
 # i18n-leak detector but the project convention exempts pure localized data.
 _GLOBAL_EXTRA_HOLIDAYS: list[tuple[int, int, dict[str, str]]] = [
     (2, 14, {  # noqa: I18N_NOT_IN_CONFIG  # holiday display data, not LLM prompt
-        'zh': '情人节', 'en': "Valentine's Day", 'ja': 'バレンタインデー',
+        'zh': '情人节', 'zh-TW': '情人節',
+        'en': "Valentine's Day", 'ja': 'バレンタインデー',
         'ko': '발렌타인데이', 'ru': 'День святого Валентина',
     }),
     (12, 25, {  # noqa: I18N_NOT_IN_CONFIG  # holiday display data, not LLM prompt
-        'zh': '圣诞节', 'en': 'Christmas', 'ja': 'クリスマス',
+        'zh': '圣诞节', 'zh-TW': '聖誕節',
+        'en': 'Christmas', 'ja': 'クリスマス',
         'ko': '크리스마스', 'ru': 'Рождество',
     }),
 ]

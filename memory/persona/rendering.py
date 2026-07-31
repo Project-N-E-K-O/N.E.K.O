@@ -584,10 +584,17 @@ class RenderingMixin:
         """  # noqa: DOCSTRING_CJK
         master_name = name_mapping.get('human', '主人')
         ai_name = name
+        from config.prompts.prompts_memory import get_persona_section_header
+        from utils.language_utils import get_global_language_full
+        render_lang = get_global_language_full()
         _headers = {
-            'master': f"关于{master_name}",
-            'neko': f"关于{ai_name}",
-            'relationship': "关系动态",
+            section: get_persona_section_header(
+                section,
+                render_lang,
+                ai_name=ai_name,
+                master_name=master_name,
+            )
+            for section in ('master', 'neko', 'relationship')
         }
 
         # Suppressed entries always render (the whole point is "AI
@@ -661,9 +668,8 @@ class RenderingMixin:
                     from config.prompts.prompts_memory import (
                         get_scoped_persona_section_header,
                     )
-                    from utils.language_utils import get_global_language_full
                     header = get_scoped_persona_section_header(
-                        subject_kind, subject_id, get_global_language_full(),
+                        subject_kind, subject_id, render_lang,
                     )
                 else:
                     header = _headers.get(entity_key, entity_key)
@@ -674,7 +680,15 @@ class RenderingMixin:
                      if r.get('text')]
             if lines:
                 sections.append(
-                    f"### {ai_name}最近的印象（还不太确定）\n" + "\n".join(lines)
+                    "### "
+                    + get_persona_section_header(
+                        "pending_reflections",
+                        render_lang,
+                        ai_name=ai_name,
+                        master_name=master_name,
+                    )
+                    + "\n"
+                    + "\n".join(lines)
                 )
 
         # Split confirmed reflections into active vs past at render time.
@@ -697,7 +711,15 @@ class RenderingMixin:
         if active_confirmed:
             lines = [f"- {r.get('text', '')}" for r in active_confirmed]
             sections.append(
-                f"### {ai_name}比较确定的印象\n" + "\n".join(lines)
+                "### "
+                + get_persona_section_header(
+                    "confirmed_reflections",
+                    render_lang,
+                    ai_name=ai_name,
+                    master_name=master_name,
+                )
+                + "\n"
+                + "\n".join(lines)
             )
 
         if past_confirmed:
@@ -707,9 +729,8 @@ class RenderingMixin:
             # time_since_label 按 0-6d / 7-29d / 30d+ 三档生成。整段按
             # get_global_language_full() 本地化（Codex review on PR #1316
             # P2 catch：之前硬编码 zh 让非 zh locale 看到中文时间标签）。
-            from utils.language_utils import get_global_language_full
             from config.prompts.prompts_memory import render_past_memory_block
-            lang = get_global_language_full()
+            lang = render_lang
             past_lines = []
             for r in past_confirmed:
                 anchor = (
@@ -734,7 +755,14 @@ class RenderingMixin:
 
         if suppressed_lines:
             sections.append(
-                f"### 暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）\n"
+                "### "
+                + get_persona_section_header(
+                    "suppressed",
+                    render_lang,
+                    ai_name=ai_name,
+                    master_name=master_name,
+                )
+                + "\n"
                 + "\n".join(suppressed_lines)
             )
 

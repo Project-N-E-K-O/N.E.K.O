@@ -147,6 +147,132 @@ def test_summary_prompt_uses_request_scoped_traditional_locale():
     assert "負面回饋" in prompt
 
 
+@pytest.mark.asyncio
+async def test_compressed_memo_wrapper_keeps_traditional_locale():
+    from config.prompts.prompts_sys import MEMORY_MEMO_WITH_SUMMARY
+    from memory.recent import CompressedRecentHistoryManager
+    from utils.language_utils import language_context
+    from utils.llm_client import HumanMessage
+
+    manager = object.__new__(CompressedRecentHistoryManager)
+    manager.name_mapping = {"human": "Alice"}
+
+    async def invoke(_prompt):
+        return "使用者喜歡貓。"
+
+    async def read_anchor(_name):
+        return None
+
+    async def write_anchor(_name):
+        return None
+
+    manager._invoke_summary_llm = invoke
+    manager._aread_last_past_block_update_at = read_anchor
+    manager._awrite_last_past_block_update_at = write_anchor
+
+    with language_context("zh-TW"):
+        memo, summary = await manager.compress_history(
+            [HumanMessage(content="我喜歡貓")],
+            "Neko",
+        )
+
+    assert summary == "使用者喜歡貓。"
+    assert memo.content == "先前對話的備忘錄：使用者喜歡貓。"
+    mutant = dict(MEMORY_MEMO_WITH_SUMMARY)
+    mutant.pop("zh-TW")
+    with pytest.raises(AssertionError):
+        assert "zh-TW" in mutant
+
+
+def test_persona_renderer_localizes_all_traditional_headers():
+    from memory.persona.manager import PersonaManager
+    from utils.language_utils import language_context
+
+    master = {"text": "Alice 喜歡貓"}
+    neko = {"text": "Neko 喜歡音樂"}
+    relationship = {"text": "兩人常一起聊天"}
+    suppressed = {"text": "不要主動提旅行", "suppress": True}
+    persona = {
+        "master": {"facts": [master, suppressed]},
+        "neko": {"facts": [neko]},
+        "relationship": {"facts": [relationship]},
+    }
+    renderer = object.__new__(PersonaManager)
+
+    with language_context("zh-TW"):
+        rendered = renderer._compose_markdown_from_trimmed(
+            "Neko",
+            persona,
+            {"human": "Alice"},
+            [
+                ("master", master),
+                ("neko", neko),
+                ("relationship", relationship),
+            ],
+            [],
+            {},
+            [{"text": "可能喜歡散步"}],
+            [{"text": "確定喜歡咖啡"}],
+        )
+
+    assert "### 關於Alice" in rendered
+    assert "### 關於Neko" in rendered
+    assert "### 關係動態" in rendered
+    assert "Neko最近的印象（還不太確定）" in rendered
+    assert "Neko比較確定的印象" in rendered
+    assert "### 暫不主動提及的內容" in rendered
+    assert "关系动态" not in rendered
+    assert "还不太确定" not in rendered
+    assert "暂不主动提及" not in rendered
+
+
+def test_holiday_context_uses_taiwan_calendar_for_traditional_locale(
+    monkeypatch,
+):
+    from datetime import date
+
+    from utils import holiday_cache
+
+    today = date.today()
+    period = holiday_cache.HolidayPeriod(
+        "Holiday",
+        "臺灣假日",
+        today,
+        today,
+    )
+    monkeypatch.setitem(
+        holiday_cache._period_cache,
+        ("TW", today.year),
+        [period],
+    )
+
+    assert holiday_cache._LANG_TO_COUNTRY["zh-TW"] == "TW"
+    assert holiday_cache.get_holiday_context_line("zh-TW") == "臺灣假日"
+
+
+@pytest.mark.parametrize(
+    ("month", "day", "expected"),
+    [(2, 14, "情人節"), (12, 25, "聖誕節")],
+)
+def test_traditional_global_holiday_names_have_mutation_guard(
+    month,
+    day,
+    expected,
+):
+    from utils import holiday_cache
+
+    names = next(
+        names
+        for entry_month, entry_day, names in holiday_cache._GLOBAL_EXTRA_HOLIDAYS
+        if (entry_month, entry_day) == (month, day)
+    )
+    assert names["zh-TW"] == expected
+    mutant = dict(names)
+    mutant.pop("zh-TW")
+    with pytest.raises(AssertionError):
+        assert "zh-TW" in mutant
+
+
 def test_builtin_recall_schema_uses_session_traditional_locale(monkeypatch):
     from main_logic.core.tool_calling import ToolCallingMixin
     from main_logic.tool_calling import ToolRegistry
@@ -340,6 +466,198 @@ async def test_scoped_history_activates_request_locale(monkeypatch):
         "status": "ok",
     }
     assert observed == [("Neko", "zh-TW", "zh-TW")]
+
+
+def test_scoped_prompt_locale_survives_restart_and_rejects_stale_write(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    locale_path = tmp_path / "scoped_prompt_locales.json"
+    subject = MemorySubject.group_chat("qq", "7788")
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(locale_path),
+    )
+    locale_state._subject_locale_cache.clear()
+
+    newer = locale_state.reserve_subject_prompt_locale_order("Neko", subject)
+    locale_state.record_subject_prompt_locale(
+        "Neko",
+        subject,
+        "zh-TW",
+        order=newer,
+    )
+    locale_state.record_subject_prompt_locale(
+        "Neko",
+        subject,
+        "en",
+        order=newer - 1,
+    )
+    locale_state._subject_locale_cache.clear()
+
+    assert locale_state.get_subject_prompt_locale("Neko", subject) == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_persists_subject_locale(monkeypatch):
+    import json
+
+    from app.memory_server import locale_state, routes, runtime
+
+    class FactStore:
+        async def extract_facts(self, *_args, **_kwargs):
+            return []
+
+    recorded = []
+    monkeypatch.setattr(runtime, "fact_store", FactStore())
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_subject_prompt_locale_order",
+        lambda _name, _subject: 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "record_subject_prompt_locale",
+        lambda name, subject, language, *, order: recorded.append(
+            (name, subject.key, language, order)
+        ),
+    )
+    request = routes.ScopedHistoryRequest(
+        input_history=json.dumps([{"role": "user", "content": "喜歡貓"}]),
+        subject={
+            "subject_kind": "group_chat",
+            "subject_id": "qq:7788",
+        },
+        language="zh-TW",
+    )
+
+    result = await routes.process_scoped_history("Neko", request)
+
+    assert result["status"] == "processed"
+    assert recorded == [
+        ("Neko", "group_chat:qq:7788", "zh-TW", 42),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_batch_persists_each_completed_subject_locale(
+    monkeypatch,
+):
+    import json
+
+    from app.memory_server import locale_state, routes, runtime
+
+    class FactStore:
+        async def extract_facts_batch(self, _segments, _name):
+            return [
+                {"status": "ok", "created": []},
+                {"status": "failed", "created": []},
+            ]
+
+        @staticmethod
+        def sanitize_speaker_label(label):
+            return label
+
+    orders = iter([41, 42])
+    recorded = []
+    monkeypatch.setattr(runtime, "fact_store", FactStore())
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_subject_prompt_locale_order",
+        lambda _name, _subject: next(orders),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "record_subject_prompt_locale",
+        lambda name, subject, language, *, order: recorded.append(
+            (name, subject.key, language, order)
+        ),
+    )
+    request = routes.ScopedHistoryRequest(
+        segments=[
+            {
+                "input_history": json.dumps([
+                    {"role": "user", "content": "喜歡貓"},
+                ]),
+                "subject": {
+                    "subject_kind": "group_participant",
+                    "subject_id": "qq:7788:1001",
+                },
+                "speaker_label": "Alice",
+            },
+            {
+                "input_history": json.dumps([
+                    {"role": "user", "content": "喜歡狗"},
+                ]),
+                "subject": {
+                    "subject_kind": "group_participant",
+                    "subject_id": "qq:7788:1002",
+                },
+                "speaker_label": "Bob",
+            },
+        ],
+        language="zh-TW",
+    )
+
+    result = await routes.process_scoped_history("Neko", request)
+
+    assert [item["status"] for item in result["segments"]] == [
+        "ok",
+        "failed",
+    ]
+    assert recorded == [
+        ("Neko", "group_participant:qq:7788:1001", "zh-TW", 41),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_deferred_scoped_synthesis_restores_subject_locale(monkeypatch):
+    from memory.reflection import synthesis
+    from memory.scopes import MemorySubject
+    from utils.language_utils import get_global_language_full, language_context
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    fact = {
+        "id": "fact-1",
+        "text": "喜歡貓",
+        "importance": 9,
+        **subject.as_entry_fields(),
+    }
+    observed = []
+
+    class FactStore:
+        async def aload_facts(self, _name):
+            return [fact]
+
+    class Harness(synthesis.SynthesisMixin):
+        _fact_store = FactStore()
+
+        async def synthesize_reflections(self, name, *, subject):
+            observed.append((name, subject.key, get_global_language_full()))
+            return [{"id": "reflection-1"}]
+
+    async def resolve(name, resolved_subject):
+        assert (name, resolved_subject.key) == (
+            "Neko",
+            "group_chat:qq:7788",
+        )
+        return "zh-TW"
+
+    monkeypatch.setattr(synthesis, "MIN_FACTS_FOR_REFLECTION", 1)
+    with language_context("en"):
+        result = await Harness().synthesize_scoped_reflections(
+            "Neko",
+            subject_locale_resolver=resolve,
+        )
+
+    assert result == [{"id": "reflection-1"}]
+    assert observed == [
+        ("Neko", "group_chat:qq:7788", "zh-TW"),
+    ]
 
 
 @pytest.mark.asyncio

@@ -941,6 +941,13 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         {"speaker_label": speaker_label} if speaker_label else None
     )
     subject = req.subject.to_domain()
+    locale_order = None
+    if is_supported_language_code(req.language):
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_order,
+            lanlan_name,
+            subject,
+        )
     if speaker_label is None and subject.kind == "group_chat":
         # 群 digest 无单一发言人：不给 label 时 legacy prompt 会把提取
         # 框定为"只找关于私聊主人的事实"，成员自述被当空提取 checkpoint
@@ -970,6 +977,14 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=502,
             detail="scoped fact extraction failed; retry later",
         ) from exc
+    if locale_order is not None:
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            req.language,
+            order=locale_order,
+        )
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
@@ -1088,6 +1103,18 @@ async def _process_scoped_history_segments(
                 f"{SCOPED_HISTORY_BATCH_MAX_MESSAGES} messages in total"
             ),
         )
+    locale_orders: list[int | None] = []
+    for segment in parsed:
+        if is_supported_language_code(req.language):
+            locale_orders.append(
+                await asyncio.to_thread(
+                    locale_state.reserve_subject_prompt_locale_order,
+                    lanlan_name,
+                    segment["subject"],
+                )
+            )
+        else:
+            locale_orders.append(None)
     # fail_closed 语义（对齐 legacy 单发路径的注释）：调用方在成功段上
     # pop 掉只存在于它内存里的 bucket。整批抽取失败以 502 暴露（全部保留
     # 重试）；单段 persist 失败在响应体里按段标 failed。
@@ -1108,6 +1135,21 @@ async def _process_scoped_history_segments(
             status_code=502,
             detail="scoped fact extraction returned mismatched segments",
         )
+    for segment, result, locale_order in zip(
+        parsed,
+        segment_results,
+        locale_orders,
+    ):
+        if locale_order is None:
+            continue
+        if result.get("status") == "ok" or result.get("created"):
+            await asyncio.to_thread(
+                locale_state.record_subject_prompt_locale,
+                lanlan_name,
+                segment["subject"],
+                req.language,
+                order=locale_order,
+            )
     return {
         "status": "processed",
         "segments": [

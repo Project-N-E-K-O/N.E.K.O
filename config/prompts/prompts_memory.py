@@ -3585,6 +3585,90 @@ def get_persona_fusion_prompt(lang: str = "zh") -> str:
 persona_fusion_prompt = PERSONA_FUSION_PROMPT["zh"]
 
 
+# Persona markdown renderer section headings. This batch separates zh-TW from
+# the renderer's historical Simplified-Chinese literals; the other locales
+# deliberately retain their existing text until their own prompt batch.
+PERSONA_SECTION_HEADER = {
+    "master": {
+        "zh": "关于{master_name}",
+        "zh-TW": "關於{master_name}",
+        "en": "关于{master_name}",
+        "ja": "关于{master_name}",
+        "ko": "关于{master_name}",
+        "ru": "关于{master_name}",
+        "es": "关于{master_name}",
+        "pt": "关于{master_name}",
+    },
+    "neko": {
+        "zh": "关于{ai_name}",
+        "zh-TW": "關於{ai_name}",
+        "en": "关于{ai_name}",
+        "ja": "关于{ai_name}",
+        "ko": "关于{ai_name}",
+        "ru": "关于{ai_name}",
+        "es": "关于{ai_name}",
+        "pt": "关于{ai_name}",
+    },
+    "relationship": {
+        "zh": "关系动态",
+        "zh-TW": "關係動態",
+        "en": "关系动态",
+        "ja": "关系动态",
+        "ko": "关系动态",
+        "ru": "关系动态",
+        "es": "关系动态",
+        "pt": "关系动态",
+    },
+    "pending_reflections": {
+        "zh": "{ai_name}最近的印象（还不太确定）",
+        "zh-TW": "{ai_name}最近的印象（還不太確定）",
+        "en": "{ai_name}最近的印象（还不太确定）",
+        "ja": "{ai_name}最近的印象（还不太确定）",
+        "ko": "{ai_name}最近的印象（还不太确定）",
+        "ru": "{ai_name}最近的印象（还不太确定）",
+        "es": "{ai_name}最近的印象（还不太确定）",
+        "pt": "{ai_name}最近的印象（还不太确定）",
+    },
+    "confirmed_reflections": {
+        "zh": "{ai_name}比较确定的印象",
+        "zh-TW": "{ai_name}比較確定的印象",
+        "en": "{ai_name}比较确定的印象",
+        "ja": "{ai_name}比较确定的印象",
+        "ko": "{ai_name}比较确定的印象",
+        "ru": "{ai_name}比较确定的印象",
+        "es": "{ai_name}比较确定的印象",
+        "pt": "{ai_name}比较确定的印象",
+    },
+    "suppressed": {
+        "zh": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "zh-TW": "暫不主動提及的內容（{ai_name}記得，但最近提到太多次了，不要再主動提起）",
+        "en": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "ja": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "ko": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "ru": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "es": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+        "pt": "暂不主动提及的内容（{ai_name}记得，但最近提到太多次了，不要再主动提起）",
+    },
+}
+
+
+def get_persona_section_header(
+    section: str,
+    lang: str = "zh",
+    *,
+    ai_name: str,
+    master_name: str,
+) -> str:
+    table = PERSONA_SECTION_HEADER.get(
+        section,
+        PERSONA_SECTION_HEADER["relationship"],
+    )
+    return _loc(table, lang).format(
+        ai_name=ai_name,
+        master_name=master_name,
+    )
+
+
 # 融合 prompt 里 {ENTITY_LABEL} 的本地化文案：master=关于用户、neko=助手人格。
 # 必须与 prompt 同语言注入，否则中文标签会漏进 en/ja 等版本。
 PERSONA_FUSION_ENTITY_LABEL = {

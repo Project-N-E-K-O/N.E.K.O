@@ -66,7 +66,11 @@ class SynthesisMixin:
         return "\n".join(str(text) for text in texts if text)
 
     async def synthesize_scoped_reflections(
-        self, lanlan_name: str, *, max_subjects: int = 1,
+        self,
+        lanlan_name: str,
+        *,
+        max_subjects: int = 1,
+        subject_locale_resolver=None,
     ) -> list[dict]:
         """Synthesize a bounded number of ready non-legacy subjects.
 
@@ -136,9 +140,17 @@ class SynthesisMixin:
             cursors[lanlan_name] = (
                 bucket['subject'].key, bucket['subject'].scope,
             )
-            created.extend(await self.synthesize_reflections(
-                lanlan_name, subject=bucket['subject'],
-            ))
+            selected_locale = None
+            if subject_locale_resolver is not None:
+                selected_locale = await subject_locale_resolver(
+                    lanlan_name,
+                    bucket['subject'],
+                )
+            from utils.language_utils import language_context
+            with language_context(selected_locale):
+                created.extend(await self.synthesize_reflections(
+                    lanlan_name, subject=bucket['subject'],
+                ))
         return created
 
     async def synthesize_reflections(

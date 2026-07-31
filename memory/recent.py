@@ -29,7 +29,6 @@ from config.prompts.prompts_memory import (
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import (
     detect_prompt_language,
-    get_global_language,
     get_global_language_full,
 )
 from utils.tokenize import acount_tokens
@@ -788,7 +787,10 @@ class CompressedRecentHistoryManager:
         # 第二个返回值（用于上层缓存）跟 memo_text 用的 summary 保持一致——之前
         # 用 raw 摘要会出现"用户看到的 memo 用 stage-2、缓存却存 stage-1"的不一致。
         from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
-        memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
+        memo_text = _loc(
+            MEMORY_MEMO_WITH_SUMMARY,
+            get_global_language_full(),
+        ).format(summary=summary)
         return SystemMessage(content=memo_text), summary
 
     async def _notify_compress_done(self, callback, lanlan_name, snapshot, ok, detailed):

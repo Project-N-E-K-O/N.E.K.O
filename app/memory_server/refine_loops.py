@@ -27,7 +27,10 @@ from config import (
 
 from . import gates, runtime
 from ._shared import logger
-from .locale_state import run_with_character_prompt_locale
+from .locale_state import (
+    aget_subject_prompt_locale,
+    run_with_character_prompt_locale,
+)
 from .gates import (
     _INITIAL_DELAY_PERSONA_REFINE,
     _INITIAL_DELAY_REFLECTION_REFINE,
@@ -336,6 +339,7 @@ async def _periodic_reflection_synthesis_loop():
                         scoped_synth,
                         name,
                         max_subjects=1,
+                        subject_locale_resolver=aget_subject_prompt_locale,
                     )
                 if results:
                     logger.info(
