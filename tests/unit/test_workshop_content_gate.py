@@ -884,6 +884,10 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                         state[target.id] = canonical
                     else:
                         state.pop(target.id, None)
+            elif isinstance(
+                node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+            ):
+                state.pop(node.name, None)
             elif isinstance(node, ast.If):
                 state = merge(after(node.body, state), after(node.orelse, state))
             elif isinstance(node, (ast.For, ast.AsyncFor)):
@@ -1926,11 +1930,9 @@ def _class_protocol_claim(
     class_aliases: dict[str, tuple[str, str]],
 ) -> tuple[tuple[str, str], str] | None:
     """Resolve implicit constructor/context protocol calls for a class name."""
-    if not isinstance(node, ast.Name):
-        return None
     parent = parents.get(id(node))
     stored_class = _local_instance_class(
-        node.id, node.lineno, local_instances
+        _storage_key(node) or '', node.lineno, local_instances
     )
     if (
         stored_class
@@ -1946,6 +1948,8 @@ def _class_protocol_claim(
     if stored_class and isinstance(parent, ast.Call) and parent.func is node:
         if '__call__' in claiming_by_scope.get(stored_class, set()):
             return stored_class, '__call__'
+        return None
+    if not isinstance(node, ast.Name):
         return None
     if not isinstance(parent, ast.Call) or parent.func is not node:
         return None
@@ -2044,33 +2048,91 @@ def _scope_claiming_names_called_on_loop(
                 source_module = alias.name.rsplit('.', 1)[-1]
                 if source_module in module_names and alias.asname:
                     local_module_aliases[alias.asname] = source_module
-    local_callable_aliases = {}
+    def merge_callable_states(*states):
+        return {
+            name: set().union(*(state.get(name, set()) for state in states))
+            for name in set().union(*(set(state) for state in states))
+        }
+
+    def callable_aliases_before(before_line: int):
+        def resolved_name(name, state):
+            if name in state:
+                return set(state[name])
+            candidate = local_names.get(name, ((module, None), name))
+            return (
+                {candidate}
+                if candidate[1] in claiming_by_scope.get(candidate[0], set())
+                else set()
+            )
+
+        def after(statements, state):
+            state = {name: set(values) for name, values in state.items()}
+            for statement in statements:
+                if statement.lineno >= before_line:
+                    continue
+                if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                    value = statement.value
+                    resolutions = (
+                        resolved_name(value.id, state)
+                        if isinstance(value, ast.Name)
+                        else set()
+                    )
+                    targets = (
+                        statement.targets
+                        if isinstance(statement, ast.Assign)
+                        else [statement.target]
+                    )
+                    for target in targets:
+                        if isinstance(target, ast.Name):
+                            state[target.id] = set(resolutions)
+                elif isinstance(
+                    statement, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
+                ):
+                    state[statement.name] = set()
+                elif isinstance(statement, ast.If):
+                    state = merge_callable_states(
+                        after(statement.body, state),
+                        after(statement.orelse, state),
+                    )
+                elif isinstance(statement, (ast.For, ast.AsyncFor)):
+                    state = merge_callable_states(
+                        state, after(statement.body, state)
+                    )
+                    state = after(statement.orelse, state)
+                elif isinstance(statement, ast.With):
+                    state = after(statement.body, state)
+                elif isinstance(statement, ast.Try):
+                    body_state = after(statement.body, state)
+                    paths = [after(statement.orelse, body_state)]
+                    paths.extend(
+                        after(handler.body, state)
+                        for handler in statement.handlers
+                    )
+                    state = after(
+                        statement.finalbody, merge_callable_states(*paths)
+                    )
+            return state
+
+        return after(func.body, {})
+
     alias_source_ids = set()
-    for child in sorted(own_scope, key=lambda node: getattr(node, 'lineno', -1)):
+    for child in own_scope:
         if not isinstance(child, (ast.Assign, ast.AnnAssign)):
             continue
         value = child.value
-        resolution = None
-        if isinstance(value, ast.Name):
-            prior = next((
-                resolved
-                for line, resolved in reversed(
-                    local_callable_aliases.get(value.id, [])
-                )
-                if line < child.lineno
-            ), None)
-            candidate = prior or local_names.get(
-                value.id, ((module, None), value.id)
-            )
-            if candidate[1] in claiming_by_scope.get(candidate[0], set()):
-                resolution = candidate
-                alias_source_ids.add(id(value))
-        targets = child.targets if isinstance(child, ast.Assign) else [child.target]
-        for target in targets:
-            if isinstance(target, ast.Name):
-                local_callable_aliases.setdefault(target.id, []).append((
-                    child.lineno, resolution
-                ))
+        if not isinstance(value, ast.Name):
+            continue
+        state = callable_aliases_before(child.lineno)
+        candidate = (
+            state[value.id]
+            if value.id in state
+            else {local_names.get(value.id, ((module, None), value.id))}
+        )
+        if any(
+            name in claiming_by_scope.get(scope, set())
+            for scope, name in candidate
+        ):
+            alias_source_ids.add(id(value))
     offenders = []
     for node in own_scope:
         if isinstance(node, ast.Name):
@@ -2086,30 +2148,36 @@ def _scope_claiming_names_called_on_loop(
                 local_class_aliases,
             )
             if protocol_claim:
-                scope, resolved_name = protocol_claim
+                resolutions = {protocol_claim}
             else:
-                local_alias = next((
-                    resolved
-                    for line, resolved in reversed(
-                        local_callable_aliases.get(name, [])
-                    )
-                    if line < node.lineno
-                ), None)
-                scope, resolved_name = local_alias or local_names.get(
-                    name, ((module, None), name)
+                state = callable_aliases_before(node.lineno)
+                resolutions = (
+                    state[name]
+                    if name in state
+                    else {local_names.get(name, ((module, None), name))}
                 )
         elif isinstance(node, ast.Attribute):
             name = node.attr
+            protocol_claim = _class_protocol_claim(
+                node,
+                module,
+                claiming_by_scope,
+                parents,
+                local_instances,
+                local_class_aliases,
+            )
             receiver_key = _storage_key(node.value)
             stored_class = _local_instance_class(
                 receiver_key or '', node.lineno, local_instances
             )
-            if (
+            if protocol_claim:
+                resolutions = {protocol_claim}
+            elif (
                 isinstance(node.value, ast.Name)
                 and node.value.id in {'self', 'cls'}
                 and class_name
             ):
-                scope = (module, class_name)
+                resolutions = {((module, class_name), name)}
             elif (
                 isinstance(node.value, ast.Call)
                 and isinstance(node.value.func, ast.Name)
@@ -2118,41 +2186,43 @@ def _scope_claiming_names_called_on_loop(
                 and not node.value.keywords
                 and class_name
             ):
-                scope = (module, class_name)
+                resolutions = {((module, class_name), name)}
             elif stored_class:
-                scope = stored_class
+                resolutions = {(stored_class, name)}
             elif (
                 isinstance(node.value, ast.Name)
                 and (module, node.value.id) in claiming_by_scope
             ):
-                scope = (module, node.value.id)
+                resolutions = {((module, node.value.id), name)}
             elif (
                 isinstance(node.value, ast.Name)
                 and node.value.id in local_class_aliases
             ):
-                scope = local_class_aliases[node.value.id]
+                resolutions = {(local_class_aliases[node.value.id], name)}
             elif (
                 isinstance(node.value, ast.Name)
                 and node.value.id in local_module_aliases
             ):
-                scope = (local_module_aliases[node.value.id], None)
+                resolutions = {
+                    ((local_module_aliases[node.value.id], None), name)
+                }
             else:
                 continue
         else:
             continue
-        if not isinstance(node, ast.Name):
-            resolved_name = name
-        if resolved_name not in claiming_by_scope.get(scope, set()):
-            continue
-        if (
-            resolved_name in generators_by_scope.get(scope, set())
-            or not _is_deferred_reference(
-                node, parents, func, to_thread_aliases
-            )
-        ):
-            offenders.append((
-                f'{scope[0]}.{scope[1] or "<module>"}.{resolved_name}', node.lineno
-            ))
+        for scope, resolved_name in resolutions:
+            if resolved_name not in claiming_by_scope.get(scope, set()):
+                continue
+            if (
+                resolved_name in generators_by_scope.get(scope, set())
+                or not _is_deferred_reference(
+                    node, parents, func, to_thread_aliases
+                )
+            ):
+                offenders.append((
+                    f'{scope[0]}.{scope[1] or "<module>"}.{resolved_name}',
+                    node.lineno,
+                ))
     return offenders
 
 
@@ -2417,6 +2487,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    with guard:\n'
         '        pass\n'
         '\n'
+        'async def stored_attribute_context_protocol_direct():\n'
+        '    holder.guard = ContextGuard()\n'
+        '    with holder.guard:\n'
+        '        pass\n'
+        '\n'
         'async def ambiguous_submit():\n'
         '    dispatcher.submit(_claiming_worker)\n'
         '\n'
@@ -2460,6 +2535,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    await asyncio.to_thread(callback)\n'
         'async def local_alias_direct():\n'
         '    callback = _claiming_worker\n'
+        '    callback()\n'
+        'async def conditional_local_alias():\n'
+        '    callback = _claiming_worker\n'
+        '    if flag:\n'
+        '        callback = harmless\n'
         '    callback()\n'
         '\n'
         'class ModuleWrapperService:\n'
@@ -2622,6 +2702,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('stored_context_protocol_direct'), (
         '先存入局部变量的 context instance 也必须解析到 claim-owning __enter__'
     )
+    assert module_offenders('stored_attribute_context_protocol_direct'), (
+        '存入 attribute 的 context instance 也必须解析到 claim-owning __enter__'
+    )
     assert module_offenders('ambiguous_submit'), (
         '无法证明 receiver 是 executor 的 submit 不能被当作安全 offload'
     )
@@ -2653,6 +2736,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('local_alias_offloaded') == []
     assert module_offenders('local_alias_direct'), (
         'local callable alias 直调仍必须继承 claim owner 身份'
+    )
+    assert module_offenders('conditional_local_alias'), (
+        '任一 conditional path 仍指向 claim owner 时，local alias 直调必须报出'
     )
     assert _scope_claiming_names_called_on_loop(
         functions['module_wrapper_handler'],
@@ -3379,6 +3465,21 @@ def _expression_path_origins(node, func, before_line: int) -> set[str]:
     )) if node is not None else set()
 
 
+def _expression_argument_origins(node, func, before_line: int) -> set[str]:
+    arguments = {
+        arg.arg
+        for arg in (
+            list(func.args.posonlyargs)
+            + list(func.args.args)
+            + list(func.args.kwonlyargs)
+        )
+    }
+    arguments.update(
+        arg.arg for arg in (func.args.vararg, func.args.kwarg) if arg is not None
+    )
+    return _expression_path_origins(node, func, before_line) & arguments
+
+
 def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
     found = []
     for node in _walk_own_scope(func):
@@ -3560,6 +3661,15 @@ def _operation_folder_origin_sets(
     ]
 
 
+def _operation_folder_argument_origin_sets(
+    operation, name: str, parents: dict[int, ast.AST], func
+) -> list[set[str]]:
+    return [
+        _expression_argument_origins(folder, func, operation.lineno)
+        for folder in _operation_folder_expressions(operation, name, parents)
+    ]
+
+
 def _stays_within_claimed_tree(
     operation, name: str, parents: dict[int, ast.AST]
 ) -> bool:
@@ -3623,6 +3733,15 @@ def _unclaimed_folder_operations(
             else set()
             for branch in expressions
         ]
+        branch_target_roots = [
+            _expression_argument_origins(folder, func, branch.lineno)
+            if _resolved_claim_factory(
+                branch, _claim_aliases(func, branch.lineno)
+            )
+            and (folder := _claim_folder_expression(branch)) is not None
+            else set()
+            for branch in expressions
+        ]
         branch_pairs = []
         for branch in expressions:
             aliases = _claim_aliases(func, branch.lineno)
@@ -3638,10 +3757,15 @@ def _unclaimed_folder_operations(
             set.intersection(*branch_target_names)
             if branch_target_names else set()
         )
+        target_roots = (
+            set.union(*branch_target_roots) if branch_target_roots else set()
+        )
         pairs = set.intersection(*branch_pairs) if branch_pairs else set()
         if branch_kinds and all(branch_kinds):
             kinds.add('<all-branches-claimed>')
-        return (kinds, folder_targets, target_names, pairs) if kinds else None
+        return (
+            kinds, folder_targets, target_names, target_roots, pairs
+        ) if kinds else None
 
     def merge_claim_states(left, right):
         return {
@@ -3698,6 +3822,7 @@ def _unclaimed_folder_operations(
         claim_kinds = set()
         claim_targets = set()
         claim_target_names = set()
+        claim_target_roots = set()
         claim_pairs = set()
         claim_contexts = claim_states_by_with.get(id(block), {})
         for item in block.items:
@@ -3717,18 +3842,25 @@ def _unclaimed_folder_operations(
                         _path_expression_names(folder)
                         | _expression_path_origins(folder, func, context.lineno)
                     )
+                    claim_target_roots.update(
+                        _expression_argument_origins(
+                            folder, func, context.lineno
+                        )
+                    )
             elif isinstance(context, ast.Name):
                 (
                     alias_kinds,
                     alias_targets,
                     alias_target_names,
+                    alias_target_roots,
                     alias_pairs,
                 ) = claim_contexts.get(
-                    context.id, (set(), set(), set(), set())
+                    context.id, (set(), set(), set(), set(), set())
                 )
                 claim_kinds.update(alias_kinds)
                 claim_targets.update(alias_targets)
                 claim_target_names.update(alias_target_names)
+                claim_target_roots.update(alias_target_roots)
                 claim_pairs.update(alias_pairs)
         if not claim_kinds:
             continue
@@ -3736,6 +3868,7 @@ def _unclaimed_folder_operations(
             claim_kinds,
             claim_targets,
             claim_target_names,
+            claim_target_roots,
             claim_pairs,
             [
                 (
@@ -3813,6 +3946,9 @@ def _unclaimed_folder_operations(
         folder_origin_sets = _operation_folder_origin_sets(
             child, name, parents, func
         )
+        folder_argument_origin_sets = _operation_folder_argument_origin_sets(
+            child, name, parents, func
+        )
         stays_within_tree = _stays_within_claimed_tree(child, name, parents)
         folder_rule_kinds = _FOLDER_OPERATION_CLAIMS.get(name)
         if (
@@ -3837,6 +3973,12 @@ def _unclaimed_folder_operations(
                     and stays_within_tree
                     and bool(folder_origin_sets)
                     and all(origins & target_names for origins in folder_origin_sets)
+                    and len(target_roots) == 1
+                    and bool(folder_argument_origin_sets)
+                    and all(
+                        origins == target_roots
+                        for origins in folder_argument_origin_sets
+                    )
                     and bool(required_kinds & kinds)
                 )
             )
@@ -3844,7 +3986,9 @@ def _unclaimed_folder_operations(
                 line <= child.lineno and names & target_names
                 for line, names in rebindings
             )
-            for kinds, targets, target_names, pairs, rebindings, scope in claimed_scopes
+            for (
+                kinds, targets, target_names, target_roots, pairs, rebindings, scope
+            ) in claimed_scopes
         )
         if not protected:
             offenders.append((short, func.name, child.lineno, name, '未占用'))
@@ -3884,7 +4028,7 @@ def _unclaimed_folder_operations(
             required_claim in kinds
             and unit_ids <= scope
             and (not unit_folder_names or bool(unit_folder_names & target_names))
-            for kinds, _, target_names, _, _, scope in claimed_scopes
+            for kinds, _, target_names, _, _, _, scope in claimed_scopes
         ):
             offenders.append((
                 short,
@@ -4102,6 +4246,12 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '\n'
         'def keyword_copytree(content_folder):\n'
         '    shutil.copytree(src=source, dst=content_folder)\n'
+        '\n'
+        'def crossed_conditional_targets(folder, other_folder, flag):\n'
+        '    claimed = folder if flag else other_folder\n'
+        '    target = other_folder if flag else folder\n'
+        '    with claim_content_folder(claimed, purpose=p):\n'
+        '        shutil.rmtree(target)\n'
     )
     functions = {node.name: node for node in tree.body}
 
@@ -4121,6 +4271,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
         assert _unclaimed_folder_operations(functions[name], 'new_router'), (
             f'{name} 的 keyword target 也必须被 repository-wide guard 发现'
         )
+    assert _unclaimed_folder_operations(
+        functions['crossed_conditional_targets'], 'new_router'
+    ), 'claim 和 mutation target 在每条 conditional path 上都相反时必须报出'
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
@@ -4178,6 +4331,20 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with claim_content_folder(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    local_definition_shadow = ast.parse(
+        'def publish():\n'
+        '    def claim_content_folder(folder):\n'
+        '        return nullcontext()\n'
+        '    with claim_content_folder(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    local_class_shadow = ast.parse(
+        'def publish():\n'
+        '    class claim_content_folder:\n'
+        '        pass\n'
+        '    with claim_content_folder(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     try_reassigned_factory = ast.parse(
         'def publish():\n'
         '    factory = claim_content_folder\n'
@@ -4225,6 +4392,12 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(parameter_shadow, 'publish'), (
         '同名参数会遮蔽仓库 claim factory，不能被当成真实占用'
+    )
+    assert _unclaimed_folder_operations(local_definition_shadow, 'publish'), (
+        '同名 local def 会遮蔽仓库 claim factory，不能被当成真实占用'
+    )
+    assert _unclaimed_folder_operations(local_class_shadow, 'publish'), (
+        '同名 local class 会遮蔽仓库 claim factory，不能被当成真实占用'
     )
     assert _unclaimed_folder_operations(try_reassigned_factory, 'publish'), (
         'claim factory alias 必须在 try 的全部可达路径上一致'
