@@ -1054,8 +1054,8 @@ function useConfirm() {
       const close = (value) => {
         renderPortal(null);
         host.remove();
-        if (value && __hostedUserActionDepth > 0) retainHostedConfirmedAction();
         resolve(value);
+        if (value && __hostedUserActionDepth > 0) retainHostedConfirmedAction();
       };
       renderPortal(h(ConfirmDialog, {
         open: true,
