@@ -1325,6 +1325,14 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         stats.update(
             await runtime.persona_manager.aforget_subject(lanlan_name, subject)
         )
+        # Reflection/persona archive writers take their store locks. Their
+        # forget calls above therefore drain any writer that had already
+        # snapshotted this subject. Advance the persistent cutoff only now,
+        # while both write tombstones are still open, so a snapshot archived
+        # after the initial facts erase cannot become restore-eligible.
+        await runtime.fact_store.afinalize_subject_forget(
+            lanlan_name, subject,
+        )
     except Exception as exc:
         logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
         raise HTTPException(

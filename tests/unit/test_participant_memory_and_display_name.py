@@ -1329,6 +1329,46 @@ def test_participant_key_is_deferred_on_open_and_immediate_on_close():
     assert '"private_participant_memory_enabled"' in whitelist
 
 
+@pytest.mark.asyncio
+async def test_failed_participant_disable_save_never_starts_settlement():
+    """A failed save must roll markers back before any settlement can run."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    user_data = {
+        "is_group": False,
+        "private_memory_mode": "participant",
+        "memory_enabled": True,
+        "session": SimpleNamespace(_conversation_history=[1, 2, 3]),
+    }
+    plugin = _settings_plugin({"private:1001": user_data})
+    plugin._qq_settings.update({
+        "group_memory_enabled": False,
+        "group_member_memory_enabled": False,
+        "private_participant_memory_enabled": True,
+        "strategy_mode": "neko_scene",
+    })
+    plugin.config_store = SimpleNamespace(
+        _normalize_strategy_mode=lambda value: value or "neko_scene",
+    )
+    plugin._ensure_qq_client_initialized = MagicMock()
+    plugin._spawn_memory_sync_task = MagicMock()
+    plugin.attention_service = None
+    plugin.qq_client = None
+    plugin._running = False
+    service = QQSettingsService(plugin)
+    service.persist_business_config = AsyncMock(return_value=False)
+
+    result = await service.save_settings(
+        private_participant_memory_enabled=False,
+    )
+
+    assert result["persisted"] is False
+    assert plugin._qq_settings["private_participant_memory_enabled"] is True
+    assert "pending_disable_settle" not in user_data
+    assert "participant_opt_out_cutoff" not in user_data
+    plugin._spawn_memory_sync_task.assert_not_called()
+
+
 # ---------------------------------------------------------------------------
 # scoped_forget - the only takeback path
 # ---------------------------------------------------------------------------
@@ -2302,6 +2342,9 @@ async def test_scoped_forget_route_wires_all_three_stores():
             or {"facts": 1, "facts_archive": 0}
         ),
     )
+    store.afinalize_subject_forget = AsyncMock(
+        side_effect=lambda *args: calls.append("fact_finalize"),
+    )
     reflection = MagicMock()
     reflection.abegin_subject_forget = AsyncMock(
         side_effect=lambda *args: calls.append("reflection_begin"),
@@ -2349,7 +2392,7 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["pending_dedup"] == 1
     assert calls == [
         "fact_begin", "reflection_begin", "dedup", "facts", "reflections",
-        "persona", "reflection_end", "fact_end",
+        "persona", "fact_finalize", "reflection_end", "fact_end",
     ]
     for double in (store, dedup, reflection, persona):
         forgotten = double.aforget_subject.await_args.args[1]
@@ -2366,6 +2409,7 @@ async def test_scoped_forget_waits_for_runtime_reload_barrier():
     store = MagicMock()
     store.abegin_subject_forget = AsyncMock()
     store.aforget_subject = AsyncMock(return_value={})
+    store.afinalize_subject_forget = AsyncMock()
     store.aend_subject_forget = AsyncMock()
     reflection = MagicMock()
     reflection.abegin_subject_forget = AsyncMock()

@@ -745,6 +745,7 @@ class QQSettingsService:
         participant_markers_created: list[
             tuple[dict[str, Any], int]
         ] = []
+        participant_settle_needed = False
         if participant_memory_before and not participant_memory_after:
             # 关闭立即生效（与其余 consent 键同向不对称）：同步盖章后交
             # 后台任务按 cutoff 结算既有 participant 会话。ON 方向在
@@ -752,9 +753,7 @@ class QQSettingsService:
             participant_markers_created = (
                 self._stamp_participant_memory_transition(enabled_after=False)
             )
-            self._spawn_group_memory_sync_task(
-                self._settle_participant_sessions_on_disable()
-            )
+            participant_settle_needed = True
         if group_memory_before != group_memory_after:
             self._stamp_group_memory_transition(enabled_after=group_memory_after)
         if member_turning_off or group_memory_after != group_memory_before:
@@ -796,6 +795,13 @@ class QQSettingsService:
             participant_memory_after=participant_memory_after,
             participant_markers_created=participant_markers_created,
         )
+        if success and participant_settle_needed:
+            # Do not race a failed-write rollback against this task: rollback
+            # removes the marker/cutoff, while a failed settlement needs both
+            # to remain retryable by discard and shutdown flush paths.
+            self._spawn_group_memory_sync_task(
+                self._settle_participant_sessions_on_disable()
+            )
         if deferred_opt_ins:
             if success:
                 self._publish_consent_opt_ins(deferred_opt_ins)

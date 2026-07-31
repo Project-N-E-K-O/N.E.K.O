@@ -871,6 +871,19 @@ class FactStore:
     ) -> str | None:
         return await asyncio.to_thread(self.subject_forget_cutoff, name, subject)
 
+    async def afinalize_subject_forget(
+        self, name: str, subject: MemorySubject,
+    ) -> None:
+        """Advance the durable cutoff after the other stores have drained."""
+        async with self._get_persist_alock(name):
+            def _record_under_fact_lock() -> None:
+                with self._get_lock(name):
+                    self._record_subject_forget_tombstone_locked(
+                        name, subject, datetime.now().isoformat(),
+                    )
+
+            await asyncio.to_thread(_record_under_fact_lock)
+
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
         from datetime import timedelta

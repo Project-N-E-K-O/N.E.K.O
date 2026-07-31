@@ -832,14 +832,18 @@ async def test_restore_roundtrip_all_three_stores(tmp_path):
 async def test_restore_does_not_revive_snapshots_preceding_scoped_forget(tmp_path):
     """A persistent forget cutoff must outlive replay-recreated shard copies."""
     _, fs, pm, re, _, _ = _install(str(tmp_path))
-    await _seed_two_subjects(fs, pm, re)
-    await asweep_scoped_subject_archive("小天", **_sweep_kwargs(fs, pm, re))
+    stale_pid, _ = await _seed_two_subjects(fs, pm, re)
 
-    # This mirrors scoped_forget after the subject has already gone stale:
-    # facts archive rows are purged, while event-sourced shard snapshots stay.
+    # The facts side records the initial cutoff first. Simulate a sweep that
+    # already snapshotted the higher-store entries and archives them afterward.
     await fs.aforget_subject("小天", SUBJ_STALE)
+    assert await re.aarchive_reflection("小天", "rs1")
+    assert await pm.aarchive_persona_entry(
+        "小天", SUBJ_STALE.persona_section_key, stale_pid,
+    )
     await re.aforget_subject("小天", SUBJ_STALE)
     await pm.aforget_subject("小天", SUBJ_STALE)
+    await fs.afinalize_subject_forget("小天", SUBJ_STALE)
 
     result = await arestore_scoped_subject(
         "小天", SUBJ_STALE,
