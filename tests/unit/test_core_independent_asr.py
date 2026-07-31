@@ -139,6 +139,7 @@ class _ReadyDetector:
         )
         self.complete_provider_candidate = AsyncMock(return_value=False)
         self.discard_provider_successor = AsyncMock(return_value=True)
+        self.observe_provider_audio = MagicMock()
 
     async def prepare_endpointing(self, token):
         self._token = token
@@ -5020,6 +5021,48 @@ async def test_websocket_core_submits_one_external_turn_after_local_history() ->
     runtime.session.create_response.assert_not_awaited()
 
 
+@pytest.mark.parametrize("accepted", [True, False])
+@pytest.mark.parametrize("observer_raises", [False, True])
+async def test_audio_activation_mirrors_only_dispatcher_accepted_provider_payload(
+    accepted: bool,
+    observer_raises: bool,
+) -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "openai")
+    component = runtime._asr_runtime
+    lifecycle = component._asr_lifecycle
+    detector = component._asr_detector
+    assert lifecycle is not None
+    assert isinstance(detector, _ReadyDetector)
+    if observer_raises:
+        detector.observe_provider_audio.side_effect = RuntimeError("observer failed")
+    token = component._capture_turn_token(lifecycle)
+    payload = b"\x01\x00" * 320
+    activate = MagicMock(return_value=accepted)
+    component._asr_audio_dispatcher = SimpleNamespace(
+        active_turn=None,
+        activate=activate,
+    )
+
+    result = component._activate_asr_audio_dispatcher(
+        lifecycle,
+        token,
+        buffered_pcm16=payload,
+    )
+
+    assert result is accepted
+    activate.assert_called_once()
+    assert activate.call_args.args[2] is payload
+    if accepted:
+        detector.observe_provider_audio.assert_called_once()
+        assert detector.observe_provider_audio.call_args.args[0] is payload
+        assert detector.observe_provider_audio.call_args.kwargs == {
+            "sample_rate_hz": 16_000,
+        }
+    else:
+        detector.observe_provider_audio.assert_not_called()
+
+
 async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
     runtime = _Runtime()
     websocket = type("WebSocket", (), {})()
@@ -5321,6 +5364,34 @@ async def test_resource_optimization_handshake_false_overrides_persisted_enabled
     await runtime._start_independent_asr_if_enabled("audio")
 
     assert start_mock.await_args.kwargs["resource_optimization_enabled"] is False
+    assert runtime._speaker_shadow_factory is None
+    assert "speaker_shadow_factory" not in start_mock.await_args.kwargs
+
+
+async def test_core_passes_only_configured_speaker_shadow_factory(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    factory = MagicMock()
+    runtime._speaker_shadow_factory = factory
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={"independentAsrEnabled": True}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert start_mock.await_args.kwargs["speaker_shadow_factory"] is factory
+    factory.assert_not_called()
 
 
 async def test_provider_restart_reuses_accepted_session_optimization(
@@ -7732,6 +7803,94 @@ async def test_start_resolves_selection_off_event_loop(monkeypatch) -> None:
     assert (
         detector_factory.call_args.kwargs["resource_optimization_enabled"] is False
     )
+    assert detector_factory.call_args.kwargs["speaker_shadow"] is None
+
+
+@pytest.mark.parametrize("factory_fails", [False, True])
+async def test_speaker_shadow_factory_is_lightweight_sync_and_fail_open(
+    monkeypatch,
+    factory_fails: bool,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    selection = _selection("qwen", "provider")
+    session = SimpleNamespace(
+        is_ready=True,
+        connect=AsyncMock(),
+        close=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        lambda _core_type: selection,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        lambda _core_type, **_kwargs: session,
+    )
+    detector_factory = MagicMock(return_value=_ReadyDetector())
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", detector_factory)
+    shadow = SimpleNamespace(close=AsyncMock())
+    factory_threads: list[threading.Thread] = []
+
+    def factory():
+        factory_threads.append(threading.current_thread())
+        if factory_fails:
+            raise RuntimeError("missing shadow backend")
+        return shadow
+
+    result = await runtime._asr_runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+        speaker_shadow_factory=factory,
+    )
+
+    assert result.status is AsrStartStatus.READY
+    assert factory_threads == [threading.main_thread()]
+    assert detector_factory.call_args.kwargs["speaker_shadow"] is (
+        None if factory_fails else shadow
+    )
+
+
+async def test_failed_detector_construction_closes_created_speaker_shadow(
+    monkeypatch,
+) -> None:
+    import main_logic.asr_client.runtime as runtime_module
+
+    runtime = _Runtime()
+    selection = _selection("qwen", "provider")
+    session = SimpleNamespace(
+        is_ready=True,
+        connect=AsyncMock(),
+        close=AsyncMock(),
+    )
+    shadow = SimpleNamespace(close=AsyncMock())
+    monkeypatch.setattr(
+        runtime_module,
+        "_resolve_asr_selection",
+        lambda _core_type: selection,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "_create_asr_session_from_selection",
+        lambda _core_type, **_kwargs: session,
+    )
+    monkeypatch.setattr(
+        runtime_module,
+        "DetectorRuntime",
+        MagicMock(side_effect=RuntimeError("detector construction failed")),
+    )
+
+    result = await runtime._asr_runtime.start(
+        route_key="qwen",
+        resource_optimization_enabled=True,
+        speaker_shadow_factory=lambda: shadow,
+    )
+
+    assert result.status in {AsrStartStatus.FAILED, AsrStartStatus.UNAVAILABLE}
+    shadow.close.assert_awaited_once_with()
 
 
 async def test_teardown_routines_share_one_turn_state_reset() -> None:
