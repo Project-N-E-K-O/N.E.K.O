@@ -755,3 +755,38 @@ def test_the_fallback_does_not_mask_a_genuinely_broken_config(tmp_path, monkeypa
         "配置真坏了却拿缓存盖住了——upload/publish 会一直对着旧根目录干活"
     )
     assert broken["default_workshop_folder"] == str(cm.workshop_dir)
+
+
+def test_the_cache_compare_and_set_is_atomic():
+    """A save landing between the generation check and the assignment must win.
+
+    Without holding a lock across both, an old read can pass the comparison,
+    get preempted while a save bumps the generation and stores the new
+    snapshot, and then assign its stale one on top.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from utils.config_manager import workshop as workshop_mixin
+
+    tree = ast.parse(
+        textwrap.dedent(
+            inspect.getsource(workshop_mixin.WorkshopMixin._remember_good_workshop_config)
+        )
+    )
+    withs = [n for n in ast.walk(tree) if isinstance(n, ast.With)]
+    assert withs, "比较和赋值没有被任何锁圈住"
+    guarded = withs[0]
+    body_ops = [n for n in ast.walk(guarded)]
+    has_compare = any(
+        isinstance(n, ast.Call) and isinstance(n.func, ast.Name) and n.func.id == "getattr"
+        for n in body_ops
+    )
+    has_assign = any(
+        isinstance(n, ast.Attribute) and n.attr == "_last_good_workshop_config"
+        for n in body_ops
+    )
+    assert has_compare and has_assign, (
+        "代数比较和缓存赋值必须在同一个 with 里，否则中间可以被一次 save 插入"
+    )

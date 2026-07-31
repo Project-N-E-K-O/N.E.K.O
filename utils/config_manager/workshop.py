@@ -20,6 +20,7 @@ root path resolution.
 """
 import json
 import os
+import threading
 
 from utils.file_utils import (
     _REPLACE_BUSY_WINERRORS,
@@ -131,6 +132,15 @@ class WorkshopMixin:
         except Exception:
             return None
 
+    @property
+    def _last_good_workshop_config_lock(self):
+        """Tiny lock guarding only the cache compare-and-set (never any I/O)."""
+        lock = getattr(self, "_last_good_lock_obj", None)
+        if lock is None:
+            lock = threading.Lock()
+            self._last_good_lock_obj = lock
+        return lock
+
     def _remember_good_workshop_config(self, config, generation) -> None:
         """Cache a successful read, unless a save landed while it was in flight.
 
@@ -141,9 +151,14 @@ class WorkshopMixin:
         """
         if not isinstance(config, dict):
             return
-        if getattr(self, "_workshop_config_generation", 0) != generation:
-            return
-        self._last_good_workshop_config = dict(config)
+        snapshot = dict(config)
+        # 比较和赋值必须是一个原子步：中间被抢占的话，一次 save 可以在这两步之间
+        # 把代数推上去并写好新缓存，然后这条旧读再把它盖回去。这把锁只圈住两行内存
+        # 操作、不含任何 I/O，所以拿它不会有「持锁跨 fsync」那类问题。
+        with self._last_good_workshop_config_lock:
+            if getattr(self, "_workshop_config_generation", 0) != generation:
+                return
+            self._last_good_workshop_config = snapshot
 
     def workshop_config_lock(self):
         """The lock that serializes every read-modify-write of workshop_config.json.
@@ -333,10 +348,12 @@ class WorkshopMixin:
             # 存下新配置后缓存里还是它进来时读到的旧值 —— 之后一次瞬时读失败就会
             # 回落到**改动之前**的配置，比回落到默认值更难查。
             if isinstance(config_data, dict):
-                self._workshop_config_generation = (
-                    getattr(self, "_workshop_config_generation", 0) + 1
-                )
-                self._last_good_workshop_config = dict(config_data)
+                snapshot = dict(config_data)
+                with self._last_good_workshop_config_lock:
+                    self._workshop_config_generation = (
+                        getattr(self, "_workshop_config_generation", 0) + 1
+                    )
+                    self._last_good_workshop_config = snapshot
 
             logger.info(f"成功保存workshop配置: {config_data}")
         except Exception as e:
