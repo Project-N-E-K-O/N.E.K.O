@@ -410,6 +410,60 @@ async def test_openai_tool_round_discards_all_transition_text():
 
 
 @pytest.mark.asyncio
+async def test_openai_cancellation_stops_before_buffered_tool_execution():
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    handler_calls: list[str] = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    tool = ToolDefinition(name="lookup", description="", handler=handler)
+    client = None
+
+    class _CancellingLLM:
+        max_completion_tokens = 100
+
+        def __init__(self):
+            self.calls = []
+
+        def astream(self, messages, **overrides):
+            self.calls.append((messages, overrides))
+
+            async def _stream():
+                yield LLMStreamChunk(content="arbitrary transition")
+                yield LLMStreamChunk(
+                    content="",
+                    tool_call_deltas=[{
+                        "index": 0,
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "lookup", "arguments": "{}"},
+                    }],
+                )
+                yield LLMStreamChunk(content="", finish_reason="tool_calls")
+                client._is_responding = False
+
+            return _stream()
+
+    fake_llm = _CancellingLLM()
+    client = _bare_tool_client(fake_llm, tool, handler, cap=3)
+    client._is_responding = True
+    messages = [{"role": "user", "content": "lookup"}]
+    visible = ""
+
+    async for chunk in client._astream_with_tools(messages):
+        visible += getattr(chunk, "content", "")
+
+    assert visible == ""
+    assert handler_calls == []
+    assert len(fake_llm.calls) == 1
+    assert messages == [{"role": "user", "content": "lookup"}]
+
+
+@pytest.mark.asyncio
 async def test_openai_tool_round_discards_leak_filter_tail():
     from utils.llm_client import LLMStreamChunk
     from main_logic.omni_offline_client import OmniOfflineClient
@@ -1101,6 +1155,55 @@ async def test_genai_tool_round_discards_all_transition_text(monkeypatch):
         if isinstance(m, dict) and m.get("role") == "assistant" and m.get("tool_calls")
     )
     assert assistant_with_tool_calls["content"] == ""
+
+
+@pytest.mark.asyncio
+async def test_genai_cancellation_stops_before_buffered_tool_execution(
+    monkeypatch,
+):
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    handler_calls: list[str] = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    client, calls = _bare_genai_client(
+        [[
+            _GenaiPart(text="arbitrary transition"),
+            _GenaiPart(function_call=_GenaiFunctionCall(
+                "recall_memory", {"query": "x"}, id_="call_1",
+            )),
+        ]],
+        handler,
+        cap=3,
+    )
+    original_generate = client._genai_client.aio.models.generate_content_stream
+
+    async def _generate_and_cancel(**kwargs):
+        stream = await original_generate(**kwargs)
+
+        async def _wrapped():
+            async for chunk in stream:
+                yield chunk
+            client._is_responding = False
+
+        return _wrapped()
+
+    client._genai_client.aio.models.generate_content_stream = _generate_and_cancel
+    client._is_responding = True
+    messages = [{"role": "user", "content": "lookup"}]
+    visible = ""
+
+    async for chunk in client._astream_genai_with_tools(messages):
+        visible += getattr(chunk, "content", "")
+
+    assert visible == ""
+    assert handler_calls == []
+    assert len(calls) == 1
+    assert messages == [{"role": "user", "content": "lookup"}]
 
 
 @pytest.mark.asyncio
@@ -1880,6 +1983,74 @@ async def test_stream_text_notifies_discarded_when_partial_text_then_error(monke
 
 
 @pytest.mark.asyncio
+async def test_stream_text_ttft_ignores_usage_only_tool_chunks(monkeypatch):
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from utils.llm_client import LLMStreamChunk, SystemMessage
+    from tests.fake_clock import patch_module_clock
+    import utils.instrument as instrument
+
+    now = [10.0]
+
+    async def _astream_usage_then_text(self, messages, **overrides):
+        now[0] = 11.0
+        yield LLMStreamChunk(
+            content="",
+            usage_metadata={"prompt_tokens": 8, "completion_tokens": 1},
+        )
+        now[0] = 20.0
+        yield LLMStreamChunk(content="最终回答")
+
+    monkeypatch.setattr(
+        OmniOfflineClient,
+        "_astream_with_tools",
+        _astream_usage_then_text,
+    )
+    patch_module_clock(monkeypatch, _ofc_streaming, time=lambda: now[0])
+    histogram_calls: list[tuple[str, float]] = []
+    monkeypatch.setattr(
+        instrument,
+        "histogram",
+        lambda name, value, **_labels: histogram_calls.append((name, value)),
+    )
+
+    emitted: list[str] = []
+
+    async def on_text_delta(text, _is_first):
+        emitted.append(text)
+
+    async def noop(*_args, **_kwargs):
+        pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.lanlan_name = "Test"
+    client.master_name = "M"
+    client._prefix_buffer_size = 0
+    client._conversation_history = [SystemMessage(content="sys")]
+    client._pending_images = []
+    client._is_responding = False
+    client._recent_responses = []
+    client._repetition_threshold = 0.8
+    client._max_recent_responses = 3
+    client.max_response_length = 300
+    client.max_response_rerolls = 0
+    client.enable_response_guard = False
+    client.vision_model = ""
+    client.model = "qwen-plus"
+    client.on_text_delta = on_text_delta
+    client.on_input_transcript = None
+    client.on_response_done = noop
+    client.on_response_discarded = None
+    client.on_status_message = None
+    client.on_repetition_detected = None
+
+    await client.stream_text("hi")
+
+    assert emitted == ["最终回答"]
+    assert histogram_calls == [("llm_ttft_ms", 10_000.0)]
+
+
+@pytest.mark.asyncio
 async def test_notify_response_discarded_prefers_request_bound_callback():
     """Per-stream callbacks must not fall back to the shared session callback."""
     from main_logic.omni_offline_client import OmniOfflineClient
@@ -2165,9 +2336,7 @@ async def test_stream_text_length_guard_finishes_visible_long_reply_without_disc
 
 @pytest.mark.asyncio
 async def test_offline_silent_fallback_when_genai_did_not_emit(monkeypatch):
-    """对偶：genai 路径还没 yield 过任何文本就抛 transient 异常时，
-    `_astream_with_tools` 仍然应该静默 fallback 到 OpenAI-compat 兜底——
-    用户感知不到失败，体验最佳。"""
+    """Fall back silently when genai fails before yielding any text."""
     from main_logic.omni_offline_client import OmniOfflineClient
     from utils.llm_client import LLMStreamChunk
 

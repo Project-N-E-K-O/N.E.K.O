@@ -755,7 +755,10 @@ class _StreamingMixin:
                         async for chunk in self._astream_visible_with_tools(
                             self._conversation_history, **_focus_overrides,
                         ):
-                            if not _ttft_recorded:
+                            if (
+                                not _ttft_recorded
+                                and bool(getattr(chunk, "content", None))
+                            ):
                                 _ttft_recorded = True
                                 try:
                                     from utils.instrument import histogram as _instr_h
