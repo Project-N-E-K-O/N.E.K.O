@@ -16,6 +16,7 @@ import ast
 import asyncio
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
@@ -27,7 +28,12 @@ from main_routers import storage_location_router as router_module
 from main_routers.shared_state import init_shared_state
 from utils import root_state_lock
 from utils import storage_location_bootstrap as bootstrap_module
-from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, ROOT_MODE_NORMAL
+from utils.cloudsave_runtime import (
+    ROOT_MODE_BOOTSTRAP_IMPORTING,
+    ROOT_MODE_MAINTENANCE_READONLY,
+    ROOT_MODE_NORMAL,
+    set_root_mode,
+)
 from utils.cloudsave_runtime import fence as fence_module
 from utils.config_manager import ConfigManager
 from utils.storage_migration import get_storage_migration_path, save_storage_migration
@@ -743,6 +749,80 @@ async def test_repeatedly_cancelled_storage_job_still_waits_for_the_worker():
     assert finished.is_set(), (
         "第二次取消让 await 提前返回了——worker 还在写，锁已经松开"
     )
+
+
+@pytest.mark.unit
+async def test_storage_snapshot_waits_for_cloud_fence_transaction(tmp_path, monkeypatch):
+    """A rollback snapshot must never capture a cloud fence's temporary mode."""
+    config_manager = _make_real_config_manager(tmp_path)
+    anchor_root = Path(config_manager.anchor_root)
+    set_root_mode(config_manager, ROOT_MODE_NORMAL)
+
+    fence_entered = threading.Event()
+    release_fence = threading.Event()
+    fence_errors: list[BaseException] = []
+
+    def _hold_cloud_fence() -> None:
+        try:
+            with fence_module.cloud_apply_fence(
+                config_manager,
+                mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
+                reason="test_snapshot_transaction",
+            ):
+                fence_entered.set()
+                if not release_fence.wait(5):
+                    raise TimeoutError("test did not release cloud fence")
+        except BaseException as exc:
+            fence_errors.append(exc)
+
+    fence_thread = threading.Thread(target=_hold_cloud_fence)
+    fence_thread.start()
+    assert await asyncio.get_running_loop().run_in_executor(None, fence_entered.wait, 5)
+
+    transaction_attempted = threading.Event()
+    snapshot_attempted = threading.Event()
+    real_transaction = router_module.root_state_transaction
+    real_snapshot = router_module._snapshot_storage_mutation_state
+
+    @contextmanager
+    def _observed_transaction():
+        transaction_attempted.set()
+        with real_transaction():
+            yield
+
+    def _observed_snapshot(*args, **kwargs):
+        snapshot_attempted.set()
+        return real_snapshot(*args, **kwargs)
+
+    monkeypatch.setattr(router_module, "root_state_transaction", _observed_transaction)
+    monkeypatch.setattr(router_module, "_snapshot_storage_mutation_state", _observed_snapshot)
+
+    snapshot: dict[str, object] = {}
+    task = asyncio.create_task(
+        router_module._apply_storage_mutation_writes(
+            config_manager,
+            anchor_root=anchor_root,
+            snapshot_out=snapshot,
+            write=lambda: set_root_mode(config_manager, ROOT_MODE_MAINTENANCE_READONLY),
+        )
+    )
+    assert await asyncio.get_running_loop().run_in_executor(None, transaction_attempted.wait, 5)
+    assert not snapshot_attempted.is_set(), (
+        "snapshot ran before cloud_apply_fence released its root-state transaction"
+    )
+
+    release_fence.set()
+    try:
+        await task
+    finally:
+        release_fence.set()
+        fence_thread.join(timeout=5)
+
+    assert not fence_thread.is_alive()
+    assert not fence_errors
+    assert snapshot_attempted.is_set()
+    assert snapshot["root_state"]["mode"] == ROOT_MODE_NORMAL
+    assert config_manager.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
 
 
 @pytest.mark.unit

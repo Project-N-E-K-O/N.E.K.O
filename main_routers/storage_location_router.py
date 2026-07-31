@@ -335,9 +335,13 @@ async def _apply_storage_mutation_writes(
     """
 
     def _job() -> Any:
-        snapshot_out.clear()
-        snapshot_out.update(_snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root))
-        return write()
+        # The rollback pre-image and the mutation must observe one root-state
+        # transaction. In particular, do not snapshot the temporary mode held
+        # by cloud_apply_fence and then replay it after that fence has exited.
+        with root_state_transaction():
+            snapshot_out.clear()
+            snapshot_out.update(_snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root))
+            return write()
 
     return await _run_locked_storage_job(_job)
 
@@ -2008,28 +2012,32 @@ async def _post_storage_location_restart_locked(
     rollback_state: dict[str, Any] = {}
 
     def _schedule_pending_migration() -> dict[str, Any]:
-        # 两份 pre-image 都读到之后再一起记进 rollback_state，这样
-        # "rollback_state 非空" 就等价于 "两份都在手上"。分两次记的话，第二次读
-        # 抛异常会留下 migration 键缺失，回滚分支就会把一份本来就存在的检查点删掉。
-        previous_root_state = config_manager.load_root_state()
-        previous_migration = load_storage_migration(config_manager, anchor_root=anchor_root)
-        rollback_state["root_state"] = previous_root_state
-        rollback_state["migration"] = previous_migration
-        pending_payload = create_pending_storage_migration(
-            config_manager,
-            source_root=current_root,
-            target_root=normalized_selected_root,
-            selection_source=payload.selection_source,
-            anchor_root=anchor_root,
-            confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
-        )
-        set_root_mode(
-            config_manager,
-            ROOT_MODE_MAINTENANCE_READONLY,
-            last_migration_source=str(current_root),
-            last_migration_result=f"restart_pending:{normalized_selected_root}",
-        )
-        return pending_payload
+        # The pre-images cannot be captured while cloud_apply_fence exposes a
+        # temporary root mode. Keep them in the same transaction as both writes
+        # so rollback always restores the state immediately preceding this job.
+        with root_state_transaction():
+            # 两份 pre-image 都读到之后再一起记进 rollback_state，这样
+            # "rollback_state 非空" 就等价于 "两份都在手上"。分两次记的话，第二次读
+            # 抛异常会留下 migration 键缺失，回滚分支就会把一份本来就存在的检查点删掉。
+            previous_root_state = config_manager.load_root_state()
+            previous_migration = load_storage_migration(config_manager, anchor_root=anchor_root)
+            rollback_state["root_state"] = previous_root_state
+            rollback_state["migration"] = previous_migration
+            pending_payload = create_pending_storage_migration(
+                config_manager,
+                source_root=current_root,
+                target_root=normalized_selected_root,
+                selection_source=payload.selection_source,
+                anchor_root=anchor_root,
+                confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
+            )
+            set_root_mode(
+                config_manager,
+                ROOT_MODE_MAINTENANCE_READONLY,
+                last_migration_source=str(current_root),
+                last_migration_result=f"restart_pending:{normalized_selected_root}",
+            )
+            return pending_payload
 
     migration_payload = None
     try:
