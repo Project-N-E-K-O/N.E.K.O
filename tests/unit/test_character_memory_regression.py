@@ -2,6 +2,7 @@ import asyncio
 import importlib
 import json
 import os
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -68,6 +69,46 @@ def _make_config_manager(tmp_root: Path):
 def reload_module(module_name: str):
     module = importlib.import_module(module_name)
     return importlib.reload(module)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_thread_call_returns_retained_lock_transaction():
+    """Cancellation must wait for the worker and preserve its cleanup token."""
+    with TemporaryDirectory() as td:
+        cm = _make_config_manager(Path(td))
+        characters_router_module = reload_module("main_routers.characters_router.crud")
+        from utils.character_memory import (
+            begin_character_recent_transaction,
+            release_character_recent_transaction,
+        )
+
+        worker_entered = threading.Event()
+        release_worker = threading.Event()
+
+        def _acquire_then_block():
+            transaction = begin_character_recent_transaction(cm, "Old", "New")
+            worker_entered.set()
+            assert release_worker.wait(3)
+            return transaction
+
+        operation = asyncio.create_task(
+            characters_router_module._await_thread_call_to_completion(
+                _acquire_then_block,
+            )
+        )
+        assert await asyncio.to_thread(worker_entered.wait, 3)
+        operation.cancel()
+        await asyncio.sleep(0.05)
+        assert not operation.done()
+
+        release_worker.set()
+        transaction, cancelled = await operation
+        assert cancelled is True
+        locks = list(transaction["held_locks"])
+        assert locks and all(lock.locked() for lock in locks)
+        release_character_recent_transaction(transaction)
+        assert all(not lock.locked() for lock in locks)
 
 
 class _DummyRequest:

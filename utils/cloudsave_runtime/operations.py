@@ -29,7 +29,9 @@ from typing import Any
 from utils.file_utils import atomic_write_json
 from utils.recent_file import (
     clear_recent_redirects,
+    get_recent_pending_unlocked,
     recent_file_locks,
+    restore_recent_redirects,
     set_recent_pending_unlocked,
 )
 
@@ -1081,31 +1083,6 @@ def import_local_cloudsave_snapshot(
                 if child.is_dir() and child.name not in imported_character_names:
                     delete_dir_targets.add(child)
 
-        backup_records: list[dict[str, Any]] = []
-        for target_path in sorted(
-            set(runtime_targets) | delete_file_targets | delete_dir_targets,
-            key=lambda path: len(path.parts),
-        ):
-            record = {
-                "target": target_path,
-                "backup": None,
-                "is_dir": target_path.is_dir(),
-            }
-            if target_path.exists():
-                backup_path = _build_backup_path(config_manager, backup_root, target_path)
-                backup_path.parent.mkdir(parents=True, exist_ok=True)
-                if target_path.is_dir():
-                    shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
-                else:
-                    shutil.copy2(target_path, backup_path)
-                record["backup"] = backup_path
-            backup_records.append(record)
-
-        _assert_deadline_not_exceeded(
-            deadline_monotonic,
-            operation="import",
-            stage="apply_runtime",
-        )
         recent_targets = {
             target_path
             for target_path in set(runtime_targets) | delete_file_targets
@@ -1116,9 +1093,40 @@ def import_local_cloudsave_snapshot(
             for character_name in imported_character_names
         )
         recent_targets.update(directory / "recent.json" for directory in delete_dir_targets)
-        clear_recent_redirects(list(recent_targets))
         with recent_file_locks(list(recent_targets)):
+            redirect_snapshot = clear_recent_redirects(list(recent_targets))
+            pending_snapshot = {
+                recent_path: get_recent_pending_unlocked(recent_path)
+                for recent_path in recent_targets
+            }
+            backup_records: list[dict[str, Any]] = []
             try:
+                # recent 锁必须覆盖 rollback backup；否则 fence 前已启动的 writer
+                # 能在 copy 与 apply 之间成功落盘，失败回滚再拿旧 backup 把它盖掉。
+                for target_path in sorted(
+                    set(runtime_targets) | delete_file_targets | delete_dir_targets,
+                    key=lambda path: len(path.parts),
+                ):
+                    record = {
+                        "target": target_path,
+                        "backup": None,
+                        "is_dir": target_path.is_dir(),
+                    }
+                    if target_path.exists():
+                        backup_path = _build_backup_path(config_manager, backup_root, target_path)
+                        backup_path.parent.mkdir(parents=True, exist_ok=True)
+                        if target_path.is_dir():
+                            shutil.copytree(target_path, backup_path, dirs_exist_ok=True)
+                        else:
+                            shutil.copy2(target_path, backup_path)
+                        record["backup"] = backup_path
+                    backup_records.append(record)
+
+                _assert_deadline_not_exceeded(
+                    deadline_monotonic,
+                    operation="import",
+                    stage="apply_runtime",
+                )
                 for target_path, staged_path in runtime_targets.items():
                     _facade._apply_runtime_file(staged_path, target_path)
 
@@ -1140,18 +1148,27 @@ def import_local_cloudsave_snapshot(
                     "name_audit": name_audit,
                 }
             except Exception:
-                for record in sorted(backup_records, key=lambda item: len(item["target"].parts), reverse=True):
-                    target_path = record["target"]
-                    if target_path.exists():
-                        if target_path.is_dir():
-                            shutil.rmtree(target_path, ignore_errors=True)
+                try:
+                    for record in sorted(
+                        backup_records,
+                        key=lambda item: len(item["target"].parts),
+                        reverse=True,
+                    ):
+                        target_path = record["target"]
+                        if target_path.exists():
+                            if target_path.is_dir():
+                                shutil.rmtree(target_path, ignore_errors=True)
+                            else:
+                                target_path.unlink()
+                        backup_path = record["backup"]
+                        if backup_path is None or not backup_path.exists():
+                            continue
+                        if record["is_dir"]:
+                            shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
                         else:
-                            target_path.unlink()
-                    backup_path = record["backup"]
-                    if backup_path is None or not backup_path.exists():
-                        continue
-                    if record["is_dir"]:
-                        shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
-                    else:
-                        _facade._apply_runtime_file(backup_path, target_path)
+                            _facade._apply_runtime_file(backup_path, target_path)
+                finally:
+                    for recent_path, messages in pending_snapshot.items():
+                        set_recent_pending_unlocked(recent_path, messages)
+                    restore_recent_redirects(redirect_snapshot)
                 raise

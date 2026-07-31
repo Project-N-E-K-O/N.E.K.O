@@ -4,6 +4,8 @@ import json
 import shutil
 import sqlite3
 import sys
+import threading
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -1018,6 +1020,72 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     assert cloud_state["next_sequence_number"] == 2
     assert cloud_state["last_applied_manifest_fingerprint"] == export_result["manifest"]["fingerprint"]
     assert cloud_state["last_successful_import_at"]
+
+
+@pytest.mark.unit
+def test_local_cloudsave_import_failure_restores_recent_redirects(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime, recent_file
+
+    _write_runtime_state(cm, character_name="B")
+    cloudsave_runtime.export_local_cloudsave_snapshot(cm)
+    old_alias = Path(cm.memory_dir) / "A" / "recent.json"
+    current_path = Path(cm.memory_dir) / "B" / "recent.json"
+    recent_file.redirect_recent_paths([old_alias], current_path)
+    original_apply = cloudsave_runtime._apply_runtime_file
+
+    def _fail_preferences(source_path, target_path):
+        if Path(target_path).name == "user_preferences.json":
+            raise RuntimeError("simulated runtime apply failure")
+        return original_apply(source_path, target_path)
+
+    with patch.object(
+        cloudsave_runtime,
+        "_apply_runtime_file",
+        side_effect=_fail_preferences,
+    ):
+        with pytest.raises(RuntimeError, match="simulated runtime apply failure"):
+            cloudsave_runtime.import_local_cloudsave_snapshot(cm)
+
+    assert recent_file._resolve_key_unlocked(recent_file._lock_key(old_alias)) == (
+        recent_file._lock_key(current_path)
+    )
+
+
+@pytest.mark.unit
+def test_local_cloudsave_import_locks_recent_before_rollback_backup(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime, recent_file
+
+    _write_runtime_state(cm, character_name="B")
+    cloudsave_runtime.export_local_cloudsave_snapshot(cm)
+    current_path = Path(cm.memory_dir) / "B" / "recent.json"
+    writer_entered = threading.Event()
+    writer = None
+    real_copy2 = shutil.copy2
+
+    def _probe_copy(source_path, target_path, *args, **kwargs):
+        nonlocal writer
+        if Path(source_path) == current_path and writer is None:
+            def _wait_for_recent_lock():
+                with recent_file.recent_file_access(current_path):
+                    writer_entered.set()
+
+            writer = threading.Thread(target=_wait_for_recent_lock)
+            writer.start()
+            time.sleep(0.05)
+            assert not writer_entered.is_set()
+        return real_copy2(source_path, target_path, *args, **kwargs)
+
+    with patch.object(shutil, "copy2", side_effect=_probe_copy):
+        cloudsave_runtime.import_local_cloudsave_snapshot(cm)
+
+    assert writer is not None
+    writer.join(3)
+    assert not writer.is_alive()
+    assert writer_entered.is_set()
 
 
 def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_path: str) -> None:

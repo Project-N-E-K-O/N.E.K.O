@@ -26,11 +26,11 @@ from utils.recent_file import (
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
     recent_file_lock,
-    recent_file_locks,
     redirect_recent_paths,
     release_recent_file_locks,
     restore_recent_redirects,
     set_recent_pending_unlocked,
+    snapshot_recent_redirects,
     write_recent_payload_unlocked,
 )
 
@@ -279,19 +279,51 @@ def list_character_recent_paths(config_manager, character_name: str) -> list[Pat
     ))
 
 
+def begin_character_recent_transaction(
+    config_manager, *character_names: str,
+) -> dict[str, Any]:
+    """Acquire all recent-file locks needed by a character lifecycle transaction."""
+    recent_paths = list(dict.fromkeys(
+        path
+        for character_name in character_names
+        for path in list_character_recent_paths(config_manager, character_name)
+    ))
+    return {
+        "recent_paths": recent_paths,
+        "held_locks": acquire_recent_file_locks(recent_paths),
+    }
+
+
+def release_character_recent_transaction(transaction: dict[str, Any] | None) -> None:
+    """Release a lifecycle transaction's recent locks exactly once."""
+    transaction = transaction or {}
+    held_locks = transaction.get("held_locks") or []
+    if held_locks:
+        transaction["held_locks"] = []
+        release_recent_file_locks(held_locks)
+
+
 def rename_character_memory_storage(
-    config_manager, old_name: str, new_name: str, *, keep_recent_locks: bool = False,
+    config_manager,
+    old_name: str,
+    new_name: str,
+    *,
+    keep_recent_locks: bool = False,
+    recent_transaction: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
     pending_sources = list_character_recent_paths(config_manager, old_name)
     target_recent = runtime_target_dir / "recent.json"
-    recent_paths = list(dict.fromkeys([*pending_sources, target_recent]))
-    held_locks = acquire_recent_file_locks(recent_paths)
-    target_redirect_snapshot: dict[str, str] = {}
+    transaction = recent_transaction or begin_character_recent_transaction(
+        config_manager, old_name, new_name,
+    )
+    recent_paths = transaction["recent_paths"]
+    redirect_snapshot = snapshot_recent_redirects(recent_paths)
+    pending_snapshot: dict[Path, list[Any]] = {}
     try:
         # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
-        target_redirect_snapshot = clear_recent_redirects([target_recent])
+        clear_recent_redirects([target_recent])
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_paths
@@ -332,30 +364,28 @@ def rename_character_memory_storage(
             "changed": changed,
             "runtime_dir": runtime_target_dir,
             "exists_after": runtime_target_dir.exists(),
-            "_recent_rename_transaction": {
-                "pending_snapshot": pending_snapshot,
-                "recent_paths": recent_paths,
-                "redirect_sources": pending_sources,
-                "target_redirect_snapshot": target_redirect_snapshot,
-                "held_locks": held_locks if keep_recent_locks else [],
-            },
+            "_recent_rename_transaction": transaction,
         }
+        transaction.update({
+            "pending_snapshot": pending_snapshot,
+            "redirect_snapshot": redirect_snapshot,
+        })
         if not keep_recent_locks:
-            release_recent_file_locks(held_locks)
+            release_character_recent_transaction(transaction)
         return result
     except BaseException:
-        restore_recent_redirects(target_redirect_snapshot)
-        release_recent_file_locks(held_locks)
+        clear_recent_redirects(recent_paths)
+        restore_recent_redirects(redirect_snapshot)
+        for path, messages in pending_snapshot.items():
+            set_recent_pending_unlocked(path, messages)
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
         raise
 
 
 def finalize_character_recent_rename(result: dict[str, Any]) -> None:
     """Release recent locks after the surrounding rename transaction commits."""
-    transaction = result.get("_recent_rename_transaction") or {}
-    held_locks = transaction.get("held_locks") or []
-    if held_locks:
-        transaction["held_locks"] = []
-        release_recent_file_locks(held_locks)
+    release_character_recent_transaction(result.get("_recent_rename_transaction"))
 
 
 def rollback_character_recent_rename(result: dict[str, Any]) -> None:
@@ -367,13 +397,13 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
     if not held_locks:
         held_locks = acquire_recent_file_locks(recent_paths)
     try:
-        clear_recent_redirects(transaction.get("redirect_sources") or [])
-        restore_recent_redirects(transaction.get("target_redirect_snapshot") or {})
+        clear_recent_redirects(recent_paths)
+        restore_recent_redirects(transaction.get("redirect_snapshot") or {})
         for path, messages in snapshot.items():
             set_recent_pending_unlocked(path, messages)
     finally:
-        transaction["held_locks"] = []
-        release_recent_file_locks(held_locks)
+        transaction["held_locks"] = held_locks
+        release_character_recent_transaction(transaction)
 
 
 def clear_character_recent_redirects(config_manager, character_name: str) -> None:
@@ -382,11 +412,20 @@ def clear_character_recent_redirects(config_manager, character_name: str) -> Non
 
 
 def delete_character_memory_storage(
-    config_manager, character_name: str, *, capture_pending: bool = False,
-) -> list[Path] | tuple[list[Path], dict[Path, list[Any]]]:
-    recent_candidates = list_character_recent_paths(config_manager, character_name)
-    clear_recent_redirects(recent_candidates)
-    with recent_file_locks(recent_candidates):
+    config_manager,
+    character_name: str,
+    *,
+    capture_pending: bool = False,
+    keep_recent_locks: bool = False,
+    recent_transaction: dict[str, Any] | None = None,
+) -> list[Path] | tuple[list[Path], dict[str, Any]]:
+    transaction = recent_transaction or begin_character_recent_transaction(
+        config_manager, character_name,
+    )
+    recent_candidates = transaction["recent_paths"]
+    redirect_snapshot = clear_recent_redirects(recent_candidates)
+    pending_snapshot: dict[Path, list[Any]] = {}
+    try:
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_candidates
@@ -401,7 +440,40 @@ def delete_character_memory_storage(
 
         for recent_path in recent_candidates:
             set_recent_pending_unlocked(recent_path, [])
+        transaction.update({
+            "pending_snapshot": pending_snapshot,
+            "redirect_snapshot": redirect_snapshot,
+        })
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
+        if capture_pending:
+            return removed_paths, transaction
+        return removed_paths
+    except BaseException:
+        restore_recent_redirects(redirect_snapshot)
+        for path, messages in pending_snapshot.items():
+            set_recent_pending_unlocked(path, messages)
+        if not keep_recent_locks:
+            release_character_recent_transaction(transaction)
+        raise
 
-    if capture_pending:
-        return removed_paths, pending_snapshot
-    return removed_paths
+
+def finalize_character_recent_delete(result: dict[str, Any]) -> None:
+    """Release recent locks after the surrounding delete transaction commits."""
+    release_character_recent_transaction(result)
+
+
+def rollback_character_recent_delete(result: dict[str, Any]) -> None:
+    """Restore pending state and redirects after a delete transaction rolls back."""
+    recent_paths = result.get("recent_paths") or []
+    held_locks = result.get("held_locks") or []
+    if not held_locks:
+        held_locks = acquire_recent_file_locks(recent_paths)
+        result["held_locks"] = held_locks
+    try:
+        clear_recent_redirects(recent_paths)
+        restore_recent_redirects(result.get("redirect_snapshot") or {})
+        for path, messages in (result.get("pending_snapshot") or {}).items():
+            set_recent_pending_unlocked(path, messages)
+    finally:
+        release_character_recent_transaction(result)

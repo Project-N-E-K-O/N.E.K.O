@@ -475,6 +475,28 @@ def test_fresh_manager_after_reload_flushes_previous_pending(tmp_path, monkeypat
     assert [m.content for m in _read_disk(path)] == ["A", "B", "C"]
 
 
+@pytest.mark.parametrize("seed_disk", [False, True])
+def test_read_includes_pending_after_failed_persist(tmp_path, monkeypatch, seed_disk):
+    """Normal and missing-file reads must preserve the unpersisted visible batch."""
+    mgr, name, path = _make_manager(tmp_path)
+    expected = ["pending"]
+    if seed_disk:
+        _write_disk(path, [HumanMessage(content="disk")])
+        expected.insert(0, "disk")
+
+    def _boom(*args, **kwargs):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", _boom)
+    asyncio.run(
+        mgr.update_history([HumanMessage(content="pending")], name, compress=False)
+    )
+
+    visible = asyncio.run(mgr.aget_recent_history(name))
+    assert [message.content for message in visible] == expected
+    assert [message.content for message in mgr._pending_batches(name)] == ["pending"]
+
+
 def test_authoritative_replace_discards_previous_pending(tmp_path, monkeypatch):
     """A user replacement must not resurrect an older failed append."""
     mgr, name, path = _make_manager(tmp_path)
@@ -599,6 +621,35 @@ def test_rename_rollback_restores_target_redirect(tmp_path):
         assert json.load(handle) == [{"owner": "still-B"}]
 
 
+def test_chained_rename_rollback_restores_source_redirect(tmp_path):
+    """Rolling back B-to-C must preserve an earlier A-to-B redirect."""
+    from utils.character_memory import (
+        rename_character_memory_storage,
+        rollback_character_recent_rename,
+    )
+
+    old_alias = tmp_path / "A" / "recent.json"
+    source_path = tmp_path / "B" / "recent.json"
+    target_path = tmp_path / "C" / "recent.json"
+    source_path.parent.mkdir()
+    _write_disk(str(source_path), [HumanMessage(content="belongs-to-B")])
+    recent_file.redirect_recent_paths([old_alias], source_path)
+
+    class _RenameConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    result = rename_character_memory_storage(_RenameConfig(), "B", "C")
+    rollback_character_recent_rename(result)
+
+    assert recent_file._resolve_key_unlocked(recent_file._lock_key(old_alias)) == (
+        recent_file._lock_key(source_path)
+    )
+    assert recent_file._resolve_key_unlocked(recent_file._lock_key(target_path)) == (
+        recent_file._lock_key(target_path)
+    )
+
+
 def test_new_character_name_invalidates_obsolete_redirect(tmp_path):
     """Every creation path can detach a name that was previously renamed away."""
     from utils.character_memory import clear_character_recent_redirects
@@ -678,9 +729,12 @@ def test_character_rename_holds_recent_locks_across_physical_move(tmp_path, monk
         assert json.load(handle) == [{"writer": "stale-old-path"}]
 
 
-def test_delete_rollback_merges_pending_queued_after_delete(tmp_path):
-    """Delete rollback restores old pending without overwriting a later batch."""
-    from utils.character_memory import delete_character_memory_storage
+def test_delete_holds_lock_until_rollback_before_accepting_later_pending(tmp_path):
+    """A delete transaction must restore state before a later writer can enter."""
+    from utils.character_memory import (
+        delete_character_memory_storage,
+        rollback_character_recent_delete,
+    )
 
     recent_path = tmp_path / "Role" / "recent.json"
     recent_path.parent.mkdir()
@@ -694,17 +748,64 @@ def test_delete_rollback_merges_pending_queued_after_delete(tmp_path):
         memory_dir = tmp_path
         project_memory_dir = tmp_path
 
-    _, snapshot = delete_character_memory_storage(
-        _DeleteConfig(), "Role", capture_pending=True,
+    _, transaction = delete_character_memory_storage(
+        _DeleteConfig(),
+        "Role",
+        capture_pending=True,
+        keep_recent_locks=True,
     )
-    with recent_file.recent_file_lock(recent_path):
-        recent_file.set_recent_pending_unlocked(
-            recent_path, [HumanMessage(content="during-delete")],
-        )
-    recent_file.merge_recent_pending_snapshot(snapshot)
+    entered = threading.Event()
+
+    def _later_writer():
+        with recent_file.recent_file_access(recent_path) as resolved_path:
+            current = recent_file.get_recent_pending_unlocked(resolved_path)
+            recent_file.set_recent_pending_unlocked(
+                resolved_path,
+                current + [HumanMessage(content="during-delete")],
+            )
+            entered.set()
+
+    writer = threading.Thread(target=_later_writer)
+    writer.start()
+    time.sleep(0.05)
+    assert not entered.is_set()
+
+    rollback_character_recent_delete(transaction)
+    writer.join(3)
+    assert not writer.is_alive()
     assert [m.content for m in recent_file.get_recent_pending(recent_path)] == [
         "before-delete", "during-delete",
     ]
+
+
+def test_delete_rollback_restores_redirect_chain(tmp_path):
+    """A failed delete of B must restore every stale path that still targets B."""
+    from utils.character_memory import (
+        delete_character_memory_storage,
+        rollback_character_recent_delete,
+    )
+
+    old_alias = tmp_path / "A" / "recent.json"
+    recent_path = tmp_path / "B" / "recent.json"
+    recent_path.parent.mkdir()
+    _write_disk(str(recent_path), [HumanMessage(content="belongs-to-B")])
+    recent_file.redirect_recent_paths([old_alias], recent_path)
+
+    class _DeleteConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    _, transaction = delete_character_memory_storage(
+        _DeleteConfig(),
+        "B",
+        capture_pending=True,
+        keep_recent_locks=True,
+    )
+    rollback_character_recent_delete(transaction)
+
+    assert recent_file._resolve_key_unlocked(recent_file._lock_key(old_alias)) == (
+        recent_file._lock_key(recent_path)
+    )
 
 
 # ─────────────── T9: review persist failure must report exactly ('failed', None) ───────────────

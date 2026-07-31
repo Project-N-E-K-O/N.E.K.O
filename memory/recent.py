@@ -350,6 +350,9 @@ class CompressedRecentHistoryManager:
                 # 读失败绝不能被当成「历史是空的」——一旦写进 user_histories，下一次
                 # 落盘就会拿这批新消息覆盖整段读不出来的历史。保持既有视图不动。
                 return self.user_histories.get(lanlan_name, [])
+            # 写失败留下的 process-wide pending 也是当前可见历史的一部分。无论
+            # recent.json 尚未创建还是仍停在旧版本，普通读取都不能把它从内存视图抹掉。
+            history = history + recent_file.get_recent_pending_unlocked(file_path)
             self.user_histories[lanlan_name] = history
             return history
 

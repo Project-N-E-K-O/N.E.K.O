@@ -49,6 +49,7 @@ __all__ = [
     "read_recent_text_unlocked",
     "release_recent_file_locks",
     "set_recent_pending_unlocked",
+    "snapshot_recent_redirects",
     "merge_recent_pending_snapshot",
     "redirect_recent_paths",
     "restore_recent_redirects",
@@ -210,10 +211,7 @@ def redirect_recent_paths(source_paths: list[Any], target_path: Any) -> None:
                 _REDIRECTS[source_key] = target_key
 
 
-def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
-    """Forget redirects when an authoritative restore/delete reuses old paths."""
-    keys = {_lock_key(path) for path in paths}
-
+def _redirect_keys_touching_unlocked(keys: set[str]) -> set[str]:
     def _chain_touches_reused_path(start_key: str) -> bool:
         current = start_key
         seen: set[str] = set()
@@ -227,11 +225,28 @@ def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
             current = target
         return False
 
+    return {
+        key for key in _REDIRECTS
+        if _chain_touches_reused_path(key)
+    }
+
+
+def snapshot_recent_redirects(paths: list[Any]) -> dict[str, str]:
+    """Snapshot every redirect chain that touches one of the supplied paths."""
+    keys = {_lock_key(path) for path in paths}
     with _LOCKS_GUARD:
-        remove_keys = {
-            key for key in _REDIRECTS
-            if _chain_touches_reused_path(key)
+        return {
+            key: _REDIRECTS[key]
+            for key in _redirect_keys_touching_unlocked(keys)
         }
+
+
+def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
+    """Forget redirects when an authoritative restore/delete reuses old paths."""
+    keys = {_lock_key(path) for path in paths}
+
+    with _LOCKS_GUARD:
+        remove_keys = _redirect_keys_touching_unlocked(keys)
         removed = {key: _REDIRECTS.pop(key) for key in remove_keys}
     return removed
 
