@@ -268,9 +268,13 @@ class WorkshopMixin:
         if not workshop_path or not os.path.isdir(workshop_path):
             return
         try:
-            config = self.load_workshop_config()
-            config["user_workshop_folder"] = workshop_path
-            self.save_workshop_config(config)
+            # 读—改—写整段持锁：不然启动期这次持久化可以「用户保存配置之前读、之后
+            # 写」，用自己那份陈旧快照把用户刚提交的目录设置整份盖掉。锁是 RLock，
+            # 所以里面的 load_workshop_config 再取一次不会自死锁。
+            with self._workshop_config_lock:
+                config = self.load_workshop_config()
+                config["user_workshop_folder"] = workshop_path
+                self.save_workshop_config(config)
             self._user_workshop_folder_persisted = True
             logger.info(f"已持久化Steam创意工坊路径到配置文件: {workshop_path}")
         except Exception as e:

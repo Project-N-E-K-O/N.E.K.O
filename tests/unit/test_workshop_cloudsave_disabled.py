@@ -244,13 +244,19 @@ async def test_a_created_folder_reports_ready(monkeypatch):
     assert "warning" not in result
 
 
-def test_the_self_healing_read_shares_the_transaction_lock():
-    """`load_workshop_config` is not read-only; it must take the same lock.
+def test_every_read_modify_write_holds_the_config_lock():
+    """No path may load workshop_config.json, change it, and save it unlocked.
 
-    After a storage migration it rebases paths and saves the result. If that
-    write happens outside the lock the POST transaction uses, a concurrent GET
-    can read before the transaction and save after it, silently overwriting
-    the folder settings the user just submitted while POST reports success.
+    Two such paths exist beyond the obvious save: the self-healing rebase
+    inside ``load_workshop_config`` (it writes after a storage migration) and
+    ``persist_user_workshop_folder`` at startup. Either one running unlocked
+    can read before the POST transaction and save after it, silently
+    overwriting the folder settings the user just submitted while POST reports
+    success.
+
+    Checked as "any function calling both load and save must do so inside the
+    lock" rather than by naming the two known offenders — a third one added
+    later has to fail this instead of slipping through.
     """
     import ast
     import inspect
@@ -258,32 +264,47 @@ def test_the_self_healing_read_shares_the_transaction_lock():
 
     from utils.config_manager import workshop as workshop_mixin
 
-    # 方法源码带类体缩进，直接 ast.parse 会 IndentationError。
-    tree = ast.parse(
-        textwrap.dedent(inspect.getsource(workshop_mixin.WorkshopMixin.load_workshop_config))
-    )
-    rebase_calls = [
-        node for node in ast.walk(tree)
-        if isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "_rebase_workshop_config_after_storage_migration"
-    ]
-    assert rebase_calls, "自愈读的调用点不见了，这条守卫需要跟着更新"
+    tree = ast.parse(textwrap.dedent(inspect.getsource(workshop_mixin.WorkshopMixin)))
 
-    guarded = {
-        call.lineno
-        for node in ast.walk(tree) if isinstance(node, ast.With)
-        for item in node.items
-        if "_workshop_config_lock" in ast.unparse(item.context_expr)
-        for call in ast.walk(node)
-        if isinstance(call, ast.Call)
-        and isinstance(call.func, ast.Attribute)
-        and call.func.attr == "_rebase_workshop_config_after_storage_migration"
-    }
-    unguarded = {call.lineno for call in rebase_calls} - guarded
-    assert not unguarded, (
-        f"这些自愈读没有进 _workshop_config_lock（相对行号 {sorted(unguarded)}）——"
-        "它会写盘，不进锁就能盖掉刚提交的配置"
+    def _calls(node) -> set[str]:
+        return {
+            child.func.attr
+            for child in ast.walk(node)
+            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
+        }
+
+    WRITERS = {"save_workshop_config", "_rebase_workshop_config_after_storage_migration"}
+    offenders = []
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if fn.name in {"save_workshop_config", "_rebase_workshop_config_after_storage_migration"}:
+            continue  # 叶子写入本身，由调用方持锁
+        called = _calls(fn)
+        if not (called & WRITERS):
+            continue
+        # 该函数体内所有「写」调用都必须落在某个持 _workshop_config_lock 的 with 里
+        guarded_lines = {
+            call.lineno
+            for node in ast.walk(fn) if isinstance(node, ast.With)
+            for item in node.items
+            if "_workshop_config_lock" in ast.unparse(item.context_expr)
+            for call in ast.walk(node)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+            and call.func.attr in WRITERS
+        }
+        all_lines = {
+            call.lineno
+            for call in ast.walk(fn)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+            and call.func.attr in WRITERS
+        }
+        if all_lines - guarded_lines:
+            offenders.append(f"{fn.name}(相对行 {sorted(all_lines - guarded_lines)})")
+
+    assert not offenders, (
+        f"这些地方在锁外写 workshop 配置：{offenders} —— "
+        "读改写不整段持锁就能盖掉刚提交的配置"
     )
 
 
