@@ -184,3 +184,30 @@ async def test_structural_boundary_preserves_literal_msg_example_in_pre_tool():
         prefix.strip(),
         "answer",
     ]
+
+
+@pytest.mark.asyncio
+async def test_structural_pre_tool_preserves_a_complete_markdown_fence():
+    """Only a fence wrapping dynamic XML may be treated as formatting."""
+    prefix = "Example:\n```xml\n<foo/>\n``` "
+    final_xml = "<msg><text>answer</text></msg>"
+    plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _sanitize_generated_reply=lambda text: text,
+        _emit_log=MagicMock(),
+    )
+    node = QQReplyPostprocessNode(plugin)
+
+    outcome = await node.finalize(
+        SimpleNamespace(ephemeral_session=False),
+        QQModelResult(
+            reply_text=prefix + final_xml,
+            pre_tool_text=prefix,
+            source="session",
+        ),
+    )
+
+    assert [block.text for block in outcome.blocks] == [
+        prefix.strip(),
+        "answer",
+    ]

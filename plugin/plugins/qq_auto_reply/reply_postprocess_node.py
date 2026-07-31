@@ -270,7 +270,10 @@ class QQReplyPostprocessNode:
                 getattr(model_result, "pre_tool_text", "") or ""
             )
             if known_pre_tool and reply_text.startswith(known_pre_tool):
-                explicit_prefix = self._clean_dynamic_prefix(known_pre_tool)
+                # 这是 core 在真实 tool-round start 捕获的模型文本，不是
+                # dynamic XML 的格式前缀。完整 Markdown 围栏、<wait> 等
+                # 字面内容都属于助手输出，不能再用启发式清理器裁剪。
+                explicit_prefix = known_pre_tool.strip()
                 parse_text = reply_text[len(known_pre_tool):]
 
             dynamic_parts = self._split_dynamic_xml(parse_text)

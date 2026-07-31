@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from main_logic.omni_offline_client import route_supports_tool_calls
 from main_logic.tool_calling import ToolResult
@@ -259,6 +259,15 @@ class QQReplyGenerationService:
             # 根本没进历史——此时入 participant bucket 会造出会话里不存在的
             # 成员记忆。
             user_data["human_row_accepted"] = False
+            tool_round_started = False
+            raw_pre_tool_text = ""
+
+            async def _capture_tool_round_start() -> None:
+                nonlocal tool_round_started, raw_pre_tool_text
+                if not tool_round_started:
+                    tool_round_started = True
+                    raw_pre_tool_text = "".join(reply_chunks)
+
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 # 私聊会话的 prompt 是建会话时烙进去的：跨群授权打开时建的
@@ -285,6 +294,7 @@ class QQReplyGenerationService:
                 context=context,
                 user_session=user_session,
                 consent_before=consent_before,
+                on_tool_round_start=_capture_tool_round_start,
             )
             generation_completed = False
             try:
@@ -342,7 +352,14 @@ class QQReplyGenerationService:
                     for clear_slot in (
                         user_session.set_tools,
                         user_session.set_tool_call_handler,
+                        getattr(
+                            user_session,
+                            "set_tool_round_start_callback",
+                            None,
+                        ),
                     ):
+                        if not callable(clear_slot):
+                            continue
                         try:
                             clear_slot(None)
                         except Exception:
@@ -364,6 +381,9 @@ class QQReplyGenerationService:
                         history_before,
                         create_missing_ai_row=generation_completed,
                         outbound_text="".join(reply_chunks),
+                        raw_pre_tool_text=(
+                            raw_pre_tool_text if tool_round_started else None
+                        ),
                     )
                     user_data["current_pre_tool_text"] = current_pre_tool_text
                 appended = list(history_now)[history_before:]
@@ -395,6 +415,7 @@ class QQReplyGenerationService:
         context: Any,
         user_session: Any,
         consent_before: dict,
+        on_tool_round_start: Callable[[], Awaitable[None]] | None = None,
     ) -> bool:
         """Install this turn's recall_memory tool + handler on the client.
 
@@ -410,6 +431,9 @@ class QQReplyGenerationService:
             return False
         set_tools = getattr(user_session, "set_tools", None)
         set_handler = getattr(user_session, "set_tool_call_handler", None)
+        set_round_start = getattr(
+            user_session, "set_tool_round_start_callback", None,
+        )
         if not callable(set_tools) or not callable(set_handler):
             return False
         if not route_supports_tool_calls(
@@ -428,14 +452,19 @@ class QQReplyGenerationService:
                 context=context,
                 consent_before=consent_before,
             ))
+            if on_tool_round_start is not None and callable(set_round_start):
+                set_round_start(on_tool_round_start)
             return True
         except Exception as exc:
             self.plugin.logger.warning(
                 f"recall_memory 工具挂载失败（本轮无召回）: {exc}"
             )
-            # 两个槽位独立做 best-effort 清理：任一个卸载失败都不能阻止
-            # 另一个复位，否则返回 False 后可能把半挂载状态带到下一轮。
-            for clear_slot in (set_tools, set_handler):
+            # 各槽位独立做 best-effort 清理：任一个卸载失败都不能阻止
+            # 其他槽位复位，否则返回 False 后可能把半挂载状态带到下一轮。
+            clear_slots = [set_tools, set_handler]
+            if on_tool_round_start is not None and callable(set_round_start):
+                clear_slots.append(set_round_start)
+            for clear_slot in clear_slots:
                 try:
                     clear_slot(None)
                 except Exception:
@@ -525,6 +554,7 @@ class QQReplyGenerationService:
         *,
         create_missing_ai_row: bool = False,
         outbound_text: str = "",
+        raw_pre_tool_text: str | None = None,
     ) -> tuple[int, str]:
         """Fold visible pre-tool text into the final AI row, then remove tool rows.
 
@@ -555,63 +585,52 @@ class QQReplyGenerationService:
             None,
         )
         final_content = getattr(final_ai_row, "content", None)
-        pre_tool_text = persisted_pre_tool_text
-        if isinstance(outbound_text, str):
-            comparable_outbound = outbound_text.rstrip()
-            if (
-                isinstance(final_content, str)
-                and final_content
-                and comparable_outbound.endswith(final_content)
-            ):
-                pre_tool_text = comparable_outbound[:-len(final_content)]
-            elif final_ai_row is None and create_missing_ai_row:
-                pre_tool_text = outbound_text
-
-        # QQ 的最终投递还会清理 provider-specific thinking 标签；history
-        # 必须对 pre-tool 段应用同一 sanitizer。保留真实出站段尾空白，避免
-        # 英文前缀与最终段在持久化时粘连。
-        sanitize = getattr(self.plugin, "_sanitize_generated_reply", None)
-        if callable(sanitize) and pre_tool_text:
-            trailing_space = pre_tool_text[len(pre_tool_text.rstrip()):]
-            sanitized = str(sanitize(pre_tool_text) or "")
-            pre_tool_text = sanitized + trailing_space if sanitized else ""
-
-        # terminal truncation 的 callback 已把恢复后的整轮正文写成 final AI
-        # row，此时 history 无需再 prepend，但 postprocess 仍需要 tool 轮的
-        # 结构边界。provider 持久化的前缀可能裁掉尾空格；能与真实出站开头
-        # 对齐时，把紧随其后的空白一并收回为边界分隔符。
-        boundary_pre_tool_text = pre_tool_text
+        structural_boundary = (
+            raw_pre_tool_text is not None or bool(assistant_tool_rows)
+        )
+        boundary_source = (
+            raw_pre_tool_text
+            if raw_pre_tool_text is not None
+            else persisted_pre_tool_text
+        )
+        raw_final_text = ""
         if (
-            assistant_tool_rows
-            and not boundary_pre_tool_text.strip()
-            and persisted_pre_tool_text.strip()
+            boundary_source is not None
+            and outbound_text.startswith(boundary_source)
         ):
-            boundary_candidate = persisted_pre_tool_text
-            if callable(sanitize):
-                boundary_candidate = str(sanitize(boundary_candidate) or "")
-            if (
-                boundary_candidate
-                and isinstance(outbound_text, str)
-                and outbound_text.startswith(boundary_candidate)
-            ):
-                boundary_end = len(boundary_candidate)
-                while (
-                    boundary_end < len(outbound_text)
-                    and outbound_text[boundary_end].isspace()
-                ):
-                    boundary_end += 1
-                boundary_pre_tool_text = outbound_text[:boundary_end]
+            raw_final_text = outbound_text[len(boundary_source):]
+        elif (
+            isinstance(final_content, str)
+            and final_content
+            and outbound_text.endswith(final_content)
+        ):
+            raw_final_text = final_content
 
-        # stream_text 不外发纯空白 chunk；相同内容即使进了 provider 的
-        # assistant tool-call history，也不能凭空合成一条用户没看到的 AI 行。
-        if pre_tool_text.strip():
+        # QQ 的 sanitizer 对 dangling thinking close tag 是整轮上下文相关的：
+        # 单独清洗 prefix 会把本应随 close tag 一起丢弃的内容重新泄进 history。
+        # 因此先清洗真实完整出站，再减去同规则清洗后的最终段，所得才是
+        # 用户实际可见的结构前缀；内部空白也会原样保留为段间分隔符。
+        sanitize = getattr(self.plugin, "_sanitize_generated_reply", None)
+        if callable(sanitize):
+            visible_outbound = str(sanitize(outbound_text) or "")
+            visible_final = str(sanitize(raw_final_text) or "")
+        else:
+            visible_outbound = outbound_text
+            visible_final = raw_final_text
+        if visible_final and visible_outbound.endswith(visible_final):
+            boundary_pre_tool_text = visible_outbound[:-len(visible_final)]
+        elif not visible_final:
+            boundary_pre_tool_text = visible_outbound
+        else:
+            boundary_pre_tool_text = ""
+
+        # 共享历史以 QQ 最终可见的整轮文本为准；只有纯空白时不凭空合成
+        # 一条用户没有看到的 AI 行。
+        if visible_outbound.strip():
             if final_ai_row is None and create_missing_ai_row:
-                history.append(AIMessage(content=pre_tool_text))
+                history.append(AIMessage(content=visible_outbound))
             elif final_ai_row is not None:
-                if isinstance(final_content, str):
-                    # sentinel 已把最终段与 pre-tool 段切开；即使最终段碰巧
-                    # 以同一句开头，也必须按结构再拼一次以匹配实际外发文本。
-                    final_ai_row.content = pre_tool_text + final_content
+                final_ai_row.content = visible_outbound
 
         removed = 0
         for index in range(len(history) - 1, start - 1, -1):
@@ -621,7 +640,7 @@ class QQReplyGenerationService:
         return (
             removed,
             boundary_pre_tool_text
-            if assistant_tool_rows and boundary_pre_tool_text.strip()
+            if structural_boundary and boundary_pre_tool_text.strip()
             else "",
         )
 

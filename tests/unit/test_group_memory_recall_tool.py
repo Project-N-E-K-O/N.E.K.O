@@ -464,6 +464,7 @@ async def test_recall_tool_disarmed_after_every_turn():
     assert client.armed_tool_names[0] == ["recall_memory"]
     assert client.tools == []
     assert client.on_tool_call is None
+    assert client.on_tool_round_start is None
 
     async def _boom(client, message):
         raise RuntimeError("stream died")
@@ -479,6 +480,7 @@ async def test_recall_tool_disarmed_after_every_turn():
         )
     assert client.tools == []
     assert client.on_tool_call is None
+    assert client.on_tool_round_start is None
 
 
 @pytest.mark.asyncio
@@ -507,6 +509,7 @@ async def test_final_disarm_clears_handler_when_tool_cleanup_fails():
         reply_chunks=[],
     )
     assert client.on_tool_call is None
+    assert client.on_tool_round_start is None
 
 
 @pytest.mark.asyncio
@@ -1106,14 +1109,64 @@ async def test_hidden_pre_tool_reasoning_is_not_persisted():
 
 
 @pytest.mark.asyncio
+async def test_dangling_thinking_close_uses_full_turn_sanitizer_context():
+    """A hidden prefix must not leak when only the full turn proves it hidden."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+    hidden_prefix = "secret</thinking_reasoning> "
+    final_xml = "<msg><text>answer</text></msg>"
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append(hidden_prefix)
+        await client.on_tool_round_start()
+        result = await client.on_tool_call(
+            _recall_tool_call({"query": "rule"})
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content=hidden_prefix,
+            )
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=final_xml)
+        )
+        client.reply_chunks_ref.append(final_xml)
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert plugin._sanitize_generated_reply(result) == final_xml
+    assert client._conversation_history[-1].content == final_xml
+    assert user_data["current_pre_tool_text"] == ""
+
+
+@pytest.mark.asyncio
 async def test_pre_tool_text_remains_when_no_tool_call_executes():
     """A nameless tool fragment must not make QQ discard prior model text."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
     async def _script(client, message):
-        client.reply_chunks_ref.append("我查一下")
-        assert client.on_tool_round_start is None
+        client.reply_chunks_ref.append("literal <msg> prefix ")
+        assert callable(client.on_tool_round_start)
+        await client.on_tool_round_start()
         client._conversation_history.append(
             SimpleNamespace(type="human", content=message)
         )
@@ -1126,14 +1179,17 @@ async def test_pre_tool_text_remains_when_no_tool_call_executes():
     client = _RecallToolClient(_script)
     reply_chunks: list = []
     client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
     result = await service._run_session_generation(
         context=_group_context(),
         session_key="group:7788",
-        user_data={"lock": asyncio.Lock()},
+        user_data=user_data,
         user_session=client,
         reply_chunks=reply_chunks,
     )
-    assert result == "我查一下最终回答"
+    assert result == "literal <msg> prefix 最终回答"
+    assert client._conversation_history[-1].content == result
+    assert user_data["current_pre_tool_text"] == "literal <msg> prefix "
     assert client.on_tool_round_start is None
     plugin.memory_bridge.query_relevant_memory.assert_not_awaited()
 
