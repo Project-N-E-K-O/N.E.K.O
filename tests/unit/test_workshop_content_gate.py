@@ -865,6 +865,10 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
 
     def after(statements, state):
         state = dict(state)
+        def invalidate(name):
+            for key in list(state):
+                if key == name or key.startswith(f'{name}.'):
+                    state.pop(key, None)
         for node in statements:
             if before_line is not None and node.lineno >= before_line:
                 continue
@@ -875,10 +879,10 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                     if canonical:
                         state[local_name] = canonical
                     else:
-                        state.pop(local_name, None)
+                        invalidate(local_name)
             elif isinstance(node, ast.Import):
                 for imported in node.names:
-                    state.pop(imported.asname or imported.name.split('.')[0], None)
+                    invalidate(imported.asname or imported.name.split('.')[0])
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
                 canonical = state.get(value.id) if isinstance(value, ast.Name) else None
@@ -889,11 +893,11 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                     if canonical:
                         state[target.id] = canonical
                     else:
-                        state.pop(target.id, None)
+                        invalidate(target.id)
             elif isinstance(
                 node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
-                state.pop(node.name, None)
+                invalidate(node.name)
             elif isinstance(node, ast.If):
                 state = merge(after(node.body, state), after(node.orelse, state))
             elif isinstance(node, ast.Match):
@@ -1020,6 +1024,11 @@ def _claim_calls_in_own_scope(func) -> list:
             if isinstance(parent, ast.Call) and parent.func is node:
                 eager.append(node.body)
             stack.extend((node, child) for child in eager)
+            continue
+        if isinstance(node, ast.GeneratorExp):
+            # Only the outermost iterable is eager; the element, conditions,
+            # and nested iterables execute when the generator is consumed.
+            stack.append((node, node.generators[0].iter))
             continue
         if isinstance(node, ast.Call):
             aliases = _claim_aliases(func, node.lineno)
@@ -1205,7 +1214,7 @@ def _is_worker_offload_call(
     if (
         target.attr == 'to_thread'
         and isinstance(target.value, ast.Name)
-        and target.value.id == 'asyncio'
+        and target.value.id in _known_asyncio_module_names(func, call.lineno)
     ):
         return True
     return (
@@ -1213,6 +1222,56 @@ def _is_worker_offload_call(
         and isinstance(target.value, ast.Name)
         and target.value.id in _known_event_loop_names(func, call.lineno)
     )
+
+
+def _known_asyncio_module_names(func, before_line: int) -> set[str]:
+    parameters = {
+        arg.arg
+        for arg in (
+            list(func.args.posonlyargs)
+            + list(func.args.args)
+            + list(func.args.kwonlyargs)
+        )
+    }
+    parameters.update(
+        arg.arg for arg in (func.args.vararg, func.args.kwarg) if arg is not None
+    )
+
+    def after(statements, names):
+        names = set(names)
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, ast.Import):
+                for alias in statement.names:
+                    local = alias.asname or alias.name.split('.')[0]
+                    if alias.name == 'asyncio':
+                        names.add(local)
+                    else:
+                        names.discard(local)
+            elif isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    if isinstance(target, ast.Name):
+                        names.discard(target.id)
+            elif isinstance(statement, ast.If):
+                names = after(statement.body, names) & after(statement.orelse, names)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                names &= after(statement.body, names)
+                names = after(statement.orelse, names)
+            elif isinstance(statement, ast.Try):
+                body_names = after(statement.body, names)
+                paths = [after(statement.orelse, body_names)]
+                paths.extend(after(handler.body, names) for handler in statement.handlers)
+                names = set.intersection(*paths)
+                names = after(statement.finalbody, names)
+        return names
+
+    return after(func.body, {'asyncio'} - parameters)
 
 
 def _contains_node(root, target) -> bool:
@@ -2082,6 +2141,25 @@ def _scope_claiming_names_called_on_loop(
         }
 
     def instance_classes_before(name: str, before_line: int):
+        def constructed_class(value):
+            if not isinstance(value, ast.Call):
+                return None
+            if isinstance(value.func, ast.Name):
+                candidate = local_class_aliases.get(
+                    value.func.id, (module, value.func.id)
+                )
+            elif (
+                isinstance(value.func, ast.Attribute)
+                and isinstance(value.func.value, ast.Name)
+                and value.func.value.id in local_module_aliases
+            ):
+                candidate = (
+                    local_module_aliases[value.func.value.id], value.func.attr
+                )
+            else:
+                return None
+            return candidate if candidate in claiming_by_scope else None
+
         def after(statements, state):
             state = {key: set(values) for key, values in state.items()}
             for statement in statements:
@@ -2089,20 +2167,8 @@ def _scope_claiming_names_called_on_loop(
                     continue
                 if isinstance(statement, (ast.Assign, ast.AnnAssign)):
                     value = statement.value
-                    stored_classes = (
-                        {
-                            local_class_aliases.get(
-                                value.func.id, (module, value.func.id)
-                            )
-                        }
-                        if isinstance(value, ast.Call)
-                        and isinstance(value.func, ast.Name)
-                        and (
-                            value.func.id in class_names
-                            or value.func.id in local_class_aliases
-                        )
-                        else set()
-                    )
+                    constructed = constructed_class(value)
+                    stored_classes = {constructed} if constructed else set()
                     targets = (
                         statement.targets
                         if isinstance(statement, ast.Assign)
@@ -2186,7 +2252,7 @@ def _scope_claiming_names_called_on_loop(
                         after(statement.body, state),
                         after(statement.orelse, state),
                     )
-                elif isinstance(statement, (ast.For, ast.AsyncFor)):
+                elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                     state = merge_callable_states(
                         state, after(statement.body, state)
                     )
@@ -2668,6 +2734,20 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    if flag:\n'
         '        callback = harmless\n'
         '    callback()\n'
+        'async def while_local_alias(flag):\n'
+        '    callback = harmless\n'
+        '    while flag:\n'
+        '        callback = _claiming_worker\n'
+        '        break\n'
+        '    callback()\n'
+        'async def shadowed_asyncio(asyncio):\n'
+        '    await asyncio.to_thread(_claiming_worker)\n'
+        'async def deferred_generator_claim(items):\n'
+        '    work = (_raise_inside(claim_content_folder(folder)) for _ in items)\n'
+        '    await asyncio.to_thread(list, work)\n'
+        'async def eager_generator_iterable_claim():\n'
+        '    work = (item for item in _raise_inside(claim_content_folder(folder)))\n'
+        '    await asyncio.to_thread(list, work)\n'
         '\n'
         'class ModuleWrapperService:\n'
         '    def module_wrapper(self):\n'
@@ -2903,6 +2983,18 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('conditional_local_alias'), (
         '任一 conditional path 仍指向 claim owner 时，local alias 直调必须报出'
     )
+    assert module_offenders('while_local_alias'), (
+        'local callable owner alias 必须合并 while 的 zero/nonzero 路径'
+    )
+    assert module_offenders('shadowed_asyncio'), (
+        '同名参数遮蔽 asyncio module 后不能把 receiver 当成已证明 offload'
+    )
+    assert _claim_calls_in_own_scope(functions['deferred_generator_claim']) == [], (
+        'generator body 是 deferred scope，在 worker 消费时不属于 handler 直接 claim'
+    )
+    assert _claim_calls_in_own_scope(functions['eager_generator_iterable_claim']), (
+        'generator 最外层 iterable 在构造时立即求值，其中的 claim 必须报出'
+    )
     assert _scope_claiming_names_called_on_loop(
         functions['module_wrapper_handler'],
         'synthetic', 'ModuleWrapperService', claiming, generators, aliases,
@@ -2947,6 +3039,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'def owner():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        pass\n'
+        'class Service:\n'
+        '    def worker(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
     )
     consumer = ast.parse(
         'from .source import owner as imported_owner\n'
@@ -3087,11 +3183,19 @@ def test_nested_router_imports_preserve_claim_ownership():
         'def owner():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        pass\n'
+        'class Service:\n'
+        '    def worker(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
     )
     consumer = ast.parse(
         'from .publish import owner\n'
+        'from . import publish as workers\n'
         'async def handler():\n'
         '    owner()\n'
+        'async def qualified_instance_handler():\n'
+        '    service = workers.Service()\n'
+        '    service.worker()\n'
     )
     package_initializer = ast.parse('from .publish import owner\n')
     package_consumer = ast.parse(
@@ -3190,6 +3294,15 @@ def test_nested_router_imports_preserve_claim_ownership():
     assert _scope_claiming_names_called_on_loop(
         handler, 'workers.consumer', None, claiming, generators, aliases, import_facts
     ), '递归发现的 subpackage module import 也必须保留 claim ownership'
+    qualified_instance_handler = next(
+        node for node in consumer.body
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == 'qualified_instance_handler'
+    )
+    assert _scope_claiming_names_called_on_loop(
+        qualified_instance_handler,
+        'workers.consumer', None, claiming, generators, aliases, import_facts,
+    ), 'module alias 上构造的 class instance 必须解析 claim-owning method'
     package_handler = next(
         node for node in package_consumer.body if isinstance(node, ast.AsyncFunctionDef)
     )
@@ -3525,33 +3638,39 @@ def _operation_aliases(
 ) -> dict[str, str]:
     """Resolve protected-operation aliases in source order."""
     known = _known_operation_names()
-    def merge(left, right):
-        return {
-            name: value
-            for name, value in left.items()
-            if right.get(name) == value
-        }
+    def operation_set(value):
+        values = {value} if isinstance(value, str) else set(value or ())
+        return frozenset(values & known)
 
     def merge_possible(left, right):
-        merged = dict(left)
-        for name, value in right.items():
-            if name not in merged:
-                merged[name] = value
-            elif merged[name] != value:
-                merged.pop(name)
-        return merged
+        return {
+            name: operation_set(left.get(name)) | operation_set(right.get(name))
+            for name in set(left) | set(right)
+            if operation_set(left.get(name)) | operation_set(right.get(name))
+        }
 
     def after(statements, state):
-        state = dict(state)
+        state = {
+            name: operations
+            for name, value in state.items()
+            if (operations := operation_set(value))
+        }
         for node in statements:
             if before_line is not None and node.lineno >= before_line:
                 continue
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
-                    canonical = state.get(alias.name, alias.name)
+                    canonical = operation_set(state.get(alias.name, alias.name))
                     local = alias.asname or alias.name
-                    if canonical in known:
+                    if canonical:
                         state[local] = canonical
+            elif isinstance(node, ast.Import):
+                for alias in node.names:
+                    if alias.name != 'os':
+                        continue
+                    local = alias.asname or alias.name
+                    for operation in _OS_CONTENT_PATH_MUTATION_ARGS:
+                        state[f'{local}.{operation}'] = frozenset({operation})
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
                 reference = (
@@ -3561,19 +3680,29 @@ def _operation_aliases(
                     and value.args
                     else value
                 )
-                canonical = state.get(
-                    _operation_name(reference) or '', _operation_name(reference)
+                reference_name = _operation_name(reference) or ''
+                if (
+                    isinstance(reference, ast.Attribute)
+                    and isinstance(reference.value, ast.Name)
+                ):
+                    qualified = f'{reference.value.id}.{reference.attr}'
+                else:
+                    qualified = reference_name
+                canonical = operation_set(
+                    state.get(qualified, state.get(reference_name, reference_name))
                 )
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if not isinstance(target, ast.Name):
                         continue
-                    if canonical in known:
+                    if canonical:
                         state[target.id] = canonical
                     else:
                         state.pop(target.id, None)
             elif isinstance(node, ast.If):
-                state = merge(after(node.body, state), after(node.orelse, state))
+                state = merge_possible(
+                    after(node.body, state), after(node.orelse, state)
+                )
             elif isinstance(node, ast.With):
                 state = after(node.body, state)
             elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
@@ -3592,7 +3721,7 @@ def _operation_aliases(
                 if paths:
                     state = paths[0]
                     for path in paths[1:]:
-                        state = merge(state, path)
+                        state = merge_possible(state, path)
             elif isinstance(node, ast.Try):
                 paths = [after(node.body, state)]
                 paths.extend(after(handler.body, state) for handler in node.handlers)
@@ -3600,7 +3729,7 @@ def _operation_aliases(
                     paths.append(after(node.orelse, paths[0]))
                 state = paths[0]
                 for path in paths[1:]:
-                    state = merge(state, path)
+                    state = merge_possible(state, path)
                 state = after(node.finalbody, state)
         return state
 
@@ -3679,6 +3808,15 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                         else:
                             state.pop(name, None)
             elif isinstance(statement, ast.If):
+                for named in ast.walk(statement.test):
+                    if not isinstance(named, ast.NamedExpr):
+                        continue
+                    origins = expression_origins(named.value, state)
+                    for name in _assigned_names(named):
+                        if origins:
+                            state[name] = origins
+                        else:
+                            state.pop(name, None)
                 # A write is relevant if either reachable path can still point
                 # into the content folder.
                 state = merge(
@@ -3849,28 +3987,41 @@ def _operation_nodes(
         aliases_at_node = _operation_aliases(
             func.body, seed_aliases, before_line=getattr(node, 'lineno', None)
         )
-        canonical = aliases_at_node.get(name, name)
-        if canonical in _OS_CONTENT_PATH_MUTATION_ARGS and not (
-            isinstance(node, ast.Attribute)
-            and isinstance(node.value, ast.Name)
-            and node.value.id == 'os'
-            or isinstance(node, ast.Name)
-            and name in aliases_at_node
-        ):
-            continue
-        if (
-            canonical in _FOLDER_OPERATION_ARGS
-            and short not in {'publish', 'voice_refs'}
-            and not any(
-                _looks_like_content_folder(origin)
-                for origin in _operation_folder_origins(
-                    node, canonical, parents, func
+        qualified = (
+            f'{node.value.id}.{node.attr}'
+            if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+            else None
+        )
+        canonical_values = aliases_at_node.get(
+            qualified,
+            aliases_at_node.get(name, frozenset({name}) if name else frozenset()),
+        )
+        canonicals = (
+            {canonical_values}
+            if isinstance(canonical_values, str)
+            else set(canonical_values)
+        )
+        for canonical in canonicals:
+            if canonical in _OS_CONTENT_PATH_MUTATION_ARGS and not (
+                qualified == f'os.{canonical}'
+                or qualified in aliases_at_node
+                or isinstance(node, ast.Name)
+                and name in aliases_at_node
+            ):
+                continue
+            if (
+                canonical in _FOLDER_OPERATION_ARGS
+                and short not in {'publish', 'voice_refs'}
+                and not any(
+                    _looks_like_content_folder(origin)
+                    for origin in _operation_folder_origins(
+                        node, canonical, parents, func
+                    )
                 )
-            )
-        ):
-            continue
-        if canonical in required:
-            found.append((node, canonical))
+            ):
+                continue
+            if canonical in required:
+                found.append((node, canonical))
     found.extend(_content_path_mutation_nodes(func))
     found.extend(_open_write_nodes(func))
     return found
@@ -3971,7 +4122,6 @@ def _operation_folder_expressions(
     is_os_style = isinstance(operation, ast.Name) or (
         isinstance(operation, ast.Attribute)
         and isinstance(operation.value, ast.Name)
-        and operation.value.id == 'os'
     )
     if (
         name in _OS_CONTENT_PATH_MUTATION_ARGS
@@ -4492,10 +4642,14 @@ def _unclaimed_folder_operations(
                     and bool(required_kinds & kinds)
                     and _paths_fit_claim(operation_folders, claim_shapes)
                     and (
-                        not _mutates_claim_root(
-                            name, operation_folders, claim_shapes
+                        'claim_content_folder' in kinds
+                        or name not in {'rmtree', 'rmdir', 'rename', 'replace', 'move'}
+                        or (
+                            bool(claim_shapes)
+                            and not _mutates_claim_root(
+                                name, operation_folders, claim_shapes
+                            )
                         )
-                        or 'claim_content_folder' in kinds
                     )
                 )
             )
@@ -4791,6 +4945,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '        break\n'
         '    shutil.rmtree(target)\n'
         '\n'
+        'def walrus_target(content_folder):\n'
+        '    if target := content_folder:\n'
+        '        shutil.rmtree(target)\n'
+        '\n'
         'def os_mutations(content_folder, other_content_folder):\n'
         "    os.mkdir(os.path.join(content_folder, 'generated'))\n"
         "    os.makedirs(os.path.join(content_folder, 'nested'))\n"
@@ -4805,6 +4963,16 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    remove_file = os.unlink\n'
         '    remove_dir(content_folder)\n'
         "    remove_file(os.path.join(content_folder, 'voice.wav'))\n"
+        '\n'
+        'def aliased_os_module(content_folder):\n'
+        '    import os as filesystem\n'
+        '    filesystem.rmdir(content_folder)\n'
+        '\n'
+        'def conditional_operation_alias(content_folder, flag):\n'
+        '    op = harmless\n'
+        '    if flag:\n'
+        '        op = os.rmdir\n'
+        '    op(content_folder)\n'
         '\n'
         'def copy_source(content_folder, dst):\n'
         '    shutil.copytree(content_folder, dst)\n'
@@ -4845,6 +5013,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '\n'
         'def partial_root_delete(content_folder):\n'
         '    with claim_partial_writer(content_folder, purpose=p):\n'
+        '        os.rmdir(content_folder)\n'
+        '\n'
+        'def dynamic_partial_root_delete(content_folder):\n'
+        '    with claim_partial_writer(os.path.abspath(content_folder), purpose=p):\n'
         '        os.rmdir(content_folder)\n'
         '\n'
         'def partial_child_delete(content_folder):\n'
@@ -4897,6 +5069,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['while_target'], 'new_router'
     ), 'while body 中绑定的 target 也必须保留 content-folder origin'
+    assert _unclaimed_folder_operations(
+        functions['walrus_target'], 'new_router'
+    ), 'If.test 中 walrus 绑定的 target 必须传播 content-folder origin'
     os_offenders = _unclaimed_folder_operations(
         functions['os_mutations'], 'new_router'
     )
@@ -4911,6 +5086,12 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert {item[3] for item in aliased_os_offenders} >= {'rmdir', 'unlink'}, (
         'generic os mutation aliases 也必须保留 operation identity'
     )
+    assert _unclaimed_folder_operations(
+        functions['aliased_os_module'], 'new_router'
+    ), 'import os as ... 的 module alias 也必须识别 mutation'
+    assert _unclaimed_folder_operations(
+        functions['conditional_operation_alias'], 'new_router'
+    ), '任一 conditional path 指向 protected operation 时必须保留该可能身份'
     assert _unclaimed_folder_operations(
         functions['copy_source'], 'new_router'
     ), 'copy source 读取 content folder 时也必须要求 matching claim'
@@ -4942,6 +5123,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['partial_root_delete'], 'new_router'
     ), 'shared claim 不能保护删除 content-folder root 的操作'
+    assert _unclaimed_folder_operations(
+        functions['dynamic_partial_root_delete'], 'new_router'
+    ), '未知静态形状的 shared claim 不能证明 destructive target 位于根目录下方'
     assert _unclaimed_folder_operations(
         functions['partial_child_delete'], 'new_router'
     ) == [], 'shared claim 仍应覆盖 content-folder 内部的 child mutation'
@@ -5032,6 +5216,13 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with claim_content_folder(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    qualified_module_shadow = ast.parse(
+        'def publish():\n'
+        '    content_gate = fake\n'
+        '    with content_gate.claim_content_folder(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    qualified_module_shadow._claim_module_aliases = {'content_gate'}
     match_reassigned_factory = ast.parse(
         'def publish(value):\n'
         '    factory = claim_content_folder\n'
@@ -5130,6 +5321,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(imported_shadow, 'publish'), (
         '无关 import 绑定同名 local 时必须清除仓库 claim factory 身份'
+    )
+    assert _unclaimed_folder_operations(qualified_module_shadow, 'publish'), (
+        'qualified claim module base 被重绑定后，其 factory identities 必须全部失效'
     )
     assert _unclaimed_folder_operations(match_reassigned_factory, 'publish'), (
         'claim factory alias 必须合并 match 的全部可达 case'
