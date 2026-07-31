@@ -1549,3 +1549,74 @@ def test_every_turn_start_advances_the_epoch():
         "every turn start must advance _turn_epoch within the next line or "
         f"two; these start a turn without it: {offenders}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_leaves_the_lane_to_a_successor_that_took_over(make_harness):
+    # Greptile P1. Scoping the owner assignment stopped the release ERASING a
+    # successor, but it still called _release_lane_if_clear() unconditionally —
+    # and that helper knows nothing about owners. Every other caller of it
+    # either just cleared the owner or guards on there being none; this was the
+    # one site that could open the lane over a response it never observed,
+    # letting the next response.create overlap a live one.
+    resumed = asyncio.Event()
+    notified = asyncio.Event()
+
+    async def _hands_control_back(reason: str, response_id: str | None) -> None:
+        notified.set()
+        await resumed.wait()
+
+    harness = make_harness(fail_open=True, on_stuck_release=_hands_control_back)
+    first = await harness.own_a_live_response("resp-1")
+
+    release = asyncio.create_task(
+        harness.arbiter._release_stuck_lifecycle("overtaken by a new owner")
+    )
+    await asyncio.wait_for(notified.wait(), timeout=1)
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(first.done, timeout=1)
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-1"}}
+    )
+    await _settle()
+    second = await harness.arbiter.enqueue(source="native-next")
+    await asyncio.wait_for(second.sent, timeout=1)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-2"}}
+    )
+    dispatched = harness.dispatch_count
+
+    resumed.set()
+    await asyncio.wait_for(release, timeout=1)
+    await _settle()
+
+    # Assert the lane state itself. `is_busy` is not the observable here — it
+    # reports True off `_response_owner` alone, so it stays True whether or not
+    # the lane was opened, and an earlier version of this test asserted it and
+    # passed with the guard deleted.
+    assert harness.arbiter._idle.is_set() is False, (
+        "the successor holds the lane; the release must not open it underneath"
+    )
+    assert harness.arbiter._server_response_active is True, (
+        "nor declare no response live while the successor is streaming"
+    )
+
+    # And the successor's own terminal is what opens it, as everywhere else in
+    # the arbiter.
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-2"}}
+    )
+    await asyncio.wait_for(second.done, timeout=1)
+    await _settle()
+    assert harness.arbiter._idle.is_set() is True
+    third = await harness.arbiter.enqueue(source="native-third")
+    await asyncio.wait_for(third.sent, timeout=1)
+    assert harness.dispatch_count == dispatched + 1
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-3"}}
+    )
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-3"}}
+    )
+    await asyncio.wait_for(third.done, timeout=1)

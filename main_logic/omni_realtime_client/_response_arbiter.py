@@ -1091,7 +1091,16 @@ class RealtimeResponseArbiter:
             # rather than by force — it already knows to keep the lane closed
             # while a live server response is being tracked, and to arm the
             # staleness timer that eventually retires one.
-            self._release_lane_if_clear()
+            #
+            # It does NOT know about owners, though: every other caller either
+            # has just cleared the owner or guards on there being none. So does
+            # this one, because the owner here may not be the one it captured —
+            # a successor can take the lane while the host is being notified,
+            # and opening it over that successor is what lets the next
+            # response.create overlap a live response. Its own terminal path
+            # re-runs this check, exactly as the staleness timer's does.
+            if self._response_owner is None:
+                self._release_lane_if_clear()
             if current is None and released_owner is None:
                 # cancel_current()'s unowned branch escalates over a
                 # server-initiated response the arbiter never owned, so there
