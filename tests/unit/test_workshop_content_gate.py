@@ -283,8 +283,23 @@ async def _drain(task) -> None:
         task.exception()
 
 
+def _run_worker(done: threading.Event, func, *args):
+    """Expose completion separately from the cancellable asyncio wrapper."""
+    try:
+        return func(*args)
+    finally:
+        done.set()
+
+
 @asynccontextmanager
-async def _worker_parked_at(gate: threading.Event, release: threading.Event, task, what: str):
+async def _worker_parked_at(
+    gate: threading.Event,
+    release: threading.Event,
+    task,
+    what: str,
+    *,
+    worker_done: threading.Event | None = None,
+):
     """Run the body while ``task``'s worker sits parked, then always let it go.
 
     Three things have to hold together here, and each one was its own defect
@@ -308,6 +323,10 @@ async def _worker_parked_at(gate: threading.Event, release: threading.Event, tas
         yield
     finally:
         release.set()
+        if worker_done is not None:
+            assert await asyncio.to_thread(worker_done.wait, _SYNC_TIMEOUT), (
+                f'{what} 的 asyncio 等待方已经结束，但 worker 没有真正收尾'
+            )
         await _drain(task)
 
 
@@ -469,6 +488,7 @@ async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, m
 
     uploading = threading.Event()
     finish = threading.Event()
+    worker_done = threading.Event()
 
     def _slow_upload(steamworks, title, description, content_folder, *rest):
         uploading.set()
@@ -478,9 +498,16 @@ async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, m
     monkeypatch.setattr(publish, '_publish_workshop_item', _slow_upload)
 
     task = asyncio.create_task(
-        asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
+        asyncio.to_thread(
+            _run_worker,
+            worker_done,
+            publish._preflight_and_publish,
+            *_publish_args(str(tmp_path)),
+        )
     )
-    async with _worker_parked_at(uploading, finish, task, '假 SetItemContent'):
+    async with _worker_parked_at(
+        uploading, finish, task, '假 SetItemContent', worker_done=worker_done
+    ):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -510,6 +537,7 @@ async def test_cancelling_the_upload_does_not_free_the_pair_early(tmp_path, monk
 
     swapping = threading.Event()
     finish = threading.Event()
+    worker_done = threading.Event()
     real_write = voice_refs.atomic_write_json
 
     def _park_before_commit(*args, **kwargs):
@@ -521,11 +549,15 @@ async def test_cancelling_the_upload_does_not_free_the_pair_early(tmp_path, monk
 
     task = asyncio.create_task(
         asyncio.to_thread(
+            _run_worker,
+            worker_done,
             voice_refs._replace_voice_reference,
             *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'new-audio', 'new'),
         )
     )
-    async with _worker_parked_at(swapping, finish, task, 'swap 的提交点'):
+    async with _worker_parked_at(
+        swapping, finish, task, 'swap 的提交点', worker_done=worker_done
+    ):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -631,6 +663,23 @@ async def test_deleting_the_temp_folder_during_a_publish_answers_409(export_fold
     assert export_folder.exists(), '发布还在跑的时候把内容目录删掉了'
 
 
+async def test_publishing_during_a_publish_answers_409(export_folder, monkeypatch):
+    """Exercise the public handler, including its exception ordering."""
+    (export_folder / 'content.txt').write_text('payload', encoding='utf-8')
+    monkeypatch.setattr(publish, 'get_steamworks', lambda: object())
+    monkeypatch.setattr(publish, '_is_workshop_publish_native_crash_risk', lambda: False)
+
+    with claim_content_folder(str(export_folder), purpose=PUBLISH_PURPOSE):
+        response = await publish.publish_to_workshop(_JsonRequest({
+            'title': 'busy item',
+            'content_folder': str(export_folder),
+            'visibility': 0,
+        }))
+
+    assert response.status_code == 409, json.loads(response.body)
+    assert json.loads(response.body)['success'] is False
+
+
 async def test_the_routes_still_work_when_nothing_holds_the_folder(export_folder):
     """The gate must not 409 the ordinary path -- that would be worse."""
     from main_routers.workshop_router import voice_refs
@@ -653,11 +702,37 @@ async def test_the_routes_still_work_when_nothing_holds_the_folder(export_folder
     assert removed.status_code == 200
     assert not (export_folder / WORKSHOP_VOICE_MANIFEST_NAME).exists()
 
+    cleaned = await publish.cleanup_temp_folder(
+        _JsonRequest({'temp_folder': str(export_folder)})
+    )
+    assert cleaned.status_code == 200, json.loads(cleaned.body)
+    assert not export_folder.exists(), '正常 cleanup 必须真的删掉目录'
+
 
 # ── structural guards ───────────────────────────────────────────────────
 
 
 _CLAIM_CALLS = {'claim_content_folder', 'claim_reference_pair'}
+_WORKER_OFFLOAD_CALLS = {'to_thread', 'run_in_executor', 'submit'}
+
+
+def _tail_name(call: ast.Call) -> str | None:
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    return None
+
+
+def _walk_own_scope(func):
+    """Walk one function body without attributing nested defs to its parent."""
+    stack = list(ast.iter_child_nodes(func))
+    while stack:
+        node = stack.pop()
+        yield node
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        stack.extend(ast.iter_child_nodes(node))
 
 
 def _referenced_names(node) -> set:
@@ -682,21 +757,55 @@ def _claim_calls_in_own_scope(func) -> list:
     descend, not by skipping a single node.
     """
     found = []
-    stack = list(ast.iter_child_nodes(func))
-    while stack:
-        node = stack.pop()
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
-            continue  # 嵌套函数自己就是一个 worker 单元，不属于这个协程的作用域
+    for node in _walk_own_scope(func):
+        if isinstance(node, ast.Lambda):
+            continue
         if isinstance(node, ast.Call):
-            name = (
-                node.func.id if isinstance(node.func, ast.Name)
-                else node.func.attr if isinstance(node.func, ast.Attribute)
-                else None
-            )
+            name = _tail_name(node)
             if name in _CLAIM_CALLS:
                 found.append(node)
-        stack.extend(ast.iter_child_nodes(node))
     return found
+
+
+def _parent_map(func) -> dict[int, ast.AST]:
+    parents = {}
+    for node in _walk_own_scope(func):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for child in ast.iter_child_nodes(node):
+            parents[id(child)] = node
+    return parents
+
+
+def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
+    current = node
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, ast.Call) and _tail_name(current) in _WORKER_OFFLOAD_CALLS:
+            return True
+        if current is stop:
+            break
+    return False
+
+
+def _claiming_helpers_called_on_loop(func) -> list:
+    """Nested claim helpers are legal only when every use is offloaded."""
+    helpers = {
+        node.name: node
+        for node in _walk_own_scope(func)
+        if isinstance(node, ast.FunctionDef) and _claim_calls_in_own_scope(node)
+    }
+    if not helpers:
+        return []
+
+    parents = _parent_map(func)
+    offenders = []
+    for node in _walk_own_scope(func):
+        if not isinstance(node, ast.Name) or node.id not in helpers:
+            continue
+        if not _is_deferred_reference(node, parents, func):
+            offenders.append((node.id, node.lineno))
+    return offenders
 
 
 def test_the_event_loop_guard_prunes_nested_worker_bodies():
@@ -714,6 +823,12 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
         '            pass\n'
         '    await asyncio.to_thread(_unit)\n'
         '\n'
+        'async def direct_helper():\n'
+        '    def _unit():\n'
+        '        with claim_reference_pair(folder):\n'
+        '            pass\n'
+        '    _unit()\n'
+        '\n'
         'async def hoisted():\n'
         "    with claim_content_folder(folder, purpose='x'):\n"
         '        pass\n'
@@ -722,6 +837,10 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
 
     assert _claim_calls_in_own_scope(functions['handler']) == [], (
         '嵌套的同步 worker 里拿占用是合法的，守卫不该报它'
+    )
+    assert _claiming_helpers_called_on_loop(functions['handler']) == []
+    assert _claiming_helpers_called_on_loop(functions['direct_helper']), (
+        '带 claim 的嵌套 helper 被直接调用时仍在事件循环上，必须报出来'
     )
     assert _claim_calls_in_own_scope(functions['hoisted']), (
         '直接写在协程体里的占用必须被报出来，否则守卫什么都没守'
@@ -748,6 +867,8 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
             # 嵌套的 async def 会被这层 walk 单独取到，各查各的作用域。
             for call in _claim_calls_in_own_scope(node):
                 offenders.append(f'{short}.{node.name}:{call.lineno}')
+            for helper, line in _claiming_helpers_called_on_loop(node):
+                offenders.append(f'{short}.{node.name}:{line} -> {helper}（在事件循环直调）')
 
     assert not offenders, f'这些占用是在协程里拿的，取消会把它们提前放开：{offenders}'
 
@@ -762,6 +883,21 @@ _MUST_BE_CLAIMED = {
     'rmtree',                             # 删掉整个目录
     # 预览图也是「Steam 会一起读走的字节」，跟那对参考语音没有区别。
     'copy2', 'copyfile', 'copytree',
+}
+
+# 这些名字过于通用，不能全模块扫描；但在指定 worker 单元里，它们正是内容目录的
+# 完整读写边界。把它们列出来，移动 tmp 创建、音频 replace/remove 或 preflight 到
+# claim 外面都会被抓住，而不会把别处无关的 ``write`` 当成目录竞态。
+_UNIT_OPERATIONS = {
+    ('publish', '_preflight_and_publish'): {
+        'resolve_voice_reference_serialized', '_publish_workshop_item',
+    },
+    ('voice_refs', '_replace_voice_reference'): {
+        '_current_reference_audio_path', 'mkstemp', 'fdopen', 'write', 'flush',
+        'fsync', 'replace', 'atomic_write_json', 'remove',
+    },
+    ('voice_refs', '_remove_voice_reference'): {'_cleanup_workshop_voice_reference'},
+    ('publish', '_delete_content_folder'): {'rmtree'},
 }
 
 # 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
@@ -782,7 +918,28 @@ _ALLOWED_UNCLAIMED = {('publish', 'prepare_workshop_upload')}
 # 占用，也没有 _assert_under_base 路径校验，而且是在事件循环上直接 open().write()，
 # 要拿占用得先把这次写挪进 worker 单元。那是独立一个 PR 的事。删掉这一条之前先确认
 # 那边真的修好了。
-_KNOWN_GAPS = {('publish', 'publish_to_workshop')}
+_KNOWN_GAPS = {
+    # 两条 preview 归一化分支各有一次同形状的 copy2；第三次会成为新 offender。
+    ('publish', 'publish_to_workshop', 'copy2'): 2,
+}
+
+
+def _operation_name(node) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _operation_nodes(func, short: str) -> list[tuple[ast.AST, str]]:
+    required = _MUST_BE_CLAIMED | _UNIT_OPERATIONS.get((short, func.name), set())
+    found = []
+    for node in _walk_own_scope(func):
+        name = _operation_name(node)
+        if name in required:
+            found.append((node, name))
+    return found
 
 
 def _unclaimed_folder_operations(func, short: str) -> list:
@@ -794,8 +951,8 @@ def _unclaimed_folder_operations(func, short: str) -> list:
     in which case being inside the ``with`` says nothing about when the work
     actually touches the folder.
     """
-    claimed_nodes = set()
-    for block in ast.walk(func):
+    claimed_scopes = []
+    for block in _walk_own_scope(func):
         if not isinstance(block, ast.With):
             continue
         if not any(
@@ -803,35 +960,53 @@ def _unclaimed_folder_operations(func, short: str) -> list:
             for item in block.items
         ):
             continue
-        for inner in ast.walk(block):
-            claimed_nodes.add(id(inner))
+        claimed_scopes.append({id(inner) for inner in ast.walk(block)})
 
     deferred_nodes = set()
-    for call in ast.walk(func):
+    for call in _walk_own_scope(func):
         if not isinstance(call, ast.Call):
             continue
-        tail = (
-            call.func.id if isinstance(call.func, ast.Name)
-            else call.func.attr if isinstance(call.func, ast.Attribute)
-            else None
-        )
+        tail = _tail_name(call)
         if tail not in _DEFERRAL_CALLS:
             continue
         for arg in list(call.args) + [kw.value for kw in call.keywords]:
-            deferred_nodes.add(id(arg))
+            deferred_nodes.update(id(node) for node in ast.walk(arg))
 
     offenders = []
-    for child in ast.walk(func):
-        if not isinstance(child, (ast.Name, ast.Attribute)):
-            continue
-        name = child.id if isinstance(child, ast.Name) else child.attr
-        if name not in _MUST_BE_CLAIMED:
-            continue
+    operations = _operation_nodes(func, short)
+    for child, name in operations:
         if id(child) in deferred_nodes:
-            offenders.append(f'{short}.{func.name}:{child.lineno} -> {name}（交给别处延后跑）')
-        elif id(child) not in claimed_nodes:
-            offenders.append(f'{short}.{func.name}:{child.lineno} -> {name}')
+            offenders.append((short, func.name, child.lineno, name, '交给别处延后跑'))
+        elif not any(id(child) in scope for scope in claimed_scopes):
+            offenders.append((short, func.name, child.lineno, name, '未占用'))
+
+    unit_names = _UNIT_OPERATIONS.get((short, func.name))
+    if unit_names:
+        present = {name for _, name in operations if name in unit_names}
+        missing = unit_names - present
+        if missing:
+            offenders.append((short, func.name, func.lineno, ','.join(sorted(missing)), '清单操作消失'))
+        unit_ids = {id(node) for node, name in operations if name in unit_names}
+        if unit_ids and not any(unit_ids <= scope for scope in claimed_scopes):
+            offenders.append((short, func.name, func.lineno, 'continuous-claim', '没有一把连续占用覆盖整个单元'))
     return offenders
+
+
+def _format_offender(offender) -> str:
+    short, func, line, name, reason = offender
+    return f'{short}.{func}:{line} -> {name}（{reason}）'
+
+
+def _consume_known_gaps(offenders: list) -> list:
+    remaining = list(offenders)
+    for (short, func, operation), expected in _KNOWN_GAPS.items():
+        matches = [
+            item for item in remaining
+            if item[0] == short and item[1] == func and item[3] == operation
+        ]
+        for item in matches[:expected]:
+            remaining.remove(item)
+    return remaining
 
 
 def test_the_claim_guard_sees_through_deferred_work():
@@ -847,6 +1022,10 @@ def test_the_claim_guard_sees_through_deferred_work():
         '    with claim_content_folder(folder, purpose=p):\n'
         '        executor.submit(_publish_workshop_item, folder)\n'
         '\n'
+        'def deferred_lambda():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        executor.submit(lambda: _publish_workshop_item(folder))\n'
+        '\n'
         'def direct():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        _publish_workshop_item(folder)\n'
@@ -856,9 +1035,35 @@ def test_the_claim_guard_sees_through_deferred_work():
     assert _unclaimed_folder_operations(functions['deferred'], 'x'), (
         '推迟执行的上传必须被报出来——占用早就放开了'
     )
+    assert _unclaimed_folder_operations(functions['deferred_lambda'], 'x'), (
+        '藏在 deferred lambda 里的上传也必须被报出来'
+    )
     assert _unclaimed_folder_operations(functions['direct'], 'x') == [], (
         '直接在占用里同步跑完是合法的，守卫不该报它'
     )
+
+
+def test_the_claim_guard_requires_one_continuous_claim():
+    """Two individually protected halves still leave an acquisition window."""
+    split = ast.parse(
+        'def _preflight_and_publish():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        resolve_voice_reference_serialized(folder)\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        _publish_workshop_item(folder)\n'
+    ).body[0]
+    continuous = ast.parse(
+        'def _preflight_and_publish():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        resolve_voice_reference_serialized(folder)\n'
+        '        _publish_workshop_item(folder)\n'
+    ).body[0]
+
+    assert any(
+        item[3] == 'continuous-claim'
+        for item in _unclaimed_folder_operations(split, 'publish')
+    ), 'preflight 和 upload 分成两把占用时，中间的窗口必须被报出来'
+    assert _unclaimed_folder_operations(continuous, 'publish') == []
 
 
 def test_every_folder_consuming_call_sits_inside_a_claim():
@@ -881,11 +1086,15 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if (short, node.name) in _ALLOWED_UNCLAIMED | _KNOWN_GAPS:
+            if (short, node.name) in _ALLOWED_UNCLAIMED:
                 continue
             offenders.extend(_unclaimed_folder_operations(node, short))
 
-    assert not offenders, f'这些地方在没拿到目录占用的情况下消费/改动内容目录：{offenders}'
+    offenders = _consume_known_gaps(offenders)
+    assert not offenders, (
+        '这些地方在没拿到目录占用的情况下消费/改动内容目录：'
+        f'{[_format_offender(item) for item in offenders]}'
+    )
 
 
 def test_the_known_gaps_are_still_gaps():
@@ -898,12 +1107,17 @@ def test_the_known_gaps_are_still_gaps():
     from main_routers.workshop_router import voice_refs
 
     modules = {'publish': publish, 'voice_refs': voice_refs}
-    for short, name in sorted(_KNOWN_GAPS):
+    for (short, name, operation), expected in sorted(_KNOWN_GAPS.items()):
         tree = ast.parse(inspect.getsource(modules[short]))
         target = next(
             node for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
         )
-        assert _unclaimed_folder_operations(target, short), (
-            f'{short}.{name} 已经没有未占用的目录操作了——把它从 _KNOWN_GAPS 里删掉'
+        matching = [
+            item for item in _unclaimed_folder_operations(target, short)
+            if item[3] == operation
+        ]
+        assert len(matching) == expected, (
+            f'{short}.{name} 预期恰有 {expected} 个未占用的 {operation}，'
+            f'现在是 {len(matching)}；重新审视并更新 _KNOWN_GAPS'
         )
