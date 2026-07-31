@@ -193,6 +193,18 @@ describe('App', () => {
   const renderInputApp = (
     props: React.ComponentProps<typeof App> = {},
   ) => render(<App compactChatState="input" {...props} />);
+  const pressEnter = (target: Element, options: { shiftKey?: boolean } = {}) => {
+    fireEvent.keyDown(target, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: options.shiftKey ?? false,
+    });
+    fireEvent.keyUp(target, {
+      key: 'Enter',
+      code: 'Enter',
+      shiftKey: options.shiftKey ?? false,
+    });
+  };
   const queryAvatarToolVisualOverlay = () => document.body.querySelector<HTMLElement>('.avatar-tool-visual-overlay');
   const queryAvatarToolImpactEffect = () => document.body.querySelector<HTMLElement>(
     '.avatar-tool-visual-overlay-hammer, .avatar-tool-impact-effect',
@@ -3981,6 +3993,273 @@ describe('App', () => {
       expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
         streamingText.slice(0, visibleLength),
       );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state when active-route sync opens after the game turn starts', async () => {
+    vi.useFakeTimers();
+    const gameLine = '哈，这球终于被我拿下了！';
+    const gameMessage = parseChatMessage({
+      id: 'assistant-badminton-exit-line',
+      role: 'assistant',
+      author: 'YUI',
+      time: '12:23',
+      createdAt: 2,
+      turnId: 'badminton-exit-turn',
+      blocks: [{ type: 'text', text: gameLine }],
+      status: 'streaming',
+    });
+
+    try {
+      const { container, rerender } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'badminton-exit-turn',
+            source: 'visible_gemini_bubble',
+            meta: {
+              source: 'game_route',
+              kind: 'badminton',
+              session_id: 'badminton-session',
+              mirror: {
+                kind: 'badminton',
+                session_id: 'badminton-session',
+                event: {},
+              },
+            },
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
+          },
+        }));
+      });
+      rerender(<App chatSurfaceMode="compact" messages={[gameMessage]} />);
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(20);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: 'badminton',
+            sessionId: 'badminton-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(gameLine);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state from an identity-less reconnect close for a tracked game', async () => {
+    vi.useFakeTimers();
+    const gameLine = '比赛已经结束啦！';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            source: 'gemini_response_first_chunk',
+            meta: {
+              source: 'game_route',
+              kind: 'badminton',
+              session_id: 'reconnected-badminton-session',
+              mirror: {
+                kind: 'badminton',
+                session_id: 'reconnected-badminton-session',
+                event: {},
+              },
+            },
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            segmentId: 'reconnected-badminton-turn:segment:1',
+            text: gameLine,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'reconnected-badminton-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      expect(container.querySelector('.compact-chat-capsule-text')?.textContent ?? '').not.toBe('');
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: '',
+            sessionId: '',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+      expect(container.querySelector('.compact-chat-capsule-text')).not.toHaveTextContent(gameLine);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('restores the compact empty state after a text-less assistant turn fully ends', async () => {
+    vi.useFakeTimers();
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'test',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-ending', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'turn_end_flush',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-end', {
+          detail: {
+            turnId: 'badminton-postgame-turn',
+            source: 'turn_end',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+      });
+
+      expect(container.querySelector('.compact-chat-capsule-text')).toHaveTextContent(
+        DEFAULT_CHAT_EMPTY_STATE_FALLBACK,
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not bind an ordinary assistant caption to a stale active game session', async () => {
+    vi.useFakeTimers();
+    const normalLine = '这是一条与小游戏无关的正常回复。';
+
+    try {
+      const { container } = render(<App chatSurfaceMode="compact" messages={[]} />);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'stale-game-session',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-turn-start', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            source: 'gemini_response_first_chunk',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-compact-caption-update', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            segmentId: 'ordinary-assistant-turn:segment:1',
+            text: normalLine,
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-assistant-speech-unavailable', {
+          detail: {
+            turnId: 'ordinary-assistant-turn',
+            source: 'test',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(3000);
+      });
+      const visibleBeforeSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleBeforeSync.length).toBeGreaterThan(0);
+      expect(normalLine.startsWith(visibleBeforeSync)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: '',
+            sessionId: '',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const visibleAfterSync = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleAfterSync.length).toBeGreaterThanOrEqual(visibleBeforeSync.length);
+      expect(normalLine.startsWith(visibleAfterSync)).toBe(true);
+
+      act(() => {
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'opened',
+            gameType: 'badminton',
+            sessionId: 'overlapping-game-session',
+          },
+        }));
+        window.dispatchEvent(new CustomEvent('neko-game-window-state-change', {
+          detail: {
+            action: 'closed',
+            gameType: 'badminton',
+            sessionId: 'overlapping-game-session',
+          },
+        }));
+      });
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100);
+      });
+
+      const visibleAfterRealClose = container.querySelector('.compact-chat-capsule-text')?.textContent ?? '';
+      expect(visibleAfterRealClose.length).toBeGreaterThanOrEqual(visibleAfterSync.length);
+      expect(normalLine.startsWith(visibleAfterRealClose)).toBe(true);
     } finally {
       vi.useRealTimers();
     }
@@ -8974,8 +9253,175 @@ describe('App', () => {
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'Test send' } });
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Test send' });
+  });
+
+  it('submits plain Enter when WebKit inserts a line break before keyup', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Send without newline' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'Send without\nnewline' },
+      inputType: 'insertLineBreak',
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Send without newline' });
+    expect(input).toHaveValue('');
+  });
+
+  it('uses the value diff fallback when WebKit omits inputType for a line break', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'Fallback send' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'Fallback\n send' },
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'Fallback send' });
+  });
+
+  it('treats an inputType-less text replacement as an IME candidate commit', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: '候选' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'candidate' },
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('candidate');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'candidate' });
+  });
+
+  it('keeps a Shift+Enter line break without submitting', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'First line' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+    fireEvent.input(input, {
+      target: { value: 'First line\n' },
+      inputType: 'insertLineBreak',
+    });
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter', shiftKey: true });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('First line\n');
+  });
+
+  it('uses the first Enter to confirm active IME text and the second Enter to submit', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(input);
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('你好');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+  });
+
+  it('treats macOS WebKit keyCode 229 as IME confirmation until keyup', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.keyDown(input, {
+      key: 'Enter',
+      code: 'Enter',
+      keyCode: 229,
+      isComposing: true,
+    });
+    fireEvent.compositionEnd(input);
+    fireEvent.input(input, {
+      target: { value: '你好' },
+      inputType: 'insertText',
+    });
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('你好');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+  });
+
+  it('submits on the first Enter after an IME commit completed without Enter', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.compositionEnd(input);
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
+  });
+
+  it('does not submit an ASCII candidate committed without composition metadata', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.change(input, { target: { value: 'ok' } });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    fireEvent.input(input, {
+      target: { value: 'ok' },
+      inputType: 'insertText',
+    });
+    fireEvent.submit(input.closest('form')!);
+    fireEvent.keyUp(input, { key: 'Enter', code: 'Enter' });
+
+    expect(onComposerSubmit).not.toHaveBeenCalled();
+    expect(input).toHaveValue('ok');
+
+    pressEnter(input);
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'ok' });
+  });
+
+  it('allows an explicit pointer send while an IME composition is active', () => {
+    const onComposerSubmit = vi.fn();
+    renderInputApp({ onComposerSubmit });
+
+    const input = screen.getByPlaceholderText('Type a message...');
+    fireEvent.compositionStart(input);
+    fireEvent.change(input, { target: { value: '你好' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Send' }), { detail: 1 });
+
+    expect(onComposerSubmit).toHaveBeenCalledWith({ text: '你好' });
   });
 
   it('disables composer submission while the home tutorial owns interaction', () => {
@@ -9022,7 +9468,7 @@ describe('App', () => {
 
     const input = screen.getByPlaceholderText('Type a message...');
     fireEvent.change(input, { target: { value: 'No local optimistic bubble' } });
-    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter' });
+    pressEnter(input);
 
     expect(onComposerSubmit).toHaveBeenCalledWith({ text: 'No local optimistic bubble' });
     expect(screen.queryByText('No local optimistic bubble')).not.toBeInTheDocument();

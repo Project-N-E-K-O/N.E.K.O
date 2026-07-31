@@ -1,4 +1,4 @@
-"""Shared local-memory fact selection for card-forge HTTP entrypoints."""
+"""Shared local-memory fact selection for card-drop HTTP entrypoints."""
 
 from __future__ import annotations
 
@@ -86,8 +86,8 @@ def _build_context(
     active_lanlan = _safe_character_segment(str(current_lanlan or ""))
     override_lanlan = _safe_character_segment(str(character_override or ""))
     known_names = _known_character_names(config_manager)
-    # Browser-provided runtime hints never select another role's memory.  A
-    # character override reaches this helper only after the standalone/debug
+    # Browser-provided runtime hints never select another role's memory. A
+    # character override reaches this helper only after the explicit debug
     # feature flag is checked, and must still name a configured character.
     selected_lanlan = override_lanlan if character_override is not None else active_lanlan
     lanlan = (
@@ -495,7 +495,7 @@ async def build_forge_facts_payload(
     exclude_fact_ids: str | None = None,
     exclude_hashes: str | None = None,
 ) -> dict[str, Any]:
-    """Build the response shared by the main service and legacy forge server."""
+    """Build the local fact response consumed by the card-drop integration."""
     runtime_hint = (
         runtime_character_hint.strip()
         if isinstance(runtime_character_hint, str)

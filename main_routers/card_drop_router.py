@@ -29,7 +29,7 @@ from urllib.parse import quote, urlparse
 
 import httpx
 from fastapi import APIRouter, Body, HTTPException, Query, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 logger = logging.getLogger("neko.card_drop")
 
@@ -47,9 +47,18 @@ _BIND_OWNERSHIP_CONFLICT = "client_already_bound_to_other_user"
 _PLATFORM_TOKEN_SYNC_FORBIDDEN = "platform_token_native_sync_forbidden"
 _SYNC_TICKET_TTL_SEC = 5 * 60
 _SYNC_TICKET_MAX_ACTIVE = 16
+_NATIVE_DELEGATE_TTL_SEC = 10 * 60
+_NATIVE_DELEGATE_MAX_ACTIVE = 8
+_NATIVE_DELEGATE_SCOPES = frozenset(
+    {"credits:mutate", "credits:read", "facts:read"}
+)
+_FACT_QUERY_MAX_EXCLUSIONS = 200
+_FACT_QUERY_MAX_EXCLUSION_LENGTH = 128
 _LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 _SUPPORTED_AUTH_SOURCES = frozenset({"legacy", "oauth"})
 _native_sync_tickets: dict[str, float] = {}
+# digest -> {expires_at, scopes, local_user_id, audience, session_fingerprint}
+_native_delegates: dict[str, dict] = {}
 
 
 class _ClientBindingConflict(Exception):
@@ -76,6 +85,12 @@ class _CloudIdentityLookup:
     identity: _CloudIdentity | None
     status_code: int
     failure: str | None = None
+
+
+@dataclass(frozen=True)
+class _BrowserAuth:
+    state: str | None
+    local_user_id: str = ""
 
 
 def _sync_ticket_digest(ticket: str) -> str:
@@ -127,6 +142,91 @@ def _consume_sync_ticket(value: object) -> bool:
     digest = _sync_ticket_digest(ticket)
     expires_at = _native_sync_tickets.pop(digest, 0)
     return expires_at > now
+
+
+def _prune_native_delegates(now: float | None = None) -> None:
+    current = time.monotonic() if now is None else now
+    expired = [
+        digest
+        for digest, entry in _native_delegates.items()
+        if float(entry.get("expires_at") or 0) <= current
+    ]
+    for digest in expired:
+        _native_delegates.pop(digest, None)
+
+
+def _clear_native_delegates() -> None:
+    _native_delegates.clear()
+
+
+def _desktop_session_fingerprint(snapshot: dict | None) -> str:
+    """Bind a delegate to the exact persisted desktop login without retaining it."""
+    if not isinstance(snapshot, dict):
+        return ""
+    local_user_id = _normalize_local_user_id(snapshot.get("local_user_id"))
+    auth_source = _normalize_auth_source(snapshot.get("auth_source"))
+    access_token = str(snapshot.get("access_token") or "").strip()
+    base_url = str(snapshot.get("base_url") or "").strip().rstrip("/")
+    if not local_user_id or not auth_source or not access_token or not base_url:
+        return ""
+    serialized = json.dumps(
+        {
+            "access_token": access_token,
+            "auth_source": auth_source,
+            "base_url": base_url,
+            "local_user_id": local_user_id,
+        },
+        ensure_ascii=True,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _issue_native_delegate(
+    *,
+    local_user_id: str,
+    audience: str,
+    session_fingerprint: str,
+    scopes: frozenset[str] | None = None,
+) -> str:
+    now = time.monotonic()
+    _prune_native_delegates(now)
+    while len(_native_delegates) >= _NATIVE_DELEGATE_MAX_ACTIVE:
+        oldest = min(
+            _native_delegates,
+            key=lambda digest: float(_native_delegates[digest].get("expires_at") or 0),
+        )
+        _native_delegates.pop(oldest, None)
+    ticket = secrets.token_urlsafe(32)
+    requested_scopes = _NATIVE_DELEGATE_SCOPES if scopes is None else frozenset(scopes)
+    scoped = requested_scopes & _NATIVE_DELEGATE_SCOPES
+    _native_delegates[_sync_ticket_digest(ticket)] = {
+        "expires_at": now + _NATIVE_DELEGATE_TTL_SEC,
+        "scopes": scoped,
+        "local_user_id": _normalize_local_user_id(local_user_id),
+        "audience": (audience or "").strip().rstrip("/"),
+        "session_fingerprint": str(session_fingerprint or ""),
+    }
+    return ticket
+
+
+def _native_delegate_entry(value: object) -> dict | None:
+    ticket = _normalize_sync_ticket(value)
+    if not ticket:
+        return None
+    now = time.monotonic()
+    _prune_native_delegates(now)
+    entry = _native_delegates.get(_sync_ticket_digest(ticket))
+    if not entry or float(entry.get("expires_at") or 0) <= now:
+        return None
+    return entry
+
+
+def _discard_native_delegate(value: object) -> None:
+    ticket = _normalize_sync_ticket(value)
+    if ticket:
+        _native_delegates.pop(_sync_ticket_digest(ticket), None)
 
 
 def _social_base_url() -> str:
@@ -275,6 +375,26 @@ def _local_request_source_allowed(request: Request) -> bool:
     )
 
 
+def _local_ui_request_source_allowed(request: Request) -> bool:
+    """Require browser Fetch Metadata proving a request came from this local UI."""
+    if (request.headers.get("sec-fetch-site") or "").strip().lower() != "same-origin":
+        return False
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin:
+        return True
+    request_origin = str(request.base_url).rstrip("/")
+    try:
+        origin_host = (urlparse(origin).hostname or "").lower()
+        request_host = (urlparse(request_origin).hostname or "").lower()
+    except (TypeError, ValueError):
+        return False
+    return (
+        origin_host in _LOOPBACK_HOSTS
+        and request_host in _LOOPBACK_HOSTS
+        and _exact_origin_matches(origin, request_origin)
+    )
+
+
 def _sync_cors_headers(request: Request) -> dict[str, str] | None:
     origin = (request.headers.get("origin") or "").strip().rstrip("/")
     if not origin:
@@ -319,9 +439,31 @@ def _facts_cors_headers(request: Request) -> dict[str, str] | None:
         return None
     headers = {
         "Access-Control-Allow-Origin": origin,
-        "Access-Control-Allow-Methods": "GET, OPTIONS",
-        "Access-Control-Allow-Headers": "authorization, content-type",
+        "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+        "Access-Control-Allow-Headers": (
+            "authorization, content-type, x-neko-local-user-id"
+        ),
         "Access-Control-Max-Age": "600",
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
+        "Vary": "Origin",
+    }
+    if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
+        headers["Access-Control-Allow-Private-Network"] = "true"
+    return headers
+
+
+def _capabilities_cors_headers(request: Request) -> dict[str, str] | None:
+    """Expose protocol metadata only to the exact configured community origin."""
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin or not _exact_origin_matches(origin, _social_base_url()):
+        return None
+    headers = {
+        "Access-Control-Allow-Origin": origin,
+        "Access-Control-Allow-Methods": "GET, OPTIONS",
+        "Access-Control-Max-Age": "600",
+        "Cache-Control": "no-store",
+        "Pragma": "no-cache",
         "Vary": "Origin",
     }
     if (request.headers.get("access-control-request-private-network") or "").lower() == "true":
@@ -595,6 +737,10 @@ def _persist_session_credentials(
         # partial-success marker there as well so auth-status can surface it.
         if auth_saved:
             _save_auth(auth_payload)
+    if auth_saved or social_saved:
+        # Any credential publication can represent an account switch or token
+        # rotation. Existing browser delegates must be reissued for that session.
+        _clear_native_delegates()
 
 
 def _persist_session_identity_metadata(
@@ -700,6 +846,8 @@ def _clear_auth() -> bool:
         else:
             success = False
             logger.warning("card_drop: credential still exists after clear: %s", path)
+    if success:
+        _clear_native_delegates()
     return success
 
 
@@ -783,20 +931,40 @@ async def _resolve_saved_desktop_identity(base: str) -> _CloudIdentityLookup:
     return _CloudIdentityLookup(None, 503, "unavailable")
 
 
-async def _request_matches_desktop_session(base: str, access: str) -> str:
-    """Return ``match``, ``mismatch``, or ``unavailable`` for a request bearer."""
+async def _request_desktop_session_auth(base: str, access: str) -> _BrowserAuth:
+    """Validate a Desktop bearer and return its verified local user principal."""
     request_lookup = await _lookup_cloud_identity(base, access)
     if request_lookup.identity is None:
-        return "unavailable" if request_lookup.failure in {"unavailable", "malformed"} else "mismatch"
+        state = (
+            "unavailable"
+            if request_lookup.failure in {"unavailable", "malformed"}
+            else "mismatch"
+        )
+        return _BrowserAuth(state)
     desktop_lookup = await _resolve_saved_desktop_identity(base)
     if desktop_lookup.identity is None:
-        return "unavailable" if desktop_lookup.failure in {"unavailable", "malformed"} else "mismatch"
+        state = (
+            "unavailable"
+            if desktop_lookup.failure in {"unavailable", "malformed"}
+            else "mismatch"
+        )
+        return _BrowserAuth(state)
     if secrets.compare_digest(
         request_lookup.identity.local_user_id,
         desktop_lookup.identity.local_user_id,
     ):
-        return "match"
-    return "mismatch"
+        return _BrowserAuth(
+            "match",
+            request_lookup.identity.local_user_id,
+        )
+    return _BrowserAuth("mismatch")
+
+
+async def _request_matches_desktop_session(base: str, access: str) -> str:
+    """Return ``match``, ``mismatch``, or ``unavailable`` for a request bearer."""
+    return (await _request_desktop_session_auth(base, access)).state or "mismatch"
+
+
 async def _store_session(
     base: str,
     access: str | None,
@@ -1045,6 +1213,160 @@ async def sync_ticket_endpoint(request: Request):
     )
 
 
+def _handoff_return_url(return_to: str | None, audience: str) -> str | None:
+    """Accept only same-origin return URLs under the configured social base."""
+    base = (audience or "").strip().rstrip("/")
+    if not base:
+        return None
+    candidate = (return_to or base).strip() or base
+    try:
+        parsed = urlparse(candidate)
+        base_parsed = urlparse(base)
+    except (TypeError, ValueError):
+        return None
+    if parsed.scheme not in {"http", "https"}:
+        return None
+    if not _same_originish(candidate, base):
+        return None
+    path = parsed.path or "/cards"
+    if not path.startswith("/"):
+        path = "/" + path
+    query = f"?{parsed.query}" if parsed.query else ""
+    return f"{base_parsed.scheme}://{base_parsed.netloc}{path}{query}"
+
+
+async def _native_delegate_session_snapshot() -> tuple[dict | None, str]:
+    """Refresh, validate, and load a fingerprintable desktop session."""
+    # Pet requests this endpoint before its separate auth-status probe. Resolve
+    # OAuth first so a just-refreshed access token cannot invalidate the newly
+    # issued delegate immediately after the community tab opens.
+    from main_routers import community_oauth
+
+    status = await community_oauth.resolve_saved_oauth_status()
+    if not status.get("logged_in"):
+        return None, "unavailable" if status.get("snapshot") else "missing"
+
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    if snapshot is None:
+        return None, "missing"
+    if _desktop_session_fingerprint(snapshot):
+        return snapshot, ""
+
+    base = str(snapshot.get("base_url") or _social_base_url()).strip().rstrip("/")
+    lookup = await _resolve_saved_desktop_identity(base)
+    if lookup.identity is None:
+        return None, lookup.failure or "rejected"
+
+    # Delegate validation re-reads the persisted desktop session on every use.
+    # Issue only after the verified legacy identity was durably backfilled.
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    if snapshot is None or not _desktop_session_fingerprint(snapshot):
+        return None, "unavailable"
+    return snapshot, ""
+
+
+@router.get("/native-delegate", summary="签发短时 scoped native delegate（credits/facts）")
+async def native_delegate_endpoint(request: Request):
+    """Mint a reusable short-lived proof for the community Web tab.
+
+    Issued only from the trusted local NEKO UI (never from the community Origin).
+    The Web tab presents this bearer to credits/facts endpoints instead of the
+    platform OAuth access token, so a rogue localhost listener cannot harvest
+    refreshable Web credentials.
+    """
+    if not _local_ui_request_source_allowed(request):
+        return JSONResponse(
+            {"detail": "origin_not_allowed"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    snapshot, failure = await _native_delegate_session_snapshot()
+    local_user_id = (snapshot or {}).get("local_user_id") or ""
+    session_fingerprint = _desktop_session_fingerprint(snapshot)
+    if not snapshot or not local_user_id or not session_fingerprint:
+        unavailable = failure in {"unavailable", "malformed"}
+        return JSONResponse(
+            {
+                "detail": (
+                    "identity_verification_unavailable"
+                    if unavailable
+                    else "desktop_login_required"
+                )
+            },
+            status_code=503 if unavailable else 409,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    audience = _social_base_url()
+    delegate = _issue_native_delegate(
+        local_user_id=str(local_user_id),
+        audience=audience,
+        session_fingerprint=session_fingerprint,
+    )
+    return JSONResponse(
+        {
+            "native_delegate": delegate,
+            "expires_in": _NATIVE_DELEGATE_TTL_SEC,
+            "scopes": sorted(_NATIVE_DELEGATE_SCOPES),
+        },
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
+@router.get("/native-delegate/handoff", summary="浏览器回跳领取 scoped native delegate")
+async def native_delegate_handoff_endpoint(
+    request: Request,
+    return_to: str | None = Query(default=None, max_length=2048),
+):
+    """Bounce the community tab through NEKO to attach ``#native_delegate``.
+
+    Only a same-origin Pet navigation may enter this compatibility path;
+    ``return_to`` must stay on the configured social origin.
+    """
+    if not _local_ui_request_source_allowed(request):
+        return JSONResponse(
+            {"detail": "origin_not_allowed"},
+            status_code=403,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    audience = _social_base_url()
+    dest = _handoff_return_url(return_to, audience)
+    if not dest:
+        return JSONResponse(
+            {"detail": "return_to_not_allowed"},
+            status_code=400,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    snapshot, failure = await _native_delegate_session_snapshot()
+    local_user_id = (snapshot or {}).get("local_user_id") or ""
+    session_fingerprint = _desktop_session_fingerprint(snapshot)
+    if not snapshot or not local_user_id or not session_fingerprint:
+        unavailable = failure in {"unavailable", "malformed"}
+        return HTMLResponse(
+            "<!doctype html><meta charset=utf-8><title>需要 Desktop 登录</title>"
+            "<body style='font-family:sans-serif;padding:40px'>"
+            + (
+                "<h1>暂时无法验证 Desktop 登录状态</h1>"
+                "<p>请稍后重试打开猫娘社区。</p>"
+                if unavailable
+                else "<h1>请先在 N.E.K.O. 桌宠完成社区登录</h1>"
+                "<p>登录后再打开猫娘社区，铸造券即可连接本机账本。</p>"
+            )
+            + "</body>",
+            status_code=503 if unavailable else 409,
+            headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+        )
+    delegate = _issue_native_delegate(
+        local_user_id=str(local_user_id),
+        audience=audience,
+        session_fingerprint=session_fingerprint,
+    )
+    return RedirectResponse(
+        f"{dest}#native_delegate={quote(delegate, safe='')}",
+        status_code=302,
+        headers={"Cache-Control": "no-store", "Pragma": "no-cache"},
+    )
+
+
 @router.options("/sync-session", summary="社区网页登录态同步预检")
 async def sync_session_options(request: Request):
     cors = _sync_cors_headers(request)
@@ -1261,7 +1583,66 @@ def _request_bearer_token(request: Request) -> str:
     return token.strip()
 
 
+def _delegate_audience_matches(request: Request, audience: str) -> bool:
+    origin = (request.headers.get("origin") or "").strip().rstrip("/")
+    if not origin or not audience:
+        return False
+    return _same_originish(origin, audience) or _exact_origin_matches(origin, audience)
+
+
+async def _scoped_native_auth(
+    request: Request,
+    required_scope: str,
+) -> _BrowserAuth:
+    """Validate a scoped native delegate and return its bound principal."""
+    supplied = _request_bearer_token(request)
+    if not supplied:
+        return _BrowserAuth(None)
+    expected_user = _normalize_local_user_id(
+        request.headers.get("x-neko-local-user-id")
+    )
+    entry = _native_delegate_entry(supplied)
+    if entry is None:
+        # Native delegates are opaque and intentionally indistinguishable from
+        # other bearer tokens.  The principal header marks this as a delegate
+        # request, so an expired/evicted value must fail closed instead of being
+        # retried as a cloud access token.
+        return _BrowserAuth("mismatch" if expected_user else None)
+    scopes = entry.get("scopes") or frozenset()
+    if required_scope not in scopes:
+        return _BrowserAuth("mismatch")
+    if not _delegate_audience_matches(request, str(entry.get("audience") or "")):
+        return _BrowserAuth("mismatch")
+    bound_user = _normalize_local_user_id(entry.get("local_user_id"))
+    if not bound_user or not expected_user or expected_user != bound_user:
+        return _BrowserAuth("mismatch")
+    snapshot = await asyncio.to_thread(_desktop_session_snapshot)
+    current_user = _normalize_local_user_id((snapshot or {}).get("local_user_id"))
+    current_fingerprint = _desktop_session_fingerprint(snapshot)
+    bound_fingerprint = str(entry.get("session_fingerprint") or "")
+    if (
+        not current_user
+        or not current_fingerprint
+        or current_user != bound_user
+        or not secrets.compare_digest(current_fingerprint, bound_fingerprint)
+    ):
+        _discard_native_delegate(supplied)
+        return _BrowserAuth("mismatch")
+    return _BrowserAuth("match", bound_user)
+
+
+async def _scoped_native_auth_state(
+    request: Request,
+    required_scope: str,
+) -> str | None:
+    """Return auth state when the bearer is a scoped native delegate, else None."""
+    return (await _scoped_native_auth(request, required_scope)).state
+
+
 async def _facts_request_auth_state(request: Request) -> str:
+    scoped = await _scoped_native_auth_state(request, "facts:read")
+    if scoped is not None:
+        return scoped
     supplied = _request_bearer_token(request)
     if not supplied:
         return "mismatch"
@@ -1275,7 +1656,133 @@ async def _build_local_forge_facts(**kwargs):
     return await build_forge_facts_payload(**kwargs)
 
 
+def _validate_fact_exclusions(value: object, field: str) -> list[str]:
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ValueError(f"{field}_must_be_an_array")
+    if len(value) > _FACT_QUERY_MAX_EXCLUSIONS:
+        raise ValueError(f"{field}_too_many_items")
+    normalized: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise ValueError(f"{field}_item_must_be_a_string")
+        text = item.strip()
+        if (
+            not 1 <= len(text) <= _FACT_QUERY_MAX_EXCLUSION_LENGTH
+            or "," in text
+            or any(ord(char) < 32 for char in text)
+        ):
+            raise ValueError(f"{field}_item_invalid")
+        normalized.append(text)
+    return normalized
+
+
+def _validate_facts_query(payload: dict) -> dict:
+    runtime_character_hint = payload.get("runtime_character_hint")
+    if runtime_character_hint is not None:
+        if not isinstance(runtime_character_hint, str):
+            raise ValueError("runtime_character_hint_must_be_a_string")
+        runtime_character_hint = runtime_character_hint.strip()
+        if len(runtime_character_hint) > 64:
+            raise ValueError("runtime_character_hint_too_long")
+
+    min_importance = payload.get("min_importance", 0)
+    if (
+        isinstance(min_importance, bool)
+        or not isinstance(min_importance, int)
+        or not 0 <= min_importance <= 10
+    ):
+        raise ValueError("min_importance_out_of_range")
+
+    include_absorbed = payload.get("include_absorbed", True)
+    if not isinstance(include_absorbed, bool):
+        raise ValueError("include_absorbed_must_be_boolean")
+
+    limit = payload.get("limit", 5)
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 10:
+        raise ValueError("limit_out_of_range")
+
+    exclude_fact_ids = _validate_fact_exclusions(
+        payload.get("exclude_fact_ids"),
+        "exclude_fact_ids",
+    )
+    exclude_hashes = _validate_fact_exclusions(
+        payload.get("exclude_hashes"),
+        "exclude_hashes",
+    )
+    return {
+        "runtime_character_hint": runtime_character_hint,
+        "min_importance": min_importance,
+        "include_absorbed": include_absorbed,
+        "limit": limit,
+        "exclude_fact_ids": ",".join(exclude_fact_ids) or None,
+        "exclude_hashes": ",".join(exclude_hashes) or None,
+    }
+
+
+async def _forge_facts_response(request: Request, *, query: dict):
+    cors = _facts_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    auth_state = await _facts_request_auth_state(request)
+    if auth_state == "unavailable":
+        return JSONResponse(
+            {"detail": "identity_verification_unavailable"},
+            status_code=503,
+            headers=cors,
+        )
+    if auth_state != "match":
+        return JSONResponse(
+            {"detail": "local_session_mismatch"},
+            status_code=401,
+            headers=cors,
+        )
+    payload = await _build_local_forge_facts(**query)
+    return JSONResponse(payload, headers=cors)
+
+
+@router.options("/capabilities", summary="社区探测本机 card-drop 协议")
+async def card_drop_capabilities_options(request: Request):
+    cors = _capabilities_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse({"ok": True}, headers=cors)
+
+
+@router.get("/capabilities", summary="社区探测本机 card-drop 协议")
+async def card_drop_capabilities_endpoint(request: Request):
+    cors = _capabilities_cors_headers(request)
+    if cors is None:
+        return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
+    return JSONResponse(
+        {
+            "protocol": "neko-card-drop",
+            "version": 1,
+            "active_character": {
+                "path": "/api/card-drop/active-character",
+            },
+            "facts": {
+                "query_path": "/api/card-drop/facts/query",
+                "method": "POST",
+                "max_exclude_hashes": _FACT_QUERY_MAX_EXCLUSIONS,
+            },
+            "credits": {
+                "path": "/api/card-drop/credits",
+                "read_scope": "credits:read",
+                "mutate_scope": "credits:mutate",
+            },
+            "delegate": {
+                "scopes": sorted(_NATIVE_DELEGATE_SCOPES),
+                "principal_header": "x-neko-local-user-id",
+            },
+        },
+        headers=cors,
+    )
+
+
 @router.options("/facts", summary="社区读取本地 NEKO 记忆候选预检")
+@router.options("/facts/query", summary="社区读取本地 NEKO 记忆候选预检")
 async def forge_facts_options(request: Request):
     cors = _facts_cors_headers(request)
     if cors is None:
@@ -1293,27 +1800,33 @@ async def forge_facts_endpoint(
     exclude_fact_ids: str | None = Query(default=None, max_length=4096),
     exclude_hashes: str | None = Query(default=None, max_length=4096),
 ):
+    return await _forge_facts_response(
+        request,
+        query={
+            "runtime_character_hint": runtime_character_hint,
+            "min_importance": min_importance,
+            "include_absorbed": include_absorbed,
+            "limit": limit,
+            "exclude_fact_ids": exclude_fact_ids,
+            "exclude_hashes": exclude_hashes,
+        },
+    )
+
+
+@router.post("/facts/query", summary="社区铸造：以有界 JSON 查询本地记忆候选")
+async def forge_facts_query_endpoint(request: Request, payload: dict = Body(...)):
     cors = _facts_cors_headers(request)
     if cors is None:
         return JSONResponse({"detail": "origin_not_allowed"}, status_code=403)
-    auth_state = await _facts_request_auth_state(request)
-    if auth_state == "unavailable":
+    try:
+        query = _validate_facts_query(payload)
+    except ValueError as exc:
         return JSONResponse(
-            {"detail": "identity_verification_unavailable"},
-            status_code=503,
+            {"detail": str(exc)},
+            status_code=422,
             headers=cors,
         )
-    if auth_state != "match":
-        return JSONResponse({"detail": "local_session_mismatch"}, status_code=401, headers=cors)
-    payload = await _build_local_forge_facts(
-        runtime_character_hint=runtime_character_hint,
-        min_importance=min_importance,
-        include_absorbed=include_absorbed,
-        limit=limit,
-        exclude_fact_ids=exclude_fact_ids,
-        exclude_hashes=exclude_hashes,
-    )
-    return JSONResponse(payload, headers=cors)
+    return await _forge_facts_response(request, query=query)
 
 
 @router.post("/login", summary="已移除：请使用统一账号 OAuth（/api/card-drop/oauth/start）")
@@ -1384,24 +1897,51 @@ def _credit_error(exc: Exception) -> HTTPException:
     return HTTPException(status_code=409, detail=str(exc))
 
 
-async def _require_credit_browser(request: Request) -> dict[str, str]:
+async def _require_credit_browser(
+    request: Request,
+    required_scope: str,
+) -> tuple[dict[str, str], str]:
     cors = _credit_cors_headers(request)
     if cors is None:
         raise HTTPException(status_code=403, detail="origin_not_allowed")
-    auth_state = await _facts_request_auth_state(request)
-    if auth_state == "unavailable":
-        raise HTTPException(
-            status_code=503,
-            detail="identity_verification_unavailable",
-            headers=cors,
-        )
-    if auth_state != "match":
+    scoped = await _scoped_native_auth(request, required_scope)
+    if scoped.state == "match":
+        if scoped.local_user_id:
+            return cors, scoped.local_user_id
         raise HTTPException(
             status_code=401,
             detail="local_session_mismatch",
             headers=cors,
         )
-    return cors
+    if scoped.state is not None:
+        raise HTTPException(
+            status_code=401,
+            detail="local_session_mismatch",
+            headers=cors,
+        )
+    # Not a scoped delegate: allow the Desktop-held session bearer only
+    # (never treat an unmatched Web platform token as authority).
+    supplied = _request_bearer_token(request)
+    if not supplied:
+        raise HTTPException(
+            status_code=401,
+            detail="local_session_mismatch",
+            headers=cors,
+        )
+    auth = await _request_desktop_session_auth(_social_base_url(), supplied)
+    if auth.state == "unavailable":
+        raise HTTPException(
+            status_code=503,
+            detail="identity_verification_unavailable",
+            headers=cors,
+        )
+    if auth.state != "match" or not auth.local_user_id:
+        raise HTTPException(
+            status_code=401,
+            detail="local_session_mismatch",
+            headers=cors,
+        )
+    return cors, auth.local_user_id
 
 
 @router.options("/credits")
@@ -1422,17 +1962,22 @@ async def grant_credit_endpoint(request: Request, payload: dict = Body(...)):
     from main_logic.forge_credit_ledger import grant_credit
 
     try:
-        return await asyncio.to_thread(grant_credit, payload)
+        result = await asyncio.to_thread(grant_credit, payload)
+        return result
     except (ValueError, LookupError, RuntimeError) as exc:
         raise _credit_error(exc) from exc
 
 
 @router.get("/credits", summary="读取 N.E.K.O 本机有效锻造券与待恢复预占")
 async def credits_endpoint(request: Request):
-    cors = await _require_credit_browser(request)
+    cors, local_user_id = await _require_credit_browser(request, "credits:read")
     from main_logic.forge_credit_ledger import list_credits
 
-    return JSONResponse(await asyncio.to_thread(list_credits), headers=cors)
+    snapshot = await asyncio.to_thread(
+        list_credits,
+        reservation_owner_id=local_user_id,
+    )
+    return JSONResponse(snapshot, headers=cors)
 
 
 @router.get("/credits/local-summary", summary="本体同源界面读取锻造券数量角标")
@@ -1463,7 +2008,10 @@ async def local_credit_summary_endpoint(request: Request):
 
 @router.post("/credits/{credit_id}/reservations", summary="为一次云端铸造幂等预占本机券")
 async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dict = Body(...)):
-    cors = await _require_credit_browser(request)
+    cors, local_user_id = await _require_credit_browser(
+        request,
+        "credits:mutate",
+    )
     from main_logic.forge_credit_ledger import reserve_credit
 
     try:
@@ -1471,6 +2019,7 @@ async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dic
             reserve_credit,
             credit_id,
             str(payload.get("operation_id") or ""),
+            local_user_id,
         )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
@@ -1482,7 +2031,10 @@ async def reserve_credit_endpoint(request: Request, credit_id: str, payload: dic
 async def commit_credit_endpoint(
     request: Request, credit_id: str, operation_id: str, payload: dict = Body(...),
 ):
-    cors = await _require_credit_browser(request)
+    cors, local_user_id = await _require_credit_browser(
+        request,
+        "credits:mutate",
+    )
     from main_logic.forge_credit_ledger import commit_credit
 
     try:
@@ -1491,6 +2043,7 @@ async def commit_credit_endpoint(
             credit_id,
             operation_id,
             str(payload.get("card_id") or ""),
+            local_user_id,
         )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
@@ -1500,11 +2053,19 @@ async def commit_credit_endpoint(
 
 @router.delete("/credits/{credit_id}/reservations/{operation_id}", summary="云端明确失败后释放本机券预占")
 async def release_credit_endpoint(request: Request, credit_id: str, operation_id: str):
-    cors = await _require_credit_browser(request)
+    cors, local_user_id = await _require_credit_browser(
+        request,
+        "credits:mutate",
+    )
     from main_logic.forge_credit_ledger import release_credit
 
     try:
-        result = await asyncio.to_thread(release_credit, credit_id, operation_id)
+        result = await asyncio.to_thread(
+            release_credit,
+            credit_id,
+            operation_id,
+            local_user_id,
+        )
     except (ValueError, LookupError, RuntimeError) as exc:
         error = _credit_error(exc)
         return JSONResponse({"detail": error.detail}, status_code=error.status_code, headers=cors)

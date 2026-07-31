@@ -7,7 +7,9 @@ Covers:
   - PersonaManager._score_trim_entries / _ascore_trim_entries:
       * preserves protected entries regardless of budget (S12)
       * sorts by (evidence_score, importance) DESC
-      * stops at first overflow (kept text token sum ≤ budget)
+      * keeps the token sum within budget, skipping what does not fit
+        (the skip-don't-stop rule itself lives in
+        tests/unit/test_memory_render_token_budget.py)
   - 3-phase render: persona budget independent from reflection budget (S11)
 """
 from __future__ import annotations
@@ -17,6 +19,8 @@ from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from utils.tokenize import count_tokens
 
 
 # ── utils.tokenize ──────────────────────────────────────────────────
@@ -172,10 +176,14 @@ def _entry(eid: str, text: str, *, rein: float = 0.0, disp: float = 0.0,
     }
 
 
-def test_score_trim_breaks_at_budget():
-    """Sorted by (score, importance) DESC, stop at first entry whose
-    cumulative tokens would exceed budget. Lower-score entries are
-    silently dropped — they don't sneak in via fallback."""
+def test_score_trim_stays_within_budget():
+    """Sorted by (score, importance) DESC; the accumulated token count
+    never crosses the cap. Lower-score entries that don't fit are dropped
+    — they don't sneak in via fallback.
+
+    (An entry that doesn't fit is skipped rather than ending the loop; the
+    same-size fixture here can't tell the two apart, so that rule has its
+    own guard in `test_memory_render_token_budget.py`.)"""
     pm = _persona_manager()
     now = datetime.now()
     entries = [
@@ -185,7 +193,7 @@ def test_score_trim_breaks_at_budget():
         _entry('e4', 'D' * 40, rein=0.0),
     ]
     # tiny budget that fits ~1.5 entries given the all-latin text
-    kept = pm._score_trim_entries(entries, budget=15, now=now)
+    kept, used = pm._score_trim_entries(entries, budget=15, now=now)
 
     # At minimum the highest-score entry survives; nothing past the budget
     assert kept, "expected at least one entry under non-zero budget"
@@ -194,6 +202,11 @@ def test_score_trim_breaks_at_budget():
     )
     assert all(k['id'] != 'e4' for k in kept), (
         "lowest-score entry must be dropped under tight budget"
+    )
+    assert used <= 15, "kept token sum must respect the cap it was given"
+    assert used == sum(count_tokens(k['text']) for k in kept), (
+        "reported usage must match what the kept entries actually cost — "
+        "the per-subject allocator hands the remainder to the next subject"
     )
 
 
@@ -205,7 +218,7 @@ def test_score_trim_importance_breaks_score_ties():
         _entry('b', 'short', rein=2.0, importance=9),  # higher importance
         _entry('c', 'short', rein=2.0, importance=5),
     ]
-    kept = pm._score_trim_entries(entries, budget=10**6, now=now)
+    kept, _used = pm._score_trim_entries(entries, budget=10**6, now=now)
     # All fit; ordering must be by importance DESC inside the same score
     assert [k['id'] for k in kept] == ['b', 'c', 'a']
 
@@ -265,6 +278,103 @@ def test_split_promotes_legacy_string_facts(tmp_path):
     assert 'legacy string fact about master' in texts, (
         "string facts must be promoted to ad-hoc dicts so they keep "
         "rendering — pre-PR-3 behaviour"
+    )
+
+
+def test_split_drops_whitespace_only_string_facts(tmp_path):
+    """裸字符串半边的空白闸（#2578 只修了 dict entry 那半）：'   ' 对
+    truthiness 为真，promote 之后跳过了 dict 路径的 _renderable_text
+    检查，一路渲成空 bullet。判据必须与 dict 路径同口径（strip）。"""  # noqa: DOCSTRING_CJK
+    pm = _persona_manager()
+    persona = {
+        'master': {'facts': [
+            '   ',
+            '  \t ',
+            # 非 str 假值：裸 str() 判空会把它们变成 "None"/"False"/"0"
+            # 文本渲染出来（review 抓的）——legacy 形态只有裸字符串，
+            # 其余一律丢弃。
+            None,
+            False,
+            0,
+            _entry('m1', 'normal dict entry', rein=1.0),
+            'legacy string fact about master',
+        ]},
+    }
+    protected, by_entity = pm._split_persona_for_render(persona)
+    assert protected == []
+    texts = [e.get('text', '') for e in by_entity.get('master', [])]
+    assert texts == ['normal dict entry', 'legacy string fact about master'], (
+        f"纯空格裸字符串 / 非 str 假值不得被 promote 成可渲染条目: {texts!r}"
+    )
+
+
+def test_compose_skips_blank_dict_entries_even_if_split_missed_them():
+    """compose 半边的独立护栏：split 侧已挡住空白条目，但 compose 的判据
+    必须自成一道（走 _renderable_text 而非 truthiness）——否则上游不变量
+    一松动，'- ' 空 bullet 就直接进 prompt。绕过 split 直调 compose。"""  # noqa: DOCSTRING_CJK
+    pm = _persona_manager()
+    blank = _entry('b1', '   ')
+    good = _entry('g1', '主人喜欢辣条', rein=1.0)
+    persona = {'master': {'facts': [blank, good]}}
+    md = pm._compose_markdown_from_trimmed(
+        '小天', persona, {'human': '主人'},
+        [], [blank, good],
+        {id(blank): 'master', id(good): 'master'},
+        [], [],
+    )
+    assert '主人喜欢辣条' in md
+    blank_bullets = [
+        line for line in md.splitlines()
+        if line.startswith('- ') and not line[2:].strip()
+    ]
+    assert blank_bullets == [], (
+        f"compose 渲染出了空 bullet 行: {blank_bullets!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_render_emits_no_blank_bullets_for_legacy_blank_strings(tmp_path):
+    """端到端：facts 列表混入纯空格裸字符串（pre-PR-1 遗留数据形态）时，
+    渲染出的 markdown 不得含空 bullet 行。compose 侧的判据同样要走
+    _renderable_text，不能靠 truthiness。"""  # noqa: DOCSTRING_CJK
+    from memory.persona import PersonaManager
+
+    cm = MagicMock()
+    cm.memory_dir = str(tmp_path)
+    cm.aget_character_data = AsyncMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
+    ))
+    cm.get_character_data = MagicMock(return_value=(
+        "主人", "小天", {}, {}, {"human": "主人"}, {}, {}, {}, {},
+    ))
+    cm.get_config_value.return_value = False
+    with patch("memory.persona.manager.get_config_manager", return_value=cm):
+        pm = PersonaManager()
+    pm._config_manager = cm
+
+    persona = {
+        'master': {'facts': [
+            '   ',
+            '  \t ',
+            _entry('m1', '主人喜欢辣条', rein=1.0),
+        ]},
+    }
+    pm._personas['小天'] = persona
+
+    async def _aensure(name):
+        return persona
+    pm.aensure_persona = _aensure  # type: ignore[assignment]
+    pm.aupdate_suppressions = AsyncMock()
+
+    md = await pm.arender_persona_markdown('小天')
+
+    assert '主人喜欢辣条' in md
+    blank_bullets = [
+        line for line in md.splitlines()
+        if line.startswith('- ') and not line[2:].strip()
+    ]
+    assert blank_bullets == [], (
+        f"渲染出了空 bullet 行: {blank_bullets!r}"
     )
 
 

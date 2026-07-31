@@ -238,6 +238,13 @@ Object.assign(AvatarButtonMixin.methods, {
         ManagerPrototype.cleanupFloatingButtons = function() {
             const opts = this._avatarButtonOptions;
 
+            // Cancel before removing the old return container so no release
+            // timeout or queued animation frame can publish stale drag state.
+            if (this._returnButtonDragHandlers &&
+                typeof this._returnButtonDragHandlers.cleanup === 'function') {
+                this._returnButtonDragHandlers.cleanup();
+            }
+
             // 停止 RAF 循环
             if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
                 cancelAnimationFrame(this._uiUpdateLoopId);
@@ -296,6 +303,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
                 document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
                 window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+                window.removeEventListener(
+                    'neko:niri-pet-physical-crop-state-applied',
+                    this._returnButtonDragHandlers.cropStateApplied
+                );
                 this._returnButtonDragHandlers = null;
             }
 

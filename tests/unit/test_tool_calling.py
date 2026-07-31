@@ -15,6 +15,7 @@ catch contract regressions in the tool plumbing.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sys
 from pathlib import Path
@@ -2813,6 +2814,449 @@ async def test_offline_iteration_cap_breaks_runaway_loop():
     assert "tool_choice" not in _final_overrides
 
 
+def _bare_tool_client(fake_llm, tool_def, handler, *, cap):
+    """Minimal OpenAI-path client for the tool-loop tests below."""
+    from main_logic.omni_offline_client import OmniOfflineClient
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.llm = fake_llm
+    client._tool_definitions = [tool_def]
+    client.max_tool_iterations = cap
+    client._use_genai_sdk = False
+    client._genai_tools_unsupported = False
+    client._last_finish_reason = None
+    client._last_prompt_tokens = None
+    client.on_tool_call = handler
+    return client
+
+
+@contextlib.contextmanager
+def _capture_ofc_logs():
+    """Capture the omni_offline_client module logger's records directly.
+
+    该 logger 经 utils/logger_config 配置为 propagate=False，caplog 的
+    root-handler 抓不到它——挂一个临时 handler 到 logger 本体上，测试
+    结束移除并还原 level。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from main_logic.omni_offline_client import _shared as _ofc_shared
+
+    records: list = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _ListHandler(level=logging.DEBUG)
+    target = _ofc_shared.logger
+    old_level = target.level
+    target.addHandler(handler)
+    target.setLevel(logging.DEBUG)
+    try:
+        yield records
+    finally:
+        target.removeHandler(handler)
+        target.setLevel(old_level)
+
+
+@pytest.mark.asyncio
+async def test_openai_nameless_fragment_round_fires_round_start_and_finalizes():
+    """P2 复现路径：provider 流出 tool_call 分片但 function.name 始终没到 →
+    collect_tool_calls 全部丢弃 → handler 零调用。本轮必须：
+    1) 触发 on_tool_round_start（缓冲型调用方靠它丢弃 pre-tool 文本——
+       只挂 handler 入口的清理在这条路径上永不发生）；
+    2) 不发 tool_round_persisted sentinel（其契约是"pre-tool 文本已写进
+       history"，此时为假——发了会让这段文本从历史里彻底消失）；
+    3) 仍走到 forced-finalize 给出最终文本；
+    4) 封顶日志单列"0 executed"形态（最值得排查的故障不得伪装成普通
+       封顶日志）。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    handler_calls: list = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    tool = ToolDefinition(name="lookup", description="", handler=handler)
+    chunks_call_1 = [
+        LLMStreamChunk(content="我查一下", finish_reason=None),
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0, "id": "c1", "type": "function",
+                "function": {"name": "", "arguments": "{}"},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_finalize = [LLMStreamChunk(content="最终回答", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_finalize])
+    client = _bare_tool_client(fake_llm, tool, handler, cap=1)
+
+    round_starts: list = []
+
+    async def _round_start():
+        round_starts.append(True)
+
+    client.set_tool_round_start_callback(_round_start)
+
+    messages = [{"role": "user", "content": "hi"}]
+    streamed = ""
+    sentinel_seen = False
+    with _capture_ofc_logs() as records:
+        async for c in client._astream_with_tools(messages):
+            if getattr(c, "content", ""):
+                streamed += c.content
+            if getattr(c, "tool_round_persisted", False):
+                sentinel_seen = True
+
+    assert round_starts == [True], "进入 tool 轮必须触发 round-start 回调"
+    assert handler_calls == [], "无名分片不得触达 handler"
+    assert not sentinel_seen, (
+        "零执行轮什么都没写进 history，sentinel 不得再宣称已持久化"
+    )
+    assert "最终回答" in streamed
+    assert len(fake_llm.calls) == 2  # 1 tool round + 1 forced-finalize
+    assert "tools" not in fake_llm.calls[-1][1]
+    assert any(
+        r.levelno == logging.WARNING and "0 executed" in r.getMessage()
+        for r in records
+    ), "零执行封顶必须打单列的 WARNING"
+
+
+@pytest.mark.asyncio
+async def test_openai_cap_one_normal_recall_logs_info_not_warning():
+    """P3-1：cap=1 是插件的设计内单轮预算，一次成功的召回轮必然耗尽循环。
+    此前的无条件 WARNING 让每次正常召回都打出主程序的 runaway 封顶信号，
+    真正的封顶被淹没。cap=1 且真的执行过 tool 时降为 INFO。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    handler_calls: list = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    tool = ToolDefinition(name="recall_memory", description="", handler=handler)
+    chunks_call_1 = [
+        LLMStreamChunk(
+            content="",
+            tool_call_deltas=[{
+                "index": 0, "id": "c1", "type": "function",
+                "function": {"name": "recall_memory", "arguments": "{}"},
+            }],
+            finish_reason=None,
+        ),
+        LLMStreamChunk(content="", finish_reason="tool_calls"),
+    ]
+    chunks_finalize = [LLMStreamChunk(content="按群规是不剧透", finish_reason="stop")]
+    fake_llm = _FakeLLM([chunks_call_1, chunks_finalize])
+    client = _bare_tool_client(fake_llm, tool, handler, cap=1)
+
+    messages = [{"role": "user", "content": "hi"}]
+    streamed = ""
+    with _capture_ofc_logs() as records:
+        async for c in client._astream_with_tools(messages):
+            if getattr(c, "content", ""):
+                streamed += c.content
+
+    assert handler_calls == ["recall_memory"]
+    assert "按群规是不剧透" in streamed
+    assert any(
+        r.levelno == logging.INFO
+        and "single tool round budget spent" in r.getMessage()
+        for r in records
+    )
+    assert not any(
+        r.levelno >= logging.WARNING and "iteration cap" in r.getMessage()
+        for r in records
+    ), "cap=1 的正常召回轮不得打 runaway 封顶 WARNING"
+
+
+@pytest.mark.asyncio
+async def test_openai_cap_multi_runaway_still_warns():
+    """三分支封顶日志的第三路：cap>1 且执行过 tool 的真 runaway 保持
+    WARNING 原文——主程序（cap=3）的封顶信号不因 P3-1 降级而丢失。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from utils.llm_client import LLMStreamChunk
+    from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
+
+    async def handler(call: ToolCall) -> ToolResult:
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    tool = ToolDefinition(name="loop", description="", handler=handler)
+
+    def loop_chunks():
+        return [
+            LLMStreamChunk(
+                content="",
+                tool_call_deltas=[{
+                    "index": 0, "id": "c", "type": "function",
+                    "function": {"name": "loop", "arguments": "{}"},
+                }],
+                finish_reason=None,
+            ),
+            LLMStreamChunk(content="", finish_reason="tool_calls"),
+        ]
+
+    fake_llm = _FakeLLM([
+        loop_chunks(), loop_chunks(), loop_chunks(),
+        [LLMStreamChunk(content="最终答案", finish_reason="stop")],
+    ])
+    client = _bare_tool_client(fake_llm, tool, handler, cap=3)
+
+    with _capture_ofc_logs() as records:
+        async for _ in client._astream_with_tools(
+            [{"role": "user", "content": "loop forever"}]
+        ):
+            pass
+
+    assert any(
+        r.levelno == logging.WARNING
+        and "tool iteration cap 3 reached" in r.getMessage()
+        and "0 executed" not in r.getMessage()
+        for r in records
+    )
+
+
+@pytest.mark.asyncio
+async def test_genai_nameless_fragment_round_fires_round_start_and_finalizes(
+    monkeypatch,
+):
+    """genai 路径的 P2 对偶（同病更糟）：空 name 的 function_call 在收集
+    阶段就被 drop，collected 为空——旧行为把这轮当"模型不再调工具"直接
+    return：没有 sentinel、没有 forced-finalize、没有封顶日志，pre-tool
+    的"我查一下"直接成为整条外发回复。现在：round-start 照常触发（缓冲
+    型调用方靠它丢弃 pre-tool 文本），该轮消耗一次迭代，封顶后 forced-
+    finalize 给出最终文本。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+
+    class _Part:
+        def __init__(self, *, function_call=None, text=None):
+            self.text = text
+            self.function_call = function_call
+            self.thought = False
+
+    class _FunctionCall:
+        def __init__(self, name, args, id_=""):
+            self.name = name
+            self.args = args
+            self.id = id_
+
+    class _Content:
+        def __init__(self, parts): self.parts = parts
+
+    class _Candidate:
+        def __init__(self, content):
+            self.content = content
+            self.finish_reason = None
+
+    class _Chunk:
+        def __init__(self, candidates):
+            self.candidates = candidates
+            self.usage_metadata = None
+            self.prompt_feedback = None
+
+    def _wrap(gen):
+        class _StreamWrapper:
+            def __aiter__(self): return self
+            async def __anext__(self):
+                return await gen.__anext__()
+        return _StreamWrapper()
+
+    call_count = [0]
+    handler_calls: list = []
+
+    async def _round_1():
+        # pre-tool 文本 + 只有空 name 的 function_call（全部被 drop）。
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(text="我查一下"),
+            _Part(function_call=_FunctionCall("", {"y": 2}, id_="c_empty")),
+        ]))])
+
+    async def _finalize():
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(text="最终回答"),
+        ]))])
+
+    class _FakeAioClient:
+        class models:
+            @staticmethod
+            async def generate_content_stream(**_kw):
+                call_count[0] += 1
+                return _wrap(_round_1() if call_count[0] == 1 else _finalize())
+
+    class _FakeClient:
+        aio = _FakeAioClient()
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.model = "gemini-2.5-flash"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.has_tools = lambda: False
+    client.max_tool_iterations = 1
+    client._genai_client = _FakeClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client.on_tool_call = handler
+
+    round_starts: list = []
+
+    async def _round_start():
+        round_starts.append(True)
+
+    client.set_tool_round_start_callback(_round_start)
+
+    streamed = ""
+    with _capture_ofc_logs() as records:
+        async for c in client._astream_genai_with_tools(
+            [{"role": "user", "content": "x"}]
+        ):
+            if getattr(c, "content", ""):
+                streamed += c.content
+
+    assert round_starts == [True], "genai 路径进入 tool 轮也必须触发 round-start"
+    assert handler_calls == [], "空 name 的 function_call 不得触达 handler"
+    assert call_count[0] == 2, "该轮必须消耗一次迭代并走到 forced-finalize"
+    assert "最终回答" in streamed, (
+        "旧行为在这里直接 return，pre-tool 文本成为整条回复"
+    )
+    assert any(
+        r.levelno == logging.WARNING and "0 executed" in r.getMessage()
+        for r in records
+    )
+
+
+@pytest.mark.asyncio
+async def test_genai_cap_one_normal_recall_logs_info_not_warning(monkeypatch):
+    """genai 版三分支封顶日志的 cap=1 正常路（与 OpenAI 版对偶）：一次
+    成功执行的 tool 轮耗尽 cap=1 必须是 INFO 而非 WARNING——否则插件在
+    genai 线路上的每次正常召回都会打出 runaway 封顶信号。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    from main_logic.omni_offline_client import OmniOfflineClient
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+
+    class _Part:
+        def __init__(self, *, function_call=None, text=None):
+            self.text = text
+            self.function_call = function_call
+            self.thought = False
+
+    class _FunctionCall:
+        def __init__(self, name, args, id_=""):
+            self.name = name
+            self.args = args
+            self.id = id_
+
+    class _Content:
+        def __init__(self, parts): self.parts = parts
+
+    class _Candidate:
+        def __init__(self, content):
+            self.content = content
+            self.finish_reason = None
+
+    class _Chunk:
+        def __init__(self, candidates):
+            self.candidates = candidates
+            self.usage_metadata = None
+            self.prompt_feedback = None
+
+    def _wrap(gen):
+        class _StreamWrapper:
+            def __aiter__(self): return self
+            async def __anext__(self):
+                return await gen.__anext__()
+        return _StreamWrapper()
+
+    call_count = [0]
+    handler_calls: list = []
+
+    async def _round_1():
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(function_call=_FunctionCall("recall_memory", {"query": "x"}, id_="c1")),
+        ]))])
+
+    async def _finalize():
+        yield _Chunk(candidates=[_Candidate(_Content([
+            _Part(text="按群规是不剧透"),
+        ]))])
+
+    class _FakeAioClient:
+        class models:
+            @staticmethod
+            async def generate_content_stream(**_kw):
+                call_count[0] += 1
+                return _wrap(_round_1() if call_count[0] == 1 else _finalize())
+
+    class _FakeClient:
+        aio = _FakeAioClient()
+        def close(self): pass
+
+    client = OmniOfflineClient.__new__(OmniOfflineClient)
+    _init_bare(client)
+    client.model = "gemini-2.5-flash"
+    client.api_key = "fake"
+    client._tool_definitions = []
+    client.has_tools = lambda: False
+    client.max_tool_iterations = 1
+    client._genai_client = _FakeClient()
+    client._genai_tools_unsupported = False
+    client.llm = type("F", (), {"max_completion_tokens": 100})()
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client.on_tool_call = handler
+
+    streamed = ""
+    with _capture_ofc_logs() as records:
+        async for c in client._astream_genai_with_tools(
+            [{"role": "user", "content": "x"}]
+        ):
+            if getattr(c, "content", ""):
+                streamed += c.content
+
+    assert handler_calls == ["recall_memory"]
+    assert call_count[0] == 2
+    assert "按群规是不剧透" in streamed
+    assert any(
+        r.levelno == logging.INFO
+        and "single tool round budget spent" in r.getMessage()
+        for r in records
+    )
+    assert not any(
+        r.levelno >= logging.WARNING and "iteration cap" in r.getMessage()
+        for r in records
+    ), "genai cap=1 的正常召回轮不得打 runaway 封顶 WARNING"
+
+
 # ---------------------------------------------------------------------------
 # 4. OmniRealtimeClient wire-format helpers
 # ---------------------------------------------------------------------------
@@ -2912,7 +3356,10 @@ async def test_realtime_glm_tool_result_must_not_carry_call_id():
         "GLM function_call_output 不能带 call_id —— 文档示例只有 output 字段，"
         "合成的 glm_xxx 仅供内部追踪"
     )
-    assert sent[1] == {"type": "response.create"}
+    # The arbiter stamps a client event_id at enqueue time (previously
+    # send_event added the same field at send time), so compare without it.
+    assert sent[1]["type"] == "response.create"
+    assert set(sent[1]) <= {"type", "event_id"}
 
 
 @pytest.mark.asyncio

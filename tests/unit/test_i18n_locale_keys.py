@@ -16,6 +16,8 @@ REQUIRED_KEYS = (
     "autostartPrompt.later",
     "autostartPrompt.never",
     "autostartPrompt.requiresApproval",
+    "api.ttsProtocolHintOpenAI",
+    "api.ttsProtocolHintVllmOmni",
 )
 
 CHARACTER_MANAGER_VOICE_KEYS = (

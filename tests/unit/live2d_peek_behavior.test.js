@@ -7,6 +7,7 @@ const vm = require('node:vm');
 const projectRoot = path.resolve(__dirname, '..', '..');
 const interactionPath = path.join(projectRoot, 'static', 'live2d', 'live2d-interaction.js');
 const corePath = path.join(projectRoot, 'static', 'live2d', 'live2d-core.js');
+const performanceStagePath = path.join(projectRoot, 'static', 'avatar', 'avatar-performance-stage.js');
 
 function createHarness({
     widgetModeEnabled = true,
@@ -15,6 +16,8 @@ function createHarness({
     innerHeight = 800,
     platform = '',
     currentDisplay = null,
+    controls = {},
+    physicalCropState = null,
     desktopRuntime = true,
     interactionActive = true,
     reducedMotion = false
@@ -49,6 +52,11 @@ function createHarness({
             devicePixelRatio: 1.25,
             matchMedia: () => ({ matches: reducedMotion }),
             __NEKO_DESKTOP_RUNTIME__: desktopRuntime ? { platform } : null,
+            __nekoNiriPetPhysicalCrop: physicalCropState ? {
+                getState() {
+                    return physicalCropState;
+                }
+            } : null,
             electronScreen: currentDisplay ? {
                 async getCurrentDisplay() {
                     return currentDisplay;
@@ -83,7 +91,7 @@ function createHarness({
                     contains: (name) => bodyClasses.has(name)
                 }
             },
-            getElementById: () => null
+            getElementById: (id) => controls[id] || null
         }
     };
     context.globalThis = context;
@@ -96,10 +104,60 @@ function createHarness({
         rafQueue,
         bodyClasses,
         window: context.window,
+        controls,
+        getLive2DPeekViewport: context.getLive2DPeekViewport,
+        isLive2DHostModelDragActive: context.isLive2DHostModelDragActive,
         setStealthModeEnabled(enabled) {
             stealthEnabledState = enabled === true;
         }
     };
+}
+
+function createInlineStyle(initial = {}) {
+    const values = new Map();
+    const priorities = new Map();
+    Object.entries(initial).forEach(([name, entry]) => {
+        const normalized = typeof entry === 'string' ? { value: entry, priority: '' } : entry;
+        values.set(name, normalized.value || '');
+        priorities.set(name, normalized.priority || '');
+    });
+    const style = {
+        getPropertyValue(name) {
+            return values.get(name) || '';
+        },
+        getPropertyPriority(name) {
+            return priorities.get(name) || '';
+        },
+        setProperty(name, value, priority = '') {
+            values.set(name, String(value));
+            priorities.set(name, String(priority));
+        },
+        removeProperty(name) {
+            const previous = values.get(name) || '';
+            values.delete(name);
+            priorities.delete(name);
+            return previous;
+        }
+    };
+    Object.defineProperties(style, {
+        display: {
+            get: () => values.get('display') || '',
+            set: (value) => {
+                values.set('display', String(value));
+                priorities.set('display', '');
+            },
+            enumerable: true
+        },
+        pointerEvents: {
+            get: () => values.get('pointer-events') || '',
+            set: (value) => {
+                values.set('pointer-events', String(value));
+                priorities.set('pointer-events', '');
+            },
+            enumerable: true
+        }
+    });
+    return style;
 }
 
 function createModel({ x = 0, y = 120, width = 500, height = 600 } = {}) {
@@ -176,7 +234,20 @@ function flushNextFrame(harness, time = 400) {
     callback(time);
 }
 
-function createCoreHarness({ innerWidth = 1000, innerHeight = 800 } = {}) {
+async function waitForQueuedFrame(harness, attempts = 10) {
+    for (let attempt = 0; attempt < attempts && harness.rafQueue.length === 0; attempt += 1) {
+        await Promise.resolve();
+    }
+}
+
+function createCoreHarness({
+    innerWidth = 1000,
+    innerHeight = 800,
+    elementsById = {},
+    bodyClasses = new Set(),
+    getComputedStyle = null,
+    physicalCropState = null
+} = {}) {
     const context = {
         console,
         setTimeout,
@@ -192,10 +263,21 @@ function createCoreHarness({ innerWidth = 1000, innerHeight = 800 } = {}) {
             screen: { width: innerWidth, height: innerHeight },
             devicePixelRatio: 1,
             addEventListener() {},
-            __LANLAN_IS_ELECTRON_PET__: false
+            __nekoNiriPetPhysicalCrop: physicalCropState ? {
+                getState() {
+                    return physicalCropState;
+                }
+            } : null,
+            __LANLAN_IS_ELECTRON_PET__: false,
+            getComputedStyle: getComputedStyle || undefined
         },
         document: {
-            getElementById: () => null
+            body: {
+                classList: {
+                    contains: (name) => bodyClasses.has(name)
+                }
+            },
+            getElementById: (id) => elementsById[id] || null
         }
     };
     context.globalThis = context;
@@ -205,9 +287,42 @@ function createCoreHarness({ innerWidth = 1000, innerHeight = 800 } = {}) {
     vm.runInNewContext(source, context, { filename: corePath });
 
     return {
-        Live2DManager: context.window.Live2DManager
+        Live2DManager: context.window.Live2DManager,
+        window: context.window
     };
 }
+
+test('physical-crop drag ownership fails closed only after the host declares support', () => {
+    const {
+        window,
+        isLive2DHostModelDragActive,
+    } = createHarness();
+
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop = {};
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop = {
+        hostModelDragOwnershipVersion: 1,
+        isHostModelDragActive: () => false,
+    };
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => true;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => undefined;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    delete window.__nekoNiriPetPhysicalCrop.isHostModelDragActive;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => {
+        throw new Error('bridge failure');
+    };
+    assert.equal(isLive2DHostModelDragActive(), true);
+});
 
 test('edge peek enter naturally moves model offscreen and reports visible bounds', async () => {
     const harness = createHarness();
@@ -437,9 +552,7 @@ test('macOS top corners trigger at the current display work-area top', async () 
         };
 
         const enterPromise = manager._tryApplyLive2DPeek(model);
-        for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-            await Promise.resolve();
-        }
+        await waitForQueuedFrame(harness);
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
         assert.equal(manager._live2DPeekState.edge, item.edge);
@@ -474,9 +587,7 @@ test('Windows bottom corners trigger at the current display work-area bottom', a
         };
 
         const enterPromise = manager._tryApplyLive2DPeek(model);
-        for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-            await Promise.resolve();
-        }
+        await waitForQueuedFrame(harness);
         flushNextFrame(harness);
         assert.equal(await enterPromise, true);
         assert.equal(manager._live2DPeekState.edge, item.edge);
@@ -619,6 +730,40 @@ test('drag-style clear exits peek without restoring position but restores transf
     assert.equal(model.scale.x, 1);
 });
 
+test('edge peek overrides important toolbar visibility and restores the previous inline styles', async () => {
+    const floatingStyle = createInlineStyle({
+        display: { value: 'flex', priority: 'important' },
+        'pointer-events': { value: 'auto', priority: 'important' }
+    });
+    const lockStyle = createInlineStyle({
+        display: { value: 'block', priority: '' }
+    });
+    const harness = createHarness({
+        controls: {
+            'live2d-floating-buttons': { style: floatingStyle },
+            'live2d-lock-icon': { style: lockStyle }
+        }
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0, y: 120 });
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    assert.equal(floatingStyle.getPropertyValue('display'), 'none');
+    assert.equal(floatingStyle.getPropertyPriority('display'), 'important');
+    assert.equal(lockStyle.getPropertyValue('display'), 'none');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    manager.clearLive2DPeek('drag-start', { restore: false });
+
+    assert.equal(floatingStyle.getPropertyValue('display'), 'flex');
+    assert.equal(floatingStyle.getPropertyPriority('display'), 'important');
+    assert.equal(floatingStyle.getPropertyValue('pointer-events'), 'auto');
+    assert.equal(floatingStyle.getPropertyPriority('pointer-events'), 'important');
+    assert.equal(lockStyle.getPropertyValue('display'), 'block');
+    assert.equal(lockStyle.getPropertyValue('pointer-events'), '');
+});
+
 test('edge peek only triggers while Widget Mode is enabled', async () => {
     const harness = createHarness({ widgetModeEnabled: false });
     const manager = new harness.Live2DManager();
@@ -755,6 +900,743 @@ test('core edge peek screen bounds use renderer screen instead of wider window',
         centerX: 1025,
         centerY: 400
     });
+});
+
+test('Niri edge peek viewport stays virtual while the physical crop renderer changes size', () => {
+    const physicalCropState = {
+        enabled: true,
+        virtualBounds: { x: 0, y: 0, width: 1280, height: 720 },
+        cropBounds: { x: 972, y: 576, width: 276, height: 300 }
+    };
+    const interactionHarness = createHarness({
+        innerWidth: 1280,
+        innerHeight: 720,
+        physicalCropState
+    });
+    const interactionManager = new interactionHarness.Live2DManager();
+    interactionManager.pixi_app = {
+        renderer: {
+            screen: { width: 276, height: 300 }
+        }
+    };
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(interactionHarness.getLive2DPeekViewport(null, interactionManager))),
+        { left: 0, top: 0, right: 1280, bottom: 720, width: 1280, height: 720 }
+    );
+
+    interactionManager.pixi_app.renderer.screen = { width: 600, height: 684 };
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(interactionHarness.getLive2DPeekViewport(null, interactionManager))),
+        { left: 0, top: 0, right: 1280, bottom: 720, width: 1280, height: 720 }
+    );
+
+    const coreHarness = createCoreHarness({
+        innerWidth: 1280,
+        innerHeight: 720,
+        physicalCropState
+    });
+    const coreManager = new coreHarness.Live2DManager();
+    coreManager.pixi_app = {
+        renderer: {
+            screen: { width: 276, height: 300 }
+        }
+    };
+    const model = createModel({ x: 1150, y: 100, width: 500, height: 600 });
+    coreManager.currentModel = model;
+    coreManager._live2DPeekState = {
+        active: true,
+        model
+    };
+    const expectedBounds = {
+        left: 1150,
+        right: 1280,
+        top: 100,
+        bottom: 700,
+        width: 130,
+        height: 600,
+        centerX: 1215,
+        centerY: 400
+    };
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(coreManager.getModelScreenBounds())),
+        expectedBounds
+    );
+
+    physicalCropState.cropBounds = { x: 900, y: 360, width: 600, height: 684 };
+    coreManager.pixi_app.renderer.screen = { width: 600, height: 684 };
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(coreManager.getModelScreenBounds())),
+        expectedBounds
+    );
+});
+
+test('core model input regions preserve asymmetric drawable geometry before viewport clipping', () => {
+    const harness = createCoreHarness({ innerWidth: 1920, innerHeight: 1200 });
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 1920, height: 1200 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 1600,
+        right: 1940,
+        top: 200,
+        bottom: 900,
+        width: 340,
+        height: 700,
+        centerX: 1770,
+        centerY: 550
+    });
+    manager._getRenderableDrawableScreenRects = () => [
+        {
+            left: 1810,
+            right: 1940,
+            top: 310,
+            bottom: 820,
+            width: 130,
+            height: 510,
+            centerX: 1875,
+            centerY: 565
+        },
+        {
+            left: 1935,
+            right: 1970,
+            top: 420,
+            bottom: 500,
+            width: 35,
+            height: 80,
+            centerX: 1952.5,
+            centerY: 460
+        }
+    ];
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 8 }))), [
+        {
+            left: 1802,
+            right: 1920,
+            top: 302,
+            bottom: 828,
+            width: 118,
+            height: 526,
+            centerX: 1861,
+            centerY: 565
+        }
+    ]);
+});
+
+test('core model input regions return empty when drawable geometry is unavailable', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager.getModelScreenBounds = () => ({
+        left: 100,
+        right: 500,
+        top: 100,
+        bottom: 700,
+        width: 400,
+        height: 600
+    });
+    manager._getRenderableDrawableScreenRects = () => [];
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+});
+
+test('core model input regions stay empty while edge peek is hiding or hidden', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager._getRenderableDrawableScreenRects = () => {
+        throw new Error('hidden edge peek must not calculate drawable geometry');
+    };
+
+    for (const phase of ['hiding', 'hidden']) {
+        manager._live2DPeekState = { active: true, phase };
+        assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    }
+});
+
+test('core model input regions stay empty until interaction is ready', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager._getRenderableDrawableScreenRects = () => {
+        throw new Error('loading model must not calculate drawable geometry');
+    };
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+});
+
+test('core model input regions stay empty when the model surface is hidden or non-interactive', () => {
+    const containerClasses = new Set(['minimized']);
+    const bodyClasses = new Set();
+    const container = {
+        classList: { contains: (name) => containerClasses.has(name) },
+        style: {},
+        getAttribute: () => null
+    };
+    const canvas = {
+        classList: { contains: () => false },
+        style: {},
+        getAttribute: () => null
+    };
+    const harness = createCoreHarness({
+        elementsById: {
+            'live2d-container': container,
+            'live2d-canvas': canvas
+        },
+        bodyClasses,
+        getComputedStyle: (element) => {
+            if (bodyClasses.has('neko-game-active')) {
+                return { ...element.style, display: 'none' };
+            }
+            if (bodyClasses.has('yui-guide-live2d-preparing')) {
+                return { ...element.style, opacity: '0', pointerEvents: 'none' };
+            }
+            return {
+                ...element.style,
+                transform: element.style.transform || 'matrix(1, 0, 0, 1, 0, 0)'
+            };
+        }
+    });
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager._getRenderableDrawableScreenRects = () => {
+        throw new Error('hidden model must not calculate drawable geometry');
+    };
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    containerClasses.clear();
+    canvas.style.pointerEvents = 'none';
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    canvas.style.pointerEvents = '';
+    for (const bodyClass of [
+        'neko-main-ui-hidden-by-model-manager',
+        'neko-model-hidden-by-manager-overlap'
+    ]) {
+        bodyClasses.clear();
+        bodyClasses.add(bodyClass);
+        assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    }
+    for (const bodyClass of [
+        'neko-game-active',
+        'yui-guide-live2d-preparing'
+    ]) {
+        bodyClasses.clear();
+        bodyClasses.add(bodyClass);
+        assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    }
+    bodyClasses.clear();
+    harness.window._nekoModelReturnEnterContainer = container;
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    harness.window._nekoModelReturnEnterContainer = null;
+    container.style.transform = 'translate3d(8px, 0, 0)';
+    harness.window._nekoAvatarPerformanceFrameContainer = container;
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects())), []);
+    container.style.transform = '';
+    assert.equal(manager._isModelInputRegionInteractive(), true);
+    assert.equal(harness.window._nekoAvatarPerformanceFrameContainer, null);
+});
+
+test('performance frame session markers clear on restore and remain for committed transforms', () => {
+    const container = {
+        style: {
+            transform: '',
+            transition: '',
+            transformOrigin: '',
+            opacity: '',
+            willChange: ''
+        }
+    };
+    const replacementContainer = {
+        style: {
+            transform: '',
+            transition: '',
+            transformOrigin: '',
+            opacity: '',
+            willChange: ''
+        }
+    };
+    let currentContainer = container;
+    const context = {
+        console,
+        document: {
+            getElementById: (id) => id === 'live2d-container' ? container : null
+        },
+        window: {
+            performance: { now: () => 0 },
+            matchMedia: () => ({ matches: false }),
+            requestAnimationFrame: () => 1,
+            cancelAnimationFrame: () => {},
+            setTimeout
+        }
+    };
+    context.globalThis = context;
+    vm.runInNewContext(
+        fs.readFileSync(performanceStagePath, 'utf8'),
+        context,
+        { filename: performanceStagePath }
+    );
+
+    const driver = context.window.AvatarPerformance.createLive2DDriver({
+        managerResolver: () => null,
+        containerResolver: () => currentContainer
+    });
+    const stage = context.window.AvatarPerformance.createStage({ driver });
+    const session = stage.acquire('input-region-test', { capabilities: ['frame'] });
+
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
+    assert.equal(stage.release(session.id, 'test-complete'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+
+    const committedSession = stage.acquire('committed-frame-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 12, y: 0, scale: 1, rotate: 0, opacity: '' }, committedSession);
+    assert.equal(stage.commitCurrentFrameAsBaseline(committedSession.id), true);
+    assert.equal(stage.release(committedSession.id, 'commit-complete'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, container);
+
+    container.style.transform = '';
+    const clearedSession = stage.acquire('externally-cleared-transform-test', { capabilities: ['motion'] });
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+    assert.equal(stage.release(clearedSession.id, 'external-transform-cleared'), true);
+
+    const fullTurnSession = stage.acquire('full-turn-frame-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 0, y: 0, scale: 1, rotate: 360, opacity: '' }, fullTurnSession);
+    assert.equal(stage.commitCurrentFrameAsBaseline(fullTurnSession.id), true);
+    assert.equal(stage.release(fullTurnSession.id, 'full-turn-committed'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+
+    container.style.transform = '';
+    const roundedIdentitySession = stage.acquire('rounded-identity-frame-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 0.002, y: 0, scale: 1, rotate: 0, opacity: '' }, roundedIdentitySession);
+    assert.match(container.style.transform, /translate3d\(0\.00px, 0\.00px, 0\)/);
+    assert.equal(stage.commitCurrentFrameAsBaseline(roundedIdentitySession.id), true);
+    assert.equal(stage.release(roundedIdentitySession.id, 'rounded-identity-committed'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+
+    const replacedSession = stage.acquire('replaced-container-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 8, y: 0, scale: 1, rotate: 0, opacity: '' }, replacedSession);
+    currentContainer = replacementContainer;
+    assert.equal(stage.release(replacedSession.id, 'container-replaced'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+    assert.equal(replacementContainer.style.transform, '');
+
+    const removedSession = stage.acquire('removed-container-test', { capabilities: ['frame'] });
+    driver.applyFrame({ x: 6, y: 0, scale: 1, rotate: 0, opacity: '' }, removedSession);
+    currentContainer = null;
+    assert.equal(stage.release(removedSession.id, 'container-removed'), true);
+    assert.equal(context.window._nekoAvatarPerformanceFrameContainer, null);
+});
+
+test('core model input regions clamp padding to the supported 0-32 range', () => {
+    const harness = createCoreHarness({ innerWidth: 1000, innerHeight: 1000 });
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 1000, height: 1000 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 400,
+        right: 500,
+        top: 400,
+        bottom: 500,
+        width: 100,
+        height: 100,
+        centerX: 450,
+        centerY: 450
+    });
+    manager._getRenderableDrawableScreenRects = () => [
+        {
+            left: 400,
+            right: 500,
+            top: 400,
+            bottom: 500,
+            width: 100,
+            height: 100,
+            centerX: 450,
+            centerY: 450
+        }
+    ];
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 100 }))), [
+        {
+            left: 368,
+            right: 532,
+            top: 368,
+            bottom: 532,
+            width: 164,
+            height: 164,
+            centerX: 450,
+            centerY: 450
+        }
+    ]);
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: -5 }))), [
+        {
+            left: 400,
+            right: 500,
+            top: 400,
+            bottom: 500,
+            width: 100,
+            height: 100,
+            centerX: 450,
+            centerY: 450
+        }
+    ]);
+    for (const invalidPadding of [null, '', false, true]) {
+        assert.deepEqual(
+            JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: invalidPadding }))),
+            [
+                {
+                    left: 392,
+                    right: 508,
+                    top: 392,
+                    bottom: 508,
+                    width: 116,
+                    height: 116,
+                    centerX: 450,
+                    centerY: 450
+                }
+            ]
+        );
+    }
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: '12' }))), [
+        {
+            left: 388,
+            right: 512,
+            top: 388,
+            bottom: 512,
+            width: 124,
+            height: 124,
+            centerX: 450,
+            centerY: 450
+        }
+    ]);
+});
+
+test('core model input regions keep per-drawable mapped geometry when direct vertices are unavailable', () => {
+    const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {
+                getDrawableCount: () => 2
+            }
+        }
+    };
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 800, height: 600 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 100,
+        right: 500,
+        top: 60,
+        bottom: 560,
+        width: 400,
+        height: 500
+    });
+    manager._getModelLogicalRect = () => ({
+        left: -1,
+        right: 1,
+        top: -1,
+        bottom: 1,
+        width: 2,
+        height: 2
+    });
+    manager._ensureModelWorldTransform = () => {};
+    manager._isDrawableRenderable = () => true;
+    manager._getDrawableDirectScreenRect = () => null;
+    manager._getDrawableScreenRect = (index) => index === 0
+        ? {
+            left: 140,
+            right: 240,
+            top: 120,
+            bottom: 260,
+            width: 100,
+            height: 140
+        }
+        : {
+            left: 300,
+            right: 420,
+            top: 280,
+            bottom: 500,
+            width: 120,
+            height: 220
+        };
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 0 }))), [
+        {
+            left: 140,
+            right: 240,
+            top: 120,
+            bottom: 260,
+            width: 100,
+            height: 140,
+            centerX: 190,
+            centerY: 190
+        },
+        {
+            left: 300,
+            right: 420,
+            top: 280,
+            bottom: 500,
+            width: 120,
+            height: 220,
+            centerX: 360,
+            centerY: 390
+        }
+    ]);
+});
+
+test('core model input regions enumerate visible legacy Cubism 2 draw data', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    const drawContexts = [
+        { _$IP: 0, _$VS: 1, baseOpacity: 1, _$yo: () => true },
+        { _$IP: 1, _$VS: 1, baseOpacity: 1, _$yo: () => true },
+        { _$IP: 2, _$VS: 1, baseOpacity: 1, _$yo: () => true },
+        { _$IP: 3, _$VS: 1, baseOpacity: 1, _$yo: () => false },
+        { _$IP: 4, _$VS: 1, baseOpacity: 1, _$yo: () => true }
+    ];
+    const drawData = [
+        { getOpacity: () => 1 },
+        { getOpacity: () => 0 },
+        { getOpacity: () => 1 },
+        { getOpacity: () => 1 }
+    ];
+    const modelContext = {
+        _$8b: drawContexts,
+        _$Hr: [
+            { getPartsOpacity: () => 1 },
+            { getPartsOpacity: () => 1 },
+            { getPartsOpacity: () => 0 },
+            { getPartsOpacity: () => 1 }
+        ],
+        getDrawData: (index) => drawData[index]
+    };
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {
+                getModelContext: () => modelContext
+            },
+            drawDataCount: 5,
+            getDrawableBounds: (index) => index === 0
+                ? { x: -1, y: -2, width: 1, height: 2 }
+                : { x: 0, y: 0, width: 2, height: 3 }
+        }
+    };
+    manager.getModelScreenBounds = () => ({ left: 0, right: 100, top: 0, bottom: 100 });
+    manager._ensureModelWorldTransform = () => {};
+    manager._getDrawableScreenRect = (index) => ({
+        left: index * 10,
+        right: index * 10 + 5,
+        top: 0,
+        bottom: 5,
+        width: 5,
+        height: 5
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._getModelLogicalRect())),
+        { x: -1, y: -2, width: 3, height: 5 }
+    );
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects(null, null, true))),
+        [
+            {
+                index: 0,
+                rect: { left: 0, right: 5, top: 0, bottom: 5, width: 5, height: 5 }
+            }
+        ]
+    );
+});
+
+test('core drawable collection keeps direct vertices when model mapping bounds are unavailable', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {
+                getDrawableCount: () => 1
+            }
+        }
+    };
+    manager.getModelScreenBounds = () => null;
+    manager._getModelLogicalRect = () => null;
+    manager._ensureModelWorldTransform = () => {};
+    manager._isDrawableRenderable = () => true;
+    manager._getDrawableDirectScreenRect = () => ({
+        left: 20,
+        right: 80,
+        top: 30,
+        bottom: 90,
+        width: 60,
+        height: 60,
+        centerX: 50,
+        centerY: 60
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._getRenderableDrawableScreenRects(null, null, false))),
+        [
+            {
+                left: 20,
+                right: 80,
+                top: 30,
+                bottom: 90,
+                width: 60,
+                height: 60,
+                centerX: 50,
+                centerY: 60
+            }
+        ]
+    );
+});
+
+test('core DisplayInfo collection uses legacy Cubism 2 drawable count fallback', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager.currentModel = {
+        internalModel: {
+            coreModel: {},
+            drawDataCount: 1
+        }
+    };
+    manager.getModelScreenBounds = () => ({
+        left: 0,
+        right: 100,
+        top: 0,
+        bottom: 100,
+        width: 100,
+        height: 100
+    });
+    manager._getModelLogicalRect = () => ({ x: -1, y: -1, width: 2, height: 2 });
+    manager._getCoreModelPartIds = () => ['PartFace'];
+    manager._getCoreModelDrawableParentPartIndices = () => [0];
+    manager._getCoreModelPartParentPartIndices = () => [-1];
+    manager._partIndexMatchesTargetIds = () => true;
+    manager._isDrawableRenderable = () => true;
+    manager._getDrawableScreenRect = () => ({
+        left: 20,
+        right: 80,
+        top: 10,
+        bottom: 70,
+        width: 60,
+        height: 60,
+        centerX: 50,
+        centerY: 40
+    });
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(manager._collectDisplayInfoPartScreenRectInfo(['PartFace'], 'face'))),
+        {
+            rect: {
+                left: 20,
+                right: 80,
+                top: 10,
+                bottom: 70,
+                width: 60,
+                height: 60,
+                centerX: 50,
+                centerY: 40
+            },
+            mode: 'face',
+            source: 'displayInfo'
+        }
+    );
+});
+
+test('core drawable fallback transforms logical corners through a rotated model', () => {
+    const harness = createCoreHarness();
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    manager.currentModel = {
+        internalModel: {
+            localTransform: { a: 1, b: 0, c: 0, d: 1, tx: 0, ty: 0 },
+            getDrawableBounds: () => ({ x: 10, y: 20, width: 30, height: 40 })
+        },
+        worldTransform: { a: 0, b: 1, c: -1, d: 0, tx: 300, ty: 100 }
+    };
+    manager._getDrawableVertexSequence = () => null;
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager._getDrawableScreenRect(
+        0,
+        { x: 0, y: 0, width: 100, height: 100 },
+        { left: 0, right: 500, top: 0, bottom: 500, width: 500, height: 500 },
+        true
+    ))), {
+        left: 240,
+        right: 280,
+        top: 110,
+        bottom: 140,
+        width: 40,
+        height: 30,
+        centerX: 260,
+        centerY: 125
+    });
+});
+
+test('core edge peek fallback maps drawables against unclipped model bounds before viewport clipping', () => {
+    const harness = createCoreHarness({ innerWidth: 800, innerHeight: 600 });
+    const manager = new harness.Live2DManager();
+    manager._isModelReadyForInteraction = true;
+    const model = {
+        destroyed: false,
+        getBounds: () => ({
+            left: -390,
+            right: 110,
+            top: 0,
+            bottom: 600,
+            width: 500,
+            height: 600
+        }),
+        internalModel: {
+            coreModel: {
+                getDrawableCount: () => 1
+            }
+        }
+    };
+    manager.currentModel = model;
+    manager._live2DPeekState = { active: true, model };
+    manager.pixi_app = {
+        renderer: {
+            screen: { width: 800, height: 600 }
+        }
+    };
+    manager._getModelLogicalRect = () => ({
+        x: -1,
+        y: -1,
+        width: 2,
+        height: 2
+    });
+    manager._getDrawableLogicalRect = () => ({
+        x: 0.6,
+        y: -0.5,
+        width: 0.4,
+        height: 1
+    });
+    manager._getDrawableDirectScreenRect = () => null;
+    manager._ensureModelWorldTransform = () => {};
+    manager._isDrawableRenderable = () => true;
+
+    assert.deepEqual(JSON.parse(JSON.stringify(manager.getModelInputRegionRects({ padding: 0 }))), [
+        {
+            left: 10,
+            right: 110,
+            top: 150,
+            bottom: 450,
+            width: 100,
+            height: 300,
+            centerX: 60,
+            centerY: 300
+        }
+    ]);
 });
 
 test('ordinary browser runtime cannot arm edge peek', async () => {
@@ -920,9 +1802,7 @@ test('display change rebuilds the active anchor against the refreshed display', 
     manager.currentModel = model;
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
-    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-        await Promise.resolve();
-    }
+    await waitForQueuedFrame(harness);
     flushNextFrame(harness);
     await enterPromise;
     const hiddenRotation = model.rotation;
@@ -968,9 +1848,7 @@ test('non-display clear invalidates a pending display anchor restore', async () 
     manager.currentModel = model;
 
     const enterPromise = manager._tryApplyLive2DPeek(model);
-    for (let attempt = 0; attempt < 10 && harness.rafQueue.length === 0; attempt += 1) {
-        await Promise.resolve();
-    }
+    await waitForQueuedFrame(harness);
     flushNextFrame(harness);
     await enterPromise;
 

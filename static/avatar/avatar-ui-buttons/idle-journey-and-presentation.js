@@ -148,7 +148,7 @@ function _getNekoIdleReactChatCompactSurfaceRect() {
 
     for (let i = 0; i < candidates.length; i += 1) {
         const rect = _getNekoIdleVisibleElementRect(candidates[i]);
-        if (rect) return rect;
+        if (rect) return _getNekoDesktopVirtualRect(rect);
     }
     return null;
 }
@@ -164,8 +164,9 @@ function _getNekoIdleDesktopCompactSurfaceRect() {
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_COMPACT_SURFACE_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
-    const screenLeft = Number.isFinite(window.screenX) ? window.screenX : 0;
-    const screenTop = Number.isFinite(window.screenY) ? window.screenY : 0;
+    const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();
+    const screenLeft = virtualOrigin.x;
+    const screenTop = virtualOrigin.y;
     return {
         left: screenRect.left - screenLeft,
         top: screenRect.top - screenTop,
@@ -196,8 +197,9 @@ function _getNekoIdleDesktopChatMinimizedRect() {
     if (Date.now() - (state.updatedAt || 0) > _NEKO_IDLE_DESKTOP_CHAT_RECT_STALE_MS) return null;
     const screenRect = _normalizeNekoIdleScreenRect(state.screenRect);
     if (!screenRect) return null;
-    const screenLeft = Number.isFinite(window.screenX) ? window.screenX : 0;
-    const screenTop = Number.isFinite(window.screenY) ? window.screenY : 0;
+    const virtualOrigin = _getNekoDesktopVirtualViewportOrigin();
+    const screenLeft = virtualOrigin.x;
+    const screenTop = virtualOrigin.y;
     return {
         left: screenRect.left - screenLeft,
         top: screenRect.top - screenTop,
@@ -228,14 +230,16 @@ function _canNekoIdleCat1MoveSoloWithExpandedChat() {
 }
 
 function _getNekoIdleChatMinimizedRect() {
-    return _getNekoIdleReactChatMinimizedRect()
+    const reactRect = _getNekoIdleReactChatMinimizedRect();
+    return (reactRect ? _getNekoDesktopVirtualRect(reactRect) : null)
         || _getNekoIdleDesktopChatMinimizedRect();
 }
 
 function _clampNekoIdleCat1Position(left, top, width, height) {
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
     return {
-        left: Math.round(Math.max(0, Math.min(left, Math.max(0, window.innerWidth - width)))),
-        top: Math.round(Math.max(0, Math.min(top, Math.max(0, window.innerHeight - height))))
+        left: Math.round(Math.max(0, Math.min(left, Math.max(0, virtualViewport.width - width)))),
+        top: Math.round(Math.max(0, Math.min(top, Math.max(0, virtualViewport.height - height))))
     };
 }
 
@@ -263,7 +267,7 @@ function _getNekoIdleCat1NativeYarnSide(container, chatRect) {
         !container || typeof container.getBoundingClientRect !== 'function') {
         return '';
     }
-    const catRect = container.getBoundingClientRect();
+    const catRect = _getNekoDesktopVirtualElementRect(container);
     const catLeft = Number(catRect && catRect.left);
     const catWidth = Number(catRect && catRect.width);
     const yarnLeft = Number(chatRect.left);
@@ -476,7 +480,7 @@ function _makeNekoIdleCat1CurrentSideTarget(rect, chatRect, options) {
 
 function _getNekoIdleCat1SideTarget(container, chatRect) {
     if (!container || !chatRect || typeof container.getBoundingClientRect !== 'function') return null;
-    const rect = container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
 
     // 提交本次走路的接近侧，且只在“猫已整体越到毛球另一侧”时才重选。
@@ -564,7 +568,7 @@ function _getNekoIdleCat1CompactTopEdgeCenterFromAnchor(surfaceRect, anchorRatio
 
 function _getNekoIdleCat1CompactTopEdgeTarget(container, surfaceRect, options = {}) {
     if (!container || !surfaceRect || typeof container.getBoundingClientRect !== 'function') return null;
-    const rect = container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
     if (!rect || rect.width <= 0 || rect.height <= 0) return null;
 
     const catCenterX = rect.left + rect.width / 2;
@@ -756,12 +760,14 @@ function _dispatchNekoIdleDesktopChatPairMoveBounds(screenRect, options = {}) {
 function _getNekoIdleCat1PairMoveChatTarget() {
     const shell = _getNekoIdleReactChatMinimizedShell();
     if (shell) {
-        const rect = _getNekoIdleReactChatMinimizedRect();
+        const localRect = _getNekoIdleReactChatMinimizedRect();
+        const rect = _getNekoDesktopVirtualRect(localRect);
         if (rect && rect.width > 0 && rect.height > 0) {
             return {
                 mode: 'dom',
                 shell: shell,
-                rect: rect
+                rect: rect,
+                localRect: localRect
             };
         }
     }
@@ -783,14 +789,15 @@ function _getNekoIdleCat1PairMoveChatTarget() {
 }
 
 function _clampNekoIdleCat1MoveVector(catRect, chatRect, desiredDx, desiredDy) {
+    const virtualViewport = _getNekoDesktopVirtualViewportSize();
     const minDx = chatRect ? Math.max(-catRect.left, -chatRect.left) : -catRect.left;
     const maxDx = chatRect
-        ? Math.min(window.innerWidth - catRect.right, window.innerWidth - chatRect.right)
-        : window.innerWidth - catRect.right;
+        ? Math.min(virtualViewport.width - catRect.right, virtualViewport.width - chatRect.right)
+        : virtualViewport.width - catRect.right;
     const minDy = chatRect ? Math.max(-catRect.top, -chatRect.top) : -catRect.top;
     const maxDy = chatRect
-        ? Math.min(window.innerHeight - catRect.bottom, window.innerHeight - chatRect.bottom)
-        : window.innerHeight - catRect.bottom;
+        ? Math.min(virtualViewport.height - catRect.bottom, virtualViewport.height - chatRect.bottom)
+        : virtualViewport.height - catRect.bottom;
     const dx = Math.max(minDx, Math.min(desiredDx, maxDx));
     const dy = Math.max(minDy, Math.min(desiredDy, maxDy));
     return {
@@ -842,7 +849,7 @@ function _getNekoIdleCat1PairMovePlan(button) {
     if (!container || (!chatTarget && !canMoveSolo)) return null;
     if (container.getAttribute('data-dragging') === 'true') return null;
     if (_isNekoIdleReturnDragActionActive(button)) return null;
-    const catRect = container.getBoundingClientRect();
+    const catRect = _getNekoDesktopVirtualElementRect(container);
     const chatRect = chatTarget ? chatTarget.rect : null;
     if (!catRect || catRect.width <= 0 || catRect.height <= 0) {
         return null;
@@ -871,8 +878,8 @@ function _getNekoIdleCat1PairMovePlan(button) {
         container: container,
         catStartLeft: catRect.left,
         catStartTop: catRect.top,
-        chatStartLeft: chatRect ? chatRect.left : null,
-        chatStartTop: chatRect ? chatRect.top : null,
+        chatStartLeft: chatTarget && chatTarget.localRect ? chatTarget.localRect.left : (chatRect ? chatRect.left : null),
+        chatStartTop: chatTarget && chatTarget.localRect ? chatTarget.localRect.top : (chatRect ? chatRect.top : null),
         chatStartScreenLeft: chatTarget && chatTarget.screenRect ? chatTarget.screenRect.left : null,
         chatStartScreenTop: chatTarget && chatTarget.screenRect ? chatTarget.screenRect.top : null,
         chatWidth: chatRect ? chatRect.width : null,
@@ -1265,7 +1272,11 @@ function _stepNekoIdleCat1Walk(button, timestamp) {
 
     state.target = target;
     state.targetKind = target.kind || '';
-    const rect = container.getBoundingClientRect();
+    const rect = _getNekoDesktopVirtualElementRect(container);
+    if (!rect) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
+        return;
+    }
     state.facingRight = _resolveNekoIdleCat1TargetFacing(rect, target);
     _setNekoIdleCat1Classes(button, state);
     const speedRate = _updateNekoIdleCat1WalkSpeedRate(button, state, target.distance);
@@ -1312,9 +1323,11 @@ function _startNekoIdleCat1Walk(button, target) {
     const walkDragging = walkContainer && walkContainer.getAttribute('data-dragging');
     if (walkDragging && walkDragging !== 'false') return;
     const profile = state.profile;
-    const currentRect = walkContainer && walkContainer.getBoundingClientRect
-        ? walkContainer.getBoundingClientRect()
-        : null;
+    const currentRect = _getNekoDesktopVirtualElementRect(walkContainer);
+    if (!currentRect) {
+        _cancelNekoIdleCat1Journey(button, { resetArt: true, preserveObservers: true });
+        return;
+    }
     state.target = target;
     state.targetKind = target && target.kind ? target.kind : '';
     state.facingRight = _resolveNekoIdleCat1TargetFacing(currentRect, target);
@@ -1355,7 +1368,7 @@ function _scheduleNekoIdleCat1WalkStart(button, target) {
     state.target = target;
     state.targetKind = target && target.kind ? target.kind : '';
     const container = _getNekoIdleReturnContainerFromButton(button);
-    const rect = container && container.getBoundingClientRect ? container.getBoundingClientRect() : null;
+    const rect = _getNekoDesktopVirtualElementRect(container);
     state.facingRight = _resolveNekoIdleCat1TargetFacing(rect, target);
     _setNekoIdleCat1Classes(button, state);
     const art = button.querySelector('.neko-idle-return-art');
@@ -1429,7 +1442,7 @@ function _canScheduleNekoIdleCat1PairMove(button, state) {
     if (!container || (!chatTarget && !canMoveSolo)) return false;
     if (container.style.display === 'none' || container.getAttribute('data-dragging') === 'true') return false;
 
-    const catRect = container.getBoundingClientRect();
+    const catRect = _getNekoDesktopVirtualElementRect(container);
     const chatRect = chatTarget ? chatTarget.rect : null;
     if (!catRect || catRect.width <= 0 || catRect.height <= 0) {
         return false;
@@ -1682,9 +1695,7 @@ function _syncNekoIdleCat1Journey(button, tier) {
     const switchingFromCompactTopEdgeToMinimizedSide =
         previousTargetKind === _NEKO_IDLE_CAT1_TARGET_KIND_COMPACT_TOP_EDGE &&
         target.kind === _NEKO_IDLE_CAT1_TARGET_KIND_MINIMIZED_SIDE;
-    const containerRect = typeof container.getBoundingClientRect === 'function'
-        ? container.getBoundingClientRect()
-        : null;
+    const containerRect = _getNekoDesktopVirtualElementRect(container);
     const centerDistancePx = _getNekoIdleRectCenterDistancePx(containerRect, chatRect);
     const walkStartDistancePx = Number.isFinite(centerDistancePx)
         ? centerDistancePx

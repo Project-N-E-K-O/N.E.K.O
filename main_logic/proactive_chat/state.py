@@ -20,6 +20,7 @@ import difflib
 import hashlib
 import re
 import time
+from contextlib import suppress
 from collections import deque
 from pathlib import Path
 from typing import Any
@@ -137,6 +138,31 @@ async def _ensure_source_history_loaded(
         _source_history_loaded_path = path
 
 
+async def _persist_source_history_unlocked(
+    *, memory_dir: str | Path | None = None
+) -> None:
+    """Persist the in-memory source history. The caller must hold _source_history_lock."""
+    # 快照故意在这里、在锁内自己取，而不是由调用方传进来：调用方取完快照再到锁外落盘，
+    # 两次投递抵达 os.replace 的顺序可以和取快照的顺序反过来，把新历史写回旧值；
+    # Windows 上两个并发 os.replace 打同一个目标还会互相 PermissionError(WinError 5)。
+    # 不接 snapshot 参数，这个反转窗口就从代码里消失，而不是靠调用约定维持。
+    try:
+        await atomic_write_json_async(
+            _source_history_path(memory_dir=memory_dir),
+            {
+                "v": _SOURCE_HISTORY_SCHEMA_VERSION,
+                "entries": dict(_source_history),
+            },
+        )
+    except Exception as exc:
+        logger.warning(
+            "落盘 %s 失败: %s: %s",
+            _SOURCE_HISTORY_FILENAME,
+            type(exc).__name__,
+            exc,
+        )
+
+
 async def _record_source_used(
     *,
     url: str,
@@ -166,21 +192,27 @@ async def _record_source_used(
         ]
         for existing_hash in forgotten:
             _source_history.pop(existing_hash, None)
-        snapshot = {
-            "v": _SOURCE_HISTORY_SCHEMA_VERSION,
-            "entries": dict(_source_history),
-        }
-    try:
-        await atomic_write_json_async(
-            _source_history_path(memory_dir=memory_dir), snapshot
+        # 落盘也在锁内，对偶于 _increment_proactive_chat_total 调 _persist_totals_unlocked：
+        # 这是个跨角色的单文件，多个投递并发时锁只盖内存不盖落盘等于没盖。
+        # 写本身仍在 to_thread 里跑（atomic_write_json_async 内部），持的是 asyncio.Lock
+        # 不是 threading.Lock，所以事件循环在等待期间照样服务别的请求。
+        #
+        # to_thread 一旦交出去就取消不掉 —— 线程会一直跑到 os.replace 结束。所以不能直接
+        # await：这里被 cancel（退出时最常见）时 async with 会在 CancelledError 穿过的
+        # 一刻就把锁放掉，而那次 os.replace 还在飞，「写在锁内」的不变量就破了。shield 让
+        # 取消落在外层、写盘任务照跑；再显式等它收尾之后才让 CancelledError 继续往上走。
+        writer = asyncio.ensure_future(
+            _persist_source_history_unlocked(memory_dir=memory_dir)
         )
-    except Exception as exc:
-        logger.warning(
-            "落盘 %s 失败: %s: %s",
-            _SOURCE_HISTORY_FILENAME,
-            type(exc).__name__,
-            exc,
-        )
+        try:
+            await asyncio.shield(writer)
+        except asyncio.CancelledError:
+            # 循环而不是等一次：第二次取消（退出时最常见）会把这次 asyncio.wait 本身也
+            # 打断，锁又提前放了。writer 是 to_thread，线程一定会跑完，循环必然终止。
+            while not writer.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait({writer})
+            raise
 
 
 # --- 主动搭话近期记录暂存区 ---

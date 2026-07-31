@@ -28,7 +28,6 @@ dispatcher actually resolves.
 """
 import re
 import websockets
-from functools import partial
 
 from utils.config_manager import get_config_manager
 from utils.tts.native_voice_registry import get_native_tts_worker
@@ -39,10 +38,13 @@ from utils.logger_config import get_module_logger
 # ── shared infrastructure (re-exported for namespace stability) ──────────────
 from ._infra import (
     TTS_SHUTDOWN_SENTINEL,
+    TTS_AUDIO_DONE_SENTINEL,
+    AudioDoneEmitter,
     _resample_audio,
     _parse_env_float,
     _enqueue_error,
     _ws_is_open,
+    log_configured_tts_failure,
     SentenceBuffer,
     _AudioQueueProxy,
     _non_bistream_tts_main_loop,
@@ -54,6 +56,9 @@ from ._registry_meta import TTSProviderMeta, TTS_PROVIDER_REGISTRY
 # ── per-provider workers + their selection/resolution adapters ──────────────
 from .workers.step import (
     step_realtime_tts_worker,
+)
+from .workers.free import (
+    free_realtime_tts_worker,
     _adjust_free_tts_url,
     _get_tts_language_code,
     _build_step_tts_create_data,
@@ -76,7 +81,11 @@ from .workers.cosyvoice import (
 )
 from .workers.cogtts import cogtts_tts_worker
 from .workers.gemini import gemini_tts_worker
-from .workers.openai import openai_tts_worker
+from .workers.openai import (
+    openai_tts_worker,
+    _custom_openai_tts_is_selected,
+    _custom_openai_tts_resolve,
+)
 from .workers.vllm_omni import (
     vllm_omni_tts_worker,
     VLLM_OMNI_DEFAULT_BASE_URL,
@@ -142,12 +151,14 @@ __all__ = [
     "get_tts_worker", "_get_voice_meta", "_grok_voice_id_is_xai_custom",
     "_XAI_CUSTOM_VOICE_PATTERN", "logger",
     # shared infrastructure
-    "TTS_SHUTDOWN_SENTINEL", "_resample_audio", "_parse_env_float", "_enqueue_error",
+    "TTS_SHUTDOWN_SENTINEL", "TTS_AUDIO_DONE_SENTINEL", "AudioDoneEmitter",
+    "_resample_audio", "_parse_env_float", "_enqueue_error",
     "_ws_is_open", "SentenceBuffer", "_AudioQueueProxy", "_non_bistream_tts_main_loop",
     "_run_sentence_tts_worker", "_record_tts_telemetry",
     "TTSProviderMeta", "TTS_PROVIDER_REGISTRY",
     # workers
-    "step_realtime_tts_worker", "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
+    "step_realtime_tts_worker", "free_realtime_tts_worker",
+    "grok_streaming_tts_worker", "qwen_realtime_tts_worker",
     "cosyvoice_vc_tts_worker", "cogtts_tts_worker", "gemini_tts_worker",
     "openai_tts_worker", "vllm_omni_tts_worker", "mimo_tts_worker",
     "doubao_tts_worker",
@@ -173,6 +184,9 @@ __all__ = [
     "_vllm_omni_clone_is_selected", "_vllm_omni_clone_resolve",
     "_vllm_omni_normalize_ws_endpoint",
     "_gptsovits_is_selected", "_gptsovits_resolve",
+    "_custom_openai_tts_is_selected", "_custom_openai_tts_resolve",
+    "tts_provider_falls_back_on_failure", "tts_provider_uses_configured_preset_voice",
+    "selected_configured_tts_preset_provider_key",
     "_minimax_clone_is_selected", "_minimax_clone_resolve",
     "_elevenlabs_clone_is_selected", "_elevenlabs_clone_resolve",
     "_cosyvoice_clone_is_selected", "_cosyvoice_clone_resolve",
@@ -256,7 +270,13 @@ def _grok_voice_id_is_xai_custom(voice_id: str) -> bool:
     return bool(_XAI_CUSTOM_VOICE_PATTERN.match(voice_id))
 
 
-def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
+def get_tts_worker(
+    core_api_type='qwen',
+    has_custom_voice=False,
+    voice_id='',
+    *,
+    excluded_provider_keys=frozenset(),
+):
     """
     Return a callable based on the core_api type and whether a custom voice exists.
 
@@ -308,7 +328,13 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
         has_custom_voice=bool(has_custom_voice),
         voice_meta_loader=lambda: _get_voice_meta(voice_id),
     )
-    special = _tts_providers.resolve_selected(_dispatch_ctx)
+    # Runtime fallback passes only the failed provider key here; all remaining
+    # providers keep their established priority and selection behavior.
+    # 运行时回退只排除故障 provider，不改变其余 provider 的既有优先级。
+    special = _tts_providers.resolve_selected(
+        _dispatch_ctx,
+        excluded_provider_keys=frozenset(excluded_provider_keys or ()),
+    )
     if special is not None:
         logger.info("[get_tts_worker] 命中 TTS provider: %s", special[2])
         return special
@@ -371,10 +397,9 @@ def get_tts_worker(core_api_type='qwen', has_custom_voice=False, voice_id=''):
     if core_api_type in ('qwen', 'qwen_intl'):
         return qwen_realtime_tts_worker, None, 'qwen'
     if core_api_type == 'free':
-        # provider_key 故意用 'free' 而非 'step'：'free' 不在 TTS_PROVIDER_REGISTRY 中，
-        # 使调用方 meta=None → normalizer 启用，因为 free 国外模式走 Gemini 后端需要
-        # CJK 空格清理。若改为 'step'（ws_bistream）则国外 free 用户的 normalizer 会被错误禁用。
-        return partial(step_realtime_tts_worker, free_mode=True), None, 'free'
+        # 免费服务拥有独立 worker；底层仍复用它与 StepFun 当前共有的流式
+        # wire transport，但 provider 路由、端点和音色选择不再伪装成 StepFun。
+        return free_realtime_tts_worker, None, 'free'
     elif core_api_type == 'step':
         return step_realtime_tts_worker, None, 'step'
     elif core_api_type == 'glm':
@@ -437,7 +462,61 @@ _tts_providers.register(_tts_providers.TTSProvider(
     probe_kind='ws_handshake',
     probe_sub_type='vllm_omni_tts',
     probe_ws_path='/audio/speech/stream',
+    configured_preset_voice=True,
+    fallback_on_failure=True,
 ))
+
+_tts_providers.register(_tts_providers.TTSProvider(
+    key='custom',
+    kind='hosted',
+    priority=25,
+    capabilities=frozenset({'preset'}),
+    is_selected=_custom_openai_tts_is_selected,
+    resolve=_custom_openai_tts_resolve,
+    editable_endpoint=True,
+    probe_kind='http_tts',
+    probe_sub_type='openai_tts',
+    configured_preset_voice=True,
+    fallback_on_failure=True,
+    # The generic "custom" option is already inserted into every model dropdown.
+    # Keep this registry entry available as metadata without adding a duplicate.
+    tts_config_visible=False,
+))
+
+
+def tts_provider_falls_back_on_failure(provider_key):
+    """Expose registry fallback metadata without importing utils in core mixins."""
+    # The facade keeps provider policy out of core; core only asks whether the
+    # active worker opted into replacement after failure.
+    # 通过门面隔离 provider 策略；core 只查询当前 worker 是否允许故障切换。
+    return _tts_providers.falls_back_on_failure(provider_key)
+
+
+def tts_provider_uses_configured_preset_voice(provider_key):
+    """Expose configured-preset ownership without importing utils in core mixins."""
+    return _tts_providers.uses_configured_preset_voice(provider_key)
+
+
+def selected_configured_tts_preset_provider_key(core_config, cm, voice_id):
+    """Return the selected configured-preset owner for ``voice_id``, if any."""
+    # Reuse registry dispatch so core never hardcodes custom/vLLM ownership.
+    # 复用注册表判定，让 core 不需要识别 custom、vLLM 等具体 provider 名称。
+    try:
+        provider_key = _tts_providers.selected_preset_provider_key(
+            core_config,
+            cm,
+            voice_id,
+        )
+        if not _tts_providers.uses_configured_preset_voice(provider_key):
+            return None
+        return provider_key
+    except Exception:
+        # Ownership lookup is advisory. A malformed provider must not abort the
+        # session, and its exception may contain credentials or signed URLs.
+        # 音色归属查询失败时按旧路由继续，且不记录可能含凭证的原始异常。
+        log_configured_tts_failure("configured", "ownership")
+        return None
+
 
 # 克隆音色 provider（hosted SaaS，按 voice_meta.provider 选中）。priority 30/40/50
 # 沿用原 get_tts_worker 克隆块顺序：都在 vllm(20) 之后、mimo/native 之前。capabilities

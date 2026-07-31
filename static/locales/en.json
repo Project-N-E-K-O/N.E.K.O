@@ -929,7 +929,14 @@
         "volumeWaiting": "Waiting",
         "volumeHintWaiting": "Mic is listening, go ahead and speak",
         "noiseReduction": "Noise Reduction",
-        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice"
+        "noiseReductionHint": "RNNoise AI noise reduction for clearer voice",
+        "independentAsr": "Independent Speech Recognition",
+        "independentAsrActive": "Independent ASR active: {{provider}}",
+        "independentAsrFallback": "Independent ASR unavailable. Voice input has stopped for this session. Check the independent ASR configuration, then start a new voice session.",
+        "audioPreprocessingFailed": "Microphone audio processing failed. Voice input has stopped for this session. Please start a new voice session.",
+        "independentAsrProviderUnavailable": "{{provider}} is temporarily unavailable. Voice input has stopped for this session. It did not switch to another speech recognition service. Please start a new voice session later.",
+        "independentAsrNextSession": "Enabled for the next voice session; it will not automatically switch to Omni if unavailable.",
+        "independentAsrNative": "Using Omni native speech recognition"
     },
     "speaker": {
         "volumeLabel": "Speaker Volume",
@@ -1028,7 +1035,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Free Version",
+            "dummy": "Test provider",
+            "unknown": "Unknown provider"
         },
         "coreProviderNames": {
             "free": "Free Version (N.E.K.O. Exclusive Benefit, Supports Web Search)",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "ttsModelApiKeyPlaceholder": "Optional, can be empty for local providers",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI-compatible: HTTP(S) POST /v1/audio/speech with complete text input and a streamed audio response.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream with bidirectional text and audio streaming.",
         "ttsVoiceIdHint": "(Optional, fallback voice when character has none)",
         "ttsVoiceIdPlaceholder": "e.g., Chinese Female, alloy",
         "agentModelUrlPlaceholder": "Leave blank to follow Assist API vision model URL",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API is only for Local mode (local voice conversation)",
             "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
             "autoSwitchLocal": "• After configuration, the core API type will automatically switch to \"local\""
-        },
-        "ttsWarning": {
-            "title": "Important Notice:",
-            "duplexStreaming": "• TTS API must support duplex streaming (full-duplex real-time speech synthesis)",
-            "wsProtocol": "• URL must use WebSocket protocol (starting with ws:// or wss://)",
-            "cosyVoiceOnly": "• Currently only supports Alibaba Cloud CosyVoice compatible protocol format"
         },
         "gptsovitsConfig": "GPT-SoVITS Configuration",
         "gptsovitsDescription": "GPT-SoVITS Note:",
@@ -2375,7 +2384,7 @@
             "never": "Do not remind me"
         },
         "screenSource": {
-            "notAvailable": "Screen source selection only available in desktop version",
+            "notAvailable": "Screen source selection is unavailable in the current environment",
             "loading": "Loading...",
             "noSources": "No screen sources available",
             "loadFailed": "Failed to load screen sources",
@@ -2383,7 +2392,8 @@
             "screenLabel": "Screen {{index}}",
             "windows": "Windows",
             "selected": "Selected {{source}}",
-            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing"
+            "sourceLost": "Screen sharing could not find previously selected window, switched to fullscreen sharing",
+            "captureFailed": "Screen capture stopped. Check system permissions or select the source again"
         },
         "deviceSwitchFailed": "Device switch failed",
         "deviceSwitching": "Switching device...",
@@ -4327,6 +4337,7 @@
         "testCoreTooltip": "Test Core API Connectivity",
         "testAssist": "Test",
         "testAssistTooltip": "Test Assist API Connectivity",
+        "maskedSecretRetype": "This key is saved but cannot be displayed. Re-enter it before testing.",
         "gsvTestText": "GSV connectivity test",
         "gsvTestTooltip": "Test GPT-SoVITS Connectivity",
         "error": {

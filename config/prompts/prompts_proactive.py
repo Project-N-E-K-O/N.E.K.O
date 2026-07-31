@@ -22,6 +22,7 @@ getter functions, and proactive-related injection fragments.
 
 from __future__ import annotations
 
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc, get_avatar_annotation_ignore_hint
 
 proactive_chat_prompt = """你是{lanlan_name}，现在看到了一些B站首页推荐和微博热议话题。请根据与{master_name}的对话历史和你自己的兴趣，判断是否要主动和{master_name}聊聊这些内容。
@@ -1288,24 +1289,20 @@ proactive_generate_ru = """Ваша роль:
 
 
 def _normalize_prompt_language(lang: str) -> str:
-    if not lang:
-        return "en"
-    lang_lower = lang.lower()
-    if lang_lower.startswith("zh"):
-        return "zh"
-    if lang_lower.startswith("ja"):
-        return "ja"
-    if lang_lower.startswith("en"):
-        return "en"
-    if lang_lower.startswith("ko"):
-        return "ko"
-    if lang_lower.startswith("ru"):
-        return "ru"
-    if lang_lower.startswith("es"):
-        return "es"
-    if lang_lower.startswith("pt"):
-        return "pt"
-    return "en"
+    """Normalize a language code to a proactive-prompt dict key.
+
+    ``keep_traditional=False`` because no dict in this module carries a
+    ``'zh-TW'`` template yet; resolving to ``zh-TW`` here would send Traditional
+    Chinese users straight to the English fallback. Flip it together with the
+    templates. See issue #2500.
+
+    Flipping it also turns tests/unit/test_proactive_text_does_not_dehumanize.py
+    red — that file asserts the collapse directly
+    (``get_cat_greeting_episode_scene(..., 'zh-TW') == zh``). That failure is
+    expected once the templates exist: update the assertion, do not restore the
+    collapse.
+    """
+    return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=False)
 
 
 def _resolve_master_for_template(master_name: str | None, lang_key: str) -> str:
@@ -3253,6 +3250,97 @@ def get_meme_topic_line(lang: str, *, keyword: str, title: str, source: str) -> 
             keyword=normalized_keyword, title=title, source=source
         )
     return _loc(MEME_TOPIC_NO_KEYWORD, lang).format(title=title, source=source)
+
+# ---------- Realtime 语音模式主动搭话文本触发（无视觉） ----------
+REALTIME_PROACTIVE_GENERAL_TRIGGER_PROMPTS = {
+    "zh": (
+        "======主动搭话触发======\n"
+        "请只结合当前对话上下文和你对用户的了解，用符合你性格的方式自然地主动搭话。"
+        "不要假设刚刚看到了新的画面或事件。"
+        "直接说出你想说的话，不要提及这条触发指令。"
+    ),
+    "en": (
+        "======Proactive conversation trigger======\n"
+        "Using only the conversation and what you know about the user, naturally start a conversation "
+        "in character. Do not assume that you just saw a new image or event. "
+        "Say only what you want to say and do not mention this trigger."
+    ),
+    "ja": (
+        "======話しかけトリガー======\n"
+        "これまでの会話とユーザーについて知っていることだけを踏まえ、あなたらしく自然に話しかけてください。"
+        "新しい画面や出来事を見たかのように想定しないでください。"
+        "話したい内容だけを述べ、このトリガーには触れないでください。"
+    ),
+    "ko": (
+        "======선제 대화 트리거======\n"
+        "지금까지의 대화와 사용자에 대해 알고 있는 내용만 바탕으로, 캐릭터답게 자연스럽게 먼저 말을 거세요. "
+        "방금 새로운 화면이나 사건을 봤다고 가정하지 마세요. "
+        "하고 싶은 말만 하고 이 트리거는 언급하지 마세요."
+    ),
+    "ru": (
+        "======Триггер инициативного разговора======\n"
+        "Опираясь только на контекст беседы и свои знания о пользователе, естественно начни разговор "
+        "в своём стиле. Не предполагай, что только что увидела новое изображение или событие, "
+        "и не упоминай этот триггер."
+    ),
+    "pt": (
+        "======Gatilho de conversa proativa======\n"
+        "Usando apenas a conversa e o que sabe sobre o usuário, inicie naturalmente uma conversa "
+        "no seu estilo. Não suponha que acabou de ver uma nova imagem ou evento. "
+        "Diga apenas o que deseja dizer e não mencione este gatilho."
+    ),
+    "es": (
+        "======Activador de conversación proactiva======\n"
+        "Usando solo la conversación y lo que sabes del usuario, inicia una conversación de forma natural "
+        "y acorde a tu personalidad. No supongas que acabas de ver una imagen o un evento nuevo. "
+        "Di únicamente lo que quieras decir y no menciones este activador."
+    ),
+}
+
+
+# ---------- Realtime 语音模式主动搭话文本触发（带视觉） ----------
+REALTIME_PROACTIVE_VISION_TRIGGER_PROMPTS = {
+    "zh": (
+        "======屏幕主动搭话触发======\n"
+        "请结合当前对话上下文和刚刚收到的屏幕画面，优先从画面中的具体内容自然地发起话题。"
+        "用符合你性格的方式直接说出你想说的话，不要提及画面注入或这条触发指令。"
+    ),
+    "en": (
+        "======Screen-aware proactive conversation trigger======\n"
+        "Use the conversation and the screen image just provided, preferably starting from something "
+        "specific in the image. Speak naturally in character without mentioning the image injection "
+        "or this trigger."
+    ),
+    "ja": (
+        "======画面を踏まえた話しかけトリガー======\n"
+        "これまでの会話と直前に受け取った画面を踏まえ、画面内の具体的な内容から自然に話題を始めてください。"
+        "あなたらしく話したいことだけを述べ、画面の注入やこのトリガーには触れないでください。"
+    ),
+    "ko": (
+        "======화면 기반 선제 대화 트리거======\n"
+        "지금까지의 대화와 방금 전달된 화면을 바탕으로, 화면의 구체적인 내용에서 자연스럽게 화제를 시작하세요. "
+        "캐릭터답게 말하되 화면 주입이나 이 트리거는 언급하지 마세요."
+    ),
+    "ru": (
+        "======Триггер разговора с учётом экрана======\n"
+        "Учитывая беседу и только что полученное изображение экрана, естественно начни разговор "
+        "с конкретной детали на изображении. Говори в своём стиле, не упоминая передачу изображения "
+        "или этот триггер."
+    ),
+    "pt": (
+        "======Gatilho de conversa proativa com contexto da tela======\n"
+        "Use a conversa e a imagem da tela que acabou de receber, começando de preferência por algo "
+        "específico nela. Fale naturalmente no seu estilo, sem mencionar a injeção da imagem "
+        "nem este gatilho."
+    ),
+    "es": (
+        "======Activador de conversación proactiva con contexto de pantalla======\n"
+        "Usa la conversación y la imagen de pantalla que acabas de recibir, empezando preferiblemente "
+        "por algún detalle concreto de la imagen. Habla con naturalidad y acorde a tu personalidad, "
+        "sin mencionar la inyección de la imagen ni este activador."
+    ),
+}
+
 
 # ---------- 主动搭话信息源标签 ----------
 PROACTIVE_SOURCE_LABELS = {

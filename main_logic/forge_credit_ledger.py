@@ -97,13 +97,50 @@ def _public_credit(credit: dict) -> dict:
     }
 
 
-def list_credits(now: datetime | None = None) -> dict:
+def _normalize_owner_id(value: object) -> str:
+    if not isinstance(value, str) or not value.strip():
+        return ""
+    try:
+        return str(uuid.UUID(value.strip()))
+    except (ValueError, AttributeError):
+        return ""
+
+
+def _require_owner_id(value: object) -> str:
+    owner_id = _normalize_owner_id(value)
+    if not owner_id:
+        raise ValueError("invalid_reservation_owner_id")
+    return owner_id
+
+
+def _require_reservation_owner(credit: dict, owner_id: str) -> None:
+    reservation_owner_id = _normalize_owner_id(
+        credit.get("reservation_owner_id")
+    )
+    if not reservation_owner_id or reservation_owner_id != owner_id:
+        # Pre-owner-schema reservations deliberately fail closed.  A current
+        # account must never be able to adopt or release an unbound reservation.
+        raise RuntimeError("reservation_owner_mismatch")
+
+
+def list_credits(
+    now: datetime | None = None,
+    *,
+    reservation_owner_id: str | None = None,
+) -> dict:
     current = now or _now()
+    owner_id = _normalize_owner_id(reservation_owner_id)
     with _LOCK:
         data = _load()
         changed = _expire(data, current)
         active = [_public_credit(c) for c in data["credits"] if c.get("status") == "active"]
-        reserved = [_public_credit(c) for c in data["credits"] if c.get("status") == "reserved"]
+        reserved = [
+            _public_credit(c)
+            for c in data["credits"]
+            if c.get("status") == "reserved"
+            and owner_id
+            and _normalize_owner_id(c.get("reservation_owner_id")) == owner_id
+        ]
         if changed:
             _save(data)
         active.sort(key=lambda item: item.get("created_at") or "")
@@ -186,8 +223,14 @@ def _granted_today(data: dict, now: datetime, trigger: str | None = None) -> int
     )
 
 
-def reserve_credit(credit_id: str, operation_id: str, now: datetime | None = None) -> dict:
+def reserve_credit(
+    credit_id: str,
+    operation_id: str,
+    reservation_owner_id: str,
+    now: datetime | None = None,
+) -> dict:
     current = now or _now()
+    owner_id = _require_owner_id(reservation_owner_id)
     try:
         uuid.UUID(credit_id)
         uuid.UUID(operation_id)
@@ -199,22 +242,41 @@ def reserve_credit(credit_id: str, operation_id: str, now: datetime | None = Non
         operation_credit = next(
             (c for c in data["credits"] if c.get("operation_id") == operation_id), None
         )
-        if operation_credit is not None and operation_credit.get("id") != credit_id:
-            raise RuntimeError("forge_operation_conflict")
+        if operation_credit is not None:
+            _require_reservation_owner(operation_credit, owner_id)
+            if operation_credit.get("id") != credit_id:
+                raise RuntimeError("forge_operation_conflict")
         credit = next((c for c in data["credits"] if c.get("id") == credit_id), None)
         if credit is None:
             raise LookupError("credit_not_found")
         if credit.get("status") == "reserved" and credit.get("operation_id") == operation_id:
+            _require_reservation_owner(credit, owner_id)
             return {"operation_id": operation_id, "credit": _public_credit(credit)}
         if credit.get("status") != "active":
             raise RuntimeError("credit_not_active")
-        credit.update({"status": "reserved", "operation_id": operation_id, "reserved_at": _iso(current)})
+        for key in ("last_released_operation_id", "last_released_owner_id"):
+            credit.pop(key, None)
+        credit.update(
+            {
+                "status": "reserved",
+                "operation_id": operation_id,
+                "reservation_owner_id": owner_id,
+                "reserved_at": _iso(current),
+            }
+        )
         _save(data)
         return {"operation_id": operation_id, "credit": _public_credit(credit)}
 
 
-def commit_credit(credit_id: str, operation_id: str, card_id: str, now: datetime | None = None) -> dict:
+def commit_credit(
+    credit_id: str,
+    operation_id: str,
+    card_id: str,
+    reservation_owner_id: str,
+    now: datetime | None = None,
+) -> dict:
     current = now or _now()
+    owner_id = _require_owner_id(reservation_owner_id)
     try:
         uuid.UUID(card_id)
     except ValueError as exc:
@@ -227,20 +289,26 @@ def commit_credit(credit_id: str, operation_id: str, card_id: str, now: datetime
         if credit is None:
             raise LookupError("credit_not_found")
         if credit.get("status") == "consumed":
+            _require_reservation_owner(credit, owner_id)
             if credit.get("operation_id") == operation_id and credit.get("card_id") == card_id:
                 return {"committed": True, "credit": _public_credit(credit)}
             raise RuntimeError("forge_operation_conflict")
         if credit.get("status") != "reserved" or credit.get("operation_id") != operation_id:
             raise RuntimeError("reservation_not_active")
+        _require_reservation_owner(credit, owner_id)
         credit.update({"status": "consumed", "card_id": card_id, "consumed_at": _iso(current)})
         _save(data)
         return {"committed": True, "credit": _public_credit(credit)}
 
 
 def release_credit(
-    credit_id: str, operation_id: str, now: datetime | None = None
+    credit_id: str,
+    operation_id: str,
+    reservation_owner_id: str,
+    now: datetime | None = None,
 ) -> dict:
     current = now or _now()
+    owner_id = _require_owner_id(reservation_owner_id)
     with _LOCK:
         data = _load()
         if _expire(data, current):
@@ -248,11 +316,25 @@ def release_credit(
         credit = next((c for c in data["credits"] if c.get("id") == credit_id), None)
         if credit is None:
             raise LookupError("credit_not_found")
-        if credit.get("status") == "active" and not credit.get("operation_id"):
+        if (
+            credit.get("status") in {"active", "expired"}
+            and not credit.get("operation_id")
+        ):
+            if credit.get("last_released_operation_id") != operation_id:
+                raise RuntimeError("reservation_not_active")
+            if _normalize_owner_id(credit.get("last_released_owner_id")) != owner_id:
+                raise RuntimeError("reservation_owner_mismatch")
             return {"released": True, "credit": _public_credit(credit)}
         if credit.get("status") != "reserved" or credit.get("operation_id") != operation_id:
             raise RuntimeError("reservation_not_active")
-        for key in ("operation_id", "reserved_at"):
+        _require_reservation_owner(credit, owner_id)
+        credit.update(
+            {
+                "last_released_operation_id": operation_id,
+                "last_released_owner_id": owner_id,
+            }
+        )
+        for key in ("operation_id", "reservation_owner_id", "reserved_at"):
             credit.pop(key, None)
         expires = _parse(credit.get("expires_at"))
         if expires is None or expires <= current:

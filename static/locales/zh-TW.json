@@ -929,7 +929,14 @@
         "volumeWaiting": "等待聲音",
         "volumeHintWaiting": "麥克風正在監聽，請說話",
         "noiseReduction": "降噪",
-        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰"
+        "noiseReductionHint": "RNNoise AI 降噪，讓語音更清晰",
+        "independentAsr": "獨立語音辨識",
+        "independentAsrActive": "目前使用獨立 ASR：{{provider}}",
+        "independentAsrFallback": "獨立 ASR 無法使用，本次語音輸入已停止。請檢查獨立 ASR 設定，然後重新開始語音會話。",
+        "audioPreprocessingFailed": "麥克風音訊處理失敗，本次工作階段的語音輸入已停止。請重新開始一次語音工作階段。",
+        "independentAsrProviderUnavailable": "{{provider}} 暫時無法使用，本次語音輸入已停止。未切換到其他語音辨識服務，請稍後重新開始語音會話。",
+        "independentAsrNextSession": "將於下次語音會話啟用；無法使用時不會自動切換到 Omni。",
+        "independentAsrNative": "目前使用 Omni 原生語音辨識"
     },
     "speaker": {
         "volumeLabel": "揚聲器音量",
@@ -1028,7 +1035,13 @@
             "silicon": "矽基流動",
             "gemini": "Gemini",
             "kimi_code": "Kimi Code（月之暗面）",
-            "vllm_omni": "vLLM-Omni（TTS）"
+            "vllm_omni": "vLLM-Omni（TTS）",
+            "qwen": "通義千問",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "免費版",
+            "dummy": "測試服務",
+            "unknown": "未知服務"
         },
         "coreProviderNames": {
             "free": "免費版（貓娘專屬福利，支持聯網搜索）",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "可選，本地服務商可留空",
         "ttsModelApiKeyPlaceholder": "可選，本地服務商可留空",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI 相容：HTTP(S) POST /v1/audio/speech，完整文字請求、串流音訊回應。",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni：WS(S) /v1/audio/speech/stream，文字與音訊雙向串流傳輸。",
         "ttsVoiceIdHint": "（可選，角色未設置時的回退音色）",
         "ttsVoiceIdPlaceholder": "如：中文女、alloy",
         "agentModelUrlPlaceholder": "留空則跟隨輔助 API 視覺模型 URL",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API 僅用於 Local 模式（本地語音對話）",
             "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
             "autoSwitchLocal": "• 配置後，核心 API 類型將自動切換為 \"local\""
-        },
-        "ttsWarning": {
-            "title": "重要提示：",
-            "duplexStreaming": "• TTS API 必須支持雙工流式（全雙工實時語音閤成）",
-            "wsProtocol": "• URL 必須使用 WebSocket 協議（以 ws:// 或 wss:// 開頭）",
-            "cosyVoiceOnly": "• 目前僅支持阿里雲 CosyVoice 兼容的協議格式"
         },
         "gptsovitsConfig": "GPT-SoVITS 配置",
         "gptsovitsDescription": "GPT-SoVITS 說明：",
@@ -2375,7 +2384,7 @@
             "never": "不再提醒"
         },
         "screenSource": {
-            "notAvailable": "屏幕源選擇僅在桌面版可用",
+            "notAvailable": "目前環境無法選擇螢幕來源",
             "loading": "加載中...",
             "noSources": "沒有可用的屏幕源",
             "loadFailed": "獲取屏幕源失敗",
@@ -2383,7 +2392,8 @@
             "screenLabel": "螢幕 {{index}}",
             "windows": "窗口",
             "selected": "已選擇 {{source}}",
-            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享"
+            "sourceLost": "螢幕分享無法找到之前選擇的窗口，已切換為全螢幕分享",
+            "captureFailed": "螢幕擷取已停止，請檢查系統權限或重新選擇來源"
         },
         "deviceSwitchFailed": "裝置切換失敗",
         "deviceSwitching": "裝置切換中...",
@@ -4327,6 +4337,7 @@
         "testCoreTooltip": "測試核心 API 連通性",
         "testAssist": "測試",
         "testAssistTooltip": "測試輔助 API 連通性",
+        "maskedSecretRetype": "金鑰已儲存但無法顯示，請重新輸入後再測試。",
         "gsvTestText": "GSV 連通性測試",
         "gsvTestTooltip": "GPT-SoVITS 連通性測試",
         "error": {

@@ -929,7 +929,14 @@
         "volumeWaiting": "Aguardando",
         "volumeHintWaiting": "O microfone está ouvindo, pode falar",
         "noiseReduction": "Redução de ruído",
-        "noiseReductionHint": "Redução de ruído RNNoise AI para voz mais clara"
+        "noiseReductionHint": "Redução de ruído RNNoise AI para voz mais clara",
+        "independentAsr": "Reconhecimento de voz independente",
+        "independentAsrActive": "ASR independente ativo: {{provider}}",
+        "independentAsrFallback": "O ASR independente não está disponível. A entrada de voz foi interrompida nesta sessão. Verifique a configuração do ASR independente e depois inicie uma nova sessão de voz.",
+        "audioPreprocessingFailed": "Falha ao processar o áudio do microfone. A entrada de voz foi interrompida nesta sessão. Inicie uma nova sessão de voz.",
+        "independentAsrProviderUnavailable": "{{provider}} está temporariamente indisponível. A entrada de voz foi interrompida nesta sessão. O sistema não mudou para outro serviço de reconhecimento de voz. Inicie uma nova sessão de voz mais tarde.",
+        "independentAsrNextSession": "Será ativado na próxima sessão de voz; não mudará automaticamente para o Omni se estiver indisponível.",
+        "independentAsrNative": "Usando o reconhecimento de voz nativo do Omni"
     },
     "speaker": {
         "volumeLabel": "Volume do alto-falante",
@@ -1028,7 +1035,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gêmeos",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Versão gratuita",
+            "dummy": "Provedor de teste",
+            "unknown": "Provedor desconhecido"
         },
         "coreProviderNames": {
             "free": "Versão gratuita (benefício exclusivo NEKO, suporta pesquisa na web)",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "ttsModelApiKeyPlaceholder": "Opcional, pode ficar vazio para provedores locais",
         "ttsVoiceId": "ID de voz",
+        "ttsProtocolHintOpenAI": "Compatível com OpenAI: HTTP(S) POST /v1/audio/speech com texto completo e resposta de áudio em streaming.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream com streaming bidirecional de texto e áudio.",
         "ttsVoiceIdHint": "(Opcional, voz substituta quando o personagem não tiver nenhuma)",
         "ttsVoiceIdPlaceholder": "por exemplo, fêmea chinesa, liga",
         "agentModelUrlPlaceholder": "Deixe em branco para seguir o URL do modelo de visão da Assist API",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• A API em tempo real é apenas para modo local (conversa de voz local)",
             "wsProtocol": "• O URL deve usar o protocolo WebSocket (começando com ws:// ou wss://)",
             "autoSwitchLocal": "• Após a configuração, o tipo de API principal mudará automaticamente para \"local\""
-        },
-        "ttsWarning": {
-            "title": "Aviso importante:",
-            "duplexStreaming": "• A API TTS deve suportar streaming duplex (síntese de fala full-duplex em tempo real)",
-            "wsProtocol": "• O URL deve usar o protocolo WebSocket (começando com ws:// ou wss://)",
-            "cosyVoiceOnly": "• Atualmente suporta apenas o formato de protocolo compatível com Alibaba Cloud CosyVoice"
         },
         "gptsovitsConfig": "Configuração GPT-SoVITS",
         "gptsovitsDescription": "Nota GPT-SoVITS:",
@@ -2375,7 +2384,7 @@
             "never": "Não me lembre novamente"
         },
         "screenSource": {
-            "notAvailable": "Seleção de fonte de tela disponível apenas na versão desktop",
+            "notAvailable": "A seleção de fonte de tela não está disponível no ambiente atual",
             "loading": "Carregando...",
             "noSources": "Nenhuma fonte de tela disponível",
             "loadFailed": "Falha ao carregar fontes da tela",
@@ -2383,7 +2392,8 @@
             "screenLabel": "Tela {{index}}",
             "windows": "Windows",
             "selected": "Selecionado {{source}}",
-            "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia"
+            "sourceLost": "O compartilhamento de tela não conseguiu encontrar a janela selecionada anteriormente, mudou para compartilhamento em tela cheia",
+            "captureFailed": "A captura de tela foi interrompida. Verifique as permissões do sistema ou selecione a fonte novamente"
         },
         "deviceSwitchFailed": "Falha na troca de dispositivo",
         "deviceSwitching": "Dispositivo de comutação...",
@@ -4327,6 +4337,7 @@
         "testCoreTooltip": "Testar conectividade da API principal",
         "testAssist": "Testar",
         "testAssistTooltip": "Testar conectividade da API auxiliar",
+        "maskedSecretRetype": "A chave está salva, mas não pode ser exibida. Digite-a novamente antes de testar.",
         "gsvTestText": "Teste de conectividade GSV",
         "gsvTestTooltip": "Testar conectividade do GPT-SoVITS",
         "error": {

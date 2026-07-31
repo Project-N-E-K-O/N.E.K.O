@@ -1376,7 +1376,10 @@ function _installNekoIdleCat1PlaygroundPointerListeners(button) {
 function _dispatchNekoIdleReturnClickFromButton(button) {
     const container = _getNekoIdleReturnContainerFromButton(button);
     if (!button || !container) return false;
-    const rect = container.getBoundingClientRect();
+    // Return/model transition state is stored in virtual body coordinates.
+    // Convert the crop-local DOMRect exactly once before publishing it.
+    const rect = _getNekoDesktopVirtualElementRect(container)
+        || container.getBoundingClientRect();
     const prefix = button.id && button.id.endsWith('-btn-return')
         ? button.id.slice(0, -'-btn-return'.length)
         : 'avatar';

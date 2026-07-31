@@ -25,6 +25,12 @@
     // 720p 下若仍超出运输预算再逐步降质兜底。
     const SCREENSHOT_JPEG_QUALITIES = [0.8, 0.72, 0.64, 0.56, 0.48];
 
+    function getDesktopProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
     let compactHistoryDropPayloadQueue = Promise.resolve();
 
     function rejectPendingTextSessionStart(reason) {
@@ -2123,6 +2129,73 @@
             window.showStatusToast(window.t ? window.t('app.initializingVoice') : '\u6B63\u5728\u521D\u59CB\u5316\u8BED\u97F3\u5BF9\u8BDD...', 3000);
             window.showVoicePreparingToast(window.t ? window.t('app.connectingToServer') : '\u6B63\u5728\u8FDE\u63A5\u670D\u52A1\u5668...');
 
+            var micStartOwner = null;
+
+            // Every point this handler resumes from an await asks the same
+            // question, and each await is wide open: on mobile the composer
+            // stays visible during an audio session, so a text send can claim
+            // the slot inside the ack's 500ms settle window, inside
+            // showCurrentModel, or inside getUserMedia. Returns true when this
+            // start must stand down -- and unwinds the shared voice-start UI on
+            // its way out UNLESS a newer audio start is driving that very state,
+            // because the unwind is global (it bumps the mic generation and
+            // clears window.isMicStarting) and would make that start abandon
+            // capture. A text start touches none of it and would instead leave
+            // the mic button stranded, so there the unwind must run.
+            function micStartMustStandDown() {
+                if (!window.sessionStartSuperseded(micStartOwner)
+                        && !(S._pendingSessionStartMode
+                            && S._pendingSessionStartMode !== 'audio')) {
+                    return false;
+                }
+                if (!window.supersededByAudioStart(micStartOwner)) {
+                    // This flow may have set S.isSwitchingMode when it began
+                    // from a live text session, and standing down returns past
+                    // both places that normally clear it. Left true it is
+                    // permanent: CHARACTER_LEFT handling stays suppressed and
+                    // auto-goodbye keeps treating the app as mid-switch (codex
+                    // P2). Only in this branch -- a newer audio start clears it
+                    // through its own success or failure path.
+                    S.isSwitchingMode = false;
+
+                    // Cancellation outranks the takeover. If the user hit
+                    // goodbye or reset after the takeover, that is the LATER
+                    // intent and it has already put its own UI on screen --
+                    // unwinding now would re-enable the mic button and unhide
+                    // the composer on top of it, and returning skips the
+                    // catch's preserveGoodbyeUi handling that would have put it
+                    // back (codex P2). The claim sequence cannot see this: a
+                    // cancellation clears the slot without claiming, so we stay
+                    // superseded by whoever came before it.
+                    if ((typeof window.isNekoGoodbyeModeActive === 'function'
+                            && window.isNekoGoodbyeModeActive())
+                            || !window.voiceStartEpochIsCurrent(voiceStartEpoch)) {
+                        return true;
+                    }
+
+                    // If capture already COMMITTED, the unwind alone leaks the
+                    // hardware microphone: abortVoiceStartForBlockedRoute sets
+                    // S.isRecording = false without stopping the stream, closing
+                    // the audio context or disconnecting the worklet, and the
+                    // text session_started handler only runs that teardown while
+                    // S.isRecording is still true -- so aborting first makes it
+                    // skip the sole pipeline teardown and the mic stays live
+                    // after the user switched to text (codex P1). Stop first,
+                    // while the flag still says there is something to stop.
+                    //
+                    // notifyServer:false: the newer start owns the socket now,
+                    // and a pause_session from a superseded flow is read as a
+                    // character switch, closing the socket out from under it.
+                    if (S.isRecording === true && typeof window.stopRecording === 'function') {
+                        window.stopRecording({ notifyServer: false });
+                    }
+                    if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                        window.abortVoiceStartForBlockedRoute();
+                    }
+                }
+                return true;
+            }
+
             try {
                 if (typeof window.waitForVoiceConfigSwitchReady === 'function') {
                     var voiceConfigWaitResult = await window.waitForVoiceConfigSwitchReady({
@@ -2145,19 +2218,52 @@
 
                 // Create a promise for session_started
                 var sessionStartPromise = new Promise(function (resolve, reject) {
-                    S.sessionStartedResolver = resolve;
-                    S.sessionStartedRejecter = reject;
-                    S._pendingSessionStartMode = 'audio';
+                    // Claim the shared slot and keep the owner token (the
+                    // resolver itself). Every release below is gated on it, so
+                    // this flow can never clear a slot that a newer start owns.
+                    micStartOwner = window.claimSessionStart('audio', resolve, reject);
+                    // Re-arm the fail-closed voice latch on user intent, strictly
+                    // before start_session goes out and therefore before any route
+                    // verdict for this session can arrive.
+                    //
+                    // This assignment was MISSING while the comment describing it
+                    // was not: the automatic-restart path in app-websocket.js has
+                    // it, this one did not, so a latch set by one failed session
+                    // survived into the next explicit attempt and the mic refused
+                    // with nothing on screen to explain it. Restoring it is safe
+                    // now that session_started carries `microphone_route`: if the
+                    // route really is still blocked, the ack re-sets the latch
+                    // before the promise settles, so clearing it here can no
+                    // longer open the mic onto a dead route.
+                    S.voiceInputRouteBlocked = false;
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
                 });
+                // Consume the rejection up front. claimSessionStart settles the start it
+                // displaces, and that can land while this flow is still inside
+                // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                // stand-down returns without ever awaiting at all. Without a handler on the
+                // promise itself a routine takeover surfaces as an unhandledrejection and
+                // the health diagnostics log it as a runtime error. `await` below still sees
+                // the rejection: this attaches a handler, it does not swallow one.
+                sessionStartPromise.catch(function () { });
 
-                // Send start session (ensure WS open)
+                // Send start session (ensure WS open).
+                //
+                // The reconnect is an await like any other, and a text send
+                // inside it displaces this flow's claim -- hence the stand-down
+                // between the two lines below. Sending anyway is the worst
+                // outcome available: the backend gets a stale audio
+                // start_session, and this flow then waits forever on a promise
+                // whose resolver has been replaced -- its own timeout returns
+                // early because it is no longer current, so none of the
+                // stand-downs further down are ever reached (codex P2).
                 await window.ensureWebSocketOpen();
                 ensureVoiceStartCurrent();
+                if (micStartMustStandDown()) return;
                 S.socket.send(JSON.stringify({
                     action: 'start_session',
                     input_type: 'audio'
@@ -2165,11 +2271,17 @@
 
                 // Timeout (15s)
                 window.sessionTimeoutId = setTimeout(function () {
+                    // Only fire for the start this timer was armed for: a newer
+                    // start may own the slot by now, and rejecting/clearing it
+                    // here would strand the promise its awaiter is holding.
+                    // Settling a displaced start is claimSessionStart's job, not
+                    // this timer's: the flow that displaces us clears the shared
+                    // window.sessionTimeoutId in its own claim setup, so by the
+                    // time it matters this callback no longer runs at all.
+                    if (!window.sessionStartIsCurrent(micStartOwner)) return;
                     if (S.sessionStartedRejecter) {
                         var rejecter = S.sessionStartedRejecter;
-                        S.sessionStartedResolver = null;
-                        S.sessionStartedRejecter = null;
-                        S._pendingSessionStartMode = null;
+                        window.releaseSessionStart(micStartOwner);
                         window.sessionTimeoutId = null;
 
                         if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2197,6 +2309,43 @@
                     // 之后才 settle、把 UI 写回录音中"的竞态，也就不需要 token / 补充
                     // teardown 去追平它。
                     await sessionStartPromise;
+
+                    // A DIFFERENT start took over while this one was waiting.
+                    // On mobile the composer stays visible during an audio
+                    // session, so the user can send text inside the ack's 500ms
+                    // settle window; app-websocket.js then leaves
+                    // _pendingSessionStartMode owned by that newer text start
+                    // and settles this promise anyway (it has no timeout left,
+                    // so nothing else ever would). Opening the microphone now
+                    // would reclaim a lease onto the text session's blocked
+                    // route -- and NONE of the guards below can see it: the
+                    // text ack changes neither voiceSessionStartEpoch nor
+                    // isMicStarting, so ensureVoiceStartCurrent passes, and it
+                    // never sets voiceInputRouteBlocked either (Codex P2).
+                    //
+                    // abortVoiceStartForBlockedRoute rather than throwing: the
+                    // generic catch clears S.sessionStartedResolver /
+                    // Rejecter / _pendingSessionStartMode unconditionally,
+                    // which would tear down the very start that superseded us.
+                    //
+                    // The test is OWNERSHIP, not mode. A newer AUDIO start --
+                    // the CHARACTER_DISCONNECTED automatic restart in
+                    // app-websocket.js claims 'audio' too -- passes a
+                    // `mode !== 'audio'` test, falls through to the timeout
+                    // clear below and cancels the 15s timer that newer start
+                    // is relying on; with its ack lost as well, it then stays
+                    // pending forever. The mode check survives inside
+                    // micStartMustStandDown as an OR because the disconnect
+                    // cleanup nulls the resolver but leaves
+                    // _pendingSessionStartMode set, so neither test subsumes
+                    // the other.
+                    //
+                    // Standing down here deliberately does NOT clear
+                    // window.sessionTimeoutId: that timer belongs to the newer
+                    // start now, and cancelling it is the same cross-start
+                    // damage in miniature.
+                    if (micStartMustStandDown()) return;
+
                     ensureVoiceStartCurrent();
 
                     if (window.sessionTimeoutId) {
@@ -2204,10 +2353,39 @@
                         window.sessionTimeoutId = null;
                     }
 
+                    if (S.voiceInputRouteBlocked === true) {
+                        // The route came back fail-closed (independent ASR was
+                        // enabled and failed to start). Do not open the mic;
+                        // unwind the starting-voice UI so the button is usable
+                        // again, and let the ASR failure toast stand.
+                        if (typeof window.abortVoiceStartForBlockedRoute === 'function') {
+                            window.abortVoiceStartForBlockedRoute();
+                        }
+                        return;
+                    }
                     await window.startMicCapture();
                     ensureVoiceStartCurrent();
+
+                    // getUserMedia and the worklet setup are another wide-open
+                    // await, and a text takeover inside it is invisible to
+                    // everything above: startMicCapture's own cancellation path
+                    // returns normally rather than throwing, and a text ack
+                    // moves neither voiceSessionStartEpoch nor isMicStarting, so
+                    // ensureVoiceStartCurrent passes. Without this the handler
+                    // walks into its success path -- neko:voice-session-started,
+                    // silence detection, "ready to speak" -- on top of the text
+                    // session that took over (codex P2).
+                    if (micStartMustStandDown()) return;
                 } catch (error) {
-                    if (window.sessionTimeoutId) {
+                    // Same ownership gate as the success path above: this
+                    // failure can arrive after a newer start has claimed the
+                    // slot and armed its own timer (startMicCapture rejecting
+                    // on a denied getUserMedia is the easy way in), and the
+                    // timer would then be the newer start's. Refuse only in
+                    // that case -- an empty slot still means the timer is ours
+                    // to clear.
+                    if (window.sessionTimeoutId
+                            && !window.sessionStartSuperseded(micStartOwner)) {
                         clearTimeout(window.sessionTimeoutId);
                         window.sessionTimeoutId = null;
                     }
@@ -2225,6 +2403,22 @@
                 } catch (e) {
                     console.warn(window.t('console.startVoiceActiveVisionFailed'), e);
                 }
+
+                // acquireProactiveVisionStream awaits a backend request AND a
+                // display-capture prompt, so this is the longest window of all
+                // -- and the last one before the success path commits. A text
+                // send completing inside it would otherwise get proactive
+                // vision started, ready-to-speak scheduled and
+                // neko:voice-session-started dispatched over its session
+                // (codex P2).
+                //
+                // BOTH questions here. A goodbye or reset inside that same
+                // window goes through cancelPendingSessionStart, which moves the
+                // epoch and clears isMicStarting WITHOUT claiming anything, so
+                // the stand-down alone cannot see it and this handler would
+                // announce a voice session the user just ended (codex P2).
+                ensureVoiceStartCurrent();
+                if (micStartMustStandDown()) return;
 
                 // Success — hide preparing toast, show ready
                 window.hideVoicePreparingToast();
@@ -2251,15 +2445,32 @@
                     console.error(window.t('console.startVoiceSessionFailed'), error);
                 }
 
-                // Cleanup
-                if (window.sessionTimeoutId) {
-                    clearTimeout(window.sessionTimeoutId);
-                    window.sessionTimeoutId = null;
+                // Cleanup -- but only of THIS start. This handler is the most
+                // damaging of the unconditional clears: it wiped the shared
+                // resolver/rejecter/mode and rejected the pending text start,
+                // so a mic start failing while the user had already switched to
+                // typing tore down the text session that had superseded it.
+                var micStartStillOurs = window.sessionStartIsCurrent(micStartOwner);
+                if (micStartStillOurs) {
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    rejectPendingTextSessionStart(error);
+                    window.releaseSessionStart(micStartOwner);
                 }
-                rejectPendingTextSessionStart(error);
-                S.sessionStartedResolver = null;
-                S.sessionStartedRejecter = null;
-                S._pendingSessionStartMode = null;
+
+                // Gating the slot was not enough: everything below is just as
+                // cross-start destructive. A newer start owns the session by
+                // now, so the end_session send would tear ITS session down, and
+                // stopRecording / the button row / the failure toast would
+                // rewrite the UI it is driving -- all to report a failure the
+                // user has already moved on from (codex P2). Note the takeover
+                // is frequently what CAUSED this error, and just as frequently
+                // has finished by the time we get here: the text ack that
+                // invalidated our getUserMedia also released the slot, which is
+                // why this asks the claim sequence and not who holds it now.
+                if (micStartMustStandDown()) return;
 
                 if (!isVoiceStartCancelled && !(error && error.voiceConfigSwitchTimedOut) && S.socket && S.socket.readyState === WebSocket.OPEN) {
                     S.socket.send(JSON.stringify({ action: 'end_session' }));
@@ -2514,10 +2725,11 @@
                 window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs1);
 
                 // Wait for session_started
+                var textStartOwner = null;
                 var sessionStartPromise = new Promise(function (resolve, reject) {
-                    S.sessionStartedResolver = resolve;
-                    S.sessionStartedRejecter = reject;
-                    S._pendingSessionStartMode = 'text';
+                    // Owner token for every release in this flow; see
+                    // window.claimSessionStart in app-state.js.
+                    textStartOwner = window.claimSessionStart('text', resolve, reject);
 
                     if (window.sessionTimeoutId) {
                         clearTimeout(window.sessionTimeoutId);
@@ -2525,11 +2737,11 @@
                     }
 
                     window.sessionTimeoutId = setTimeout(function () {
+                        // Only for the start this timer was armed for.
+                        if (!window.sessionStartIsCurrent(textStartOwner)) return;
                         if (S.sessionStartedRejecter) {
                             var rejecter = S.sessionStartedRejecter;
-                            S.sessionStartedResolver = null;
-                            S.sessionStartedRejecter = null;
-                            S._pendingSessionStartMode = null;
+                            window.releaseSessionStart(textStartOwner);
                             window.sessionTimeoutId = null;
 
                             if (S.socket && S.socket.readyState === WebSocket.OPEN) {
@@ -2542,6 +2754,14 @@
                         }
                     }, 15000);
                 });
+                // Consume the rejection up front. claimSessionStart settles the start it
+                // displaces, and that can land while this flow is still inside
+                // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                // stand-down returns without ever awaiting at all. Without a handler on the
+                // promise itself a routine takeover surfaces as an unhandledrejection and
+                // the health diagnostics log it as a runtime error. `await` below still sees
+                // the rejection: this attaches a handler, it does not swallow one.
+                sessionStartPromise.catch(function () { });
 
                 // Start text session
                 await window.ensureWebSocketOpen();
@@ -2612,6 +2832,17 @@
                 );
 
             } catch (error) {
+                // Displaced by a newer start rather than failed: claimSessionStart
+                // settles the start it takes over from, and reporting that as
+                // "\u56DE\u6765\u5931\u8D25" would blame the user's own next action -- with an
+                // internal English reason string, at that.
+                if (error && error.sessionStartCancelled
+                        && !window.sessionStartIsCurrent(textStartOwner)) {
+                    window.hideVoicePreparingToast();
+                    returnSessionButton.disabled = false;
+                    return;
+                }
+
                 console.error(window.t('console.askHerBackFailed'), error);
                 window.hideVoicePreparingToast();
                 window.showStatusToast(
@@ -2621,13 +2852,16 @@
                     5000
                 );
 
-                if (window.sessionTimeoutId) {
-                    clearTimeout(window.sessionTimeoutId);
-                    window.sessionTimeoutId = null;
+                // Only tear down THIS start: a newer one may own the slot by
+                // now, and clearing it would strand its awaiter.
+                if (window.sessionStartIsCurrent(textStartOwner)) {
+                    if (window.sessionTimeoutId) {
+                        clearTimeout(window.sessionTimeoutId);
+                        window.sessionTimeoutId = null;
+                    }
+                    rejectPendingTextSessionStart(error);
+                    window.releaseSessionStart(textStartOwner);
                 }
-                rejectPendingTextSessionStart(error);
-                S.sessionStartedResolver = null;
-                S.sessionStartedRejecter = null;
 
                 returnSessionButton.disabled = false;
             } finally {
@@ -2754,6 +2988,7 @@
                 screenshotButton.disabled = true;
                 resetSessionButton.disabled = false;
 
+                var composerStartOwner = null;
                 try {
                     if (!mod._textSessionStartPromise) {
                         mod._textSessionStartPromise = (async function () {
@@ -2762,9 +2997,8 @@
                             window.showStatusToast(window.t ? window.t('app.initializingText') : '\u6B63\u5728\u521D\u59CB\u5316\u6587\u672C\u5BF9\u8BDD...', initToastMs2);
 
                             var sessionStartPromise = new Promise(function (resolve, reject) {
-                                S.sessionStartedResolver = resolve;
-                                S.sessionStartedRejecter = reject;
-                                S._pendingSessionStartMode = 'text';
+                                // Owner token for every release in this flow.
+                                composerStartOwner = window.claimSessionStart('text', resolve, reject);
                                 mod._textSessionStartRejecter = reject;
 
                                 if (window.sessionTimeoutId) {
@@ -2772,6 +3006,14 @@
                                     window.sessionTimeoutId = null;
                                 }
                             });
+                            // Consume the rejection up front. claimSessionStart settles the start it
+                            // displaces, and that can land while this flow is still inside
+                            // ensureWebSocketOpen -- before it reaches the await, and possibly before a
+                            // stand-down returns without ever awaiting at all. Without a handler on the
+                            // promise itself a routine takeover surfaces as an unhandledrejection and
+                            // the health diagnostics log it as a runtime error. `await` below still sees
+                            // the rejection: this attaches a handler, it does not swallow one.
+                            sessionStartPromise.catch(function () { });
 
                             await window.ensureWebSocketOpen();
                             S.socket.send(JSON.stringify({
@@ -2782,11 +3024,11 @@
 
                             // Timeout after WebSocket confirms connection
                             window.sessionTimeoutId = setTimeout(function () {
+                                // Only for the start this timer was armed for.
+                                if (!window.sessionStartIsCurrent(composerStartOwner)) return;
                                 if (S.sessionStartedRejecter) {
                                     var rejecter = S.sessionStartedRejecter;
-                                    S.sessionStartedResolver = null;
-                                    S.sessionStartedRejecter = null;
-                                    S._pendingSessionStartMode = null;
+                                    window.releaseSessionStart(composerStartOwner);
                                     mod._textSessionStartRejecter = null;
                                     window.sessionTimeoutId = null;
 
@@ -2818,28 +3060,40 @@
                     }
 
                     await mod._textSessionStartPromise;
-                    if (window.sessionTimeoutId) {
-                        clearTimeout(window.sessionTimeoutId);
-                        window.sessionTimeoutId = null;
+                    if (window.sessionStartIsCurrent(composerStartOwner)) {
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        window.releaseSessionStart(composerStartOwner);
                     }
-                    S.sessionStartedResolver = null;
-                    S.sessionStartedRejecter = null;
                 } catch (error) {
-                    console.error(window.t('console.startTextSessionFailed'), error);
-                    window.hideVoicePreparingToast();
-                    window.showStatusToast(
-                        window.t
-                            ? window.t('app.startFailed', { error: error.message })
-                            : '\u542F\u52A8\u5931\u8D25: ' + error.message,
-                        5000
-                    );
-
-                    if (window.sessionTimeoutId) {
-                        clearTimeout(window.sessionTimeoutId);
-                        window.sessionTimeoutId = null;
+                    // Displaced rather than failed. The message still cannot go
+                    // out -- the session it was waiting for never started, so
+                    // the optimistic bubble is still marked failed below and the
+                    // composer still comes back -- but the toast would report a
+                    // start failure, in internal English, for what was really
+                    // the user's own newer action taking over.
+                    var composerDisplaced = !!(error && error.sessionStartCancelled)
+                        && !window.sessionStartIsCurrent(composerStartOwner);
+                    if (!composerDisplaced) {
+                        console.error(window.t('console.startTextSessionFailed'), error);
+                        window.showStatusToast(
+                            window.t
+                                ? window.t('app.startFailed', { error: error.message })
+                                : '\u542F\u52A8\u5931\u8D25: ' + error.message,
+                            5000
+                        );
                     }
-                    S.sessionStartedResolver = null;
-                    S.sessionStartedRejecter = null;
+                    window.hideVoicePreparingToast();
+
+                    if (window.sessionStartIsCurrent(composerStartOwner)) {
+                        if (window.sessionTimeoutId) {
+                            clearTimeout(window.sessionTimeoutId);
+                            window.sessionTimeoutId = null;
+                        }
+                        window.releaseSessionStart(composerStartOwner);
+                    }
 
                     textSendButton.disabled = false;
                     textInputBox.disabled = false;
@@ -3164,8 +3418,8 @@
         }
 
         function getDesktopRegionCaptureMethod() {
-            if (!window.electronDesktopCapturer) return null;
-            var bridge = window.electronDesktopCapturer;
+            var bridge = getDesktopProvider();
+            if (!bridge) return null;
             var names = [
                 'beginDesktopRegionSelection',
                 'captureDesktopRegion',
@@ -3351,11 +3605,16 @@
             // 一起 hide 掉再抓屏，是唯一能真正抹掉立绘的途径；下面的 renderer fallback 只能
             // 对 Pet 的 DOM 做 visibility:hidden，盖不住 WebGL 合成层 —— 那正是"隐藏NEKO
             // 画面刷新了但立绘还在"的根因。主进程在 sourceId 缺省时会自行选择合适屏幕。
-            if (window.electronDesktopCapturer
-                && typeof window.electronDesktopCapturer.captureSourceWithoutNeko === 'function') {
+            var desktopProvider = getDesktopProvider();
+            if (desktopProvider
+                && typeof desktopProvider.captureSourceWithoutNeko === 'function') {
                 var atomicFailed = false;
                 try {
-                    var atomic = await window.electronDesktopCapturer.captureSourceWithoutNeko(selectedSourceId || null);
+                    var atomic = await window.captureDesktopSourceWithTimeout(
+                        desktopProvider,
+                        'captureSourceWithoutNeko',
+                        selectedSourceId || null
+                    );
                     if (atomic && atomic.success && atomic.dataUrl) {
                         return atomic.dataUrl;
                     } else if (atomic && atomic.error) {
@@ -3388,10 +3647,10 @@
             // MediaStream 抓帧（getDisplayMedia）会把卫星窗口也拍进去，CSS 隐藏覆盖不到它们。
             var saved = hideNekoUI();
             var fallbackHiddenIds = null;
-            if (window.electronDesktopCapturer
-                && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+            if (desktopProvider
+                && typeof desktopProvider.hideNekoWindows === 'function') {
                 try {
-                    var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                    var hideRes = await desktopProvider.hideNekoWindows();
                     if (hideRes && Array.isArray(hideRes.hiddenIds)) {
                         fallbackHiddenIds = hideRes.hiddenIds;
                     }
@@ -3407,10 +3666,14 @@
                 // 快照已是僵尸 ID；继续用它只会让主进程再原样报一次 'Source not found'，
                 // 多一次 IPC 往返。重读 S 直接跳到 Priority 2 流路径。
                 var currentSourceId = S.selectedScreenSourceId;
-                if (currentSourceId && window.electronDesktopCapturer
-                    && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                if (currentSourceId && desktopProvider
+                    && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                     try {
-                        var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(currentSourceId);
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            currentSourceId
+                        );
                         if (direct && direct.success && direct.dataUrl) {
                             return direct.dataUrl;
                         } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
@@ -3466,10 +3729,10 @@
                 // 先恢复卫星窗口，再恢复 Pet 的 DOM visibility —— 反过来用户会看到
                 // 孤零零的 Pet 一帧。
                 if (fallbackHiddenIds && fallbackHiddenIds.length > 0
-                    && window.electronDesktopCapturer
-                    && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                    && desktopProvider
+                    && typeof desktopProvider.restoreNekoWindows === 'function') {
                     try {
-                        await window.electronDesktopCapturer.restoreNekoWindows(fallbackHiddenIds);
+                        await desktopProvider.restoreNekoWindows(fallbackHiddenIds);
                     } catch (e) {
                         console.warn('[隐藏NEKO][fallback] 恢复卫星窗口失败:', e);
                     }
@@ -3569,10 +3832,15 @@
                     }
 
                     var selectedSourceId = S.selectedScreenSourceId;
-                    if (selectedSourceId && window.electronDesktopCapturer
-                        && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+                    var desktopProvider = getDesktopProvider();
+                    if (selectedSourceId && desktopProvider
+                        && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
                         try {
-                            var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(selectedSourceId);
+                            var direct = await window.captureDesktopSourceWithTimeout(
+                                desktopProvider,
+                                'captureSourceAsDataUrl',
+                                selectedSourceId
+                            );
                             if (direct && direct.success && direct.dataUrl) {
                                 dataUrl = direct.dataUrl;
                                 width = direct.width || 0;
@@ -3659,10 +3927,11 @@
                 // 在显示裁剪 overlay 前隐藏其他 NEKO 窗口（如 Chat 窗口），
                 // 避免它们的 z-order 遮挡 Pet 窗口中的全屏裁剪界面。
                 var hiddenIds = null;
-                if (window.electronDesktopCapturer
-                    && typeof window.electronDesktopCapturer.hideNekoWindows === 'function') {
+                var desktopProvider = getDesktopProvider();
+                if (desktopProvider
+                    && typeof desktopProvider.hideNekoWindows === 'function') {
                     try {
-                        var hideRes = await window.electronDesktopCapturer.hideNekoWindows();
+                        var hideRes = await desktopProvider.hideNekoWindows();
                         if (hideRes && Array.isArray(hideRes.hiddenIds)) {
                             hiddenIds = hideRes.hiddenIds;
                         }
@@ -3685,10 +3954,10 @@
                     }
                 } finally {
                     if (hiddenIds && hiddenIds.length > 0
-                        && window.electronDesktopCapturer
-                        && typeof window.electronDesktopCapturer.restoreNekoWindows === 'function') {
+                        && desktopProvider
+                        && typeof desktopProvider.restoreNekoWindows === 'function') {
                         try {
-                            await window.electronDesktopCapturer.restoreNekoWindows(hiddenIds);
+                            await desktopProvider.restoreNekoWindows(hiddenIds);
                         } catch (restoreErr) {
                             console.warn('[截图] 恢复其他窗口失败:', restoreErr);
                         }

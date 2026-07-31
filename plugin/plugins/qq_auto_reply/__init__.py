@@ -48,6 +48,7 @@ from .group_permission import GroupPermissionManager
 from .handler_runtime_service import QQHandlerRuntimeService
 from .message_dispatcher import QQMessageDispatcher
 from .memory_bridge import QQMemoryBridge
+from .memory_tool_service import QQMemoryToolService
 from .napcat_service import QQNapcatService
 from .permission import PermissionManager
 from .prompt_builder import QQPromptBuilder
@@ -119,6 +120,7 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
         self.attention_service = QQAttentionService(self)
         self.prompt_builder = QQPromptBuilder(self)
         self.memory_bridge = QQMemoryBridge(self)
+        self.memory_tool_service = QQMemoryToolService(self)
         self.relay_service = QQRelayService(self)
         self.reply_generation_service = QQReplyGenerationService(self)
         self.reply_decision_node = QQReplyDecisionNode(self)
@@ -392,6 +394,9 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             except asyncio.CancelledError:
                 pass
             self._session_housekeeping_task = None
+        # 这里不关 http client：记忆桥与附件下载用的是 utils/http 的进程级
+        # 单例，由 main_server 的 shutdown 钩子统一关。插件自己关会把上面
+        # 那批"只 join 1s、不取消"的结算任务的在途请求打断。
         return Ok({"status": "shutdown"})
 
     def _mask_token(self, token: str) -> str:

@@ -25,9 +25,17 @@ Electron stores port overrides in `port_config.json` under `%APPDATA%\N.E.K.O` o
 | `NEKO_INSTANCE_ID` | Shared instance ID; normally created by the launcher |
 | `NEKO_AUTOSTART_CSRF_TOKEN` | Autostart request token; defaults to the instance ID |
 | `NEKO_AUTOSTART_ALLOWED_ORIGINS` | Comma-separated extra allowed origins |
+| `NEKO_TRUSTED_HOSTS` | Comma-separated extra hostnames accepted by local HTTP/WebSocket services. Loopback names and IP literals are accepted automatically. |
+| `NEKO_TRUSTED_ORIGINS` | Comma-separated extra browser origins accepted for WebSocket connections. Same-origin connections and loopback aliases are accepted automatically. |
 | `NEKO_BEHIND_PROXY` | Enables proxy-header handling in supported entrypoints |
 | `NEKO_LOG_LEVEL` | Main-server log level |
 | `NEKO_MERGED` | Launcher merged-mode override |
+
+Trusted hosts are exact names (optionally with a port); `*.example.com` permits
+subdomains but not the bare suffix. A global `*` is deliberately ignored. The
+Docker entrypoint adds `SSL_DOMAIN` to `NEKO_TRUSTED_HOSTS` by default. Trusted
+origins must be complete `http://` or `https://` origins and affect browser
+WebSocket handshakes, not CORS.
 
 Most shared boolean helpers accept `1/true/yes/on` and `0/false/no/off`.
 `NEKO_MERGED` itself accepts `1/true/yes` and `0/false/no`.
@@ -45,7 +53,7 @@ record (pid, instance id, negotiated ports) next to that lock.
 | `NEKO_OWNER_RELAUNCH` | unset | `1` declares that the owner will restart the runtime itself. A storage-migration restart then exits cleanly and waits to be relaunched instead of spawning its own replacement. Strongly recommended on Windows: without it the launcher respawns itself, and the outgoing Job has to be un-managed to spare the replacement, which leaves any process that outlived cleanup (plugins, MCP, Chromium) unreaped. |
 | `NEKO_PARENT_DEATH_GUARD` | `1` | Set to `0` to disable the parent-death guard entirely. Only for debuggers and profilers that re-parent their target; a runtime with the guard off can outlive its owner. |
 | `NEKO_LAUNCHER_RESTART_HANDOFF` | unset | Set by the outgoing launcher on its replacement so the replacement waits out the single-instance lock instead of concluding another instance is running. Not meant to be set by hand. |
-| `NEKO_RUNTIME_STATE_DIR` | per-user runtime dir | Overrides where `launcher.lock` and `launcher.json` live. Defaults to `%LOCALAPPDATA%\N.E.K.O\runtime` on Windows, `~/Library/Application Support/N.E.K.O/runtime` on macOS, and `~/.local/state/N.E.K.O/runtime` on Linux. The Linux path deliberately ignores `XDG_RUNTIME_DIR`: that variable is present in a desktop session but absent under cron, plain SSH, `su`, system units and most containers, so deriving the lock path from it let one user hold two different locks and run two runtimes at once. The override is used verbatim — no per-user suffix is appended — so it must point somewhere private to one user. On POSIX the directory is still validated: one owned by another uid (or a symlink to it) is refused with EPERM, and one carrying group or world bits is chmod'd to 0700 in place. Windows does neither. A refusal is treated as unknown — the launcher starts with a warning and no uniqueness proof. A directory shared between users breaks the single-instance proof: on Windows two users contend for one lock, and on POSIX the second user cannot open the first user's lock file and starts with no uniqueness proof at all. |
+| `NEKO_RUNTIME_STATE_DIR` | per-user runtime dir | Overrides where `launcher.lock` and `launcher.json` live. Defaults to `%LOCALAPPDATA%\N.E.K.O.runtime` on Windows, `~/Library/Application Support/N.E.K.O.runtime` on macOS, and `~/.local/state/N.E.K.O/runtime` on Linux. The Windows and macOS directories are siblings of the cloudsave-managed `N.E.K.O` data root so an atomic root replacement cannot block on or unlink the live single-instance lock. The Linux path deliberately ignores `XDG_RUNTIME_DIR`: that variable is present in a desktop session but absent under cron, plain SSH, `su`, system units and most containers, so deriving the lock path from it let one user hold two different locks and run two runtimes at once. The override is used verbatim — no per-user suffix is appended — so it must point somewhere private to one user. On POSIX the directory is still validated: one owned by another uid (or a symlink to it) is refused with EPERM, and one carrying group or world bits is chmod'd to 0700 in place. Windows does neither. A refusal is treated as unknown — the launcher starts with a warning and no uniqueness proof. A directory shared between users breaks the single-instance proof: on Windows two users contend for one lock, and on POSIX the second user cannot open the first user's lock file and starts with no uniqueness proof at all. |
 
 ## Runtime topology
 

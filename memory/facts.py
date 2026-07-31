@@ -46,6 +46,7 @@ from memory.temporal import (
     normalize_event_when,
 )
 from config.prompts.prompts_memory import (
+    get_fact_extraction_batch_prompt,
     get_fact_extraction_prompt,
     get_signal_detection_prompt,
 )
@@ -455,23 +456,49 @@ class FactStore:
     # ── extraction ───────────────────────────────────────────────────
 
     @staticmethod
-    def _format_conversation(messages: list, name_mapping: dict) -> str:
+    def _flatten_message_content(content) -> str:
+        """Flatten a message content (str or content-part list) to plain text."""
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts = []
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(item.get('text', f"|{item.get('type', '')}|"))
+                else:
+                    parts.append(str(item))
+            return ''.join(parts)
+        return str(content or '')
+
+    @classmethod
+    def _format_conversation(cls, messages: list, name_mapping: dict) -> str:
         """Serialize messages into the 'role | content' shape used by LLM prompts."""
         lines = []
         for msg in messages:
             role = name_mapping.get(getattr(msg, 'type', ''), getattr(msg, 'type', ''))
             content = getattr(msg, 'content', '')
-            if isinstance(content, str):
-                lines.append(f"{role} | {content}")
-            elif isinstance(content, list):
-                parts = []
-                for item in content:
-                    if isinstance(item, dict):
-                        parts.append(item.get('text', f"|{item.get('type', '')}|"))
-                    else:
-                        parts.append(str(item))
-                lines.append(f"{role} | {''.join(parts)}")
+            if isinstance(content, (str, list)):
+                lines.append(f"{role} | {cls._flatten_message_content(content)}")
         return "\n".join(lines)
+
+    @classmethod
+    def _format_speaker_segments(cls, segments: list[dict]) -> str:
+        """Render multi-speaker segments for the batch extraction prompt.
+
+        段首标记 ``[SEGMENT n | speaker: label]`` 是 locale 无关的固定形状，
+        批模板（FACT_EXTRACTION_BATCH_PROMPT）按原样向模型解释它；段内每行
+        以该段的 speaker label 开头，与单发路径的 'role | content' 同构。"""  # noqa: DOCSTRING_CJK
+        blocks = []
+        for index, segment in enumerate(segments, start=1):
+            label = str(segment.get('speaker_label') or '').strip()
+            lines = [f"[SEGMENT {index} | speaker: {label}]"]
+            for msg in segment.get('messages') or []:
+                lines.append(
+                    f"{label} | "
+                    f"{cls._flatten_message_content(getattr(msg, 'content', ''))}"
+                )
+            blocks.append("\n".join(lines))
+        return "\n\n".join(blocks)
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -629,6 +656,177 @@ class FactStore:
             return []
         return extracted
 
+    async def _allm_extract_facts_batch(
+        self, lanlan_name: str, segments: list[dict],
+    ) -> list | None:
+        """Stage-1 batch: one LLM call over multiple single-speaker segments.
+
+        每个元素应带 ``segment`` 归属字段（由 ``extract_facts_batch``
+        fail-closed 解析）。非数组一律按终止失败返回 None——唯一调用方是
+        fail-closed 的 scoped_history 路由，没有"宽容当空"的模式。
+
+        占位符替换顺序刻意 {LANLAN_NAME} 在前、{SEGMENTS} 在后：消息正文
+        里出现字面 "{LANLAN_NAME}" 时不得被二次替换。"""  # noqa: DOCSTRING_CJK
+        prompt = (
+            get_fact_extraction_batch_prompt(get_global_language_full())
+            .replace('{LANLAN_NAME}', lanlan_name)
+            .replace('{SEGMENTS}', self._format_speaker_segments(segments))
+        )
+        extracted = await self._allm_call_with_retries(
+            prompt, lanlan_name,
+            tier=EVIDENCE_EXTRACT_FACTS_MODEL_TIER,
+            call_type="memory_fact_extraction_batch",
+        )
+        if extracted is None:
+            return None
+        if not isinstance(extracted, list):
+            logger.warning(
+                f"[FactStore] {lanlan_name}: 批抽取返回非数组 "
+                f"{type(extracted).__name__}，当作抽取失败（可重试）"
+            )
+            return None
+        return extracted
+
+    @staticmethod
+    def _batch_fact_segment_index(fact, segment_count: int) -> int | None:
+        """Fail-closed attribution: the 0-based segment index, or None to drop.
+
+        归属标记无法解析 / 指向不存在的段时**必须丢弃而不是猜**——A 的
+        事实挂到 B 头上比丢一条严重得多（错误归属会进 B 的 persona 且
+        无人能发现）。接受 int 与纯数字字符串（模型输出 "1" 的常见形态），
+        bool 显式排除（True 是 int 子类）。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(fact, dict):
+            return None
+        text = fact.get('text')
+        if not isinstance(text, str) or not text.strip():
+            return None
+        raw = fact.get('segment')
+        if isinstance(raw, bool):
+            return None
+        if isinstance(raw, int):
+            seg = raw
+        elif isinstance(raw, str):
+            # try/except 而非 isdigit() 预检：isdigit() 对上标数字（"²"）等
+            # int() 消化不了的字符也返回 True，预检放行后 int() 抛
+            # ValueError 会把整批弄崩——按契约这类畸形只该丢这一条。
+            try:
+                seg = int(raw.strip())
+            except ValueError:
+                return None
+        elif isinstance(raw, float) and raw.is_integer():
+            seg = int(raw)
+        else:
+            return None
+        if not (1 <= seg <= segment_count):
+            return None
+        return seg - 1
+
+    @staticmethod
+    def _speaker_provenance_of(segment: dict) -> dict | None:
+        """The provenance fields to stamp onto this segment's persisted facts.
+
+        只落字段不接消费（发言人信赖度阶段一）：speaker_label = 谁说的，
+        speaker_trust = 调用方按权限等级派生的 0..1 初值。永远来自请求段，
+        绝不读 LLM 输出——模型在输出里伪造同名键不会被采纳。"""  # noqa: DOCSTRING_CJK
+        prov: dict = {}
+        label = str(segment.get('speaker_label') or '').strip()
+        if label:
+            prov['speaker_label'] = label[:64]
+        trust = segment.get('speaker_trust')
+        if (
+            isinstance(trust, (int, float))
+            and not isinstance(trust, bool)
+            and 0.0 <= float(trust) <= 1.0
+        ):
+            prov['speaker_trust'] = float(trust)
+        return prov or None
+
+    async def extract_facts_batch(
+        self, segments: list[dict], lanlan_name: str,
+    ) -> list[dict]:
+        """Multi-segment scoped extraction: one LLM call, per-segment dispatch.
+
+        ``segments``: ``[{'messages': [...], 'subject': MemorySubject,
+        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
+        发言人。成本从 O(发言人数) 次 LLM 调用降到每批一次。
+
+        Returns one result dict per segment, in request order:
+        ``{'status': 'ok'|'failed', 'created': list[dict]}``。
+
+        fail-closed 语义是 **per-段** 的（对比 :meth:`extract_facts` 的整批
+        判定）：
+        - 整个 LLM 调用终止失败 / 返回非数组 → raise
+          :class:`FactExtractionFailed`（路由 502，调用方整批保留重试）；
+        - 单条输出畸形 / ``segment`` 归属无法解析或越界 → 丢那一条，绝不
+          猜段；
+        - 输出非空但**零条**可归属 → 模型没理解任务，整批 raise——静默
+          全丢会让调用方 pop 掉从未入库的桶（与单发路径"畸形整批可重试"
+          同一防线）；
+        - 某段 persist 失败 → 只该段 ``failed``，其余段不连累重来。
+        """  # noqa: DOCSTRING_CJK
+        if not segments:
+            return []
+        if len(segments) == 1:
+            # 单段无归属风险：走成熟的单发抽取管线（prompt 更完整、
+            # malformed 判定也更严）。
+            segment = segments[0]
+            created = await self.extract_facts(
+                segment.get('messages') or [],
+                lanlan_name,
+                subject=segment.get('subject'),
+                fail_closed=True,
+                speaker_label=segment.get('speaker_label'),
+                speaker_provenance=self._speaker_provenance_of(segment),
+            )
+            return [{'status': 'ok', 'created': created}]
+
+        extracted = await self._allm_extract_facts_batch(lanlan_name, segments)
+        if extracted is None:
+            raise FactExtractionFailed(
+                f"batch Stage-1 LLM call failed for {lanlan_name!r} "
+                f"({len(segments)} segments, fail_closed caller)"
+            )
+        per_segment: list[list[dict]] = [[] for _ in segments]
+        dropped = 0
+        for fact in extracted:
+            index = self._batch_fact_segment_index(fact, len(segments))
+            if index is None:
+                dropped += 1
+                continue
+            per_segment[index].append(fact)
+        if extracted and not any(per_segment):
+            raise FactExtractionFailed(
+                f"batch Stage-1 returned {len(extracted)} facts but none "
+                f"attributable for {lanlan_name!r} (fail_closed caller)"
+            )
+        if dropped:
+            logger.warning(
+                f"[FactStore] {lanlan_name}: 批抽取丢弃 {dropped}/"
+                f"{len(extracted)} 条畸形或归属不明的输出（fail-closed，不猜段）"
+            )
+
+        results: list[dict] = []
+        for segment, segment_facts in zip(segments, per_segment):
+            if not segment_facts:
+                results.append({'status': 'ok', 'created': []})
+                continue
+            try:
+                created = await self._apersist_new_facts(
+                    lanlan_name,
+                    segment_facts,
+                    subject=segment.get('subject'),
+                    speaker_provenance=self._speaker_provenance_of(segment),
+                )
+            except Exception as exc:
+                logger.error(
+                    f"[FactStore] {lanlan_name}: 批抽取第 "
+                    f"{len(results) + 1} 段持久化失败（其余段不受连累）: {exc}"
+                )
+                results.append({'status': 'failed', 'created': []})
+                continue
+            results.append({'status': 'ok', 'created': created})
+        return results
+
     # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；
     # 'ai_disclosure' = path B 抽出的 AI 自我披露/屏幕上下文（trust-tier 较低）。
     # 老 fact 没 source 字段时按 'user_observation' 回退（向后兼容——pre-#PR
@@ -666,6 +864,7 @@ class FactStore:
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
+        speaker_provenance: dict | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             return await self._apersist_new_facts_locked(
@@ -674,6 +873,7 @@ class FactStore:
                 default_source=default_source,
                 semantic_dedup=semantic_dedup,
                 subject=subject,
+                speaker_provenance=speaker_provenance,
             )
 
     async def apersist_scoped_facts(
@@ -696,6 +896,7 @@ class FactStore:
         default_source: str = 'user_observation',
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
+        speaker_provenance: dict | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -716,7 +917,12 @@ class FactStore:
         existing.source in place + reset signal_processed=False so Stage-2
         re-evaluates. The reverse (user→ai) never downgrades — user
         corroboration is irreversible.
-        """
+
+        ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
+        trust'} 子集），盖在本批每条**新建** fact 上。只落字段不接消费
+        （信赖度阶段一）；来自调用方（scoped_history 请求段），绝不读
+        extracted 元素里的同名键——LLM 输出无法伪造它。
+        """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
         memory_subject = coerce_subject(subject)
@@ -983,6 +1189,18 @@ class FactStore:
             }
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
+            if speaker_provenance:
+                # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
+                label = str(speaker_provenance.get('speaker_label') or '').strip()
+                if label:
+                    fact_entry['speaker_label'] = label[:64]
+                trust = speaker_provenance.get('speaker_trust')
+                if (
+                    isinstance(trust, (int, float))
+                    and not isinstance(trust, bool)
+                    and 0.0 <= float(trust) <= 1.0
+                ):
+                    fact_entry['speaker_trust'] = float(trust)
             if external_import is not None:
                 self._apply_external_import_provenance(fact_entry, external_import)
             existing_facts.append(fact_entry)
@@ -1531,6 +1749,7 @@ class FactStore:
         subject: MemorySubject | dict | None = None,
         fail_closed: bool = False,
         speaker_label: str | None = None,
+        speaker_provenance: dict | None = None,
     ) -> list[dict]:
         """Stage-1-only backward-compat entry.
 
@@ -1554,7 +1773,13 @@ class FactStore:
 
         ``speaker_label`` is forwarded to the extraction prompt — see
         :meth:`_allm_extract_facts`.
-        """
+
+        ``speaker_provenance``: stamped onto每条新建 fact（speaker_label /
+        speaker_trust，信赖度阶段一只落字段）。与 ``speaker_label`` 分开传：
+        后者影响 prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——
+        那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
+        决定是否给本参数。
+        """  # noqa: DOCSTRING_CJK
         extracted = await self._allm_extract_facts(
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
@@ -1586,6 +1811,7 @@ class FactStore:
             return []
         return await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
+            speaker_provenance=speaker_provenance,
         )
 
     # ── external import state (sidecar) ──────────────────────────────

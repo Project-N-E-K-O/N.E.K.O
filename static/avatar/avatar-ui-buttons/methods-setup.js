@@ -14,6 +14,9 @@ Object.assign(AvatarButtonMixin.methods, {
             }
 
             if (this._returnButtonDragHandlers) {
+                if (typeof this._returnButtonDragHandlers.cleanup === 'function') {
+                    this._returnButtonDragHandlers.cleanup();
+                }
                 document.removeEventListener('mousemove', this._returnButtonDragHandlers.mouseMove);
                 document.removeEventListener('mouseup', this._returnButtonDragHandlers.mouseUp);
                 document.removeEventListener('touchmove', this._returnButtonDragHandlers.touchMove);
@@ -21,6 +24,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
                 document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
                 window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+                window.removeEventListener(
+                    'neko:niri-pet-physical-crop-state-applied',
+                    this._returnButtonDragHandlers.cropStateApplied
+                );
                 this._returnButtonDragHandlers = null;
             }
 

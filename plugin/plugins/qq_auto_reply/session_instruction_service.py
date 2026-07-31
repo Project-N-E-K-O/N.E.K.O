@@ -5,7 +5,10 @@ import asyncio
 from datetime import datetime
 from typing import Any, Optional
 
-from config.prompts.prompts_sys import CONTEXT_SUMMARY_READY, SESSION_INIT_PROMPT
+from config.prompts.prompts_sys import (
+    SESSION_INIT_PROMPT,
+    get_context_summary_ready,
+)
 from main_logic.core import apply_role_placeholders
 from utils.language_utils import get_global_language
 from .pipeline_models import QQInstructionBundle
@@ -49,10 +52,17 @@ class QQSessionInstructionService:
         {"id": "time",                  "i18n_key": "time_prompt_section",   "required_placeholders": ["{time_str}"],                   "format_after": True},
         {"id": "detail",                "i18n_key": "detail_constraints_section", "required_placeholders": [],                          "format_after": False},
         {"id": "output",                "i18n_key": "output_prompt_section", "required_placeholders": [],                               "format_after": False},
-        {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
+        # kira_unified 是纯软指令，模板本身一个占位符都没有（见
+        # scene_prompt_templates.SCENE_KIRA_UNIFIED_GROUP）。声明成必需会让
+        # 护栏对每一份 i18n bundle 都判"缺占位符"，把非中文用户的这一段整个
+        # 换回中文默认常量，还每轮打一条 warning。要求必须以模板实际内容为准。
+        {"id": "scene_group_dynamic",   "i18n_key": "prompts.group.kira_unified", "required_placeholders": [], "format_after": True},
         {"id": "scene_group_collective","i18n_key": "prompts.group.collective", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
         {"id": "scene_group_shared",    "i18n_key": "prompts.group.shared_session", "required_placeholders": ["{her_name}", "{master_name}", "{group_id}"], "format_after": True},
-        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}", "{group_id}"], "format_after": True},
+        # directed 的加固默认模板本身不含 {group_id}（身份边界只点名发言人
+        # 与主人/管理员），把它声明成必需就是一条**永远无法满足**的判据，
+        # 再完整的翻译也会被判缺占位符。其余四个是真正的身份边界，保留。
+        {"id": "scene_group_directed",  "i18n_key": "prompts.group.directed", "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "scene_private",         "i18n_key": "prompts.private.body",  "required_placeholders": ["{her_name}", "{master_name}", "{sender_id}", "{user_title}"], "format_after": True},
         {"id": "naming_with_title",     "i18n_key": "prompts.group.naming_with_title", "required_placeholders": ["{user_title}"],       "format_after": False},
         {"id": "naming_without_title",  "i18n_key": "prompts.group.naming_without_title", "required_placeholders": [],                "format_after": False},
@@ -256,9 +266,10 @@ class QQSessionInstructionService:
             short_language,
             SESSION_INIT_PROMPT.get(user_language, SESSION_INIT_PROMPT["zh"]),
         )
-        context_ready_template = CONTEXT_SUMMARY_READY.get(
-            short_language,
-            CONTEXT_SUMMARY_READY.get(user_language, CONTEXT_SUMMARY_READY["zh"]),
+        # QQ 永远是文字；群里没有那个固定的一对一对象，群变体连
+        # {master} 槽都没有（否则等于把私聊对象的名字写进群 prompt）。
+        context_ready_template = get_context_summary_ready(
+            short_language, input_mode="text", is_group=is_group,
         )
 
         master_title = master_name if master_name else self.plugin.i18n.t("prompts.default_master", default="主人")
@@ -332,17 +343,11 @@ class QQSessionInstructionService:
         core_sender_id = (
             memory_sender_id if memory_sender_id is not None else sender_id
         )
-        # 该段是否会含 participant 域：调用方据此在后续 await 窗口里
-        # member 被关掉时撤除本段。判据与 _build_core_memory_section 内
-        # 的 subject 组装条件一致。
-        used_member_subject = bool(
-            is_group
-            and str(group_id or "").strip()
-            and str(core_sender_id or "").strip()
-            and (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                "group_member_memory_enabled", False,
-            )
-        )
+        # 该段是否含 participant 域：调用方据此在后续 await 窗口里 member
+        # 被关掉时撤除本段。判据由 _build_core_memory_section 从 resolver
+        # 拿到后经 out-param 回传（同 used_member_subject_out 既有模式），
+        # 不在这里复刻一份会漂移的影子条件。
+        core_used_member: list = []
         core_memory_text = await self._build_core_memory_section(
             should_use_memory_context=should_use_memory_context,
             her_name=her_name,
@@ -352,7 +357,9 @@ class QQSessionInstructionService:
             group_id=group_id,
             sender_id=core_sender_id,
             locale=user_language,
+            used_member_subject_out=core_used_member,
         )
+        used_member_subject = bool(core_used_member)
         if core_memory_text:
             sections.append(core_memory_text)
         self._append_user_profile_section(
@@ -572,6 +579,7 @@ class QQSessionInstructionService:
         group_id: str | None = None,
         sender_id: str = "",
         locale: str = "",
+        used_member_subject_out: list | None = None,
     ) -> str:
         if not should_use_memory_context:
             return ""
@@ -588,20 +596,23 @@ class QQSessionInstructionService:
             return ""
         try:
             if is_group:
-                subjects = [self.plugin.memory_bridge.group_subject(group_id)]
-                member_sender = str(sender_id or "").strip()
-                if member_sender and bool(
-                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                        "group_member_memory_enabled", False,
-                    )
-                ):
-                    # 对偶 _build_recalled_memory_text：成员开关同时门控读，
-                    # sender 规范化与写侧一致。
-                    subjects.append(
-                        self.plugin.memory_bridge.group_participant_subject(
-                            group_id, member_sender,
-                        )
-                    )
+                # subject 组装收口进 resolve_group_recall_subjects：本段此前
+                # 是一份内联副本（群 + 当前发言人），三条读路径（tool
+                # handler / 回落召回 / 本段 bootstrap）必须授权完全一致的
+                # 域，扩容（+最近发言人）也只在一处生效。
+                from .memory_tool_service import resolve_group_recall_subjects
+
+                subjects, used_member = await resolve_group_recall_subjects(
+                    self.plugin,
+                    group_id=group_id,
+                    memory_sender_id=str(sender_id or "").strip(),
+                )
+                if used_member and used_member_subject_out is not None:
+                    # 权威判据来自 resolver（member 门控与最近发言人扩容
+                    # 都收口在它那一处）：调用方不再复刻一份会漂移的影子
+                    # 条件——影子偏 False 的方向正是隐私回归（member 已
+                    # 撤销而 participant 派生段留在 prompt 里）。
+                    used_member_subject_out.append(True)
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,

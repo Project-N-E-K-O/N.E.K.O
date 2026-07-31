@@ -14,11 +14,16 @@ async def _read_streaming_body(response):
 
 
 class CookieRecorder:
-    def __init__(self):
-        self.values = {}
+    def __init__(self, values=None):
+        self.values = dict(values or {})
 
     def set(self, key, value):
         self.values[key] = value
+
+    def delete(self, key):
+        if key not in self.values:
+            raise KeyError(key)
+        del self.values[key]
 
 
 class FailingCookieRecorder:
@@ -27,10 +32,12 @@ class FailingCookieRecorder:
 
 
 def test_sync_pyncm_session_cookies_uses_modern_session_cookie_jar():
-    session = SimpleNamespace(cookies=CookieRecorder())
+    session = SimpleNamespace(cookies=CookieRecorder(), csrf_token="old-csrf")
 
-    assert music_router._sync_pyncm_session_cookies(session, {"MUSIC_U": "token"}) is True
-    assert session.cookies.values == {"MUSIC_U": "token"}
+    cookies = {"MUSIC_U": "token", "__csrf": "new-csrf"}
+    assert music_router._sync_pyncm_session_cookies(session, cookies) is True
+    assert session.cookies.values == cookies
+    assert session.csrf_token == "new-csrf"
 
 
 def test_sync_pyncm_session_cookies_supports_legacy_client_cookie_jar():
@@ -71,6 +78,19 @@ def test_sync_pyncm_session_cookies_continues_after_setter_failure():
 
     assert music_router._sync_pyncm_session_cookies(session, {"MUSIC_U": "token"}) is True
     assert client_cookies.values == {"MUSIC_U": "token"}
+
+
+def test_sync_pyncm_session_cookies_removes_stale_auth_and_preserves_other_cookies():
+    cookies = CookieRecorder({
+        "MUSIC_U": "old-token",
+        "__csrf": "old-csrf",
+        "NMTID": "keep-me",
+    })
+    session = SimpleNamespace(cookies=cookies, csrf_token="old-csrf")
+
+    assert music_router._sync_pyncm_session_cookies(session, {}) is True
+    assert cookies.values == {"NMTID": "keep-me"}
+    assert session.csrf_token == ""
 
 
 @pytest.mark.asyncio

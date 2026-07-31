@@ -723,6 +723,28 @@ class TurnMixin:
             else:
                 pass  # websocket未连接时忽略
 
+    async def handle_audio_done(self):
+        """Realtime provider closed the audio stream of the current response.
+
+        Dual of ``handle_audio_data``: that one streams the provider's native
+        audio out, this one tells the frontend no more of it is coming for
+        ``current_speech_id``. Without it the frontend has to guess the end of
+        playback from momentarily-empty audio queues and finalizes too early
+        (issue #1566).
+
+        The transport awaits this callback only after the last audio delta of
+        the response has been awaited, so the notice can never overtake audio.
+        """
+        if self._takeover_active:
+            logger.info("[%s] session takeover active: dropping ordinary realtime audio-done notice", self.lanlan_name)
+            return
+        # 只在原生音频通路上发。use_tts=True 时 provider 的原生音频在
+        # handle_audio_data 里被整段丢弃，实际发声走 TTS worker 那条路，
+        # 由它自己的 __audio_done__ 哨兵发信号 —— 这里再发一次就是错 sid /
+        # 重复发。
+        if not self.use_tts:
+            await self.send_audio_done(self.current_speech_id)
+
     def _publish_user_utterance_to_plugin_bus(
         self, text: Optional[str], *, is_voice_source: bool
     ) -> None:
@@ -1095,7 +1117,7 @@ class TurnMixin:
                             logger.info("[%s] session takeover: cancelled ordinary realtime response after STT transcript", self.lanlan_name)
                         except Exception as cancel_exc:
                             logger.debug("[%s] session takeover: realtime response cancel skipped/failed: %s", self.lanlan_name, cancel_exc)
-                    return
+                    return False
             except Exception as exc:
                 logger.warning("[%s] session takeover dispatcher failed: %s", self.lanlan_name, exc)
 
@@ -1108,7 +1130,7 @@ class TurnMixin:
                 "[%s] suppressed likely AI echo voice transcript len=%d",
                 self.lanlan_name, len(transcript_text),
             )
-            return
+            return False
 
         if is_voice_source and not voice_rms_recorded:
             # transcript 到达 → VAD 在窗口内捕捉到声音，标记 voice RMS 活跃；
@@ -1209,6 +1231,7 @@ class TurnMixin:
         # 注意: 这里不能修改 current_speech_id.
         # speech_id 仅应在“模型新回复开始”时更新 (handle_new_message / 文本模式 stream 入口),
         # 否则会导致前端把同一轮 AI 语音误判为新轮次, 出现首包被重置/吞掉的问题.
+        return bool(record_transcript_text)
 
     async def handle_output_transcript(self, text: str, is_first_chunk: bool = False):
         """Output transcription callback: handles text display and TTS (for voice mode)"""

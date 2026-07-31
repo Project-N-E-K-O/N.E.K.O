@@ -541,6 +541,11 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
 
 @pytest.mark.asyncio
 async def test_qq_group_recall_passes_group_and_member_subjects():
+    """Fallback recall channel (routes that silently drop ``tools``, i.e.
+    the free proxy): the pre-generation synchronous recall must authorize
+    exactly the group (+ participant) scopes. Tool-capable routes recall
+    via the recall_memory tool instead — the two channels share the
+    subject resolver, covered in test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.memory_bridge import (
         QQMemoryBridge,
         QQMemoryQueryResult,
@@ -643,6 +648,8 @@ async def test_qq_group_recall_passes_group_and_member_subjects():
 
 @pytest.mark.asyncio
 async def test_qq_group_recall_omits_phantom_member_for_empty_sender():
+    """Fallback recall channel: an empty sender must not fabricate a
+    phantom participant subject (the tool channel shares the resolver)."""
     from plugin.plugins.qq_auto_reply.memory_bridge import (
         QQMemoryBridge,
         QQMemoryQueryResult,
@@ -688,9 +695,7 @@ async def test_qq_recall_with_empty_subjects_never_falls_back_to_private():
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
 
     bridge = QQMemoryBridge(SimpleNamespace())
-    with patch(
-        "plugin.plugins.qq_auto_reply.memory_bridge.httpx.AsyncClient",
-    ) as client:
+    with patch.object(QQMemoryBridge, "_client") as client:
         result = await bridge.query_relevant_memory(
             "Neko", "不应读取私聊记忆", subjects=[],
         )
@@ -718,6 +723,10 @@ async def test_qq_group_session_writes_only_scoped_history():
         QQMemoryBridge.group_participant_subject
     )
     bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+    })
     bridge.post_memory_history = AsyncMock(return_value={"status": "ok"})
     user_data = {
         "memory_enabled": True,
@@ -745,7 +754,8 @@ async def test_qq_group_session_writes_only_scoped_history():
     )
 
     assert completed is True
-    bridge.post_scoped_memory_history.assert_any_await(
+    # 群 digest 仍走 legacy 单 subject 形态（不带 speaker_label）。
+    bridge.post_scoped_memory_history.assert_awaited_once_with(
         "Neko",
         [
             {"role": "user", "content": [{"type": "text", "text": "记住群规是不剧透"}]},
@@ -754,14 +764,21 @@ async def test_qq_group_session_writes_only_scoped_history():
         subject=QQMemoryBridge.group_subject("7788"),
         timeout=30.0,
     )
-    bridge.post_scoped_memory_history.assert_any_await(
+    # 成员 bucket 走批形态：每段带 subject / speaker_label / speaker_trust
+    # （无 permission_mgr → level "none" 的初值）。
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    bridge.post_scoped_memory_history_batch.assert_awaited_once_with(
         "Neko",
-        [{"role": "user", "content": [{"type": "text", "text": "我最喜欢三文鱼"}]}],
-        subject=QQMemoryBridge.group_participant_subject("7788", "2046"),
-        speaker_label="2046",
+        [{
+            "messages": [
+                {"role": "user", "content": [{"type": "text", "text": "我最喜欢三文鱼"}]},
+            ],
+            "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
+            "speaker_label": "2046",
+            "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+        }],
         timeout=30.0,
     )
-    assert bridge.post_scoped_memory_history.await_count == 2
     bridge.post_memory_history.assert_not_awaited()
     assert "group:7788" not in plugin._user_sessions
 
@@ -780,11 +797,15 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
     )
-    bridge.post_scoped_memory_history = AsyncMock(side_effect=[
-        {"status": "ok"},
-        {"status": "error", "message": "member 2046 failed"},
-        {"status": "ok"},
-    ])
+    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    # 两个成员桶打进同一批；批响应逐段报成败——2046 那段失败，4096 成功。
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "failed"},
+            {"status": "ok", "created": 0, "fact_ids": []},
+        ],
+    })
     failed_member_messages = [
         {"role": "user", "content": [{"type": "text", "text": "A"}]},
     ]
@@ -815,23 +836,34 @@ async def test_qq_member_flush_continues_and_retries_only_failed_buckets():
     )
 
     assert completed is False
-    assert bridge.post_scoped_memory_history.await_count == 3
+    assert bridge.post_scoped_memory_history.await_count == 1  # 群 digest
+    assert bridge.post_scoped_memory_history_batch.await_count == 1
+    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [seg["speaker_label"] for seg in sent_segments] == ["2046", "4096"]
     assert user_data["group_memory_flushed"] is True
+    # 批内单段失败只保留那一段的桶，成功段当场弹出。
     assert list(member_buckets) == ["2046"]
     assert "group:7788" in plugin._user_sessions
     session.close.assert_not_awaited()
 
-    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+    })
     completed = await service.finalize_user_memory_session(
         "group:7788", reason="retry",
     )
 
     assert completed is True
-    bridge.post_scoped_memory_history.assert_awaited_once_with(
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    bridge.post_scoped_memory_history_batch.assert_awaited_once_with(
         "Neko",
-        failed_member_messages,
-        subject=QQMemoryBridge.group_participant_subject("7788", "2046"),
-        speaker_label="2046",
+        [{
+            "messages": failed_member_messages,
+            "subject": QQMemoryBridge.group_participant_subject("7788", "2046"),
+            "speaker_label": "2046",
+            "speaker_trust": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+        }],
         timeout=30.0,
     )
     assert member_buckets == {}
@@ -2093,6 +2125,500 @@ async def test_extract_facts_fail_closed_raises_on_terminal_failure(tmp_path):
         fs._time_indexed = None
         created = await fs.extract_facts([msg], "Neko", fail_closed=True)
         assert any(f.get("text") == "索引失败的事实" for f in created)
+
+
+def _batch_segment(group_id, sender_id, label, texts, *, trust=None):
+    from memory.scopes import MemorySubject
+
+    return {
+        "messages": [
+            SimpleNamespace(type="human", content=text) for text in texts
+        ],
+        "subject": MemorySubject.create(
+            "group_participant", f"qq:{group_id}:{sender_id}",
+        ),
+        "speaker_label": label,
+        "speaker_trust": trust,
+    }
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
+    """批抽取最大的质量风险：A 的事实挂到 B 头上——错误归属会进 B 的
+    persona 且没有任何下游能发现。构造内容明显可区分的多段批次，断言每
+    条事实落到正确的 subject、且信赖度字段随段落盘。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    captured = {}
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        captured["prompt"] = prompt
+        return [
+            {"text": "Alice 对花生过敏", "importance": 7, "segment": 1},
+            {"text": "Bob 养了一只叫毛毛的猫", "importance": 6, "segment": 2},
+            # 数字字符串归属也接受（模型输出 "1" 的常见形态）。
+            {"text": "Alice 周五要考试", "importance": 5, "segment": "1"},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segment_a = _batch_segment(
+        "7788", "1001", "Alice(1001)",
+        ["我对花生过敏", "周五要考试"], trust=0.8,
+    )
+    segment_b = _batch_segment(
+        "7788", "1002", "Bob(1002)", ["我家猫叫毛毛"], trust=0.5,
+    )
+
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch([segment_a, segment_b], "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    facts_a = results[0]["created"]
+    facts_b = results[1]["created"]
+    assert {f["text"] for f in facts_a} == {"Alice 对花生过敏", "Alice 周五要考试"}
+    assert {f["text"] for f in facts_b} == {"Bob 养了一只叫毛毛的猫"}
+    # subject 三元组真的按段落盘（不是只在返回值里分了组）。
+    assert all(f["subject_id"] == "qq:7788:1001" for f in facts_a)
+    assert all(f["subject_id"] == "qq:7788:1002" for f in facts_b)
+    persisted = await fs.aload_facts("Neko")
+    by_text = {f["text"]: f for f in persisted if isinstance(f, dict)}
+    assert by_text["Bob 养了一只叫毛毛的猫"]["subject_id"] == "qq:7788:1002"
+    # 信赖度字段（阶段一只落字段）：speaker_label + speaker_trust 随段。
+    assert all(
+        f["speaker_label"] == "Alice(1001)" and f["speaker_trust"] == 0.8
+        for f in facts_a
+    )
+    assert all(
+        f["speaker_label"] == "Bob(1002)" and f["speaker_trust"] == 0.5
+        for f in facts_b
+    )
+    # prompt 按段渲染：段首标记 + 每行冠以该段 speaker。
+    assert "[SEGMENT 1 | speaker: Alice(1001)]" in captured["prompt"]
+    assert "[SEGMENT 2 | speaker: Bob(1002)]" in captured["prompt"]
+    assert "Alice(1001) | 我对花生过敏" in captured["prompt"]
+    assert "Bob(1002) | 我家猫叫毛毛" in captured["prompt"]
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_drops_unattributable_facts(tmp_path):
+    """归属 fail-closed：段号缺失/非法/越界/布尔的输出必须丢弃而不是猜
+    一个段——只要有一条被猜错，就是把 A 的事实写进 B 的记忆。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {"text": "越界段号", "importance": 5, "segment": 3},
+            {"text": "零段号", "importance": 5, "segment": 0},
+            {"text": "缺段号", "importance": 5},
+            {"text": "非数字段号", "importance": 5, "segment": "x"},
+            # isdigit() 为 True 但 int() 抛 ValueError 的字符：必须丢这
+            # 一条而不是让 ValueError 把整批弄崩（review 抓的）。
+            {"text": "上标段号", "importance": 5, "segment": "²"},
+            {"text": "布尔段号", "importance": 5, "segment": True},
+            {"text": "空文本", "importance": 5, "segment": 1},
+            {"text": "有效条目", "importance": 5, "segment": 2},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    # "空文本" 用例：text 改成空白串（上面写占位是为了可读性）。
+    fs_llm = fs._allm_call_with_retries
+
+    async def _llm_blank(prompt, lanlan_name, **kwargs):
+        payload = await fs_llm(prompt, lanlan_name, **kwargs)
+        payload[6]["text"] = "   "
+        return payload
+
+    fs._allm_call_with_retries = _llm_blank
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    assert results[0]["created"] == []
+    assert [f["text"] for f in results[1]["created"]] == ["有效条目"]
+    persisted = await fs.aload_facts("Neko")
+    texts = {f.get("text") for f in persisted if isinstance(f, dict)}
+    assert texts == {"有效条目"}, (
+        f"归属不明的输出被猜段落盘了: {texts - {'有效条目'}!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_fails_closed_when_nothing_attributable(tmp_path):
+    """输出非空但零条可归属 = 模型没理解任务：整批 raise 让调用方保留
+    缓冲重试。静默全丢会让调用方 pop 掉从未入库的桶。终止失败与非数组
+    输出同样整批 502。"""  # noqa: DOCSTRING_CJK
+    from memory.facts import FactExtractionFailed
+
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+
+    async def _all_unattributable(prompt, lanlan_name, **kwargs):
+        return [{"text": "没有段号的事实", "importance": 5}]
+
+    fs._allm_call_with_retries = _all_unattributable
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts_batch(segments, "Neko")
+
+        async def _terminal(prompt, lanlan_name, **kwargs):
+            return None
+
+        fs._allm_call_with_retries = _terminal
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts_batch(segments, "Neko")
+
+        async def _non_list(prompt, lanlan_name, **kwargs):
+            return {"facts": []}
+
+        fs._allm_call_with_retries = _non_list
+        with pytest.raises(FactExtractionFailed):
+            await fs.extract_facts_batch(segments, "Neko")
+
+        # 真·空抽取是合法结果：所有段 ok、零 facts，调用方可以 pop。
+        async def _empty(prompt, lanlan_name, **kwargs):
+            return []
+
+        fs._allm_call_with_retries = _empty
+        results = await fs.extract_facts_batch(segments, "Neko")
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    assert all(r["created"] == [] for r in results)
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
+    """一段 persist 失败不得连累其他段重来（fail_closed 改 per-段的核心
+    语义）：失败段报 failed（调用方保留那个桶），成功段正常 ok。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {"text": "A 的事实", "importance": 5, "segment": 1},
+            {"text": "B 的事实", "importance": 5, "segment": 2},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    real_persist = fs._apersist_new_facts
+
+    async def _persist_b_fails(lanlan_name, extracted, **kwargs):
+        subject = kwargs.get("subject")
+        if getattr(subject, "subject_id", "") == "qq:7788:1002":
+            raise RuntimeError("disk full")
+        return await real_persist(lanlan_name, extracted, **kwargs)
+
+    fs._apersist_new_facts = _persist_b_fails
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "failed"]
+    assert [f["text"] for f in results[0]["created"]] == ["A 的事实"]
+    assert results[1]["created"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_path):
+    """单段批次没有归属风险：走成熟的单发抽取管线（speaker_label 渲染 +
+    整批 malformed 判定），不用带段标记的批 prompt。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    captured = {}
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        captured["prompt"] = prompt
+        return [{"text": "单段事实", "importance": 5}]
+
+    fs._allm_call_with_retries = _llm
+    segment = _batch_segment(
+        "7788", "1001", "Alice(1001)", ["我对花生过敏"], trust=1.0,
+    )
+    with patch("memory.facts.get_global_language", return_value="zh"), \
+            patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch([segment], "Neko")
+
+    assert [r["status"] for r in results] == ["ok"]
+    assert "[SEGMENT" not in captured["prompt"]
+    assert "Alice(1001) | 我对花生过敏" in captured["prompt"]
+    created = results[0]["created"]
+    assert [f["text"] for f in created] == ["单段事实"]
+    # 单段路径同样落信赖度字段。
+    assert created[0]["speaker_label"] == "Alice(1001)"
+    assert created[0]["speaker_trust"] == 1.0
+
+
+@pytest.mark.asyncio
+async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
+    """speaker_label / speaker_trust 永远来自请求段：模型在输出元素里伪造
+    同名键不得被采纳（provenance 是权限派生的信任基线，被模型改写等于让
+    不可信输入给自己提权）。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {
+                "text": "试图伪造来源", "importance": 5, "segment": 1,
+                "speaker_trust": 999, "speaker_label": "admin 本人",
+            },
+            {"text": "B 的事实", "importance": 5, "segment": 2},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"], trust=0.3),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"], trust=0.5),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    fact = results[0]["created"][0]
+    assert fact["speaker_label"] == "Alice(1001)"
+    assert fact["speaker_trust"] == 0.3
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_batch_route_validation():
+    """批形态的入口校验：与 legacy 字段互斥、段数 1..8、总消息 ≤200、
+    speaker_label 必填且 ≤64。"""  # noqa: DOCSTRING_CJK
+    import json as _json
+
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    def _seg(sender="1001", n_messages=1, label="Alice(1001)"):
+        return {
+            "input_history": _json.dumps([
+                {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+            ] * n_messages),
+            "subject": {
+                "subject_kind": "group_participant",
+                "subject_id": f"qq:100:{sender}",
+            },
+            "speaker_label": label,
+        }
+
+    store = MagicMock()
+    store.extract_facts_batch = AsyncMock(return_value=[
+        {"status": "ok", "created": []},
+    ])
+    with patch.object(memory_routes.runtime, "fact_store", store):
+        # segments 与 legacy 字段互斥。
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(
+                    input_history="[]",
+                    subject={
+                        "subject_kind": "group_chat", "subject_id": "qq:100",
+                    },
+                    segments=[_seg()],
+                ),
+            )
+        assert excinfo.value.status_code == 422
+
+        # 两种形态都不给 → 422。
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko", ScopedHistoryRequest(),
+            )
+        assert excinfo.value.status_code == 422
+
+        # 段数超限。
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(segments=[
+                    _seg(sender=str(1000 + i)) for i in range(9)
+                ]),
+            )
+        assert excinfo.value.status_code == 422
+
+        # 总消息超限（两段各 150 = 300 > 200）。
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(segments=[
+                    _seg(sender="1001", n_messages=150),
+                    _seg(sender="1002", n_messages=150),
+                ]),
+            )
+        assert excinfo.value.status_code == 422
+
+        # speaker_label 必填（空白串同缺失）。
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(segments=[_seg(label="   ")]),
+            )
+        assert excinfo.value.status_code == 422
+
+        # label 超长拒绝而非静默截断（与 legacy 同口径）。
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(segments=[_seg(label="x" * 65)]),
+            )
+        assert excinfo.value.status_code == 422
+
+        store.extract_facts_batch.assert_not_awaited()
+
+    # speaker_trust 越界在请求模型层拒绝。
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError):
+        ScopedHistoryRequest(segments=[{**_seg(), "speaker_trust": 1.5}])
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_batch_route_reports_per_segment_results():
+    """路由把 extract_facts_batch 的逐段结果按请求顺序透传；整批抽取失败
+    仍是 502（调用方整批保留重试）。"""  # noqa: DOCSTRING_CJK
+    import json as _json
+
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactExtractionFailed
+
+    segments = [
+        {
+            "input_history": _json.dumps([
+                {"role": "user", "content": [{"type": "text", "text": "a"}]},
+            ]),
+            "subject": {
+                "subject_kind": "group_participant",
+                "subject_id": "qq:100:1001",
+            },
+            "speaker_label": "Alice(1001)",
+            "speaker_trust": 0.8,
+        },
+        {
+            "input_history": _json.dumps([
+                {"role": "user", "content": [{"type": "text", "text": "b"}]},
+            ]),
+            "subject": {
+                "subject_kind": "group_participant",
+                "subject_id": "qq:100:1002",
+            },
+            "speaker_label": "Bob(1002)",
+        },
+    ]
+
+    store = MagicMock()
+    store.extract_facts_batch = AsyncMock(return_value=[
+        {"status": "ok", "created": [{"id": "fact_1", "text": "x"}]},
+        {"status": "failed", "created": []},
+    ])
+    with patch.object(memory_routes.runtime, "fact_store", store):
+        result = await memory_routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=segments),
+        )
+    assert result["status"] == "processed"
+    assert [seg["status"] for seg in result["segments"]] == ["ok", "failed"]
+    assert result["segments"][0]["created"] == 1
+    assert result["segments"][0]["fact_ids"] == ["fact_1"]
+    assert result["segments"][0]["subject"]["subject_id"] == "qq:100:1001"
+    # 传给 FactStore 的段带解析后的 messages / subject / label / trust。
+    sent = store.extract_facts_batch.await_args.args[0]
+    assert [seg["speaker_label"] for seg in sent] == [
+        "Alice(1001)", "Bob(1002)",
+    ]
+    assert sent[0]["speaker_trust"] == 0.8
+    assert sent[1]["speaker_trust"] is None
+
+    failing_store = MagicMock()
+    failing_store.extract_facts_batch = AsyncMock(
+        side_effect=FactExtractionFailed("retries exhausted"),
+    )
+    with patch.object(memory_routes.runtime, "fact_store", failing_store):
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko", ScopedHistoryRequest(segments=segments),
+            )
+        assert excinfo.value.status_code == 502
+
+    # 抽取层结果数与请求段数不等（实现漂移）：绝不按位置 zip 截断，
+    # 整批 502 让调用方保留全部桶重试。
+    mismatched_store = MagicMock()
+    mismatched_store.extract_facts_batch = AsyncMock(return_value=[
+        {"status": "ok", "created": []},
+    ])
+    with patch.object(memory_routes.runtime, "fact_store", mismatched_store):
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko", ScopedHistoryRequest(segments=segments),
+            )
+        assert excinfo.value.status_code == 502
+        assert "mismatched" in excinfo.value.detail
+
+
+@pytest.mark.asyncio
+async def test_group_digest_default_label_is_not_stamped_as_provenance():
+    """legacy 单发路径：群 digest 的集体描述符缺省 label 不是发言人，不得
+    作为 speaker provenance 落到 fact 上；调用方真给的 label 才落。"""  # noqa: DOCSTRING_CJK
+    import json as _json
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    history = _json.dumps([
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    ])
+
+    store = MagicMock()
+    store.extract_facts = AsyncMock(return_value=[])
+    with patch.object(memory_routes.runtime, "fact_store", store):
+        # 群 digest：无 label → 缺省填充只进 prompt，不进 provenance。
+        await memory_routes.process_scoped_history(
+            "Neko",
+            ScopedHistoryRequest(
+                input_history=history,
+                subject={
+                    "subject_kind": "group_chat", "subject_id": "qq:100",
+                },
+            ),
+        )
+        kwargs = store.extract_facts.await_args.kwargs
+        assert kwargs["speaker_label"]  # 缺省描述符仍然进了 prompt 槽位
+        assert kwargs["speaker_provenance"] is None
+
+        # 成员批（legacy 单发形态）：调用方给了 label → 落 provenance。
+        await memory_routes.process_scoped_history(
+            "Neko",
+            ScopedHistoryRequest(
+                input_history=history,
+                subject={
+                    "subject_kind": "group_participant",
+                    "subject_id": "qq:100:1001",
+                },
+                speaker_label="Alice(1001)",
+            ),
+        )
+        kwargs = store.extract_facts.await_args.kwargs
+        assert kwargs["speaker_provenance"] == {"speaker_label": "Alice(1001)"}
 
 
 @pytest.mark.asyncio
@@ -3706,6 +4232,9 @@ async def test_private_flush_prompt_not_excluded_and_cache_lags_tail_draft():
     history = [_msg("human", "第一条"), _msg("ai", "本轮草稿")]
     user_data = {
         "is_group": False,
+        # 私聊 /cache 只对已授权（admin）会话开放，见
+        # test_silent_turn_never_caches_unauthorized_private_history。
+        "memory_enabled": True,
         "her_name": "Neko",
         "session": SimpleNamespace(_conversation_history=history),
         "last_synced_index": 0,
@@ -4112,6 +4641,10 @@ async def test_cross_group_section_removed_when_consent_revoked():
     assert "cross_group_section = self._append_cross_group_section(" in bundle_src
     assert "cross_group_section=cross_group_section" in bundle_src
     assert "used_member_subject=used_member_subject" in bundle_src
+    # member 判据的权威来源是 resolver 经 out-param 回传，不是调用方复刻
+    # 的影子条件（影子偏 False 的方向正是隐私回归）。
+    assert "used_member_subject_out=core_used_member" in bundle_src
+    assert "used_member_subject = bool(core_used_member)" in bundle_src
 
     # Post-await revocation: the node strips the exact section text.
     from plugin.plugins.qq_auto_reply.reply_context_node import (
@@ -4135,6 +4668,77 @@ async def test_cross_group_section_removed_when_consent_revoked():
     assert "烤肉" not in stripped
     assert "前段" in stripped and "后段" in stripped
 
+
+
+@pytest.mark.asyncio
+async def test_core_memory_section_reports_member_usage_via_out_param():
+    """member 判据经 out-param 从 resolver 回传（不是影子条件）：resolver
+    真带了 participant 域才置位；member 关掉时 resolver 只回群 subject，
+    out-param 保持空。钉住接线本身——helper 对了没人接线就是死代码。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = SimpleNamespace(
+        i18n=SimpleNamespace(t=lambda key, default="", **kw: default),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+        logger=MagicMock(),
+        memory_bridge=SimpleNamespace(
+            group_subject=QQMemoryBridge.group_subject,
+            group_participant_subject=QQMemoryBridge.group_participant_subject,
+            fetch_scoped_bootstrap_memory=AsyncMock(return_value="群规是不剧透"),
+        ),
+    )
+    service = QQSessionInstructionService(plugin)
+
+    flag: list = []
+    text = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="主人",
+        context_ready_template="{name}/{master}",
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+        used_member_subject_out=flag,
+    )
+    assert text and "群规是不剧透" in text
+    assert flag == [True]
+    sent_subjects = (
+        plugin.memory_bridge.fetch_scoped_bootstrap_memory
+        .await_args.kwargs["subjects"]
+    )
+    assert sent_subjects[0] == QQMemoryBridge.group_subject("7788")
+    assert (
+        QQMemoryBridge.group_participant_subject("7788", "2046")
+        in sent_subjects
+    )
+
+    # member 关掉：resolver 只回群 subject，out-param 不置位。
+    plugin._qq_settings["group_member_memory_enabled"] = False
+    plugin.memory_bridge.fetch_scoped_bootstrap_memory.reset_mock()
+    flag_off: list = []
+    text = await service._build_core_memory_section(
+        should_use_memory_context=True,
+        her_name="Neko",
+        master_name="主人",
+        context_ready_template="{name}/{master}",
+        is_group=True,
+        group_id="7788",
+        sender_id="2046",
+        used_member_subject_out=flag_off,
+    )
+    assert text
+    assert flag_off == []
+    sent_subjects = (
+        plugin.memory_bridge.fetch_scoped_bootstrap_memory
+        .await_args.kwargs["subjects"]
+    )
+    assert sent_subjects == [QQMemoryBridge.group_subject("7788")]
 
 
 @pytest.mark.asyncio
@@ -4213,10 +4817,12 @@ def test_generation_strips_scoped_sections_when_group_revoked():
 
 @pytest.mark.asyncio
 async def test_recall_reports_participant_usage_to_caller():
-    """The recall reports whether it actually queried the participant
-    subject, and build() ORs that into the context flag — binding the flag
-    to a nonempty bootstrap section would miss the empty-bootstrap +
-    participant-hit combination."""
+    """Fallback recall channel: the recall reports whether it actually
+    queried the participant subject, and build() ORs that into the
+    context flag — binding the flag to a nonempty bootstrap section would
+    miss the empty-bootstrap + participant-hit combination. (On the tool
+    channel the equivalent record is the handler's runtime consent
+    entry, covered in test_group_memory_recall_tool.py.)"""
     import inspect
 
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryQueryResult
@@ -4283,10 +4889,12 @@ async def test_recall_reports_participant_usage_to_caller():
 
 
 def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
-    """Participant authorization must be tracked from the recall itself:
-    an empty scoped bootstrap (no core-memory section) with a participant
-    recall hit still has to lose that recall when member memory is
-    revoked before generation."""
+    """Fallback recall channel: participant authorization must be tracked
+    from the recall itself — an empty scoped bootstrap (no core-memory
+    section) with a participant recall hit still has to lose that recall
+    when member memory is revoked before generation. (The tool channel
+    has no pre-composed recall section; its dual is the in-handler
+    entry/post-fetch gate pair.)"""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -4321,7 +4929,10 @@ def test_sanitizer_drops_recall_when_member_revoked_without_bootstrap():
 async def test_generation_recheck_wiring_drops_scoped_prompt():
     """Wiring guard for the generation-time recheck: the stripped prompt
     and the emptied recall must actually reach _apply_turn_memory_context
-    (a correct helper nobody calls is dead code)."""
+    (a correct helper nobody calls is dead code). The recalled-text leg
+    only exists on the fallback recall channel — tool-channel turns carry
+    an empty recalled_memory_text and rely on the runtime consent record
+    instead."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -4474,7 +5085,10 @@ async def test_delivered_fallback_reply_enters_shared_history():
 async def test_generation_discards_reply_when_consent_revoked_mid_stream():
     """The model already saw the scoped prompt; if the switch goes off
     while streaming, the reply still carries that content — it must be
-    discarded rather than delivered."""
+    discarded rather than delivered. This drives the prompt-section
+    (fallback-channel) dependency shape; the tool channel's runtime-record
+    twin — including rolling back THROUGH tool-round dict rows — lives in
+    test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -5394,7 +6008,10 @@ async def test_scoped_reads_recheck_live_policy_before_fetch():
     (login fetch, first memory call) while the admin opts the group out:
     both scoped read points must recheck the live setting immediately
     before fetching — persistence is already re-gated at prime time, reads
-    must not inject scoped context into a reply after opt-out."""
+    must not inject scoped context into a reply after opt-out. The recall
+    leg here is the fallback channel; the tool channel's read-point
+    rechecks live inside the handler (entry + post-fetch), covered in
+    test_group_memory_recall_tool.py."""
     from plugin.plugins.qq_auto_reply.reply_context_node import (
         QQReplyContextNode,
     )
@@ -5614,6 +6231,9 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     bridge.post_scoped_memory_history = AsyncMock(
         side_effect=RuntimeError("server down"),
     )
+    bridge.post_scoped_memory_history_batch = AsyncMock(
+        side_effect=RuntimeError("server down"),
+    )
     user_data = {
         "memory_enabled": True,
         "is_group": True,
@@ -5648,11 +6268,18 @@ async def test_group_memory_toggle_syncs_existing_sessions():
     # The group digest and the member buckets settle independently: the
     # failing digest must not stop the member queues (capped at 50) from
     # being attempted, or continued traffic silently truncates them.
+    # digest 走 legacy 单发（1 次），成员桶走批（1 次）。
     settle_attempts = bridge.post_scoped_memory_history.await_count
-    assert settle_attempts == 2
+    member_settle_attempts = bridge.post_scoped_memory_history_batch.await_count
+    assert settle_attempts == 1
+    assert member_settle_attempts == 1
     # A later idle/shutdown sweep must now skip this session entirely.
     await service.flush_all_memory_sessions("shutdown")
     assert bridge.post_scoped_memory_history.await_count == settle_attempts
+    assert (
+        bridge.post_scoped_memory_history_batch.await_count
+        == member_settle_attempts
+    )
 
     # OFF->ON on a session that accumulated turns while opted out.
     history.append(SimpleNamespace(type="human", content="opted-out turn"))
@@ -6701,7 +7328,10 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
     bridge.group_participant_subject.side_effect = (
         QQMemoryBridge.group_participant_subject
     )
-    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+    })
     user_data = {
         "is_group": True, "group_id": "7788", "her_name": "Neko",
         "memory_enabled": True,
@@ -6735,8 +7365,8 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
 
     await service.settle_member_buckets_on_disable()
 
-    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
-    assert kwargs["speaker_label"] == "Alice(2046)"
+    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [seg["speaker_label"] for seg in sent_segments] == ["Alice(2046)"]
     assert "pending_settle_buckets" not in user_data
     # The re-enabled live bucket survives the late settle untouched.
     assert "9999" in user_data["group_member_memory_messages"]
@@ -6746,7 +7376,9 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
     user_data["pending_settle_buckets"] = {
         "2046": [{"role": "user", "content": [{"type": "text", "text": "B"}]}],
     }
-    bridge.post_scoped_memory_history = AsyncMock(side_effect=RuntimeError("down"))
+    bridge.post_scoped_memory_history_batch = AsyncMock(
+        side_effect=RuntimeError("down"),
+    )
     await service.settle_member_buckets_on_disable()
     assert "pending_settle_buckets" not in user_data
     assert "9999" in user_data["group_member_memory_messages"]
@@ -6766,13 +7398,16 @@ async def test_member_toggle_off_settles_buckets_before_clearing():
         "pending_settle_labels": {"2046": "2046"},
     }
     plugin._user_sessions["group:7788"] = marked
-    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+    })
     completed = await service.finalize_user_memory_session(
         "group:7788", reason="idle_timeout",
     )
     assert completed is True
-    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
-    assert kwargs["speaker_label"] == "2046"
+    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [seg["speaker_label"] for seg in sent_segments] == ["2046"]
 
 
 def test_static_layer_falls_back_when_required_placeholders_missing():
@@ -6975,7 +7610,9 @@ def test_persona_view_authorizes_scoped_entries_per_entry():
 async def test_fallback_reply_dropped_when_consent_revoked_during_call(monkeypatch):
     """The direct fallback sanitizes once, then awaits an LLM for up to a
     minute: a switch turned off during that call leaves the returned text
-    carrying memory the user just revoked."""
+    carrying memory the user just revoked. (Tool-channel turns reach this
+    path with an empty recalled_memory_text — their dependency, if any,
+    was already unioned into context.consent_snapshot by the handler.)"""
     import plugin.plugins.qq_auto_reply.reply_generation_service as rgs
 
     plugin = SimpleNamespace(
@@ -8394,7 +9031,10 @@ async def test_member_bucket_cap_flushes_instead_of_dropping():
             "group_memory_enabled": True, "group_member_memory_enabled": True,
         },
         _run_with_session_lock=_run_with_session_lock,
-        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        _spawn_memory_sync_task=(
+            # 真实签名带 session_key（排空要登记成该会话的结算工作）。
+            lambda coro, *, session_key=None: spawned.append(coro)
+        ),
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(get_nickname=lambda *a, **k: None),
     )
@@ -8481,7 +9121,10 @@ async def test_group_backlog_is_drained_before_it_can_be_lost():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         _run_with_session_lock=_run_with_session_lock,
-        _spawn_memory_sync_task=lambda coro: spawned.append(coro),
+        _spawn_memory_sync_task=(
+            # 真实签名带 session_key（排空要登记成该会话的结算工作）。
+            lambda coro, *, session_key=None: spawned.append(coro)
+        ),
         logger=MagicMock(),
     )
     service = QQSessionMemoryService(plugin)
@@ -8896,16 +9539,27 @@ async def test_failed_member_drain_is_rearmed():
         _spawn_memory_sync_task=_passthrough_memory_task,
         logger=MagicMock(),
     ))
-    service._flush_member_buckets = AsyncMock(return_value=["2046"])
+    # 与真实实现同契约：成功即从传入的 buckets 里弹出，失败原样留下。
+    async def _flush_all_fail(user_data, **kwargs):
+        return list(kwargs["buckets"])
+
+    async def _flush_all_ok(user_data, **kwargs):
+        kwargs["buckets"].clear()
+        return []
+
+    service._flush_member_buckets = AsyncMock(side_effect=_flush_all_fail)
     await service._drain_member_buckets("group:7788")
     assert ud.get("member_flush_due") is True
     assert "member_drain_in_flight" not in ud
+    # 失败的桶回到队列里等下一轮，没有凭空消失。
+    assert ud["group_member_memory_messages"] == {"2046": [{"role": "user"}]}
 
     # A successful drain leaves nothing armed.
     ud.pop("member_flush_due")
-    service._flush_member_buckets = AsyncMock(return_value=[])
+    service._flush_member_buckets = AsyncMock(side_effect=_flush_all_ok)
     await service._drain_member_buckets("group:7788")
     assert "member_flush_due" not in ud
+    assert not ud["group_member_memory_messages"]
 
 
 @pytest.mark.asyncio
@@ -8931,7 +9585,7 @@ async def test_draft_row_marks_are_pruned_when_rows_leave_history():
         _user_sessions={"group:7788": ud},
         _qq_settings={"group_memory_enabled": True},
         logger=MagicMock(),
-        _spawn_memory_sync_task=lambda coro: coro.close(),
+        _spawn_memory_sync_task=lambda coro, *, session_key=None: coro.close(),
         _run_with_session_lock=None,
     ))
 
@@ -9268,7 +9922,10 @@ async def test_member_flush_success_pops_bucket_and_label():
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
-    bridge.post_scoped_memory_history = AsyncMock(return_value={"status": "ok"})
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],
+    })
     service = QQSessionMemoryService(SimpleNamespace(
         memory_bridge=bridge, logger=MagicMock(),
     ))
@@ -9282,7 +9939,7 @@ async def test_member_flush_success_pops_bucket_and_label():
     # A failed flush keeps both, so the retry still has the speaker label.
     ud["group_member_memory_messages"]["2046"] = [{"role": "user"}]
     ud["group_member_memory_labels"]["2046"] = "小张(2046)"
-    bridge.post_scoped_memory_history = AsyncMock(
+    bridge.post_scoped_memory_history_batch = AsyncMock(
         side_effect=RuntimeError("server down")
     )
     failed = await service._flush_member_buckets(
@@ -9290,6 +9947,156 @@ async def test_member_flush_success_pops_bucket_and_label():
     )
     assert failed == ["2046"]
     assert ud["group_member_memory_labels"]["2046"] == "小张(2046)"
+
+
+def test_pack_member_batches_shapes():
+    """贪心打包：小桶合批（调用数不再随发言人数线性涨）、总消息 200 一
+    刀、段数 8 一刀、空桶跳过；单桶 ≤150 永远不用跨批拆。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    msg = {"role": "user"}
+    # 10 个小桶（各 5 条）：总量 50 ≤ 200、段数 10 > 8 → 按段数切成 8+2。
+    buckets = {str(i): [msg] * 5 for i in range(10)}
+    batches = QQSessionMemoryService._pack_member_batches(buckets)
+    assert [len(b) for b in batches] == [8, 2]
+
+    # 150+150 超 200 → 各占一批；再来一个 40 条的能和第二个 150 拼吗？
+    # 150+40=190 ≤ 200 → 拼进同一批。
+    buckets = {"a": [msg] * 150, "b": [msg] * 150, "c": [msg] * 40}
+    batches = QQSessionMemoryService._pack_member_batches(buckets)
+    assert batches == [["a"], ["b", "c"]]
+
+    # 空桶与空 sender 跳过。
+    buckets = {"a": [], "": [msg], "b": [msg]}
+    assert QQSessionMemoryService._pack_member_batches(buckets) == [["b"]]
+
+    assert QQSessionMemoryService._pack_member_batches({}) == []
+
+
+@pytest.mark.asyncio
+async def test_member_flush_packs_small_buckets_into_one_request():
+    """批抽取的成本主张本体：8 个小桶 = 1 次 HTTP / 1 次 LLM 抽取，段序
+    与桶序一致。改前是 8 次。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "group_member_memory_messages": {
+            str(1000 + i): [{"role": "user", "content": [
+                {"type": "text", "text": f"发言{i}"},
+            ]}]
+            for i in range(8)
+        },
+        "group_member_memory_labels": {},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "created": 0, "fact_ids": []} for _ in range(8)
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+    ))
+    failed = await service._flush_member_buckets(
+        ud, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert failed == []
+    assert bridge.post_scoped_memory_history_batch.await_count == 1
+    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [seg["speaker_label"] for seg in sent_segments] == [
+        str(1000 + i) for i in range(8)
+    ]
+    assert ud["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
+async def test_member_flush_malformed_batch_response_keeps_all_buckets():
+    """响应段数与请求对不上时绝不按位置乱猜：整批按失败保留重试。按位置
+    消费一个错位的响应，会把失败段的桶当成功弹掉（数据永久丢失）或把成
+    功段留下重发（重复抽取）。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ud = {
+        "group_member_memory_messages": {
+            "1001": [{"role": "user"}],
+            "1002": [{"role": "user"}],
+        },
+        "group_member_memory_labels": {},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok", "created": 0, "fact_ids": []}],  # 少一段
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(),
+    ))
+    failed = await service._flush_member_buckets(
+        ud, group_id="7788", her_name="Neko", reason="test",
+    )
+    assert sorted(failed) == ["1001", "1002"]
+    assert set(ud["group_member_memory_messages"]) == {"1001", "1002"}
+
+
+@pytest.mark.asyncio
+async def test_speaker_trust_derived_from_permission_level():
+    """信赖度初值按权限等级派生（阶段一只落字段）：admin/trusted/normal/
+    none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""  # noqa: DOCSTRING_CJK
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    levels = {"1001": "admin", "1002": "trusted", "1003": "normal"}
+    ud = {
+        "group_member_memory_messages": {
+            sender: [{"role": "user"}] for sender in ["1001", "1002", "1003", "1004"]
+        },
+        "group_member_memory_labels": {},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "created": 0, "fact_ids": []} for _ in range(4)
+        ],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda sender: levels.get(sender, "none"),
+        ),
+    ))
+    await service._flush_member_buckets(
+        ud, group_id="7788", her_name="Neko", reason="test",
+    )
+    sent_segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    trust_by_sender = {
+        seg["speaker_label"]: seg["speaker_trust"] for seg in sent_segments
+    }
+    assert trust_by_sender == {
+        "1001": SPEAKER_TRUST_BY_PERMISSION_LEVEL["admin"],
+        "1002": SPEAKER_TRUST_BY_PERMISSION_LEVEL["trusted"],
+        "1003": SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"],
+        "1004": SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"],
+    }
 
 
 @pytest.mark.asyncio
@@ -9913,19 +10720,26 @@ async def test_member_snapshot_merge_does_not_join_an_in_flight_flush():
     )
     merged_during_flight: list = []
 
-    async def _post(*a, **k):
+    async def _post_batch(her_name, segments, *, timeout=30.0):
         # While the request is in flight, a second OFF asks for a snapshot.
         # It must NOT touch the live mapping: that mapping may BE this
         # request's payload, and copying it means submitting twice.
-        assert ud.get("member_flush_in_progress") is True
+        # 计数而非布尔（并发冲刷各持一层），这里只关心"有冲刷在飞"。
+        assert ud.get("member_flush_in_progress")
         ud["member_snapshot_due"] = True
         ud.setdefault("group_member_memory_messages", {}).setdefault(
             "2046", []
         ).append({"role": "user", "content": "第二代"})
         merged_during_flight.append(True)
-        return {"status": "ok"}
+        return {
+            "status": "processed",
+            "segments": [
+                {"status": "ok", "created": 0, "fact_ids": []}
+                for _ in segments
+            ],
+        }
 
-    bridge.post_scoped_memory_history = _post
+    bridge.post_scoped_memory_history_batch = _post_batch
     service = QQSessionMemoryService(SimpleNamespace(
         memory_bridge=bridge, logger=MagicMock(),
     ))

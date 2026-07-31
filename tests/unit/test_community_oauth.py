@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import hashlib
 import json
@@ -54,13 +55,13 @@ def test_desktop_client_id_is_owned_here_and_rejects_plugin_market_client(monkey
     # 单一真相源：main_routers 是 L3、plugin 是 L4，前者不能 import 后者，所以这个
     # 值不在 plugin/settings.py 里另立常量（那份曾经存在但无人消费）。
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-desktop")
-    assert O._desktop_client_id() == "neko-servers-desktop-dev"
+    assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "  ")
-    assert O._desktop_client_id() == "neko-servers-desktop-dev"
+    assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
     monkeypatch.delenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", raising=False)
-    assert O._desktop_client_id() == "neko-servers-desktop-dev"
+    assert O._desktop_client_id() == "neko-servers-desktop-prod"
 
     monkeypatch.setenv("NEKO_SERVERS_DESKTOP_CLIENT_ID", "neko-servers-desktop-prod")
     assert O._desktop_client_id() == "neko-servers-desktop-prod"
@@ -218,6 +219,69 @@ async def test_oauth_status_refreshes_rejected_access_token(monkeypatch):
     assert status["logged_in"] is True
     assert status["snapshot"]["access_token"] == "fresh-access"
     assert saved == [(old_snapshot, "fresh-access", "rotated-refresh")]
+
+
+@pytest.mark.unit
+async def test_oauth_status_serializes_concurrent_rotating_refreshes(monkeypatch):
+    old_snapshot = {
+        "base_url": "https://community.example",
+        "access_token": "expired-access",
+        "refresh_token": "refresh-token",
+        "local_user_id": USER_ID,
+        "auth_source": "oauth",
+        "auth_public_url": "https://auth.example",
+        "client_id": "desktop-client",
+    }
+    refreshed_snapshot = {
+        **old_snapshot,
+        "access_token": "fresh-access",
+        "refresh_token": "rotated-refresh",
+    }
+    current = {
+        "snapshot": old_snapshot,
+        "auth": {"access_token": "expired-access"},
+    }
+    refresh_calls = 0
+
+    def load_records():
+        return current["snapshot"], current["auth"]
+
+    async def lookup_identity(_base, access):
+        await asyncio.sleep(0)
+        if access == "fresh-access":
+            return C._CloudIdentityLookup(
+                C._CloudIdentity(USER_ID, "oauth", {}),
+                200,
+            )
+        return C._CloudIdentityLookup(None, 401, "rejected")
+
+    async def refresh_token(**_kwargs):
+        nonlocal refresh_calls
+        refresh_calls += 1
+        await asyncio.sleep(0)
+        return "ok", {
+            "access_token": "fresh-access",
+            "refresh_token": "rotated-refresh",
+        }
+
+    def persist(_expected, _access, _refresh):
+        current["snapshot"] = refreshed_snapshot
+        current["auth"] = {"access_token": "fresh-access"}
+        return True
+
+    monkeypatch.setattr(O, "_load_oauth_status_records", load_records)
+    monkeypatch.setattr(C, "_lookup_cloud_identity", lookup_identity)
+    monkeypatch.setattr(O, "_refresh_oauth_token", refresh_token)
+    monkeypatch.setattr(O, "_persist_refreshed_oauth_tokens", persist)
+
+    first, second = await asyncio.gather(
+        O.resolve_saved_oauth_status(),
+        O.resolve_saved_oauth_status(),
+    )
+
+    assert first["logged_in"] is True
+    assert second["logged_in"] is True
+    assert refresh_calls == 1
 
 
 @pytest.mark.unit

@@ -446,6 +446,85 @@ def test_character_card_manager_voice_dropdown_groups_by_provider_source(
 
 
 @pytest.mark.frontend
+@pytest.mark.parametrize(
+    ("provider", "voice_id"),
+    [
+        ("vllm_omni", "default"),
+        ("custom", "vendor-voice"),
+    ],
+)
+def test_character_card_manager_shows_configured_custom_api_voice(
+    mock_page: Page,
+    running_server: str,
+    provider: str,
+    voice_id: str,
+):
+    """Configured HTTPS/WSS voices replace the unspecified placeholder when selected."""
+    _open_character_card_manager(mock_page, running_server)
+
+    state = mock_page.evaluate(
+        """
+        async ({ provider, voiceId }) => {
+            window.t = (key) => ({
+                'api.customModelProviderCustom': 'Custom API',
+                'voice.sourcePreset': 'Preset',
+                'voice.providerUnknown': 'Other',
+                'character.voiceNotSet': 'Unspecified voice'
+            }[key] || key);
+
+            const originalFetch = window.fetch.bind(window);
+            window.fetch = async (input, init) => {
+                const url = typeof input === 'string' ? input : input.url;
+                const path = new URL(url, window.location.origin).pathname;
+                if (path === '/api/characters/voices') {
+                    return new Response(JSON.stringify({
+                        voices: {},
+                        free_voices: {},
+                        native_voices: {
+                            [voiceId]: {
+                                prefix: voiceId,
+                                provider,
+                                provider_label: 'custom'
+                            }
+                        }
+                    }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+                }
+                if (path === '/api/characters/custom_tts_voices') {
+                    return new Response(JSON.stringify({ success: true, voices: [] }), {
+                        status: 200, headers: { 'Content-Type': 'application/json' }
+                    });
+                }
+                return originalFetch(input, init);
+            };
+
+            const select = document.createElement('select');
+            document.body.appendChild(select);
+            await _loadPanelVoices(select, voiceId);
+
+            const selected = select.options[select.selectedIndex];
+            const group = Array.from(select.querySelectorAll('optgroup'))
+                .find(item => Array.from(item.querySelectorAll('option'))
+                    .some(option => option.value === voiceId));
+            return {
+                value: select.value,
+                selectedText: selected ? selected.textContent : '',
+                groupLabel: group ? group.label : '',
+                unspecifiedSelected: select.options[0] ? select.options[0].selected : true
+            };
+        }
+        """,
+        {"provider": provider, "voiceId": voice_id},
+    )
+
+    assert state == {
+        "value": voice_id,
+        "selectedText": voice_id,
+        "groupLabel": "Custom API · Preset",
+        "unspecifiedSelected": False,
+    }
+
+
+@pytest.mark.frontend
 def test_character_card_manager_localizes_free_api_native_voice_provider_label(
     mock_page: Page,
     running_server: str,

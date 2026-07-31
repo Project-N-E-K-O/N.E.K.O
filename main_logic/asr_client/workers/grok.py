@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from collections import deque
 from typing import Any, Literal
 from urllib.parse import urlencode
@@ -25,33 +26,32 @@ from urllib.parse import urlencode
 import websockets
 
 from .._infra import AsrSessionConfig, _AsrWorkerEvent, _AsrWorkerRequest
+from ._shared import is_auth_rejection, normalize_zh_en_language
 
 
 _GROK_STT_URL = "wss://api.x.ai/v1/stt"
 _CLOSE_TIMEOUT_SECONDS = 0.5
 _SHUTDOWN_TIMEOUT_SECONDS = 3.0
+# xAI reports a server-VAD endpoint only through the speech_final transcript
+# itself; there is no separate endpoint event to arm a stalled deadline at
+# (unlike the OpenAI/Step/Qwen workers, which arm at their endpoint events).
+# The deadline therefore arms at the FIRST partial of a server utterance and
+# every later partial refreshes it: continuous speech keeps streaming
+# partials and can never expire mid-utterance, while a provider that goes
+# silent after a nonterminal partial (lost speech_final) completes the turn
+# within this bound instead of pinning it open forever.
+_GROK_STALLED_TURN_TIMEOUT_SECONDS = 30.0
 
 _UtteranceKey = tuple[int, int, int | None]
 _ConnectionAction = Literal["reconnect", "shutdown", "failed"]
 
 
 def _normalize_grok_language(language: str) -> str | None:
-    normalized = language.strip().lower()
-    if normalized == "auto":
-        return None
-    if normalized in {"zh", "zh-cn"}:
-        return "zh"
-    if normalized in {"en", "en-us"}:
-        return "en"
-    raise ValueError("ASR_LANGUAGE_NOT_SUPPORTED: xAI language is unsupported")
+    return normalize_zh_en_language(language, provider_name="xAI")
 
 
 def _grok_is_auth_rejection(exc: BaseException) -> bool:
-    response = getattr(exc, "response", None)
-    status_code = getattr(response, "status_code", None)
-    if status_code is None:
-        status_code = getattr(exc, "status_code", None)
-    return status_code in {401, 403}
+    return is_auth_rejection(exc)
 
 
 async def grok_asr_worker(
@@ -67,6 +67,10 @@ async def grok_asr_worker(
     ready_sent = False
     shutdown_requested = asyncio.Event()
     websocket = None
+    # Worker-scoped (not connection-scoped) so a stalled-turn expiry
+    # reconnect within one generation and buffer epoch can never reuse the
+    # expired utterance's id on the fresh connection.
+    next_server_utterance_id: int | None = None
 
     async def _emit_error(error_code: str, error_message: str) -> None:
         nonlocal failure_sent
@@ -135,11 +139,15 @@ async def grok_asr_worker(
         pending_manual_commits: deque[_UtteranceKey] = deque()
         manual_locked_segments: dict[_UtteranceKey, list[str]] = {}
         active_server_key: _UtteranceKey | None = None
-        next_server_utterance_id: int | None = None
+        server_locked_segments: list[str] = []
+        stalled_deadline: float | None = None
+        stalled_deadline_armed = asyncio.Event()
+        stalled_expired = False
         intentional_close = asyncio.Event()
 
         async def _receive_events() -> None:
             nonlocal active_server_key, next_server_utterance_id
+            nonlocal stalled_deadline
             try:
                 async for message in connection:
                     if isinstance(message, bytes):
@@ -231,6 +239,14 @@ async def grok_asr_worker(
                         )
                         continue
 
+                    if stalled_expired:
+                        # The stalled-turn deadline already completed this
+                        # connection's utterance and a reconnect is in
+                        # flight. xAI events carry no item ids, so a late
+                        # event here (e.g. the lost speech_final finally
+                        # arriving) cannot be told apart from a new
+                        # utterance; drop it so it dies with this socket.
+                        continue
                     if active_server_key is None:
                         if latest_audio_key is None:
                             continue
@@ -250,20 +266,54 @@ async def grok_asr_worker(
                                 utterance_id=active_server_key[2],
                             )
                         )
+                        stalled_deadline = time.monotonic()
+                        stalled_deadline_armed.set()
 
                     key = active_server_key
-                    kind = "final" if is_final and speech_final else "partial"
+                    if is_final and speech_final:
+                        # xAI segments long utterances: every earlier
+                        # is_final=true / speech_final=false event locked one
+                        # segment and the terminal event carries only the
+                        # trailing segment's text, so concatenate the locked
+                        # segments (same joiner as the manual branch) into
+                        # the Core final.
+                        server_locked_segments.append(text)
+                        final_text = "".join(server_locked_segments)
+                        server_locked_segments.clear()
+                        active_server_key = None
+                        stalled_deadline = None
+                        await response_queue.put(
+                            _AsrWorkerEvent(
+                                kind="final",
+                                generation=key[0],
+                                buffer_epoch=key[1],
+                                utterance_id=key[2],
+                                text=final_text,
+                            )
+                        )
+                        continue
+                    stalled_deadline = time.monotonic()
+                    if is_final:
+                        # Locked segment: retain it so the eventual final
+                        # covers the whole utterance.
+                        server_locked_segments.append(text)
+                        partial_text = "".join(server_locked_segments)
+                    else:
+                        # Cumulative preview: render locked segments plus
+                        # the mutable tail so the preview matches what the
+                        # final will say.
+                        partial_text = "".join(
+                            [*server_locked_segments, text]
+                        )
                     await response_queue.put(
                         _AsrWorkerEvent(
-                            kind=kind,
+                            kind="partial",
                             generation=key[0],
                             buffer_epoch=key[1],
                             utterance_id=key[2],
-                            text=text,
+                            text=partial_text,
                         )
                     )
-                    if kind == "final":
-                        active_server_key = None
             except asyncio.CancelledError:
                 raise
             except websockets.exceptions.ConnectionClosed:
@@ -284,6 +334,56 @@ async def grok_asr_worker(
                     "ASR_GROK_DISCONNECTED",
                     "xAI streaming transcription disconnected unexpectedly",
                 )
+
+        async def _watch_stalled_turn() -> None:
+            # Runs beside the receiver because the receiver blocks on
+            # provider frames; a provider that goes silent mid-utterance
+            # would otherwise never trigger the sweep. Only server-VAD
+            # utterances arm the deadline, so in manual mode this task
+            # idles until cancelled.
+            nonlocal active_server_key, stalled_deadline, stalled_expired
+            while True:
+                if stalled_deadline is None:
+                    await stalled_deadline_armed.wait()
+                    stalled_deadline_armed.clear()
+                    continue
+                remaining = (
+                    stalled_deadline
+                    + _GROK_STALLED_TURN_TIMEOUT_SECONDS
+                    - time.monotonic()
+                )
+                if remaining > 0:
+                    await asyncio.sleep(remaining)
+                    continue
+                key = active_server_key
+                stalled_deadline = None
+                if key is None:
+                    continue
+                # The provider went silent after a nonterminal partial and
+                # the speech_final never arrived. Locked segments are text
+                # the provider already committed (is_final=true), so emit
+                # them instead of dropping real speech; with none locked
+                # this stays the empty final the sibling workers emit on
+                # expiry, and upstream handles both (an empty final only
+                # clears the preview). Returning forces a reconnect:
+                # without item ids a late speech_final cannot be told
+                # apart from a new utterance, so late events must die with
+                # this socket (mirrors the Step worker's ambiguous-expiry
+                # connection reset).
+                stalled_expired = True
+                active_server_key = None
+                final_text = "".join(server_locked_segments)
+                server_locked_segments.clear()
+                await response_queue.put(
+                    _AsrWorkerEvent(
+                        kind="final",
+                        generation=key[0],
+                        buffer_epoch=key[1],
+                        utterance_id=key[2],
+                        text=final_text,
+                    )
+                )
+                return
 
         async def _send_requests() -> _ConnectionAction:
             nonlocal latest_audio_key, last_generation
@@ -336,42 +436,71 @@ async def grok_asr_worker(
 
         receiver_task = asyncio.create_task(_receive_events(), name="grok-asr-receiver")
         sender_task = asyncio.create_task(_send_requests(), name="grok-asr-sender")
-        done, _ = await asyncio.wait(
-            {sender_task, receiver_task},
-            return_when=asyncio.FIRST_COMPLETED,
+        watch_task = asyncio.create_task(
+            _watch_stalled_turn(), name="grok-asr-stalled-watch"
         )
-
-        action = await sender_task if sender_task in done else None
-        if receiver_task in done:
-            await receiver_task
-            if action is not None:
-                return action
-            if not sender_task.done():
-                sender_task.cancel()
-                await asyncio.gather(sender_task, return_exceptions=True)
-            return "failed"
-
-        assert action is not None
-        if action == "shutdown":
-            try:
-                await asyncio.wait_for(
-                    asyncio.shield(receiver_task),
-                    timeout=_SHUTDOWN_TIMEOUT_SECONDS,
-                )
-            except asyncio.TimeoutError:
-                receiver_task.cancel()
-                await asyncio.gather(receiver_task, return_exceptions=True)
-            return action
-
-        intentional_close.set()
         try:
-            await connection.close()
-        except Exception:
-            pass
-        if not receiver_task.done():
-            receiver_task.cancel()
-        await asyncio.gather(receiver_task, return_exceptions=True)
-        return action
+            done, _ = await asyncio.wait(
+                {sender_task, receiver_task, watch_task},
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+
+            if (
+                watch_task in done
+                and sender_task not in done
+                and receiver_task not in done
+            ):
+                # Stalled-turn expiry: the watch already emitted the final.
+                # Retire the connection so any late event for the expired
+                # utterance dies with the old socket.
+                await watch_task
+                intentional_close.set()
+                try:
+                    await connection.close()
+                except Exception:
+                    pass
+                sender_task.cancel()
+                receiver_task.cancel()
+                await asyncio.gather(
+                    sender_task, receiver_task, return_exceptions=True
+                )
+                return "reconnect"
+
+            action = await sender_task if sender_task in done else None
+            if receiver_task in done:
+                await receiver_task
+                if action is not None:
+                    return action
+                if not sender_task.done():
+                    sender_task.cancel()
+                    await asyncio.gather(sender_task, return_exceptions=True)
+                return "failed"
+
+            assert action is not None
+            if action == "shutdown":
+                try:
+                    await asyncio.wait_for(
+                        asyncio.shield(receiver_task),
+                        timeout=_SHUTDOWN_TIMEOUT_SECONDS,
+                    )
+                except asyncio.TimeoutError:
+                    receiver_task.cancel()
+                    await asyncio.gather(receiver_task, return_exceptions=True)
+                return action
+
+            intentional_close.set()
+            try:
+                await connection.close()
+            except Exception:
+                pass
+            if not receiver_task.done():
+                receiver_task.cancel()
+            await asyncio.gather(receiver_task, return_exceptions=True)
+            return action
+        finally:
+            if not watch_task.done():
+                watch_task.cancel()
+            await asyncio.gather(watch_task, return_exceptions=True)
 
     try:
         if config.endpointing_mode not in {"manual", "provider"}:

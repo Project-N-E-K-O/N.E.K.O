@@ -114,9 +114,129 @@ MAX_KNOWN_POOL_FACTS = 30
 EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS = 3600
 
 # §3.6 render budget（PR-3 使用，此处先占位）
-PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算
-REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和）
+# 私聊 / 本体（legacy，subjects 为空）时这两条各是一个全局池；scoped 渲染
+# （群聊，subjects 非空）时改为**每个 subject 各一份**，再由下面的
+# SCOPED_RENDER_TOTAL_MAX_TOKENS 总闸兜底。改前群 subject 与成员 subject 抢
+# 的是同一个 2000，成员越多群自己的人设越薄。
+PERSONA_RENDER_MAX_TOKENS = 2000         # 非-protected persona 预算（per subject）
+REFLECTION_RENDER_MAX_TOKENS = 2000      # reflection 渲染预算（pending+confirmed 总和，per subject）
 PERSONA_RENDER_ENCODING = "o200k_base"   # tiktoken encoding
+
+# ── scoped（群聊）L10 核心记忆的整块总闸 ─────────────────────────────────
+# per-subject 预算解决了"互抢"，但没解决"人多了总量爆炸"：一次渲染带 5 个
+# subject 就是 5 × 4000 = 20k，光核心记忆就吃掉大半个上下文窗口。这里是那
+# 一整块的硬顶，按调用方给的 subjects 顺序先到先得——没有任何 subject 类型
+# 享有预留额度或插队权。要优先就排在前面，这是调用方唯一的旋钮（现有调用方
+# 都把群排在第一位）。曾经给群 subject 留过一份保底额度，对所有现有与已规划
+# 的调用方都是死代码，而它的每一处交互（多个群、空群、只有免预算内容的群、
+# 没花完的额度外溢）都是一种把它本想保护的顺序倒过来的方式，故删除。
+# 选 16000：4 个 subject 各拿满 (2000 persona + 2000 reflection) 的量。当前
+# 调用方传 [群, 当前发言人]，后续 PR 扩到 [群, 当前发言人, 最近说话的另外
+# 3 人] 共 5 个——最后一个会分到剩量，正是这条常量该起作用的地方。
+SCOPED_RENDER_TOTAL_MAX_TOKENS = 16000
+
+# 单个 subject 的最小可用额度：总闸剩不到这个数就整段跳过该 subject，而不
+# 是塞进一两条。半截的 persona 比没有更糟——模型会拿残缺的人设当完整的用
+# （"这个人只有一条偏好"），而缺席至少是诚实的空白。
+SCOPED_RENDER_SUBJECT_MIN_TOKENS = 200
+
+# 每条 kept 条目在**总闸**上额外记的渲染开销。两个口径是分开的，别混：
+#   · per-subject 的两个池按条目 **text** 计——scoped 与 legacy 同一个含义，
+#     一个常量不能在两种模式下代表两件事；
+#   · 总闸按**渲染出来的行**计，即 text + 本常量（compose 给每条加的 "- "
+#     前缀和换行）。短条目下 markup 占比很大，只数 text 的总闸根本不是上限。
+# 选取时两条同时满足才收下（见 _score_trim_entries 的 budget / gate_budget）。
+#
+# 12 是**最坏情况**下的单条装饰量，不是典型值：
+#   "- " 前缀 2 + 换行 1 = 3，普通条目就这些；
+#   过时 reflection 还会被 compose 加一个本地化时间标签前缀
+#   （`[13 ヶ月前] ` / `[hace 13mes] ` 之类，实测七种语言里最长 8 tok）。
+# 取和 3 + 8 = 11，进位到 12 留一点余量。按典型值取会让「短条目很多」的
+# 场景越过总闸——这段预算的意义就在于最坏情况下也成立，所以按最坏取。
+# 段落标题不摊到单条上（它按 subject 数有界，不随条目数增长），不计入。
+SCOPED_RENDER_ENTRY_MARKUP_TOKENS = 12
+
+# ── 特权段的条数上限（protected / suppressed） ───────────────────────────
+# 这两段刻意不吃 token 预算：protected 是角色卡来源（evidence_score 返回
+# inf），被裁掉等于人格破裂；suppressed 是"记得但别主动提"，整段的意义就在
+# 于完整。但"不吃预算"不等于"可以无限膨胀"——一次导入把角色卡灌进几百条，
+# 或 suppress 冷却期堆积，都会让这两段悄悄把上下文吃光。所以给条数上限，
+# 超限截断并打 warning（token 上限会切断单条，条数上限只丢整条）。
+PERSONA_RENDER_PROTECTED_MAX_ENTRIES = 80
+PERSONA_RENDER_SUPPRESSED_MAX_ENTRIES = 40
+
+# ── L21 长期记忆召回段（/query_memory → prompt）的预算 ───────────────────
+# 召回段此前只有"取前 5 条"，单条文本零上限：一条被 LLM 合并出来的超长
+# reflection 就能把整段撑到几千 token。两条常量分别管"单条"和"整段"。
+# 单条 400：够放一条完整的 fact / reflection（典型 30-80 token）加上被
+# 合并过的长条目，又不至于让一条吃掉整段。超出的**截断**不丢弃——召回是
+# 按相关度排的，命中的那条哪怕只剩前半段也比整条消失有用。
+RECALL_RENDER_ENTRY_MAX_TOKENS = 400
+# 整段上限。⚠️ 单条 cap 只截 text，而总闸数的是**整行**
+# `f"{i}. {tag} {text}{suffix}"`——序号 + 本地化 tier/entity 标签 + 日期
+# 后缀实测约 17-25 tok/行（英文标签更长）。所以「5 × 400 = 2000」是错的
+# 算术：5 条满额实际是 5 × 425 ≈ 2125，按 2000 设会把相关度第 5 的那条
+# 静默丢掉。按含开销的口径给 40 tok/行余量。
+#
+# 但 5 × (400 + 40) = 2200 仍然少算了一项：take_lines_within_token_budget
+# 拼行用 separator，**separator 自己也计费**（见它的 docstring —— 数裸行
+# 会每个缝隙少算一个 token）。N 行有 N-1 个缝隙，换行实测 1 tok，所以 5 行
+# 的真实需求是 5 × (400 + 40) + 4 × 1 = 2204。按 2200 设时第 5 条恰好
+# 越界被丢——正常条目（tag 6-8 tok）每行约 417 tok 够不着，是畸形/满额
+# 数据才咬人的那种差 4 tok。后续 PR 放大 limit 时这条才是真正绑定的闸，
+# 那时按 limit × (ENTRY + OVERHEAD) + (limit - 1) × 换行 重新推导。
+#
+# ⚠️ 这个推导只覆盖**按原值传闸**的调用方（QQ 插件 render_relevant_memory）。
+# 本体的 recall_memory 工具（main_logic/core/tool_calling.py）还要先扣掉首行
+# i18n 总览的 header_reserve 再传给 helper，所以它实际拿到的比这条常量小，
+# 装不下 limit 条满额行——那是刻意的（表头和条目进同一个字符串，不扣就整段
+# 超预算），不是漏算。改这条常量时两个口径都要过一遍。
+RECALL_RENDER_LINE_OVERHEAD_TOKENS = 40
+RECALL_RENDER_LINE_SEPARATOR_TOKENS = 1  # "\n"，take_lines_within_token_budget 的缝隙计费
+RECALL_RENDER_TOTAL_MAX_TOKENS = 2204
+
+# ── scoped 批抽取（写路径 /scoped_history 的 segments 形态） ─────────────
+# 成员记忆抽取的成本此前与**说话的人数**成正比：一个 subject = 一次 LLM
+# 抽取，桶里 1 条和 150 条一样贵。批形态把多个 (subject, speaker, messages)
+# 段并进一次请求 / 一次 LLM 调用，调用数从 O(发言人数) 降到 O(总消息数/批容量)。
+#
+# 段数上限 8：与读侧三个端点的 subjects 1..8 同一口径，也等于插件侧一趟
+# 排空最多带走的桶数（GROUP_MEMBER_MAX_PARTICIPANTS）。
+SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
+# 单批消息总量上限：沿用 legacy 单 subject 请求的 200——一次 LLM 抽取的
+# 输入工作量上界不因批形态而变（这正是"批不比单发慢"成立的前提，插件侧
+# 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
+# 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
+SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+
+# ── 群召回读侧的 subject 形状 ────────────────────────────────────────────
+# 一轮群回复带的 subject：1 个群 + 最多这么多个成员（当前发言人 + 本轮
+# 上下文里最近说过话的另外 N-1 人）。群恒排最前——subjects 顺序就是渲染
+# 预算的分配顺序（SCOPED_RENDER_TOTAL_MAX_TOKENS 按序先到先得），总数
+# 1 + 4 = 5 不触读端点的 1..8 上限。第二个"群"槽位刻意留空当预留：今天
+# 唯一能填的是别的群的记忆，那是跨群披露，要不要开是单独的决定（现在的
+# 跨群段只读活会话内存、从不碰记忆库）。
+GROUP_RECALL_MAX_MEMBER_SUBJECTS = 4
+# 找"另外 3 人"要扫多少条最近群消息：同一个人连发是常态，只取 3 条扫不
+# 出 3 个不同的人；30 条覆盖到几分钟前的对话，成本只是读一次 backlog。
+GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT = 30
+
+# ── 发言人信赖度（speaker_trust）字段 ────────────────────────────────────
+# 「不同人说的话可信度不同，矛盾时影响覆盖优先级」——本阶段只落字段：
+# 抽取时给每条 scoped fact 打上 speaker_label（谁说的）与 speaker_trust
+# （0..1 初值，由调用方按权限等级派生后随请求带上）。消费点（fact_dedup
+# 的 LLM 仲裁 / corrections 纠错队列 / refine merge / aadd_fact 矛盾扫描）
+# 留给后续 PR，本阶段任何路径都不得读这两个字段做决策。
+#
+# 初值按 QQ 插件权限等级派生（permission.py 的四档）。数值只需保序
+# （admin > trusted > normal > none），绝对值留给消费 PR 调参。
+SPEAKER_TRUST_DEFAULT = 0.5
+SPEAKER_TRUST_BY_PERMISSION_LEVEL = {
+    "admin": 1.0,
+    "trusted": 0.8,
+    "normal": 0.5,
+    "none": 0.3,
+}
 
 # ── 混合记忆召回（recall_memory 工具后端） ───────────────────────────────
 # 模型决定调 recall_memory(query) 时，memory_server 在内存里并行跑 BM25 +
@@ -402,7 +522,8 @@ PERSONA_MERGE_POOL_MAX_TOKENS = 4000
 
 # ---- Memory: 外部记忆导入 · persona LLM 融合预算 ----
 # 背景（也是这条链路存在的根本原因）：persona 渲染进 system prompt 有一个严格的
-# token 上限（PERSONA_RENDER_MAX_TOKENS，non-protected 条目共抢一个池），外部工作
+# token 上限（PERSONA_RENDER_MAX_TOKENS；scoped 群渲染是每个 subject 各一份，但外部
+# 导入只写 legacy 私聊语料，所以这里绑定的是单池那份），外部工作
 # 区（OpenClaw/Hermes 的 USER.md / SOUL.md）动辄几十条自由 Markdown，若原样精确
 # 去重后逐条追加，很快就会把 persona 池撑爆、把角色自身积累的印象挤掉。因此
 # USER.md / SOUL.md 必须先经一次 LLM 融合（归纳/合并/去重/消歧/按重要度排序），

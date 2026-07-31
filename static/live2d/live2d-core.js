@@ -70,6 +70,23 @@ function getEffectiveLive2DRenderQuality(quality) {
     return isDesktopLinuxX11Runtime() ? LIVE2D_LINUX_X11_DEFAULT_QUALITY : 'medium';
 }
 
+function getLive2DNiriPetVirtualViewportSize() {
+    try {
+        const api = window.__nekoNiriPetPhysicalCrop;
+        if (!api || typeof api.getState !== 'function') return null;
+        const state = api.getState();
+        const virtualBounds = state && state.enabled === true ? state.virtualBounds : null;
+        const width = Number(virtualBounds && virtualBounds.width);
+        const height = Number(virtualBounds && virtualBounds.height);
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+        return { width, height };
+    } catch (_) {
+        return null;
+    }
+}
+
 // 验证模型偏好是否有效
 function isValidModelPreferences(scale, position) {
     if (!scale || !position) return false;
@@ -341,9 +358,19 @@ class Live2DManager {
                     const renderer = this.pixi_app.renderer;
                     const prevW = this.pixi_app.renderer.screen.width;
                     const prevH = this.pixi_app.renderer.screen.height;
-                    // 以 CSS 像素为准（= BrowserWindow 当前像素尺寸），这是模型真正可见的区域
-                    const newW = Math.max(window.innerWidth || window.screen.width || 1, 1);
-                    const newH = Math.max(window.innerHeight || window.screen.height || 1, 1);
+                    // Niri 会把透明 Pet 的 BrowserWindow 物理裁剪到人物附近，但 Live2D
+                    // 始终工作在完整虚拟桌面坐标系。若把物理裁剪尺寸当成 viewport，
+                    // 每轮 setBounds 都会再次缩放人物并反过来改变下一轮裁剪范围。
+                    const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();
+                    const niriPhysicalCropActive = !!niriVirtualViewport;
+                    const newW = Math.max(
+                        niriVirtualViewport?.width || window.innerWidth || window.screen.width || 1,
+                        1
+                    );
+                    const newH = Math.max(
+                        niriVirtualViewport?.height || window.innerHeight || window.screen.height || 1,
+                        1
+                    );
                     const prevResolution = renderer.resolution || 1;
                     const nextResolution = this._getRenderResolutionForQuality(getEffectiveLive2DRenderQuality(window.renderQuality));
                     if (isLive2DReturnBallViewportSize(newW, newH)) {
@@ -356,7 +383,8 @@ class Live2DManager {
                     const resolutionChanged = Math.abs(prevResolution - nextResolution) >= 0.001;
                     if (!sizeChanged && !resolutionChanged) return;
 
-                    if (typeof this.isLive2DPeekActive === 'function' &&
+                    if (!niriPhysicalCropActive &&
+                        typeof this.isLive2DPeekActive === 'function' &&
                         this.isLive2DPeekActive() &&
                         typeof this.clearLive2DPeek === 'function') {
                         this.clearLive2DPeek(`viewport-changed:${reason}`);
@@ -376,7 +404,7 @@ class Live2DManager {
                     // 主动把 model.x/y 设置为新屏窗口坐标。若这里再按 (newW/prevW, newH/prevH) 缩放，
                     // 会对同一个值双重作用，导致模型偏移。通过 _pendingDisplaySwitch 跳过缩放，
                     // 仅 resize renderer（renderer 尺寸必须更新，否则 canvas 仍是旧尺寸裁切模型）。
-                    if (this._pendingDisplaySwitch || restoringFromReturnBallViewport) {
+                    if (this._pendingDisplaySwitch || restoringFromReturnBallViewport || niriPhysicalCropActive) {
                         if (restoringFromReturnBallViewport && !this._pendingDisplaySwitch) return;
                         console.log('[Live2D Core] renderer 已 resize（跳过模型缩放）:', {
                             reason,
@@ -384,7 +412,8 @@ class Live2DManager {
                             prevH,
                             newW,
                             newH,
-                            pendingDisplaySwitch: !!this._pendingDisplaySwitch
+                            pendingDisplaySwitch: !!this._pendingDisplaySwitch,
+                            niriPhysicalCropActive
                         });
                         return;
                     }
@@ -518,6 +547,89 @@ class Live2DManager {
         this.pixi_app = null;
         this.isInitialized = false;
         return await this.initPIXI(canvasId, containerId, options);
+    }
+
+    _isModelInputRegionInteractive() {
+        if (!this._isModelReadyForInteraction) {
+            return false;
+        }
+
+        const bodyClassList = document.body?.classList;
+        if (bodyClassList &&
+            (bodyClassList.contains('neko-main-ui-hidden-by-model-manager') ||
+                bodyClassList.contains('neko-model-hidden-by-manager-overlap'))) {
+            return false;
+        }
+
+        const getStyleValueFrom = (style, propertyName, camelName) => {
+            if (!style) return '';
+            const directValue = style[camelName];
+            if (directValue !== undefined && directValue !== null && directValue !== '') {
+                return String(directValue).trim().toLowerCase();
+            }
+            if (typeof style.getPropertyValue === 'function') {
+                return String(style.getPropertyValue(propertyName) || '').trim().toLowerCase();
+            }
+            return '';
+        };
+        const getStyleValue = (element, propertyName, camelName) => {
+            if (!element) return '';
+            if (typeof window.getComputedStyle === 'function') {
+                const computedValue = getStyleValueFrom(
+                    window.getComputedStyle(element),
+                    propertyName,
+                    camelName
+                );
+                if (computedValue !== '') {
+                    return computedValue;
+                }
+            }
+            return getStyleValueFrom(element.style, propertyName, camelName);
+        };
+        const isVisuallyHidden = (element, checkPointerEvents = false) => {
+            if (!element) return false;
+            const classList = element.classList;
+            if (classList && (classList.contains('hidden') || classList.contains('minimized'))) {
+                return true;
+            }
+            if (typeof element.getAttribute === 'function' &&
+                element.getAttribute('data-neko-model-goodbye-exiting') === 'true') {
+                return true;
+            }
+
+            const display = getStyleValue(element, 'display', 'display');
+            const visibility = getStyleValue(element, 'visibility', 'visibility');
+            const opacity = getStyleValue(element, 'opacity', 'opacity');
+            if (display === 'none' || visibility === 'hidden' ||
+                (opacity !== '' && Number.isFinite(Number(opacity)) && Number(opacity) <= 0)) {
+                return true;
+            }
+            return checkPointerEvents &&
+                getStyleValue(element, 'pointer-events', 'pointerEvents') === 'none';
+        };
+
+        const container = document.getElementById('live2d-container');
+        const canvas = this.pixi_app?.view || document.getElementById('live2d-canvas');
+        if (window._nekoModelReturnEnterContainer === container) {
+            return false;
+        }
+        if (window._nekoAvatarPerformanceFrameContainer === container) {
+            // Avatar performance frames are written to the inline transform.
+            // The stylesheet baseline uses translateZ(0), whose computed matrix
+            // is identity and must not keep stale suppression alive.
+            const inlineTransform = getStyleValueFrom(
+                container?.style,
+                'transform',
+                'transform'
+            );
+            if (inlineTransform !== '' && inlineTransform !== 'none') {
+                return false;
+            }
+            window._nekoAvatarPerformanceFrameContainer = null;
+        }
+        // The Electron pet root intentionally stays pointer-transparent in normal
+        // operation, so only canvas pointer-events are an interaction signal.
+        return !isVisuallyHidden(container) && !isVisuallyHidden(canvas, true);
     }
 
     /**
@@ -1080,6 +1192,41 @@ class Live2DManager {
             : null;
     }
 
+    _getCubism2DrawableOpacity(internalModel, drawableIndex) {
+        if (!Number.isInteger(internalModel?.drawDataCount)) {
+            return null;
+        }
+
+        try {
+            const modelContext = internalModel.coreModel?.getModelContext?.();
+            const drawData = modelContext?.getDrawData?.(drawableIndex);
+            // Cubism 2 stores the evaluated draw contexts in this runtime-owned
+            // array. The bundled renderer composes these same three factors.
+            const drawContext = modelContext?._$8b?.[drawableIndex];
+            if (!drawData || !drawContext || typeof drawData.getOpacity !== 'function') {
+                return null;
+            }
+            if (typeof drawContext._$yo === 'function' && drawContext._$yo() !== true) {
+                return 0;
+            }
+
+            const drawableOpacity = drawData.getOpacity(modelContext, drawContext);
+            const partContext = modelContext?._$Hr?.[drawContext._$IP];
+            const parentOpacity = typeof partContext?.getPartsOpacity === 'function'
+                ? partContext.getPartsOpacity()
+                : drawContext._$VS;
+            const baseOpacity = drawContext.baseOpacity;
+            if (!Number.isFinite(drawableOpacity) ||
+                !Number.isFinite(parentOpacity) ||
+                !Number.isFinite(baseOpacity)) {
+                return null;
+            }
+            return drawableOpacity * parentOpacity * baseOpacity;
+        } catch (_) {
+            return null;
+        }
+    }
+
     _isDrawableRenderable(coreModel, drawableIndex) {
         if (!coreModel || !Number.isInteger(drawableIndex) || drawableIndex < 0) {
             return false;
@@ -1092,12 +1239,20 @@ class Live2DManager {
             }
         } catch (_) {}
 
+        let opacity = null;
         try {
-            const opacity = coreModel.getDrawableOpacity?.(drawableIndex);
-            if (Number.isFinite(opacity) && opacity <= 0.01) {
+            opacity = coreModel.getDrawableOpacity?.(drawableIndex);
+        } catch (_) {}
+        if (!Number.isFinite(opacity)) {
+            const internalModel = this.currentModel?.internalModel;
+            opacity = this._getCubism2DrawableOpacity(internalModel, drawableIndex);
+            if (Number.isInteger(internalModel?.drawDataCount) && !Number.isFinite(opacity)) {
                 return false;
             }
-        } catch (_) {}
+        }
+        if (Number.isFinite(opacity) && opacity <= 0.01) {
+            return false;
+        }
 
         return true;
     }
@@ -1163,10 +1318,66 @@ class Live2DManager {
         return this._createScreenRect(minX, minY, maxX, maxY);
     }
 
+    _getTransformedLogicalScreenRect(logicalRect, skipTransformSync = false) {
+        const model = this.currentModel;
+        if (!model || !logicalRect) {
+            return null;
+        }
+
+        if (!skipTransformSync) {
+            this._ensureModelWorldTransform(model);
+        }
+
+        const localTransform = model.internalModel?.localTransform;
+        const worldTransform = model.worldTransform;
+        const left = Number(logicalRect.x);
+        const top = Number(logicalRect.y);
+        const right = left + Number(logicalRect.width);
+        const bottom = top + Number(logicalRect.height);
+        if (!this._isFiniteMatrix2D(localTransform) ||
+            !this._isFiniteMatrix2D(worldTransform) ||
+            !Number.isFinite(left) || !Number.isFinite(top) ||
+            !Number.isFinite(right) || !Number.isFinite(bottom)) {
+            return null;
+        }
+
+        let minX = Infinity;
+        let maxX = -Infinity;
+        let minY = Infinity;
+        let maxY = -Infinity;
+        for (const [x, y] of [
+            [left, top],
+            [right, top],
+            [left, bottom],
+            [right, bottom]
+        ]) {
+            const localPoint = this._applyMatrixToPoint(localTransform, x, y);
+            const screenPoint = localPoint
+                ? this._applyMatrixToPoint(worldTransform, localPoint.x, localPoint.y)
+                : null;
+            if (!screenPoint) {
+                continue;
+            }
+            minX = Math.min(minX, screenPoint.x);
+            maxX = Math.max(maxX, screenPoint.x);
+            minY = Math.min(minY, screenPoint.y);
+            maxY = Math.max(maxY, screenPoint.y);
+        }
+
+        return this._createScreenRect(minX, minY, maxX, maxY);
+    }
+
+    _getDrawableCount(internalModel = this.currentModel?.internalModel) {
+        const coreDrawableCount = internalModel?.coreModel?.getDrawableCount?.();
+        return Number.isInteger(coreDrawableCount)
+            ? coreDrawableCount
+            : internalModel?.drawDataCount;
+    }
+
     _getModelLogicalRect() {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const drawableCount = coreModel?.getDrawableCount?.();
+        const drawableCount = this._getDrawableCount(internalModel);
         if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
             return null;
         }
@@ -1412,6 +1623,11 @@ class Live2DManager {
         }
 
         const logicalRect = this._getDrawableLogicalRect(drawableIndex);
+        const transformedLogicalRect = this._getTransformedLogicalScreenRect(logicalRect, skipTransformSync);
+        if (transformedLogicalRect) {
+            return transformedLogicalRect;
+        }
+
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const mappedRect = this._mapLogicalRectToScreen(logicalRect, resolvedModelLogicalRect, resolvedModelBounds);
@@ -1456,11 +1672,10 @@ class Live2DManager {
     _getRenderableDrawableScreenRects(modelBounds = null, modelLogicalRect = null, includeIndex = false) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const drawableCount = coreModel?.getDrawableCount?.();
+        const drawableCount = this._getDrawableCount(internalModel);
         const resolvedModelBounds = modelBounds || this.getModelScreenBounds();
         const resolvedModelLogicalRect = modelLogicalRect || this._getModelLogicalRect();
-        if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||
-            !resolvedModelBounds || !resolvedModelLogicalRect) {
+        if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0) {
             return [];
         }
 
@@ -1484,6 +1699,92 @@ class Live2DManager {
         }
 
         return rects;
+    }
+
+    /**
+     * 获取当前实际可渲染 drawable 的屏幕输入区域。
+     *
+     * 桌面宿主使用这些区域构造 Native Wayland compositor input region。
+     * 这里必须先从 drawable 顶点得到屏幕几何，再裁剪到 renderer viewport；
+     * 不能从已裁剪的模型外接矩形重新猜一个居中椭圆，否则靠边模型会出现
+     * “透明处可点击、人物本体穿透”。
+     *
+     * @param {Object} options
+     * @param {number} options.padding 每个 drawable 周围的拖拽容差（CSS 像素）
+     * @returns {Array<Object>} 屏幕坐标矩形
+     */
+    getModelInputRegionRects(options = {}) {
+        if (!this._isModelInputRegionInteractive()) {
+            return [];
+        }
+
+        const edgePeekState = this._live2DPeekState;
+        if (edgePeekState && edgePeekState.active &&
+            (edgePeekState.phase === 'hidden' || edgePeekState.phase === 'hiding')) {
+            return [];
+        }
+
+        const rawPadding = options?.padding;
+        const requestedPadding =
+            (typeof rawPadding === 'number' ||
+                (typeof rawPadding === 'string' && rawPadding.trim() !== ''))
+                ? Number(rawPadding)
+                : NaN;
+        const padding = Number.isFinite(requestedPadding)
+            ? Math.max(0, Math.min(32, requestedPadding))
+            : 8;
+        // Drawable vertices already carry their real screen coordinates. When
+        // vertices are temporarily unavailable, logical fallback mapping must
+        // use the model's full (unclipped) bounds as its scale basis. Edge peek
+        // deliberately makes getModelScreenBounds() return only the visible
+        // viewport intersection, which would otherwise compress every fallback
+        // drawable into the narrow revealed strip.
+        const modelBounds = this._getUnclippedModelScreenBounds();
+        const drawableRects = this._getRenderableDrawableScreenRects(
+            modelBounds,
+            null,
+            false
+        );
+        if (!Array.isArray(drawableRects) || drawableRects.length === 0) {
+            return [];
+        }
+
+        const rendererScreen = this.pixi_app?.renderer?.screen;
+        const rendererWidth = Number(rendererScreen?.width);
+        const rendererHeight = Number(rendererScreen?.height);
+        const windowWidth = Number(window.innerWidth);
+        const windowHeight = Number(window.innerHeight);
+        const viewportWidth = Number.isFinite(rendererWidth) && rendererWidth > 0
+            ? Math.min(rendererWidth, Number.isFinite(windowWidth) && windowWidth > 0 ? windowWidth : rendererWidth)
+            : windowWidth;
+        const viewportHeight = Number.isFinite(rendererHeight) && rendererHeight > 0
+            ? Math.min(rendererHeight, Number.isFinite(windowHeight) && windowHeight > 0 ? windowHeight : rendererHeight)
+            : windowHeight;
+        if (!Number.isFinite(viewportWidth) || viewportWidth <= 0 ||
+            !Number.isFinite(viewportHeight) || viewportHeight <= 0) {
+            return [];
+        }
+
+        const inputRects = [];
+        for (const drawableRect of drawableRects) {
+            if (!drawableRect) continue;
+            const rawLeft = Number(drawableRect.left);
+            const rawTop = Number(drawableRect.top);
+            const rawRight = Number(drawableRect.right);
+            const rawBottom = Number(drawableRect.bottom);
+            if (!Number.isFinite(rawLeft) || !Number.isFinite(rawTop) ||
+                !Number.isFinite(rawRight) || !Number.isFinite(rawBottom)) {
+                continue;
+            }
+
+            const left = Math.max(0, rawLeft - padding);
+            const top = Math.max(0, rawTop - padding);
+            const right = Math.min(viewportWidth, rawRight + padding);
+            const bottom = Math.min(viewportHeight, rawBottom + padding);
+            const rect = this._createScreenRect(left, top, right, bottom);
+            if (rect) inputRects.push(rect);
+        }
+        return inputRects;
     }
 
     _expandScreenRect(rect, paddingX = 0, paddingY = 0) {
@@ -2550,7 +2851,7 @@ class Live2DManager {
     _collectDisplayInfoPartScreenRectInfo(targetPartIds, mode) {
         const internalModel = this.currentModel?.internalModel;
         const coreModel = internalModel?.coreModel;
-        const drawableCount = coreModel?.getDrawableCount?.();
+        const drawableCount = this._getDrawableCount(internalModel);
         const modelBounds = this.getModelScreenBounds();
         const modelLogicalRect = this._getModelLogicalRect();
         if (!internalModel || !coreModel || !Number.isInteger(drawableCount) || drawableCount <= 0 ||
@@ -4663,6 +4964,49 @@ class Live2DManager {
         };
     }
 
+    _getUnclippedModelScreenBounds(model = this.currentModel) {
+        if (!model || model.destroyed || typeof model.getBounds !== 'function') {
+            return null;
+        }
+
+        let bounds = null;
+        try {
+            bounds = model.getBounds();
+        } catch (error) {
+            console.warn('[Live2D] 获取模型屏幕边界失败:', error);
+            return null;
+        }
+        if (!bounds) {
+            return null;
+        }
+
+        const left = Number(bounds.left ?? bounds.x);
+        const top = Number(bounds.top ?? bounds.y);
+        const right = Number(bounds.right ?? (left + Number(bounds.width)));
+        const bottom = Number(bounds.bottom ?? (top + Number(bounds.height)));
+        if (!Number.isFinite(left) || !Number.isFinite(right) ||
+            !Number.isFinite(top) || !Number.isFinite(bottom)) {
+            return null;
+        }
+
+        const width = right - left;
+        const height = bottom - top;
+        if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
+            return null;
+        }
+
+        return {
+            left: left,
+            right: right,
+            top: top,
+            bottom: bottom,
+            width: width,
+            height: height,
+            centerX: left + width / 2,
+            centerY: top + height / 2
+        };
+    }
+
     /**
      * 获取 Live2D 模型在屏幕上的边界
      * @returns {Object|null} 边界对象 { left, right, top, bottom, width, height, centerX, centerY } 或 null
@@ -4684,14 +5028,19 @@ class Live2DManager {
                 const screen = renderer && renderer.screen;
                 const rendererW = Number(screen && screen.width);
                 const rendererH = Number(screen && screen.height);
+                const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();
                 const viewportLeft = 0;
                 const viewportTop = 0;
-                const viewportRight = Math.max(0, Number.isFinite(rendererW) && rendererW > 0
-                    ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
-                    : Number(window.innerWidth) || 0);
-                const viewportBottom = Math.max(0, Number.isFinite(rendererH) && rendererH > 0
-                    ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
-                    : Number(window.innerHeight) || 0);
+                const viewportRight = Math.max(0, niriVirtualViewport
+                    ? niriVirtualViewport.width
+                    : (Number.isFinite(rendererW) && rendererW > 0
+                        ? Math.min(rendererW, Number(window.innerWidth) || rendererW)
+                        : Number(window.innerWidth) || 0));
+                const viewportBottom = Math.max(0, niriVirtualViewport
+                    ? niriVirtualViewport.height
+                    : (Number.isFinite(rendererH) && rendererH > 0
+                        ? Math.min(rendererH, Number(window.innerHeight) || rendererH)
+                        : Number(window.innerHeight) || 0));
                 const visibleLeft = Math.max(left, viewportLeft);
                 const visibleRight = Math.min(right, viewportRight);
                 const visibleTop = Math.max(top, viewportTop);

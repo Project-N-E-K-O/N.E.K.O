@@ -125,6 +125,7 @@ from utils.logger_config import setup_logging  # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware  # noqa: E402
+from utils.host_origin_guard import HostOriginGuardMiddleware  # noqa: E402
 
 _main_log_level = getattr(
     logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO
@@ -508,7 +509,7 @@ _main_runtime_limited_mode_enabled = False
 _main_runtime_limited_mode_reason = ""
 _MAIN_LIMITED_MODE_ALLOWED_EXACT_PATHS = {
     "/",
-    "/card-forge/active-character",
+    "/api/card-drop/active-character",
     "/health",
     "/favicon.ico",
     "/api/beacon/shutdown",
@@ -607,6 +608,9 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
 # 文件上传（模型/音乐/角色卡等）一律放行，交给各上传 router 自带的流式分块守门。
 # add_middleware 后注册即处于最外层，最先执行——解析前拒收，不浪费后续处理。
 app.add_middleware(InboundBodySizeLimitMiddleware)
+# Registered after the body guard so it is the outermost ASGI middleware and
+# rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+app.add_middleware(HostOriginGuardMiddleware)
 
 
 @app.exception_handler(MaintenanceModeError)
@@ -617,7 +621,7 @@ async def handle_maintenance_mode_error(_request, exc: MaintenanceModeError):
 from .web_app import (  # noqa: F401
     CustomStaticFiles,
     _active_character_cors_headers,
-    _card_forge_active_character,
+    _card_drop_active_character,
     _start_debug_health_watchdog,
     active_character_options,
     agent_router,
@@ -633,7 +637,7 @@ from .web_app import (  # noqa: F401
     debug_router,
     galgame_router,
     game_router,
-    get_card_forge_active_character,
+    get_card_drop_active_character,
     health,
     icebreaker_router,
     init_shared_state,
@@ -647,7 +651,7 @@ from .web_app import (  # noqa: F401
     proactive_router,
     proxy_user_plugin_market_bridge,
     set_steamworks_initializer,
-    set_card_forge_active_character,
+    set_card_drop_active_character,
     static_dir,
     storage_location_router,
     system_router,
@@ -660,7 +664,6 @@ from .web_app import (  # noqa: F401
 _preload_task: asyncio.Task = None
 _game_cleanup_task: asyncio.Task = None
 _facts_sync_worker_task: asyncio.Task = None
-_card_cache_worker_task: asyncio.Task = None
 _runtime_startup_init_lock = asyncio.Lock()
 _runtime_startup_init_completed = False
 
@@ -691,7 +694,7 @@ async def _sync_memory_server_after_startup_import(import_result):
 
 def _start_neko_servers_integration_workers() -> None:
     """Start storage-backed integration workers after the startup barrier clears."""
-    global _facts_sync_worker_task, _card_cache_worker_task
+    global _facts_sync_worker_task
 
     if _facts_sync_worker_task is None or _facts_sync_worker_task.done():
         try:
@@ -701,18 +704,9 @@ def _start_neko_servers_integration_workers() -> None:
         except Exception as exc:
             logger.warning("[facts_sync] start worker failed: %s", exc)
 
-    if _card_cache_worker_task is None or _card_cache_worker_task.done():
-        try:
-            from main_logic.card_cache import start_card_cache_puller
-
-            _card_cache_worker_task = asyncio.create_task(start_card_cache_puller())
-        except Exception as exc:
-            logger.warning("[card_cache] start puller failed: %s", exc)
-
-
 async def _stop_neko_servers_integration_workers() -> None:
     """Cancel storage-backed integration workers during graceful shutdown."""
-    global _facts_sync_worker_task, _card_cache_worker_task
+    global _facts_sync_worker_task
 
     await _cancel_task_if_running(
         _facts_sync_worker_task,
@@ -720,12 +714,6 @@ async def _stop_neko_servers_integration_workers() -> None:
         timeout=1.0,
     )
     _facts_sync_worker_task = None
-    await _cancel_task_if_running(
-        _card_cache_worker_task,
-        name="card cache worker",
-        timeout=1.0,
-    )
-    _card_cache_worker_task = None
 
 
 async def _cancel_task_if_running(

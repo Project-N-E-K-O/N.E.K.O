@@ -15,6 +15,9 @@ export NGINX_AUTO_RELOAD=${NGINX_AUTO_RELOAD:-1}  # 是否启用自动重载，�
 
 # Docker 容器内 Nginx 作为反向代理前置，强制启用 uvicorn proxy_headers
 export NEKO_BEHIND_PROXY=true
+# Nginx 保留客户端 Host；将配置的部署域名显式加入应用层可信主机。
+# loopback 和 IP 字面量由中间件默认允许，因此本地/IP 访问不依赖此项。
+export NEKO_TRUSTED_HOSTS="${NEKO_TRUSTED_HOSTS:-${SSL_DOMAIN}}"
 
 # 1. 信号处理优化
 setup_signal_handlers() {

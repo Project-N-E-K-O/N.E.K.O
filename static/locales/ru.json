@@ -929,7 +929,14 @@
         "volumeWaiting": "Ожидание",
         "volumeHintWaiting": "Микрофон слушает, можете говорить",
         "noiseReduction": "Шумоподавление",
-        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса"
+        "noiseReductionHint": "Шумоподавление RNNoise AI для более чистого голоса",
+        "independentAsr": "Независимое распознавание речи",
+        "independentAsrActive": "Активен независимый ASR: {{provider}}",
+        "independentAsrFallback": "Независимый ASR недоступен. Голосовой ввод в этом сеансе остановлен. Проверьте настройки независимого ASR, затем начните новый голосовой сеанс.",
+        "audioPreprocessingFailed": "Не удалось обработать звук микрофона. Голосовой ввод в этой сессии остановлен. Начните новую голосовую сессию.",
+        "independentAsrProviderUnavailable": "{{provider}} временно недоступен. Голосовой ввод в этом сеансе остановлен. Переключения на другую службу распознавания речи не произошло. Начните новый голосовой сеанс позже.",
+        "independentAsrNextSession": "Будет включён в следующем голосовом сеансе; при недоступности автоматического переключения на Omni не произойдёт.",
+        "independentAsrNative": "Используется встроенное распознавание речи Omni"
     },
     "speaker": {
         "volumeLabel": "Громкость динамика",
@@ -1028,7 +1035,13 @@
             "silicon": "SiliconFlow",
             "gemini": "Gemini",
             "kimi_code": "Moonshot Kimi Code",
-            "vllm_omni": "vLLM-Omni (TTS)"
+            "vllm_omni": "vLLM-Omni (TTS)",
+            "qwen": "Qwen",
+            "grok": "Grok",
+            "soniox": "Soniox",
+            "free": "Бесплатная версия",
+            "dummy": "Тестовый провайдер",
+            "unknown": "Неизвестный провайдер"
         },
         "coreProviderNames": {
             "free": "Бесплатная версия (Эксклюзив N.E.K.O., веб-поиск)",
@@ -1189,6 +1202,8 @@
         "omniModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "ttsModelApiKeyPlaceholder": "Необязательно, можно оставить пустым для локальных провайдеров",
         "ttsVoiceId": "Voice ID",
+        "ttsProtocolHintOpenAI": "OpenAI-совместимый API: HTTP(S) POST /v1/audio/speech с полной текстовой фразой и потоковым аудиоответом.",
+        "ttsProtocolHintVllmOmni": "vLLM-Omni: WS(S) /v1/audio/speech/stream с двунаправленной потоковой передачей текста и аудио.",
         "ttsVoiceIdHint": "(Необязательно, запасной голос)",
         "ttsVoiceIdPlaceholder": "например, Chinese Female, alloy",
         "agentModelUrlPlaceholder": "Оставьте пустым для URL модели вспомогательного API",
@@ -1234,12 +1249,6 @@
             "localModeOnly": "• Realtime API только для локального режима",
             "wsProtocol": "• URL должен использовать ws:// или wss://",
             "autoSwitchLocal": "• Тип основного API переключится на \"local\""
-        },
-        "ttsWarning": {
-            "title": "Важное уведомление:",
-            "duplexStreaming": "• TTS API должен поддерживать дуплексную потоковую передачу",
-            "wsProtocol": "• URL должен использовать ws:// или wss://",
-            "cosyVoiceOnly": "• Поддерживается только протокол Alibaba Cloud CosyVoice"
         },
         "gptsovitsConfig": "Конфигурация GPT-SoVITS",
         "gptsovitsDescription": "Примечание GPT-SoVITS:",
@@ -2375,7 +2384,7 @@
             "never": "Больше не напоминать"
         },
         "screenSource": {
-            "notAvailable": "Выбор источника экрана доступен только в десктопной версии",
+            "notAvailable": "Выбор источника экрана недоступен в текущей среде",
             "loading": "Загрузка...",
             "noSources": "Нет доступных источников экрана",
             "loadFailed": "Не удалось загрузить источники экрана",
@@ -2383,7 +2392,8 @@
             "screenLabel": "Экран {{index}}",
             "windows": "Окна",
             "selected": "Выбрано {{source}}",
-            "sourceLost": "Не удалось найти ранее выбранное окно, переключено на полноэкранную демонстрацию"
+            "sourceLost": "Не удалось найти ранее выбранное окно, переключено на полноэкранную демонстрацию",
+            "captureFailed": "Захват экрана остановлен. Проверьте системные разрешения или выберите источник снова"
         },
         "deviceSwitchFailed": "Ошибка переключения устройства",
         "deviceSwitching": "Переключение устройства...",
@@ -4327,6 +4337,7 @@
         "testCoreTooltip": "Тест подключения основного API",
         "testAssist": "Тест",
         "testAssistTooltip": "Тест подключения вспомогательного API",
+        "maskedSecretRetype": "Ключ сохранён, но не может быть показан. Введите его заново перед проверкой.",
         "gsvTestText": "Тест подключения GSV",
         "gsvTestTooltip": "Тест подключения GPT-SoVITS",
         "error": {

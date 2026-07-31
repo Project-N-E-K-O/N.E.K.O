@@ -11,6 +11,144 @@
     const mod = {};
     const S = window.appState;
     const C = window.appConst;
+    const MIC_LEASE = Object.freeze({
+        NONE: 'none',
+        GAME: 'game',
+        CORE: 'core'
+    });
+    let voiceLeaseGeneration = 0;
+    let lastVoiceLeaseFingerprint = '';
+    // Cancellation token for an IN-FLIGHT microphone start (Codex P2).
+    // S.isRecording only flips at the very END of startAudioWorklet, after
+    // getUserMedia() and audioWorklet.addModule() have both awaited — so every
+    // "stop the mic" guard keyed on S.isRecording === true is a no-op for the
+    // whole startup window. The pending start then completed anyway, set
+    // recording true and re-claimed through refreshMicLease() the very lease the
+    // backend had just revoked, uploading PCM into a blocked route. Bumping this
+    // invalidates any start still inside that window.
+    //
+    // The token each attempt compares against is a LOCAL const in
+    // startMicCapture, deliberately not a module field. A module-level
+    // "pending token" is re-armed by the NEXT startMicCapture: attempt #1 is
+    // invalidated (generation moves past its token), attempt #2 then writes
+    // both the token and the generation to the same new value, and #1's guard
+    // compares equal again and commits -- re-claiming through refreshMicLease()
+    // the exact lease this counter exists to protect.
+    let micStartGeneration = 0;
+
+    function invalidatePendingMicStart() {
+        micStartGeneration += 1;
+    }
+
+    function currentVoiceInputControlState() {
+        return {
+            owner: resolveMicLeaseOwner(),
+            hard_muted: S.isMicMuted === true,
+            focus_suppressed: (
+                S.focusModeEnabled === true
+                && S.isPlaying === true
+            ),
+            // Engagement marker for the backend voice-connection claim gate:
+            // the onopen force-sync also fires from windows that merely
+            // opened (second /chat_full window). A snapshot stamped
+            // engaged: false is provably passive — neither recording nor
+            // starting a voice session — and must not steal the voice
+            // connection identity from a window that is actively recording.
+            engaged: (
+                S.isRecording === true
+                || S.voiceStartPending === true
+                || window.isMicStarting === true
+            )
+        };
+    }
+
+    function sendVoiceInputControlState(force) {
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+        const state = currentVoiceInputControlState();
+        const fingerprint = JSON.stringify(state);
+        if (force !== true && fingerprint === lastVoiceLeaseFingerprint) return true;
+        voiceLeaseGeneration += 1;
+        S.socket.send(JSON.stringify({
+            action: 'voice_input_control',
+            event: 'lease_sync',
+            owner: state.owner,
+            hard_muted: state.hard_muted,
+            focus_suppressed: state.focus_suppressed,
+            engaged: state.engaged,
+            lease_generation: voiceLeaseGeneration
+        }));
+        lastVoiceLeaseFingerprint = fingerprint;
+        return true;
+    }
+
+    function syncVoiceInputControlState(socket) {
+        if (socket && socket !== S.socket) return false;
+        if (!S.socket || S.socket.readyState !== WebSocket.OPEN) return false;
+
+        // 每条 WebSocket 都有独立的 generation scope；第一条消息就是完整状态。
+        voiceLeaseGeneration = 0;
+        lastVoiceLeaseFingerprint = '';
+        return sendVoiceInputControlState(true);
+    }
+
+    function setVoiceInputLifecycleState(state) {
+        const allowed = new Set([
+            'off', 'local_listen', 'prewarming', 'active', 'draining',
+            'warm_idle', 'deep_sleep', 'backoff', 'blocked', 'suspended'
+        ]);
+        if (!allowed.has(state) || S.voiceInputLifecycleState === state) return;
+        S.voiceInputLifecycleState = state;
+        document.documentElement.setAttribute('data-voice-input-state', state);
+        window.dispatchEvent(new CustomEvent('voice-input-lifecycle-changed', {
+            detail: { state, route_mode: S.independentAsrActive ? 'independent' : 'blocked' }
+        }));
+    }
+
+    window.addEventListener('voice-input-socket-open', function (event) {
+        syncVoiceInputControlState(event && event.detail && event.detail.socket);
+    });
+
+    function setMicLeaseOwner(owner) {
+        if (!Object.values(MIC_LEASE).includes(owner)) {
+            throw new Error(`Invalid microphone lease owner: ${owner}`);
+        }
+        if (S.micLeaseOwner !== owner) {
+            S.micLeaseOwner = owner;
+            window.dispatchEvent(new CustomEvent('mic-lease-changed', {
+                detail: { owner }
+            }));
+        }
+        if (owner === MIC_LEASE.NONE || S.isMicMuted === true) {
+            setVoiceInputLifecycleState('off');
+        } else if (owner === MIC_LEASE.GAME) {
+            setVoiceInputLifecycleState('suspended');
+        } else if (
+            S.voiceInputLifecycleState === 'off'
+            || S.voiceInputLifecycleState === 'suspended'
+        ) {
+            setVoiceInputLifecycleState('local_listen');
+        }
+        sendVoiceInputControlState(false);
+        return owner;
+    }
+
+    function resolveMicLeaseOwner() {
+        if (!S.isRecording) return MIC_LEASE.NONE;
+        if (S.gameVoiceSttGateActive) return MIC_LEASE.GAME;
+        return MIC_LEASE.CORE;
+    }
+
+    function refreshMicLease() {
+        // setMicLeaseOwner() already sends the (fingerprint-deduped) control
+        // snapshot — no extra send here.
+        return setMicLeaseOwner(resolveMicLeaseOwner());
+    }
+
+    function canUploadOrdinaryMicFrame() {
+        if (refreshMicLease() !== MIC_LEASE.CORE) return false;
+        const state = currentVoiceInputControlState();
+        return !state.hard_muted && !state.focus_suppressed;
+    }
 
     // ======================== DOM 辅助 ========================
 
@@ -522,6 +660,7 @@
         if (!S.gameVoiceSttGateActive || !S.isRecording || S.isMicMuted) {
             return false;
         }
+        setMicLeaseOwner(MIC_LEASE.GAME);
         if (S.gameVoiceSttListening) {
             releaseOrdinaryMicCaptureForGameVoiceSttGate();
             return true;
@@ -611,6 +750,18 @@
         recognition.onerror = function (event) {
             const errorCode = (event && event.error) || 'unknown';
             console.warn('[GameVoiceSTT] recognition error:', errorCode, event);
+            // Same staleness guard its onstart/onend siblings carry, which this
+            // handler was missing. An abandoned recognizer still fires onerror,
+            // and the not-allowed branch below calls
+            // restoreOrdinaryMicCaptureAfterGameVoiceSttFailure -> a fresh
+            // startMicCapture: a permission toast for a recognizer nobody uses
+            // any more, plus a microphone restart over a healthy live pipeline.
+            // Logged before returning so the diagnostics this handler exists
+            // for survive; only the side effects are gated.
+            if (S.gameVoiceSttRecognition !== recognition) {
+                console.warn('[GameVoiceSTT] ignoring error from a superseded recognizer');
+                return;
+            }
             if (errorCode === 'no-speech') {
                 console.warn('[GameVoiceSTT][Diag] no-speech: 识别器启动了但没有形成可用语音。优先检查默认麦克风是否正确、是否有 audio/sound/speech start 日志。');
             }
@@ -683,6 +834,7 @@
         if (!keepActive && restoreOrdinaryMic) {
             restoreOrdinaryMicCaptureAfterGameVoiceSttStop('gate stop');
         }
+        refreshMicLease();
     }
 
     // ======================== 麦克风设备选择 ========================
@@ -764,8 +916,28 @@
                 }
                 S.workletNode = null;
 
+                // Snapshot the cancellation counter BEFORE the delay below.
+                // wasRecording was taken even earlier, so on its own it cannot
+                // see a teardown that lands during the wait -- and the restart
+                // then MINTS A NEWER TOKEN, which defeats the very
+                // invalidation that teardown performed. An auto_close_mic, a
+                // text-session takeover or a plain stopRecording() inside this
+                // window would be silently overridden and the hardware
+                // microphone reopened, re-claiming a lease the backend had
+                // already released (Codex P2).
+                //
+                // This function's own teardown above closes the graph directly
+                // rather than through stopRecording(), so it does not bump the
+                // counter and cannot cancel its own restart.
+                const restartGeneration = micStartGeneration;
+
                 // 等待一小段时间，确保选择提示显示出来
                 await new Promise(resolve => setTimeout(resolve, 500));
+
+                if (micStartGeneration !== restartGeneration) {
+                    console.log('[App] microphone switch superseded during the restart delay; not reopening');
+                    return;
+                }
 
                 if (wasRecording) {
                     await startMicCapture();
@@ -960,13 +1132,13 @@
         try {
             localStorage.setItem('neko_noise_reduction', S.noiseReductionEnabled ? '1' : '0');
         } catch (e) { }
-        // 同步到后端 conversation-settings
+        // Route through the shared CAS client so cross-window toggles carry
+        // If-Match and reconcile 412 snapshots instead of bypassing ordering.
         try {
-            fetch('/api/config/conversation-settings', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ noiseReductionEnabled: S.noiseReductionEnabled })
-            });
+            if (window.appSettings
+                && typeof window.appSettings.saveSettings === 'function') {
+                window.appSettings.saveSettings();
+            }
         } catch (e) { }
     }
 
@@ -1098,12 +1270,54 @@
 
     // ======================== AudioWorklet ========================
 
-    async function startAudioWorklet(mediaStream) {
+    /**
+     * Open the capture pipeline for ONE microphone-start attempt.
+     *
+     * ``startToken`` is that attempt's identity, taken from micStartGeneration
+     * before its first await. Returns true when the pipeline was committed and
+     * false when the attempt was superseded and unwound -- the caller MUST
+     * check, because an unwound attempt has torn the hardware down and must not
+     * continue into its success path.
+     *
+     * A caller that passes no token cannot prove it is current, so it unwinds.
+     * That is deliberate: this whole subsystem is fail-closed, and the only
+     * consumer is startMicCapture below (the module export exists for tests).
+     */
+    async function startAudioWorklet(mediaStream, startToken) {
+        // Entry gate, before ANY shared state is touched. An attempt can be
+        // superseded while it is still in startMicCapture's getUserMedia (a
+        // cold device open is slow; the newer attempt hits a warm one and
+        // commits first), and it then arrives here already having lost. The
+        // teardown immediately below is not otherwise token-aware, so it would
+        // close the WINNER's freshly published AudioContext -- verified: the
+        // winner is left recording with a closed context, S.audioContext null
+        // and a microphone that has stopped producing, while the UI still says
+        // recording. Nothing has been allocated yet at this point, so bailing
+        // costs only this attempt's own device handle.
+        if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+            console.log('[App] microphone start was superseded before opening; unwinding');
+            try {
+                if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (_) {
+                // best-effort teardown
+            }
+            return false;
+        }
+
         // 先清理旧的音频上下文，防止多个 worklet 同时发送数据导致 QPS 超限
-        if (S.audioContext) {
-            if (S.audioContext.state !== 'closed') {
+        //
+        // Pinned to a local across the await: `await S.audioContext.close()`
+        // yields, and another attempt can publish a NEW pipeline during it.
+        // Nulling the shared fields afterwards without re-checking would then
+        // erase the handles to that live pipeline while its worklet keeps
+        // uploading -- an unstoppable microphone with every handle null.
+        const previousContext = S.audioContext;
+        if (previousContext) {
+            if (previousContext.state !== 'closed') {
                 try {
-                    await S.audioContext.close();
+                    await previousContext.close();
                 } catch (e) {
                     console.warn('关闭旧音频上下文时出错:', e);
                     // 强制复位所有状态，防止状态不一致
@@ -1126,106 +1340,375 @@
                     throw e;
                 }
             }
-            S.audioContext = null;
-            S.workletNode = null;
+            if (S.audioContext === previousContext) {
+                // Still the pipeline we just closed. Clear ALL of it: leaving
+                // micGainNode / inputAnalyser behind kept nodes from a closed
+                // context addressable, so the volume meter and the gain slider
+                // went on reading and poking a graph that no longer exists.
+                S.audioContext = null;
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+                // Reconcile the recording flag with what just happened. The
+                // pipeline that was feeding it is closed, so leaving
+                // S.isRecording true describes a microphone that no longer
+                // exists: the mic button keeps its recording/active styling and
+                // the floating button stays lit, canUploadOrdinaryMicFrame's
+                // callers still believe frames are flowing, and if THIS attempt
+                // then unwinds (superseded, fail-closed, addModule failure)
+                // nothing ever puts it right -- the caller's UI restore is
+                // skipped precisely because S.isRecording is true.
+                //
+                // The winning attempt sets it back to true at its own commit,
+                // so a successful restart is unchanged; only the window between
+                // teardown and commit now tells the truth.
+                if (S.isRecording) {
+                    S.isRecording = false;
+                    window.isRecording = false;
+                    if (typeof window.syncFloatingMicButtonState === 'function') {
+                        window.syncFloatingMicButtonState(false);
+                    }
+                }
+            }
         }
 
         // 创建音频上下文，强制使用 48kHz 采样率
-        S.audioContext = new AudioContext({ sampleRate: 48000 });
-        console.log("音频上下文采样率 (强制48kHz):", S.audioContext.sampleRate);
+        //
+        // Everything this attempt builds stays ATTEMPT-LOCAL until the token
+        // gate below says it won; only then is it published into S.*. Those
+        // fields are module globals shared by every concurrent attempt, and
+        // building through them directly cost two separate defects:
+        //
+        //   * the unwind reset them blindly, so a loser stopped the WINNER's
+        //     tracks and nulled its context, and the winner then threw on
+        //     S.audioContext.sampleRate -- no microphone at all;
+        //   * even with the teardown scoped, the loser's post-await SETUP
+        //     still ran through them (Codex P2): resuming from addModule() it
+        //     built its worklet on the winner's context, overwrote
+        //     S.workletNode and spliced itself into the winner's gain node --
+        //     two live worklets on one microphone, both uploading duplicate
+        //     PCM, with the winner's own node orphaned where no later
+        //     teardown could reach it.
+        //
+        // One publish point at the end removes the whole class: before the
+        // gate this attempt is invisible, after it the four fields describe
+        // exactly one pipeline.
+        const ownContext = new AudioContext({ sampleRate: 48000 });
+        console.log("音频上下文采样率 (强制48kHz):", ownContext.sampleRate);
 
-        // 创建媒体流源
-        const source = S.audioContext.createMediaStreamSource(mediaStream);
+        let source = null;
+        let ownGainNode = null;
+        let ownAnalyser = null;
+        try {
+            // 创建媒体流源
+            source = ownContext.createMediaStreamSource(mediaStream);
 
-        // 创建增益节点用于麦克风音量放大
-        S.micGainNode = S.audioContext.createGain();
-        const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
-        S.micGainNode.gain.value = linearGain;
-        console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
+            // 创建增益节点用于麦克风音量放大
+            ownGainNode = ownContext.createGain();
+            const linearGain = window.appUtils.dbToLinear(S.microphoneGainDb);
+            ownGainNode.gain.value = linearGain;
+            console.log(`麦克风增益已设置: ${S.microphoneGainDb}dB (${linearGain.toFixed(2)}x)`);
 
-        // 创建analyser节点用于监测输入音量
-        S.inputAnalyser = S.audioContext.createAnalyser();
-        S.inputAnalyser.fftSize = 2048;
-        S.inputAnalyser.smoothingTimeConstant = 0.8;
+            // 创建analyser节点用于监测输入音量
+            ownAnalyser = ownContext.createAnalyser();
+            ownAnalyser.fftSize = 2048;
+            ownAnalyser.smoothingTimeConstant = 0.8;
 
-        // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
-        source.connect(S.micGainNode);
-        S.micGainNode.connect(S.inputAnalyser);
+            // 连接 source → gainNode → analyser（用于音量检测，检测增益后的音量）
+            source.connect(ownGainNode);
+            ownGainNode.connect(ownAnalyser);
+        } catch (graphError) {
+            // The context is already constructed but nothing is published and
+            // discardOwnPipeline is not defined yet, so a throw from any of
+            // these node constructors would strand a live AudioContext that no
+            // teardown path can reach -- and Blink caps them at about six per
+            // document, so a repeating failure eventually makes `new
+            // AudioContext()` itself throw (Codex P2). The caller's catch
+            // releases the microphone track; this releases the context.
+            if (ownContext.state !== 'closed') {
+                ownContext.close();
+            }
+            throw graphError;
+        }
+
+        let ownWorkletNode = null;
+
+        // Dispose of everything this attempt built. Shared by the supersede /
+        // fail-closed gate and by the catch below: an attempt that never
+        // publishes is unreachable from S.*, so nothing else can ever close
+        // its AudioContext or stop its microphone track. Touches the shared
+        // fields only where they provably still describe THIS attempt.
+        const discardOwnPipeline = () => {
+            try {
+                if (mediaStream && typeof mediaStream.getTracks === 'function') {
+                    mediaStream.getTracks().forEach(track => track.stop());
+                }
+            } catch (_) {
+                // best-effort teardown
+            }
+            if (S.stream && S.stream === mediaStream) {
+                // Already stopped above; only drop the reference, and only
+                // while it is still OUR stream.
+                S.stream = null;
+            }
+            try {
+                if (ownWorkletNode) {
+                    // Kill the handler before disconnecting: an in-flight port
+                    // message must not upload a frame from a pipeline that
+                    // just lost.
+                    ownWorkletNode.port.onmessage = null;
+                    ownWorkletNode.disconnect();
+                }
+                // Nullable since the graph construction above can throw
+                // partway; that path closes the context and rethrows without
+                // reaching here, but the guards keep this honest.
+                if (ownGainNode) ownGainNode.disconnect();
+                if (ownAnalyser) ownAnalyser.disconnect();
+                if (source) source.disconnect();
+            } catch (_) {
+                // best-effort teardown
+            }
+            if (ownContext.state !== 'closed') {
+                ownContext.close();
+            }
+            if (S.audioContext === null) {
+                // No pipeline is live at all (the fail-closed route case, or a
+                // supersede with nothing committed since). The graph fields
+                // still name the pipeline the top of this function tore down,
+                // so clear them rather than leave nodes from a closed context
+                // addressable. When a winner IS live, S.audioContext is its
+                // context and none of this runs.
+                S.workletNode = null;
+                S.micGainNode = null;
+                S.inputAnalyser = null;
+                stopSilenceDetection();
+            }
+        };
 
         try {
             // 加载AudioWorklet处理器
-            await S.audioContext.audioWorklet.addModule('/static/audio-processor.js');
+            await ownContext.audioWorklet.addModule('/static/audio-processor.js');
 
             // 根据连接类型确定目标采样率
             const isMobile = window.appUtils.isMobile;
             const targetSampleRate = isMobile() ? 16000 : 48000;
-            console.log(`音频采样率配置: 原始=${S.audioContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
+            console.log(`音频采样率配置: 原始=${ownContext.sampleRate}Hz, 目标=${targetSampleRate}Hz, 移动端=${isMobile()}`);
 
             // 创建AudioWorkletNode
-            S.workletNode = new AudioWorkletNode(S.audioContext, 'audio-processor', {
+            ownWorkletNode = new AudioWorkletNode(ownContext, 'audio-processor', {
                 processorOptions: {
-                    originalSampleRate: S.audioContext.sampleRate,
+                    originalSampleRate: ownContext.sampleRate,
                     targetSampleRate: targetSampleRate
                 }
             });
 
             // 监听处理器发送的消息
-            S.workletNode.port.onmessage = (event) => {
+            ownWorkletNode.port.onmessage = (event) => {
                 const audioData = event.data;
 
-                if (S.isMicMuted) {
-                    return;
-                }
-
-                if (S.focusModeEnabled === true && S.isPlaying === true) {
-                    return;
-                }
-
-                if (S.gameVoiceSttGateActive) {
+                if (!canUploadOrdinaryMicFrame()) {
                     return;
                 }
 
                 if (S.isRecording && S.socket && S.socket.readyState === WebSocket.OPEN) {
-                    S.socket.send(JSON.stringify({
-                        action: 'stream_data',
-                        data: Array.from(audioData),
-                        input_type: 'audio'
-                    }));
+                    // 8-byte header: ASCII "NEKO" + little-endian sample rate，
+                    // 后续直接附 PCM16，避免每帧 JSON 数组的带宽与 GC 开销。
+                    const pcm16 = audioData instanceof Int16Array
+                        ? audioData
+                        : new Int16Array(audioData);
+                    const frame = new ArrayBuffer(8 + pcm16.byteLength);
+                    const header = new DataView(frame);
+                    header.setUint8(0, 0x4E);
+                    header.setUint8(1, 0x45);
+                    header.setUint8(2, 0x4B);
+                    header.setUint8(3, 0x4F);
+                    header.setUint32(4, targetSampleRate, true);
+                    // 字节级拷贝按平台字节序输出 PCM，而 wire 格式要求
+                    // little-endian。所有主流浏览器 / JS 引擎都是 LE，这里
+                    // 显式依赖该假设以保持每帧热路径零逐样本开销；若未来
+                    // 出现 BE 平台，需改为 DataView 逐样本 setInt16(LE)。
+                    new Uint8Array(frame, 8).set(new Uint8Array(
+                        pcm16.buffer,
+                        pcm16.byteOffset,
+                        pcm16.byteLength
+                    ));
+                    S.socket.send(frame);
                 }
             };
 
             // 连接节点：gainNode → workletNode（音频经过增益处理后发送）
-            S.micGainNode.connect(S.workletNode);
+            ownGainNode.connect(ownWorkletNode);
+
+            // Last gate before the commit. Everything above only awaited; this
+            // is where the microphone actually becomes live and where
+            // refreshMicLease() would re-claim the lease. A text takeover (or
+            // any fail-closed verdict) that landed while getUserMedia() and
+            // addModule() were in flight found S.isRecording still false, so its
+            // stopRecording() early-returned and could not prevent this. Unwind
+            // instead of committing: without this the pending start re-claims a
+            // lease the backend just revoked and feeds a blocked route.
+            if (startToken !== micStartGeneration || S.voiceInputRouteBlocked === true) {
+                console.log('[App] microphone start was superseded while opening; unwinding');
+                // Nothing above was published, so this tears down ONLY what
+                // this attempt built. There is no re-entrancy guard on
+                // startMicCapture and several callers are fire-and-forget (the
+                // two game-STT restore paths above, and app-websocket.js's
+                // mic-pipeline repair), so a winner may well be live in S.*
+                // right now -- and it must not be touched here.
+                discardOwnPipeline();
+                // Deliberately NOT refreshMicLease(): the lease is the
+                // backend's now, and re-emitting a snapshot from a window that
+                // never started recording is exactly the re-claim being
+                // prevented. S.isRecording was never set, so nothing to reset.
+                //
+                // false, not a bare return: the caller awaits this and would
+                // otherwise run its whole success path -- disabling the mic
+                // button, toasting "speaking", lighting the floating button and
+                // silencing proactive chat -- against hardware that no longer
+                // exists.
+                return false;
+            }
+
+            // This attempt won. Publish the pipeline as one unit -- the only
+            // place S.* learns about it, so the five fields are always the
+            // same live graph and never a mix of two attempts.
+            //
+            // The gain is re-read here rather than trusted from construction
+            // time: setMicrophoneGain writes S.microphoneGainDb and then pokes
+            // S.micGainNode, which this attempt was deliberately absent from
+            // for the whole open window, so a slider move during it would
+            // otherwise persist and display the new dB while the live
+            // microphone stayed at the old one until the next restart.
+            ownGainNode.gain.value = window.appUtils.dbToLinear(S.microphoneGainDb);
+            S.stream = mediaStream;
+            S.audioContext = ownContext;
+            S.micGainNode = ownGainNode;
+            S.inputAnalyser = ownAnalyser;
+            S.workletNode = ownWorkletNode;
 
             // 用户主动开麦，意味着要讲话；focus mode 的 isPlaying guard 此刻必须让路。
             // 切档案后自动触发的 greeting 音频播完如果没把 isPlaying 复位（finalize
             // 路径的前置条件没兜住就会粘住），下一次开麦每一帧都会被 focus 拦掉，
             // 表现为"Electron 显示可以说话但 STT 无反应"。用户此刻的意图是明确的，
             // 不管 flag 是粘住还是真在播 AI 音频，都应该让位给用户输入。
+            // Moved below the gate with the publish: a superseded attempt has
+            // no business clearing the winner's playback guard.
             S.isPlaying = false;
 
             // 所有初始化成功后，才标记为录音状态
             S.isRecording = true;
             window.isRecording = true;
+            refreshMicLease();
+            return true;
 
         } catch (err) {
             console.error('加载AudioWorklet失败:', err);
             console.dir(err);
             window.showStatusToast(window.t ? window.t('app.audioWorkletFailed') : 'AudioWorklet加载失败', 5000);
-            stopSilenceDetection();
+            // Nothing was published, so this graph is unreachable from S.* --
+            // without an explicit discard its AudioContext and the microphone
+            // track would leak on every failed addModule(), with no later
+            // attempt able to find and close them. (The old code leaked the
+            // stream too, and reached stopSilenceDetection() unconditionally,
+            // which would stop a concurrent WINNER's detection; discard only
+            // does that when no pipeline is live.)
+            discardOwnPipeline();
+            // RETHROW. `false` means "this attempt was deliberately cancelled"
+            // -- superseded, or the route came back fail-closed -- and the
+            // caller treats it as benign: it restores the pre-start UI and
+            // returns without error. A real setup failure returned the same
+            // value, so app-buttons.js sailed past `await startMicCapture()`
+            // into the success path: ready-to-speak toast, proactive vision,
+            // the neko:voice-session-started event, and never the error path
+            // that sends end_session -- announcing a live voice call with no
+            // capture pipeline behind it (Codex P2).
+            //
+            // Marked so startMicCapture's own catch does not stack a generic
+            // "cannot access microphone" toast on top of the accurate one
+            // already shown above.
+            err.voiceWorkletSetupFailed = true;
+            throw err;
         }
     }
 
     // ======================== 录音开始/停止 ========================
 
     // 开麦，按钮on click
+    function abortVoiceStartForBlockedRoute() {
+        // Unwind the "starting voice" UI after startMicCapture refused a
+        // fail-closed route. Deliberately NOT a thrown error: the generic
+        // catch would replace the accurate ASR failure toast with a generic
+        // "session start failed".
+        const _mic = micButton();
+        const _mute = muteButton();
+        const _screen = screenButton();
+        if (_mic) {
+            _mic.classList.remove('recording');
+            _mic.classList.remove('active');
+            _mic.disabled = false;
+        }
+        if (_mute) _mute.disabled = true;
+        if (_screen) _screen.disabled = true;
+        // Also cancel a start still inside its getUserMedia/addModule window:
+        // clearing S.isRecording cannot reach one that has not set it yet.
+        invalidatePendingMicStart();
+        S.isRecording = false;
+        window.isRecording = false;
+        S.voiceChatActive = false;
+        S.voiceStartPending = false;
+        window.isMicStarting = false;
+        if (typeof window.hideVoicePreparingToast === 'function') {
+            window.hideVoicePreparingToast();
+        }
+        const textInputArea = document.getElementById('text-input-area');
+        if (textInputArea) textInputArea.classList.remove('hidden');
+        if (typeof window.syncVoiceChatComposerHidden === 'function') {
+            window.syncVoiceChatComposerHidden(false);
+        }
+        if (typeof window.syncFloatingMicButtonState === 'function') {
+            window.syncFloatingMicButtonState(false);
+        }
+        refreshMicLease();
+    }
+
     async function startMicCapture() {
+        // Refuse to open the hardware microphone onto a route the backend has
+        // already fail-closed. This is THE guard that closes the startup-failure
+        // hole: on a cold voice start the mic is opened only AFTER
+        // session_started, i.e. after the ASR_INDEPENDENT_* failure status, so a
+        // server-side lease revoke has nothing to revoke yet -- and this
+        // function's own refreshMicLease() would re-claim the lease from
+        // scratch anyway (_handle_voice_input_control enforces only generation
+        // monotonicity, and the revoke reset the generation to -1, so the next
+        // client snapshot wins unconditionally). Placed at the top rather than
+        // at the two await-sessionStartPromise call sites because three more
+        // callers -- the device-change restore paths below -- can also reopen
+        // the mic on a dead route, and one guard covers all five.
+        if (S.voiceInputRouteBlocked === true) {
+            console.log('[App] voice route is fail-closed; refusing to open the microphone');
+            return;
+        }
+        // Claim this attempt BEFORE the first await. Anything that invalidates
+        // pending starts from here on makes the commit at the end of
+        // startAudioWorklet a no-op, which is the only way to cover the
+        // getUserMedia() half of the window as well.
+        micStartGeneration += 1;
+        const micStartToken = micStartGeneration;
         const _mic = micButton();
         const _mute = muteButton();
         const _screen = screenButton();
         const _stop = stopButton();
         const _reset = resetSessionButton();
 
+        // Declared OUTSIDE the try so the catch below can still reach it.
+        // `const` inside the try block is invisible to `catch (err)` -- a
+        // separate block scope -- and the stream is deliberately not published
+        // to S.stream until the attempt wins, so on any throw between
+        // acquisition and the commit (a failing `new AudioContext()`, which
+        // Blink caps at ~6 per document, the source/gain/analyser setup, or
+        // the previous context's close()) NOTHING could stop its tracks: the
+        // UI reported a failed start while the browser microphone stayed live.
+        let ownStream = null;
         try {
             // 开始录音前添加录音状态类到两个按钮
             if (_mic) _mic.classList.add('recording');
@@ -1264,10 +1747,22 @@
                     : baseAudioConstraints
             };
 
-            S.stream = await navigator.mediaDevices.getUserMedia(constraints);
+            // Attempt-local, for the same reason the audio graph is: publishing
+            // the stream here put it OUTSIDE the single publish point in
+            // startAudioWorklet, and this write lands after an await, so it is
+            // unordered with respect to the token. Two overlapping starts whose
+            // getUserMedia settle out of token order let the LOSER write
+            // S.stream last; its unwind then legitimately sees
+            // `S.stream === mediaStream` and nulls it, leaving the winner
+            // recording with S.stream === null -- stopRecording's `if (S.stream)`
+            // never stops those tracks, so the OS microphone indicator stays lit
+            // for the life of the page, and the `S.stream && S.audioContext &&
+            // S.workletNode` liveness probes read dead against a live pipeline
+            // and open a second microphone on top of it.
+            ownStream = await navigator.mediaDevices.getUserMedia(constraints);
 
             // 检查音频轨道状态
-            const audioTracks = S.stream.getAudioTracks();
+            const audioTracks = ownStream.getAudioTracks();
             console.log(window.t('console.audioTrackCount'), audioTracks.length);
             console.log(window.t('console.audioTrackStatus'), audioTracks.map(track => ({
                 label: track.label,
@@ -1283,10 +1778,45 @@
                     _mic.classList.remove('recording');
                     _mic.classList.remove('active');
                 }
+                // Never published, so nothing else can reach it to release it.
+                try {
+                    ownStream.getTracks().forEach(track => track.stop());
+                } catch (_) {
+                    // best-effort teardown
+                }
                 throw new Error('没有可用的音频轨道');
             }
 
-            await startAudioWorklet(S.stream);
+            const micStartCommitted = await startAudioWorklet(ownStream, micStartToken);
+            if (!micStartCommitted) {
+                // Superseded or fail-closed while opening: the hardware is
+                // already torn down, so restore the pre-start UI and leave
+                // WITHOUT the success path below. Not an error -- no toast, and
+                // nothing to throw at a caller who did nothing wrong.
+                //
+                // Skipped when a newer attempt has since COMMITTED: this UI is
+                // global, same as the S.* fields the unwind is careful about,
+                // and painting "not recording" over a window that is recording
+                // is the display-plane half of the same bug.
+                if (S.isRecording === true) {
+                    return;
+                }
+                if (_mic) {
+                    _mic.classList.remove('recording');
+                    _mic.classList.remove('active');
+                }
+                const cancelledTextInputArea = document.getElementById('text-input-area');
+                if (cancelledTextInputArea) {
+                    cancelledTextInputArea.classList.remove('hidden');
+                }
+                if (typeof window.syncVoiceChatComposerHidden === 'function') {
+                    window.syncVoiceChatComposerHidden(false);
+                }
+                if (typeof window.syncFloatingMicButtonState === 'function') {
+                    window.syncFloatingMicButtonState(false);
+                }
+                return;
+            }
             if (S.gameVoiceSttGateActive) {
                 startGameVoiceSttGate();
             }
@@ -1315,7 +1845,25 @@
             }
         } catch (err) {
             console.error(window.t('console.getMicrophonePermissionFailed'), err);
-            window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            // A worklet setup failure already showed its own, more accurate
+            // toast before rethrowing; do not stack "cannot access microphone"
+            // on top of "AudioWorklet failed to load" -- microphone access
+            // demonstrably succeeded in that case.
+            if (!(err && err.voiceWorkletSetupFailed)) {
+                window.showStatusToast(window.t ? window.t('app.micAccessDenied') : '无法访问麦克风', 4000);
+            }
+
+            // Release a device this attempt opened but never published. Guarded
+            // on `S.stream !== ownStream` so a throw from the SUCCESS path (the
+            // UI updates and startGameVoiceSttGate() below the commit) cannot
+            // stop the microphone of a pipeline that is now live and owned.
+            if (ownStream && S.stream !== ownStream) {
+                try {
+                    ownStream.getTracks().forEach(track => track.stop());
+                } catch (_) {
+                    // best-effort teardown
+                }
+            }
 
             const hasOuterVoiceStartLifecycle = !!(S.voiceStartPending || window.isMicStarting);
 
@@ -1439,10 +1987,38 @@
             window.stopScreening();
         }
         stopGameVoiceSttGate({ restoreOrdinaryMic: false });
+        if (typeof window.removeExternalAsrPreview === 'function') {
+            window.removeExternalAsrPreview();
+        }
+        // Ordinary user stop must also drop the independent-ASR route flags.
+        // Only failure paths (BLOCKED / terminal ASR_INDEPENDENT_* statuses in
+        // app-websocket.js) reset them otherwise, so the mic settings hint
+        // would keep claiming "Independent ASR active" after the session
+        // ended. The next voice session re-derives both fields from fresh
+        // ASR_INDEPENDENT_* status events (lifecycle.py _start_session_activate
+        // re-runs the route on every start_session).
+        S.independentAsrActive = false;
+        S.independentAsrProvider = '';
+        // Cancel a start still inside its getUserMedia()/addModule() window,
+        // BEFORE the isRecording early-out below. S.isRecording only flips at
+        // the very end of startAudioWorklet, so every "stop the mic" path --
+        // the user pressing stop, the server's auto_close_mic, a websocket
+        // close -- used to early-return here and leave the in-flight attempt to
+        // commit afterwards: the UI flipped back to recording and the client
+        // re-claimed the lease from a backend that had just released it. Only
+        // the text-takeover and blocked-route aborts bumped this counter, so
+        // every other teardown was unable to cancel a start it had every right
+        // to cancel.
+        //
+        // Safe for the restart flows: each of them calls startMicCapture()
+        // afterwards, which mints its own token, so invalidating here cannot
+        // cancel the start they are about to make.
+        invalidatePendingMicStart();
         if (!S.isRecording) return;
 
         S.isRecording = false;
         window.isRecording = false;
+        refreshMicLease();
         window.currentGeminiMessage = null;
 
         // 重置语音模式用户转录合并追踪
@@ -1685,6 +2261,8 @@
     // ======================== 暴露到 window（向后兼容） ========================
     window.startMicCapture = startMicCapture;
     window.stopMicCapture = stopMicCapture;
+    window.abortVoiceStartForBlockedRoute = abortVoiceStartForBlockedRoute;
+    window.invalidatePendingMicStart = invalidatePendingMicStart;
     window.stopRecording = stopRecording;
     window.startSilenceDetection = startSilenceDetection;
     window.stopSilenceDetection = stopSilenceDetection;
@@ -1714,6 +2292,7 @@
             return S.isMicMuted;
         }
         S.isMicMuted = !S.isMicMuted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 立刻清掉"用户最近在说话"的时间戳。否则 mute 前最后一帧
@@ -1745,6 +2324,7 @@
 
     window.setMicMuted = function(muted, showToast = false) {
         S.isMicMuted = muted;
+        refreshMicLease();
         if (S.isMicMuted) {
             stopSilenceDetection();
             // 与 toggleMicMute 对齐：进入 muted 时清掉时间戳，避免拖尾。
@@ -1790,12 +2370,17 @@
     mod.startAudioWorklet = startAudioWorklet;
     mod.startMicCapture = startMicCapture;
     mod.stopMicCapture = stopMicCapture;
+    mod.invalidatePendingMicStart = invalidatePendingMicStart;
     mod.stopRecording = stopRecording;
     mod.startMicVolumeVisualization = startMicVolumeVisualization;
     mod.stopMicVolumeVisualization = stopMicVolumeVisualization;
     mod.updateMicVolumeStatusNow = updateMicVolumeStatusNow;
     mod.startGameVoiceSttGate = startGameVoiceSttGate;
     mod.stopGameVoiceSttGate = stopGameVoiceSttGate;
+    mod.refreshMicLease = refreshMicLease;
+    mod.sendVoiceInputControlState = sendVoiceInputControlState;
+    mod.canUploadOrdinaryMicFrame = canUploadOrdinaryMicFrame;
+    mod.setVoiceInputLifecycleState = setVoiceInputLifecycleState;
 
     // ======================== 麦克风设备列表 UI ========================
 
@@ -2196,6 +2781,102 @@ if (typeof micPopup.__nekoMicScrollbarCleanup === 'function') {
             Object.assign(nrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
             nrContainer.appendChild(nrHint);
             leftColumn.appendChild(nrContainer);
+
+            // ===== 独立 ASR 开关（下次语音 session 生效） =====
+            var asrContainer = document.createElement('div');
+            asrContainer.style.padding = '8px 12px';
+
+            var asrRow = document.createElement('div');
+            Object.assign(asrRow.style, { display: 'flex', justifyContent: 'space-between', alignItems: 'center' });
+
+            var asrLabel = document.createElement('span');
+            asrLabel.textContent = window.t ? window.t('microphone.independentAsr') : 'Independent ASR';
+            asrLabel.setAttribute('data-i18n', 'microphone.independentAsr');
+            Object.assign(asrLabel.style, { fontSize: '13px', color: 'var(--neko-popup-text)', fontWeight: '500' });
+
+            var asrToggle = document.createElement('label');
+            Object.assign(asrToggle.style, { position: 'relative', display: 'inline-block', width: '36px', height: '20px', flexShrink: '0' });
+            var asrInput = document.createElement('input');
+            asrInput.type = 'checkbox';
+            asrInput.checked = S.independentAsrEnabled === true;
+            Object.assign(asrInput.style, { opacity: '0', width: '0', height: '0' });
+            var asrSlider = document.createElement('span');
+            Object.assign(asrSlider.style, { position: 'absolute', cursor: 'pointer', top: '0', left: '0', right: '0', bottom: '0', backgroundColor: asrInput.checked ? '#4f8cff' : '#ccc', borderRadius: '10px', transition: 'background-color 0.2s' });
+            var asrKnob = document.createElement('span');
+            Object.assign(asrKnob.style, { position: 'absolute', content: '""', height: '16px', width: '16px', left: asrInput.checked ? '18px' : '2px', bottom: '2px', backgroundColor: 'white', borderRadius: '50%', transition: 'left 0.2s' });
+            asrSlider.appendChild(asrKnob);
+            asrToggle.appendChild(asrInput);
+            asrToggle.appendChild(asrSlider);
+
+            function renderAsrHint() {
+                if (!asrHint) return;
+                var hintKey = S.independentAsrActive
+                    ? 'microphone.independentAsrActive'
+                    : (S.independentAsrEnabled ? 'microphone.independentAsrNextSession' : 'microphone.independentAsrNative');
+                var hintParams = { providerKey: S.independentAsrProvider || 'unknown' };
+                asrHint.setAttribute('data-i18n', hintKey);
+                asrHint.setAttribute('data-i18n-params', JSON.stringify(hintParams));
+                asrHint.textContent = window.t
+                    ? window.t(hintKey, hintParams)
+                    : (S.independentAsrActive ? 'Independent ASR active' : (S.independentAsrEnabled ? 'Takes effect next voice session' : 'Using Omni native recognition'));
+            }
+
+            asrInput.addEventListener('change', function () {
+                S.independentAsrEnabled = asrInput.checked;
+                asrSlider.style.backgroundColor = asrInput.checked ? '#4f8cff' : '#ccc';
+                asrKnob.style.left = asrInput.checked ? '18px' : '2px';
+                // The confirmation text has to follow the switch it confirms.
+                renderAsrHint();
+                if (window.appSettings && typeof window.appSettings.saveSettings === 'function') {
+                    if (typeof window.appSettings.syncSettingsToServer === 'function') {
+                        // Session start reads the SERVER-persisted value (asr_runtime.py
+                        // _start_independent_asr_if_enabled -> aload_global_conversation_settings),
+                        // so the fire-and-forget POST inside saveSettings() can race a
+                        // mic start and silently keep the previous route. Persist
+                        // locally first, then run the POST ourselves and publish it as
+                        // S.pendingSettingsSyncPromise; ensureWebSocketOpen()
+                        // (app-websocket.js) awaits it before any start_session send.
+                        // userInitiated: true marks settings hydrated so the
+                        // start_session handshake stamps this explicit choice
+                        // even while the settings GET is failing.
+                        // syncSettingsToServer serializes its POSTs internally
+                        // and snapshots settings at send time, so flipping the
+                        // toggle twice quickly cannot let the older request
+                        // finish last and persist the stale value; the newer
+                        // promise published below also resolves only after any
+                        // predecessor POST completed.
+                        window.appSettings.saveSettings({ skipServerSync: true });
+                        var syncPromise = Promise.resolve(window.appSettings.syncSettingsToServer({ userInitiated: true }))
+                            .catch(function () { /* syncSettingsToServer already logs failures */ })
+                            .then(function () {
+                                if (S.pendingSettingsSyncPromise === syncPromise) {
+                                    S.pendingSettingsSyncPromise = null;
+                                }
+                            });
+                        S.pendingSettingsSyncPromise = syncPromise;
+                    } else {
+                        window.appSettings.saveSettings();
+                    }
+                }
+            });
+
+            asrRow.appendChild(asrLabel);
+            asrRow.appendChild(asrToggle);
+            asrContainer.appendChild(asrRow);
+
+            var asrHint = document.createElement('div');
+            // Single renderer, called at build time AND from the toggle's change
+            // handler above (function declarations hoist, so it is reachable
+            // there). The hint used to be computed once here, so flipping the
+            // switch with the popup open left "Using Omni native speech
+            // recognition" on screen after enabling -- and the inverse stale
+            // text after disabling -- until the popup was rebuilt: the
+            // confirmation contradicted the choice the user had just made
+            // (Codex P2).
+            renderAsrHint();
+            Object.assign(asrHint.style, { fontSize: '11px', color: 'var(--neko-popup-text-sub)', marginTop: '6px' });
+            asrContainer.appendChild(asrHint);
+            leftColumn.appendChild(asrContainer);
 
             var sep1b = document.createElement('div');
             Object.assign(sep1b.style, { height: '1px', backgroundColor: 'var(--neko-popup-separator)', margin: '8px 0' });

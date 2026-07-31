@@ -14,6 +14,35 @@ Client text frames use `action`; server text frames use `type`. The lists below 
 
 Valid `input_type`: `audio`, `screen`, `camera`, `text`, `avatar_drop_image`, `user_image`.
 
+For an ordinary audio session, new clients are strongly encouraged to send the
+complete `voice_input_control` snapshot below before `start_session`. A legacy
+client that has sent no control message receives a one-time generation-0 Core
+lease when the ordinary audio session starts. Game audio never uses that
+compatibility path.
+
+#### `voice_input_control`
+
+```json
+{
+  "action": "voice_input_control",
+  "event": "lease_sync",
+  "owner": "core",
+  "hard_muted": false,
+  "focus_suppressed": false,
+  "lease_generation": 1
+}
+```
+
+`event` is one of `lease_sync`, `hard_mute`, `hard_unmute`,
+`focus_suppress`, `focus_resume`, `game_takeover`, or `game_release`.
+`lease_sync` requires the complete `owner`, `hard_muted`, and
+`focus_suppressed` snapshot. `owner` is `none`, `core`, or `game`.
+
+Generations are scoped to one WebSocket, strictly increase, and restart after
+reconnection. Any explicit control attempt permanently selects this strict
+path for the connection: an invalid or stale message is rejected and cannot
+fall back to the legacy generation-0 lease.
+
 #### `stream_data`
 
 Text:
@@ -41,7 +70,19 @@ Image (`screen`, `camera`, `avatar_drop_image`, or `user_image`):
 }
 ```
 
-Audio uses a JSON array of signed 16-bit PCM sample values, **not base64** and not a client binary frame:
+The bundled client sends microphone audio as a binary frame:
+
+```text
+bytes 0..3   ASCII "NEKO"
+bytes 4..7   uint32 little-endian sample rate (16000 or 48000)
+bytes 8..N   mono signed PCM16, little-endian
+```
+
+The PCM payload must be non-empty, even-sized, and no longer than one second.
+The server treats this frame as `stream_data` with `input_type: "audio"`.
+
+For compatibility, clients may send a JSON array of signed 16-bit PCM sample
+values instead. Audio is **not base64**:
 
 ```json
 {
@@ -108,7 +149,7 @@ Any action may also include `language`.
 | Type | Fields | Meaning |
 |---|---|---|
 | `session_preparing` | `input_mode` | Provider startup is in progress. |
-| `session_started` | `input_mode` | Requested `audio` or `text` mode is ready. |
+| `session_started` | `input_mode` | Requested `audio` or `text` Provider mode is ready. For audio, MicLease authorization is still independently enforced. |
 | `session_failed` | `input_mode` | Startup failed; a `status` event normally carries detail. |
 | `session_ended_by_server` | `input_mode` | Backend/upstream ended the provider session. |
 | `catgirl_switched` | `new_catgirl`, `old_catgirl` | Reconnect to the new character route. |
@@ -163,6 +204,13 @@ Exactly one binary audio frame follows the header. Correlate it with `speech_id`
 | `topic_hint` | `author`, `turn_id` | Frontend-only prelude bubble, not chat memory. |
 | `cancel_topic_hint` | `turn_id` | Remove an orphaned prelude. |
 | `reload_page` | `message` | Configuration changed; `message` is another status-style encoded JSON string. |
+
+Relevant microphone-control status codes are:
+
+| Code | Meaning |
+|---|---|
+| `VOICE_INPUT_CONTROL_REJECTED` | The explicit control message was invalid or its generation was not newer. The connection remains on the strict control path. |
+| `VOICE_INPUT_LEASE_REQUIRED` | An ordinary audio session was not authorized, so the Provider session was not started. |
 
 ### First-party workflow events
 

@@ -878,9 +878,26 @@ class VoiceStorageMixin:
                 logger.warning("hosted preset voice 归一化异常，按非预制处理", exc_info=True)
                 return None
 
+        def _preferred_configured_preset_provider(ref):
+            """Return an exact configured preset owner before clone lookup."""
+            # Explicit configuration wins only for dynamic configured presets;
+            # static hosted catalogs keep their existing clone-first behavior.
+            # 仅动态配置音色优先于同名克隆；静态厂商目录仍保持原有优先级。
+            provider_key = _hosted_preset_provider(ref)
+            if not provider_key:
+                return None
+            try:
+                from utils.tts import provider_registry
+                if provider_registry.uses_configured_preset_voice(provider_key):
+                    return provider_key
+            except Exception:
+                logger.warning("configured preset voice 归一化异常，按普通优先级处理", exc_info=True)
+            return None
+
         return normalize_voice_id(
             voice_id,
             vllm_selected=self._is_vllm_omni_tts_selected(self.get_core_config()),
+            preferred_preset_provider=_preferred_configured_preset_provider,
             clone_provider_lookup=_clone_lookup,
             is_native=lambda ref: is_saveable_native_voice(self, ref),
             native_provider=get_active_realtime_native_provider(self) or '',

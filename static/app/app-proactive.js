@@ -25,6 +25,12 @@
     const NEW_USER_ICEBREAKER_BLOCKING_WINDOW_MS = 2 * 60 * 60 * 1000;
     const MEME_LOAD_FAILED_STICKER_URL = '/static/icons/meme-image-load-failed-sticker.png';
 
+    function getDesktopProvider() {
+        return typeof window.getDesktopCaptureProvider === 'function'
+            ? window.getDesktopCaptureProvider()
+            : null;
+    }
+
     // ======================== proactive leader election ========================
     //
     // 背景：index.html（Pet 主窗口）和 chat.html（聊天浮窗）共用 app-proactive.js，
@@ -528,7 +534,7 @@
     // 网络来回有延迟时前端守门先挡住，请求根本不发出去，省一个 round-trip。
     // `S.userRecentSpeechTime` 由 app-audio-capture.js 里的 monitorInputVolume 持续
     // 写入（RMS > 0.01 每帧打点），这里用一个稍宽于后端的窗口，保证"前端没挡住但
-    // 后端挡住"的 race 不至于频繁发生（fudge 空跑成本低，但可以省则省）。
+    // 后端挡住"的 race 不至于频繁发生（文本触发空跑成本低，但可以省则省）。
     var USER_RECENT_SPEECH_WINDOW_MS = 8000;
 
     function _isAssistantSpeaking() {
@@ -706,6 +712,8 @@
             console.log('[ProactiveChat] 语音模式：' + (delay / 1000) + '秒后触发（无退避，无回复计数：' + (S._voiceProactiveNoResponseCount || 0) + '/10）');
 
             S.proactiveChatTimer = setTimeout(async function () {
+                // setTimeout firing does not clear our stored handle.
+                S.proactiveChatTimer = null;
                 if (S.isProactiveChatRunning) return;
                 // 设计说明（by 用户意图）：
                 // 这里不"rearm-after-playback"——那样每句话说完都要严格等满一个固定间隔
@@ -719,7 +727,7 @@
                     return;
                 }
                 // C: 前端麦克风 RMS 最近 8s 内超过语音阈值 → 用户正在说话或
-                // 刚说完，不发 fudge。与后端 _user_recent_activity_time guard
+                // 刚说完，不发主动文本触发。与后端 _user_recent_activity_time guard
                 // 对称（8s 窗口），请求根本不出门，省一次 round-trip。
                 // 同 AI-speaking 分支：不计入 no-response 计数，仍推进下一 tick。
                 if (_isUserRecentlySpeaking()) {
@@ -729,6 +737,7 @@
                 }
                 S.isProactiveChatRunning = true;
                 var voiceTriggered = false;
+                var voiceResetVersion = S._voiceProactiveBackoffResetVersion || 0;
                 try {
                     voiceTriggered = await triggerProactiveChat();
                 } finally {
@@ -739,15 +748,17 @@
                 // 409 会按 >=10 阈值熔断语音 nudge 直到下次 user 触发 reset。等同
                 // _isAssistantSpeaking / _isUserRecentlySpeaking 这两个 frontend
                 // guard 走的"跳过不计数"分支。Codex review on PR #1401。
-                if (voiceTriggered) {
+                if (voiceTriggered
+                    && (S._voiceProactiveBackoffResetVersion || 0) === voiceResetVersion) {
                     S._voiceProactiveNoResponseCount = (S._voiceProactiveNoResponseCount || 0) + 1;
+                } else if (voiceTriggered) {
+                    console.log('[ProactiveChat] 用户在本轮等待期间已回复，保留无回复计数 reset');
                 }
-                // 不在这里 scheduleProactiveChat()——等 AI turn end 后再调度下一次，
-                // 避免 AI 还在说话就被下一次 nudge 打断。
-                // turn end handler 中会对语音模式调用 scheduleProactiveChat()。
-                // 如果本次 nudge 被 guard 跳过（pass）/ 被 server 409 拒绝，
-                // AI 不会响应也不会有 turn end，所以这两种情况仍需自行调度。
-                if (S._voiceProactiveLastResult === 'pass') {
+                // 文本注入会一直 await 到 response.done；对应 turn end 可能在
+                // isProactiveChatRunning 仍为 true 时先到，导致调度调用被抑制。
+                // 请求完成、锁释放后兜底补排。若其它完成事件已排好 timer，
+                // 保留原 timer，避免把间隔起点向后推。
+                if (!S.proactiveChatTimer) {
                     scheduleProactiveChat();
                 }
             }, delay);
@@ -859,6 +870,8 @@
         }
 
         S.proactiveChatTimer = setTimeout(async function () {
+            // setTimeout firing does not clear our stored handle.
+            S.proactiveChatTimer = null;
             // 双重检查锁：定时器触发时再次检查是否正在执行
             if (S.isProactiveChatRunning) {
                 console.log('主动搭话定时器触发时发现正在执行中，跳过本次');
@@ -985,7 +998,7 @@
                 console.log('[ProactiveChat] 游戏路由 active，跳过普通主动搭话');
                 return;
             }
-            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入预录音频 ──
+            // ── 语音模式快速路径：直接发 voice_mode 请求，后端注入文本触发 ──
             if (S.isRecording) {
                 var lanlanName = (window.lanlan_config && window.lanlan_config.lanlan_name) || '';
                 var voiceModes = [];
@@ -1840,6 +1853,8 @@
         S.proactiveChatBackoffLevel = 0;
         // 语音模式：用户说话了，重置无回复计数
         S._voiceProactiveNoResponseCount = 0;
+        S._voiceProactiveBackoffResetVersion =
+            (S._voiceProactiveBackoffResetVersion || 0) + 1;
         // 重新安排定时器
         scheduleProactiveChat();
         // 跨窗口同步：分发环境下 chat.html 输入只会 reset 它自己这份无用的 state，
@@ -1854,10 +1869,14 @@
 
     // ======================== proactive vision during speech ========================
 
+    var proactiveVisionFrameInFlight = false;
+
     /**
      * 发送单帧屏幕数据（统一使用 acquireOrReuseCachedStream → captureFrameFromStream → 后端兜底）
      */
     async function sendOneProactiveVisionFrame() {
+        if (proactiveVisionFrameInFlight) return;
+        proactiveVisionFrameInFlight = true;
         try {
             if (!isProactiveVisionEnabledNow() || !S.isRecording) {
                 stopProactiveVisionDuringSpeech();
@@ -1879,6 +1898,36 @@
                     try { stream.getTracks().forEach(function (t) { try { t.stop(); } catch (e) { } }); } catch (e) { }
                     S.screenCaptureStream = null;
                     S.screenCaptureStreamLastUsed = null;
+                }
+            }
+
+            // Native desktop shells return encoded frames instead of a
+            // Chromium MediaStream.
+            if (!dataUrl && S.selectedScreenSourceId) {
+                var desktopProvider = getDesktopProvider();
+                if (desktopProvider
+                    && desktopProvider.nativeFrameCapture
+                    && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
+                    try {
+                        var direct = await window.captureDesktopSourceWithTimeout(
+                            desktopProvider,
+                            'captureSourceAsDataUrl',
+                            S.selectedScreenSourceId
+                        );
+                        if (direct && direct.success && direct.dataUrl) {
+                            dataUrl = direct.dataUrl;
+                        } else if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(direct, '主动视觉原生捕获源已失效');
+                        }
+                    } catch (directError) {
+                        if (typeof window.maybeClearSourceOnNotFound === 'function') {
+                            window.maybeClearSourceOnNotFound(
+                                { error: directError && directError.message },
+                                '主动视觉原生捕获源已失效'
+                            );
+                        }
+                        console.warn('[ProactiveVision] 原生捕获失败，尝试后端兜底:', directError);
+                    }
                 }
             }
 
@@ -1910,6 +1959,8 @@
             }
         } catch (e) {
             console.error('sendOneProactiveVisionFrame 失败:', e);
+        } finally {
+            proactiveVisionFrameInFlight = false;
         }
     }
     mod.sendOneProactiveVisionFrame = sendOneProactiveVisionFrame;
@@ -2049,11 +2100,16 @@
             } catch (e) { console.warn('[主动搭话截图] 缓存流截图失败，继续:', e); }
         }
 
-        // 策略 0b: 主进程直接捕获选中源（Electron 桌面环境）
-        if (S.selectedScreenSourceId && window.electronDesktopCapturer
-            && typeof window.electronDesktopCapturer.captureSourceAsDataUrl === 'function') {
+        // 策略 0b: 桌面壳直接捕获选中源（Electron / Tauri）
+        var desktopProvider = getDesktopProvider();
+        if (S.selectedScreenSourceId && desktopProvider
+            && typeof desktopProvider.captureSourceAsDataUrl === 'function') {
             try {
-                var direct = await window.electronDesktopCapturer.captureSourceAsDataUrl(S.selectedScreenSourceId);
+                var direct = await window.captureDesktopSourceWithTimeout(
+                    desktopProvider,
+                    'captureSourceAsDataUrl',
+                    S.selectedScreenSourceId
+                );
                 if (direct && direct.success && direct.dataUrl) {
                     console.log('[主动搭话截图] 主进程直接捕获成功:', S.selectedScreenSourceId);
                     return direct.dataUrl;

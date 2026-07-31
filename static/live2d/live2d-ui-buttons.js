@@ -764,6 +764,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         if (this.isLocked) {
             return;
         }
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
             hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
             return;
@@ -772,6 +781,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         buttonsContainer.style.display = 'flex';
 
         setTimeout(() => {
+            if (
+                typeof this.isLive2DPeekActive === 'function'
+                && this.isLive2DPeekActive()
+            ) {
+                if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                    this._setLive2DPeekControlsSuppressed(true);
+                }
+                return;
+            }
             const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
             if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
@@ -792,6 +810,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     }
 
     this.tutorialProtectionTimer = setInterval(() => {
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (window.isInTutorial === true) {
             if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                 hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
@@ -830,6 +857,13 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     this._uiWindowHandlers = this._uiWindowHandlers || [];
     this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
+    if (
+        typeof this.isLive2DPeekActive === 'function' &&
+        this.isLive2DPeekActive() &&
+        typeof this._setLive2DPeekControlsSuppressed === 'function'
+    ) {
+        this._setLive2DPeekControlsSuppressed(true);
+    }
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');
 };
