@@ -146,6 +146,14 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         # an interrupted response's own terminal must still be able to finish
         # the turn it belongs to.
         self._turn_epoch = 0
+        # The value ``_turn_epoch`` had when the response ``_current_response_id``
+        # names began. A release must compare against THIS, not against the
+        # epoch it happens to read on entry: a barge-in advances ``_turn_epoch``
+        # at ``speech_stopped`` without clearing the tracked response id, so a
+        # release starting after that barge-in would otherwise adopt the
+        # successor's epoch as its own baseline and find itself trivially
+        # current.
+        self._current_turn_epoch = 0
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,

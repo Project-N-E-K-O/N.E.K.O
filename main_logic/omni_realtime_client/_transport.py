@@ -1297,7 +1297,12 @@ class _TransportMixin:
         if not self._is_responding and self._current_response_id is None:
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
-        released_epoch = self._turn_epoch
+        # The epoch this response began in, not the one the callback happens to
+        # find. Between them a barge-in can have advanced _turn_epoch at
+        # speech_stopped — which does not clear _current_response_id, so the id
+        # guard above still passes — and reading the live value here would make
+        # the check compare the successor's epoch with itself.
+        released_epoch = self._current_turn_epoch
 
         def _still_ours() -> bool:
             return self._turn_epoch == released_epoch
@@ -1616,6 +1621,7 @@ class _TransportMixin:
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
                     self._turn_epoch += 1
+                    self._current_turn_epoch = self._turn_epoch
                     self._interrupted = False  # Clear interruption flag on new response
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
                     # 清空转录 buffer，防止累积旧内容

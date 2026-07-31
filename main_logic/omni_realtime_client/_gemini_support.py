@@ -556,6 +556,7 @@ class _GeminiMixin:
                     )
                     self._is_responding = True
                     self._turn_epoch += 1
+                    self._current_turn_epoch = self._turn_epoch
                     if _is_new_turn and _can_clear_interrupted:
                         # Gemini has no response.created event; clear stale interrupt state only
                         # after SDK transcription or a quiet gap proves this is not a canceled tail.

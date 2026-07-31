@@ -199,6 +199,22 @@ def _released_client(**hooks):
     return client, arbiter, sent
 
 
+def _begin_response(client, response_id="resp-1"):
+    """Put the host exactly where ``response.created`` leaves it.
+
+    Hand-rolling this trio is how fixtures drift away from the branch they
+    stand in for — one earlier version forgot ``_is_first_transcript_chunk``
+    and another would have missed ``_current_turn_epoch``, which is the very
+    thing several of these tests exist to check.
+    """
+
+    client._current_response_id = response_id
+    client._is_responding = True
+    client._turn_epoch += 1
+    client._current_turn_epoch = client._turn_epoch
+    client._is_first_text_chunk = client._is_first_transcript_chunk = True
+
+
 # ---------------------------------------------------------------------------
 # Contract 1: the shipped default is untouched.
 # ---------------------------------------------------------------------------
@@ -1278,9 +1294,7 @@ async def test_an_id_less_overlap_is_not_the_releases_to_end():
         on_response_done=_on_done, on_output_transcript=_on_transcript
     )
     # The owner announced itself with an id...
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     # ...then an id-less response.created took the turn over.
     client._current_response_id = None
     client._turn_epoch += 1
@@ -1310,9 +1324,7 @@ async def test_a_named_release_still_ends_the_turn_it_named():
             done_calls.append("done")
 
         client = _free_client(on_response_done=_on_done)
-        client._current_response_id = "resp-1"
-        client._is_responding = True
-        client._turn_epoch += 1
+        _begin_response(client, "resp-1")
 
         await client._on_arbiter_stuck_release("abandoned", named_id)
 
@@ -1350,9 +1362,7 @@ async def test_a_turn_that_started_mid_release_keeps_its_speech_id():
         on_response_done=_on_done,
         on_sid_rotate=_on_rotate,
     )
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     client._output_transcript_buffer = "旧轮说了半句"
     client._audio_delta_count = 1
 
@@ -1362,9 +1372,7 @@ async def test_a_turn_that_started_mid_release_keeps_its_speech_id():
     await asyncio.wait_for(entered.wait(), timeout=1)
 
     # A successor turn starts while the release is parked in the flush.
-    client._current_response_id = "resp-2"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-2")
 
     proceed.set()
     await asyncio.wait_for(release, timeout=2)
@@ -1390,9 +1398,7 @@ async def test_an_undisturbed_release_still_runs_both_hooks():
         order.append("rotate")
 
     client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
 
     await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
 
@@ -1419,9 +1425,7 @@ async def test_a_blocked_transcript_flush_cannot_cost_the_speech_id_rotation():
     client = _free_client(
         on_output_transcript=_never_returns, on_sid_rotate=_on_rotate
     )
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     client._output_transcript_buffer = "说了半句"
     client._audio_delta_count = 1
 
@@ -1449,9 +1453,7 @@ async def test_a_raising_transcript_flush_cannot_cost_the_rotation_either():
         rotations.append("rotate")
 
     client = _free_client(on_output_transcript=_raises, on_sid_rotate=_on_rotate)
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     client._output_transcript_buffer = "说了半句"
     client._audio_delta_count = 1
 
@@ -1474,9 +1476,7 @@ async def test_a_blocked_done_hook_cannot_cost_the_rotation():
         rotations.append("rotate")
 
     client = _free_client(on_response_done=_never_returns, on_sid_rotate=_on_rotate)
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
 
     await asyncio.wait_for(
         client._on_arbiter_stuck_release("abandoned resp-1", "resp-1"),
@@ -1530,8 +1530,14 @@ def test_every_turn_start_advances_the_epoch():
             if not re.match(r"^\s*self\._is_responding\s*=\s*True\s*$", line):
                 continue
             starts += 1
-            if "self._turn_epoch += 1" not in "\n".join(lines[index : index + 3]):
-                offenders.append(f"{path.name}:{index + 1}")
+            window = "\n".join(lines[index : index + 4])
+            if "self._turn_epoch += 1" not in window:
+                offenders.append(f"{path.name}:{index + 1} (no epoch bump)")
+            elif "self._current_turn_epoch = self._turn_epoch" not in window:
+                # A response turn must also record WHICH epoch it began in.
+                # Without that, a release compares the live epoch against
+                # itself and its guard is vacuous — the exact defect this pins.
+                offenders.append(f"{path.name}:{index + 1} (epoch not recorded)")
     assert starts >= 2, (
         "expected to find the turn-start sites; the search stopped matching, "
         f"which makes this guard vacuous (found {starts})"
@@ -1795,9 +1801,7 @@ async def test_the_release_adds_what_the_turn_said_to_the_repetition_history():
     # _recent_responses, so three identical turns in a row could not trigger
     # on_repetition_detected at all.
     client = _free_client()
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     client._current_response_transcript = "一模一样的回答"
     client._audio_delta_count = 2
 
@@ -1860,9 +1864,7 @@ async def test_a_turn_starting_inside_the_done_hook_still_gets_a_speech_id():
         rotations.append("rotate")
 
     client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
 
     release = asyncio.create_task(
         client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
@@ -2083,9 +2085,7 @@ async def test_the_abandoned_transcript_is_dropped_rather_than_spoken_as_the_suc
     client._repetition_threshold = 0.5
     # Two prior identical turns so the third trips detection and parks there.
     client._recent_responses = ["一样的话", "一样的话"]
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     client._current_response_transcript = "一样的话"
     client._output_transcript_buffer = "旧轮没送出的半句"
     client._audio_delta_count = 1
@@ -2119,9 +2119,7 @@ async def test_an_undisturbed_release_still_flushes_its_trailing_transcript():
         transcripts.append((text, is_first))
 
     client = _free_client(on_output_transcript=_on_transcript)
-    client._current_response_id = "resp-1"
-    client._is_responding = True
-    client._turn_epoch += 1
+    _begin_response(client, "resp-1")
     # What response.created sets, so the flag the host receives is the one a
     # real turn would have produced.
     client._is_first_transcript_chunk = True
@@ -2201,3 +2199,101 @@ async def test_an_unowned_cancellation_does_not_fail_work_queued_behind_it(
         {"type": "response.done", "response": {"id": "srv-1"}}
     )
     await asyncio.wait_for(queued.sent, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_barge_in_before_the_release_is_not_adopted_as_its_own_turn():
+    # Codex P2, against the epoch fix two rounds ago. Advancing _turn_epoch at
+    # speech_stopped protects a release that is ALREADY running. A release
+    # that starts afterwards read the live value as its baseline, so the guard
+    # compared the successor's epoch with itself and passed trivially.
+    #
+    # The barge-in is what makes it reachable: speech_stopped advances the
+    # epoch and on_new_message takes the new speech id, but it does NOT clear
+    # _current_response_id — so the id guard still matches the abandoned
+    # response, and the hooks then queue TTS-done and emit turn end against
+    # the user's brand-new turn.
+    done_calls: list[str] = []
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
+    _begin_response(client, "resp-1")
+
+    # The user barges in. This is exactly what the speech_stopped branch does:
+    # a new turn starts, and the tracked response id is left alone.
+    client._turn_epoch += 1
+    assert client._current_response_id == "resp-1", (
+        "speech_stopped does not clear the tracked response, which is why the "
+        "id guard alone cannot catch this"
+    )
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert done_calls == [], (
+        "the user's turn started first; ending a turn under it is what the "
+        "epoch is for"
+    )
+    assert rotations == [], (
+        "and rotating would throw away the speech id on_new_message just "
+        "assigned to that turn"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_release_with_no_barge_in_still_ends_its_own_turn():
+    # The dual: without an intervening turn start, the captured epoch and the
+    # live one agree and the release finishes normally. Without this pair,
+    # "never run the hooks" would pass for correct.
+    done_calls: list[str] = []
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
+    _begin_response(client, "resp-1")
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert done_calls == ["done"]
+    assert rotations == ["rotate"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_response_created_records_the_epoch_its_turn_began_in():
+    # Through the real receive loop, not the fixture that stands in for it.
+    # _begin_response sets _current_turn_epoch directly, so it cannot tell
+    # whether the branch it imitates still does — and that branch is what the
+    # release's guard depends on.
+    import json
+    from unittest.mock import AsyncMock
+
+    client = _free_client()
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+    ]
+    before = client._turn_epoch
+
+    try:
+        await client.handle_messages()
+    finally:
+        await client._response_arbiter.shutdown("test teardown")
+
+    assert client._turn_epoch == before + 1, "the turn started"
+    assert client._current_turn_epoch == client._turn_epoch, (
+        "and the response records which epoch it began in, which is what a "
+        "release compares against instead of the live value"
+    )
