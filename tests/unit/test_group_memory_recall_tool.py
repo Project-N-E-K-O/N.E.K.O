@@ -14,7 +14,7 @@ pin the six load-bearing pieces of that migration:
 4. the in-handler entry / post-fetch revocation gates;
 5. tool-round dict rows never survive in the shared history (neither on
    normal turns nor through the revocation rollback);
-6. pre-tool text never reaches the outbound message, and routes that
+6. model-authored pre-tool text remains in the outbound message, and routes that
    silently drop ``tools`` fall back to the synchronous recall.
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -136,6 +137,24 @@ def _generation_service(plugin):
     service = QQReplyGenerationService.__new__(QQReplyGenerationService)
     service.plugin = plugin
     return service
+
+
+def test_hardcoded_recall_filler_remains_removed():
+    """The retired mechanical recall phrase must not return under another hook."""
+    repo_root = Path(__file__).resolve().parents[2]
+    runtime_paths = [repo_root / "config/prompts/prompts_memory.py"]
+    runtime_paths.extend(sorted((repo_root / "main_logic/core").glob("*.py")))
+    runtime_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in runtime_paths
+    )
+
+    for retired_marker in (
+        "RECALL_MEMORY_TOOL_FILLER",
+        "_RECALL_FILLER_SID_SUFFIX",
+        "::recall-filler",
+        "让我回忆一下哦……",
+    ):
+        assert retired_marker not in runtime_sources
 
 
 def _recall_tool_call(arguments):
@@ -476,7 +495,6 @@ async def test_arm_respects_the_session_clients_frozen_route():
     assert service._arm_recall_tool(
         context=_group_context(),
         user_session=free_client,
-        reply_chunks=[],
         consent_before={},
     ) is False
     assert free_client.armed_tool_names == []
@@ -486,7 +504,6 @@ async def test_arm_respects_the_session_clients_frozen_route():
     assert service._arm_recall_tool(
         context=_group_context(recall_via_tool=False),
         user_session=capable_client,
-        reply_chunks=[],
         consent_before={},
     ) is False
     assert capable_client.armed_tool_names == []
@@ -496,14 +513,12 @@ async def test_arm_respects_the_session_clients_frozen_route():
         context=_group_context(),
         user_session=SimpleNamespace(model=TOOL_CAPABLE_MODEL,
                                      base_url=TOOL_CAPABLE_BASE_URL),
-        reply_chunks=[],
         consent_before={},
     ) is False
 
     assert service._arm_recall_tool(
         context=_group_context(),
         user_session=capable_client,
-        reply_chunks=[],
         consent_before={},
     ) is True
     assert capable_client.armed_tool_names[-1] == ["recall_memory"]
@@ -728,16 +743,13 @@ async def test_revocation_after_tool_read_discards_reply_and_tool_rows():
 
 
 # ---------------------------------------------------------------------------
-# Outbound hygiene (连带 #6) and timeout budget (连带 #7)
+# Outbound continuity (连带 #6) and timeout budget (连带 #7)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_pre_tool_text_never_reaches_the_outbound_message():
-    """The model announces a lookup ("let me check") before calling the
-    tool. That segment is persisted by the client into the assistant
-    tool_calls row (and swept with it) — the QQ message the group
-    receives must contain only the post-tool answer."""
+async def test_pre_tool_text_remains_in_the_outbound_message():
+    """QQ must preserve model-authored text emitted before a tool call."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
@@ -765,27 +777,18 @@ async def test_pre_tool_text_never_reaches_the_outbound_message():
         user_session=client,
         reply_chunks=reply_chunks,
     )
-    assert result == "查到了，是不剧透"
-    assert "我查一下" not in result
+    assert result == "我查一下查到了，是不剧透"
 
 
 @pytest.mark.asyncio
-async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
-    """P2 的零执行路径：provider 流出 tool_call 分片但 function.name 始终
-    没到，collect_tool_calls 全部丢弃，handler 一次都不调——真实客户端
-    此时仍会触发 on_tool_round_start（进入 tool 轮的最早信号）。清理只挂
-    handler 入口的话，这条路径上永远清不掉，pre-tool 的"我查一下"会连着
-    forced-finalize 的最终文本一起外发（审计实跑复现过）。"""  # noqa: DOCSTRING_CJK
+async def test_pre_tool_text_remains_when_no_tool_call_executes():
+    """A nameless tool fragment must not make QQ discard prior model text."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
     async def _script(client, message):
         client.reply_chunks_ref.append("我查一下")
-        # 模拟真实客户端：确认进入 tool 轮即回调，但 handler 从未被调。
-        assert client.on_tool_round_start is not None, (
-            "挂载召回工具的同时必须挂 round-start 回调"
-        )
-        await client.on_tool_round_start()
+        assert client.on_tool_round_start is None
         client._conversation_history.append(
             SimpleNamespace(type="human", content=message)
         )
@@ -805,10 +808,7 @@ async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
         user_session=client,
         reply_chunks=reply_chunks,
     )
-    assert result == "最终回答"
-    assert "我查一下" not in result
-    # 对偶卸载：round-start 闭包攥着本轮的 reply_chunks，越轮存活会清掉
-    # 下一轮的出站缓冲。
+    assert result == "我查一下最终回答"
     assert client.on_tool_round_start is None
     plugin.memory_bridge.query_relevant_memory.assert_not_awaited()
 
