@@ -689,8 +689,44 @@ class FactStore:
         def _clip(body: str, budget: int) -> str:
             if budget <= 0:
                 return ''
-            if _rendered_cost(body) <= budget:
+
+            # Tokenizers can be pathologically slow on a single enormous run
+            # (for example hundreds of thousands of repeated ASCII chars).
+            # This is a CPU guard, not the prompt contract: the final output is
+            # still governed by token budgets below and keeps both ends plus a
+            # visible marker. The generous factor avoids touching ordinary
+            # prose while bounding what any tokenizer invocation receives.
+            working_char_limit = (
+                SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS * 16
+            )
+            if len(body) > working_char_limit:
+                guard_head = working_char_limit // 2
+                guard_tail = working_char_limit - guard_head
+                guarded = (
+                    f"{body[:guard_head]}{omission_marker}{body[-guard_tail:]}"
+                )
+                if _rendered_cost(guarded) <= budget:
+                    return guarded
+                body = f"{body[:guard_head]}{body[-guard_tail:]}"
+            elif _rendered_cost(body) <= budget:
                 return body
+
+            # Bound the working set once before binary search. Otherwise each
+            # probe would re-encode the complete untrusted body. An empty
+            # separator deliberately joins the retained ends only internally;
+            # the final probe below inserts the visible localized marker.
+            working_budget = min(
+                SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
+                budget,
+            )
+            working_head = working_budget // 2
+            working_body = truncate_head_tail_tokens(
+                body,
+                working_head,
+                working_budget - working_head,
+                separator='',
+            )
+            working_was_truncated = working_body != body
 
             # The budget covers the generated per-line ``| `` prefix too.
             # Binary-search the largest content allocation whose fully
@@ -698,13 +734,17 @@ class FactStore:
             # path without discarding either retained end.
             low = 0
             high = min(SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS, budget)
+            if working_was_truncated:
+                # Force the final pass to insert the visible marker instead
+                # of accepting the internal marker-less working set as-is.
+                high = min(high, max(0, count_tokens(working_body) - 1))
             best = ''
             while low <= high:
                 content_budget = (low + high) // 2
                 retained_budget = max(0, content_budget - omission_tokens)
                 head = retained_budget // 2
                 candidate = truncate_head_tail_tokens(
-                    body,
+                    working_body,
                     head + omission_tokens,
                     retained_budget - head,
                     separator=omission_marker,

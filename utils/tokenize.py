@@ -292,13 +292,27 @@ def truncate_head_tail_tokens(
     total = head_tokens + tail_tokens
     if total <= 0:
         return ""
-    if count_tokens(text, encoding) <= total:
-        return text
+    enc = _get_encoder(encoding)
+    tokens = None
+    if enc is None:
+        if _count_tokens_heuristic(text) <= total:
+            return text
+    else:
+        tokens = enc.encode(text, disallowed_special=())
+        if len(tokens) <= total:
+            return text
     # Reserve room for the separator out of head/tail so the final
     # `head + sep + tail` never exceeds `total`. Bias the deduction
     # toward `head` first (head_alloc shrinks first, then tail) — keeps
     # tail (last sentence / question) intact when budgets are tight.
-    sep_tokens = count_tokens(separator, encoding) if separator else 0
+    if separator:
+        sep_tokens = (
+            _count_tokens_heuristic(separator)
+            if enc is None
+            else len(enc.encode(separator, disallowed_special=()))
+        )
+    else:
+        sep_tokens = 0
     if sep_tokens >= total:
         # Pathological: budget can't even fit the separator. Degrade to
         # a plain head-only truncation (better than returning sep alone).
@@ -309,7 +323,6 @@ def truncate_head_tail_tokens(
         # Sanity: head_alloc was already shaved; if rounding misbehaved
         # take the rest from tail.
         tail_alloc = max(0, total - head_alloc - sep_tokens)
-    enc = _get_encoder(encoding)
     if enc is None:
         # Heuristic fallback: cut by char position using same weighting
         # as `_count_tokens_heuristic`. Approximate but bounded.
@@ -335,7 +348,7 @@ def truncate_head_tail_tokens(
         if not head_str and not tail_str:
             return ""
         return f"{head_str}{separator}{tail_str}"
-    tokens = enc.encode(text, disallowed_special=())
+    assert tokens is not None
     head_tok = tokens[:head_alloc] if head_alloc else []
     tail_tok = tokens[-tail_alloc:] if tail_alloc > 0 else []
     head_str = enc.decode(head_tok) if head_tok else ""

@@ -124,6 +124,32 @@ def test_scoped_batch_budget_includes_generated_newline_prefixes():
     assert rendered_message.endswith("| END")
 
 
+def test_scoped_batch_binary_search_only_reprocesses_a_bounded_working_set(
+    monkeypatch,
+):
+    original = "BEGIN" + ("x" * 200_000) + "END"
+    seen_lengths = []
+    real_truncate = tokenize.truncate_head_tail_tokens
+
+    def _record_length(text, *args, **kwargs):
+        seen_lengths.append(len(text))
+        return real_truncate(text, *args, **kwargs)
+
+    monkeypatch.setattr(tokenize, "truncate_head_tail_tokens", _record_length)
+
+    rendered = FactStore._format_speaker_segments(
+        [_segment([original])],
+        nonce="abcd1234",
+        lang="en",
+    )
+
+    assert len(seen_lengths) > 1
+    assert len(original) not in seen_lengths
+    assert max(seen_lengths) < 10_000
+    assert "BEGIN" in rendered
+    assert "END" in rendered
+
+
 def test_scoped_batch_water_filling_reuses_later_short_message_savings():
     messages = ["H" + ("界" * 1000) + "T" for _ in range(20)]
     messages.extend("ok" for _ in range(180))
