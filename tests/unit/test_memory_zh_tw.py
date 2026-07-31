@@ -1003,6 +1003,65 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
         assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
 
 
+@pytest.mark.asyncio
+async def test_fact_extractors_detect_prompt_locale_from_message_text(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from config.prompts import prompts_memory as prompt_module
+    from memory import facts
+    from utils.language_utils import language_context
+    from utils.llm_client import HumanMessage
+
+    selected = []
+
+    def basic_prompt(lang):
+        selected.append(("basic", lang))
+        return "{CONVERSATION} {LANLAN_NAME} {MASTER_NAME}"
+
+    def batch_prompt(lang):
+        selected.append(("batch", lang))
+        return "{SEGMENTS} {SEGMENT_NONCE} {LANLAN_NAME}"
+
+    def aware_prompt(lang):
+        selected.append(("aware", lang))
+        return "{CONVERSATION} {KNOWN_POOL} {LANLAN_NAME} {MASTER_NAME}"
+
+    class ConfigManager:
+        async def aget_character_data(self):
+            return (None, None, None, None, {"human": "Alice"}, None, None, None, None)
+
+    store = object.__new__(facts.FactStore)
+    store._config_manager = ConfigManager()
+    store._allm_call_with_retries = AsyncMock(return_value=[])
+    messages = [HumanMessage(content="I prefer quiet afternoons at home.")]
+
+    monkeypatch.setattr(facts, "get_fact_extraction_prompt", basic_prompt)
+    monkeypatch.setattr(facts, "get_fact_extraction_batch_prompt", batch_prompt)
+    monkeypatch.setattr(
+        prompt_module,
+        "get_fact_extraction_ai_aware_prompt",
+        aware_prompt,
+    )
+
+    with language_context("zh-TW"):
+        await store._allm_extract_facts("Neko", messages)
+        await store._allm_extract_facts_batch(
+            "Neko",
+            [{"speaker_label": "Alice", "messages": messages}],
+        )
+        await store._allm_extract_facts_with_known_pool(
+            "Neko",
+            messages,
+            [],
+        )
+
+    assert selected == [
+        ("basic", "en"),
+        ("batch", "en"),
+        ("aware", "en"),
+    ]
+
+
 def test_promotion_locale_detection_excludes_truncated_pool_tail():
     from memory.reflection.promotion_merge import PromotionMergeMixin
     from utils.language_utils import detect_prompt_language

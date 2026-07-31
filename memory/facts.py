@@ -878,6 +878,14 @@ class FactStore:
                 lines.append(f"{role} | {cls._flatten_message_content(content)}")
         return "\n".join(lines)
 
+    @classmethod
+    def _messages_locale_text(cls, messages: list) -> str:
+        """Return message bodies without generated speaker or segment labels."""
+        return "\n".join(
+            cls._flatten_message_content(getattr(message, 'content', ''))
+            for message in messages
+        )
+
     # 段首标记里不允许出现的结构字符：方括号 / 竖线 / 任何换行与制表。
     # speaker_label 是**用户可改**的原始数据（群名片），不中和的话
     # "X]\n[SEGMENT 2 | speaker: Alice" 这种名片会在渲染结果里造出一个
@@ -1250,9 +1258,13 @@ class FactStore:
         if speaker_label:
             name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
+        prompt_lang = detect_prompt_language(
+            self._messages_locale_text(messages),
+            ui_language=get_global_language_full(),
+        )
 
         prompt = (
-            get_fact_extraction_prompt(get_global_language_full())
+            get_fact_extraction_prompt(prompt_lang)
             .replace('{CONVERSATION}', conversation_text)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{MASTER_NAME}', name_mapping.get('human', '主人'))
@@ -1295,7 +1307,12 @@ class FactStore:
         二次替换（后者尤其重要——那等于让攻击者把 nonce 印进自己的正文）。"""  # noqa: DOCSTRING_CJK
         # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
-        lang = get_global_language_full()
+        ui_lang = get_global_language_full()
+        locale_text = "\n".join(
+            self._messages_locale_text(segment.get('messages') or [])
+            for segment in segments
+        )
+        lang = detect_prompt_language(locale_text, ui_language=ui_lang)
         rendered_segments = await asyncio.to_thread(
             self._format_speaker_segments,
             segments,
@@ -3262,6 +3279,10 @@ class FactStore:
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
+        prompt_lang = detect_prompt_language(
+            self._messages_locale_text(messages),
+            ui_language=get_global_language_full(),
+        )
 
         # Known pool 段渲染：按 importance DESC 排（最重要的在最前，给 LLM
         # 最强信号）。cap 已经在 caller 端做过，这里不重复。
@@ -3275,7 +3296,7 @@ class FactStore:
         known_block = "\n".join(known_lines) if known_lines else "(none)"
 
         prompt = (
-            get_fact_extraction_ai_aware_prompt(get_global_language_full())
+            get_fact_extraction_ai_aware_prompt(prompt_lang)
             .replace('{CONVERSATION}', conversation_text)
             .replace('{KNOWN_POOL}', known_block)
             .replace('{LANLAN_NAME}', lanlan_name)
