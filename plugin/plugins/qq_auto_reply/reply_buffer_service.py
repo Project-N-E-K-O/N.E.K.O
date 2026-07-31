@@ -21,15 +21,23 @@ class PendingReply:
                  "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
                  "draft_rows", "mention_context", "has_nonconsent_input",
-                 "consent_snapshot", "used_fallback_reply", "generation")
+                 "consent_snapshot", "used_fallback_reply", "generation",
+                 "private_permission_level_at_receipt")
 
-    def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
+    def __init__(
+        self, first_text: str, wait_seconds: float, sender_id: str,
+        is_group: bool, group_id: str,
+        private_permission_level_at_receipt: str | None = None,
+    ):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
         # Keep real inbound text separate from buffered_texts: schedule_reply
         # replaces buffered_texts[0] with the bot draft, while later private
         # inputs never enter the normal pipeline/history.
         self.buffered_user_texts: list[str] = [first_text]
-        self.materialized_user_count: int = 1
+        # pre_buffer runs before session creation/generation, so zero is the
+        # only honest initial value. schedule_reply advances this after the
+        # generation path confirms that the first human row exists.
+        self.materialized_user_count: int = 0
         self.wait_until = time.time() + wait_seconds
         self.task: Optional[asyncio.Task] = None
         # 代际：每次新消息作废当前等待任务时 +1。归属**不能**只看
@@ -64,6 +72,9 @@ class PendingReply:
         # 本草稿来自直连 fallback（共享历史没有对应 ai 行）：真投递后要
         # 补一行，否则 digest 只留半边对话。
         self.used_fallback_reply = False
+        self.private_permission_level_at_receipt = (
+            private_permission_level_at_receipt
+        )
 
 
 class QQReplyBufferService:
@@ -121,6 +132,16 @@ class QQReplyBufferService:
 
     def _consent_revoked_since(self, pending) -> bool:
         """True when any consent switch this draft relied on is now off."""
+        permission_snapshot = getattr(
+            pending, "private_permission_level_at_receipt", None,
+        )
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        if permission_snapshot is not None and permission_mgr is not None:
+            current_permission = permission_mgr.get_permission_level(
+                pending.sender_id
+            )
+            if current_permission != permission_snapshot:
+                return True
         snapshot = getattr(pending, "consent_snapshot", None)
         if not snapshot:
             return False
@@ -242,6 +263,7 @@ class QQReplyBufferService:
         group_id: str,
         *,
         participant_memory_at_receipt: bool | None = None,
+        private_permission_level_at_receipt: str | None = None,
     ) -> bool:
         """消息到达时调用（LLM 生成前）：创建/追加缓冲，返回 True 表示跳过 pipeline。"""
         now = time.time()
@@ -279,6 +301,9 @@ class QQReplyBufferService:
             sender_id=sender_id,
             is_group=is_group,
             group_id=group_id,
+            private_permission_level_at_receipt=(
+                private_permission_level_at_receipt
+            ),
         )
         pending.task = None  # 尚未启动等待（等 schedule_reply 来启动）
         if not is_group and participant_memory_at_receipt is False:
@@ -318,6 +343,8 @@ class QQReplyBufferService:
         consented: bool = True,
         consent_snapshot: dict | None = None,
         used_fallback_reply: bool = False,
+        private_permission_level_at_receipt: str | None = None,
+        first_user_materialized: bool = False,
     ) -> None:
         """缓冲一条消息。如果已有等待中的缓冲，追加消息并重置等待计时。
 
@@ -398,6 +425,9 @@ class QQReplyBufferService:
                         participant_memory_at_receipt=(
                             self._participant_memory_at_receipt(existing)
                         ),
+                        private_permission_level_at_receipt=(
+                            existing.private_permission_level_at_receipt
+                        ),
                     )
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
@@ -449,6 +479,9 @@ class QQReplyBufferService:
                         participant_memory_at_receipt=(
                             self._participant_memory_at_receipt(existing)
                         ),
+                        private_permission_level_at_receipt=(
+                            existing.private_permission_level_at_receipt
+                        ),
                     )
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
@@ -488,6 +521,9 @@ class QQReplyBufferService:
                     sender_id=sender_id,
                     is_group=is_group,
                     group_id=group_id,
+                    private_permission_level_at_receipt=(
+                        private_permission_level_at_receipt
+                    ),
                 )
                 existing.first_blocks = blocks
                 existing.message_count += max(0, extra_count)
@@ -503,6 +539,14 @@ class QQReplyBufferService:
         self._bind_draft_to_pending(draft_row, existing)
         existing.mention_context = mention_context
         existing.used_fallback_reply = bool(used_fallback_reply)
+        if existing.private_permission_level_at_receipt is None:
+            existing.private_permission_level_at_receipt = (
+                private_permission_level_at_receipt
+            )
+        if first_user_materialized:
+            existing.materialized_user_count = max(
+                existing.materialized_user_count, 1,
+            )
         if consent_snapshot is not None:
             self._merge_consent_snapshot(existing, consent_snapshot)
         if not consented:
@@ -729,6 +773,9 @@ class QQReplyBufferService:
                 ),
                 participant_memory_at_receipt=(
                     self._participant_memory_at_receipt(pending)
+                ),
+                private_permission_level_at_receipt=(
+                    pending.private_permission_level_at_receipt
                 ),
             )
             async def _run_flush() -> Any:

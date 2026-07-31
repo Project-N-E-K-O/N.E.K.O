@@ -1049,6 +1049,20 @@ def test_prime_gates_participant_and_demoted_legacy_sessions():
     assert ud["private_memory_mode"] == "legacy"
     assert ud["memory_enabled"] is True
 
+    # Handler-time permission may differ from the receipt-time mode. The
+    # latter owns persistence routing, so neither direction can retarget the
+    # queued turn into the other private corpus.
+    ud = _prime(
+        {}, permission_level="admin", private_memory_mode="participant",
+    )
+    assert ud["private_memory_mode"] == "participant"
+    assert ud["memory_enabled"] is True
+    ud = _prime(
+        {}, permission_level="trusted", private_memory_mode="legacy",
+    )
+    assert ud["private_memory_mode"] == "legacy"
+    assert ud["memory_enabled"] is True
+
 
 # ---------------------------------------------------------------------------
 # settings transitions for the participant switch
@@ -2536,6 +2550,38 @@ async def test_private_buffer_uses_resolved_participant_consent():
 
 
 @pytest.mark.asyncio
+async def test_private_context_uses_receipt_permission_after_promotion():
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQReplyDecision,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    build = AsyncMock(return_value=SimpleNamespace())
+    runner = QQReplyPipelineRunner(SimpleNamespace(
+        reply_context_node=SimpleNamespace(build=build),
+    ))
+    request = QQReplyRequest(
+        message_text="queued before promotion",
+        sender_id="1001",
+        is_group=False,
+        participant_memory_at_receipt=True,
+        private_permission_level_at_receipt="trusted",
+    )
+
+    await runner._run_context(
+        request, QQReplyDecision(action="reply", permission_level="admin"),
+    )
+
+    assert build.await_args.kwargs["permission_level"] == "trusted"
+    assert build.await_args.kwargs[
+        "private_permission_level_at_receipt"
+    ] == "trusted"
+
+
+@pytest.mark.asyncio
 async def test_private_synthetic_flush_propagates_receipt_consent():
     from plugin.plugins.qq_auto_reply.reply_buffer_service import (
         PendingReply,
@@ -2565,6 +2611,7 @@ async def test_private_synthetic_flush_propagates_receipt_consent():
     service = QQReplyBufferService(plugin)
     pending = PendingReply(
         "draft one", 0.0, sender_id="1001", is_group=False, group_id="",
+        private_permission_level_at_receipt="trusted",
     )
     pending.buffered_texts = ["draft one", "draft two"]
     pending.message_count = 2
@@ -2577,6 +2624,71 @@ async def test_private_synthetic_flush_propagates_receipt_consent():
     synthetic = run.await_args.args[0]
     assert synthetic.source_kind == "rapid_fire_flush"
     assert synthetic.participant_memory_at_receipt is False
+    assert synthetic.private_permission_level_at_receipt == "trusted"
+
+
+def test_private_buffer_permission_snapshot_revokes_delayed_reply():
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    live_permission = {"value": "trusted"}
+    plugin = SimpleNamespace(
+        _qq_settings={},
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda _sender: live_permission["value"],
+        ),
+    )
+    service = QQReplyBufferService(plugin)
+    pending = PendingReply(
+        "draft", 10.0, sender_id="1001", is_group=False, group_id="",
+        private_permission_level_at_receipt="trusted",
+    )
+
+    assert service._consent_revoked_since(pending) is False
+    live_permission["value"] = "admin"
+    assert service._consent_revoked_since(pending) is True
+
+
+@pytest.mark.asyncio
+async def test_private_buffer_counts_first_input_only_after_history_accepts_it():
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        QQReplyBufferService,
+    )
+
+    plugin = SimpleNamespace(_emit_log=MagicMock())
+    service = QQReplyBufferService(plugin)
+    assert service.pre_buffer(
+        "private:1001", "first", "1001", False, "",
+        participant_memory_at_receipt=True,
+        private_permission_level_at_receipt="trusted",
+    ) is False
+    await service.schedule_reply(
+        "private:1001", "draft", "draft", [], 60.0, "1001", False,
+        history_backed=False, first_user_materialized=False,
+    )
+    pending = service._pending["private:1001"]
+    assert pending.materialized_user_count == 0
+    pending.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending.task
+
+    service = QQReplyBufferService(plugin)
+    service.pre_buffer(
+        "private:1001", "first", "1001", False, "",
+        participant_memory_at_receipt=True,
+        private_permission_level_at_receipt="trusted",
+    )
+    await service.schedule_reply(
+        "private:1001", "draft", "draft", [], 60.0, "1001", False,
+        history_backed=False, first_user_materialized=True,
+    )
+    pending = service._pending["private:1001"]
+    assert pending.materialized_user_count == 1
+    pending.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending.task
 
 
 def test_private_synthetic_flush_replaces_control_row_with_real_inputs():
@@ -2670,6 +2782,7 @@ async def test_failed_participant_permission_settlement_retains_session(
         _build_session_key=lambda **kwargs: "private:1001",
         _run_with_session_lock=_run_locked,
         logger=MagicMock(),
+        reply_buffer_service=SimpleNamespace(cancel_pending=MagicMock()),
     )
     service = QQSessionMemoryService(plugin)
     memory_enabled_during_finalize = []
@@ -2688,6 +2801,9 @@ async def test_failed_participant_permission_settlement_retains_session(
     assert user_data["memory_enabled"] is memory_enabled
     service.finalize_user_memory_session.assert_awaited_once_with(
         "private:1001", reason="permission_change",
+    )
+    plugin.reply_buffer_service.cancel_pending.assert_called_once_with(
+        "private:1001", user_data,
     )
     session.close.assert_not_awaited()
 

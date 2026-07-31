@@ -172,7 +172,7 @@ class QQSessionBootstrapService:
                 # 写进另一个语料库。群会话恒 None。
                 "private_memory_mode": (
                     None if context.is_group or not context.persist_memory
-                    else (
+                    else getattr(context, "private_memory_mode", None) or (
                         "legacy" if context.permission_level == "admin"
                         else "participant"
                     )

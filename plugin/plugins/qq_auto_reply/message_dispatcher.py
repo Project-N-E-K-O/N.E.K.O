@@ -125,6 +125,33 @@ class QQMessageDispatcher:
                                 "private_participant_memory_enabled", False,
                             )
                         )
+                        if message.get("message_type") == "private":
+                            sender_at_receipt = str(
+                                message.get("user_id") or ""
+                            ).strip()
+                            permission_at_receipt = None
+                            permission_mgr = getattr(
+                                self.plugin, "permission_mgr", None,
+                            )
+                            if permission_mgr is not None:
+                                permission_at_receipt = (
+                                    permission_mgr.get_permission_level(
+                                        sender_at_receipt
+                                    )
+                                )
+                                # Open-platform bootstrap deterministically
+                                # promotes the first private user in the
+                                # handler; stamp that same identity here.
+                                qq_client = getattr(self.plugin, "qq_client", None)
+                                if (
+                                    qq_client is not None
+                                    and not qq_client.needs_attention
+                                    and not permission_mgr.list_users()
+                                ):
+                                    permission_at_receipt = "admin"
+                            message["_private_permission_level_at_receipt"] = (
+                                permission_at_receipt
+                            )
                     task = __import__("asyncio").create_task(self.plugin._run_message_handler(message))
                     self.plugin.handler_runtime_service.track_handler_task(task)
             except __import__("asyncio").CancelledError:
@@ -247,6 +274,10 @@ class QQMessageDispatcher:
                     message.get("_participant_memory_at_receipt")
                     if isinstance(message, dict) else None
                 ),
+                private_permission_level_at_receipt=(
+                    message.get("_private_permission_level_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
             )
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
@@ -294,7 +325,14 @@ class QQMessageDispatcher:
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
-    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0, current_message_id: str = "", participant_memory_at_receipt: bool | None = None):
+    async def handle_private_message(
+        self, sender_id: str, message_text: str,
+        attachments: Optional[list[dict[str, Any]]] = None,
+        user_nickname: Optional[str] = None, forward_sub_count: int = 0,
+        current_message_id: str = "",
+        participant_memory_at_receipt: bool | None = None,
+        private_permission_level_at_receipt: str | None = None,
+    ):
         # 开放平台：第一个私聊用户自动成为管理员，之后可在前端配置
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
@@ -313,6 +351,9 @@ class QQMessageDispatcher:
                 False,
                 "",
                 participant_memory_at_receipt=participant_memory_at_receipt,
+                private_permission_level_at_receipt=(
+                    private_permission_level_at_receipt
+                ),
             ):
                 return
         self.plugin._emit_log("INFO", f"私聊 pipeline 开始: from={sender_id} text={message_text[:40]}")
@@ -329,6 +370,9 @@ class QQMessageDispatcher:
             # 内回退实时读）：排队期间 OFF→ON 不得让收到时无授权的私聊
             # 被收集。
             participant_memory_at_receipt=participant_memory_at_receipt,
+            private_permission_level_at_receipt=(
+                private_permission_level_at_receipt
+            ),
         )
         outcome = await self.plugin.reply_pipeline.run(request)
         if outcome.action == "reply" and outcome.reply_text and current_message_id:

@@ -143,7 +143,16 @@ class QQReplyPipelineRunner:
     async def _run_context(self, request: QQReplyRequest, decision: QQReplyDecision) -> QQReplyContext:
         return await self.plugin.reply_context_node.build(
             message=request.message_text,
-            permission_level=decision.permission_level,
+            permission_level=(
+                getattr(request, "private_permission_level_at_receipt", None)
+                if (
+                    not request.is_group
+                    and getattr(
+                        request, "private_permission_level_at_receipt", None,
+                    ) is not None
+                )
+                else decision.permission_level
+            ),
             sender_id=request.sender_id,
             attachments=request.attachments,
             is_group=request.is_group,
@@ -162,6 +171,9 @@ class QQReplyPipelineRunner:
             ),
             participant_memory_at_receipt=getattr(
                 request, "participant_memory_at_receipt", None,
+            ),
+            private_permission_level_at_receipt=getattr(
+                request, "private_permission_level_at_receipt", None,
             ),
             inherited_consent_snapshot=getattr(
                 request, "inherited_consent_snapshot", None,
@@ -315,6 +327,14 @@ class QQReplyPipelineRunner:
                         getattr(outcome, "used_fallback", False)
                         or self._primary_row_superseded(outcome, delivery_plan)
                     ) if outcome else False
+                ),
+                private_permission_level_at_receipt=getattr(
+                    context, "private_permission_level_at_receipt", None,
+                ),
+                first_user_materialized=bool(
+                    (
+                        getattr(self.plugin, "_user_sessions", {}) or {}
+                    ).get(session_key, {}).get("human_row_accepted", False)
                 ),
                 consent_snapshot=(
                     # 私聊也可能有依赖（跨群开关打开时的会话清单段），

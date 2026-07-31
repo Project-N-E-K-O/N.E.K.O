@@ -100,6 +100,9 @@ class QQReplyRequest:
     # 接收边界的私聊 participant 记忆政策快照（语义同上，作用于非 admin
     # 私聊轮；admin 私聊与群轮忽略它）。
     participant_memory_at_receipt: bool | None = None
+    # 私聊权限的接收边界快照。权限编辑可能发生在 handler 排队期间；记忆
+    # 域必须仍按消息到达时的 admin/participant 身份选择。
+    private_permission_level_at_receipt: str | None = None
 
 
 @dataclass(slots=True)
@@ -172,6 +175,9 @@ class QQReplyContext:
     # ON）：读写都以对方的 participant 域为界，绝不落入 legacy 私聊主人
     # 语料（bridge 侧 subjects=None 的语义）。
     participant_memory_enabled: bool = False
+    # 本轮按接收时权限选择的持久化域；None 表示本轮没有私聊记忆授权。
+    private_memory_mode: str | None = None
+    private_permission_level_at_receipt: str | None = None
     # 本轮 prompt 里的跨群段原文（未注入时为空）：生成前在会话锁内复检
     # 授权，撤销时按原文摘除。
     cross_group_section: str = ""

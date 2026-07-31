@@ -2031,6 +2031,14 @@ class QQSessionMemoryService:
 
         async def _invalidate() -> None:
             user_data = self.plugin._user_sessions.get(session_key)
+            buffer_service = getattr(
+                self.plugin, "reply_buffer_service", None,
+            )
+            if buffer_service is not None:
+                # Permission mutation has already happened. Kill every delayed
+                # reply from the old permission era before either settlement
+                # or the retained-retry branch can leave it deliverable.
+                buffer_service.cancel_pending(session_key, user_data)
             if user_data and (
                 user_data.get("memory_enabled")
                 or user_data.get("pending_disable_settle")

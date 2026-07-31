@@ -83,15 +83,21 @@ class QQSessionRuntimeService:
             )
         elif not context.is_group and persist:
             mode = user_data.get("private_memory_mode")
+            turn_mode = getattr(context, "private_memory_mode", None) or (
+                "legacy" if context.permission_level == "admin"
+                else "participant"
+            )
             if mode is None:
                 # OFF 时代创建的会话首次拿到 persist=True（开关中途打开）：
                 # 此刻补章。结算目标从此定格，per-turn 权限漂移不再改它。
-                mode = (
-                    "legacy" if context.permission_level == "admin"
-                    else "participant"
-                )
+                mode = turn_mode
                 user_data["private_memory_mode"] = mode
-            if mode == "participant":
+            if mode != turn_mode:
+                # One session has exactly one persistence domain. A permission
+                # transition invalidates it; a queued turn from the other era
+                # must not be retargeted into the surviving domain.
+                persist = False
+            elif mode == "participant":
                 # 对偶群分支的实时策略门控：OFF 盖章循环之后才插入的会话
                 # 不得凭陈旧的 True 继续收集。
                 persist = bool(
@@ -99,7 +105,7 @@ class QQSessionRuntimeService:
                         "private_participant_memory_enabled", False,
                     )
                 )
-            elif mode == "legacy" and context.permission_level != "admin":
+            elif mode == "legacy" and turn_mode != "legacy":
                 # 会话以 admin 语料结算、当前发言人却不再是 admin（降权）：
                 # fail-closed 停写。继续写会把非 admin 的发言并进主人的
                 # legacy 私聊语料；改道 participant 也不行——先前的历史

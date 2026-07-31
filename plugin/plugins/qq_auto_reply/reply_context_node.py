@@ -233,6 +233,7 @@ class QQReplyContextNode:
         source_kind: str = "",
         member_memory_at_receipt: bool | None = None,
         participant_memory_at_receipt: bool | None = None,
+        private_permission_level_at_receipt: str | None = None,
         inherited_consent_snapshot: dict[str, bool] | None = None,
     ) -> QQReplyContext:
         # member 记忆 consent 快照优先取消息接收边界（process_messages 在
@@ -250,20 +251,26 @@ class QQReplyContextNode:
             participant_memory_at_receipt = (
                 getattr(self.plugin, "_qq_settings", {}) or {}
             ).get("private_participant_memory_enabled", False)
-        participant_memory_snapshot = bool(
-            not is_group
-            and permission_level != "admin"
-            and participant_memory_at_receipt
+        receipt_permission = (
+            private_permission_level_at_receipt
+            if private_permission_level_at_receipt is not None
+            else permission_level
         )
+        private_memory_mode = None
+        if not is_group:
+            if receipt_permission == "admin":
+                private_memory_mode = "legacy"
+            elif participant_memory_at_receipt:
+                private_memory_mode = "participant"
+        participant_memory_snapshot = private_memory_mode == "participant"
         if (
             not is_group
-            and permission_level != "admin"
             and use_memory_context is None
         ):
             # 主路径（dispatcher）不显式传 use/persist：接收边界章在此定格
             # 成显式请求值，prompt_builder 的 None 分支只服务旁路调用者
             # （它读实时配置，与群路径的 None 语义对偶）。
-            use_memory_context = participant_memory_snapshot
+            use_memory_context = private_memory_mode is not None
         # 合成轮（rapid-fire/proactive/buffer 合并）复用首个 pending sender，
         # 但缓冲内容可能混有其他成员的发言——记忆读路径只授权群 subject，
         # 不得注入"名义 sender"的成员记忆（写侧已同样过滤）。
@@ -598,6 +605,10 @@ class QQReplyContextNode:
             source_kind=source_kind,
             member_memory_enabled=member_memory_snapshot,
             participant_memory_enabled=participant_memory_snapshot,
+            private_memory_mode=private_memory_mode,
+            private_permission_level_at_receipt=(
+                private_permission_level_at_receipt
+            ),
             recall_via_tool=recall_via_tool,
             cross_group_section=(
                 getattr(instruction_bundle, "cross_group_section", "")
