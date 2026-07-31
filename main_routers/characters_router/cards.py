@@ -234,8 +234,9 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
 
         # 保存到characters.json
+        publish_cancelled = False
         if is_new_character:
-            await asave_characters_with_recent_activation(
+            publish_cancelled = await asave_characters_with_recent_activation(
                 _config_manager, characters, chara_name,
             )
         else:
@@ -279,6 +280,8 @@ async def save_character_card(request: Request):
             result["pending_mark_ok"] = False
             result["pending_mark_failed"] = True
             result["pending_mark_error"] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return result
     except MaintenanceModeError:
         raise
@@ -1000,7 +1003,7 @@ async def import_character_card(
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            await asave_characters_with_recent_activation(
+            publish_cancelled = await asave_characters_with_recent_activation(
                 _config_manager, characters, character_name,
             )
             pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
@@ -1044,6 +1047,8 @@ async def import_character_card(
                 if not pending_mark_ok:
                     partial_result["pending_mark_failed"] = True
                     partial_result["pending_mark_error"] = pending_mark_error
+                if publish_cancelled:
+                    raise asyncio.CancelledError
                 return JSONResponse(partial_result, status_code=200)
 
             # 老角色卡兼容：如果前端上传了载体 PNG，且本地还没有同名卡面，
@@ -1092,6 +1097,8 @@ async def import_character_card(
             import_result['pending_mark_ok'] = False
             import_result['pending_mark_failed'] = True
             import_result['pending_mark_error'] = pending_mark_error
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return JSONResponse(import_result)
 
     except zipfile.BadZipFile:

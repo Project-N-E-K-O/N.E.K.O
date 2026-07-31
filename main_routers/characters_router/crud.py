@@ -1120,7 +1120,7 @@ async def add_catgirl(request: Request):
     # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
     default_free_voice_id = _get_new_catgirl_default_voice_id()
     set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
-    await asave_characters_with_recent_activation(
+    publish_cancelled = await asave_characters_with_recent_activation(
         _config_manager, characters, key,
     )
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
@@ -1141,6 +1141,8 @@ async def add_catgirl(request: Request):
         response["pending_mark_ok"] = False
         response["pending_mark_failed"] = True
         response["pending_mark_error"] = pending_mark_error
+    if publish_cancelled:
+        raise asyncio.CancelledError
     return response
 
 

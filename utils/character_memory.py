@@ -496,8 +496,8 @@ async def _await_task_to_completion(task: asyncio.Task) -> Any:
 
 async def asave_characters_with_recent_activation(
     config_manager, characters: dict[str, Any], *character_names: str,
-) -> None:
-    """Publish character config and reused recent identities as one transaction."""
+) -> bool:
+    """Publish config and recent identities; return whether cancellation was deferred."""
     activation_task = asyncio.create_task(asyncio.to_thread(
         begin_character_recent_activation, config_manager, *character_names,
     ))
@@ -522,6 +522,7 @@ async def asave_characters_with_recent_activation(
             )))
         else:
             release_character_recent_transaction(transaction)
+            return True
         raise
     except BaseException:
         await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
@@ -530,6 +531,7 @@ async def asave_characters_with_recent_activation(
         raise
     else:
         release_character_recent_transaction(transaction)
+        return False
 
 
 def delete_character_memory_storage(

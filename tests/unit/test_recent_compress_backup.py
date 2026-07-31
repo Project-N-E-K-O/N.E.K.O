@@ -352,3 +352,45 @@ async def test_stale_failure_cannot_overwrite_new_generation_backoff(tmp_path):
     assert state["compress_backup_fail_attempts"] == 1
     assert state["compress_backup_generation"] == list(new_generation)
     memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reused_identity_replaces_stale_in_flight_backup(tmp_path):
+    """A stale name-keyed task must not block the reused identity's fallback."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色C-reused"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    new_generation = recent_file.capture_recent_generation(path)
+
+    old_task = asyncio.create_task(asyncio.sleep(30))
+    memory_server.compress_backup_tasks[name] = old_task
+    memory_server.review.compress_backup_task_generations[name] = old_generation
+
+    async def _slow_compress(*args, **kwargs):
+        await asyncio.sleep(30)
+
+    fake_mgr = MagicMock()
+    fake_mgr.compress_history = _slow_compress
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr):
+        await memory_server._on_compress_done(
+            name,
+            _history(6),
+            ok=False,
+            detailed=False,
+            admission_generation=new_generation,
+        )
+        new_task = memory_server.compress_backup_tasks[name]
+        await asyncio.sleep(0)
+
+    assert new_task is not old_task
+    assert old_task.cancelled()
+    assert memory_server.review.compress_backup_task_generations[name] == new_generation
+    await _cleanup_task(new_task)
+    memory_server.compress_backup_tasks.pop(name, None)
+    memory_server.review.compress_backup_task_generations.pop(name, None)

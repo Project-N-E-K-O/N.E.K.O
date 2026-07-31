@@ -103,6 +103,7 @@ async def sync_workshop_character_cards(
     deleted_character_names_seen: list[str] = []
     restored_deleted_names: list[str] = []
     tombstone_cleanup_deferred = False
+    publish_cancelled = False
 
     def _append_unique(bucket: list[str], name: str) -> None:
         normalized_name = str(name or "").strip()
@@ -603,7 +604,7 @@ async def sync_workshop_character_cards(
                 if need_save:
                     try:
                         if actually_added_names:
-                            await asave_characters_with_recent_activation(
+                            publish_cancelled = await asave_characters_with_recent_activation(
                                 config_mgr,
                                 characters_to_save,
                                 *actually_added_names,
@@ -733,6 +734,8 @@ async def sync_workshop_character_cards(
         error_count += 1
         return _sync_result(code="WORKSHOP_SYNC_FAILED")
 
+    if publish_cancelled:
+        raise asyncio.CancelledError
     return _sync_result()
 
 

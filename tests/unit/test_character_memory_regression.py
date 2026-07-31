@@ -335,8 +335,7 @@ async def test_character_publish_cancellation_waits_for_save_and_keeps_activatio
     assert not operation.done()
 
     release.set()
-    with pytest.raises(asyncio.CancelledError):
-        await operation
+    assert await operation is True
 
     with recent_file._LOCKS_GUARD:
         for name in names:
@@ -344,6 +343,75 @@ async def test_character_publish_cancellation_waits_for_save_and_keeps_activatio
                 key = recent_file._lock_key(path)
                 assert recent_file._resolve_key_unlocked(key) == key
         assert all(not lock.locked() for lock in recent_file._LOCKS.values())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_add_cancellation_finishes_post_publish_initialization(tmp_path):
+    """A committed add must initialize runtime services before cancellation escapes."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+    entered = threading.Event()
+    release = threading.Event()
+    initialized = asyncio.Event()
+    original_save = cm.save_characters
+
+    def _delayed_save(data, character_json_path=None, *, bypass_write_fence=False):
+        if not bypass_write_fence and "Deferred" in (data.get("猫娘") or {}):
+            entered.set()
+            assert release.wait(3)
+        return original_save(
+            data,
+            character_json_path=character_json_path,
+            bypass_write_fence=bypass_write_fence,
+        )
+
+    async def _init_one(name, *, is_new=False):
+        assert name == "Deferred"
+        assert is_new is True
+        initialized.set()
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_init_one,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        reload_memory = AsyncMock(return_value=True)
+        with (
+            patch.object(cm, "save_characters", side_effect=_delayed_save),
+            patch.object(
+                crud,
+                "_mark_new_character_greeting_pending_safe",
+                AsyncMock(return_value=(True, "")),
+            ),
+            patch.object(crud, "notify_memory_server_reload", reload_memory),
+            patch.object(crud, "_get_new_catgirl_default_voice_id", return_value="voice"),
+        ):
+            operation = asyncio.create_task(
+                crud.add_catgirl(_DummyRequest({"档案名": "Deferred"}))
+            )
+            assert await asyncio.to_thread(entered.wait, 3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+    assert initialized.is_set()
+    reload_memory.assert_awaited_once()
+    assert "Deferred" in cm.load_characters().get("猫娘", {})
 
 
 @pytest.mark.unit

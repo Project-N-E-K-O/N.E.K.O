@@ -347,3 +347,30 @@ async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
     )
     assert state["review_output_exhaustion_blocked"] is True
     memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_output_exhaustion_cannot_arm_reused_identity(tmp_path):
+    """An old review result must not mutate the reused identity's breaker."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-output"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    memory_server.gates._maint_state.pop(name, None)
+
+    with patch(
+        "memory.recent.review_context_token_count",
+        AsyncMock(return_value=100),
+    ):
+        result = await memory_server.review._record_review_output_exhaustion(
+            name, _history(10), old_generation,
+    )
+
+    assert result is None
+    assert memory_server.gates._maint_state.get(name) == {}
+    memory_server.gates._maint_state.pop(name, None)

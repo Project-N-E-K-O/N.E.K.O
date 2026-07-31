@@ -208,6 +208,29 @@ async def test_spawn_passes_snapshot_admission_generation():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_stale_review_failure_cannot_mutate_reused_identity(tmp_path):
+    """An old failed review must not consume the new identity's retry budget."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-review-failure"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    memory_server.gates._maint_state.pop(name, None)
+
+    attempts = await memory_server.review._record_review_failure(
+        name, _history(10), old_generation,
+    )
+
+    assert attempts is None
+    assert memory_server.gates._maint_state.get(name) == {}
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_gate6_skips_when_dead_lettered_and_input_unchanged():
     """attempts ≥ MAX 且当前 history tail fingerprint == 失败时记下的 → 不 spawn。"""
     from app import memory_server
