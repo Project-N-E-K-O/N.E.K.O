@@ -625,13 +625,16 @@ class FactStore:
           * is what `_restore_subject_facts` strips when moving rows back.
 
         ``stale_cutoff`` re-validates the sweep's staleness snapshot UNDER
-        the write lock: a fact written between the sweep's judgement and
-        this call has ``created_at >= cutoff`` — the subject just revived,
-        so the whole archival aborts (returning 0) rather than sweeping the
-        subject's first fresh memory out of recall. Rows with unparseable
-        ``created_at`` never archive (unknown age must not mean "old"), but
-        also never veto the pass — one corrupt row must not immortalize the
-        subject.
+        the write lock: a fact written (or explicitly restored — the
+        ``restored_at`` stamp counts like the ledger does) between the
+        sweep's judgement and this call has a timestamp ``>= cutoff`` — the
+        subject just revived, so the whole archival aborts (returning
+        ``None``) rather than sweeping the subject's first fresh memory out
+        of recall. Rows with unparseable timestamps never archive (unknown
+        age must not mean "old"), but also never veto the pass — one
+        corrupt row must not immortalize the subject. A corrupt archive
+        file likewise aborts with ``None``: proceeding would leave the
+        subject permanently split (facts active, higher stores archived).
 
         Same two-file commit discipline as `_archive_absorbed`: archive first,
         facts.json second — an interruption leaves the row in BOTH files
@@ -651,14 +654,25 @@ class FactStore:
             ]
             to_archive: list[dict] = []
             for f in matching:
-                try:
-                    created = datetime.fromisoformat(f.get('created_at', ''))
-                except (ValueError, TypeError):
+                # 复活检查同时看 created_at 与 restored_at：判定窗口内的
+                # 显式 restore 给行盖的是 restored_at（created_at 仍是旧
+                # 值），只看 created_at 会把刚恢复的行立刻再归档。
+                latest: datetime | None = None
+                for field in ('created_at', 'restored_at'):
+                    try:
+                        parsed = datetime.fromisoformat(f.get(field) or '')
+                    except (ValueError, TypeError):
+                        continue
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone().replace(tzinfo=None)
+                    if latest is None or parsed > latest:
+                        latest = parsed
+                if latest is None:
                     continue  # 未知年龄的行留在活跃池（对齐 _archive_absorbed）
-                if created >= stale_cutoff:
-                    # 判定后落进来的新写入：subject 已复活，本轮整体中止。
-                    # 新写入只会落在活跃池，归档池里的行都早于判定快照，
-                    # 所以复活检查只需要看活跃行。
+                if latest >= stale_cutoff:
+                    # 判定后落进来的新写入/恢复：subject 已复活，本轮整体
+                    # 中止。新写入只会落在活跃池，归档池里的行都早于判定
+                    # 快照，所以复活检查只需要看活跃行。
                     logger.info(
                         f"[FactStore] {name}: subject "
                         f"[scoped {subject.kind}/{subject.subject_id}] 在归档窗口"
@@ -675,10 +689,13 @@ class FactStore:
                     if isinstance(data, list):
                         existing_archive = data
                 except (json.JSONDecodeError, OSError) as e:
+                    # 归档文件损坏时按中止（None）而非普通零结果返回：让
+                    # caller 跳过 reflection/persona——否则每轮都在同一处
+                    # 失败，subject 永久劈叉成「facts 活跃、高层已归档」。
                     logger.warning(
-                        f"[FactStore] {name}: 读取归档文件失败，跳过本次 subject 归档: {e}"
+                        f"[FactStore] {name}: 读取归档文件失败，中止本轮 subject 归档: {e}"
                     )
-                    return 0
+                    return None
             # absorbed 收缩早已搬进归档文件的同 subject 行：就地补
             # subject_archived_at 标记，让它们与活跃行一起退出召回。
             stamped_in_archive = 0

@@ -237,11 +237,15 @@ class FactDedupResolver:
             return 0
         async with self._get_alock(name):
             existing = await self.aload_pending(name)
-            # 顺手 scrub 老 schema 条目的明文残留：本次 enqueue 反正要整
-            # 队列重写，落盘后磁盘上不再有文本字段。
+            # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
+            # （全部撞去重），只要发生了 scrub 就必须重写队列文件——否则
+            # 磁盘上的明文要等下一次真正的写入才消失。
+            scrubbed = False
             for it in existing:
-                it.pop('candidate_text', None)
-                it.pop('existing_text', None)
+                if 'candidate_text' in it or 'existing_text' in it:
+                    it.pop('candidate_text', None)
+                    it.pop('existing_text', None)
+                    scrubbed = True
             existing_keys = {
                 (it.get('candidate_id'), it.get('existing_id'))
                 for it in existing
@@ -263,6 +267,8 @@ class FactDedupResolver:
                 })
                 existing_keys.add(key)
                 appended += 1
+            if scrubbed and not appended:
+                await self._asave_pending(name, existing)
             if appended:
                 if not await self._asave_pending(name, existing):
                     # Maintenance-mode skip: the queue file was NOT

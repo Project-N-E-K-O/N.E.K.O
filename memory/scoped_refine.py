@@ -685,6 +685,15 @@ async def apply_scoped_persona_merge(
             # subject 戳：无戳条目在 scoped 渲染路径 fail-closed 掉队，
             # 漏掉这行等于把被合并的记忆整体蒸发。
             merged.update(subject.as_entry_fields())
+            # 产物 id 撞车守卫：id 由产出文本+时间盐派生，同批两条相同
+            # 文本可能撞 id——撞车的 action 跳过（不消费源），走「不
+            # stamp、下轮重审」的既有路径。
+            if merged['id'] in {p.get('id') for p in produced} or merged['id'] in by_id:
+                logger.warning(
+                    f"[ScopedRefine apply] persona: 产物 id 撞车，跳过该 action "
+                    f"(id={merged['id']})"
+                )
+                continue
             produced.append(merged)
             consumed.update(valid_ids)
             applied += 1
@@ -705,7 +714,14 @@ async def apply_scoped_persona_merge(
             if not isinstance(e, dict):
                 continue
             eid = e.get('id')
-            if eid in cluster_ids and eid not in consumed:
+            # 幸存者盖 stamp 前重验文本快照：cluster_hash 只含 id，LLM 窗
+            # 口内被并发改写的行若照常 stamp，新文本会被 hash-skip 静默压
+            # 制 30 天——文本漂移的幸存者不 stamp，下轮重新入审。
+            if (
+                eid in cluster_ids
+                and eid not in consumed
+                and e.get('text') == cluster_text_by_id.get(eid)
+            ):
                 e['last_refine_cluster_hash'] = cluster_hash
                 e['last_refine_at'] = now_iso
                 if e.get('refine_attempts'):
@@ -822,6 +838,14 @@ async def apply_scoped_reflection_merge(
             merged['rein_last_signal_at'] = now_iso
             # subject 戳：无戳 reflection 在 scoped 读路径 fail-closed 掉队。
             merged.update(subject.as_entry_fields())
+            # 产物 id 撞车守卫（同 persona 侧）：撞车会让源条目的
+            # absorbed_into 指向不唯一目标、溯源链断裂。
+            if merged['id'] in {p.get('id') for p in produced} or merged['id'] in by_id:
+                logger.warning(
+                    f"[ScopedRefine apply] reflection: 产物 id 撞车，跳过该 "
+                    f"action (id={merged['id']})"
+                )
+                continue
             for sid in valid_ids:
                 src = by_id[sid]
                 src['status'] = 'merged'
@@ -839,7 +863,13 @@ async def apply_scoped_reflection_merge(
             if not isinstance(r, dict):
                 continue
             rid = r.get('id')
-            if rid in cluster_ids and rid not in consumed:
+            # 同 persona 侧：文本漂移的幸存者不 stamp，防 hash-skip 把
+            # 未经模型看过的新文本压制 30 天。
+            if (
+                rid in cluster_ids
+                and rid not in consumed
+                and r.get('text') == cluster_text_by_id.get(rid)
+            ):
                 r['last_refine_cluster_hash'] = cluster_hash
                 r['last_refine_at'] = now_iso
                 if r.get('refine_attempts'):

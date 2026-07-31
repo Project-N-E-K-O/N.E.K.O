@@ -934,6 +934,37 @@ async def test_legacy_plaintext_queue_scrubbed_by_resolve_even_on_llm_failure(tm
 
 
 @pytest.mark.asyncio
+async def test_enqueue_persists_scrub_even_when_all_pairs_are_duplicates(tmp_path):
+    """coderabbit round-3 Major: when every incoming pair dedups away
+    (appended == 0), the scrub of legacy plaintext fields must STILL be
+    written back — otherwise member text lingers on disk until the next
+    genuine write."""
+    import os
+    from utils.file_utils import atomic_write_json
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    legacy_queue = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": "成员乙的明文残留",
+        "existing_text": "成员乙的另一句",
+        "entity": "master", "cosine": 0.9,
+        "queued_at": "2026-04-25T10:00:00",
+    }]
+    qpath = os.path.join(str(tmp_path), "小天", "facts_pending_dedup.json")
+    atomic_write_json(qpath, legacy_queue, indent=2, ensure_ascii=False)
+
+    # 唯一入队 pair 与队列现存条目重复 → appended == 0。
+    appended = await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.9,
+    }])
+    assert appended == 0
+    raw = _read_queue_file_raw(tmp_path)
+    assert "成员乙" not in raw
+    assert "candidate_text" not in raw
+
+
+@pytest.mark.asyncio
 async def test_resolve_prompt_uses_current_authoritative_text(tmp_path):
     """Texts in the LLM prompt come from facts.json AT RESOLVE TIME,
     not from an enqueue-time copy — a fact edited between enqueue and

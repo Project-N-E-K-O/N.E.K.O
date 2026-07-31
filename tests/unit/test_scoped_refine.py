@@ -667,6 +667,75 @@ async def test_apply_rejects_source_suppressed_since_cluster(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_apply_skips_stamp_for_survivor_whose_text_drifted(tmp_path):
+    """codex round-3: the id-only cluster hash doesn't change when a
+    survivor's text is edited during the LLM window — stamping it anyway
+    would hash-skip the unreviewed text for 30 days. Drifted survivors
+    stay unstamped and re-enter review next round."""
+    fs, pm, re = _install(str(tmp_path))
+    refls = [
+        _r_entry("r0", "重复甲", GROUP_A),
+        _r_entry("r1", "重复乙", GROUP_A),
+        _r_entry("r2", "幸存者原文", GROUP_A),
+    ]
+    await re.asave_reflections("小天", refls)
+    active = await re.aload_reflections("小天")
+    cluster = [dict(r) for r in active]
+
+    # LLM 窗口内幸存者 r2 被并发改写。
+    live = await re.aload_reflections("小天")
+    next(r for r in live if r['id'] == "r2")['text'] = "幸存者被改写"
+    await re.asave_reflections("小天", live)
+
+    actions = [{
+        'action': 'merge', 'source_ids': ['r0', 'r1'],
+        'produce': {'text': '合并结论'},
+    }]
+    applied = await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, actions, "hashD",
+    )
+    assert applied == 1  # merge 本身照常应用
+    full = await re._aload_reflections_full("小天")
+    by_id = {r['id']: r for r in full}
+    assert by_id['r0']['status'] == 'merged'
+    # 文本漂移的幸存者不 stamp。
+    assert not by_id['r2'].get('last_refine_cluster_hash')
+
+
+@pytest.mark.asyncio
+async def test_apply_skips_action_on_produced_id_collision(tmp_path):
+    """coderabbit round-3: produced ids derive from output text + time
+    salt; two identical texts in one batch can collide. The colliding
+    action is skipped without consuming its sources."""
+    from unittest.mock import patch as _patch
+
+    fs, pm, re = _install(str(tmp_path))
+    refls = [_r_entry(f"r{i}", f"文本{i}", GROUP_A) for i in range(4)]
+    await re.asave_reflections("小天", refls)
+    active = await re.aload_reflections("小天")
+    cluster = [dict(r) for r in active]
+    actions = [
+        {'action': 'merge', 'source_ids': ['r0', 'r1'],
+         'produce': {'text': '同样的结论'}},
+        {'action': 'merge', 'source_ids': ['r2', 'r3'],
+         'produce': {'text': '同样的结论'}},
+    ]
+    with _patch("memory.scoped_refine.refine_reflection_id",
+                return_value="ref_fixed"):
+        applied = await apply_scoped_reflection_merge(
+            re, "小天", GROUP_A, cluster, actions, "hashC",
+        )
+    assert applied == 1
+    full = await re._aload_reflections_full("小天")
+    by_id = {r['id']: r for r in full}
+    # 第一条应用、第二条撞车跳过：r2/r3 未被消费。
+    assert by_id['r0']['status'] == 'merged'
+    assert by_id['r2']['status'] == 'confirmed'
+    assert by_id['r3']['status'] == 'confirmed'
+    assert len([r for r in full if r['id'] == "ref_fixed"]) == 1
+
+
+@pytest.mark.asyncio
 async def test_apply_rejects_garbage_actions_without_stamping(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     refls = [_r_entry(f"r{i}", f"文本{i}", GROUP_A) for i in range(3)]

@@ -725,7 +725,7 @@ _periodic_archive_sweep_loop 里靠进程内时间戳节流。"""
 
 SCOPED_REFINE_MIN_ENTRIES = 8
 """单 (subject, 存储) 池触发 refine 的最小条目数。per-subject 渲染预算
-2000 token ≈ 10-15 条típico条目，8 条起审让合并发生在预算裁剪开始
+2000 token ≈ 10-15 条典型条目，8 条起审让合并发生在预算裁剪开始
 静默丢条目之前。"""
 
 SCOPED_REFINE_COSINE_THRESHOLD = 0.82

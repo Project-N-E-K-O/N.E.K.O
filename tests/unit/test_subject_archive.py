@@ -459,6 +459,91 @@ async def test_sweep_stamps_absorbed_archived_rows_of_stale_subject(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fact_archival_aborts_on_fresh_restore_in_window(tmp_path):
+    """codex round-3: a concurrent explicit restore stamps restored_at but
+    keeps the old created_at — the locked revalidation must honour every
+    ledger timestamp field, or the just-restored rows get re-archived."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    restored_row = _scoped_fact("r1", "刚恢复的旧事实", SUBJ_STALE,
+                                created_at=_iso(120))
+    restored_row['restored_at'] = _iso(0.01)  # 判定窗口内的恢复
+    fs._facts["小天"] = [restored_row]
+    await fs.asave_facts("小天")
+    cutoff = NOW - timedelta(days=STALE_DAYS)
+    moved = await fs.aarchive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(), cutoff,
+    )
+    assert moved is None
+    assert {f['id'] for f in await fs.aload_facts("小天")} == {"r1"}
+
+
+@pytest.mark.asyncio
+async def test_fact_archival_aborts_on_corrupt_archive_file(tmp_path):
+    """codex round-3: a corrupt facts_archive.json must abort (None) — an
+    ordinary 0 would let the sweep archive reflections/persona while the
+    facts stay active and recallable, splitting the subject permanently."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    fs._facts["小天"] = [
+        _scoped_fact("fs1", "陈年", SUBJ_STALE, created_at=_iso(120)),
+    ]
+    await fs.asave_facts("小天")
+    os.makedirs(os.path.dirname(fs._facts_archive_path("小天")), exist_ok=True)
+    with open(fs._facts_archive_path("小天"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+    cutoff = NOW - timedelta(days=STALE_DAYS)
+    moved = await fs.aarchive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(), cutoff,
+    )
+    assert moved is None
+    assert {f['id'] for f in await fs.aload_facts("小天")} == {"fs1"}
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_other_stores_when_fact_archival_raises(tmp_path):
+    """coderabbit round-3 Major: a hard write failure in the fact store is
+    treated like the revival abort — skip the subject's other stores, never
+    leave facts active while reflections/persona moved out."""
+    from unittest.mock import AsyncMock, patch as _patch
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    stale_pid, _ = await _seed_two_subjects(fs, pm, re)
+
+    with _patch.object(
+        fs, "aarchive_subject_facts",
+        AsyncMock(side_effect=OSError("disk full")),
+    ):
+        report = await asweep_scoped_subject_archive(
+            "小天", **_sweep_kwargs(fs, pm, re),
+        )
+    assert report['archived'] == {}
+    assert {r['id'] for r in await re._aload_reflections_full("小天")} == {"rs1", "ra1"}
+    persona = await pm.aensure_persona("小天")
+    all_ids = {
+        e.get('id')
+        for sec in persona.values() if isinstance(sec, dict)
+        for e in sec.get('facts', []) if isinstance(e, dict)
+    }
+    assert stale_pid in all_ids
+
+
+def test_parse_iso_normalizes_timezone_aware_timestamps():
+    """codex round-3: import/migration paths can write offset-bearing ISO
+    strings; mixing aware values with the sweep's naive now() would raise
+    TypeError and kill the whole stage every interval."""
+    aware_fact = _scoped_fact(
+        "tz1", "带时区的行", SUBJ_STALE,
+        created_at="2026-03-01T12:00:00+00:00",
+    )
+    last, no_ts = collect_subject_last_writes([[aware_fact]])
+    marker = (SUBJ_STALE.key, SUBJ_STALE.scope)
+    assert marker in last
+    assert last[marker][1].tzinfo is None  # 已折算成 naive
+    # naive now 与之混算不抛 TypeError，且 120+ 天前的行判 stale。
+    stale = find_stale_subjects(last, now=NOW, stale_days=STALE_DAYS)
+    assert [s.key for s, _ in stale] == [SUBJ_STALE.key]
+
+
+@pytest.mark.asyncio
 async def test_fact_archival_keeps_unparseable_rows_without_veto(tmp_path):
     """A row with a corrupt created_at neither archives (unknown age must
     not mean old) nor vetoes the pass (one corrupt row must not immortalize

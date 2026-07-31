@@ -78,9 +78,15 @@ def _parse_iso(value) -> datetime | None:
     if not isinstance(value, str) or not value:
         return None
     try:
-        return datetime.fromisoformat(value)
+        parsed = datetime.fromisoformat(value)
     except (ValueError, TypeError):
         return None
+    if parsed.tzinfo is not None:
+        # 外部导入/迁移路径可能写带时区的 ISO 串；sweep 的 now 是 naive
+        # 本地时间，aware-naive 混算直接 TypeError、整个 stage 每轮报废。
+        # 统一折算成本地 naive 再比较。
+        parsed = parsed.astimezone().replace(tzinfo=None)
+    return parsed
 
 
 def collect_subject_last_writes(
@@ -278,11 +284,14 @@ async def asweep_scoped_subject_archive(
                     name, subject, now_iso, stale_cutoff,
                 )
             except Exception as e:
+                # 写盘/权限类真失败与复活中止同治：跳过其余存储，防止
+                # 「facts 留在活跃池、reflection/persona 已进分片」的劈叉。
                 logger.warning(
                     f"[SubjectArchive] {name}: subject "
-                    f"[{_domain_marker(subject)}] facts 归档失败: {e}"
+                    f"[{_domain_marker(subject)}] facts 归档失败，跳过本轮"
+                    f"其余存储的归档: {e}"
                 )
-                moved = 0
+                moved = None
             if moved is None:
                 # fact store 在锁内发现判定窗口里落了新写入：subject 已
                 # 复活。三个存储要么按同一判定走、要么全不走——跳过该
