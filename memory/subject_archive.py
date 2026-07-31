@@ -550,41 +550,49 @@ async def arestore_scoped_subject(
         now = datetime.now()
     now_iso = now.isoformat()
 
-    forgotten_at = await fact_store.asubject_forget_cutoff(
+    # Hold the same per-subject transaction lock as scoped_forget.  Reading the
+    # cutoff once is then safe for the full three-store restore: a forget can
+    # only run wholly before (and update the cutoff) or wholly after (and erase
+    # the restored rows), never between shard scan and append.
+    transaction_lock = fact_store._get_subject_forget_transaction_lock(
         name, memory_subject,
     )
+    async with transaction_lock:
+        forgotten_at = await fact_store.asubject_forget_cutoff(
+            name, memory_subject,
+        )
 
-    facts_restored = await fact_store.arestore_subject_facts(
-        name, memory_subject, now_iso, forgotten_at,
-    )
-    if facts_restored is None:
-        # 与归档侧对称的中止语义：facts_archive.json 损坏时不再继续恢复
-        # 高层存储——「facts 仍归档、reflection/persona 已活跃」的劈叉
-        # 会一直保持到归档文件被修好，且反复 restore 也修不平。
-        logger.warning(
-            f"[SubjectArchive] {name}: subject "
-            f"[{_domain_marker(memory_subject)}] fact 恢复中止（归档文件"
-            f"损坏），跳过其余存储的恢复"
+        facts_restored = await fact_store.arestore_subject_facts(
+            name, memory_subject, now_iso, forgotten_at,
+        )
+        if facts_restored is None:
+            # 与归档侧对称的中止语义：facts_archive.json 损坏时不再继续恢复
+            # 高层存储——「facts 仍归档、reflection/persona 已活跃」的劈叉
+            # 会一直保持到归档文件被修好，且反复 restore 也修不平。
+            logger.warning(
+                f"[SubjectArchive] {name}: subject "
+                f"[{_domain_marker(memory_subject)}] fact 恢复中止（归档文件"
+                f"损坏），跳过其余存储的恢复"
+            )
+            return {
+                'facts': 0,
+                'reflections': 0,
+                'persona_entries': 0,
+                'aborted': True,
+            }
+        reflections_restored = await _arestore_subject_reflections(
+            name, memory_subject, reflection_engine, now_iso, forgotten_at,
+        )
+        persona_restored = await _arestore_subject_persona_entries(
+            name, memory_subject, persona_manager, now_iso, forgotten_at,
+        )
+        logger.info(
+            f"[SubjectArchive] {name}: 恢复 subject "
+            f"[{_domain_marker(memory_subject)}] facts={facts_restored} "
+            f"reflections={reflections_restored} persona={persona_restored}"
         )
         return {
-            'facts': 0,
-            'reflections': 0,
-            'persona_entries': 0,
-            'aborted': True,
+            'facts': facts_restored,
+            'reflections': reflections_restored,
+            'persona_entries': persona_restored,
         }
-    reflections_restored = await _arestore_subject_reflections(
-        name, memory_subject, reflection_engine, now_iso, forgotten_at,
-    )
-    persona_restored = await _arestore_subject_persona_entries(
-        name, memory_subject, persona_manager, now_iso, forgotten_at,
-    )
-    logger.info(
-        f"[SubjectArchive] {name}: 恢复 subject "
-        f"[{_domain_marker(memory_subject)}] facts={facts_restored} "
-        f"reflections={reflections_restored} persona={persona_restored}"
-    )
-    return {
-        'facts': facts_restored,
-        'reflections': reflections_restored,
-        'persona_entries': persona_restored,
-    }

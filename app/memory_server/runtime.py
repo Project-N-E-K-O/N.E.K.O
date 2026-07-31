@@ -194,6 +194,20 @@ _memory_storage_blocked_after_init = False
 _memory_background_tasks_started = False
 
 
+def _share_subject_forget_state(old_component, new_component) -> None:
+    """Keep scoped-erasure fences alive across a component hot reload."""
+    if old_component is None:
+        return
+    for attr in (
+        "_subject_forget_generations",
+        "_subject_forget_epochs",
+        "_active_subject_forgets",
+        "_subject_forget_transaction_locks",
+    ):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
 def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     """Defer cleanup of the old TimeIndexedMemory until process shutdown, so concurrent requests in the switchover window don't hit a released handle."""
     if manager is None:
@@ -233,6 +247,13 @@ async def reload_memory_components():
             new_event_log = event_log if event_log is not None else EventLog()
             new_persona = PersonaManager(event_log=new_event_log)
             new_reflection = ReflectionEngine(new_facts, new_persona, event_log=new_event_log)
+            # Requests may have captured the old managers before entering a
+            # long out-of-lock LLM call.  Sharing these process-local fences
+            # lets a forget on the replacement generation invalidate those
+            # late writes and keeps restore/forget mutually exclusive across
+            # the swap.
+            _share_subject_forget_state(fact_store, new_facts)
+            _share_subject_forget_state(reflection_engine, new_reflection)
             new_cursor_store = CursorStore()
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)

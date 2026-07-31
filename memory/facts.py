@@ -234,6 +234,14 @@ class FactStore:
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
         self._subject_forget_generations: dict[tuple[str, str, str], int] = {}
         self._active_subject_forgets: set[tuple[str, str, str]] = set()
+        # Restore and forget are multi-store transactions.  A dedicated
+        # per-subject lock prevents restore from re-appending an archive shard
+        # between the individual store erases.  runtime reload deliberately
+        # shares this registry with the replacement FactStore so requests that
+        # captured the old instance participate in the same transaction.
+        self._subject_forget_transaction_locks: dict[
+            tuple[str, str, str], asyncio.Lock
+        ] = {}
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -295,6 +303,29 @@ class FactStore:
             return False
         active = getattr(self, '_active_subject_forgets', None)
         return bool(active and (name, subject_key, scope) in active)
+
+    def _get_subject_forget_transaction_lock(
+        self, name: str, subject,
+    ) -> asyncio.Lock:
+        """Return the cross-store restore/forget lock for one subject."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("subject transaction requires an explicit subject")
+        locks = getattr(self, '_subject_forget_transaction_locks', None)
+        if locks is None:
+            # Focused tests may construct FactStore via __new__.
+            locks = {}
+            self._subject_forget_transaction_locks = locks
+        key = self._subject_forget_key(name, memory_subject)
+        if key not in locks:
+            guard = getattr(self, '_locks_guard', None)
+            if guard is None:
+                guard = threading.Lock()
+                self._locks_guard = guard
+            with guard:
+                if key not in locks:
+                    locks[key] = asyncio.Lock()
+        return locks[key]
 
     async def abegin_subject_forget(self, name: str, subject) -> None:
         """Open a fact-write tombstone for the complete scoped-forget route."""

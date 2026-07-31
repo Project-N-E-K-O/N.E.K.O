@@ -120,10 +120,17 @@ class QQSettingsService:
                     svc = self.plugin.session_memory_service
                     prev_progress = svc._settlement_progress(current)
                     while True:
+                        # A plain ON->OFF transition has no future work that
+                        # needs this client: let a successful finalization pop
+                        # and close it.  Only a rapid OFF->ON transition stamps
+                        # pending_permission_discard; that path must retain the
+                        # old session until bootstrap can replace its memory
+                        # domain safely.
+                        retain = bool(current.get("pending_permission_discard"))
                         try:
                             finalized = await svc.finalize_user_memory_session(
                                 key, reason="participant_memory_disabled",
-                                retain_session=True,
+                                retain_session=retain,
                             )
                         except Exception as exc:
                             self.plugin.logger.error(

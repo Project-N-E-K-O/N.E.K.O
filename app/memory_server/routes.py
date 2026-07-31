@@ -1302,7 +1302,16 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     # same generation alive until every tombstone is closed, otherwise reload
     # can split one forget transaction across old and new managers.
     await runtime._reload_lock.acquire()
+    subject_transaction_lock = None
+    subject_transaction_acquired = False
     try:
+        subject_transaction_lock = (
+            runtime.fact_store._get_subject_forget_transaction_lock(
+                lanlan_name, subject,
+            )
+        )
+        await subject_transaction_lock.acquire()
+        subject_transaction_acquired = True
         # Bracket the whole multi-store transaction on both write paths.
         # Fact extraction and reflection synthesis release their locks during
         # LLM calls; work that starts before *or anywhere inside* this interval
@@ -1354,6 +1363,8 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
                         lanlan_name, subject,
                     )
         finally:
+            if subject_transaction_acquired:
+                subject_transaction_lock.release()
             runtime._reload_lock.release()
     return {
         "status": "forgotten",

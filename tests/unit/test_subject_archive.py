@@ -24,6 +24,7 @@ Contracts under test (group-memory series 5/7, mainline 1):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta
@@ -856,6 +857,25 @@ async def test_restore_does_not_revive_snapshots_preceding_scoped_forget(tmp_pat
     )
     persona = await pm.aensure_persona("小天")
     assert SUBJ_STALE.persona_section_key not in persona
+
+
+@pytest.mark.asyncio
+async def test_restore_waits_for_subject_forget_transaction(tmp_path):
+    """Restore cannot read a stale cutoff while scoped forget owns the fence."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    transaction = fs._get_subject_forget_transaction_lock("小天", SUBJ_STALE)
+    await transaction.acquire()
+
+    task = asyncio.create_task(arestore_scoped_subject(
+        "小天", SUBJ_STALE,
+        fact_store=fs, persona_manager=pm, reflection_engine=re,
+    ))
+    await asyncio.sleep(0)
+    assert not task.done()
+
+    transaction.release()
+    result = await task
+    assert result == {'facts': 0, 'reflections': 0, 'persona_entries': 0}
 
 
 @pytest.mark.asyncio

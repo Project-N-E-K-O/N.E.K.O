@@ -1252,9 +1252,29 @@ async def test_participant_disable_settle_consumes_or_keeps_marks():
 
     await service._settle_participant_sessions_on_disable()
 
-    assert finalize.await_args.kwargs["retain_session"] is True
+    assert finalize.await_args.kwargs["retain_session"] is False
     assert user_data["memory_enabled"] is False
     assert "pending_disable_settle" not in user_data
+
+    # 快速 OFF→ON 已给旧会话盖 discard 章：保留到 bootstrap 安全替换。
+    finalize_reenabled = AsyncMock(return_value=True)
+    reenabled = {
+        "is_group": False, "private_memory_mode": "participant",
+        "memory_enabled": False, "pending_disable_settle": True,
+        "pending_permission_discard": True,
+        "participant_opt_out_cutoff": 2,
+        "session": SimpleNamespace(_conversation_history=[1, 2, 3]),
+    }
+    plugin_reenabled = _settings_plugin({"private:1001": reenabled})
+    plugin_reenabled._run_with_session_lock = _run_locked
+    plugin_reenabled.session_memory_service = SimpleNamespace(
+        finalize_user_memory_session=finalize_reenabled,
+        _settlement_progress=lambda ud: (0,),
+    )
+    await QQSettingsService(
+        plugin_reenabled,
+    )._settle_participant_sessions_on_disable()
+    assert finalize_reenabled.await_args.kwargs["retain_session"] is True
 
     # 失败路径：章保留
     finalize2 = AsyncMock(return_value=False)
@@ -2330,6 +2350,7 @@ async def test_scoped_forget_route_wires_all_three_stores():
 
     calls: list[str] = []
     store = MagicMock()
+    store._get_subject_forget_transaction_lock.return_value = asyncio.Lock()
     store.abegin_subject_forget = AsyncMock(
         side_effect=lambda *args: calls.append("fact_begin"),
     )
@@ -2407,6 +2428,7 @@ async def test_scoped_forget_waits_for_runtime_reload_barrier():
     barrier = asyncio.Lock()
     await barrier.acquire()
     store = MagicMock()
+    store._get_subject_forget_transaction_lock.return_value = asyncio.Lock()
     store.abegin_subject_forget = AsyncMock()
     store.aforget_subject = AsyncMock(return_value={})
     store.afinalize_subject_forget = AsyncMock()
@@ -2437,6 +2459,77 @@ async def test_scoped_forget_waits_for_runtime_reload_barrier():
         await task
 
     store.abegin_subject_forget.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_waits_for_subject_restore_transaction():
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedForgetRequest
+
+    transaction = asyncio.Lock()
+    await transaction.acquire()
+    store = MagicMock()
+    store._get_subject_forget_transaction_lock.return_value = transaction
+    store.abegin_subject_forget = AsyncMock()
+    store.aforget_subject = AsyncMock(return_value={})
+    store.afinalize_subject_forget = AsyncMock()
+    store.aend_subject_forget = AsyncMock()
+    reflection = MagicMock()
+    reflection.abegin_subject_forget = AsyncMock()
+    reflection.aforget_subject = AsyncMock(return_value={})
+    reflection.aend_subject_forget = AsyncMock()
+    persona = MagicMock()
+    persona.aforget_subject = AsyncMock(return_value={})
+    dedup = MagicMock()
+    dedup.aforget_subject = AsyncMock(return_value={})
+
+    with patch.object(memory_routes.runtime, "fact_store", store), \
+            patch.object(memory_routes.runtime, "fact_dedup_resolver", dedup), \
+            patch.object(memory_routes.runtime, "reflection_engine", reflection), \
+            patch.object(memory_routes.runtime, "persona_manager", persona):
+        task = asyncio.create_task(memory_routes.forget_scoped_subject(
+            "Neko",
+            ScopedForgetRequest(subject={
+                "subject_kind": "participant", "subject_id": "qq:1001",
+            }),
+        ))
+        await asyncio.sleep(0)
+        store.abegin_subject_forget.assert_not_awaited()
+        transaction.release()
+        await task
+
+    store.abegin_subject_forget.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_reload_shares_subject_forget_fences_with_old_components():
+    from app.memory_server import runtime
+    from memory.reflection import ReflectionEngine
+
+    old_store = FactStore(time_indexed_memory=None)
+    new_store = FactStore(time_indexed_memory=None)
+    runtime._share_subject_forget_state(old_store, new_store)
+    subject = MemorySubject.participant("qq", "1001")
+    old_generation = old_store._subject_forget_generation("Neko", subject)
+
+    await new_store.abegin_subject_forget("Neko", subject)
+
+    assert old_store._subject_forget_generation("Neko", subject) != old_generation
+    assert old_store._subject_forget_is_active("Neko", subject)
+    assert (
+        old_store._get_subject_forget_transaction_lock("Neko", subject)
+        is new_store._get_subject_forget_transaction_lock("Neko", subject)
+    )
+
+    old_reflection = ReflectionEngine(old_store, MagicMock())
+    new_reflection = ReflectionEngine(new_store, MagicMock())
+    runtime._share_subject_forget_state(old_reflection, new_reflection)
+    old_epoch = old_reflection._subject_forget_epoch("Neko", subject)
+
+    await new_reflection.abegin_subject_forget("Neko", subject)
+
+    assert old_reflection._subject_forget_epoch("Neko", subject) != old_epoch
+    assert old_reflection._subject_forget_is_active("Neko", subject)
 
 
 @pytest.mark.asyncio
