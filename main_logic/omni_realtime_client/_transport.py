@@ -1007,6 +1007,29 @@ class _TransportMixin:
             except Exception as exc:
                 logger.warning("turn-finished speech-id rotation failed: %s", exc)
 
+    async def _on_arbiter_stuck_release(self, reason: str) -> None:
+        """End a turn the arbiter gave up on, exactly as its terminal would.
+
+        The same three steps ``response.done`` runs, in the same order. That
+        is the entire point: a second way to end a turn is a second thing to
+        keep correct, and the withdrawn #2592 spent seven review rounds
+        discovering, one at a time, which parts its own version had left out.
+
+        Clearing the identity here is what quarantines the abandoned
+        response's later events — the stale-event filter then routes its
+        terminal to the arbiter alone, so the lane still releases but nothing
+        finalizes a second time. Note this is the opposite of what
+        ``handle_interruption`` wants, which keeps the identity precisely so
+        the cancelled response's own terminal still ends the turn.
+        """
+
+        if not self._is_responding and self._current_response_id is None:
+            return
+        logger.info("Ending abandoned turn after arbiter release: %s", reason)
+        self._clear_turn_response_state()
+        self._reset_per_turn_output_state()
+        await self._notify_turn_finished()
+
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
         if not self._is_responding:

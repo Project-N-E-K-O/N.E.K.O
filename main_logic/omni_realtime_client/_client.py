@@ -27,6 +27,7 @@ from ._shared import (
     TurnDetectionMode,
     _IMAGE_ANALYSIS_PENDING_DESCRIPTION,
     asyncio,
+    response_arbiter_fail_open_enabled,
     soxr,
 )
 
@@ -140,6 +141,8 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
+            fail_open=response_arbiter_fail_open_enabled(),
+            on_stuck_release=self._on_arbiter_stuck_release,
         )
         # Track printing state for input and output transcripts
         self._is_first_text_chunk = False

@@ -104,7 +104,7 @@ async def test_an_escalation_for_a_finished_request_does_nothing(harness, caplog
     assert harness.arbiter._response_owner is not observed
 
     with caplog.at_level(logging.DEBUG, logger=ARBITER_LOGGER):
-        await harness.arbiter._fail_closed("late escalation", observed=observed)
+        await harness.arbiter._escalate("late escalation", observed=observed)
 
     assert harness.aborted == [], (
         "an escalation naming a finished request must not tear down the "
@@ -137,7 +137,7 @@ async def test_an_escalation_for_the_running_request_still_acts(harness):
     observed = harness.arbiter._response_owner
     assert observed is not None
 
-    await harness.arbiter._fail_closed("real escalation", observed=observed)
+    await harness.arbiter._escalate("real escalation", observed=observed)
 
     assert harness.aborted == ["real escalation"]
     assert harness.arbiter._connection_available is False
@@ -152,7 +152,7 @@ async def test_an_unnamed_escalation_still_acts(harness):
         {"type": "response.created", "response": {"id": "srv-1"}}
     )
 
-    await harness.arbiter._fail_closed("unowned server response stuck")
+    await harness.arbiter._escalate("unowned server response stuck")
 
     assert harness.aborted == ["unowned server response stuck"]
     assert harness.arbiter._connection_available is False

@@ -19,6 +19,7 @@ from typing import Any, Awaitable, Callable
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
+OnStuckRelease = Callable[[str], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 # Server-initiated response ids are remembered so their terminal events are
@@ -53,6 +54,11 @@ _DEFAULT_RESPONSE_DONE_TIMEOUT = 60.0
 # provider-side pre-creation failure cannot wedge the lane until the much
 # longer running-response timeout tears down an otherwise healthy connection.
 _SERVER_VAD_RESPONSE_STARTED_TIMEOUT = 5.0
+# Ceiling on the host's end-of-turn notification during a fail-open release.
+# Escalations raised inside ``_process`` run it on the sole queue consumer,
+# so an unbounded host callback would stall every later dispatch; short
+# because the work it fronts is local bookkeeping plus one frontend send.
+_STUCK_RELEASE_NOTIFY_TIMEOUT = 2.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,9 +138,21 @@ class RealtimeResponseArbiter:
         send_event: SendEvent,
         *,
         abort_transport: AbortTransport | None = None,
+        fail_open: bool = False,
+        on_stuck_release: OnStuckRelease | None = None,
     ) -> None:
         self._send_event = send_event
         self._abort_transport = abort_transport
+        # Escalation policy. The default tears the transport down, which is
+        # what every release so far has shipped. Injected by the
+        # construction site so this module reads no configuration itself.
+        self._fail_open = fail_open
+        # Notified that a turn ended, so the host can run the same end-of-turn
+        # work its terminal event drives. Dual to ``abort_transport``.
+        self._on_stuck_release = on_stuck_release
+        # True while the queue consumer is suspended inside a transport
+        # write; only the worker's own sends set it.
+        self._worker_send_in_flight = False
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
@@ -285,7 +303,7 @@ class RealtimeResponseArbiter:
             try:
                 await self.wait_until_idle(timeout)
             except asyncio.TimeoutError as original_timeout:
-                await self._fail_closed(
+                await self._escalate(
                     "response cancellation terminal event timed out"
                 )
                 raise original_timeout
@@ -304,7 +322,7 @@ class RealtimeResponseArbiter:
         try:
             await asyncio.wait_for(asyncio.shield(current.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
-            await self._fail_closed(
+            await self._escalate(
                 "response cancellation terminal event timed out",
                 observed=current,
             )
@@ -348,7 +366,7 @@ class RealtimeResponseArbiter:
         try:
             await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
-            await self._fail_closed(
+            await self._escalate(
                 "targeted response cancellation timed out", observed=queued
             )
             raise original_timeout
@@ -846,13 +864,14 @@ class RealtimeResponseArbiter:
                 queued.completed.set_result(None)
             self._queue.task_done()
 
-    async def _fail_closed(
+    async def _escalate(
         self,
         reason: str,
         *,
         observed: _QueuedResponse | None = None,
+        transport_write_failed: bool = False,
     ) -> None:
-        """Tear the transport down over a lifecycle that cannot terminate.
+        """Give up on a lifecycle that cannot reach a terminal state.
 
         ``observed`` is the request whose failure the caller actually watched.
         Escalation is scoped to it, and happens at most once:
@@ -893,9 +912,149 @@ class RealtimeResponseArbiter:
                 )
                 return
             observed.escalated = True
-        await self._fail_closed_unscoped(reason)
 
-    async def _fail_closed_unscoped(self, reason: str) -> None:
+        blocker = self._cannot_keep_the_connection(
+            transport_write_failed=transport_write_failed
+        )
+        if self._fail_open and blocker is None:
+            await self._release_stuck_lifecycle(reason)
+            return
+        if self._fail_open:
+            logger.warning(
+                "response arbiter cannot keep the connection (%s); "
+                "failing closed despite the escape hatch",
+                blocker,
+            )
+        await self._tear_down_transport(reason)
+
+    def _cannot_keep_the_connection(
+        self, *, transport_write_failed: bool
+    ) -> str | None:
+        """Answer the single question fail-open rests on, and name the blocker.
+
+        Keeping the connection is only defensible when it is still usable AND
+        the arbiter can still tell whose events are whose. Anything that
+        falsifies either half belongs here, so the policy has one place to
+        read rather than a list of conditions to keep in sync.
+
+        Returns the blocker's description, or ``None`` when the connection can
+        be kept.
+        """
+
+        if self._worker_send_in_flight:
+            # Nothing this class does to its own state unwinds an await parked
+            # in the transport, and ``_run`` is the only consumer — keeping the
+            # connection would leave it wedged while reporting recovery. The
+            # transport's close is what wakes that write.
+            return "the queue consumer is suspended inside a transport write"
+        if transport_write_failed:
+            # The caller's own write raised moments ago; on the fatal branch
+            # the transport has already dropped its socket.
+            return "a transport write just failed"
+        owner = self._response_owner
+        if owner is not None and owner.response_send_started and (
+            owner.response_id is None
+        ):
+            # The create reached the wire, so the provider may still announce
+            # this response later. Without an id there is nothing to tell that
+            # announcement apart from the next turn's, and it would be credited
+            # to whichever ticket dispatches next.
+            #
+            # The criterion is deliberately "did the create go out", not "did
+            # response.created come back": a request whose create is on the
+            # wire is exactly the one that can still surprise us.
+            return "the abandoned response has no id to attribute later events by"
+        if self._server_vad_response_pending:
+            # Same shape without an owner: announced by speech_stopped, no id
+            # until its response.created arrives.
+            return "an announced server-VAD response has no id yet"
+        return None
+
+    async def _worker_send(self, event: dict[str, Any]) -> None:
+        """Send from the queue consumer, flagged for the duration of the write.
+
+        Only the worker's sends qualify: a caller-task send that blocks hurts
+        only that caller, while a blocked consumer stops every later request.
+        The flag is what lets the policy notice that "the connection is
+        usable" has stopped being true.
+        """
+
+        self._worker_send_in_flight = True
+        try:
+            await self._send_event(event)
+        finally:
+            self._worker_send_in_flight = False
+
+    async def _release_stuck_lifecycle(self, reason: str) -> None:
+        """Drop the stuck turn and keep the connection.
+
+        Deliberately narrower than ``_mark_connection_lost``, which is for a
+        connection that is actually gone. It does NOT clear
+        ``_connection_available`` (the transport still works), bump
+        ``_connection_generation`` (there is no replacement connection to
+        protect in-flight cancels from), set ``_dispatch_allowed`` (an
+        external-ASR turn's pause must survive an unrelated stuck response),
+        or fail the queue (that work is still viable).
+
+        Order matters. The host is told the turn is over BEFORE the lane
+        opens: the notification ends the turn on the host's side, and letting
+        the next request dispatch first would have it rotate the speech id and
+        finalize shared turn state underneath a response that had already
+        started. Awaiting on a caller task alone does not serialize anything —
+        the worker is a separate task and only a closed lane holds it.
+        """
+
+        exc = RuntimeError(reason)
+        owner = self._response_owner
+        current = self._current
+        seen: set[int] = set()
+        for target in (owner, current):
+            if target is None or id(target) in seen:
+                continue
+            seen.add(id(target))
+            # Unwinds ``_process`` now rather than letting it park until its
+            # own timeout escalates a second time.
+            target.interrupted = True
+            target.interrupt_event.set()
+            self._wake_current_with_error(target, exc)
+
+        if self._on_stuck_release is not None:
+            try:
+                await asyncio.wait_for(
+                    self._on_stuck_release(reason),
+                    _STUCK_RELEASE_NOTIFY_TIMEOUT,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "stuck-release host notification exceeded %.1fs; opening "
+                    "the lane anyway",
+                    _STUCK_RELEASE_NOTIFY_TIMEOUT,
+                )
+            except Exception as exc_host:
+                logger.warning(
+                    "stuck-release host notification failed: %s", exc_host
+                )
+
+        # Give up on the bookkeeping just declared untrustworthy: leaving the
+        # owner or the remembered ids in place would hold the lane closed
+        # waiting for terminals nobody expects any more.
+        self._response_owner = None
+        self._server_response_active = False
+        self._server_vad_response_pending = False
+        self._server_response_ids.clear()
+        self._cancel_server_vad_pending_timer()
+        self._cancel_stale_release_timer()
+        self._idle.set()
+        logger.warning(
+            "response arbiter failing open, transport kept: %s "
+            "(current=%s owner=%s queue_depth=%d)",
+            reason,
+            current.source if current is not None else None,
+            owner.source if owner is not None else None,
+            self._queue.qsize(),
+        )
+
+    async def _tear_down_transport(self, reason: str) -> None:
         # This is the only chokepoint through which the arbiter tears down the
         # transport, and to the rest of the system the result is
         # indistinguishable from a provider-side disconnect (the receive loop
@@ -1010,7 +1169,7 @@ class RealtimeResponseArbiter:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                await self._fail_closed(
+                await self._escalate(
                     "realtime response idle wait timed out", observed=queued
                 )
                 raise asyncio.TimeoutError("realtime response idle wait timed out")
@@ -1046,7 +1205,7 @@ class RealtimeResponseArbiter:
             for event in queued.events_before_response:
                 if queued.interrupted:
                     raise RuntimeError("response dispatch interrupted")
-                await self._send_event(event)
+                await self._worker_send(event)
 
             if queued.item_ack is not None:
                 try:
@@ -1076,7 +1235,7 @@ class RealtimeResponseArbiter:
             self._response_owner = queued
             queued.response_send_started = True
             try:
-                await self._send_event(queued.response_event)
+                await self._worker_send(queued.response_event)
             except Exception:
                 if self._response_owner is queued:
                     self._response_owner = None
@@ -1105,7 +1264,7 @@ class RealtimeResponseArbiter:
                     "response dispatch interrupted by pending server VAD response"
                 )
             if queued.interrupted:
-                await self._send_event({"type": "response.cancel"})
+                await self._worker_send({"type": "response.cancel"})
                 try:
                     await asyncio.wait_for(
                         asyncio.shield(queued.terminal), queued.cancel_timeout
@@ -1113,7 +1272,7 @@ class RealtimeResponseArbiter:
                 except Exception:
                     if not queued.terminal.done():
                         queued.terminal.cancel()
-                    await self._fail_closed(
+                    await self._escalate(
                         "interrupted response could not reach a terminal state",
                         observed=queued,
                     )
@@ -1199,8 +1358,16 @@ class RealtimeResponseArbiter:
     async def _cancel_after_timeout(
         self, queued: _QueuedResponse, original_timeout: asyncio.TimeoutError
     ) -> None:
+        cancel_write_failed = False
         try:
-            await self._send_event({"type": "response.cancel"})
+            try:
+                await self._worker_send({"type": "response.cancel"})
+            except Exception:
+                # ``_worker_send``'s finally has already lowered the in-flight
+                # flag, so without remembering this the escalation below would
+                # read a usable transport moments after this one refused a write.
+                cancel_write_failed = True
+                raise
             assert queued.terminal is not None
             await asyncio.wait_for(
                 asyncio.shield(queued.terminal), queued.cancel_timeout
@@ -1208,8 +1375,9 @@ class RealtimeResponseArbiter:
         except Exception:
             if queued.terminal is not None and not queued.terminal.done():
                 queued.terminal.cancel()
-            await self._fail_closed(
+            await self._escalate(
                 "response lifecycle could not reach a terminal state",
                 observed=queued,
+                transport_write_failed=cancel_write_failed,
             )
         raise original_timeout
