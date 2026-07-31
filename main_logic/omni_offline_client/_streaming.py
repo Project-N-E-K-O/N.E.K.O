@@ -597,8 +597,8 @@ class _StreamingMixin:
         # Retry策略：重试2次，间隔1秒、2秒
         max_retries = 3
         retry_delays = [1, 2]
-        assistant_message = ""
-        assistant_message_total = ""
+        assistant_message = ""        # 仅最后一段未持久化的 text（final-segment）
+        assistant_message_total = ""  # 整轮累计（含 pre-tool），整轮级判定看它
         status_reported = False
         guard_exhausted = False
         # Empty-completion 诊断字段重置：每轮 turn 独立，否则会读到上一轮的旧值。
@@ -670,14 +670,15 @@ class _StreamingMixin:
                     _ttft_recorded = False
                     while guard_attempt <= self.max_response_rerolls:
                         self._is_responding = True
-                        assistant_message = ""
-                        assistant_message_total = ""     # 全轮可见文本，用于 _check_repetition / 长度 guard
+                        assistant_message = ""           # 仅最后一段未持久化的 text，用于 final AIMessage append
+                        assistant_message_total = ""     # 全轮累积，用于 _check_repetition / 长度 guard
                         is_first_chunk = True
                         pipe_count = 0  # 围栏：追踪 | 字符的出现次数
                         fence_triggered = False  # 围栏是否已触发
                         guard_triggered = False
                         discard_reason = None
                         length_guard_recovery_text = ""
+                        length_guard_persisted_prefix = ""
                         length_guard_original_tokens = 0
                         chunk_usage = None
                         prefix_buffer = ""
@@ -704,6 +705,8 @@ class _StreamingMixin:
                         # 各状态的 emit 去向：
                         #   idle / pending_cutover  → UI + TTS（both）
                         #   cutover_done            → 仅 UI（tail 攒进 summary_tail_buffer）
+                        # tool_round_persisted 触发时：先把 cutover 后的 tail abandon 给
+                        # TTS（否则永远听不到），再把整套状态重置回 idle。
                         summary_state = 'idle'
                         summary_prefix_for_history = ""  # cutover 触发那一刻 assistant_message 的快照
                         summary_tail_buffer = ""        # post-cutover UI-only 文本
@@ -714,6 +717,15 @@ class _StreamingMixin:
                         # 应该从这个点开始找 terminator。trigger chunk 之后立即
                         # 消费回 0，下一 chunk 从头扫（因为它整段已经在 budget 之后）。
                         summary_overflow_offset = 0
+
+                        def _has_unpersisted_recovery_suffix(recovery_text: str) -> bool:
+                            if not recovery_text:
+                                return False
+                            if not length_guard_persisted_prefix:
+                                return True
+                            if not recovery_text.startswith(length_guard_persisted_prefix):
+                                return False
+                            return bool(recovery_text[len(length_guard_persisted_prefix):].strip())
 
                         # Tool-aware streaming: ``_astream_with_tools`` runs
                         # the multi-turn tool loop inside (executing tools and
@@ -769,6 +781,66 @@ class _StreamingMixin:
                             if hasattr(chunk, 'response_metadata') and chunk.response_metadata:
                                 if 'token_usage' in chunk.response_metadata or 'usage' in chunk.response_metadata:
                                     logger.debug(f"🔍 [Meta] {chunk.response_metadata}")
+                            # tool 轮 sentinel：``_astream_*_with_tools`` 已把
+                            # pre-tool 文本 + tool_calls + tool result inline
+                            # 写进 history。重置 final-segment buffer 防止
+                            # 之后 append 的 AIMessage 把同一段 pre-tool 文本
+                            # 第二次写进 history。``_total`` 不重置——重复检测
+                            # / token 长度 guard 仍要看完整一轮的实际文本量。
+                            if getattr(chunk, "tool_round_persisted", False):
+                                length_guard_persisted_prefix = assistant_message_total
+                                assistant_message = ""
+                                # 重置围栏 / prefix buffer：下一段是新的语义
+                                # 单元（模型基于 tool 结果重新出文本），不应
+                                # 复用之前的 fence / prefix 状态。
+                                pipe_count = 0
+                                prefix_buffer = ""
+                                prefix_checked = not bool(self._prefix_buffer_size)
+                                if think_stripper is not None:
+                                    # Flush before reset: if this pre-tool segment
+                                    # never emitted </think>, the stripper is still
+                                    # holding real answer text it withheld from
+                                    # TTS/UI. The inner generator already persisted
+                                    # that text to history (stripped), so emit it to
+                                    # TTS/UI only here — dropping it (a bare reset)
+                                    # would lose the pre-tool sentence. Then re-arm
+                                    # for the post-tool segment (new semantic unit).
+                                    _pretool_residual = think_stripper.flush()
+                                    if _pretool_residual and _pretool_residual.strip() and self.on_text_delta:
+                                        await self.on_text_delta(_pretool_residual, is_first_chunk)
+                                        is_first_chunk = False
+                                    think_stripper.reset()
+                                # Summary 状态收尾：cutover 之后的 tail 已经 UI-only
+                                # 发出去了，但 TTS 还没听到。tool 边界处不知道
+                                # post-tool 段会有多长，没法走"final < max+slack"
+                                # 那套判断，所以一律 abandon —— 把 tail 续给 TTS
+                                # 当原文读完。`_astream_*_with_tools` 已经把含
+                                # tail 的完整 pre-tool 文本写进 assistant.tool_calls.content
+                                # 持久化到 _conversation_history，UI/TTS/history 这下
+                                # 三家口径一致。然后再重置 state 让 post-tool 重新
+                                # 走 idle 起点。
+                                if (
+                                    summary_mode_enabled
+                                    and summary_state == 'cutover_done'
+                                    and summary_tail_buffer
+                                ):
+                                    logger.info(
+                                        "OmniOfflineClient summary: tool 边界 abandon "
+                                        "(pre-tool tail %d chars 续给 TTS)",
+                                        len(summary_tail_buffer),
+                                    )
+                                    if self.on_text_delta:
+                                        await self.on_text_delta(
+                                            summary_tail_buffer, False,
+                                            ui_enabled=False, tts_enabled=True,
+                                        )
+                                summary_state = 'idle'
+                                summary_prefix_for_history = ""
+                                summary_tail_buffer = ""
+                                summary_next_gibberish_check = _SUMMARY_GIBBERISH_RECHECK_TOKENS
+                                summary_trigger_tokens = 0
+                                summary_overflow_offset = 0
+                                continue
                             if not self._is_responding:
                                 break
 
@@ -820,7 +892,7 @@ class _StreamingMixin:
                                 if truncated_content and truncated_content.strip():
                                     emit_content = truncated_content
                                     if self.enable_response_guard:
-                                        # 长度 guard 看完整一轮可见文本的 token 量。
+                                        # 长度 guard 看完整一轮（含 pre-tool）的 token 量。
                                         # 必须在 on_text_delta 前裁剪本 chunk，否则 UI/TTS
                                         # 会先收到超限尾巴，而 history 只保存截断文本。
                                         candidate_total = assistant_message_total + truncated_content
@@ -874,7 +946,7 @@ class _StreamingMixin:
                                                                 length_guard_recovery_text = candidate_recovery
                                                         elif (
                                                             assistant_message_total
-                                                            and assistant_message_total.strip()
+                                                            and _has_unpersisted_recovery_suffix(assistant_message_total)
                                                         ):
                                                             # 已流式发出的前缀无法撤回；保持 history 与
                                                             # UI/TTS 一致，避免可见文本和上下文分叉。
@@ -1021,7 +1093,7 @@ class _StreamingMixin:
                                 if flush_text and flush_text.strip():
                                     emit_flush_text = flush_text
                                     if self.enable_response_guard:
-                                        # 长度 guard 看整轮可见文本，与上方主累加块对偶。
+                                        # 长度 guard 看整轮（含 pre-tool），与上方主累加块对偶。
                                         candidate_total = assistant_message_total + flush_text
                                         current_length = count_tokens(candidate_total)
                                         if current_length > self.max_response_length:
@@ -1062,7 +1134,7 @@ class _StreamingMixin:
                                                                 length_guard_recovery_text = candidate_recovery
                                                         elif (
                                                             assistant_message_total
-                                                            and assistant_message_total.strip()
+                                                            and _has_unpersisted_recovery_suffix(assistant_message_total)
                                                         ):
                                                             length_guard_recovery_text = assistant_message_total
                                     if emit_flush_text and emit_flush_text.strip():
@@ -1150,10 +1222,10 @@ class _StreamingMixin:
                                         assistant_message_total, self.max_response_length,
                                     )
                                     candidate_recovery = _truncate_to_last_sentence_end(capped)
-                                    if candidate_recovery and candidate_recovery.strip():
+                                    if _has_unpersisted_recovery_suffix(candidate_recovery):
                                         recovery_text = candidate_recovery
 
-                            if recovery_text and recovery_text.strip():
+                            if recovery_text and _has_unpersisted_recovery_suffix(recovery_text):
                                 history_recovery_text = assistant_message
                                 original_tokens = length_guard_original_tokens or count_tokens(assistant_message_total)
                                 logger.info(
@@ -1205,13 +1277,15 @@ class _StreamingMixin:
                             # 可能在 token 上限之外（比如最后一个句号在 950 token
                             # 处但 cap 是 300）。
                             if discard_reason and "length>" in discard_reason:
-                                # 整轮判定：gibberish / 截断必须看累计可见文本。
+                                # 整轮判定：gibberish / 截断必须看 _total，否则
+                                # tool 轮 sentinel 把 final-segment 清空之后整段
+                                # pre-tool 被忽略，明明很长却走 RESPONSE_TOO_LONG。
                                 if not _is_gibberish_response(assistant_message_total):
                                     capped = truncate_to_tokens(
                                         assistant_message_total, self.max_response_length,
                                     )
                                     candidate_recovery = _truncate_to_last_sentence_end(capped)
-                                    if candidate_recovery and candidate_recovery.strip():
+                                    if _has_unpersisted_recovery_suffix(candidate_recovery):
                                         recovery_text = candidate_recovery
 
                             if recovery_text:
@@ -1361,8 +1435,12 @@ class _StreamingMixin:
                         # 此处不再手动调用 TokenTracker.record() 避免双重计数。
 
                         if assistant_message:
+                            # final AIMessage 只写未被 inline 持久化的最后一段
+                            # （pre-tool 文本已经在前面 ``assistant.tool_calls.content``
+                            # 里了，再 append 一次会双写历史）。
                             self._conversation_history.append(AIMessage(content=assistant_message))
-                        # 重复检测看完整一轮真正外发的文本。
+                        # 重复检测看完整一轮文本（含 pre-tool），与人类用户感知
+                        # 的"这一轮 AI 说了什么"一致。
                         if assistant_message_total:
                             await self._check_repetition(assistant_message_total)
                         break
@@ -1370,7 +1448,9 @@ class _StreamingMixin:
                     if guard_exhausted:
                         break
 
-                    # 本轮只要产生过真正外发的文本就算成功完成 retry 循环。
+                    # 整轮判定：本轮只要产生过任何文本（含 pre-tool）就算成功完成
+                    # retry 循环；用 final-segment 会让"max_tool_iterations 用尽
+                    # 时只剩 pre-tool 被持久化、没出 final 回复"的轮次被错误重试。
                     if assistant_message_total:
                         break
 
@@ -1427,6 +1507,9 @@ class _StreamingMixin:
                     if attempt < max_retries - 1:
                         wait_time = retry_delays[attempt]
                         logger.warning(f"OmniOfflineClient: LLM调用失败 (尝试 {attempt + 1}/{max_retries})，{wait_time}秒后重试: {e}")
+                        # 整轮判定：本轮是否吐过任何文本到前端 —— 用 _total 才能
+                        # 覆盖 tool_round_persisted 已重置 final-segment 的场景。
+                        # 否则 pre-tool 文本残留在前端但 notify_discarded 漏触发。
                         if assistant_message_total and discard_callback:
                             await self._notify_response_discarded(
                                 f"api_error:{error_type}",
@@ -1499,6 +1582,8 @@ class _StreamingMixin:
                     # 在那。和 (APIConnectionError 等) 分支语义对偶，但
                     # 这条路径已经决定不再重试（break 在下面），所以
                     # ``will_retry=False``，并附带可读的错误码到前端。
+                    # 整轮判定：用 _total，覆盖 tool_round_persisted 已重置
+                    # final-segment 但 pre-tool 文本仍在前端的场景。
                     if assistant_message_total and discard_callback:
                         try:
                             await self._notify_response_discarded(
@@ -1535,7 +1620,8 @@ class _StreamingMixin:
             if _summary_prev_max_tokens is not None and getattr(self, "llm", None) is not None:
                 self.llm.max_completion_tokens = _summary_prev_max_tokens
 
-            # 所有重试都没产生过任何可见文本才算 LLM_NO_RESPONSE。
+            # 整轮判定：所有重试都没产生过任何文本（包括 pre-tool）才算 LLM_NO_RESPONSE。
+            # 用 final-segment 会让"tool 轮跑完了但模型没出 final 文本"的场景被错报。
             if not assistant_message_total and not guard_exhausted and not status_reported:
                 # 把最后一次 attempt 的 finish_reason / block_reason / prompt_tokens
                 # 拼进 warning。Gemini-via-OpenAI-compat 静默 empty 时（safety /

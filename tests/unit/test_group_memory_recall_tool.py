@@ -14,8 +14,8 @@ pin the six load-bearing pieces of that migration:
 4. the in-handler entry / post-fetch revocation gates;
 5. tool-round dict rows never survive in the shared history (neither on
    normal turns nor through the revocation rollback);
-6. the QQ layer preserves text already filtered by the shared core, and
-   routes that silently drop ``tools`` fall back to synchronous recall.
+6. pre-tool text never reaches the outbound message, and routes that
+   silently drop ``tools`` fall back to the synchronous recall.
 """
 
 from __future__ import annotations
@@ -101,9 +101,10 @@ def _group_context(sender_id="2046", **overrides):
 class _RecallToolClient:
     """A stand-in for OmniOfflineClient's tool loop.
 
-    ``stream_text`` runs the provided script, invokes whatever handler is
-    CURRENTLY installed, appends the tool-round dict rows the real client
-    persists, and emits the final answer.
+    ``stream_text`` runs the provided script, which can emit pre-tool
+    deltas, invoke whatever handler is CURRENTLY installed (exactly like
+    the real loop does), append the tool-round dict rows the real client
+    persists, and emit the final answer.
     """
 
     def __init__(self, script, *, model=TOOL_CAPABLE_MODEL,
@@ -114,6 +115,7 @@ class _RecallToolClient:
         self._conversation_history: list = []
         self.tools: list = []
         self.on_tool_call = None
+        self.on_tool_round_start = None
         self.armed_tool_names: list[list[str]] = []
 
     def set_tools(self, tool_definitions):
@@ -122,6 +124,9 @@ class _RecallToolClient:
 
     def set_tool_call_handler(self, handler):
         self.on_tool_call = handler
+
+    def set_tool_round_start_callback(self, handler):
+        self.on_tool_round_start = handler
 
     async def stream_text(self, message):
         await self._script(self, message)
@@ -143,7 +148,7 @@ def _tool_round_rows(recall_output):
     return [
         {
             "role": "assistant",
-            "content": "",
+            "content": "我查一下",
             "tool_calls": [{
                 "id": "call_1", "type": "function",
                 "function": {"name": "recall_memory", "arguments": "{}"},
@@ -471,6 +476,7 @@ async def test_arm_respects_the_session_clients_frozen_route():
     assert service._arm_recall_tool(
         context=_group_context(),
         user_session=free_client,
+        reply_chunks=[],
         consent_before={},
     ) is False
     assert free_client.armed_tool_names == []
@@ -480,6 +486,7 @@ async def test_arm_respects_the_session_clients_frozen_route():
     assert service._arm_recall_tool(
         context=_group_context(recall_via_tool=False),
         user_session=capable_client,
+        reply_chunks=[],
         consent_before={},
     ) is False
     assert capable_client.armed_tool_names == []
@@ -489,12 +496,14 @@ async def test_arm_respects_the_session_clients_frozen_route():
         context=_group_context(),
         user_session=SimpleNamespace(model=TOOL_CAPABLE_MODEL,
                                      base_url=TOOL_CAPABLE_BASE_URL),
+        reply_chunks=[],
         consent_before={},
     ) is False
 
     assert service._arm_recall_tool(
         context=_group_context(),
         user_session=capable_client,
+        reply_chunks=[],
         consent_before={},
     ) is True
     assert capable_client.armed_tool_names[-1] == ["recall_memory"]
@@ -724,13 +733,16 @@ async def test_revocation_after_tool_read_discards_reply_and_tool_rows():
 
 
 @pytest.mark.asyncio
-async def test_recall_handler_preserves_core_filtered_outbound_chunks():
-    """The QQ handler must not clear text already released by the core."""
+async def test_pre_tool_text_never_reaches_the_outbound_message():
+    """The model announces a lookup ("let me check") before calling the
+    tool. That segment is persisted by the client into the assistant
+    tool_calls row (and swept with it) — the QQ message the group
+    receives must contain only the post-tool answer."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
     async def _script(client, message):
-        client.reply_chunks_ref.append("最终回答前缀，")
+        client.reply_chunks_ref.append("我查一下")
         result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
         client._conversation_history.append(
             SimpleNamespace(type="human", content=message)
@@ -753,7 +765,52 @@ async def test_recall_handler_preserves_core_filtered_outbound_chunks():
         user_session=client,
         reply_chunks=reply_chunks,
     )
-    assert result == "最终回答前缀，查到了，是不剧透"
+    assert result == "查到了，是不剧透"
+    assert "我查一下" not in result
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
+    """P2 的零执行路径：provider 流出 tool_call 分片但 function.name 始终
+    没到，collect_tool_calls 全部丢弃，handler 一次都不调——真实客户端
+    此时仍会触发 on_tool_round_start（进入 tool 轮的最早信号）。清理只挂
+    handler 入口的话，这条路径上永远清不掉，pre-tool 的"我查一下"会连着
+    forced-finalize 的最终文本一起外发（审计实跑复现过）。"""  # noqa: DOCSTRING_CJK
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("我查一下")
+        # 模拟真实客户端：确认进入 tool 轮即回调，但 handler 从未被调。
+        assert client.on_tool_round_start is not None, (
+            "挂载召回工具的同时必须挂 round-start 回调"
+        )
+        await client.on_tool_round_start()
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        # forced-finalize 出的最终文本。
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="最终回答")
+        )
+        client.reply_chunks_ref.append("最终回答")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "最终回答"
+    assert "我查一下" not in result
+    # 对偶卸载：round-start 闭包攥着本轮的 reply_chunks，越轮存活会清掉
+    # 下一轮的出站缓冲。
+    assert client.on_tool_round_start is None
+    plugin.memory_bridge.query_relevant_memory.assert_not_awaited()
 
 
 @pytest.mark.asyncio

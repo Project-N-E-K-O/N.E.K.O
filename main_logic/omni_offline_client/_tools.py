@@ -25,6 +25,7 @@ from ._shared import (
     log_tool_leak_filtered,
     logger,
     parse_arguments_json,
+    strip_thinking_segments,
 )
 
 from ._genai_support import (
@@ -54,6 +55,27 @@ class _ToolingMixin:
         """Plug in (or replace) the callback that executes tool calls."""
         self.on_tool_call = handler
 
+    def set_tool_round_start_callback(self, handler) -> None:
+        """Plug in (or clear with ``None``) the tool-round-start callback.
+
+        Fires once per LLM iteration that enters a tool round, before any
+        handler runs — including rounds where every collected call is
+        dropped (nameless fragments) and no handler ever runs. See the
+        ``on_tool_round_start`` note in ``_client``."""
+        self.on_tool_round_start = handler
+
+    async def _notify_tool_round_start(self) -> None:
+        """Best-effort fire of ``on_tool_round_start``; a callback failure
+        must never disturb the stream. getattr default guards ``__new__``
+        test stubs that bypass ``__init__``."""
+        cb = getattr(self, "on_tool_round_start", None)
+        if cb is None:
+            return
+        try:
+            await cb()
+        except Exception as e:
+            logger.debug("on_tool_round_start callback failed (ignored): %s", e)
+
     def has_tools(self) -> bool:
         return bool(self._tool_definitions) and self.on_tool_call is not None
 
@@ -69,6 +91,7 @@ class _ToolingMixin:
         self,
         messages,
         calls,
+        assistant_text: str = "",
         assistant_reasoning: str = "",
     ) -> int:
         """Run each tool call through ``on_tool_call`` and mutate
@@ -78,10 +101,18 @@ class _ToolingMixin:
         so the next astream invocation sees a valid history.
 
         Returns the number of calls actually executed — 0 when every slot
-        was a nameless fragment and nothing was appended. Text emitted by
-        the provider in the same turn is intentionally absent here: the
-        streaming loop buffers it until the turn type is known and drops
-        it for tool rounds.
+        was a nameless fragment and nothing was appended. The caller uses
+        that to decide whether the round-persisted sentinel may be emitted
+        (its contract is "the pre-tool text IS in history now") and to
+        grade the iteration-cap log.
+
+        ``assistant_text`` is written into the assistant turn's ``content``.
+        The OpenAI Chat Completions protocol allows a turn to carry both
+        ``content`` and ``tool_calls``, and some OpenAI-compat providers
+        "emit text first, then enter tool_calls". Like the Gemini path's
+        streamed_text_buffer, this text must be written into the history
+        too, otherwise the next turn's context loses the prefix and the
+        model repeats itself / backtracks.
 
         ``assistant_reasoning`` is the thinking model's reasoning chain for
         this turn (``reasoning_content``). Endpoints like DeepSeek-R /
@@ -102,7 +133,7 @@ class _ToolingMixin:
             return 0
         assistant_turn = {
             "role": "assistant",
-            "content": "",
+            "content": assistant_text or "",
             "tool_calls": [
                 {
                     "id": c.id or f"call_{i}",
@@ -359,93 +390,73 @@ class _ToolingMixin:
         # 跨迭代累计真正执行过的 tool call 数：0 与非 0 在封顶日志里是两种
         # 性质（"进了 tool 分支但全是无名分片" vs 正常耗尽预算）。
         executed_tool_calls = 0
-        # 同一个 provider turn 可能先给 text、最后才以 tool_calls 收尾。要保证
-        # 这类过渡语既不进 UI/TTS 也不进 history，只能在启用工具时暂存整轮
-        # 文本，等 finish_reason 确认 turn 类型：普通文本轮再释放，工具轮丢弃。
-        # 没启用工具时没有这种歧义，继续逐 chunk 流式转发。
-        buffer_iteration_text = bool(tools_payload and self.on_tool_call is not None)
+        # 是否因"零执行轮且已经流过文本"提前跳出循环（与 genai 路径对偶）：
+        # 封顶日志据此别谎称迭代被耗尽。
+        zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
-            had_visible_text = False
-            buffered_chunks: list[LLMStreamChunk] = []
+            # 累积本轮已 yield 给上游的 text，下面 finish_reason=tool_calls
+            # 时一起写进 assistant 历史。OpenAI Chat Completions 协议允许同
+            # 一 turn 既有 content 又有 tool_calls；某些兼容 provider 真会
+            # 先吐文字再进 tool_calls。和 Gemini 路径完全对偶。
+            streamed_text_buffer = ""
             # Thinking 模型本轮的推理链：finish_reason=tool_calls 时必须随
             # assistant tool_calls turn 一起回填，否则部分 provider 下一轮报
             # 400（reasoning_content must be passed back）。普通端点恒为空。
             streamed_reasoning_buffer = ""
-            try:
-                async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
-                    if getattr(chunk, "content", None):
-                        if tool_leak_filter is not None:
-                            chunk.content = self._filter_tool_leak_content(
-                                chunk.content, tool_leak_filter, provider=tool_leak_provider
-                            )
-                            setattr(chunk, "_tool_leak_filtered", True)
-                        if chunk.content:
-                            had_visible_text = True
-                    if getattr(chunk, "reasoning_content", None):
-                        streamed_reasoning_buffer += chunk.reasoning_content
-                        # Pulse the thinking bubble on ANY chunk carrying reasoning,
-                        # BEFORE the pure-reasoning skip below — a thinking provider
-                        # can pack reasoning_content onto the SAME delta as a
-                        # tool_call_delta / finish_reason (the OpenAI adapter keeps
-                        # them in one LLMStreamChunk), and a reasoning tool-call turn
-                        # has no visible token to show feedback otherwise (Codex P2).
-                        await self._notify_reasoning_active()
-                    if chunk.tool_call_deltas:
-                        deltas_per_chunk.append(chunk.tool_call_deltas)
-                    if chunk.finish_reason:
-                        finish_reason = chunk.finish_reason
-                    # Empty-completion 诊断：记最新的 finish_reason 和 prompt_tokens，
-                    # 给上层 stream_text / prompt_ephemeral 的兜底 warning 用。
-                    # usage chunk（terminal）才带 prompt_tokens；前面 text chunk 不带。
-                    if chunk.usage_metadata:
-                        pt = chunk.usage_metadata.get("prompt_tokens")
-                        if pt:
-                            self._last_prompt_tokens = pt
-                    # 纯 reasoning chunk（thinking 模型先吐推理链，content 为空、无
-                    # tool delta / finish / usage）只在上面累积进 buffer，不向下游
-                    # 转发：``stream_text`` 在首个 yield 的 chunk 上记 TTFT，放行
-                    # reasoning-only 会把"首推理 token"误当首 token，拉低延迟埋点。
-                    if (
-                        getattr(chunk, "reasoning_content", None)
-                        and not getattr(chunk, "content", None)
-                        and not chunk.tool_call_deltas
-                        and not chunk.finish_reason
-                        and not chunk.usage_metadata
-                    ):
-                        # Pure reasoning-only chunk: already pulsed above; drop it so
-                        # the "first token" TTFT埋点 isn't fooled by a reasoning token.
-                        continue
-                    if buffer_iteration_text:
-                        buffered_chunks.append(chunk)
-                    else:
-                        yield chunk
-            except Exception:
-                # The visible-stream wrapper finalizes this filter on errors.
-                # A tool-capable iteration has not established that its buffered
-                # text was a normal reply, so do not let that finalizer leak it.
-                if buffer_iteration_text and tool_leak_filter is not None:
-                    tool_leak_filter.reset()
-                raise
-
-            if buffer_iteration_text and tool_leak_filter is not None:
-                tail, event = tool_leak_filter.finalize()
-                if event:
-                    log_tool_leak_filtered(event, provider=tool_leak_provider)
-                if tail:
-                    had_visible_text = True
-                    tail_chunk = LLMStreamChunk(content=tail)
-                    setattr(tail_chunk, "_tool_leak_filtered", True)
-                    buffered_chunks.append(tail_chunk)
-                tool_leak_filter.reset()
+            async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
+                if getattr(chunk, "content", None):
+                    if tool_leak_filter is not None:
+                        chunk.content = self._filter_tool_leak_content(
+                            chunk.content, tool_leak_filter, provider=tool_leak_provider
+                        )
+                        setattr(chunk, "_tool_leak_filtered", True)
+                    streamed_text_buffer += chunk.content
+                if getattr(chunk, "reasoning_content", None):
+                    streamed_reasoning_buffer += chunk.reasoning_content
+                    # Pulse the thinking bubble on ANY chunk carrying reasoning,
+                    # BEFORE the pure-reasoning skip below — a thinking provider
+                    # can pack reasoning_content onto the SAME delta as a
+                    # tool_call_delta / finish_reason (the OpenAI adapter keeps
+                    # them in one LLMStreamChunk), and a reasoning tool-call turn
+                    # has no visible token to show feedback otherwise (Codex P2).
+                    await self._notify_reasoning_active()
+                if chunk.tool_call_deltas:
+                    deltas_per_chunk.append(chunk.tool_call_deltas)
+                if chunk.finish_reason:
+                    finish_reason = chunk.finish_reason
+                # Empty-completion 诊断：记最新的 finish_reason 和 prompt_tokens，
+                # 给上层 stream_text / prompt_ephemeral 的兜底 warning 用。
+                # usage chunk（terminal）才带 prompt_tokens；前面 text chunk 不带。
+                if chunk.usage_metadata:
+                    pt = chunk.usage_metadata.get("prompt_tokens")
+                    if pt:
+                        self._last_prompt_tokens = pt
+                # 纯 reasoning chunk（thinking 模型先吐推理链，content 为空、无
+                # tool delta / finish / usage）只在上面累积进 buffer，不向下游
+                # 转发：``stream_text`` 在首个 yield 的 chunk 上记 TTFT，放行
+                # reasoning-only 会把"首推理 token"误当首 token，拉低延迟埋点。
+                if (
+                    getattr(chunk, "reasoning_content", None)
+                    and not getattr(chunk, "content", None)
+                    and not chunk.tool_call_deltas
+                    and not chunk.finish_reason
+                    and not chunk.usage_metadata
+                ):
+                    # Pure reasoning-only chunk: already pulsed above; drop it so
+                    # the "first token" TTFT埋点 isn't fooled by a reasoning token.
+                    continue
+                # 永远 yield 文本 chunk —— 即便是 tool-only turn 也可能在
+                # finish_reason=tool_calls 之前 emit usage chunk 和空 content。
+                yield chunk
             # 记录本次 attempt 的最终 finish_reason，供上层 empty-completion
             # 兜底警告引用（"safety" / "length" / "content_filter" / "stop" 都
             # 可能在 content 为空时出现，是诊断 Gemini-via-OpenAI-compat 静默
             # empty 的关键线索）。
             self._last_finish_reason = finish_reason
             if (
-                not had_visible_text
+                not streamed_text_buffer
                 and not deltas_per_chunk
                 and finish_reason != "tool_calls"
             ):
@@ -466,39 +477,87 @@ class _ToolingMixin:
                 and tools_payload
                 and self.on_tool_call is not None
             ):
+                if tool_leak_filter is not None:
+                    tail, event = tool_leak_filter.finalize()
+                    if event:
+                        log_tool_leak_filtered(event, provider=tool_leak_provider)
+                    if tail:
+                        streamed_text_buffer += tail
+                        tail_chunk = LLMStreamChunk(content=tail)
+                        setattr(tail_chunk, "_tool_leak_filtered", True)
+                        yield tail_chunk
+                    tool_leak_filter.reset()
+                # 本轮已确认是 tool 轮：先给缓冲型调用方（QQ 插件）一个丢弃
+                # pre-tool 文本的锚点。必须在执行器之前、且不依赖 handler 被
+                # 真正调用——无名分片会让下面的 calls 过滤后为空、handler 一次
+                # 都不跑，只挂在 handler 入口的清理在那条路径上永不发生。
+                await self._notify_tool_round_start()
                 # ChatOpenAI is the right import even though we're outside
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
                 from utils.llm_client import ChatOpenAI as _ChatOpenAI
+                from utils.llm_client import LLMStreamChunk as _LLMStreamChunk
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
                 executed_this_round = await self._execute_and_append_openai_tool_calls(
                     messages, calls,
+                    # Strip any leaked <think> CoT before it lands in history:
+                    # the streaming guard (ThinkingStreamStripper) only protects
+                    # TTS/UI; this assembled pre-tool text is persisted raw to the
+                    # assistant tool-call turn, so a leak-prone Focus turn would
+                    # otherwise carry CoT into the next turn's context. No-op on
+                    # clean replies (no think tag present).
+                    assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
                 )
                 executed_tool_calls += executed_this_round
-                # Keep per-round telemetry while dropping every ambiguous text
-                # or tool-delta chunk from the user-facing stream.
-                for buffered_chunk in buffered_chunks:
-                    if buffered_chunk.usage_metadata:
-                        yield LLMStreamChunk(
-                            content="",
-                            usage_metadata=buffered_chunk.usage_metadata,
-                            response_metadata=buffered_chunk.response_metadata,
-                        )
+                if executed_this_round:
+                    # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
+                    # 已经写进 history（assistant turn）。stream_text 据此清空
+                    # final-segment buffer，避免之后 append 的 final AIMessage
+                    # 把同一段 pre-tool 文本第二次写进 history。
+                    #
+                    # 零执行轮（全是无名分片，什么都没写进 history）不发：
+                    # sentinel 的契约是"pre-tool 文本已持久化"，此时为假——
+                    # 发了会让这段文本既不在 tool_calls 行、又被 final
+                    # AIMessage 跳过，从历史里彻底消失。
+                    yield _LLMStreamChunk(content="", tool_round_persisted=True)
+                elif (
+                    streamed_text_buffer
+                    and getattr(self, "on_tool_round_start", None) is None
+                ):
+                    # 零执行轮：messages 一个字都没变，重来一轮不会有新信息，
+                    # 只会让模型把同样的 pre-tool 文本再流一遍给用户。已经流
+                    # 过文本就跳出循环去 forced-finalize（forced-finalize 与
+                    # 封顶日志都保留，被砍掉的只是没有意义的重试）；什么都
+                    # 没流出去的零执行轮仍允许再试一轮——重试没有用户可见
+                    # 代价，而 provider 抖动确实可能下一轮就正常。
+                    #
+                    # 装了 round-start 回调的调用方是缓冲型的（回调体就是
+                    # 丢弃 pre-tool 文本），本轮那截文本根本没送到用户手里，
+                    # "重放"无从谈起——那种情况仍然重试，别白丢一次本可恢复
+                    # 的工具调用。与 genai 路径对偶。
+                    zero_exec_break = True
+                    break
                 continue
-            if buffer_iteration_text:
-                for buffered_chunk in buffered_chunks:
-                    yield buffered_chunk
             return
         if executed_tool_calls == 0:
             # 进过 tool 分支却一次都没执行成（provider 流出的 tool_call 分片
             # 始终没带 name，collect_tool_calls 全部丢弃）：这是最值得排查的
             # 形态，不能伪装成普通封顶日志。
             logger.warning(
-                "OmniOfflineClient: tool iteration cap %d reached with 0 "
-                "executed tool calls (provider "
+                "OmniOfflineClient: %s with 0 executed tool calls (provider "
                 "streamed nameless tool_call fragments); forcing final answer "
                 "without tools",
-                self.max_tool_iterations,
+                "zero-execution round after streaming text" if zero_exec_break
+                else f"tool iteration cap {self.max_tool_iterations} reached",
+            )
+        elif zero_exec_break:
+            # 前面几轮真的执行过 tool，最后一轮零执行且已流过文本：循环没被
+            # 耗尽，别打成 runaway 封顶（与 genai 路径对偶）。
+            logger.warning(
+                "OmniOfflineClient: zero-execution round after streaming text "
+                "(provider streamed nameless tool_call fragments) with %d "
+                "executed tool calls so far; forcing final answer without tools",
+                executed_tool_calls,
             )
         elif self.max_tool_iterations == 1:
             # cap=1 是调用方的设计内单轮预算（QQ 插件：一轮一召回）：一次

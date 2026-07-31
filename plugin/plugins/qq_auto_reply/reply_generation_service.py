@@ -275,6 +275,7 @@ class QQReplyGenerationService:
             armed_recall_tool = self._arm_recall_tool(
                 context=context,
                 user_session=user_session,
+                reply_chunks=reply_chunks,
                 consent_before=consent_before,
             )
             try:
@@ -329,6 +330,17 @@ class QQReplyGenerationService:
                     # prompt_ephemeral 等）绝不能带着本轮的 subject 闭包
                     # 发起召回。
                     try:
+                        # round-start 先清：它的闭包攥着本轮的 reply_chunks，
+                        # 越轮存活会清掉下一轮的出站缓冲，而且下一轮在
+                        # _arm_recall_tool 的早退路径（recall_via_tool 关闭、
+                        # 线路不支持 tool call）上不会覆盖这个槽位——排最前
+                        # 保证前两个卸载万一抛异常也连累不到它。
+                        set_round_start = getattr(
+                            user_session,
+                            "set_tool_round_start_callback", None,
+                        )
+                        if callable(set_round_start):
+                            set_round_start(None)
                         user_session.set_tools(None)
                         user_session.set_tool_call_handler(None)
                     except Exception:
@@ -372,6 +384,7 @@ class QQReplyGenerationService:
         *,
         context: Any,
         user_session: Any,
+        reply_chunks: list[str],
         consent_before: dict,
     ) -> bool:
         """Install this turn's recall_memory tool + handler on the client.
@@ -398,14 +411,29 @@ class QQReplyGenerationService:
                 "缓存会话的线路不支持 tool call，本轮无召回（会话重建后恢复）"
             )
             return False
+        set_round_start = getattr(
+            user_session, "set_tool_round_start_callback", None,
+        )
         try:
             set_tools([
                 self.plugin.memory_tool_service.build_recall_tool_definition()
             ])
             set_handler(self._build_recall_tool_handler(
                 context=context,
+                reply_chunks=reply_chunks,
                 consent_before=consent_before,
             ))
+            if callable(set_round_start):
+                # pre-tool 文本清理的主锚点：客户端在确认进入 tool 轮的最早
+                # 时刻回调（早于 handler，且覆盖"分片全是空 name、handler
+                # 一次都不调"的路径——那条路径上只挂 handler 入口的清理永远
+                # 不会发生，pre-tool 的"我查一下"会被 forced-finalize 的
+                # 文本接在后面一起外发）。handler 入口的 clear 保留作幂等
+                # 兜底。
+                async def _on_tool_round_start() -> None:
+                    reply_chunks.clear()
+
+                set_round_start(_on_tool_round_start)
             return True
         except Exception as exc:
             self.plugin.logger.warning(
@@ -414,6 +442,8 @@ class QQReplyGenerationService:
             try:
                 set_tools(None)
                 set_handler(None)
+                if callable(set_round_start):
+                    set_round_start(None)
             except Exception:
                 # 挂载半途失败后的兜底清理：清不掉也只影响本轮（返回
                 # False 已宣布未挂载），finally 不会再动这两个槽位。
@@ -421,14 +451,15 @@ class QQReplyGenerationService:
             return False
 
     def _build_recall_tool_handler(
-        self, *, context: Any, consent_before: dict,
+        self, *, context: Any, reply_chunks: list[str], consent_before: dict,
     ):
         """This turn's recall_memory execution closure.
 
         Subjects never come from the model: ``execute_recall`` derives
         them from the turn context (the server reads an omitted subjects
-        field as the legacy PRIVATE corpus). The closure also owns the
-        runtime consent record.
+        field as the legacy PRIVATE corpus). The closure also owns two
+        pieces of turn plumbing — outbound-text hygiene and the runtime
+        consent record.
         """
 
         # 一轮一次召回的闸在 handler 层：max_tool_iterations=1 只限 LLM/
@@ -440,6 +471,11 @@ class QQReplyGenerationService:
         recall_executed = [False]
 
         async def _handle_recall_tool(tool_call: Any) -> ToolResult:
+            # pre-tool 文本（"我查一下"之类）不得外发：走到这里说明本轮
+            # 进入了 tool 轮，之前流出的增量已由客户端写进 history 的
+            # assistant tool_calls 行（随后与本轮其余 tool 行一并清理），
+            # 出站文本只保留 post-tool 的最终回答。
+            reply_chunks.clear()
             tool_service = self.plugin.memory_tool_service
             arguments = getattr(tool_call, "arguments", None) or {}
             substantive = tool_service.has_recall_arguments(arguments)
