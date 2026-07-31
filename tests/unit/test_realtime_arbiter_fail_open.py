@@ -623,7 +623,7 @@ async def test_the_release_ends_the_turn_before_the_lane_opens(make_harness):
     # turn — and end up with that turn's speech id rotated underneath it.
     lane_open_at_notify: list[bool] = []
 
-    async def _on_release(reason: str) -> None:
+    async def _on_release(reason: str, response_id: str | None) -> None:
         lane_open_at_notify.append(harness.arbiter._idle.is_set())
 
     harness = make_harness(fail_open=True, on_stuck_release=_on_release)
@@ -654,7 +654,7 @@ async def test_a_hanging_host_notification_cannot_wedge_the_consumer(
     )
     released = asyncio.Event()
 
-    async def _never_returns(reason: str) -> None:
+    async def _never_returns(reason: str, response_id: str | None) -> None:
         await released.wait()
 
     harness = make_harness(fail_open=True, on_stuck_release=_never_returns)
@@ -842,3 +842,314 @@ async def test_the_release_runs_the_hosts_own_end_of_turn_work():
         assert client.is_active_response() is False
     finally:
         await arbiter.shutdown("test teardown")
+
+
+# --------------------------------------------------------------------------
+# Contract 5: the release is scoped across its own await.
+#
+# Notifying the host before opening the lane (contract 4) puts an await in the
+# middle of the release. Three things can happen there that cannot happen in
+# straight-line code: this task can be cancelled, the abandoned response's
+# terminal can land, and the worker can wake and take a new owner. The release
+# must act only on what it captured before that await, and must finish its
+# bookkeeping either way.
+#
+# All four cases below were raised by Codex against the first version of this
+# ordering — the fix for one invariant opening a window on another, which is
+# the failure mode #2583 was reorganised to stop repeating.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_cancelled_release_still_finishes_its_bookkeeping(make_harness):
+    # Without this, a cancellation mid-notification leaves `escalated` set on
+    # the owner while the owner is never cleared: every later escalation sees
+    # a duplicate and returns, and the lane never reopens. The connection the
+    # hatch "saved" would then accept no further turns at all — strictly worse
+    # than the teardown it replaced.
+    entered = asyncio.Event()
+
+    async def _blocks_forever(reason: str, response_id: str | None) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    harness = make_harness(fail_open=True, on_stuck_release=_blocks_forever)
+    owner = await harness.own_a_live_response("resp-1")
+    assert owner is not None
+
+    release = asyncio.create_task(
+        harness.arbiter._release_stuck_lifecycle("cancelled mid-notify")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+    await _settle()
+
+    assert harness.arbiter._response_owner is None, (
+        "a release cancelled mid-notification must still give up the owner"
+    )
+    assert harness.arbiter.is_busy is False, "and still reopen the lane"
+    revived = await harness.arbiter.enqueue(source="native-after")
+    await asyncio.wait_for(revived.sent, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_does_not_erase_an_owner_that_arrived_meanwhile(
+    make_harness,
+):
+    # The abandoned response's terminal can still land while the host is being
+    # notified — the arbiter gave up on it, the provider did not. That clears
+    # the owner and reopens the lane, so the next queued request dispatches and
+    # installs itself as the new owner, all before the release resumes.
+    # Clearing "the owner" unconditionally at that point erases a healthy
+    # turn's ownership, and its terminal would arrive with nothing to resolve.
+    resumed = asyncio.Event()
+    notified = asyncio.Event()
+
+    async def _hands_control_back(reason: str, response_id: str | None) -> None:
+        notified.set()
+        await resumed.wait()
+
+    harness = make_harness(fail_open=True, on_stuck_release=_hands_control_back)
+    first = await harness.own_a_live_response("resp-1")
+
+    release = asyncio.create_task(
+        harness.arbiter._release_stuck_lifecycle("overtaken by a new owner")
+    )
+    await asyncio.wait_for(notified.wait(), timeout=1)
+
+    # The world moves while the notification is outstanding. The release
+    # already woke this ticket, so its failure is expected; what matters is
+    # that the terminal frees the ownership behind it.
+    with pytest.raises(RuntimeError):
+        await asyncio.wait_for(first.done, timeout=1)
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-1"}}
+    )
+    await _settle()
+    assert harness.arbiter._response_owner is None
+    second = await harness.arbiter.enqueue(source="native-next")
+    await asyncio.wait_for(second.sent, timeout=1)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-2"}}
+    )
+    successor = harness.arbiter._response_owner
+    assert successor is not None and successor.source == "native-next"
+
+    resumed.set()
+    await release
+    await _settle()
+
+    assert harness.arbiter._response_owner is successor, (
+        "the release must not clear an owner it never observed"
+    )
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-2"}}
+    )
+    # And its terminal still resolves, which is what the ownership was for.
+    await asyncio.wait_for(second.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_undisturbed_release_still_clears_its_own_owner(make_harness):
+    # The dual. "Only clear what you captured" must not become "never clear":
+    # in the ordinary case nothing intervenes and the owner is still the one
+    # captured, so it goes.
+    async def _returns_promptly(reason: str, response_id: str | None) -> None:
+        return None
+
+    harness = make_harness(fail_open=True, on_stuck_release=_returns_promptly)
+    await harness.own_a_live_response("resp-1")
+
+    await harness.arbiter._release_stuck_lifecycle("ordinary release")
+    await _settle()
+
+    assert harness.arbiter._response_owner is None
+    assert harness.arbiter.is_busy is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_tells_the_host_which_response_it_abandoned(make_harness):
+    # The host cannot finalize "the current turn" on trust: an owned response
+    # can overlap a server-initiated one, and it is the server response's
+    # response.created that last wrote the host's tracked id. The reason
+    # string alone does not say which response died, so the id travels with it.
+    seen: list[tuple[str, str | None]] = []
+
+    async def _record(reason: str, response_id: str | None) -> None:
+        seen.append((reason, response_id))
+
+    harness = make_harness(fail_open=True, on_stuck_release=_record)
+    await harness.own_a_live_response("resp-abandoned")
+
+    await harness.arbiter._release_stuck_lifecycle("named release")
+    await _settle()
+
+    assert seen == [("named release", "resp-abandoned")], (
+        "the abandoned response's identity must reach the host"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_id_less_orphan_response_stands_the_hatch_down(make_harness, caplog):
+    # The gap the four existing blockers left open. A server-initiated
+    # response.created arrives with no id and nobody owns it: there is no
+    # owner to inspect, no remembered id, and no speech_stopped marker, so all
+    # four blockers pass and the lane opens over a response that may still be
+    # streaming. Its terminal will arrive id-less too, and complete whoever
+    # holds the lane by then.
+    harness = make_harness(fail_open=True)
+    harness.arbiter.notify_response_created({"type": "response.created"})
+    assert harness.arbiter._server_response_active is True
+    assert harness.arbiter._server_response_ids == {}
+    assert harness.arbiter._response_owner is None
+
+    with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+        await harness.arbiter._escalate("orphan with no id")
+
+    assert harness.aborted == ["orphan with no id"], (
+        "an unidentifiable live response must tear the transport down"
+    )
+    assert any(
+        "no id at all" in record.getMessage() for record in caplog.records
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_id_bearing_orphan_response_still_fails_open(make_harness):
+    # The dual: the same unowned server response, but identified. Its later
+    # events are attributable, so the hatch applies and the lane stays closed
+    # only until that response retires.
+    harness = make_harness(fail_open=True)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-1"}}
+    )
+
+    await harness.arbiter._escalate("orphan with an id")
+
+    assert harness.aborted == []
+    assert harness.arbiter._connection_available is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_host_leaves_a_different_live_response_alone():
+    # The host half of the same contract. The arbiter abandoned resp-1, but a
+    # server-initiated resp-2 announced itself afterwards and is what the
+    # transport is tracking. Finalizing "the current turn" would close resp-2
+    # mid-stream: its audio keeps arriving with _is_responding already false,
+    # and its own terminal finds nothing left to end.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    client._current_response_id = "resp-2"
+    client._is_responding = True
+    client._image_sent_this_turn = True
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert client._is_responding is True, (
+        "the live response must keep streaming"
+    )
+    assert client._current_response_id == "resp-2"
+    assert client._image_sent_this_turn is True, (
+        "and keep the per-turn state it is still using"
+    )
+    assert done_calls == [], "no turn ended, so nothing announces one"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_host_ends_the_turn_it_was_actually_tracking():
+    # The dual, in both directions: the named response IS the tracked one, and
+    # an unnamed release (the arbiter never learned an id) still finalizes.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    for named_id in ("resp-1", None):
+        done_calls: list[str] = []
+
+        async def _on_done() -> None:
+            done_calls.append("done")
+
+        client = OmniRealtimeClient(
+            "wss://example.invalid/realtime",
+            "test-key",
+            model="free-model",
+            api_type="free",
+            on_response_done=_on_done,
+        )
+        client._current_response_id = "resp-1"
+        client._is_responding = True
+        client._image_sent_this_turn = True
+
+        await client._on_arbiter_stuck_release("abandoned", named_id)
+
+        assert client._is_responding is False, f"named_id={named_id}"
+        assert client._current_response_id is None, f"named_id={named_id}"
+        assert client._image_sent_this_turn is False, f"named_id={named_id}"
+        assert done_calls == ["done"], f"named_id={named_id}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_blocked_transcript_flush_cannot_strand_this_turns_state():
+    # The host callbacks run under the arbiter's 2s bound, so a host that
+    # blocks in on_output_transcript gets its release cancelled at that await.
+    # If the per-turn reset ran after it, this turn's flags would survive into
+    # the next one — _image_sent_this_turn being the one that changes what the
+    # model is told. Settling every synchronous write before the first await
+    # makes the leak impossible rather than merely unlikely.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    entered = asyncio.Event()
+
+    async def _blocks(text: str, is_first: bool) -> None:
+        entered.set()
+        await asyncio.Event().wait()
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_output_transcript=_blocks,
+    )
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._image_sent_this_turn = True
+    client._image_recognized_this_turn = True
+    client._output_transcript_buffer = "已经说出口的半句"
+    client._audio_delta_count = 3
+
+    release = asyncio.create_task(client._on_arbiter_stuck_release("stalled", "resp-1"))
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    release.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await release
+
+    assert client._is_responding is False
+    assert client._current_response_id is None
+    assert client._image_sent_this_turn is False, (
+        "a turn interrupted while flushing must not leak its image flags"
+    )
+    assert client._image_recognized_this_turn is False
+    assert client._audio_delta_count == 0
+    assert client._output_transcript_buffer == ""

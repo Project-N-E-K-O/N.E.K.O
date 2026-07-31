@@ -19,7 +19,7 @@ from typing import Any, Awaitable, Callable
 
 SendEvent = Callable[[dict[str, Any]], Awaitable[None]]
 AbortTransport = Callable[[str], Awaitable[None]]
-OnStuckRelease = Callable[[str], Awaitable[None]]
+OnStuckRelease = Callable[[str, "str | None"], Awaitable[None]]
 logger = logging.getLogger(__name__)
 
 # Server-initiated response ids are remembered so their terminal events are
@@ -992,6 +992,17 @@ class RealtimeResponseArbiter:
             # Same shape without an owner: announced by speech_stopped, no id
             # until its response.created arrives.
             return "an announced server-VAD response has no id yet"
+        if (
+            self._server_response_active
+            and self._response_owner is None
+            and not self._server_response_ids
+        ):
+            # A response is live, nobody owns it, and it supplied no id — an
+            # id-less proxy's orphan. Nothing identifies it, so neither its
+            # deltas nor its terminal can be told from the next turn's, and a
+            # late id-less terminal would complete whoever owns the lane by
+            # then.
+            return "an unowned response is live with no id at all"
         return None
 
     async def _worker_send(self, event: dict[str, Any]) -> None:
@@ -1042,43 +1053,53 @@ class RealtimeResponseArbiter:
             target.interrupt_event.set()
             self._wake_current_with_error(target, exc)
 
-        if self._on_stuck_release is not None:
-            try:
+        # Everything below straddles an await, so the release is scoped to
+        # what was captured before it and finishes even if this task is
+        # cancelled. The world can move while the host is being notified: the
+        # abandoned response's terminal can land, the worker can wake and take
+        # a queued request as the new owner. Writing "the owner" unconditionally
+        # afterwards would erase that new owner, whose terminal could then
+        # never resolve its ticket.
+        released_owner = owner
+        released_id = owner.response_id if owner is not None else None
+        try:
+            if self._on_stuck_release is not None:
                 await asyncio.wait_for(
-                    self._on_stuck_release(reason),
+                    self._on_stuck_release(reason, released_id),
                     _STUCK_RELEASE_NOTIFY_TIMEOUT,
                 )
-            except asyncio.TimeoutError:
-                logger.warning(
-                    "stuck-release host notification exceeded %.1fs; opening "
-                    "the lane anyway",
-                    _STUCK_RELEASE_NOTIFY_TIMEOUT,
-                )
-            except Exception as exc_host:
-                logger.warning(
-                    "stuck-release host notification failed: %s", exc_host
-                )
-
-        # Give up on THIS turn's bookkeeping, and only this turn's. The
-        # remembered server response ids belong to separately initiated
-        # responses that are still tracking normally: clearing them would
-        # discard a live response's identity, and the next queued create would
-        # then overlap it. Nothing about the abandoned owner makes those
-        # untrustworthy.
-        self._response_owner = None
-        # Which is why the lane reopens through the ordinary release check
-        # rather than by force — it already knows to keep the lane closed
-        # while a live server response is being tracked, and to arm the
-        # staleness timer that eventually retires one.
-        self._release_lane_if_clear()
-        logger.warning(
-            "response arbiter failing open, transport kept: %s "
-            "(current=%s owner=%s queue_depth=%d)",
-            reason,
-            current.source if current is not None else None,
-            owner.source if owner is not None else None,
-            self._queue.qsize(),
-        )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "stuck-release host notification exceeded %.1fs; opening "
+                "the lane anyway",
+                _STUCK_RELEASE_NOTIFY_TIMEOUT,
+            )
+        except Exception as exc_host:
+            logger.warning(
+                "stuck-release host notification failed: %s", exc_host
+            )
+        finally:
+            # Give up on THIS turn's bookkeeping, and only this turn's. The
+            # remembered server response ids belong to separately initiated
+            # responses that are still tracking normally: clearing them would
+            # discard a live response's identity, and the next queued create
+            # would then overlap it. Nothing about the abandoned owner makes
+            # those untrustworthy.
+            if self._response_owner is released_owner:
+                self._response_owner = None
+            # Which is why the lane reopens through the ordinary release check
+            # rather than by force — it already knows to keep the lane closed
+            # while a live server response is being tracked, and to arm the
+            # staleness timer that eventually retires one.
+            self._release_lane_if_clear()
+            logger.warning(
+                "response arbiter failing open, transport kept: %s "
+                "(current=%s owner=%s queue_depth=%d)",
+                reason,
+                current.source if current is not None else None,
+                released_owner.source if released_owner is not None else None,
+                self._queue.qsize(),
+            )
 
     async def _tear_down_transport(self, reason: str) -> None:
         # This is the only chokepoint through which the arbiter tears down the

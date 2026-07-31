@@ -972,12 +972,25 @@ class _TransportMixin:
         is what clears the buffer.
         """
 
+        await self._emit_pending_output_transcript(
+            self._take_pending_output_transcript()
+        )
+
+    def _take_pending_output_transcript(self) -> tuple[str, bool] | None:
+        """Decide what the fallback flush owes the host, and settle the state.
+
+        Split from the sending half so a caller that must not be interrupted
+        mid-cleanup can commit every synchronous write first, then await. The
+        turn's remaining state is consistent the moment this returns, whether
+        or not the emit that follows ever completes.
+        """
+
         if not (
             self._output_transcript_buffer
             and self.on_output_transcript
             and self._audio_delta_count > 0
         ):
-            return
+            return None
         # 「有声无字」是反复出现的问题（见 ISSUE4b），留一条 debug 日志方便下次
         # 诊断时确认是这条兜底生效、还是 streaming/transcript.done 路径生效。
         # audio_delta_count 此处尚未清零，记录的是本轮真实值。
@@ -987,10 +1000,19 @@ class _TransportMixin:
             self._audio_delta_count,
             self._is_first_transcript_chunk,
         )
-        await self.on_output_transcript(
-            self._output_transcript_buffer, self._is_first_transcript_chunk
-        )
+        pending = (self._output_transcript_buffer, self._is_first_transcript_chunk)
         self._is_first_transcript_chunk = False
+        return pending
+
+    async def _emit_pending_output_transcript(
+        self, pending: tuple[str, bool] | None
+    ) -> None:
+        """Send what ``_take_pending_output_transcript`` decided was owed."""
+
+        if pending is None or not self.on_output_transcript:
+            return
+        text, is_first = pending
+        await self.on_output_transcript(text, is_first)
 
     def _clear_turn_response_state(self) -> None:
         """Drop the flags that say "a response is in progress".
@@ -1043,7 +1065,9 @@ class _TransportMixin:
             except Exception as exc:
                 logger.warning("turn-finished speech-id rotation failed: %s", exc)
 
-    async def _on_arbiter_stuck_release(self, reason: str) -> None:
+    async def _on_arbiter_stuck_release(
+        self, reason: str, response_id: str | None = None
+    ) -> None:
         """End a turn the arbiter gave up on, exactly as its terminal would.
 
         The same three steps ``response.done`` runs, in the same order. That
@@ -1057,17 +1081,44 @@ class _TransportMixin:
         finalizes a second time. Note this is the opposite of what
         ``handle_interruption`` wants, which keeps the identity precisely so
         the cancelled response's own terminal still ends the turn.
+
+        ``response_id`` names the response the arbiter abandoned, and this
+        finalizes only that one. The turn being tracked here is not always it:
+        an owned response can overlap a server-initiated one, and it is the
+        server response's ``response.created`` that last wrote
+        ``_current_response_id``. Ending "the current turn" would then close a
+        response that is still streaming, and its own terminal would find
+        nothing left to close. A ``None`` id means the arbiter had nothing to
+        name — it never learned one — and the tracked turn is finalized as
+        before.
+
+        The synchronous state is settled before the first await on purpose.
+        Both remaining awaits reach host code that can block past the
+        arbiter's notification bound, and being cancelled there must not leave
+        this turn's flags half-cleared for the next turn to inherit.
         """
 
+        if response_id is not None and self._current_response_id not in (
+            None,
+            response_id,
+        ):
+            logger.info(
+                "Arbiter released %s but this turn is tracking %s; leaving it "
+                "alone",
+                response_id,
+                self._current_response_id,
+            )
+            return
         if not self._is_responding and self._current_response_id is None:
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
-        self._clear_turn_response_state()
-        # Before the reset, which is what clears the buffer: a stalled
+        # Captured before the reset, which is what clears the buffer: a stalled
         # lifecycle is exactly the case where the terminal that would normally
         # flush it never arrives.
-        await self._flush_pending_output_transcript()
+        pending_transcript = self._take_pending_output_transcript()
+        self._clear_turn_response_state()
         self._reset_per_turn_output_state()
+        await self._emit_pending_output_transcript(pending_transcript)
         await self._notify_turn_finished()
 
     async def handle_interruption(self):
