@@ -667,6 +667,108 @@ async def test_apply_rejects_source_suppressed_since_cluster(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reflection_merge_unions_event_window(tmp_path):
+    """codex round-4: a contradiction conclusion spans every source's
+    period — inheriting the first source's window would anchor 'used to X,
+    later Y' to the OLD period and time-scoped recall would miss it."""
+    fs, pm, re = _install(str(tmp_path))
+    old = _r_entry("r0", "曾经喜欢猫", GROUP_A,
+                   event_start_at="2026-01-01T00:00:00",
+                   event_end_at="2026-02-01T00:00:00")
+    new = _r_entry("r1", "后来讨厌猫", GROUP_A,
+                   event_start_at="2026-05-01T00:00:00",
+                   event_end_at="2026-06-01T00:00:00")
+    await re.asave_reflections("小天", [old, new])
+    active = await re.aload_reflections("小天")
+    cluster = [dict(r) for r in active]
+    actions = [{
+        'action': 'merge', 'source_ids': ['r0', 'r1'],
+        'produce': {'text': '曾喜欢猫，后来转为讨厌'},
+    }]
+    applied = await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, actions, "hashW",
+    )
+    assert applied == 1
+    full = await re._aload_reflections_full("小天")
+    merged = next(r for r in full if r.get('merged_from_ids'))
+    assert merged['event_start_at'] == "2026-01-01T00:00:00"
+    assert merged['event_end_at'] == "2026-06-01T00:00:00"
+
+    # 任一源无结束点（pattern/进行中）→ 并集也无结束点。
+    ongoing = _r_entry("r2", "持续在群里活跃", GROUP_A,
+                       event_start_at="2026-03-01T00:00:00",
+                       event_end_at=None)
+    bounded = _r_entry("r3", "上月很活跃", GROUP_A,
+                       event_start_at="2026-06-01T00:00:00",
+                       event_end_at="2026-06-30T00:00:00")
+    await re.asave_reflections(
+        "小天", (await re.aload_reflections("小天")) + [ongoing, bounded],
+    )
+    active2 = await re.aload_reflections("小天")
+    cluster2 = [dict(r) for r in active2 if r['id'] in ("r2", "r3")]
+    actions2 = [{
+        'action': 'merge', 'source_ids': ['r2', 'r3'],
+        'produce': {'text': '长期活跃'},
+    }]
+    await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster2, actions2, "hashW2",
+    )
+    full2 = await re._aload_reflections_full("小天")
+    merged2 = next(
+        r for r in full2
+        if set(r.get('merged_from_ids') or []) == {"r2", "r3"}
+    )
+    assert merged2['event_start_at'] == "2026-03-01T00:00:00"
+    assert merged2['event_end_at'] is None
+
+
+@pytest.mark.asyncio
+async def test_persona_merge_preserves_all_upstream_source_ids(tmp_path):
+    """codex round-4: the merged persona entry must keep EVERY source's
+    upstream reflection id so the time-driven promotion idempotency check
+    still finds its carrier after a merge — otherwise the half-committed
+    'persona written, reflection status save failed' retry re-promotes a
+    duplicate."""
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("小天")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    for i, rid in enumerate(("ref_aaa", "ref_bbb")):
+        entry = pm._build_fact_entry(
+            f"晋升条目{i}", 'reflection_time_driven', rid, subject=GROUP_A,
+        )
+        entry['id'] = f"p{i}"
+        section.append(entry)
+    await pm.asave_persona("小天", persona)
+
+    cluster = [dict(e) for e in section]
+    actions = [{
+        'action': 'merge', 'source_ids': ['p0', 'p1'],
+        'produce': {'text': '合并后的群人设条目'},
+    }]
+    applied = await apply_scoped_persona_merge(
+        pm, "小天", GROUP_A, cluster, actions, "hashP",
+    )
+    assert applied == 1
+    persona = await pm.aensure_persona("小天")
+    merged = next(
+        e for e in persona[GROUP_A.persona_section_key]['facts']
+        if e.get('merged_from_ids')
+    )
+    assert set(merged['merged_source_ids']) == {"ref_aaa", "ref_bbb"}
+
+    # 幂等检查对两个上游 reflection id 都能找到载体。
+    assert await re._ascoped_promotion_already_applied(
+        "小天", "ref_aaa", GROUP_A,
+    ) is True
+    assert await re._ascoped_promotion_already_applied(
+        "小天", "ref_bbb", GROUP_A,
+    ) is True
+    assert await re._ascoped_promotion_already_applied(
+        "小天", "ref_zzz", GROUP_A,
+    ) is False
+
+
+@pytest.mark.asyncio
 async def test_apply_skips_stamp_for_survivor_whose_text_drifted(tmp_path):
     """codex round-3: the id-only cluster hash doesn't change when a
     survivor's text is edited during the LLM window — stamping it anyway

@@ -631,6 +631,10 @@ async def apply_scoped_persona_merge(
             latest_sub_zero_increment: str | None = None
             inherited_source = None
             inherited_source_id = None
+            # 全部源的上游 reflection source_id（含源条目此前 merge 累积
+            # 的清单）：time-driven 晋升的幂等检查按 source_id 找 persona
+            # 载体，只继承首源会让其余 reflection 的半提交重试重复晋升。
+            merged_source_ids: list = []
             for sid in valid_ids:
                 src = by_id[sid]
                 history.append({
@@ -639,6 +643,11 @@ async def apply_scoped_persona_merge(
                     'reason': 'scoped_refine_merge',
                     'source_fact_id': None,
                 })
+                for upstream in (
+                    [src.get('source_id')] + list(src.get('merged_source_ids') or [])
+                ):
+                    if upstream and upstream not in merged_source_ids:
+                        merged_source_ids.append(upstream)
                 max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
                 max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
                 max_user_count = max(
@@ -682,6 +691,7 @@ async def apply_scoped_persona_merge(
             merged['source'] = inherited_source or 'scoped_refine'
             merged['source_id'] = inherited_source_id
             merged['merged_from_ids'] = list(valid_ids)
+            merged['merged_source_ids'] = merged_source_ids
             # subject 戳：无戳条目在 scoped 渲染路径 fail-closed 掉队，
             # 漏掉这行等于把被合并的记忆整体蒸发。
             merged.update(subject.as_entry_fields())
@@ -806,6 +816,20 @@ async def apply_scoped_reflection_merge(
                 for fid in src.get('source_fact_ids') or []:
                     if fid not in source_fact_ids:
                         source_fact_ids.append(fid)
+            # 事件窗取并集而非继承首源：矛盾合并的结论（「曾X后Y」）覆盖
+            # 全部源的时间跨度，只抄首源会把结论锚在旧时段，recall_by_time
+            # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
+            # （pattern/进行中，无结束点）则并集也无结束点，否则取最晚。
+            # ISO 字符串比较即时间序（同 persona merge 的既有约定）。
+            starts = [
+                s.get('event_start_at') for s in sources if s.get('event_start_at')
+            ]
+            ends = [s.get('event_end_at') for s in sources]
+            merged_start = min(starts) if starts else None
+            merged_end = (
+                None if (not ends or any(e is None for e in ends))
+                else max(ends)
+            )
             merged = normalize_reflection({
                 'id': refine_reflection_id(text),
                 'text': text,
@@ -823,8 +847,8 @@ async def apply_scoped_reflection_merge(
                 'temporal_scope': first.get('temporal_scope'),
                 'subject': first.get('subject'),
                 'event_when_raw': first.get('event_when_raw'),
-                'event_start_at': first.get('event_start_at'),
-                'event_end_at': first.get('event_end_at'),
+                'event_start_at': merged_start,
+                'event_end_at': merged_end,
                 'schema_version': first.get('schema_version', 1),
                 'merged_from_ids': list(valid_ids),
             })

@@ -543,6 +543,21 @@ async def arestore_scoped_subject(
     facts_restored = await fact_store.arestore_subject_facts(
         name, memory_subject, now_iso,
     )
+    if facts_restored is None:
+        # 与归档侧对称的中止语义：facts_archive.json 损坏时不再继续恢复
+        # 高层存储——「facts 仍归档、reflection/persona 已活跃」的劈叉
+        # 会一直保持到归档文件被修好，且反复 restore 也修不平。
+        logger.warning(
+            f"[SubjectArchive] {name}: subject "
+            f"[{_domain_marker(memory_subject)}] fact 恢复中止（归档文件"
+            f"损坏），跳过其余存储的恢复"
+        )
+        return {
+            'facts': 0,
+            'reflections': 0,
+            'persona_entries': 0,
+            'aborted': True,
+        }
     reflections_restored = await _arestore_subject_reflections(
         name, memory_subject, reflection_engine, now_iso,
     )

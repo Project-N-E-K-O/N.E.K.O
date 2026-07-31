@@ -755,6 +755,12 @@ class FactStore:
         ledger counts it as a write (see ``subject_archive._TIMESTAMP_FIELDS``),
         so an explicit restore resets the subject's archival clock instead of
         being undone by the very next sweep.
+
+        Returns the number of rows moved back, or ``None`` when the archive
+        file is corrupt — mirroring the archival side's abort semantics, so
+        the orchestrator skips the higher stores instead of leaving the
+        subject split (facts still archived, reflections/persona active).
+        A missing archive file is an ordinary no-op 0.
         """
         if restored_at_iso is None:
             restored_at_iso = datetime.now().isoformat()
@@ -773,11 +779,14 @@ class FactStore:
                     archived = json.load(fh)
             except (json.JSONDecodeError, OSError) as e:
                 logger.warning(
-                    f"[FactStore] {name}: 读取归档文件失败，跳过 subject 恢复: {e}"
+                    f"[FactStore] {name}: 读取归档文件失败，中止 subject 恢复: {e}"
                 )
-                return 0
+                return None
             if not isinstance(archived, list):
-                return 0
+                logger.warning(
+                    f"[FactStore] {name}: 归档文件顶层非 list，中止 subject 恢复"
+                )
+                return None
 
             def _is_subject_archived_row(f) -> bool:
                 return (
@@ -825,7 +834,7 @@ class FactStore:
     async def arestore_subject_facts(
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
-    ) -> int:
+    ) -> int | None:
         return await asyncio.to_thread(
             self._restore_subject_facts, name, subject, restored_at_iso,
         )

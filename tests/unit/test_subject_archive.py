@@ -846,6 +846,37 @@ async def test_restore_picks_newest_snapshot_across_shards(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_aborts_higher_stores_on_corrupt_fact_archive(tmp_path):
+    """codex round-4: a corrupt facts_archive.json must abort the whole
+    restore (mirroring the archival-side abort) — restoring reflections /
+    persona while the facts stay archived would split the subject until
+    the archive file is repaired."""
+    from memory.archive_shards import append_to_shard_sync
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    # 分片里有一条可恢复的 reflection。
+    archived_refl = _scoped_reflection("rres", "可恢复反思", SUBJ_STALE,
+                                       created_at=_iso(120))
+    archived_refl['status'] = 'archived'
+    archived_refl['archived_at'] = _iso(10)
+    archived_refl['archive_shard_path'] = 'x'
+    append_to_shard_sync(re._reflections_archive_dir("小天"), [archived_refl])
+    # facts 归档文件损坏。
+    os.makedirs(os.path.dirname(fs._facts_archive_path("小天")), exist_ok=True)
+    with open(fs._facts_archive_path("小天"), "w", encoding="utf-8") as f:
+        f.write("{not json")
+
+    result = await arestore_scoped_subject(
+        "小天", SUBJ_STALE,
+        fact_store=fs, persona_manager=pm, reflection_engine=re,
+    )
+    assert result.get('aborted') is True
+    assert result['reflections'] == 0
+    # reflection 未被恢复——没有出现「facts 仍归档、反思已活跃」的劈叉。
+    assert await re._aload_reflections_full("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_restore_skips_age_archived_terminal_reflections(tmp_path):
     """Age-based terminal archival (promoted/denied >30 days) keeps the
     original status in the shard copy — only the subject/evidence archive
