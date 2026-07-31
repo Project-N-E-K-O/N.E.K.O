@@ -798,10 +798,15 @@ async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
     path reaches them). Throttled per character because the staleness
     criterion has day granularity while the sweep loop runs hourly.
     """
-    import config as _config
-    if not getattr(_config, 'SCOPED_SUBJECT_ARCHIVE_ENABLED', True):
+    # 函数级 import：每次调用时从 config 模块现读属性，测试 patch
+    # config.SCOPED_* 即可生效（模块级 from-import 会在导入时冻结值）。
+    from config import (
+        SCOPED_SUBJECT_ARCHIVE_ENABLED,
+        SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS,
+    )
+    if not SCOPED_SUBJECT_ARCHIVE_ENABLED:
         return
-    min_interval = _config.SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS
+    min_interval = SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS
     last = _subject_archive_last_run.get(name)
     if last is not None and (now - last).total_seconds() < min_interval:
         return

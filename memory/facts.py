@@ -597,8 +597,9 @@ class FactStore:
 
     def _archive_subject_facts(
         self, name: str, subject: MemorySubject, archived_at_iso: str,
+        stale_cutoff: datetime,
     ) -> int:
-        """Move ALL active facts of one scoped subject into facts_archive.json.
+        """Move the stale facts of one scoped subject into facts_archive.json.
 
         Time-driven counterpart of `_archive_absorbed` (score/absorbed-driven).
         Every moved row is stamped with ``subject_archived_at`` — the marker
@@ -612,6 +613,15 @@ class FactStore:
             deduped into invisibility;
           * is what `_restore_subject_facts` strips when moving rows back.
 
+        ``stale_cutoff`` re-validates the sweep's staleness snapshot UNDER
+        the write lock: a fact written between the sweep's judgement and
+        this call has ``created_at >= cutoff`` — the subject just revived,
+        so the whole archival aborts (returning 0) rather than sweeping the
+        subject's first fresh memory out of recall. Rows with unparseable
+        ``created_at`` never archive (unknown age must not mean "old"), but
+        also never veto the pass — one corrupt row must not immortalize the
+        subject.
+
         Same two-file commit discipline as `_archive_absorbed`: archive first,
         facts.json second — an interruption leaves the row in BOTH files
         (readers converge by id, next run is idempotent), never in neither.
@@ -624,10 +634,25 @@ class FactStore:
                 target=f"memory/{name}/facts.json",
             )
             facts = self._facts.get(name, [])
-            to_archive = [
+            matching = [
                 f for f in facts
                 if isinstance(f, dict) and entry_matches_subject(f, subject)
             ]
+            to_archive: list[dict] = []
+            for f in matching:
+                try:
+                    created = datetime.fromisoformat(f.get('created_at', ''))
+                except (ValueError, TypeError):
+                    continue  # 未知年龄的行留在活跃池（对齐 _archive_absorbed）
+                if created >= stale_cutoff:
+                    # 判定后落进来的新写入：subject 已复活，本轮整体中止。
+                    logger.info(
+                        f"[FactStore] {name}: subject "
+                        f"[scoped {subject.kind}/{subject.subject_id}] 在归档窗口"
+                        f"内有新写入，中止本轮 subject 归档"
+                    )
+                    return 0
+                to_archive.append(f)
             if not to_archive:
                 return 0
             archive_path = self._facts_archive_path(name)
@@ -664,12 +689,17 @@ class FactStore:
 
     async def aarchive_subject_facts(
         self, name: str, subject: MemorySubject, archived_at_iso: str,
+        stale_cutoff: datetime,
     ) -> int:
         return await asyncio.to_thread(
             self._archive_subject_facts, name, subject, archived_at_iso,
+            stale_cutoff,
         )
 
-    def _restore_subject_facts(self, name: str, subject: MemorySubject) -> int:
+    def _restore_subject_facts(
+        self, name: str, subject: MemorySubject,
+        restored_at_iso: str | None = None,
+    ) -> int:
         """Move a subject's ``subject_archived_at`` rows back into facts.json.
 
         Inverse of `_archive_subject_facts`; absorbed-archived rows (no
@@ -677,7 +707,14 @@ class FactStore:
         (with the restored rows) first, archive (without them) second — so an
         interruption again leaves rows in BOTH files, and every reader's
         by-id convergence keeps the active copy.
+
+        Every restored row is stamped with ``restored_at``: the staleness
+        ledger counts it as a write (see ``subject_archive._TIMESTAMP_FIELDS``),
+        so an explicit restore resets the subject's archival clock instead of
+        being undone by the very next sweep.
         """
+        if restored_at_iso is None:
+            restored_at_iso = datetime.now().isoformat()
         self.load_facts(name)
         with self._get_lock(name):
             assert_cloudsave_writable(
@@ -724,6 +761,7 @@ class FactStore:
                     continue
                 copy = dict(f)
                 copy.pop('subject_archived_at', None)
+                copy['restored_at'] = restored_at_iso
                 restored.append(copy)
             remaining_archive = [
                 f for f in archived if not _is_subject_archived_row(f)
@@ -741,8 +779,13 @@ class FactStore:
             )
             return len(restored)
 
-    async def arestore_subject_facts(self, name: str, subject: MemorySubject) -> int:
-        return await asyncio.to_thread(self._restore_subject_facts, name, subject)
+    async def arestore_subject_facts(
+        self, name: str, subject: MemorySubject,
+        restored_at_iso: str | None = None,
+    ) -> int:
+        return await asyncio.to_thread(
+            self._restore_subject_facts, name, subject, restored_at_iso,
+        )
 
     # ── extraction ───────────────────────────────────────────────────
 

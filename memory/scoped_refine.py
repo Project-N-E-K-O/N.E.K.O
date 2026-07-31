@@ -167,7 +167,9 @@ def gather_scoped_refine_buckets(
     def _collect(entry: dict, store: str) -> None:
         if not isinstance(entry, dict):
             return
-        if entry.get('protected') or not entry.get('id'):
+        # suppress 条目排除：渲染层刻意把它们放「不主动提及」通道，merge
+        # 产物是普通可见条目，把 suppressed 内容并进去等于解除抑制。
+        if entry.get('protected') or entry.get('suppress') or not entry.get('id'):
             return
         subject = subject_from_entry(entry)
         if subject is None:
@@ -194,11 +196,12 @@ def gather_scoped_refine_buckets(
     return ready
 
 
-# apply_fn(bucket, cluster, actions, cluster_hash)；failure_fn(bucket,
-# cluster, cluster_hash)。存储读写全在回调侧（manager 锁内），engine 不碰
-# 磁盘——同本体 refine 的分工。
+# apply_fn(bucket, cluster, actions, cluster_hash) -> 应用成功的 action 数；
+# failure_fn(bucket, cluster, cluster_hash)。存储读写全在回调侧（manager
+# 锁内），engine 不碰磁盘——同本体 refine 的分工。返回值参与失败判定：
+# 非空 actions 全被拒（语义垃圾）按 cluster 失败计 refine_attempts。
 ScopedApplyFn = Callable[
-    [ScopedRefineBucket, list[dict], list[dict], str], Awaitable[None]
+    [ScopedRefineBucket, list[dict], list[dict], str], Awaitable[int]
 ]
 ScopedFailureFn = Callable[
     [ScopedRefineBucket, list[dict], str], Awaitable[None]
@@ -486,7 +489,18 @@ class ScopedLiteRefineEngine:
             )
             return False
 
-        await apply_fn(bucket, cluster, actions, cluster_hash)
+        applied = await apply_fn(bucket, cluster, actions, cluster_hash)
+        if actions and not applied:
+            # 非空 actions 但没有一条通过 apply 校验 = 语义垃圾输出。apply
+            # 侧刻意不 stamp（等下轮重试），这里必须按失败计——否则毒
+            # cluster 既不 stamp 也不进 refine_attempts，每个 cron 周期
+            # 白打一次 LLM 直到永远，戳穿 lite 管线的成本契约。空数组是
+            # 明确 no-op：apply 已 stamp，按成功计。
+            logger.warning(
+                f"[ScopedRefine] LLM 输出 {len(actions)} 条 action 全部无效 "
+                f"(cluster_hash={cluster_hash})，按失败计入 refine_attempts"
+            )
+            return False
         return True
 
     @staticmethod
@@ -520,16 +534,21 @@ class ScopedLiteRefineEngine:
 
 def _valid_merge_source_ids(
     action: dict, cluster_ids: set, by_id: dict, consumed: set,
+    cluster_text_by_id: dict,
 ) -> list[str]:
     src_ids_raw = action.get('source_ids') or []
     if not isinstance(src_ids_raw, list):
         return []
+    # 文本快照校验：LLM 决策是针对 cluster 里那份文本做出的。锁外 LLM
+    # 窗口期间若有并发写者改了该行文本，按 id 盲信会把「模型没见过的
+    # 内容」合并掉——文本不一致的源直接失效，cluster 下轮重聚重审。
     valid = [
         sid for sid in src_ids_raw
         if sid in cluster_ids
         and sid in by_id
         and sid not in consumed
         and not by_id[sid].get('protected')
+        and by_id[sid].get('text') == cluster_text_by_id.get(sid)
     ]
     # 去重保序（LLM 偶发重复 id 会让 evidence 继承重复计数）。
     seen: set = set()
@@ -571,6 +590,10 @@ async def apply_scoped_persona_merge(
         cluster_ids = {
             e.get('id') for e in cluster if isinstance(e, dict) and e.get('id')
         }
+        cluster_text_by_id = {
+            e.get('id'): e.get('text') for e in cluster
+            if isinstance(e, dict) and e.get('id')
+        }
         consumed: set[str] = set()
         produced: list[dict] = []
         applied = 0
@@ -584,7 +607,7 @@ async def apply_scoped_persona_merge(
                 logger.warning(f"[ScopedRefine apply] persona: 非法 action {act!r}")
                 continue
             valid_ids = _valid_merge_source_ids(
-                act_obj, cluster_ids, by_id, consumed,
+                act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
             )
             if len(valid_ids) < 2:
                 continue
@@ -729,6 +752,10 @@ async def apply_scoped_reflection_merge(
         cluster_ids = {
             e.get('id') for e in cluster if isinstance(e, dict) and e.get('id')
         }
+        cluster_text_by_id = {
+            e.get('id'): e.get('text') for e in cluster
+            if isinstance(e, dict) and e.get('id')
+        }
         consumed: set[str] = set()
         produced: list[dict] = []
         applied = 0
@@ -744,7 +771,7 @@ async def apply_scoped_reflection_merge(
                 )
                 continue
             valid_ids = _valid_merge_source_ids(
-                act_obj, cluster_ids, by_id, consumed,
+                act_obj, cluster_ids, by_id, consumed, cluster_text_by_id,
             )
             if len(valid_ids) < 2:
                 continue

@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for memory.scoped_refine — the scoped lite refine engine.
 
-Contracts under test (群记忆系列 5/7 主线二):
+Contracts under test (group-memory series 5/7, mainline 2):
 
   1. Bucketing: key is (subject.key, scope) per store — two groups sharing
      entity='group_chat' NEVER share a bucket / cluster / prompt; legacy,
@@ -129,8 +129,9 @@ def _make_llm(payload):
 
 
 def test_gather_buckets_by_subject_never_by_entity():
-    """A 群与 B 群的条目 entity 全是 'group_chat'——分桶必须按 subject
-    隔离。按 entity 分桶的错误实现会把两群塞进一个池（跨群合并）。"""
+    """Entries of group A and group B all share entity='group_chat' —
+    bucketing MUST isolate by subject. An entity-keyed implementation
+    would pool both groups together and merge across the boundary."""
     refls = (
         [_r_entry(f"a{i}", f"A 群反思 {i}", GROUP_A) for i in range(8)]
         + [_r_entry(f"b{i}", f"B 群反思 {i}", GROUP_B) for i in range(8)]
@@ -165,6 +166,17 @@ def test_gather_excludes_legacy_protected_idless_and_dead_letter():
     )
     ids = {e['id'] for b in buckets for e in b.entries}
     assert ids == {f"a{i}" for i in range(8)}
+
+
+def test_gather_excludes_suppressed_entries():
+    """codex P2: suppressed entries live in the renderer's do-not-mention
+    channel; letting them into a merge would resurface the content as an
+    ordinary visible memory."""
+    entries = [_r_entry(f"a{i}", f"t{i}", GROUP_A) for i in range(8)]
+    entries.append(_r_entry("supp", "t", GROUP_A, suppress=True))
+    buckets = gather_scoped_refine_buckets({}, entries)
+    ids = {e['id'] for b in buckets for e in b.entries}
+    assert "supp" not in ids
 
 
 def test_gather_dead_letter_self_heal_probe():
@@ -242,9 +254,10 @@ async def test_refine_pass_single_llm_call_and_no_cross_bucket_text():
 
 @pytest.mark.asyncio
 async def test_refine_pass_llm_config_is_lite():
-    """成本契约钉死：summary tier、不传 extra_body（= provider 方言关
-    thinking）、短超时。传 extra_body=None（开 thinking）或 correction
-    tier 的错误实现都要在这里翻红。"""
+    """Pin the cost contract: summary tier, extra_body OMITTED (= the
+    provider-dialect thinking-off default), short timeout. A wrong
+    implementation passing extra_body=None (thinking ON) or using the
+    correction tier must go red here."""
     engine = _engine()
     va, vb = _vec_pair()
     entries = [
@@ -359,9 +372,52 @@ async def test_refine_pass_failure_calls_failure_fn():
     assert len(failures) == 1
 
 
+@pytest.mark.asyncio
+async def test_refine_pass_all_rejected_actions_count_as_failure():
+    """codex P2: a syntactically valid list whose every action is rejected
+    by the apply layer must count as a cluster failure (refine_attempts
+    bump via failure_fn) — otherwise the unstamped poison cluster costs one
+    LLM call per cron interval forever."""
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(f"a{i}", f"文本{i}", GROUP_A, va if i % 2 else vb)
+        for i in range(8)
+    ]
+    failures = []
+
+    async def _apply(bucket, cluster, actions, cluster_hash):
+        return 0  # apply 层拒绝了全部 action
+
+    async def _failure(bucket, cluster, cluster_hash):
+        failures.append(cluster_hash)
+
+    garbage = _make_llm([{"action": "discard", "source_id": "a0"}])
+    with patch('utils.llm_client.create_chat_llm_async',
+               AsyncMock(return_value=garbage)):
+        result = await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply, scope_label='t', failure_fn=_failure,
+        )
+    assert result['failed'] == 1
+    assert result['resolved'] == 0
+    assert len(failures) == 1
+
+    # 对照：空数组 = 明确 no-op，按成功计，不触发 failure_fn。
+    failures.clear()
+    with patch('utils.llm_client.create_chat_llm_async',
+               AsyncMock(return_value=_make_llm([]))):
+        result = await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply, scope_label='t', failure_fn=_failure,
+        )
+    assert result['resolved'] == 1
+    assert failures == []
+
+
 def test_render_cluster_trust_annotation_hook():
-    """系列 7/7 的接口形状：trust_of 提供时行内出现 trust=，不提供时
-    绝不出现。"""
+    """Interface shape for series 7/7: with trust_of supplied the line
+    carries trust=, without it the field never appears."""
     cluster = [
         _r_entry("a1", "文本一", GROUP_A),
         _r_entry("a2", "文本二", GROUP_A),
@@ -459,8 +515,9 @@ async def test_apply_persona_merge_stamps_subject_and_consumes_sources(tmp_path)
 
 @pytest.mark.asyncio
 async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
-    """同一 section key 可以混不同自定义 scope 的条目；LLM 幻觉引用了
-    另一 scope 的 id 也绝不能动它。"""
+    """One section key may legally mix entries from different custom
+    scopes; even if the LLM hallucinates another scope's id, that row
+    must never be touched."""
     fs, pm, re = _install(str(tmp_path))
     other_scope = MemorySubject.create(
         GROUP_A.kind, GROUP_A.subject_id, scope="custom_scope",
@@ -537,6 +594,41 @@ async def test_apply_reflection_merge_full_contract(tmp_path):
     assert merged_id in active_ids
     # 幸存者 r2 盖 stamp。
     assert by_id['r2']['last_refine_cluster_hash'] == "hashR"
+
+
+@pytest.mark.asyncio
+async def test_apply_rejects_source_whose_text_changed_since_cluster(tmp_path):
+    """greptile P1: the LLM's decision was made about the texts in the
+    cluster snapshot. If a concurrent writer changed a source row during
+    the unlocked LLM window, merging it by bare id would consume content
+    the model never saw — the stale source must invalidate the action."""
+    fs, pm, re = _install(str(tmp_path))
+    refls = [
+        _r_entry("r0", "原始文本甲", GROUP_A),
+        _r_entry("r1", "原始文本乙", GROUP_A),
+    ]
+    await re.asave_reflections("小天", refls)
+    active = await re.aload_reflections("小天")
+    cluster = [dict(r) for r in active]  # LLM 看到的快照
+
+    # LLM 调用窗口内并发写者改了 r1 的文本。
+    live = await re.aload_reflections("小天")
+    next(r for r in live if r['id'] == "r1")['text'] = "被并发改写的文本"
+    await re.asave_reflections("小天", live)
+
+    actions = [{
+        'action': 'merge', 'source_ids': ['r0', 'r1'],
+        'produce': {'text': '基于旧快照的合并结论'},
+    }]
+    applied = await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, actions, "hashS",
+    )
+    assert applied == 0
+    full = await re._aload_reflections_full("小天")
+    by_id = {r['id']: r for r in full}
+    assert set(by_id) == {"r0", "r1"}
+    assert by_id['r0']['status'] == 'confirmed'
+    assert by_id['r1']['text'] == "被并发改写的文本"
 
 
 @pytest.mark.asyncio
@@ -637,7 +729,8 @@ def test_scoped_refine_prompt_locales_and_placeholders():
 
 
 def test_runtime_registers_scoped_refine_loop():
-    """结构护栏：runtime 启动体必须注册 scoped refine cron。"""
+    """Structural guardrail: runtime startup must register the scoped
+    refine cron."""
     import inspect
     from app.memory_server import runtime as runtime_module
 

@@ -64,12 +64,14 @@ from utils.logger_config import get_module_logger
 logger = get_module_logger(__name__, "Memory")
 
 
-# 「最后写入时间」认这两个字段：fact/reflection 落盘都带 created_at；
-# scoped reflection 另有 confirmed_at。persona 条目通常两者皆无——它们
-# 是晋升派生物，贡献不了时间戳也无妨（facts 是权威写入面）。派生管线
-# （合成/晋升/refine）产出的新条目会把 last_write 往后推，方向保守：
-# 只会推迟归档，绝不会提前。
-_TIMESTAMP_FIELDS = ('created_at', 'confirmed_at')
+# 「最后写入时间」认这三个字段：fact/reflection 落盘都带 created_at；
+# scoped reflection 另有 confirmed_at；restored_at 由 restore 路径盖在
+# 三个存储的恢复条目上——显式恢复必须重置归档时钟，否则下一轮 sweep
+# 就把 restore 原样撤销。persona 普通条目通常三者皆无——它们是晋升派
+# 生物，贡献不了时间戳也无妨（facts 是权威写入面）。派生管线（合成/
+# 晋升/refine）产出的新条目会把 last_write 往后推，方向保守：只会推迟
+# 归档，绝不会提前。
+_TIMESTAMP_FIELDS = ('created_at', 'confirmed_at', 'restored_at')
 
 
 def _parse_iso(value) -> datetime | None:
@@ -219,6 +221,10 @@ async def asweep_scoped_subject_archive(
     active_facts = await fact_store.aload_facts(name)
     active_refls = await reflection_engine.aload_reflections(name)
     now_iso = now.isoformat()
+    # stale 判据的快照口径带进执行层：fact store 在写锁内用它重验——
+    # 判定之后落进来的新写入（created_at >= cutoff）会让该 subject 的
+    # 归档整体中止，绝不把复活后的第一条新记忆扫出召回。
+    stale_cutoff = now - timedelta(days=stale_days)
 
     for subject, last_dt in stale:
         fact_targets = [
@@ -265,7 +271,7 @@ async def asweep_scoped_subject_archive(
         if fact_targets:
             try:
                 archived_counts['facts'] = await fact_store.aarchive_subject_facts(
-                    name, subject, now_iso,
+                    name, subject, now_iso, stale_cutoff,
                 )
             except Exception as e:
                 logger.warning(
@@ -341,7 +347,16 @@ async def _ascan_shards_for_subject(
                 continue
             if not entry_matches_subject(entry, subject):
                 continue
-            candidates[entry['id']] = entry
+            # 同 id 多分片副本（archive→restore→archive 循环）：按
+            # archived_at 取最新快照。分片文件名的同日后缀是随机 uuid8，
+            # 文件序不等于时间序，不能靠遍历顺序。
+            prev = candidates.get(entry['id'])
+            if (
+                prev is None
+                or str(entry.get('archived_at') or '')
+                > str(prev.get('archived_at') or '')
+            ):
+                candidates[entry['id']] = entry
     return candidates
 
 
@@ -499,7 +514,9 @@ async def arestore_scoped_subject(
         now = datetime.now()
     now_iso = now.isoformat()
 
-    facts_restored = await fact_store.arestore_subject_facts(name, memory_subject)
+    facts_restored = await fact_store.arestore_subject_facts(
+        name, memory_subject, now_iso,
+    )
     reflections_restored = await _arestore_subject_reflections(
         name, memory_subject, reflection_engine, now_iso,
     )

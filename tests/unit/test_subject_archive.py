@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Unit tests for memory.subject_archive — time-driven scoped subject archival.
 
-Contracts under test (群记忆系列 5/7 主线一):
+Contracts under test (group-memory series 5/7, mainline 1):
 
   1. Last-write derivation: per-subject max(created_at / confirmed_at) over
      the full pools; subjects with zero parseable timestamps are fail-closed
@@ -204,7 +204,7 @@ def test_stale_boundary_one_second_past_n_days():
 
 
 async def _seed_two_subjects(fs, pm, re, name: str = "小天"):
-    """SUBJ_STALE last write 91 天前；SUBJ_ACTIVE 10 天前。"""
+    """Seed SUBJ_STALE with writes >90 days old and SUBJ_ACTIVE at 10 days."""
     fs._facts[name] = [
         _scoped_fact("fs1", "陈年群事实一", SUBJ_STALE, created_at=_iso(120)),
         _scoped_fact("fs2", "陈年群事实二", SUBJ_STALE,
@@ -312,9 +312,9 @@ async def test_sweep_second_run_is_noop(tmp_path):
 
 @pytest.mark.asyncio
 async def test_sweep_respects_stale_days_override(tmp_path):
-    """变异验证的两个方向：把活跃 subject 的判据改紧（10 天前的写入在
-    stale_days=8 下必须被归档）；把 stale subject 的判据改松
-    （stale_days=365 下必须原样不动）。"""
+    """Mutation guard in both directions: tightening the criterion
+    (stale_days=8) must archive the 10-day-old subject too, and loosening
+    it (stale_days=365) must leave everything untouched."""
     _, fs, pm, re, _, _ = _install(str(tmp_path))
     await _seed_two_subjects(fs, pm, re)
     kwargs = _sweep_kwargs(fs, pm, re)
@@ -335,9 +335,10 @@ async def test_sweep_respects_stale_days_override(tmp_path):
 
 @pytest.mark.asyncio
 async def test_last_write_derivation_reads_full_pool_including_archive(tmp_path):
-    """absorbed 收缩会把新近 fact 搬进 facts_archive.json——最后写入时间
-    必须从 active+archive 全池推导。只看活跃池的错误实现会把「最近还在
-    写、但新写入都被 absorbed 归档了」的 subject 误判为 stale。"""
+    """The absorbed-shrink path moves recent facts into facts_archive.json,
+    so last-write MUST be derived from the FULL pool (active + archive).
+    An active-pool-only implementation would misjudge a subject as stale
+    when its recent writes were all absorbed and archived."""
     from utils.file_utils import atomic_write_json
 
     _, fs, pm, re, _, _ = _install(str(tmp_path))
@@ -361,6 +362,130 @@ async def test_last_write_derivation_reads_full_pool_including_archive(tmp_path)
     )
     assert report['archived'] == {}  # 全池 max = 10 天前 → 不 stale
     assert {f['id'] for f in await fs.aload_facts("小天")} == {"f_old"}
+
+
+@pytest.mark.asyncio
+async def test_fact_archival_aborts_on_fresh_write_in_window(tmp_path):
+    """Race guard: a fact written AFTER the sweep judged the subject stale
+    but BEFORE the fact store took its write lock means the subject just
+    revived — the whole fact archival must abort instead of sweeping the
+    subject's first fresh memory out of recall."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    fs._facts["小天"] = [
+        _scoped_fact("fs1", "陈年一", SUBJ_STALE, created_at=_iso(120)),
+        _scoped_fact("fs2", "陈年二", SUBJ_STALE, created_at=_iso(100)),
+        # 判定后、加锁前落进来的新写入。
+        _scoped_fact("fresh", "复活后的新事实", SUBJ_STALE, created_at=_iso(1)),
+    ]
+    await fs.asave_facts("小天")
+    cutoff = NOW - timedelta(days=STALE_DAYS)
+    moved = await fs.aarchive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(), cutoff,
+    )
+    assert moved == 0
+    assert {f['id'] for f in await fs.aload_facts("小天")} == {"fs1", "fs2", "fresh"}
+    assert not os.path.exists(fs._facts_archive_path("小天"))
+
+
+@pytest.mark.asyncio
+async def test_fact_archival_keeps_unparseable_rows_without_veto(tmp_path):
+    """A row with a corrupt created_at neither archives (unknown age must
+    not mean old) nor vetoes the pass (one corrupt row must not immortalize
+    the subject)."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    corrupt = _scoped_fact("bad", "坏时间戳", SUBJ_STALE, created_at="not-a-date")
+    fs._facts["小天"] = [
+        _scoped_fact("fs1", "陈年一", SUBJ_STALE, created_at=_iso(120)),
+        corrupt,
+    ]
+    await fs.asave_facts("小天")
+    cutoff = NOW - timedelta(days=STALE_DAYS)
+    moved = await fs.aarchive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(), cutoff,
+    )
+    assert moved == 1
+    assert {f['id'] for f in await fs.aload_facts("小天")} == {"bad"}
+
+
+@pytest.mark.asyncio
+async def test_restore_resets_archival_clock(tmp_path):
+    """codex P1: without a restored_at stamp in the staleness ledger, a
+    restored subject whose data is older than N days is immediately stale
+    again and the next sweep silently undoes the restore."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    await _seed_two_subjects(fs, pm, re)
+    await asweep_scoped_subject_archive("小天", **_sweep_kwargs(fs, pm, re))
+
+    await arestore_scoped_subject(
+        "小天", SUBJ_STALE,
+        fact_store=fs, persona_manager=pm, reflection_engine=re,
+        now=NOW + timedelta(hours=1),
+    )
+    restored_facts = [
+        f for f in await fs.aload_facts("小天")
+        if f.get('id') in {"fs1", "fs2"}
+    ]
+    assert restored_facts and all(f.get('restored_at') for f in restored_facts)
+
+    # restore 之后紧接着的 sweep 绝不能把 subject 原样再归档。
+    kwargs = _sweep_kwargs(fs, pm, re)
+    kwargs['now'] = NOW + timedelta(hours=2)
+    report = await asweep_scoped_subject_archive("小天", **kwargs)
+    assert report['archived'] == {}
+    assert {"fs1", "fs2"} <= {f['id'] for f in await fs.aload_facts("小天")}
+
+
+@pytest.mark.asyncio
+async def test_synthesis_related_context_excludes_subject_archived_rows(tmp_path):
+    """codex P2: `_build_related_context_block` reads the FULL fact pool on
+    its own — subject-archived rows must not re-enter a revived subject's
+    synthesis prompt through that side door."""
+    import numpy as np
+    from memory.embeddings import stamp_embedding_fields
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    model_id = "test-model"
+
+    def _stamped_fact(fid, text, days, **extra):
+        row = _scoped_fact(fid, text, SUBJ_STALE, created_at=_iso(days), **extra)
+        stamp_embedding_fields(
+            row, np.asarray([1.0, 0.0, 0.0, 0.0], dtype=np.float32),
+            text, model_id,
+        )
+        return row
+
+    unabsorbed = _stamped_fact("q1", "查询事实", 1)
+    normal_absorbed = _stamped_fact("ok1", "正常已吸收", 30, absorbed=True)
+    archived_absorbed = _stamped_fact("arch1", "已归档已吸收", 200, absorbed=True)
+    archived_absorbed['subject_archived_at'] = _iso(5)
+    fs._facts["小天"] = [unabsorbed, normal_absorbed, archived_absorbed]
+    await fs.asave_facts("小天")
+
+    class _Service:
+        def is_disabled(self):
+            return False
+
+        def is_available(self):
+            return True
+
+        def model_id(self):
+            return model_id
+
+    captured = {}
+
+    async def _capture_topk(self, pool, query_texts, **kwargs):
+        captured['pool_ids'] = {f.get('id') for f in pool}
+        return []
+
+    from unittest.mock import patch as _patch
+    with _patch("memory.embeddings.get_embedding_service",
+                return_value=_Service()), \
+         _patch("memory.recall.MemoryRecallReranker.aretrieve_per_query_topk",
+                _capture_topk):
+        await re._build_related_context_block(
+            "小天", [unabsorbed], subject=SUBJ_STALE,
+        )
+    assert captured.get('pool_ids') == {"ok1"}
 
 
 @pytest.mark.asyncio
@@ -413,9 +538,11 @@ async def test_recall_archive_pool_excludes_subject_archived_rows(tmp_path):
 
 @pytest.mark.asyncio
 async def test_fts_dedup_lets_revived_subject_restate_archived_fact(tmp_path):
-    """复活语义：subject 归档后成员重述同一事实，FTS 近似命中不得把新
-    写入判成重复——否则这条信息（归档行已退出召回）永久不可见。反向
-    对照：absorbed 归档行照旧挡重复。"""
+    """Revival semantics: after subject archival, a member re-stating the
+    same fact must NOT be deduped away by the FTS near-match against the
+    archived row — that row already left recall, so blocking the re-write
+    would make the information permanently invisible. Counter-case:
+    absorbed-archived rows (no marker) still block duplicates."""
     _, fs, pm, re, _, _ = _install(str(tmp_path))
     fs._facts["小天"] = [
         _scoped_fact("fs1", "小明住在幸福路", SUBJ_STALE, created_at=_iso(120)),
@@ -519,10 +646,55 @@ async def test_restore_roundtrip_all_three_stores(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_picks_newest_snapshot_across_shards(tmp_path):
+    """codex P2: after archive → restore → archive cycles the same entry id
+    can sit in multiple shards. Same-day shard suffixes are random uuid8,
+    so filename order is NOT chronological — restore must pick the copy
+    with the newest archived_at, never whichever file happens to sort last."""
+    from utils.file_utils import atomic_write_json
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    archive_dir = re._reflections_archive_dir("小天")
+    os.makedirs(archive_dir, exist_ok=True)
+
+    def _snapshot(text: str, archived_at: str) -> dict:
+        entry = _scoped_reflection("rdup", text, SUBJ_STALE, created_at=_iso(200))
+        entry['status'] = 'archived'
+        entry['archived_at'] = archived_at
+        entry['archive_shard_path'] = 'x'
+        return entry
+
+    # 最新快照刻意放在文件序的中间位：first-wins 拿到首文件的旧快照、
+    # last-wins 拿到末文件的更旧快照，只有按 archived_at 比较才能全对。
+    atomic_write_json(
+        os.path.join(archive_dir, "2026-06-01_aaaaaaaa.json"),
+        [_snapshot("旧快照文本", _iso(40))], indent=2, ensure_ascii=False,
+    )
+    atomic_write_json(
+        os.path.join(archive_dir, "2026-06-02_bbbbbbbb.json"),
+        [_snapshot("新快照文本", _iso(10))], indent=2, ensure_ascii=False,
+    )
+    atomic_write_json(
+        os.path.join(archive_dir, "2026-06-03_cccccccc.json"),
+        [_snapshot("更旧快照文本", _iso(60))], indent=2, ensure_ascii=False,
+    )
+
+    result = await arestore_scoped_subject(
+        "小天", SUBJ_STALE,
+        fact_store=fs, persona_manager=pm, reflection_engine=re,
+    )
+    assert result['reflections'] == 1
+    refls = await re.aload_reflections("小天")
+    back = next(r for r in refls if r['id'] == "rdup")
+    assert back['text'] == "新快照文本"
+
+
+@pytest.mark.asyncio
 async def test_restore_skips_age_archived_terminal_reflections(tmp_path):
-    """30 天年龄归档进 shard 的 promoted/denied 条目保留原 status（只有
-    subject/evidence 归档路径盖 status='archived'）——subject restore 绝
-    不能把已晋升的终态反思复活回主文件。"""
+    """Age-based terminal archival (promoted/denied >30 days) keeps the
+    original status in the shard copy — only the subject/evidence archive
+    paths stamp status='archived'. A subject restore must never resurrect
+    a promoted terminal reflection back into the main file."""
     from memory.archive_shards import append_to_shard_sync
 
     _, fs, pm, re, _, _ = _install(str(tmp_path))
@@ -591,9 +763,10 @@ async def test_loop_stage_throttles_and_respects_enable_gate(tmp_path):
 
 
 def test_archive_sweep_loop_source_wires_subject_stage():
-    """结构护栏（对齐 test_reflection_synthesis_loop 的注册断言风格）：
-    _periodic_archive_sweep_loop 的角色扫描体必须调用 scoped subject
-    归档阶段——防止将来重构时静默掉线。"""
+    """Structural guardrail (same style as the registration assertion in
+    test_reflection_synthesis_loop): the per-character sweep body of
+    _periodic_archive_sweep_loop must invoke the scoped-subject stage,
+    so a future refactor cannot silently unwire it."""
     import inspect
     from app.memory_server import evidence_loops
 

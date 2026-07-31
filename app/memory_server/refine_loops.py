@@ -292,15 +292,16 @@ async def _run_scoped_refine_for_character(character: str) -> None:
     lite = ScopedLiteRefineEngine(runtime._config_manager)
 
     async def _apply(bucket, cluster, actions, cluster_hash):
+        # 返回应用成功的 action 数：engine 用它把「非空 actions 全被拒」
+        # 判成 cluster 失败（计 refine_attempts，防毒 cluster 无限重打）。
         if bucket.store == STORE_PERSONA:
-            await apply_scoped_persona_merge(
+            return await apply_scoped_persona_merge(
                 pm, character, bucket.subject, cluster, actions, cluster_hash,
             )
-        else:
-            await apply_scoped_reflection_merge(
-                engine_ref, character, bucket.subject, cluster, actions,
-                cluster_hash,
-            )
+        return await apply_scoped_reflection_merge(
+            engine_ref, character, bucket.subject, cluster, actions,
+            cluster_hash,
+        )
 
     async def _failure(bucket, cluster, cluster_hash):
         if bucket.store == STORE_PERSONA:

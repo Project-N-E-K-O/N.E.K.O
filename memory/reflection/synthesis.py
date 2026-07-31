@@ -515,6 +515,11 @@ class SynthesisMixin:
             f for f in all_facts
             if f.get('absorbed')
             and f.get('id') not in unabsorbed_ids
+            # subject 时间归档的行（subject_archived_at 标记）不进合成
+            # 背景：它们已退出召回与渲染，复活后的新一轮合成若把归档内
+            # 容当 RELATED_CONTEXT 会把它重新洗进活跃 reflection——归档
+            # 语义就被这条侧路悄悄绕开了。
+            and not f.get('subject_archived_at')
             and is_cached_embedding_valid(f, f.get('text', ''), model_id)
         ]
         if not absorbed_pool:
