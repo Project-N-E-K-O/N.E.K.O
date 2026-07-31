@@ -1267,6 +1267,55 @@ async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     return PlainTextResponse(rendered)
 
 
+class ScopedForgetRequest(BaseModel):
+    subject: MemorySubjectRequest
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_forget")
+async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
+    """Delete every stored memory of one exact (subject, scope) domain.
+
+    撤回入口：删好友/退群之后，该 subject 的 facts（活跃 + 归档）、
+    reflections（含 surfaced 引用）、persona section（含 display_name）、
+    pending corrections 一次清干净——此前四个 scoped 端点只进不出，
+    建档没有任何撤回路径。精确匹配 (key, scope)：legacy 无戳语料与其它
+    scope 永不落入删除面。幂等：重复调用报 0。部分失败以 500 暴露，
+    重试安全（已删的不会复活）。归档分片（reflection/persona shards）
+    刻意不清：不进任何渲染/召回读路径，属事件溯源留底。
+    """  # noqa: DOCSTRING_CJK
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if (
+        runtime.fact_store is None
+        or runtime.persona_manager is None
+        or runtime.reflection_engine is None
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    subject = req.subject.to_domain()
+    stats: dict = {}
+    try:
+        stats.update(await runtime.fact_store.aforget_subject(lanlan_name, subject))
+        stats.update(
+            await runtime.reflection_engine.aforget_subject(lanlan_name, subject)
+        )
+        stats.update(
+            await runtime.persona_manager.aforget_subject(lanlan_name, subject)
+        )
+    except Exception as exc:
+        logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="scoped forget failed; retry is safe and idempotent",
+        ) from exc
+    return {
+        "status": "forgotten",
+        "subject": subject.as_entry_fields(),
+        **stats,
+    }
+
+
 @app.post("/internal/memory/{lanlan_name}/scoped_mentions")
 async def record_scoped_mentions(lanlan_name: str, req: ScopedMentionsRequest):
     """Bump mention counters for scoped persona/reflection entries.

@@ -525,6 +525,90 @@ class FactStore:
     async def asave_facts(self, name: str) -> None:
         await asyncio.to_thread(self.save_facts, name)
 
+    async def aforget_subject(self, lanlan_name: str, subject) -> dict:
+        """Delete every fact belonging to one exact (subject, scope) domain.
+
+        撤回入口（删好友/退群后清档）：活跃 facts、facts_archive、FTS 索引
+        三处一起清。匹配用 entry_matches_subject 的精确 (key, scope) 相等
+        ——legacy 无戳条目与其它 scope 的条目绝不落入删除面（fail-closed
+        方向与读侧过滤一致）。幂等：目标为空时是 no-op。
+
+        FTS 删行失败只告警不中止：索引残留最多让 BM25 命中一个已不存在
+        的 id，读侧对缺失 id 本就容忍；而为它中止会让重试反复重删主存。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import coerce_subject, entry_matches_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        removed_active = 0
+        removed_archive = 0
+        async with self._get_persist_alock(lanlan_name):
+            await self.aload_facts(lanlan_name)
+            facts = self._facts.get(lanlan_name, [])
+            removed = [
+                f for f in facts
+                if isinstance(f, dict) and entry_matches_subject(f, memory_subject)
+            ]
+            if removed:
+                removed_active = len(removed)
+                removed_identities = {id(f) for f in removed}
+                facts[:] = [f for f in facts if id(f) not in removed_identities]
+                if self._time_indexed is not None:
+                    for fact in removed:
+                        fact_id = fact.get('id')
+                        if not fact_id:
+                            continue
+                        try:
+                            await self._time_indexed.adelete_fact_from_index(
+                                lanlan_name, fact_id,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                f"[FactStore] {lanlan_name}: forget 清 FTS 索引"
+                                f"失败（残留 id 只影响空命中）: {exc}"
+                            )
+                await self.asave_facts(lanlan_name)
+            archive_path = self._facts_archive_path(lanlan_name)
+            if await asyncio.to_thread(os.path.exists, archive_path):
+                def _read_archive() -> object:
+                    with open(archive_path, encoding='utf-8') as f:
+                        return json.load(f)
+
+                try:
+                    archived = await asyncio.to_thread(_read_archive)
+                except (json.JSONDecodeError, OSError) as exc:
+                    # 归档损坏时明确失败：静默跳过会让"已删干净"的响应
+                    # 掩盖一份仍可被 BM25 召回的副本。
+                    raise RuntimeError(
+                        f"facts_archive unreadable during forget: {exc}"
+                    ) from exc
+                if isinstance(archived, list):
+                    kept = [
+                        f for f in archived
+                        if not (
+                            isinstance(f, dict)
+                            and entry_matches_subject(f, memory_subject)
+                        )
+                    ]
+                    removed_archive = len(archived) - len(kept)
+                    if removed_archive:
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation="save",
+                            target=f"memory/{lanlan_name}/facts_archive.json",
+                        )
+                        await asyncio.to_thread(
+                            atomic_write_json, archive_path, kept,
+                            indent=2, ensure_ascii=False,
+                        )
+        if removed_active or removed_archive:
+            logger.info(
+                f"[FactStore] {lanlan_name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"active={removed_active} archive={removed_archive}"
+            )
+        return {"facts": removed_active, "facts_archive": removed_archive}
+
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')

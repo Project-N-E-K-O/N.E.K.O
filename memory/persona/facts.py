@@ -28,6 +28,9 @@ import os
 from datetime import datetime
 
 
+from utils.cloudsave_runtime import assert_cloudsave_writable
+
+from utils.file_utils import atomic_write_json_async
 
 
 from memory.stop_names import (
@@ -978,6 +981,92 @@ class FactsMixin:
             section['display_name'] = cleaned
             await self.asave_persona(name, persona)
             return True
+
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Delete one exact (subject, scope) domain from the persona view.
+
+        撤回入口（对偶 FactStore / ReflectionEngine 的 aforget_subject）：
+        1. scoped section 里 entry_matches_subject 的条目全删；
+        2. section 因此清空、且 section 元数据就属于这个域时整段删掉
+           （连 display_name）——section key 不含 scope，混居着其它 scope
+           条目时 section 必须保留；
+        3. pending corrections 里带该 subject 戳的条目一并清：残留的
+           correction 在 resolve 时会把已删文本重新写回 persona（回流）。
+        归档分片不清（不进渲染/召回读路径，事件留底）。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import (
+            coerce_subject,
+            entry_matches_subject,
+            persona_subject_from_section,
+        )
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        section_key = memory_subject.persona_section_key
+        removed_entries = 0
+        section_dropped = False
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(section_key)
+            if isinstance(section, dict):
+                entries = section.get('facts')
+                if isinstance(entries, list):
+                    kept = [
+                        e for e in entries
+                        if not (
+                            isinstance(e, dict)
+                            and entry_matches_subject(e, memory_subject)
+                        )
+                    ]
+                    removed_entries = len(entries) - len(kept)
+                    entries[:] = kept
+                if not section.get('facts'):
+                    section_subject = persona_subject_from_section(
+                        section_key, section,
+                    )
+                    if (
+                        section_subject is not None
+                        and section_subject.key == memory_subject.key
+                        and section_subject.scope == memory_subject.scope
+                    ):
+                        persona.pop(section_key, None)
+                        section_dropped = True
+            if removed_entries or section_dropped:
+                await self.asave_persona(name, persona)
+            # corrections 清理留在同一把角色锁内：_aqueue_correction_locked
+            # 也在这把锁下写同一个文件，锁外读改写会与并发入队互相覆盖。
+            corrections_removed = 0
+            corrections = await self.aload_pending_corrections(name)
+            kept_corrections = [
+                c for c in corrections
+                if not (
+                    isinstance(c, dict)
+                    and entry_matches_subject(c, memory_subject)
+                )
+            ]
+            corrections_removed = len(corrections) - len(kept_corrections)
+            if corrections_removed:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/persona_corrections.json",
+                )
+                await atomic_write_json_async(
+                    self._corrections_path(name), kept_corrections,
+                    indent=2, ensure_ascii=False,
+                )
+        if removed_entries or section_dropped or corrections_removed:
+            logger.info(
+                f"[Persona] {name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"entries={removed_entries} section_dropped={section_dropped} "
+                f"corrections={corrections_removed}"
+            )
+        return {
+            "persona_entries": removed_entries,
+            "persona_section_dropped": section_dropped,
+            "corrections": corrections_removed,
+        }
 
     def _normalize_entry_for_section(
         self, persona: dict, section_key: str, value,

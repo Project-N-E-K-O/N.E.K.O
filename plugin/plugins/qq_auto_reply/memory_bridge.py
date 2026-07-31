@@ -117,6 +117,26 @@ class QQMemoryBridge:
         )
         response.raise_for_status()
 
+    async def post_scoped_forget(
+        self,
+        her_name: str,
+        *,
+        subject: dict[str, str],
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """Erase one subject's stored memory (facts/reflections/persona).
+
+        删好友/退群后的撤回入口。幂等；服务端部分失败以 HTTP 错误暴露，
+        重试安全。调用方自备触发时机（UI 操作/事件），bridge 只管线路。"""
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_forget",
+            json={"subject": subject},
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
     async def query_relevant_memory(
         self,
         her_name: str,

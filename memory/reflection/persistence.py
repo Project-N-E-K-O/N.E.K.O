@@ -302,6 +302,66 @@ class PersistenceMixin:
 
         atomic_write_json(path, merged, indent=2, ensure_ascii=False)
 
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Delete every reflection belonging to one exact (subject, scope).
+
+        撤回入口（对偶 FactStore.aforget_subject）。**不走** asave_reflections
+        ——它的 prepare_save_reflections 会把磁盘上不在入参 id 集里的
+        merged / promote_blocked 条目并回主文件，删除会被静默 undo；这里
+        在角色锁内读主文件全量、过滤后直写。surfaced.json 里引用被删
+        reflection 的行一并清（surfaced 条目自带 text，会进 feedback
+        prompt）。归档分片不清：分片不进任何渲染/召回读路径，属事件留底。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import coerce_subject, entry_matches_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        async with self._get_alock(name):
+            path = self._reflections_path(name)
+            rows: list = []
+            if await asyncio.to_thread(os.path.exists, path):
+                data = await read_json_async(path)
+                if isinstance(data, list):
+                    rows = data
+            removed = [
+                r for r in rows
+                if isinstance(r, dict) and entry_matches_subject(r, memory_subject)
+            ]
+            if removed:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/reflections.json",
+                )
+                removed_identities = {id(r) for r in removed}
+                kept = [r for r in rows if id(r) not in removed_identities]
+                await atomic_write_json_async(
+                    path, kept, indent=2, ensure_ascii=False,
+                )
+            removed_ids = {
+                r.get('id') for r in removed if isinstance(r, dict) and r.get('id')
+            }
+            surfaced_removed = 0
+            if removed_ids:
+                surfaced = await self.aload_surfaced(name)
+                kept_surfaced = [
+                    s for s in surfaced
+                    if not (
+                        isinstance(s, dict)
+                        and s.get('reflection_id') in removed_ids
+                    )
+                ]
+                surfaced_removed = len(surfaced) - len(kept_surfaced)
+                if surfaced_removed:
+                    await self.asave_surfaced(name, kept_surfaced)
+        if removed:
+            logger.info(
+                f"[Reflection] {name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"reflections={len(removed)} surfaced={surfaced_removed}"
+            )
+        return {"reflections": len(removed), "surfaced": surfaced_removed}
+
     async def asave_reflections(self, name: str, reflections: list[dict]) -> None:
         from memory.archive_shards import aappend_to_shard
         assert_cloudsave_writable(
