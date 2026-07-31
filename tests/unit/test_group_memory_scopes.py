@@ -3002,9 +3002,8 @@ async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_path):
-    """单段批次没有归属风险：走成熟的单发抽取管线（speaker_label 渲染 +
-    整批 malformed 判定），不用带段标记的批 prompt。"""  # noqa: DOCSTRING_CJK
+async def test_batch_extraction_single_segment_still_uses_bounded_batch_prompt(tmp_path):
+    """A one-segment batch must not bypass the batch input budget."""
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -3013,19 +3012,28 @@ async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_pa
 
     async def _llm(prompt, lanlan_name, **kwargs):
         captured["prompt"] = prompt
-        return [{"text": "单段事实", "importance": 5}]
+        return [{
+            "segment": 1,
+            "facts": [{"text": "单段事实", "importance": 5}],
+        }]
 
     fs._allm_call_with_retries = _llm
     segment = _batch_segment(
-        "7788", "1001", "Alice(1001)", ["我对花生过敏"], trust=1.0,
+        "7788",
+        "1001",
+        "Alice(1001)",
+        ["BEGIN-important " + ("界" * 2000) + " END-important"],
+        trust=1.0,
     )
     with patch("memory.facts.get_global_language", return_value="zh"), \
             patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch([segment], "Neko")
 
     assert [r["status"] for r in results] == ["ok"]
-    assert "[SEGMENT" not in captured["prompt"]
-    assert "Alice(1001) | 我对花生过敏" in captured["prompt"]
+    assert "[SEGMENT" in captured["prompt"]
+    assert "BEGIN-important " in captured["prompt"]
+    assert " END-important" in captured["prompt"]
+    assert "界" * 2000 not in captured["prompt"]
     created = results[0]["created"]
     assert [f["text"] for f in created] == ["单段事实"]
     # 单段路径同样落信赖度字段。

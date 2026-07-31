@@ -31,6 +31,8 @@ def test_set_nickname_rejects_oversized_or_structural_values_without_overwrite()
     assert manager.get_nickname("1001") == at_limit
     assert manager.set_nickname("1001", "  Alice 小明  ") is True
     assert manager.get_nickname("1001") == "Alice 小明"
+    assert manager.set_nickname("1001", "👩‍💻") is True
+    assert manager.get_nickname("1001") == "👩‍💻"
     assert manager.set_nickname("1001", "") is True
     assert manager.get_nickname("1001") is None
 
@@ -43,3 +45,15 @@ def test_historical_invalid_nickname_remains_readable_and_can_be_repaired():
     assert manager.list_users()[0]["nickname"] == historical
     assert manager.set_nickname("1001", "repaired") is True
     assert manager.get_nickname("1001") == "repaired"
+
+
+def test_add_user_applies_the_same_nickname_validation_before_persisting():
+    manager = PermissionManager()
+
+    assert manager.add_user("1001", nickname="bad|name") is False
+    assert manager.get_permission_level("1001") == "none"
+    assert manager.add_user("1002", nickname="👩‍💻") is True
+    assert manager.get_nickname("1002") == "👩‍💻"
+
+    assert manager.add_user("1003", level="admin", nickname="bad|name") is True
+    assert manager.get_nickname("1003") is None

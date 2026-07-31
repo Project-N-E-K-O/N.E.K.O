@@ -13,6 +13,7 @@ class PermissionManager:
     VALID_LEVELS = {"admin", "trusted", "normal"}
     NICKNAME_MAX_CHARS = 64
     _NICKNAME_FORBIDDEN_CHARS = frozenset("[]|")
+    _NICKNAME_ALLOWED_FORMAT_CHARS = frozenset({"\u200d"})
 
     def __init__(self, trusted_users: List[Dict[str, Any]] = None):
         """
@@ -57,6 +58,23 @@ class PermissionManager:
             return None
         return normalized
 
+    @classmethod
+    def _normalize_nickname_for_write(cls, nickname: str) -> Optional[str]:
+        raw = str(nickname or "")
+        normalized = raw.strip()
+        if len(normalized) > cls.NICKNAME_MAX_CHARS:
+            return None
+        if any(
+            char in cls._NICKNAME_FORBIDDEN_CHARS
+            or (
+                not char.isprintable()
+                and char not in cls._NICKNAME_ALLOWED_FORMAT_CHARS
+            )
+            for char in raw
+        ):
+            return None
+        return normalized
+
     def add_user(self, qq_number: str, level: str = "trusted", nickname: str = "", normal_relay_probability: Any = None):
         """
         添加用户
@@ -68,12 +86,20 @@ class PermissionManager:
         """
         qq_str = self._normalize_qq(qq_number)
         if not qq_str:
-            return
+            return False
+        normalized_level = self._normalize_level(level)
+        normalized_nickname = (
+            "" if normalized_level == "admin"
+            else self._normalize_nickname_for_write(nickname)
+        )
+        if normalized_nickname is None:
+            return False
         self._users[qq_str] = {
-            "level": self._normalize_level(level),
-            "nickname": str(nickname or "").strip(),
+            "level": normalized_level,
+            "nickname": normalized_nickname,
             "normal_relay_probability": self._normalize_probability(normal_relay_probability),
         }
+        return True
 
     def remove_user(self, qq_number: str):
         """移除用户"""
@@ -122,16 +148,10 @@ class PermissionManager:
     def set_nickname(self, qq_number: str, nickname: str):
         """设置用户昵称"""
         qq_str = self._normalize_qq(qq_number)
-        raw = str(nickname or "")
-        normalized = raw.strip()
         if qq_str not in self._users:
             return False
-        if len(normalized) > self.NICKNAME_MAX_CHARS:
-            return False
-        if any(
-            char in self._NICKNAME_FORBIDDEN_CHARS or not char.isprintable()
-            for char in raw
-        ):
+        normalized = self._normalize_nickname_for_write(nickname)
+        if normalized is None:
             return False
         self._users[qq_str]["nickname"] = normalized
         return True

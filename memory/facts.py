@@ -940,18 +940,17 @@ class FactStore:
         # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
         lang = get_global_language_full()
+        rendered_segments = await asyncio.to_thread(
+            self._format_speaker_segments,
+            segments,
+            nonce=nonce,
+            lang=lang,
+        )
         prompt = (
             get_fact_extraction_batch_prompt(lang)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{SEGMENT_NONCE}', nonce)
-            .replace(
-                '{SEGMENTS}',
-                self._format_speaker_segments(
-                    segments,
-                    nonce=nonce,
-                    lang=lang,
-                ),
-            )
+            .replace('{SEGMENTS}', rendered_segments)
         )
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -1270,19 +1269,6 @@ class FactStore:
         """  # noqa: DOCSTRING_CJK
         if not segments:
             return []
-        if len(segments) == 1:
-            # 单段无归属风险：走成熟的单发抽取管线（prompt 更完整、
-            # malformed 判定也更严）。
-            segment = segments[0]
-            created = await self.extract_facts(
-                segment.get('messages') or [],
-                lanlan_name,
-                subject=segment.get('subject'),
-                fail_closed=True,
-                speaker_label=segment.get('speaker_label'),
-                speaker_provenance=self._speaker_provenance_of(segment),
-            )
-            return [{'status': 'ok', 'created': created, 'dropped': 0}]
 
         extracted = await self._allm_extract_facts_batch(lanlan_name, segments)
         if extracted is None:

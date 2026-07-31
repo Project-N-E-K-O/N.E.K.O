@@ -36,8 +36,6 @@ import logging
 import math
 
 from config import PERSONA_RENDER_ENCODING
-from utils.cjk import count_cjk_chars, is_cjk_char
-
 logger = logging.getLogger(__name__)
 
 # Encoder cache keyed by encoding name (e.g. "o200k_base"). Values are
@@ -56,7 +54,7 @@ _FALLBACK_WARNED = False
 # invalidate old heuristic-cached counts. tiktoken identity is keyed by
 # the `tiktoken:<encoding>` pair, which already changes automatically if
 # someone flips PERSONA_RENDER_ENCODING.
-_HEURISTIC_VERSION = "v1"
+_HEURISTIC_VERSION = "v2"
 
 
 def _get_encoder(encoding: str):
@@ -95,9 +93,11 @@ def _count_tokens_heuristic(text: str) -> int:
     render budget is a soft cap and rendering a few entries less is
     preferable to silently exceeding the model context window.
 
-    - CJK (Han / Kana / Hangul) → 1.5 tokens / char
-    - Other (latin / digits / punct) → 0.25 tokens / char (≈ 4 char per
-      token, matches GPT tokenizer ballpark on English prose)
+    Every character is weighted by its UTF-8 byte length. The tokenizer's
+    byte-level fallback vocabulary means this is a conservative upper bound:
+    merges can reduce token count, but cannot require more tokens than input
+    bytes. This intentionally favors safety over prompt utilization in the
+    exceptional no-tiktoken mode.
     """
     if not text:
         # Empty stays 0 — both for math sanity and because callers
@@ -105,13 +105,15 @@ def _count_tokens_heuristic(text: str) -> int:
         # Defensive double-check kept here so direct callers of the
         # heuristic (tests, future callsites) get the same contract.
         return 0
-    cjk = count_cjk_chars(text)
-    non_cjk = len(text) - cjk
     # Floor of 1 for non-empty text: int() truncated short latin strings
     # (e.g. "ok" → 0.5 → 0), which made score-trim treat them as free
     # and bypass the budget. ceil + clamp avoids that without
     # under-counting longer text.
-    return max(1, math.ceil(cjk * 1.5 + non_cjk * 0.25))
+    return max(1, math.ceil(sum(_heuristic_char_weight(c) for c in text)))
+
+
+def _heuristic_char_weight(char: str) -> float:
+    return float(len(char.encode("utf-8", errors="surrogatepass")))
 
 
 def count_tokens(text: str, encoding: str = PERSONA_RENDER_ENCODING) -> int:
@@ -322,7 +324,7 @@ def truncate_head_tail_tokens(
         else:
             running = 0.0
             for i in range(len(text) - 1, -1, -1):
-                weight = 1.5 if is_cjk_char(text[i]) else 0.25
+                weight = _heuristic_char_weight(text[i])
                 if math.ceil(running + weight) > tail_alloc:
                     cut_idx = i + 1
                     break
@@ -364,11 +366,11 @@ async def atruncate_head_tail_tokens(
 
 def _truncate_to_tokens_heuristic(text: str, max_tokens: int) -> str:
     """Heuristic prefix scan that mirrors `_count_tokens_heuristic`'s
-    weighting (CJK 1.5 / non-CJK 0.25). Walks the string once and stops
-    just before the running estimate would exceed `max_tokens`."""
+    character-class weighting. Walks the string once and stops just before
+    the running estimate would exceed `max_tokens`."""
     running = 0.0
     for i, c in enumerate(text):
-        weight = 1.5 if is_cjk_char(c) else 0.25
+        weight = _heuristic_char_weight(c)
         if math.ceil(running + weight) > max_tokens:
             return text[:i]
         running += weight

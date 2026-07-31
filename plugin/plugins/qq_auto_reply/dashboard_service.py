@@ -226,7 +226,13 @@ class QQDashboardService:
             value = float(normal_relay_probability)
             if value < 0.0 or value > 1.0:
                 return Err(SdkError(f"INVALID_ARGUMENT: {self.plugin.i18n.t('errors.invalid_probability', default='normal_relay_probability 必须在 0 到 1 之间')}"))
-        self.plugin.permission_mgr.add_user(qq_number, level, normalized_nickname, normal_relay_probability=normal_relay_probability)
+        if not self.plugin.permission_mgr.add_user(
+            qq_number,
+            level,
+            normalized_nickname,
+            normal_relay_probability=normal_relay_probability,
+        ):
+            return Err(SdkError(f"SET_FAILED: {self.plugin.i18n.t('errors.set_nickname_failed', default='设置昵称失败')}"))
         self.plugin._refresh_admin_qq()
         await self.plugin._invalidate_private_session(qq_number)
         success = await self.plugin.settings_service.persist_business_config()
