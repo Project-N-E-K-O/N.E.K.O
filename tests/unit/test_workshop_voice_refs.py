@@ -501,29 +501,6 @@ def test_each_upload_gets_its_own_audio_filename(tmp_path):
     )
 
 
-def test_an_orphan_from_an_earlier_failure_is_swept_after_the_commit(tmp_path):
-    """A failed upload leaves an unreferenced audio file; the next one clears it."""
-    from main_routers.workshop_router import voice_refs
-
-    (tmp_path / "voice_sample_0123456789ab.wav").write_bytes(b"orphan")
-    (tmp_path / "voice_sample_aaaaaaaaaaaa.mp3").write_bytes(b"old-audio")
-    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
-        json.dumps({"version": 1, "reference_audio": "voice_sample_aaaaaaaaaaaa.mp3", "prefix": "old"}),
-        encoding="utf-8",
-    )
-
-    voice_refs._replace_voice_reference(
-        str(tmp_path),
-        str(tmp_path / "voice_sample_bbbbbbbbbbbb.wav"),
-        b"new-audio",
-        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
-        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
-    )
-
-    remaining = sorted(p.name for p in tmp_path.iterdir())
-    assert remaining == [WORKSHOP_VOICE_MANIFEST_NAME, "voice_sample_bbbbbbbbbbbb.wav"], (
-        f"提交后应该只剩新的一对：{remaining}"
-    )
 
 
 def test_the_lock_key_resolves_symlinks(tmp_path):
@@ -548,29 +525,62 @@ def test_the_lock_key_resolves_symlinks(tmp_path):
     )
 
 
-def test_the_sweep_only_touches_names_this_module_generates(tmp_path):
-    """A content folder is the user's own directory; do not guess ownership.
 
-    The folder can hold an unrelated `voice_sample_demo.mp3` the user put
-    there. Matching by prefix would delete it. The sweep matches the exact
-    shape uploads generate (`voice_sample_<12 hex>.<ext>`) plus the legacy bare
-    `voice_sample.<ext>` — provable ownership, not probability, same rule as
-    the temp-file owner tag in utils/file_utils.py.
+
+def test_only_the_previously_referenced_audio_is_deleted(tmp_path):
+    """Ownership is proven by the manifest, never guessed from the filename.
+
+    A content folder is the user's own publish directory. Matching by name
+    shape — even the exact `voice_sample_<12 hex>.<ext>` this feature
+    generates — is still probability: a user file that happens to fit the
+    shape gets silently deleted. The one file this module can prove it owns is
+    the one the outgoing manifest pointed at.
     """
     from main_routers.workshop_router import voice_refs
 
-    (tmp_path / "voice_sample_demo.mp3").write_bytes(b"user-file")
-    (tmp_path / "voice_sample_notes.wav").write_bytes(b"user-file")
-    (tmp_path / "voice_sample.mp3").write_bytes(b"legacy")
-    (tmp_path / "voice_sample_cccccccccccc.wav").write_bytes(b"generated")
-    keep = tmp_path / "voice_sample_dddddddddddd.wav"
-    keep.write_bytes(b"current")
+    (tmp_path / "voice_sample_aaaaaaaaaaaa.mp3").write_bytes(b"ours-previous")
+    (tmp_path / "voice_sample_cccccccccccc.wav").write_bytes(b"user-file-same-shape")
+    (tmp_path / "voice_sample.mp3").write_bytes(b"user-file-legacy-shape")
+    (tmp_path / "voice_sample_theme.mp3").write_bytes(b"user-file")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({
+            "version": 1,
+            "reference_audio": "voice_sample_aaaaaaaaaaaa.mp3",
+            "prefix": "old",
+        }),
+        encoding="utf-8",
+    )
 
-    voice_refs._sweep_unreferenced_audio(str(tmp_path), keep=str(keep))
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / "voice_sample_bbbbbbbbbbbb.wav"),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+    )
 
     remaining = sorted(p.name for p in tmp_path.iterdir())
     assert remaining == [
-        "voice_sample_dddddddddddd.wav",
-        "voice_sample_demo.mp3",
-        "voice_sample_notes.wav",
-    ], f"扫过头或者漏扫了：{remaining}"
+        WORKSHOP_VOICE_MANIFEST_NAME,
+        "voice_sample.mp3",
+        "voice_sample_bbbbbbbbbbbb.wav",
+        "voice_sample_cccccccccccc.wav",
+        "voice_sample_theme.mp3",
+    ], f"删了不属于自己的文件，或者没删掉上一份引用：{remaining}"
+
+
+def test_nothing_is_deleted_when_no_manifest_claims_anything(tmp_path):
+    """A folder with no manifest claims nothing; the swap must add, not remove."""
+    from main_routers.workshop_router import voice_refs
+
+    (tmp_path / "voice_sample.wav").write_bytes(b"user-file")
+
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / "voice_sample_bbbbbbbbbbbb.wav"),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+    )
+
+    assert (tmp_path / "voice_sample.wav").read_bytes() == b"user-file"

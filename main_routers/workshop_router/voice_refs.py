@@ -35,7 +35,7 @@ from .voice_manifest import (
 )
 
 import os
-import re
+import json
 import asyncio
 import uuid
 import tempfile
@@ -102,32 +102,84 @@ def _replace_voice_reference(
         _sweep_unreferenced_audio(content_folder, keep=audio_path)
 
 
-# 只认自己生成的名字，不认「叫得像」的。内容目录是用户自己的目录，里面完全可能有
-# 一个他自己放的 voice_sample_demo.mp3 —— 按前缀扫就会把它删掉。所以匹配写死成
-# 这次上传生成的形状（voice_sample_<12 位 hex>.<ext>）加上历史遗留的裸
-# voice_sample.<ext>。跟 file_utils 里 tmp 用所有权标记而不是猜形状是同一条原则：
-# 可证明的所有权，不是概率论。
-_GENERATED_REFERENCE_AUDIO_RE = re.compile(r'^voice_sample(_[0-9a-f]{12})?$')
+def _current_reference_audio_path(content_folder: str) -> str | None:
+    """The audio path the folder's manifest currently points at, if any.
 
-
-def _sweep_unreferenced_audio(content_folder: str, *, keep: str) -> None:
-    """Delete reference-audio files this module generated and no longer references."""
-    keep_real = os.path.normcase(os.path.abspath(keep))
+    Best-effort and never raises: a missing or malformed manifest just means
+    "nothing is claimed", which is the safe answer for a caller about to
+    delete something.
+    """
+    manifest_path = os.path.join(content_folder, WORKSHOP_VOICE_MANIFEST_NAME)
     try:
-        entries = os.listdir(content_folder)
-    except OSError:
-        return
-    for name in entries:
-        stem, ext = os.path.splitext(name)
-        if not _GENERATED_REFERENCE_AUDIO_RE.match(stem):
-            continue
-        if ext.lower() not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
-            continue
-        candidate = os.path.join(content_folder, name)
-        if os.path.normcase(os.path.abspath(candidate)) == keep_real:
-            continue
-        with suppress(OSError):
-            os.remove(candidate)
+        with open(manifest_path, 'r', encoding='utf-8') as f:
+            manifest = json.load(f)
+    except Exception:
+        return None
+    reference = manifest.get('reference_audio') if isinstance(manifest, dict) else None
+    if not isinstance(reference, str) or not reference:
+        return None
+    return os.path.join(content_folder, reference)
+
+
+def _replace_voice_reference(
+    content_folder: str,
+    audio_path: str,
+    audio_bytes: bytes,
+    manifest_path: str,
+    manifest: dict,
+) -> None:
+    """Swap in a new reference-audio/manifest pair as one blocking unit.
+
+    Kept synchronous on purpose so the caller can hand the whole swap to a
+    single worker thread: the steps have no await between them, so a cancelled
+    request can never observe a half-replaced pair. The per-folder lock covers
+    the other direction — two workers racing the same folder.
+
+    The manifest write is the single commit point. The new audio goes to its
+    own filename, so nothing the current manifest points at is ever
+    overwritten or deleted before that commit: any failure up to it leaves the
+    previous pair byte-for-byte intact, and any state after it is the complete
+    new pair. There is no window in which the two halves come from different
+    uploads, so there is nothing to roll back.
+    """
+    with voice_reference_lock(content_folder):
+        # 进来时这个目录里「属于我们」的音频，就是当前 manifest 指着的那一个 ——
+        # 这是**可证明**的所有权。按名字形状猜（voice_sample*、甚至
+        # voice_sample_<12 位 hex>）都还是概率论：内容目录是用户自己的目录，他放一个
+        # 同形状的文件进来就会被静默删掉。跟 file_utils 里 tmp 用所有权标记的理由一样。
+        previous_audio = _current_reference_audio_path(content_folder)
+
+        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 到它**自己的**文件名。
+        #    这个名字不会是当前 manifest 指着的那个（handler 每次生成新 token），
+        #    所以这一步不覆盖、不删除任何在用的东西。
+        fd, temp_audio = tempfile.mkstemp(dir=content_folder, suffix='.tmp')
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(audio_bytes)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(temp_audio, audio_path)
+
+            # 2) 唯一的提交点。atomic_write_json 是 tmp + os.replace，要么整份旧
+            #    manifest，要么整份新 manifest —— 这一步之前失败，盘上还是完完整整的
+            #    旧一对。
+            atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
+        except BaseException:
+            with suppress(OSError):
+                os.remove(temp_audio)
+            # 没提交成功就把刚落下的新音频也清掉：它没人引用，但 publish 是把整个
+            # 内容目录交给 SetItemContent 的，留着会让一次「报了失败」的上传照样被
+            # 发布出去。
+            with suppress(OSError):
+                os.remove(audio_path)
+            raise
+
+        # 3) 提交之后，上一份 manifest 指着的那个音频才失去引用，这时才能删。
+        #    换了扩展名（mp3 → wav）时它跟新文件不同名；理论上同名的话上面的
+        #    os.replace 已经顶掉了，这里跳过。删失败只是占点磁盘。
+        if previous_audio and os.path.normcase(os.path.abspath(previous_audio)) != os.path.normcase(os.path.abspath(audio_path)):
+            with suppress(OSError):
+                os.remove(previous_audio)
 
 
 def _remove_voice_reference(content_folder: str) -> None:
