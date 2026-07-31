@@ -4,7 +4,7 @@ import asyncio
 import re
 from typing import Any
 
-from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest
+from .pipeline_models import QQDeliveryResult, QQModelResult, QQPipelineStageTrace, QQRelayResult, QQReplyContext, QQReplyDecision, QQReplyOutcome, QQReplyRequest, delivered_blocks_text
 from .reply_buffer_service import QQReplyBufferService
 
 
@@ -278,7 +278,17 @@ class QQReplyPipelineRunner:
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
             # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
-            raw = (outcome.raw_reply_text if outcome else "") or ""
+            raw = getattr(outcome, "wait_directive_text", None)
+            if raw is None:
+                raw = (outcome.raw_reply_text if outcome else "") or ""
+                structural_pre_tool = str(
+                    getattr(outcome, "pre_tool_text", "") or ""
+                )
+                if structural_pre_tool and raw.startswith(structural_pre_tool):
+                    raw = raw[len(structural_pre_tool):]
+            raw = str(raw or "")
+            # postprocess 直接携带 sanitizer 后、真实 tool 边界之后的最终段；
+            # 因此 hidden/literal pre-tool 内的 <wait> 都不能成为 buffer 指令。
             clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
             # 默认等待加随机抖动（±40%），避免每次都一样
             if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:
@@ -286,6 +296,7 @@ class QQReplyPipelineRunner:
                 wait_sec = max(1.5, wait_sec * random.uniform(0.6, 1.4))
             # 私聊默认等更久（对方在讲故事/连续输出）
             first_text = delivery_plan.blocks[0].text if delivery_plan.blocks else ""
+            visible_text = delivered_blocks_text(delivery_plan.blocks)
             # 检查是否有实际内容（text/record/sticker/poke/emoji 任一非空即有效）
             has_content = any(
                 b.text or b.record or b.sticker or b.poke or b.emoji
@@ -307,7 +318,9 @@ class QQReplyPipelineRunner:
             fwd_count = int(getattr(request, 'forward_sub_count', 0) or 0)
             await self.plugin.reply_buffer_service.schedule_reply(
                 session_key=session_key,
-                reply_text=first_text or clean or "",
+                # reply_text 是缓冲汇总的语义输入；首块可能只是 pre-tool，
+                # 必须把最终 XML 块也带上，不能让汇总只看到“我查一下”。
+                reply_text=visible_text or clean or "",
                 raw_text=clean or first_text or "",
                 blocks=delivery_plan.blocks,
                 wait_seconds=wait_sec,
@@ -477,8 +490,6 @@ class QQReplyPipelineRunner:
             # 整条计划的正文：outcome.reply_text 只有首块，后续块里披露
             # 的事实既进不了历史（digest 少半条），也记不到 mention（永远
             # 到不了 suppression）。
-            from .pipeline_models import delivered_blocks_text
-
             delivered_text = (
                 delivered_blocks_text(delivery_plan.blocks) or outcome.reply_text
             )

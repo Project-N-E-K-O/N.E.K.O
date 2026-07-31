@@ -14,7 +14,7 @@ pin the six load-bearing pieces of that migration:
 4. the in-handler entry / post-fetch revocation gates;
 5. tool-round dict rows never survive in the shared history (neither on
    normal turns nor through the revocation rollback);
-6. pre-tool text never reaches the outbound message, and routes that
+6. model-authored pre-tool text remains in the outbound message, and routes that
    silently drop ``tools`` fall back to the synchronous recall.
 """
 
@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -39,6 +40,7 @@ from plugin.plugins.qq_auto_reply.memory_tool_service import (
 from plugin.plugins.qq_auto_reply.reply_generation_service import (
     QQReplyGenerationService,
 )
+from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
 
 TOOL_CAPABLE_MODEL = "qwen3.7-plus"
 TOOL_CAPABLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -138,17 +140,35 @@ def _generation_service(plugin):
     return service
 
 
+def test_hardcoded_recall_filler_remains_removed():
+    """The retired mechanical recall phrase must not return under another hook."""
+    repo_root = Path(__file__).resolve().parents[2]
+    runtime_paths = [repo_root / "config/prompts/prompts_memory.py"]
+    runtime_paths.extend(sorted((repo_root / "main_logic/core").glob("*.py")))
+    runtime_sources = "\n".join(
+        path.read_text(encoding="utf-8") for path in runtime_paths
+    )
+
+    for retired_marker in (
+        "RECALL_MEMORY_TOOL_FILLER",
+        "_RECALL_FILLER_SID_SUFFIX",
+        "::recall-filler",
+        "让我回忆一下哦……",
+    ):
+        assert retired_marker not in runtime_sources
+
+
 def _recall_tool_call(arguments):
     return SimpleNamespace(
         name="recall_memory", arguments=arguments, call_id="call_1",
     )
 
 
-def _tool_round_rows(recall_output):
+def _tool_round_rows(recall_output, assistant_content="我查一下"):
     return [
         {
             "role": "assistant",
-            "content": "我查一下",
+            "content": assistant_content,
             "tool_calls": [{
                 "id": "call_1", "type": "function",
                 "function": {"name": "recall_memory", "arguments": "{}"},
@@ -444,6 +464,7 @@ async def test_recall_tool_disarmed_after_every_turn():
     assert client.armed_tool_names[0] == ["recall_memory"]
     assert client.tools == []
     assert client.on_tool_call is None
+    assert client.on_tool_round_start is None
 
     async def _boom(client, message):
         raise RuntimeError("stream died")
@@ -459,6 +480,36 @@ async def test_recall_tool_disarmed_after_every_turn():
         )
     assert client.tools == []
     assert client.on_tool_call is None
+    assert client.on_tool_round_start is None
+
+
+@pytest.mark.asyncio
+async def test_final_disarm_clears_handler_when_tool_cleanup_fails():
+    """Final cleanup must reset each mounted slot independently."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    class _StickyToolClient(_RecallToolClient):
+        def set_tools(self, tool_definitions):
+            if tool_definitions is None:
+                raise RuntimeError("tool slot refused cleanup")
+            super().set_tools(tool_definitions)
+
+    async def _quiet(client, message):
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+
+    client = _StickyToolClient(_quiet)
+    await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=[],
+    )
+    assert client.on_tool_call is None
+    assert client.on_tool_round_start is None
 
 
 @pytest.mark.asyncio
@@ -476,7 +527,6 @@ async def test_arm_respects_the_session_clients_frozen_route():
     assert service._arm_recall_tool(
         context=_group_context(),
         user_session=free_client,
-        reply_chunks=[],
         consent_before={},
     ) is False
     assert free_client.armed_tool_names == []
@@ -486,7 +536,6 @@ async def test_arm_respects_the_session_clients_frozen_route():
     assert service._arm_recall_tool(
         context=_group_context(recall_via_tool=False),
         user_session=capable_client,
-        reply_chunks=[],
         consent_before={},
     ) is False
     assert capable_client.armed_tool_names == []
@@ -496,18 +545,47 @@ async def test_arm_respects_the_session_clients_frozen_route():
         context=_group_context(),
         user_session=SimpleNamespace(model=TOOL_CAPABLE_MODEL,
                                      base_url=TOOL_CAPABLE_BASE_URL),
-        reply_chunks=[],
         consent_before={},
     ) is False
 
     assert service._arm_recall_tool(
         context=_group_context(),
         user_session=capable_client,
-        reply_chunks=[],
         consent_before={},
     ) is True
     assert capable_client.armed_tool_names[-1] == ["recall_memory"]
     assert capable_client.on_tool_call is not None
+
+
+def test_failed_arm_clears_tool_slots_independently():
+    """One failing cleanup action must not leave the other slot mounted."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    calls: list[str] = []
+
+    class _HalfMountClient(_RecallToolClient):
+        def set_tools(self, tool_definitions):
+            if tool_definitions is None:
+                calls.append("clear-tools")
+                raise RuntimeError("tool slot refused cleanup")
+            calls.append("set-tools")
+
+        def set_tool_call_handler(self, handler):
+            if handler is None:
+                calls.append("clear-handler")
+                return
+            calls.append("set-handler")
+            raise RuntimeError("handler mount failed")
+
+    client = _HalfMountClient(AsyncMock())
+    assert service._arm_recall_tool(
+        context=_group_context(),
+        user_session=client,
+        consent_before={},
+    ) is False
+    assert calls == [
+        "set-tools", "set-handler", "clear-tools", "clear-handler",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -728,16 +806,13 @@ async def test_revocation_after_tool_read_discards_reply_and_tool_rows():
 
 
 # ---------------------------------------------------------------------------
-# Outbound hygiene (连带 #6) and timeout budget (连带 #7)
+# Outbound continuity (连带 #6) and timeout budget (连带 #7)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_pre_tool_text_never_reaches_the_outbound_message():
-    """The model announces a lookup ("let me check") before calling the
-    tool. That segment is persisted by the client into the assistant
-    tool_calls row (and swept with it) — the QQ message the group
-    receives must contain only the post-tool answer."""
+async def test_pre_tool_text_remains_in_the_outbound_message():
+    """QQ must preserve model-authored text emitted before a tool call."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
@@ -758,6 +833,123 @@ async def test_pre_tool_text_never_reaches_the_outbound_message():
     client = _RecallToolClient(_script)
     reply_chunks: list = []
     client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "我查一下查到了，是不剧透"
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "我查一下查到了，是不剧透"
+    assert user_data["current_pre_tool_text"] == "我查一下"
+
+
+@pytest.mark.asyncio
+async def test_primary_result_carries_the_pre_tool_boundary():
+    """Postprocess receives the boundary captured from tool-round history."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    context = _group_context(ephemeral_session=False, group_scene_mode="")
+    user_data = {
+        "memory_enabled": False,
+        "human_row_accepted": False,
+    }
+    client = SimpleNamespace(_conversation_history=[])
+    reply_chunks: list[str] = []
+    plugin.session_bootstrap_service = SimpleNamespace(
+        ensure_generation_session=AsyncMock(return_value=user_data)
+    )
+    plugin.session_runtime_service = SimpleNamespace(
+        build_generation_session_key=lambda _context: "group:7788",
+        prime_generation_session_state=lambda *_args, **_kwargs: (
+            client,
+            reply_chunks,
+        ),
+    )
+
+    async def _generate(**_kwargs):
+        user_data["current_pre_tool_text"] = "literal <msg> prefix "
+        return "literal <msg> prefix <msg><text>answer</text></msg>"
+
+    service._run_session_generation = AsyncMock(side_effect=_generate)
+    service._sync_memory_after_success = AsyncMock()
+
+    result = await service.run_primary_session_call(context)
+
+    assert result.pre_tool_text == "literal <msg> prefix "
+    assert result.reply_text == (
+        "literal <msg> prefix <msg><text>answer</text></msg>"
+    )
+
+
+@pytest.mark.asyncio
+async def test_terminal_recovery_history_is_not_duplicated_on_tool_cleanup():
+    """Callback-owned recovery already contains the complete visible turn."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    recovered = "我查一下。最终保留到这里。"
+
+    async def _script(client, message):
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content="我查一下。",
+            )
+        )
+        # RESPONSE_LENGTH_TRUNCATED callback owns this append.
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=recovered)
+        )
+        client.reply_chunks_ref.append(recovered)
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == recovered
+    assert [getattr(row, "content", "") for row in client._conversation_history] == [
+        "hi",
+        recovered,
+    ]
+    assert user_data["current_pre_tool_text"] == "我查一下。"
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_text_creates_history_row_without_a_final_segment():
+    """A pre-tool-only reply must still have one durable assistant row."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("我查一下")
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(result.output_as_json_string())
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
     result = await service._run_session_generation(
         context=_group_context(),
         session_key="group:7788",
@@ -765,26 +957,384 @@ async def test_pre_tool_text_never_reaches_the_outbound_message():
         user_session=client,
         reply_chunks=reply_chunks,
     )
-    assert result == "查到了，是不剧透"
-    assert "我查一下" not in result
+    assert result == "我查一下"
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "我查一下"
 
 
 @pytest.mark.asyncio
-async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
-    """P2 的零执行路径：provider 流出 tool_call 分片但 function.name 始终
-    没到，collect_tool_calls 全部丢弃，handler 一次都不调——真实客户端
-    此时仍会触发 on_tool_round_start（进入 tool 轮的最早信号）。清理只挂
-    handler 入口的话，这条路径上永远清不掉，pre-tool 的"我查一下"会连着
-    forced-finalize 的最终文本一起外发（审计实跑复现过）。"""  # noqa: DOCSTRING_CJK
+async def test_whitespace_pre_tool_text_does_not_create_a_history_row():
+    """Provider-only whitespace must not become a phantom assistant turn."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(), assistant_content="\n",
+            )
+        )
+
+    client = _RecallToolClient(_script)
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=[],
+    )
+    assert result == ""
+    assert [
+        getattr(row, "type", "") for row in client._conversation_history
+    ] == ["human"]
+
+
+@pytest.mark.asyncio
+async def test_repeated_pre_tool_prefix_is_preserved_in_history():
+    """Equal text in separate stream segments must not be deduplicated."""
     plugin = _tool_plugin()
     service = _generation_service(plugin)
 
     async def _script(client, message):
         client.reply_chunks_ref.append("我查一下")
-        # 模拟真实客户端：确认进入 tool 轮即回调，但 handler 从未被调。
-        assert client.on_tool_round_start is not None, (
-            "挂载召回工具的同时必须挂 round-start 回调"
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
         )
+        client._conversation_history.extend(
+            _tool_round_rows(result.output_as_json_string())
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="我查一下，结果是不剧透")
+        )
+        client.reply_chunks_ref.append("我查一下，结果是不剧透")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "我查一下我查一下，结果是不剧透"
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "我查一下我查一下，结果是不剧透"
+
+
+@pytest.mark.asyncio
+async def test_exact_outbound_separator_is_preserved_in_history():
+    """Provider history trimming must not join separate English segments."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("Let me check. ")
+        result = await client.on_tool_call(_recall_tool_call({"query": "rule"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content="Let me check.",
+            )
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="The answer is 42.")
+        )
+        client.reply_chunks_ref.append("The answer is 42.")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "Let me check. The answer is 42."
+    assert client._conversation_history[-1].content == result
+
+
+@pytest.mark.asyncio
+async def test_hidden_pre_tool_reasoning_is_not_persisted():
+    """QQ-only hidden tags must be absent from delivery and shared history."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+    hidden = "<thinking_reasoning>secret</thinking_reasoning>"
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append(hidden)
+        result = await client.on_tool_call(_recall_tool_call({"query": "rule"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(), assistant_content=hidden,
+            )
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert plugin._sanitize_generated_reply(result) == ""
+    assert [
+        getattr(row, "type", "") for row in client._conversation_history
+    ] == ["human"]
+
+
+@pytest.mark.asyncio
+async def test_dangling_thinking_close_uses_full_turn_sanitizer_context():
+    """A hidden prefix must not leak when only the full turn proves it hidden."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+    hidden_prefix = "secret</thinking_reasoning> "
+    final_xml = "<msg><text>answer</text></msg>"
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append(hidden_prefix)
+        await client.on_tool_round_start()
+        result = await client.on_tool_call(
+            _recall_tool_call({"query": "rule"})
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content=hidden_prefix,
+            )
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=final_xml)
+        )
+        client.reply_chunks_ref.append(final_xml)
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert plugin._sanitize_generated_reply(result) == final_xml
+    assert client._conversation_history[-1].content == final_xml
+    assert user_data["current_pre_tool_text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_sanitized_empty_terminal_recovery_is_removed_from_history():
+    """A recovered turn hidden by QQ must not survive only in history."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+    hidden = "<thinking_reasoning>secret</thinking_reasoning>"
+
+    async def _script(client, message):
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        # Terminal RESPONSE_LENGTH_TRUNCATED callback owns both appends.
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=hidden)
+        )
+        client.reply_chunks_ref.append(hidden)
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert plugin._sanitize_generated_reply(result) == ""
+    assert [row.type for row in client._conversation_history] == ["human"]
+    assert user_data["current_turn_ai_row"] is None
+
+
+@pytest.mark.asyncio
+async def test_delayed_thinking_residual_completes_the_tool_boundary():
+    """Persisted tool text fills a prefix emitted after round-start capture."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    residual = "literal <msg> example remains text"
+
+    async def _script(client, message):
+        assert callable(client.on_tool_round_start)
+        await client.on_tool_round_start()
+        # ThinkingStreamStripper.flush() emits this only after the sentinel.
+        client.reply_chunks_ref.append(residual)
+        result = await client.on_tool_call(
+            _recall_tool_call({"query": "rule"})
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content=residual,
+            )
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == residual
+    assert client._conversation_history[-1].content == residual
+    assert user_data["current_pre_tool_text"] == residual
+
+
+@pytest.mark.asyncio
+async def test_discarded_attempt_resets_the_structural_tool_boundary():
+    """A winning non-tool retry must not inherit the rejected tool boundary."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    winning = "literal <msg> example remains text"
+    attempt_state = {"discard_epoch": 0}
+
+    async def _script(client, message):
+        # Rejected attempt entered a tool round after emitting this prefix.
+        client.reply_chunks_ref.append(winning)
+        await client.on_tool_round_start()
+        # on_response_discarded owns both operations; the successful reroll
+        # happens to start with the same text but never enters a tool round.
+        client.reply_chunks_ref.clear()
+        attempt_state["discard_epoch"] += 1
+        client.reply_chunks_ref.append(winning)
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=winning)
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {
+        "lock": asyncio.Lock(),
+        "reply_attempt_state": attempt_state,
+    }
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == winning
+    assert client._conversation_history[-1].content == winning
+    assert user_data["current_pre_tool_text"] == ""
+
+
+@pytest.mark.asyncio
+async def test_terminal_recovery_retains_a_zero_execution_tool_boundary():
+    """Successful truncation recovery stays in the same boundary epoch."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    prefix = "literal <msg> example remains text: "
+    recovered = prefix + "final"
+    attempt_state = {"discard_epoch": 0}
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append(prefix)
+        await client.on_tool_round_start()
+        # Terminal recovery replaces the raw chunks but is not a reroll.
+        client.reply_chunks_ref.clear()
+        client.reply_chunks_ref.append(recovered)
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=recovered)
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {
+        "lock": asyncio.Lock(),
+        "reply_attempt_state": attempt_state,
+    }
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == recovered
+    assert client._conversation_history[-1].content == recovered
+    assert user_data["current_pre_tool_text"] == prefix
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_text_remains_when_no_tool_call_executes():
+    """A nameless tool fragment must not make QQ discard prior model text."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("literal <msg> prefix ")
+        assert callable(client.on_tool_round_start)
         await client.on_tool_round_start()
         client._conversation_history.append(
             SimpleNamespace(type="human", content=message)
@@ -798,17 +1348,17 @@ async def test_pre_tool_text_discarded_even_when_no_tool_call_executes():
     client = _RecallToolClient(_script)
     reply_chunks: list = []
     client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
     result = await service._run_session_generation(
         context=_group_context(),
         session_key="group:7788",
-        user_data={"lock": asyncio.Lock()},
+        user_data=user_data,
         user_session=client,
         reply_chunks=reply_chunks,
     )
-    assert result == "最终回答"
-    assert "我查一下" not in result
-    # 对偶卸载：round-start 闭包攥着本轮的 reply_chunks，越轮存活会清掉
-    # 下一轮的出站缓冲。
+    assert result == "literal <msg> prefix 最终回答"
+    assert client._conversation_history[-1].content == result
+    assert user_data["current_pre_tool_text"] == "literal <msg> prefix "
     assert client.on_tool_round_start is None
     plugin.memory_bridge.query_relevant_memory.assert_not_awaited()
 
@@ -1222,6 +1772,7 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
             self.kwargs = kwargs
             self.base_url = kwargs.get("base_url")
             self.model = kwargs.get("model")
+            self._conversation_history = []
             built.append(self)
 
         async def connect(self, instructions=""):
@@ -1277,6 +1828,52 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     assert created is not stale_entry
     assert created["conversation_route"] == new_route
     assert built and built[-1].base_url == new_route[0]
+
+    # 被 core 判废的 attempt 不得污染下一次重试；成功重试自己的 pre-tool
+    # 仍由同一个 delta 回调原样保留。
+    on_text_delta = built[-1].kwargs["on_text_delta"]
+    on_response_discarded = built[-1].kwargs["on_response_discarded"]
+    await on_text_delta("旧 attempt", True)
+    built[-1]._conversation_history.extend(
+        _tool_round_rows("rejected scoped output")
+    )
+    await on_response_discarded("retry", 1, 3, True, None)
+    assert created["reply_attempt_state"]["discard_epoch"] == 1
+    assert built[-1]._conversation_history == []
+    await on_text_delta("我查", True)
+    await on_text_delta("一下", False)
+    assert created["reply_chunks"] == ["我查", "一下"]
+
+    # reroll 耗尽后的可读截断正文不会再走 on_text_delta；terminal discard
+    # callback 必须以它替换被判废的流式分片，而不是把整轮清成空回复。
+    await on_response_discarded(
+        "length>300",
+        3,
+        3,
+        False,
+        json.dumps({
+            "code": "RESPONSE_LENGTH_TRUNCATED",
+            "text": "保留到最后一个完整句子。",
+        }),
+    )
+    assert created["reply_attempt_state"]["discard_epoch"] == 1
+    assert created["reply_chunks"] == ["保留到最后一个完整句子。"]
+    assert [row.content for row in built[-1]._conversation_history] == [
+        "保留到最后一个完整句子。"
+    ]
+
+    await on_text_delta("故障前半句", True)
+    await on_response_discarded(
+        "text_gen_error",
+        1,
+        1,
+        False,
+        json.dumps({
+            "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
+            "text": "不可当作恢复正文",
+        }),
+    )
+    assert created["reply_chunks"] == []
 
     # 线路一致的下一轮：原样复用，不再重建。
     discard.reset_mock()

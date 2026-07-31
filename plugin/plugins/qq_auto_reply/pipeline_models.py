@@ -206,6 +206,9 @@ class QQReplyContext:
 @dataclass(slots=True)
 class QQModelResult:
     reply_text: str | None = None
+    # Exact visible prefix emitted before the tool-call turn. Postprocess uses
+    # this structural boundary instead of guessing from literal <msg> text.
+    pre_tool_text: str = ""
     source: str = "none"
     used_fallback: bool = False
     timed_out: bool = False
@@ -277,6 +280,8 @@ class QQReplyOutcome:
     # mark the previous (delivered) reply as an undelivered draft.
     used_fallback: bool = False
     raw_reply_text: str | None = None
+    pre_tool_text: str = ""
+    wait_directive_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
     relay_plan: QQRelayPlan | None = None

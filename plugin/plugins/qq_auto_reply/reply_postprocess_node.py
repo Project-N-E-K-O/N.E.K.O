@@ -11,6 +11,36 @@ class QQReplyPostprocessNode:
         self.plugin = plugin
 
     @staticmethod
+    def _clean_dynamic_prefix(text: str) -> str:
+        """Remove dynamic-format directives surrounding a literal prefix."""
+        import re as _re
+
+        cleaned = _re.sub(
+            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
+            "",
+            text,
+            flags=_re.IGNORECASE,
+        )
+        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
+        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
+        cleaned = _re.sub(
+            r"```(?:xml)?\s*$", "", cleaned, flags=_re.IGNORECASE,
+        )
+        return cleaned.strip()
+
+    @staticmethod
+    def _split_dynamic_xml(text: str) -> tuple[str, str] | None:
+        """Separate literal assistant text from the dynamic XML document."""
+        import re as _re
+
+        msg_start = _re.search(r"<msg(?:\s|>)", text)
+        if msg_start is None:
+            return None
+        leading_raw = text[:msg_start.start()]
+        xml_text = _re.sub(r"\s*```\s*$", "", text[msg_start.start():])
+        return QQReplyPostprocessNode._clean_dynamic_prefix(leading_raw), xml_text
+
+    @staticmethod
     def _parse_blocks(raw_text: str) -> list[QQMessageBlock]:
         """KiraAI-style `<msg>` 块解析器。将 LLM 输出解析为消息块列表。
 
@@ -34,17 +64,31 @@ class QQReplyPostprocessNode:
             block = QQMessageBlock(text=text)
             return [block] if text else []
 
+        # pre-tool 是 XML 文档外的普通文本，必须先切出来；若把它一起交给
+        # ElementTree，模型自然输出的未转义 < / & 会让整个结构降级失败。
+        import re as _re
+        dynamic_parts = QQReplyPostprocessNode._split_dynamic_xml(text)
+        if dynamic_parts is None:
+            return [QQMessageBlock(text=text)]
+        leading_text, xml_text = dynamic_parts
+
         # XML 解析
         try:
-            root = ET.fromstring(f"<root>{text}</root>")
+            root = ET.fromstring(f"<root>{xml_text}</root>")
         except ET.ParseError:
             # 解析失败 → 回退纯文本（去除 XML 标签）
-            import re as _re
-            clean = _re.sub(r"<[^>]+>", "", text).strip()
-            block = QQMessageBlock(text=clean or text)
-            return [block] if (clean or text) else []
+            clean = _re.sub(r"<[^>]+>", "", xml_text).strip()
+            blocks = []
+            if leading_text:
+                blocks.append(QQMessageBlock(text=leading_text))
+            if clean:
+                blocks.append(QQMessageBlock(text=clean))
+            return blocks or [QQMessageBlock(text=text)]
 
         blocks: list[QQMessageBlock] = []
+        if leading_text:
+            blocks.append(QQMessageBlock(text=leading_text))
+
         for msg_el in root.findall("msg"):
             block = QQMessageBlock()
 
@@ -207,6 +251,19 @@ class QQReplyPostprocessNode:
     async def finalize(self, context: QQReplyContext, model_result: QQModelResult) -> QQReplyOutcome:
         raw_reply_text = model_result.reply_text or ""
         reply_text = self.plugin._sanitize_generated_reply(raw_reply_text)
+        known_pre_tool = str(
+            getattr(model_result, "pre_tool_text", "") or ""
+        )
+        structural_pre_tool = (
+            known_pre_tool
+            if known_pre_tool and reply_text.startswith(known_pre_tool)
+            else ""
+        )
+        wait_directive_text = (
+            reply_text[len(structural_pre_tool):]
+            if structural_pre_tool
+            else reply_text
+        )
         if raw_reply_text and not reply_text:
             self.plugin._emit_log("INFO", f"[Sanitize] {len(raw_reply_text)}字被清除: {raw_reply_text[:100]}")
 
@@ -220,13 +277,41 @@ class QQReplyPostprocessNode:
             if wm:
                 # 保留 raw_reply_text 中的 <wait> 标签（不清理），让 buffer 能读到
                 pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
-            blocks = self._parse_blocks(reply_text)
-            # 如果解析失败（只得到一个纯文本块且原文字含 XML 标签），尝试 LLM 修复
-            if len(blocks) == 1 and blocks[0].text and ("<msg>" in reply_text or "</msg>" in reply_text):
-                repaired = await self._repair_xml(reply_text)
+            explicit_prefix = ""
+            parse_text = reply_text
+            if structural_pre_tool:
+                # 这是 core 在真实 tool-round start 捕获的模型文本，不是
+                # dynamic XML 的格式前缀。完整 Markdown 围栏、<wait> 等
+                # 字面内容都属于助手输出，不能再用启发式清理器裁剪。
+                explicit_prefix = structural_pre_tool.strip()
+                parse_text = reply_text[len(structural_pre_tool):]
+
+            dynamic_parts = self._split_dynamic_xml(parse_text)
+            parse_failed = dynamic_parts is None and "</msg>" in parse_text
+            broken_xml = parse_text if parse_failed else ""
+            if dynamic_parts is not None:
+                try:
+                    ET.fromstring(f"<root>{dynamic_parts[1]}</root>")
+                except ET.ParseError:
+                    parse_failed = True
+                    broken_xml = dynamic_parts[1]
+            blocks = self._parse_blocks(parse_text)
+            if explicit_prefix:
+                blocks.insert(0, QQMessageBlock(text=explicit_prefix))
+            # 解析失败必须显式进入修复；带 pre-tool 时 fallback 会产生两个
+            # 纯文本块，不能再用 len(blocks) == 1 猜测解析状态。
+            if parse_failed:
+                leading_text = dynamic_parts[0] if dynamic_parts else ""
+                repaired = await self._repair_xml(broken_xml)
                 if repaired:
-                    blocks = self._parse_blocks(repaired)
-                    if blocks:
+                    repaired_blocks = self._parse_blocks(repaired)
+                    if repaired_blocks:
+                        prefix_blocks = [
+                            QQMessageBlock(text=value)
+                            for value in (explicit_prefix, leading_text)
+                            if value
+                        ]
+                        blocks = prefix_blocks + repaired_blocks
                         reply_text = repaired
             # 构建人类可读的 reply_text（首个块的文本）
             first_text = blocks[0].text if blocks else ""
@@ -237,6 +322,8 @@ class QQReplyPostprocessNode:
                 action="reply",
                 reply_text=reply_text,
                 raw_reply_text=raw_reply_text,
+                pre_tool_text=structural_pre_tool,
+                wait_directive_text=wait_directive_text,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
@@ -246,6 +333,8 @@ class QQReplyPostprocessNode:
                 action="reply",
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
+                pre_tool_text=structural_pre_tool,
+                wait_directive_text=wait_directive_text,
                 postprocess_reason="empty",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
@@ -256,6 +345,8 @@ class QQReplyPostprocessNode:
                 action="reply",
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
+                pre_tool_text=structural_pre_tool,
+                wait_directive_text=wait_directive_text,
                 postprocess_reason="llm_skip",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
@@ -266,6 +357,8 @@ class QQReplyPostprocessNode:
             reply_text=self.plugin.i18n.t("messages.default_no_reply", default="嗯嗯~"),
             used_default_message=True,
             raw_reply_text=raw_reply_text,
+            pre_tool_text=structural_pre_tool,
+            wait_directive_text=wait_directive_text,
             postprocess_reason="default",
             used_fallback=bool(getattr(model_result, "used_fallback", False)),
         )

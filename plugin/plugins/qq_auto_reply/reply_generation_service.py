@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from typing import Any, Optional
+from typing import Any, Awaitable, Callable, Optional
 
 from main_logic.omni_offline_client import route_supports_tool_calls
 from main_logic.tool_calling import ToolResult
-from utils.llm_client import SystemMessage, create_chat_llm_async
+from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS
@@ -137,6 +137,9 @@ class QQReplyGenerationService:
                     user_session=user_session,
                     reply_chunks=reply_chunks,
                 )
+                pre_tool_text = str(
+                    user_data.pop("current_pre_tool_text", "") or ""
+                )
             finally:
                 # 成员发言的收集绑定"会话已接受该 human 行"（stream_text 在
                 # 发起网络流之前就把它追加进历史），不绑回复非空、也不绑
@@ -179,6 +182,7 @@ class QQReplyGenerationService:
             stage_trace.metadata["reply_length"] = len(ai_reply)
             return QQModelResult(
                 reply_text=ai_reply,
+                pre_tool_text=pre_tool_text,
                 source="session",
                 history_ai_row=user_data.get("current_turn_ai_row"),
                 traces=[stage_trace],
@@ -235,6 +239,7 @@ class QQReplyGenerationService:
     ) -> str | None:
         async with user_data["lock"]:
             reply_chunks.clear()
+            user_data["current_pre_tool_text"] = ""
 
             queued_images = await self.plugin._queue_attachment_images(user_session, context.attachments)
             self.plugin.logger.info(f"发送消息到 AI (会话: {session_key}, length: {len(context.prompt_message)}, images: {queued_images})")
@@ -261,6 +266,21 @@ class QQReplyGenerationService:
             # 成员记忆。
             user_data["human_row_accepted"] = False
             user_data["human_row_materialized"] = False
+            reply_attempt_state = user_data.setdefault(
+                "reply_attempt_state", {"discard_epoch": 0},
+            )
+            tool_round_epoch: int | None = None
+            raw_pre_tool_text = ""
+
+            async def _capture_tool_round_start() -> None:
+                nonlocal tool_round_epoch, raw_pre_tool_text
+                current_epoch = int(
+                    reply_attempt_state.get("discard_epoch", 0) or 0
+                )
+                if tool_round_epoch != current_epoch:
+                    tool_round_epoch = current_epoch
+                    raw_pre_tool_text = "".join(reply_chunks)
+
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 # 私聊会话的 prompt 是建会话时烙进去的：跨群授权打开时建的
@@ -294,9 +314,10 @@ class QQReplyGenerationService:
             armed_recall_tool = self._arm_recall_tool(
                 context=context,
                 user_session=user_session,
-                reply_chunks=reply_chunks,
                 consent_before=consent_before,
+                on_tool_round_start=_capture_tool_round_start,
             )
+            generation_completed = False
             try:
                 turn_timeout = self.plugin._ai_turn_timeout_seconds
                 if armed_recall_tool:
@@ -342,39 +363,56 @@ class QQReplyGenerationService:
                     # 在抢救前就没了（原本也是双重 discard）。
                     self.plugin.logger.warning(f"会话 {session_key} 响应超时，关闭并丢弃该会话")
                     raise asyncio.TimeoutError
+                generation_completed = True
             finally:
                 if armed_recall_tool:
                     # 按轮挂载的对偶收尾：工具与 handler 不得越轮存活——
                     # 同一 client 上的其他生成路径（proactive 的
                     # prompt_ephemeral 等）绝不能带着本轮的 subject 闭包
                     # 发起召回。
-                    try:
-                        # round-start 先清：它的闭包攥着本轮的 reply_chunks，
-                        # 越轮存活会清掉下一轮的出站缓冲，而且下一轮在
-                        # _arm_recall_tool 的早退路径（recall_via_tool 关闭、
-                        # 线路不支持 tool call）上不会覆盖这个槽位——排最前
-                        # 保证前两个卸载万一抛异常也连累不到它。
-                        set_round_start = getattr(
+                    for clear_slot in (
+                        user_session.set_tools,
+                        user_session.set_tool_call_handler,
+                        getattr(
                             user_session,
-                            "set_tool_round_start_callback", None,
-                        )
-                        if callable(set_round_start):
-                            set_round_start(None)
-                        user_session.set_tools(None)
-                        user_session.set_tool_call_handler(None)
-                    except Exception:
-                        # 卸载失败不能连累收尾（下面还有历史清理与成员轮
-                        # 记录），下一轮挂载会整体覆盖这两个槽位。
-                        pass
+                            "set_tool_round_start_callback",
+                            None,
+                        ),
+                    ):
+                        if not callable(clear_slot):
+                            continue
+                        try:
+                            clear_slot(None)
+                        except Exception:
+                            # 单个卸载失败不能阻止另一槽位复位，也不能连累
+                            # 下面的历史清理与成员轮记录。
+                            pass
                 restore_session_prompt()
                 history_now = getattr(user_session, "_conversation_history", []) or []
                 if isinstance(history_now, list):
                     # tool 轮写进共享历史的裸 dict 行随轮清理：召回原文是按
                     # consent 域临时授权给本轮的，语义与旧管线的"prompt 注入
                     # + restore"一致——留在共享历史里会进 digest、进后续每轮
-                    # 的上下文，member 撤销后也无法再摘除。模型的最终回答行
-                    # （引用了召回结论的那条 ai 行）照常保留。
-                    self._strip_tool_round_rows(history_now, history_before)
+                    # 的上下文，member 撤销后也无法再摘除。assistant tool-call
+                    # 行里的 pre-tool 可见文本先折叠进最终 ai 行，再删掉携带
+                    # tool metadata 的裸 dict，保证用户看到的文本与后续上下文
+                    # 一致。
+                    _, current_pre_tool_text = self._strip_tool_round_rows(
+                        history_now,
+                        history_before,
+                        create_missing_ai_row=generation_completed,
+                        outbound_text="".join(reply_chunks),
+                        raw_pre_tool_text=(
+                            raw_pre_tool_text
+                            if tool_round_epoch == int(
+                                reply_attempt_state.get(
+                                    "discard_epoch", 0,
+                                ) or 0
+                            )
+                            else None
+                        ),
+                    )
+                    user_data["current_pre_tool_text"] = current_pre_tool_text
                 appended = list(history_now)[history_before:]
                 human_row_materialized = any(
                     getattr(row, "type", "") == "human" for row in appended
@@ -416,8 +454,8 @@ class QQReplyGenerationService:
         *,
         context: Any,
         user_session: Any,
-        reply_chunks: list[str],
         consent_before: dict,
+        on_tool_round_start: Callable[[], Awaitable[None]] | None = None,
     ) -> bool:
         """Install this turn's recall_memory tool + handler on the client.
 
@@ -433,6 +471,9 @@ class QQReplyGenerationService:
             return False
         set_tools = getattr(user_session, "set_tools", None)
         set_handler = getattr(user_session, "set_tool_call_handler", None)
+        set_round_start = getattr(
+            user_session, "set_tool_round_start_callback", None,
+        )
         if not callable(set_tools) or not callable(set_handler):
             return False
         if not route_supports_tool_calls(
@@ -443,55 +484,45 @@ class QQReplyGenerationService:
                 "缓存会话的线路不支持 tool call，本轮无召回（会话重建后恢复）"
             )
             return False
-        set_round_start = getattr(
-            user_session, "set_tool_round_start_callback", None,
-        )
         try:
             set_tools([
                 self.plugin.memory_tool_service.build_recall_tool_definition()
             ])
             set_handler(self._build_recall_tool_handler(
                 context=context,
-                reply_chunks=reply_chunks,
                 consent_before=consent_before,
             ))
-            if callable(set_round_start):
-                # pre-tool 文本清理的主锚点：客户端在确认进入 tool 轮的最早
-                # 时刻回调（早于 handler，且覆盖"分片全是空 name、handler
-                # 一次都不调"的路径——那条路径上只挂 handler 入口的清理永远
-                # 不会发生，pre-tool 的"我查一下"会被 forced-finalize 的
-                # 文本接在后面一起外发）。handler 入口的 clear 保留作幂等
-                # 兜底。
-                async def _on_tool_round_start() -> None:
-                    reply_chunks.clear()
-
-                set_round_start(_on_tool_round_start)
+            if on_tool_round_start is not None and callable(set_round_start):
+                set_round_start(on_tool_round_start)
             return True
         except Exception as exc:
             self.plugin.logger.warning(
                 f"recall_memory 工具挂载失败（本轮无召回）: {exc}"
             )
-            try:
-                set_tools(None)
-                set_handler(None)
-                if callable(set_round_start):
-                    set_round_start(None)
-            except Exception:
-                # 挂载半途失败后的兜底清理：清不掉也只影响本轮（返回
-                # False 已宣布未挂载），finally 不会再动这两个槽位。
-                pass
+            # 各槽位独立做 best-effort 清理：任一个卸载失败都不能阻止
+            # 其他槽位复位，否则返回 False 后可能把半挂载状态带到下一轮。
+            clear_slots = [set_tools, set_handler]
+            if on_tool_round_start is not None and callable(set_round_start):
+                clear_slots.append(set_round_start)
+            for clear_slot in clear_slots:
+                try:
+                    clear_slot(None)
+                except Exception:
+                    # 这里只能 best-effort：原始挂载异常必须保持为本轮降级，
+                    # 单个槽位拒绝复位也不能阻止另一槽位继续清理。
+                    pass
             return False
 
     def _build_recall_tool_handler(
-        self, *, context: Any, reply_chunks: list[str], consent_before: dict,
+        self, *, context: Any, consent_before: dict,
     ):
         """This turn's recall_memory execution closure.
 
         Subjects never come from the model: ``execute_recall`` derives
         them from the turn context (the server reads an omitted subjects
-        field as the legacy PRIVATE corpus). The closure also owns two
-        pieces of turn plumbing — outbound-text hygiene and the runtime
-        consent record.
+        field as the legacy PRIVATE corpus). The closure also owns the
+        runtime consent record. Model-authored pre-tool text is ordinary
+        assistant output and remains in the outbound buffer.
         """
 
         # 一轮一次召回的闸在 handler 层：max_tool_iterations=1 只限 LLM/
@@ -503,11 +534,6 @@ class QQReplyGenerationService:
         recall_executed = [False]
 
         async def _handle_recall_tool(tool_call: Any) -> ToolResult:
-            # pre-tool 文本（"我查一下"之类）不得外发：走到这里说明本轮
-            # 进入了 tool 轮，之前流出的增量已由客户端写进 history 的
-            # assistant tool_calls 行（随后与本轮其余 tool 行一并清理），
-            # 出站文本只保留 post-tool 的最终回答。
-            reply_chunks.clear()
             tool_service = self.plugin.memory_tool_service
             arguments = getattr(tool_call, "arguments", None) or {}
             substantive = tool_service.has_recall_arguments(arguments)
@@ -561,9 +587,16 @@ class QQReplyGenerationService:
             role == "assistant" and bool(row.get("tool_calls"))
         )
 
-    @classmethod
-    def _strip_tool_round_rows(cls, history: list, start_index: int) -> int:
-        """Remove this turn's tool-round dict rows from shared history.
+    def _strip_tool_round_rows(
+        self,
+        history: list,
+        start_index: int,
+        *,
+        create_missing_ai_row: bool = False,
+        outbound_text: str = "",
+        raw_pre_tool_text: str | None = None,
+    ) -> tuple[int, str]:
+        """Fold visible pre-tool text into the final AI row, then remove tool rows.
 
         Only rows appended at or after ``start_index`` are considered —
         the rows sit BETWEEN the human row and the final ai row, so this
@@ -571,12 +604,105 @@ class QQReplyGenerationService:
         guard can reset the history to shorter than ``start_index``; the
         range is then empty and nothing is touched.
         """
+        start = max(start_index, 0)
+        assistant_tool_rows = [
+            row for row in history[start:]
+            if (
+                isinstance(row, dict)
+                and row.get("role") == "assistant"
+                and row.get("tool_calls")
+                and isinstance(row.get("content"), str)
+            )
+        ]
+        persisted_pre_tool_text = "".join(
+            str(row.get("content") or "") for row in assistant_tool_rows
+        )
+        final_ai_row = next(
+            (
+                row for row in reversed(history[start:])
+                if getattr(row, "type", "") == "ai"
+            ),
+            None,
+        )
+        final_content = getattr(final_ai_row, "content", None)
+        structural_boundary = (
+            raw_pre_tool_text is not None or bool(assistant_tool_rows)
+        )
+        boundary_source = (
+            raw_pre_tool_text
+            if raw_pre_tool_text is not None
+            else persisted_pre_tool_text
+        )
+        if (
+            raw_pre_tool_text is not None
+            and len(persisted_pre_tool_text) > len(raw_pre_tool_text)
+            and persisted_pre_tool_text.startswith(raw_pre_tool_text)
+            and outbound_text.startswith(persisted_pre_tool_text)
+        ):
+            # Focus 的 thinking stripper 会在 core 发出 tool sentinel 后才
+            # flush 被延迟的可见 residual；round-start callback 因而可能只
+            # 捕获到真实 prefix 的前半段（最窄情况是空串）。provider 已将
+            # 完整 prefix 写入 assistant tool row，可与真实 outbound 对齐时
+            # 用它补齐结构边界，仍不修改或丢弃任何模型文本。
+            boundary_source = persisted_pre_tool_text
+        raw_final_text = ""
+        if (
+            boundary_source is not None
+            and outbound_text.startswith(boundary_source)
+        ):
+            raw_final_text = outbound_text[len(boundary_source):]
+        elif (
+            isinstance(final_content, str)
+            and final_content
+            and outbound_text.endswith(final_content)
+        ):
+            raw_final_text = final_content
+
+        # QQ 的 sanitizer 对 dangling thinking close tag 是整轮上下文相关的：
+        # 单独清洗 prefix 会把本应随 close tag 一起丢弃的内容重新泄进 history。
+        # 因此先清洗真实完整出站，再减去同规则清洗后的最终段，所得才是
+        # 用户实际可见的结构前缀；内部空白也会原样保留为段间分隔符。
+        sanitize = getattr(self.plugin, "_sanitize_generated_reply", None)
+        if callable(sanitize):
+            visible_outbound = str(sanitize(outbound_text) or "")
+            visible_final = str(sanitize(raw_final_text) or "")
+        else:
+            visible_outbound = outbound_text
+            visible_final = raw_final_text
+        if visible_final and visible_outbound.endswith(visible_final):
+            boundary_pre_tool_text = visible_outbound[:-len(visible_final)]
+        elif not visible_final:
+            boundary_pre_tool_text = visible_outbound
+        else:
+            boundary_pre_tool_text = ""
+
+        # 共享历史以 QQ 最终可见的整轮文本为准；只有纯空白时不凭空合成
+        # 一条用户没有看到的 AI 行。
+        if final_ai_row is not None and not visible_outbound.strip():
+            # terminal truncation callback 会先把 raw recovery 写入 history；
+            # 若整轮经 QQ sanitizer 后没有任何可见文本，这行既未投递也不
+            # 能进入后续上下文/记忆。按对象身份删除，避免误删等值旧行。
+            for index in range(len(history) - 1, start - 1, -1):
+                if history[index] is final_ai_row:
+                    del history[index]
+                    break
+        elif visible_outbound.strip():
+            if final_ai_row is None and create_missing_ai_row:
+                history.append(AIMessage(content=visible_outbound))
+            elif final_ai_row is not None:
+                final_ai_row.content = visible_outbound
+
         removed = 0
-        for index in range(len(history) - 1, max(start_index, 0) - 1, -1):
-            if cls._is_tool_round_row(history[index]):
+        for index in range(len(history) - 1, start - 1, -1):
+            if self._is_tool_round_row(history[index]):
                 del history[index]
                 removed += 1
-        return removed
+        return (
+            removed,
+            boundary_pre_tool_text
+            if structural_boundary and boundary_pre_tool_text.strip()
+            else "",
+        )
 
     async def _run_memory_housekeeping(
         self, session_key: str, user_data: dict[str, Any],

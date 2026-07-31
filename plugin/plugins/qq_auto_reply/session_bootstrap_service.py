@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Optional
 
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.config_manager import get_config_manager
+from utils.llm_client import AIMessage
 
 from .pipeline_models import QQReplyContext
 
@@ -165,15 +167,73 @@ class QQSessionBootstrapService:
             model = conversation_config.get("model", "")
 
             reply_chunks: list[str] = []
+            reply_attempt_state = {"discard_epoch": 0}
 
             async def on_text_delta(text: str, is_first: bool):
                 reply_chunks.append(text)
+
+            def _drop_rejected_tool_rows() -> None:
+                history = getattr(user_session, "_conversation_history", None)
+                if not isinstance(history, list):
+                    return
+                for index in range(len(history) - 1, -1, -1):
+                    row = history[index]
+                    if getattr(row, "type", "") == "human":
+                        break
+                    if isinstance(row, dict) and (
+                        row.get("role") == "tool"
+                        or (
+                            row.get("role") == "assistant"
+                            and bool(row.get("tool_calls"))
+                        )
+                    ):
+                        del history[index]
+
+            async def on_response_discarded(
+                reason: str,
+                attempt: int,
+                max_attempts: int,
+                will_retry: bool,
+                message: str | None,
+            ):
+                recovered = None
+                if not will_retry and message:
+                    try:
+                        payload = json.loads(message)
+                    except (TypeError, ValueError):
+                        payload = None
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("code") == "RESPONSE_LENGTH_TRUNCATED"
+                    ):
+                        candidate = payload.get("text")
+                        if isinstance(candidate, str) and candidate.strip():
+                            recovered = candidate
+
+                # core 已判定当前流式分片不可直接投递；终态截断的 recovered
+                # text 是同一 attempt 的合法成功输出，只替换 buffer，不得让
+                # epoch 失效。真正 reroll/终态失败才推进 epoch，并删除该失败
+                # attempt 已经 inline 持久化的 assistant/tool 裸行。
+                reply_chunks.clear()
+                if recovered is not None:
+                    # 终态截断正文不会再经 on_text_delta 重发；callback
+                    # 就是它唯一的交付与入史通道，因此两边同步替换。
+                    reply_chunks.append(recovered)
+                    history = getattr(
+                        user_session, "_conversation_history", None
+                    )
+                    if isinstance(history, list):
+                        history.append(AIMessage(content=recovered))
+                    return
+                reply_attempt_state["discard_epoch"] += 1
+                _drop_rejected_tool_rows()
 
             user_session = OmniOfflineClient(
                 base_url=base_url,
                 api_key=api_key,
                 model=model,
                 on_text_delta=on_text_delta,
+                on_response_discarded=on_response_discarded,
                 # 一轮只允许一次召回：与旧的每轮同步召回同预算，也压住
                 # 工具轮的最坏超时（每多一次迭代就多一整段 LLM 流，而这里
                 # 超时的代价是丢弃整个共享群会话）。封顶后 forced-finalize
@@ -188,6 +248,7 @@ class QQSessionBootstrapService:
             created = {
                 "session": user_session,
                 "reply_chunks": reply_chunks,
+                "reply_attempt_state": reply_attempt_state,
                 "her_name": context.her_name,
                 # 创建时刻的会话线路指纹：复用判据拿它与当前配置比对（绝不
                 # 读 client 现值——图片轮会把 client 合法地切到 vision 模型，

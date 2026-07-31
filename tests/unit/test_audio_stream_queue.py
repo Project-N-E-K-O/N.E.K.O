@@ -493,6 +493,7 @@ async def test_independent_audio_route_precedes_omni_websocket_checks():
         sample_rate_hz=16_000,
         speech_probability=0.8,
         rnnoise_available=True,
+        rnnoise_evidence=None,
         ingress_token=token,
     )
     mgr.session.stream_audio.assert_not_awaited()
@@ -530,6 +531,7 @@ async def test_independent_audio_route_does_not_require_omni_session_container()
         sample_rate_hz=16_000,
         speech_probability=0.5,
         rnnoise_available=True,
+        rnnoise_evidence=None,
         ingress_token=token,
     )
     mgr.start_session.assert_not_awaited()
@@ -600,6 +602,7 @@ async def test_hot_swap_flush_preserves_identity_and_detector_metadata():
         sample_rate_hz=16_000,
         speech_probability=0.75,
         rnnoise_available=True,
+        rnnoise_evidence=None,
         ingress_token=token,
     )
     mgr.session.stream_audio.assert_not_awaited()
