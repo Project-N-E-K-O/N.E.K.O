@@ -86,6 +86,17 @@ def _assert_prompt_locale_writable(target: str) -> None:
     )
 
 
+def _prompt_locale_write_transaction(target: str):
+    from utils.cloudsave_runtime import cloudsave_writable_transaction
+    from utils.config_manager import get_config_manager
+
+    return cloudsave_writable_transaction(
+        get_config_manager(),
+        operation="save",
+        target=target,
+    )
+
+
 def _subject_locale_key(subject) -> str:
     from memory.scopes import coerce_subject
 
@@ -176,15 +187,12 @@ def _persist_locale_state_unlocked(
             },
             ensure_ascii=False,
         )
-        with _locale_cache_guard:
-            if generation != _locale_cache_generation:
-                return
-            # Re-check the cloud-save fence immediately before the final
-            # replace. A writer may have passed the caller's fence check before
-            # a restore started, while its staged write was still in flight.
-            _assert_prompt_locale_writable("prompt_locale.json")
-            os.replace(staging_path, path)
-            _locale_cache[name] = (language, order, reserved_order)
+        with _prompt_locale_write_transaction("prompt_locale.json"):
+            with _locale_cache_guard:
+                if generation != _locale_cache_generation:
+                    return
+                os.replace(staging_path, path)
+                _locale_cache[name] = (language, order, reserved_order)
     except Exception as exc:
         logger.warning(
             "[PromptLocale] %s: persist failed: %s",
@@ -273,12 +281,12 @@ def _persist_subject_locale_state_unlocked(
             },
             ensure_ascii=False,
         )
-        with _locale_cache_guard:
-            if generation != _locale_cache_generation:
-                return
-            _assert_prompt_locale_writable("scoped_prompt_locales.json")
-            os.replace(staging_path, path)
-            _subject_locale_cache[name] = snapshot
+        with _prompt_locale_write_transaction("scoped_prompt_locales.json"):
+            with _locale_cache_guard:
+                if generation != _locale_cache_generation:
+                    return
+                os.replace(staging_path, path)
+                _subject_locale_cache[name] = snapshot
     except Exception as exc:
         logger.warning(
             "[PromptLocale] %s: scoped locale persist failed: %s",

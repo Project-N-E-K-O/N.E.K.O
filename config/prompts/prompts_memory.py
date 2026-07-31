@@ -2861,8 +2861,24 @@ Retorne JSON com os campos nesta ordem exata:
 }
 
 
+REFLECTION_RELATED_CONTEXT_NOTE = {
+    "zh": "仅供参考，本轮不要为它们单独产出 reflection",
+    "zh-TW": "僅供參考，本輪不要為它們單獨產出 reflection",
+    "en": "Reference only; do not produce separate reflections for them in this pass.",
+    "ja": "参考用です。この処理では、これらについて個別に reflection を生成しないでください。",
+    "ko": "참고용입니다. 이번 처리에서는 이 항목들에 대한 별도의 reflection을 생성하지 마세요.",
+    "ru": "Только для справки; в этом проходе не создавайте для них отдельные reflection.",
+    "pt": "Apenas para referência; nesta rodada, não produza reflections separadas para eles.",
+    "es": "Solo como referencia; en esta pasada, no produzcas reflections separadas para ellos.",
+}
+
+
 def get_reflection_prompt(lang: str = "zh") -> str:
     return _loc(REFLECTION_PROMPT, lang)
+
+
+def get_reflection_related_context_note(lang: str = "zh") -> str:
+    return _loc(REFLECTION_RELATED_CONTEXT_NOTE, lang)
 
 
 reflection_prompt = REFLECTION_PROMPT["zh"]

@@ -957,6 +957,59 @@ def test_cloud_apply_fence_does_not_restore_over_a_concurrent_storage_mode_write
 
 
 @pytest.mark.unit
+def test_cloud_apply_fence_waits_for_writable_transaction(tmp_path):
+    import threading
+
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        cloud_apply_fence,
+        cloudsave_writable_transaction,
+    )
+
+    write_entered = threading.Event()
+    release_write = threading.Event()
+    fence_entered = threading.Event()
+    errors = []
+
+    def writer():
+        try:
+            with cloudsave_writable_transaction(
+                cm,
+                operation="save",
+                target="prompt_locale.json",
+            ):
+                write_entered.set()
+                assert release_write.wait(5)
+        except Exception as exc:
+            errors.append(exc)
+
+    def fenced_restore():
+        try:
+            with cloud_apply_fence(cm):
+                fence_entered.set()
+        except Exception as exc:
+            errors.append(exc)
+
+    writer_thread = threading.Thread(target=writer)
+    writer_thread.start()
+    assert write_entered.wait(5)
+
+    fence_thread = threading.Thread(target=fenced_restore)
+    fence_thread.start()
+    assert not fence_entered.wait(0.1)
+
+    release_write.set()
+    writer_thread.join(5)
+    fence_thread.join(5)
+
+    assert errors == []
+    assert not writer_thread.is_alive()
+    assert not fence_thread.is_alive()
+    assert fence_entered.is_set()
+
+
+@pytest.mark.unit
 def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     cm = _make_config_manager(tmp_path)
 

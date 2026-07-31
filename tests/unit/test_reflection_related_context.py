@@ -109,6 +109,28 @@ async def test_happy_path_renders_watermarked_block():
 
 
 @pytest.mark.asyncio
+async def test_happy_path_localizes_traditional_context_instruction():
+    engine = _make_engine([
+        {"id": "f1", "text": "已吸收事實", "absorbed": True, "importance": 7},
+    ])
+    mock_reranker = MagicMock()
+    mock_reranker.aretrieve_per_query_topk = AsyncMock(return_value=[
+        {"id": "f1", "text": "已吸收事實", "importance": 7},
+    ])
+    with patch("memory.embeddings.get_embedding_service", return_value=_enabled_service()), \
+         patch("memory.embeddings.is_cached_embedding_valid", return_value=True), \
+         patch("memory.recall.MemoryRecallReranker", return_value=mock_reranker):
+        block = await engine._build_related_context_block(
+            "小天",
+            [{"id": "f2", "text": "新事實"}],
+            prompt_lang="zh-TW",
+        )
+
+    assert "僅供參考，本輪不要為它們單獨產出 reflection" in block
+    assert "仅供参考" not in block
+
+
+@pytest.mark.asyncio
 async def test_returns_empty_when_all_absorbed_facts_lack_valid_embedding():
     """Codex P2 #1392：fact 没 valid embedding 时 reranker 会 fallback 到
     evidence_score 排序，fact 又没 score 字段 → 注入近随机的历史 fact 当

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from contextlib import contextmanager
 
 import pytest
 
@@ -1370,7 +1371,7 @@ async def test_post_turn_counter_stays_on_loop_and_locale_persistence_offloads(
     events = []
 
     async def fake_to_thread(function, *args, **kwargs):
-        assert events == ["counter"]
+        assert events == []
         calls.append((function, args, kwargs))
         return function(*args, **kwargs)
 
@@ -1408,7 +1409,43 @@ async def test_post_turn_counter_stays_on_loop_and_locale_persistence_offloads(
             {"language": "zh-TW", "locale_order": 123},
         ),
     ]
-    assert events == ["counter", "locale"]
+    assert events == ["locale", "counter"]
+
+
+@pytest.mark.asyncio
+async def test_post_turn_locale_failure_still_exposes_signal_counter(monkeypatch):
+    from app.memory_server import gates, post_turn, signal_extraction
+    from utils.llm_client import HumanMessage
+
+    events = []
+
+    async def fail_to_thread(*_args, **_kwargs):
+        events.append("locale_failed")
+        raise OSError("disk unavailable")
+
+    class StopAfterLocale(Exception):
+        pass
+
+    async def stop_after_locale():
+        raise StopAfterLocale
+
+    monkeypatch.setattr(post_turn.asyncio, "to_thread", fail_to_thread)
+    monkeypatch.setattr(
+        signal_extraction,
+        "_signal_check_record_turn",
+        lambda *_args, **_kwargs: events.append("counter"),
+    )
+    monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", stop_after_locale)
+
+    with pytest.raises(StopAfterLocale):
+        await post_turn._run_post_turn_signals(
+            [HumanMessage(content="我喜歡貓")],
+            "Neko",
+            language="zh-TW",
+            locale_order=123,
+        )
+
+    assert events == ["locale_failed", "counter"]
 
 
 @pytest.mark.asyncio
@@ -2018,6 +2055,58 @@ def test_locale_order_reservation_survives_clock_rollback(monkeypatch, tmp_path)
     )
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_final_replace_holds_cloud_write_transaction(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    path_helper = "_subject_locale_path" if scoped else "_locale_path"
+    expected_target = (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    active = False
+    original_replace = locale_state.os.replace
+
+    @contextmanager
+    def transaction(target):
+        nonlocal active
+        assert target == expected_target
+        active = True
+        try:
+            yield
+        finally:
+            active = False
+
+    def guarded_replace(source, target):
+        if str(target) == str(locale_path):
+            assert active
+        return original_replace(source, target)
+
+    monkeypatch.setattr(locale_state, path_helper, lambda _name: str(locale_path))
+    monkeypatch.setattr(locale_state, "_assert_prompt_locale_writable", lambda _target: None)
+    monkeypatch.setattr(locale_state, "_prompt_locale_write_transaction", transaction)
+    monkeypatch.setattr(locale_state.os, "replace", guarded_replace)
+    locale_state.invalidate_prompt_locale_caches()
+
+    if scoped:
+        locale_state.record_subject_prompt_locale(
+            "Neko",
+            MemorySubject.group_chat("qq", "7788"),
+            "zh-TW",
+        )
+    else:
+        locale_state.record_character_prompt_locale("Neko", "zh-TW")
+
+    assert locale_path.exists()
 
 
 @pytest.mark.asyncio

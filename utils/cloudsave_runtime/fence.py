@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import os
 import sys
+import threading
 from contextlib import contextmanager
 from typing import Any
 
@@ -52,6 +53,9 @@ _cloud_apply_lock_handle = None
 
 
 _cloud_apply_lock_file = None
+
+
+_cloud_apply_process_guard = threading.RLock()
 
 
 def get_root_state(config_manager) -> dict[str, Any]:
@@ -104,6 +108,40 @@ def maintenance_error_payload(exc: MaintenanceModeError) -> dict[str, Any]:
         "target": exc.target,
         "retryable": True,
     }
+
+
+@contextmanager
+def cloudsave_writable_transaction(
+    config_manager,
+    *,
+    operation: str = "write",
+    target: str = "",
+):
+    """Keep the cloud-apply fence closed across a final file mutation."""
+    if is_cloudsave_disabled_due_to_local_state_unavailable():
+        yield
+        return
+    _ensure_local_state_directory_or_raise(
+        config_manager,
+        "starting cloudsave_writable_transaction",
+    )
+    with _cloud_apply_process_guard:
+        if not acquire_cloud_apply_lock(config_manager):
+            raise MaintenanceModeError(
+                get_root_mode(config_manager),
+                operation=operation,
+                target=target,
+            )
+        try:
+            with root_state_transaction():
+                assert_cloudsave_writable(
+                    config_manager,
+                    operation=operation,
+                    target=target,
+                )
+                yield
+        finally:
+            release_cloud_apply_lock(config_manager)
 
 
 def _cloud_apply_mutex_name(config_manager) -> str:
@@ -272,36 +310,37 @@ def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READO
     """Acquire the global cloud apply lock and switch root_state into maintenance."""
     _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
 
-    if not acquire_cloud_apply_lock(config_manager):
-        raise MaintenanceModeError(
-            get_root_mode(config_manager),
-            operation="acquire_lock",
-            target="cloud_apply_lock",
-        )
-    try:
-        # Hold the process-wide root_state transaction for the *whole* fence
-        # lifetime, not only for its enter/exit writes. Storage-location writes
-        # now run in worker threads; without this lifecycle lock they can commit
-        # MAINTENANCE_READONLY while a cloud operation is active, only for the
-        # fence's stale exit snapshot to restore NORMAL over the pending migration.
-        #
-        # Lock order stays cloud_apply_lock -> root_state_transaction everywhere.
-        # The transaction is an RLock because fence bodies legitimately call
-        # ConfigManager writers on the same thread.
-        with root_state_transaction():
-            # Read the pre-image only after both locks are held. Reading it before
-            # acquire_cloud_apply_lock would still allow a storage writer to land
-            # between the read and the acquisition and make this snapshot stale.
-            previous_state = get_root_state(config_manager)
-            previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
-            _facade.set_root_mode(
-                config_manager,
-                mode,
-                last_migration_result=reason or previous_state.get("last_migration_result", ""),
+    with _cloud_apply_process_guard:
+        if not acquire_cloud_apply_lock(config_manager):
+            raise MaintenanceModeError(
+                get_root_mode(config_manager),
+                operation="acquire_lock",
+                target="cloud_apply_lock",
             )
-            try:
-                yield get_root_state(config_manager)
-            finally:
-                _facade.set_root_mode(config_manager, previous_mode)
-    finally:
-        release_cloud_apply_lock(config_manager)
+        try:
+            # Hold the process-wide root_state transaction for the *whole* fence
+            # lifetime, not only for its enter/exit writes. Storage-location writes
+            # now run in worker threads; without this lifecycle lock they can commit
+            # MAINTENANCE_READONLY while a cloud operation is active, only for the
+            # fence's stale exit snapshot to restore NORMAL over the pending migration.
+            #
+            # Lock order stays cloud_apply_lock -> root_state_transaction everywhere.
+            # The transaction is an RLock because fence bodies legitimately call
+            # ConfigManager writers on the same thread.
+            with root_state_transaction():
+                # Read the pre-image only after both locks are held. Reading it before
+                # acquire_cloud_apply_lock would still allow a storage writer to land
+                # between the read and the acquisition and make this snapshot stale.
+                previous_state = get_root_state(config_manager)
+                previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
+                _facade.set_root_mode(
+                    config_manager,
+                    mode,
+                    last_migration_result=reason or previous_state.get("last_migration_result", ""),
+                )
+                try:
+                    yield get_root_state(config_manager)
+                finally:
+                    _facade.set_root_mode(config_manager, previous_mode)
+        finally:
+            release_cloud_apply_lock(config_manager)

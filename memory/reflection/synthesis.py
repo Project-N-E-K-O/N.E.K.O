@@ -271,19 +271,19 @@ class SynthesisMixin:
         else:
             master_name = name_mapping.get('human', '主人')
 
+        from utils.language_utils import detect_prompt_language, get_global_language_full
+        prompt_lang = detect_prompt_language(
+            self._synthesis_locale_text(unabsorbed),
+            ui_language=get_global_language_full(),
+        )
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
         related_block = await self._build_related_context_block(
             lanlan_name,
             unabsorbed,
             subject=memory_subject,
+            prompt_lang=prompt_lang,
         )
-        from utils.language_utils import detect_prompt_language, get_global_language_full
-        reflection_prompt = get_reflection_prompt(
-            detect_prompt_language(
-                self._synthesis_locale_text(unabsorbed),
-                ui_language=get_global_language_full(),
-            )
-        )
+        reflection_prompt = get_reflection_prompt(prompt_lang)
         prompt = reflection_prompt.replace('{RELATED_CONTEXT_BLOCK}', related_block)
         prompt = prompt.replace('{FACTS}', facts_text)
         prompt = prompt.replace('{LANLAN_NAME}', lanlan_name)
@@ -495,6 +495,7 @@ class SynthesisMixin:
         unabsorbed: list[dict],
         *,
         subject=None,
+        prompt_lang: str = "zh",
     ) -> str:
         """When embeddings are available, recall absorbed facts as RELATED_CONTEXT;
         unavailable / empty recall → return an empty string (the
@@ -589,10 +590,11 @@ class SynthesisMixin:
             f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
             for f in related
         )
+        from config.prompts.prompts_memory import get_reflection_related_context_note
         return (
             "======以下为相关历史背景======\n"
             f"{related_text}\n"
-            "（仅供参考，本轮不要为它们单独产出 reflection）\n"
+            f"（{get_reflection_related_context_note(prompt_lang)}）\n"
             "======以上为相关历史背景======\n\n"
         )
 

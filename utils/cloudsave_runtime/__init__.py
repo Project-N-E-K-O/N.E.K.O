@@ -92,6 +92,7 @@ from .fence import (  # noqa: F401
     acquire_cloud_apply_lock,
     assert_cloudsave_writable,
     cloud_apply_fence,
+    cloudsave_writable_transaction,
     get_root_mode,
     get_root_state,
     is_write_fence_active,

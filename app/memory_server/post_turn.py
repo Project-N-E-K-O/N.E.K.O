@@ -173,17 +173,19 @@ async def _run_post_turn_signals(
     # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
     # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
     # memory；只有 user 印证过的才升级到神明降临层。
-    # Counter stays on the event loop because the periodic loop mutates the same
-    # dict; only the durable locale write is allowed onto a worker thread.
+    # Persist the locale before exposing the new turn to the periodic loop, while
+    # keeping the counter mutation itself on the event-loop thread.
     try:
         if user_msgs:
-            signal_extraction._signal_check_record_turn(lanlan_name)
-            await asyncio.to_thread(
-                signal_extraction._signal_check_persist_locale,
-                lanlan_name,
-                language=language,
-                locale_order=locale_order,
-            )
+            try:
+                await asyncio.to_thread(
+                    signal_extraction._signal_check_persist_locale,
+                    lanlan_name,
+                    language=language,
+                    locale_order=locale_order,
+                )
+            finally:
+                signal_extraction._signal_check_record_turn(lanlan_name)
     except Exception as e:
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
