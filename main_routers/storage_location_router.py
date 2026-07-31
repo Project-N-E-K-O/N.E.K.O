@@ -1229,10 +1229,28 @@ async def _release_storage_startup_barrier_if_needed(*, reason: str) -> None:
         await result
 
 
+class _ShutdownAcceptedCancellation(asyncio.CancelledError):
+    """Cancellation delivered after the shutdown callback completed successfully."""
+
+
 async def _request_app_shutdown(request_app_shutdown) -> None:
     result = request_app_shutdown()
     if inspect.isawaitable(result):
-        await result
+        # Keep a handle so a cancellation queued after callback completion but
+        # before this waiter resumes can be distinguished from cancellation of
+        # an in-flight request. The former means shutdown is already committed
+        # and the pending migration must not be rolled back.
+        shutdown_task = asyncio.ensure_future(result)
+        try:
+            await shutdown_task
+        except asyncio.CancelledError as exc:
+            if (
+                shutdown_task.done()
+                and not shutdown_task.cancelled()
+                and shutdown_task.exception() is None
+            ):
+                raise _ShutdownAcceptedCancellation(*exc.args) from exc
+            raise
 
 
 @router.get("/bootstrap")
@@ -1946,11 +1964,14 @@ async def _post_storage_location_restart_locked(
                 write=_rebind_to_selected_root,
             )
             await _request_app_shutdown(request_app_shutdown)
+        except _ShutdownAcceptedCancellation:
+            # Shutdown 已经被 launcher 接受；保留本次写入，让退出后的接力流程执行。
+            raise
         except asyncio.CancelledError:
             # 取消也必须回滚。工作线程已经跑完（_run_locked_storage_job 保证了这点），
-            # 也就是说检查点 / 策略 / maintenance_readonly 都已经落盘，而
-            # _request_app_shutdown 没发出去——留着就是把应用钉死在受限态，用户看到
-            # 一个永远不重启的"正在迁移"。
+            # 也就是说检查点 / 策略 / maintenance_readonly 都已经落盘，而 shutdown
+            # 尚未被接受——留着就是把应用钉死在受限态，用户看到一个永远不重启的
+            # "正在迁移"。
             # CancelledError 是 BaseException，下面的 except Exception 接不住，所以
             # 必须单列。回滚本身是同步的，不会再被取消。
             if state_snapshot:
@@ -2043,9 +2064,12 @@ async def _post_storage_location_restart_locked(
     try:
         migration_payload = await _run_locked_storage_job(_schedule_pending_migration)
         await _request_app_shutdown(request_app_shutdown)
+    except _ShutdownAcceptedCancellation:
+        # Shutdown 已经被 launcher 接受；待迁移检查点正是退出后的接力依据。
+        raise
     except asyncio.CancelledError:
-        # 同上：写已落盘、shutdown 没发出去，不回滚就会留下一个没人执行的待迁移
-        # 检查点 + maintenance_readonly。rollback_state 为空 = 什么都还没写。
+        # 同上：写已落盘、shutdown 尚未被接受，不回滚就会留下一个没人执行的
+        # 待迁移检查点 + maintenance_readonly。rollback_state 为空 = 什么都还没写。
         if rollback_state:
             previous_root_state = rollback_state.get("root_state")
             previous_migration_payload = rollback_state.get("migration")

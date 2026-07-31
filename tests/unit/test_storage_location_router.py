@@ -1209,6 +1209,46 @@ def test_storage_location_restart_awaits_async_shutdown_callback(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_restart_keeps_checkpoint_when_cancelled_after_shutdown_is_accepted(tmp_path):
+    """Late cancellation must not erase work already handed to the launcher."""
+    config_manager = _DummyConfigManager(tmp_path)
+    target_root = tmp_path / "new-storage" / "N.E.K.O"
+    route_task = asyncio.current_task()
+    assert route_task is not None
+    shutdown_accepted = asyncio.Event()
+
+    async def request_app_shutdown():
+        shutdown_accepted.set()
+        # The callback succeeds, but cancellation reaches its waiter first.
+        asyncio.get_running_loop().call_soon(route_task.cancel)
+
+    init_shared_state(
+        role_state={},
+        steamworks=None,
+        templates=None,
+        config_manager=config_manager,
+        logger=None,
+        request_app_shutdown=request_app_shutdown,
+    )
+    payload = storage_location_router_module.StorageLocationSelectionRequest(
+        selected_root=str(target_root),
+        selection_source="recommended",
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await storage_location_router_module._post_storage_location_restart_locked(
+            payload,
+            Response(),
+        )
+
+    assert shutdown_accepted.is_set()
+    migration_payload = load_storage_migration(config_manager)
+    assert migration_payload["target_root"] == str(target_root.resolve())
+    assert config_manager.load_root_state()["mode"] == ROOT_MODE_MAINTENANCE_READONLY
+
+
+@pytest.mark.unit
 def test_storage_location_restart_restores_previous_migration_when_shutdown_fails(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     target_root = tmp_path / "new-storage" / "N.E.K.O"
