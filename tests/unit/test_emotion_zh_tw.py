@@ -1182,3 +1182,148 @@ def test_a_postposed_veto_still_crosses_a_clause_break(confidence):
     """
     assert _label("我笑不起來，其實真的開心不起來", confidence) == "neutral"
     assert _label("我難過不起來但很開心", confidence) == "happy"
+
+
+# --- 两条管线各自的作用域缺口（来自一轮 45 agent 的扫描 + Codex 四条 P2） ---
+
+
+def _heur(text):
+    from main_routers.system_router.emotion import _infer_emotion_from_text
+
+    return _infer_emotion_from_text(text)[0]
+
+
+@pytest.mark.parametrize("text", [
+    "這幅畫充滿生氣", "这幅画充满生气", "生氣勃勃", "生氣蓬勃", "了無生氣", "死氣沉沉",
+])
+def test_a_keyword_that_does_not_mean_the_emotion_it_spells(text):
+    """The Traditional word for anger is also the word for vitality.
+
+    No negation is involved, so none of the negation machinery can catch it --
+    the keyword simply means something else. Degraded fallback is the only
+    emotion source when the model is unavailable, so answering angry here drives
+    a real reaction.
+    """
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("text", ["我很生氣", "他生氣了", "好生氣", "他有生氣"])
+def test_real_anger_survives_the_false_friend_list(text):
+    """`有` + verb is the Taiwanese perfective, so the last one is real anger.
+
+    That is why the vitality list deliberately omits it, at the cost of the
+    literary reading. Pinned so the trade-off is not silently reversed.
+    """
+    assert _heur(text) == "angry"
+
+
+@pytest.mark.parametrize("text", ["有什麼好開心的", "有什么好开心的", "這有什麼好開心的", "有什麼好難過的"])
+def test_an_overlapping_keyword_keeps_the_modal_negation(text):
+    """The rhetorical negation has to survive the longer keyword winning.
+
+    The tables hold both the short emotion word and a longer one starting one
+    character earlier. The short match was suppressed correctly; the long one
+    left a shorter window, degree-adverb stripping then took the window apart,
+    and the phrase scored positive -- the opposite of what it says.
+    """
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("text", ["好開心", "好高興", "我今天好開心"])
+def test_the_longer_keyword_still_scores_on_its_own(text):
+    assert _heur(text) == "happy"
+
+
+def test_an_emphatic_negation_does_not_reach_the_next_clause():
+    """The emphatic form only denies the predicate it precedes.
+
+    It sat in the 14-character wide-lookback table, so it cancelled the emotion
+    asserted later in the same sentence and the whole line came back empty. It
+    belongs in the adjacency-scoped table, which is where the other modal
+    compounds already live.
+    """
+    assert _heur("我並不討厭而且覺得太棒") == "happy"
+    assert _heur("我并不讨厌而且觉得太棒") == "happy"
+    assert _heur("我並不開心") is None
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", ["sadじゃないけどhappy", "sadではないがhappy"])
+def test_a_mixed_script_label_honours_the_postposed_negation(label, confidence):
+    """A label can deny an ASCII alias with a Japanese suffix.
+
+    The compact branch checked postposed markers; the ASCII branch did not, so
+    the denied half stayed in the running and won the ranking for being earlier.
+    """
+    assert _label(label, confidence) == "happy"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [("nice happy", "happy"), ("nice sad", "sad")])
+def test_a_two_letter_latin_negation_is_not_a_syllable(label, expected, confidence):
+    """Only reachable at the confidence the endpoint actually passes.
+
+    A two-letter Spanish negation at the head of the label left a remainder that
+    fuzzy-matches the emotion word once the cutoff drops, so an ordinary label
+    came back neutral. Short Latin negations now get the rule single CJK
+    characters already had: what follows must be an alias outright.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "幸せではなかった", "びっくりしなかった", "興奮していなかった", "嬉しいわけじゃない",
+    "幸せじゃなくて", "意外でもない", "興奮せず", "腹が立つことはない", "可愛くありませんでした",
+])
+def test_japanese_negation_beyond_the_polite_present(label, confidence):
+    """Past, te-form, particle-infixed and nominalised negation.
+
+    All still sit directly against the alias, so they are table entries rather
+    than new analysis. Each one was returning the emotion it denies.
+    """
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "開心不了", "开心不了", "開心才怪", "開心個屁", "生氣不了", "難過不了",
+])
+def test_chinese_postposed_colloquial_negation(label, confidence):
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "無法開心", "无法开心", "難以開心", "沒辦法開心", "我無法難過", "無法生氣",
+])
+def test_chinese_inability_is_a_negation(label, confidence):
+    """The single character was already in the table but cannot reach past the
+    second half of the compound, because it requires the remainder to be an
+    alias outright."""
+    assert _label(label, confidence) == "neutral"
+
+
+@pytest.mark.parametrize("text", [
+    "no estoy feliz", "ni triste ni feliz", "tampoco estoy feliz", "sin estar feliz",
+    "sem estar feliz", "neither sad nor happy", "ninguno feliz", "nada feliz",
+    "no estoy triste ni enojado", "nem triste nem feliz",
+])
+def test_the_two_negation_tables_agree(text):
+    """One table feeds the label parser, the other the heuristic — same words.
+
+    They drifted: several negations existed only on the label side, so the same
+    sentence came back neutral from one pipeline and named the emotion it denies
+    from the other. This asserts both at once so a one-sided addition fails.
+    """
+    from main_routers.system_router.emotion import _normalize_emotion_label
+
+    assert _normalize_emotion_label(text, 0.9) == "neutral"
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("text", [
+    "estoy feliz", "sino que estoy feliz", "casino night, I am happy", "I am happy",
+])
+def test_the_wider_negation_vocabulary_does_not_swallow_assertions(text):
+    assert _heur(text) == "happy"

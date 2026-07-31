@@ -51,6 +51,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_negation_suffixes_flat,
     get_emotion_negation_degree_adverbs_flat,
     get_heuristic_modal_negations_flat,
+    get_emotion_keyword_false_friends_flat,
 )
 from utils.language_utils import detect_prompt_language
 
@@ -276,6 +277,14 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
         if not single_clause or not compact_text.startswith(negation):
             continue
         rest = compact_text[len(negation):]
+        if len(negation) <= 2 and negation.isascii():
+            # Latin negations this short are syllables as often as words -- `ni`
+            # turned `nice happy` into neutral at the confidence the endpoint
+            # passes, because `cehappy` fuzzy-matches `happy`. Same rule the
+            # single CJK character gets: what follows has to be an alias outright.
+            if rest in _EMOTION_COMPACT_ALIAS_LOOKUP:
+                return True
+            continue
         if len(negation) == 1:
             # A single character is as likely to be the first half of a word as a
             # negation, so it only counts when what follows is an alias outright.
@@ -432,6 +441,15 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
                     compact_start = len(
                         _NON_WORD_RE.sub("", normalized_text[:match.start()])
                     )
+                    # Same postposed check the compact branch does. A label can
+                    # mix scripts -- `sadじゃないけどhappy` denies the ASCII alias
+                    # with a Japanese suffix -- and without this the denied half
+                    # stayed in the running and won the ranking.
+                    if any(
+                        compact_text.startswith(marker, compact_start + len(alias))
+                        for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+                    ):
+                        continue
                     matches.append((compact_start, -len(alias), canonical))
             continue
 
@@ -547,6 +565,9 @@ _HEURISTIC_TIGHT_NEGATION_TOKENS = get_heuristic_tight_negation_tokens_flat()
 _HEURISTIC_NEGATION_BLOCKLIST = get_heuristic_negation_blocklist_flat()
 
 
+_EMOTION_KEYWORD_FALSE_FRIENDS = get_emotion_keyword_false_friends_flat()
+
+
 _HEURISTIC_CONTRAST_CONJUNCTIONS = get_heuristic_contrast_conjunctions_flat()
 
 
@@ -594,13 +615,7 @@ def _has_heuristic_negation_before(text_value, position):
         window = window[last_conj:]
     # 4) 排除非否定固定搭配（`not only / 不仅 / не только` 等肯定结构里的 not/不/не
     #    并不是真否定）：把这些短语从 window 里替换成等长空白后再做 token 匹配。
-    sanitized = window
-    for phrase in _HEURISTIC_NEGATION_BLOCKLIST:
-        if phrase and phrase in sanitized:
-            # Removed, not blanked: the tight lookback is a fixed-width suffix,
-            # so leaving spaces behind pushes a real negation out of it —
-            # `別特別開心` would become `別  ` and read as un-negated.
-            sanitized = sanitized.replace(phrase, '')
+    sanitized = _strip_negation_blocklist(window)
     # 5) 多字否定 token（宽 lookback）
     if any(token in sanitized for token in _HEURISTIC_CJK_NEGATION_TOKENS):
         return True
@@ -610,8 +625,13 @@ def _has_heuristic_negation_before(text_value, position):
     #      才是在否定它 —— 放进上面那张宽回看表会否定同一小句里**另一个**谓语
     #      （`我不会唱歌也很开心`）。所以剥掉尾部的程度副词之后，要求它就压在
     #      情绪词前面。
+    #      剥前剥后各判一次。剥后是为了 `不會真的開心`；剥前是为了**重叠关键词**：
+    #      `有什麼好開心的` 命中的是更长的 `好開心`，窗口只剩 `有什麼` —— 那一段
+    #      本身就是否定，而剥掉 `什麼` 把它拆散了，短的那个 `開心` 命中被正确压住、
+    #      长的这个反而漏过去，整句读成 happy。
+    peeled_window = _strip_degree_adverbs(sanitized)
     if any(
-        _strip_degree_adverbs(sanitized).endswith(modal)
+        sanitized.endswith(modal) or peeled_window.endswith(modal)
         for modal in _HEURISTIC_MODAL_NEGATIONS
     ):
         return True
@@ -681,6 +701,15 @@ def _count_keyword_hits(text_value, keyword):
 
 def _infer_emotion_from_text(text):
     text_value = str(text or "").lower()
+    if not text_value:
+        return None, 0
+
+    # Dropped before anything is counted: these read as an emotion keyword but
+    # are not one, and no negation is involved for the negation machinery to
+    # catch. Removing rather than blanking keeps the lookback windows tight.
+    for phrase in _EMOTION_KEYWORD_FALSE_FRIENDS:
+        if phrase and phrase in text_value:
+            text_value = text_value.replace(phrase, '')
     if not text_value:
         return None, 0
 
