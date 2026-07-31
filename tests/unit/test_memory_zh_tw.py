@@ -631,6 +631,50 @@ def test_prompt_locale_writes_honor_cloudsave_fence(monkeypatch):
     assert locale_state._subject_locale_cache[name] == subjects_before
 
 
+@pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_write_failure_does_not_publish_cache(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    import json
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "FailedWriteNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    old_state = {"language": "en", "order": 1, "reserved_order": 1}
+    subject_key = locale_state._subject_locale_key(subject)
+    payload = {"subjects": {subject_key: old_state}} if scoped else old_state
+    locale_path.write_text(json.dumps(payload), encoding="utf-8")
+    path_helper = "_subject_locale_path" if scoped else "_locale_path"
+    monkeypatch.setattr(locale_state, path_helper, lambda _name: str(locale_path))
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+
+    def fail_write(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(locale_state, "atomic_write_json", fail_write)
+    locale_state.invalidate_prompt_locale_caches()
+
+    if scoped:
+        locale_state.reserve_subject_prompt_locale_order(name, subject)
+        cached = locale_state._subject_locale_cache[name][subject_key]
+    else:
+        locale_state.reserve_character_prompt_locale_order(name)
+        cached = locale_state._locale_cache[name]
+
+    assert cached == ("en", 1, 1)
+
+
 @pytest.mark.asyncio
 async def test_scoped_history_persists_subject_locale(monkeypatch):
     import json

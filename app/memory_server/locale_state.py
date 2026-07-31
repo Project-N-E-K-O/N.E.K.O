@@ -160,8 +160,6 @@ def _persist_locale_state_unlocked(
     order: int | None,
     reserved_order: int | None,
 ) -> None:
-    with _locale_cache_guard:
-        _locale_cache[name] = (language, order, reserved_order)
     try:
         atomic_write_json(
             _locale_path(name),
@@ -178,6 +176,9 @@ def _persist_locale_state_unlocked(
             name,
             exc,
         )
+        return
+    with _locale_cache_guard:
+        _locale_cache[name] = (language, order, reserved_order)
 
 
 def _load_subject_locale_state_unlocked(
@@ -231,8 +232,6 @@ def _persist_subject_locale_state_unlocked(
     states: dict[str, tuple[str | None, int | None, int | None]],
 ) -> None:
     snapshot = dict(states)
-    with _locale_cache_guard:
-        _subject_locale_cache[name] = snapshot
     try:
         atomic_write_json(
             _subject_locale_path(name),
@@ -254,6 +253,9 @@ def _persist_subject_locale_state_unlocked(
             name,
             exc,
         )
+        return
+    with _locale_cache_guard:
+        _subject_locale_cache[name] = snapshot
 
 
 def reserve_character_prompt_locale_order(name: str) -> int:
