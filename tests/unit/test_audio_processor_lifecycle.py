@@ -149,6 +149,11 @@ def test_toggling_noise_reduction_clears_rnnoise_evidence(monkeypatch) -> None:
     assert processor.rnnoise_probability_ema is None
     assert processor._rnnoise_ema_state is None
 
+    processor._last_speech_prob = 0.3
+    processor._rnnoise_frame_count = 1
+    processor._rnnoise_peak = 0.3
+    processor._rnnoise_mean = 0.2
+    processor._rnnoise_last = 0.1
     processor._rnnoise_ema = 0.4
     processor._rnnoise_ema_state = 0.4
     processor.set_enabled(True)
@@ -156,6 +161,11 @@ def test_toggling_noise_reduction_clears_rnnoise_evidence(monkeypatch) -> None:
     assert processor._rnnoise_ema_state == 0.4
 
     processor.set_enabled(False)
+    assert processor.speech_probability == 0.0
+    assert processor.rnnoise_frame_count == 0
+    assert processor.rnnoise_probability_peak is None
+    assert processor.rnnoise_probability_mean is None
+    assert processor.rnnoise_probability_last is None
     assert processor.rnnoise_probability_ema is None
     assert processor._rnnoise_ema_state is None
 
