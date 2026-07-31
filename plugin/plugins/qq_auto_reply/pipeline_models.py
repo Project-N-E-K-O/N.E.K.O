@@ -264,6 +264,7 @@ class QQReplyOutcome:
     # mark the previous (delivered) reply as an undelivered draft.
     used_fallback: bool = False
     raw_reply_text: str | None = None
+    pre_tool_text: str = ""
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
     relay_plan: QQRelayPlan | None = None

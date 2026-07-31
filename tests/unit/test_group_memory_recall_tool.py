@@ -1158,6 +1158,87 @@ async def test_dangling_thinking_close_uses_full_turn_sanitizer_context():
 
 
 @pytest.mark.asyncio
+async def test_sanitized_empty_terminal_recovery_is_removed_from_history():
+    """A recovered turn hidden by QQ must not survive only in history."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+    hidden = "<thinking_reasoning>secret</thinking_reasoning>"
+
+    async def _script(client, message):
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        # Terminal RESPONSE_LENGTH_TRUNCATED callback owns both appends.
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=hidden)
+        )
+        client.reply_chunks_ref.append(hidden)
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert plugin._sanitize_generated_reply(result) == ""
+    assert [row.type for row in client._conversation_history] == ["human"]
+    assert user_data["current_turn_ai_row"] is None
+
+
+@pytest.mark.asyncio
+async def test_delayed_thinking_residual_completes_the_tool_boundary():
+    """Persisted tool text fills a prefix emitted after round-start capture."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    residual = "literal <msg> example remains text"
+
+    async def _script(client, message):
+        assert callable(client.on_tool_round_start)
+        await client.on_tool_round_start()
+        # ThinkingStreamStripper.flush() emits this only after the sentinel.
+        client.reply_chunks_ref.append(residual)
+        result = await client.on_tool_call(
+            _recall_tool_call({"query": "rule"})
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content=residual,
+            )
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == residual
+    assert client._conversation_history[-1].content == residual
+    assert user_data["current_pre_tool_text"] == residual
+
+
+@pytest.mark.asyncio
 async def test_pre_tool_text_remains_when_no_tool_call_executes():
     """A nameless tool fragment must not make QQ discard prior model text."""
     plugin = _tool_plugin()

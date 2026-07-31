@@ -263,6 +263,13 @@ class QQReplyPipelineRunner:
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
             # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
             raw = (outcome.raw_reply_text if outcome else "") or ""
+            structural_pre_tool = str(
+                getattr(outcome, "pre_tool_text", "") or ""
+            )
+            if structural_pre_tool and raw.startswith(structural_pre_tool):
+                # pre-tool 内的 literal <wait> 示例是普通助手文本；只有真实
+                # tool 边界之后的最终段可以携带 buffer 控制指令。
+                raw = raw[len(structural_pre_tool):]
             clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
             # 默认等待加随机抖动（±40%），避免每次都一样
             if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:

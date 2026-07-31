@@ -7,6 +7,9 @@ import pytest
 from plugin.plugins.qq_auto_reply import reply_generation_service as reply_module
 from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
 from plugin.plugins.qq_auto_reply.pipeline_models import QQModelResult
+from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+    QQReplyBufferService,
+)
 from plugin.plugins.qq_auto_reply.reply_generation_service import (
     QQReplyGenerationService,
 )
@@ -184,6 +187,7 @@ async def test_structural_boundary_preserves_literal_msg_example_in_pre_tool():
         prefix.strip(),
         "answer",
     ]
+    assert outcome.pre_tool_text == prefix
 
 
 @pytest.mark.asyncio
@@ -211,3 +215,66 @@ async def test_structural_pre_tool_preserves_a_complete_markdown_fence():
         prefix.strip(),
         "answer",
     ]
+
+
+@pytest.mark.asyncio
+async def test_buffer_wait_ignores_a_literal_tag_in_structural_pre_tool(
+    monkeypatch,
+):
+    """Only the post-tool final segment may carry a wait directive."""
+    monkeypatch.setattr("random.uniform", lambda *_args: 1.0)
+    buffer_service = SimpleNamespace(schedule_reply=AsyncMock())
+    plugin = SimpleNamespace(
+        reply_buffer_service=buffer_service,
+        _build_session_key=lambda **_kwargs: "group:7788",
+        _emit_log=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    prefix = "Example: <wait>10</wait> "
+    final_xml = "<msg><text>answer</text></msg>"
+    blocks = [QQMessageBlock(text=prefix.strip()), QQMessageBlock(text="answer")]
+    plan = SimpleNamespace(blocks=blocks, target_type="group", target_id="7788")
+    request = SimpleNamespace(
+        source_kind="incoming",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+        forward_sub_count=0,
+        persist_memory=True,
+    )
+    outcome = SimpleNamespace(
+        raw_reply_text=prefix + final_xml,
+        pre_tool_text=prefix,
+        used_fallback=False,
+        used_default_message=False,
+    )
+
+    await runner._run_delivery(plan, request, outcome)
+
+    scheduled = buffer_service.schedule_reply.await_args.kwargs
+    assert scheduled["wait_seconds"] == QQReplyBufferService.DEFAULT_WAIT_SECONDS
+    assert scheduled["raw_text"] == final_xml
+    assert scheduled["reply_text"] == f"{prefix.strip()}\nanswer"
+
+
+@pytest.mark.asyncio
+async def test_dynamic_xml_repairs_a_suffix_missing_its_opening_msg():
+    """A remaining closing msg tag is an explicit malformed-XML signal."""
+    broken = "<text>answer</text></msg>"
+    plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _sanitize_generated_reply=lambda text: text,
+        _emit_log=MagicMock(),
+    )
+    node = QQReplyPostprocessNode(plugin)
+    node._repair_xml = AsyncMock(
+        return_value="<msg><text>answer</text></msg>"
+    )
+
+    outcome = await node.finalize(
+        SimpleNamespace(ephemeral_session=False),
+        QQModelResult(reply_text=broken, source="session"),
+    )
+
+    node._repair_xml.assert_awaited_once_with(broken)
+    assert [block.text for block in outcome.blocks] == ["answer"]

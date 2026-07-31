@@ -251,6 +251,14 @@ class QQReplyPostprocessNode:
     async def finalize(self, context: QQReplyContext, model_result: QQModelResult) -> QQReplyOutcome:
         raw_reply_text = model_result.reply_text or ""
         reply_text = self.plugin._sanitize_generated_reply(raw_reply_text)
+        known_pre_tool = str(
+            getattr(model_result, "pre_tool_text", "") or ""
+        )
+        structural_pre_tool = (
+            known_pre_tool
+            if known_pre_tool and reply_text.startswith(known_pre_tool)
+            else ""
+        )
         if raw_reply_text and not reply_text:
             self.plugin._emit_log("INFO", f"[Sanitize] {len(raw_reply_text)}字被清除: {raw_reply_text[:100]}")
 
@@ -266,30 +274,29 @@ class QQReplyPostprocessNode:
                 pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
             explicit_prefix = ""
             parse_text = reply_text
-            known_pre_tool = str(
-                getattr(model_result, "pre_tool_text", "") or ""
-            )
-            if known_pre_tool and reply_text.startswith(known_pre_tool):
+            if structural_pre_tool:
                 # 这是 core 在真实 tool-round start 捕获的模型文本，不是
                 # dynamic XML 的格式前缀。完整 Markdown 围栏、<wait> 等
                 # 字面内容都属于助手输出，不能再用启发式清理器裁剪。
-                explicit_prefix = known_pre_tool.strip()
-                parse_text = reply_text[len(known_pre_tool):]
+                explicit_prefix = structural_pre_tool.strip()
+                parse_text = reply_text[len(structural_pre_tool):]
 
             dynamic_parts = self._split_dynamic_xml(parse_text)
-            parse_failed = False
+            parse_failed = dynamic_parts is None and "</msg>" in parse_text
+            broken_xml = parse_text if parse_failed else ""
             if dynamic_parts is not None:
                 try:
                     ET.fromstring(f"<root>{dynamic_parts[1]}</root>")
                 except ET.ParseError:
                     parse_failed = True
+                    broken_xml = dynamic_parts[1]
             blocks = self._parse_blocks(parse_text)
             if explicit_prefix:
                 blocks.insert(0, QQMessageBlock(text=explicit_prefix))
             # 解析失败必须显式进入修复；带 pre-tool 时 fallback 会产生两个
             # 纯文本块，不能再用 len(blocks) == 1 猜测解析状态。
-            if parse_failed and dynamic_parts is not None:
-                leading_text, broken_xml = dynamic_parts
+            if parse_failed:
+                leading_text = dynamic_parts[0] if dynamic_parts else ""
                 repaired = await self._repair_xml(broken_xml)
                 if repaired:
                     repaired_blocks = self._parse_blocks(repaired)
@@ -310,6 +317,7 @@ class QQReplyPostprocessNode:
                 action="reply",
                 reply_text=reply_text,
                 raw_reply_text=raw_reply_text,
+                pre_tool_text=structural_pre_tool,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
@@ -319,6 +327,7 @@ class QQReplyPostprocessNode:
                 action="reply",
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
+                pre_tool_text=structural_pre_tool,
                 postprocess_reason="empty",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
@@ -329,6 +338,7 @@ class QQReplyPostprocessNode:
                 action="reply",
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
+                pre_tool_text=structural_pre_tool,
                 postprocess_reason="llm_skip",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
@@ -339,6 +349,7 @@ class QQReplyPostprocessNode:
             reply_text=self.plugin.i18n.t("messages.default_no_reply", default="嗯嗯~"),
             used_default_message=True,
             raw_reply_text=raw_reply_text,
+            pre_tool_text=structural_pre_tool,
             postprocess_reason="default",
             used_fallback=bool(getattr(model_result, "used_fallback", False)),
         )

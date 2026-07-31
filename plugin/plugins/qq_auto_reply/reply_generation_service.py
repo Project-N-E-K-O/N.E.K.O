@@ -593,6 +593,18 @@ class QQReplyGenerationService:
             if raw_pre_tool_text is not None
             else persisted_pre_tool_text
         )
+        if (
+            raw_pre_tool_text is not None
+            and len(persisted_pre_tool_text) > len(raw_pre_tool_text)
+            and persisted_pre_tool_text.startswith(raw_pre_tool_text)
+            and outbound_text.startswith(persisted_pre_tool_text)
+        ):
+            # Focus 的 thinking stripper 会在 core 发出 tool sentinel 后才
+            # flush 被延迟的可见 residual；round-start callback 因而可能只
+            # 捕获到真实 prefix 的前半段（最窄情况是空串）。provider 已将
+            # 完整 prefix 写入 assistant tool row，可与真实 outbound 对齐时
+            # 用它补齐结构边界，仍不修改或丢弃任何模型文本。
+            boundary_source = persisted_pre_tool_text
         raw_final_text = ""
         if (
             boundary_source is not None
@@ -626,7 +638,15 @@ class QQReplyGenerationService:
 
         # 共享历史以 QQ 最终可见的整轮文本为准；只有纯空白时不凭空合成
         # 一条用户没有看到的 AI 行。
-        if visible_outbound.strip():
+        if final_ai_row is not None and not visible_outbound.strip():
+            # terminal truncation callback 会先把 raw recovery 写入 history；
+            # 若整轮经 QQ sanitizer 后没有任何可见文本，这行既未投递也不
+            # 能进入后续上下文/记忆。按对象身份删除，避免误删等值旧行。
+            for index in range(len(history) - 1, start - 1, -1):
+                if history[index] is final_ai_row:
+                    del history[index]
+                    break
+        elif visible_outbound.strip():
             if final_ai_row is None and create_missing_ai_row:
                 history.append(AIMessage(content=visible_outbound))
             elif final_ai_row is not None:
