@@ -1636,9 +1636,10 @@ class FactStore:
         corroboration is irreversible.
 
         ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
-        trust'} 子集），盖在本批每条**新建** fact 上。只落字段不接消费
-        （信赖度阶段一）；来自调用方（scoped_history 请求段），绝不读
-        extracted 元素里的同名键——LLM 输出无法伪造它。
+        trust'} 子集），只盖在本批**新建 user_observation** fact 上；AI
+        disclosure 不冒用参与者 provenance。字段只落盘不接消费（信赖度
+        阶段一）；来自调用方（scoped_history 请求段），绝不读 extracted
+        元素里的同名键——LLM 输出无法伪造它。
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -1906,7 +1907,7 @@ class FactStore:
             }
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
-            if speaker_provenance:
+            if speaker_provenance and source == 'user_observation':
                 # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
                 label = str(speaker_provenance.get('speaker_label') or '').strip()
                 if label:
@@ -2491,11 +2492,12 @@ class FactStore:
         ``speaker_label`` is forwarded to the extraction prompt — see
         :meth:`_allm_extract_facts`.
 
-        ``speaker_provenance``: stamped onto每条新建 fact（speaker_label /
-        speaker_trust，信赖度阶段一只落字段）。与 ``speaker_label`` 分开传：
-        后者影响 prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——
-        那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
-        决定是否给本参数。
+        ``speaker_provenance``: stamped onto新建 user_observation fact
+        （speaker_label / speaker_trust，信赖度阶段一只落字段）；AI
+        disclosure 保持独立来源。与 ``speaker_label`` 分开传：后者影响
+        prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
+        "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定
+        是否给本参数。
         """  # noqa: DOCSTRING_CJK
         memory_subject = coerce_subject(subject)
         expected_subject_generation = (

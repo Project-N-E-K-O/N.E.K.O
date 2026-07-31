@@ -338,6 +338,29 @@ class QQReplyPipelineRunner:
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(delivered=True, target_type=delivery_plan.target_type, target_id=delivery_plan.target_id, reply_text=first_text)
 
+        direct_session_key = None
+        direct_ai_row = None
+        if (
+            request is not None
+            and outcome is not None
+            and outcome.history_ai_row is not None
+            and not getattr(outcome, "used_fallback", False)
+            and not getattr(outcome, "used_default_message", False)
+            and not self._primary_row_superseded(outcome, delivery_plan)
+        ):
+            direct_session_key = self.plugin._build_session_key(
+                sender_id=request.sender_id,
+                is_group=request.is_group,
+                group_id=request.group_id if request.is_group else None,
+            )
+            direct_ai_row = outcome.history_ai_row
+            # The history row exists before network delivery. Fence it before
+            # the await so an opt-out settlement cannot persist a reply whose
+            # send later fails.
+            self.plugin.session_memory_service.record_provisional_ai_row(
+                direct_session_key, direct_ai_row,
+            )
+
         if context is not None and self._consent_revoked_before_send(context):
             # 直投没有 buffer 的撤销闸：生成后复检到真正发出去之间还有
             # 后处理（XML 修复等再等一次 LLM）与计划构建，这段窗口里关掉
@@ -400,6 +423,11 @@ class QQReplyPipelineRunner:
             # digest 会把没发出去的回复入库。
             _mark_tail_undelivered()
             raise
+        if direct_ai_row is not None:
+            self.plugin.session_memory_service.settle_provisional_ai_row(
+                direct_session_key, direct_ai_row,
+                delivered=bool(result is not None and result.delivered),
+            )
         if (
             result is not None
             and not getattr(result, "delivered", False)

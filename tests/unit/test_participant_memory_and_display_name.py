@@ -852,6 +852,71 @@ async def test_participant_finalize_honors_cutoff_and_floor_exemption():
 
 
 @pytest.mark.asyncio
+async def test_participant_digest_uses_session_permission_snapshot():
+    """A dashboard trust change mutates permission_mgr before old history is
+    settled. That history keeps the permission stamped on its session."""
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content="旧权限下的话")]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    user_data["permission_level"] = "normal"
+    plugin.permission_mgr.get_permission_level = lambda _sender_id: "admin"
+    service = QQSessionMemoryService(plugin)
+
+    assert await service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=0,
+    )
+
+    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
+    assert kwargs["speaker_trust"] == pytest.approx(
+        SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_participant_digest_freezes_history_before_first_post():
+    """Rows appended after opt-out while the first batch awaits are outside
+    the authorized snapshot and cannot leak into the second batch."""
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [
+        SimpleNamespace(type="human", content="授权一"),
+        SimpleNamespace(type="ai", content="授权二"),
+    ]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+
+    async def _run_locked(_session_key, callback):
+        return await callback()
+
+    async def _post(*args, **kwargs):
+        if bridge.post_scoped_memory_history.await_count == 1:
+            plugin._qq_settings["private_participant_memory_enabled"] = False
+            history.append(SimpleNamespace(type="human", content="撤权后"))
+        return {"status": "processed"}
+
+    plugin._run_with_session_lock = _run_locked
+    bridge.post_scoped_memory_history.side_effect = _post
+    service = QQSessionMemoryService(plugin)
+    service.GROUP_HISTORY_MAX_MESSAGES = 1
+
+    await service._drain_participant_digest("private:1001")
+
+    sent_texts = [
+        call.args[1][0]["content"][0]["text"]
+        for call in bridge.post_scoped_memory_history.await_args_list
+    ]
+    assert sent_texts == ["授权一", "授权二"]
+    assert user_data["last_participant_digest_index"] == 2
+
+
+@pytest.mark.asyncio
 async def test_participant_cache_delta_never_posts_legacy_cache():
     """participant 会话在 per-turn /cache 钩子上必须是纯调度点：一条消息
     都不进 legacy /cache；积压过线时催后台 scoped drain。"""  # noqa: DOCSTRING_CJK

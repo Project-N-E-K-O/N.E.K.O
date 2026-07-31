@@ -3064,6 +3064,41 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
     assert fact["speaker_trust"] == 0.3
 
 
+@pytest.mark.asyncio
+async def test_ai_disclosure_does_not_inherit_participant_provenance(tmp_path):
+    """Participant provenance describes the human observation only; an AI
+    disclosure extracted from the same digest must remain separately sourced."""
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {
+                "text": "用户喜欢爵士乐", "importance": 5,
+                "source": "user_observation",
+            },
+            {
+                "text": "助手说自己喜欢雨天", "importance": 5,
+                "source": "ai_disclosure",
+            },
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segment = _batch_segment(
+        "7788", "1001", "Alice(1001)", ["聊音乐"], trust=0.3,
+    )
+    with patch("memory.facts.get_global_language", return_value="zh"), \
+            patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch([segment], "Neko")
+
+    human, ai = results[0]["created"]
+    assert human["speaker_label"] == "Alice(1001)"
+    assert human["speaker_trust"] == 0.3
+    assert "speaker_label" not in ai
+    assert "speaker_trust" not in ai
+
+
 _REAL_HEADER_RE = re.compile(
     r'^\[SEGMENT (\d+):([0-9a-f]{8,}) \| speaker: (.*)\]$', re.MULTILINE,
 )
@@ -4394,6 +4429,8 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     )
     plugin.session_memory_service = SimpleNamespace(
         record_tail_undelivered_ai_row=MagicMock(),
+        record_provisional_ai_row=MagicMock(),
+        settle_provisional_ai_row=MagicMock(),
     )
     from plugin.plugins.qq_auto_reply.pipeline_models import QQReplyRequest
 
@@ -10267,6 +10304,78 @@ async def test_cancelled_delivery_marks_the_history_row():
 
 
 @pytest.mark.asyncio
+async def test_direct_delivery_fences_history_row_until_send_settles():
+    """A concurrent digest must see the direct-send row as provisional for
+    the entire network await, then retain it as undelivered on failure."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    ai_row = SimpleNamespace(type="ai", content="在途回复")
+    provisional = MagicMock()
+    settle = MagicMock()
+    mark = MagicMock()
+
+    async def _deliver(*args, **kwargs):
+        provisional.assert_called_once_with("group:7788", ai_row)
+        settle.assert_not_called()
+        return QQDeliveryResult(
+            delivered=False, target_type="group", target_id="7788",
+            reply_text=None,
+        )
+
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(deliver=AsyncMock(side_effect=_deliver)),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=MagicMock(),
+        ),
+        session_memory_service=SimpleNamespace(
+            record_provisional_ai_row=provisional,
+            settle_provisional_ai_row=settle,
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    outcome = QQReplyOutcome(
+        action="reply", reply_text="在途回复", history_ai_row=ai_row,
+    )
+
+    result = await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="在途回复")],
+        ),
+        request, outcome,
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+        ),
+    )
+
+    assert result.delivered is False
+    settle.assert_called_once_with(
+        "group:7788", ai_row, delivered=False,
+    )
+    mark.assert_called_once_with("group:7788", ai_row)
+
+
+@pytest.mark.asyncio
 async def test_fallback_history_row_carries_every_delivered_block():
     """postprocess keeps only the first block in reply_text; appending just
     that leaves the rest of a delivered fallback out of scoped history."""
@@ -11811,6 +11920,22 @@ async def test_undelivered_marking_uses_this_turns_row_identity():
     service.record_tail_undelivered_ai_row("group:7788", this_turn)
     assert ud["undelivered_draft_rows"] == [this_turn]
     history.pop()
+
+    # Direct sends fence the exact row before their network await. Success
+    # removes both marks; failure converts the fence into a final exclusion.
+    ud["undelivered_draft_rows"] = []
+    service.record_provisional_ai_row("group:7788", this_turn)
+    assert ud["undelivered_draft_rows"] == [this_turn]
+    assert ud["provisional_draft_rows"] == [this_turn]
+    service.settle_provisional_ai_row(
+        "group:7788", this_turn, delivered=True,
+    )
+    assert ud["undelivered_draft_rows"] == []
+    assert ud["provisional_draft_rows"] == []
+    service.record_provisional_ai_row("group:7788", this_turn)
+    service.record_tail_undelivered_ai_row("group:7788", this_turn)
+    assert ud["undelivered_draft_rows"] == [this_turn]
+    assert ud["provisional_draft_rows"] == []
 
     # This turn wrote no ai row at all: nothing may be marked.
     ud["undelivered_draft_rows"] = []

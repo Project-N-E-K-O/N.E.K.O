@@ -481,6 +481,10 @@ class QQSessionMemoryService:
             rows = user_data.setdefault("undelivered_draft_rows", [])
             if not any(existing is row for existing in rows):
                 rows.append(row)
+            provisional = user_data.get("provisional_draft_rows", [])
+            user_data["provisional_draft_rows"] = [
+                existing for existing in provisional if existing is not row
+            ]
             return
         if "current_turn_ai_row" in user_data:
             # 生成路径记下了本轮到底写没写 ai 行：按身份标，没写就什么都不
@@ -499,6 +503,49 @@ class QQSessionMemoryService:
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
             return
+
+    def record_provisional_ai_row(self, session_key: str, ai_row: Any) -> None:
+        """Fence an exact history row while direct delivery is in flight."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict):
+            return
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") != "participant"
+        ):
+            return
+        history = getattr(
+            user_data.get("session"), "_conversation_history", None,
+        ) or []
+        if ai_row is None or not any(existing is ai_row for existing in history):
+            return
+        for key in ("undelivered_draft_rows", "provisional_draft_rows"):
+            rows = user_data.setdefault(key, [])
+            if not any(existing is ai_row for existing in rows):
+                rows.append(ai_row)
+
+    def settle_provisional_ai_row(
+        self, session_key: str, ai_row: Any, *, delivered: bool,
+    ) -> None:
+        """Resolve a direct-send fence without relying on a mutable tail."""
+        user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
+            session_key
+        )
+        if not isinstance(user_data, dict) or ai_row is None:
+            return
+        provisional = user_data.get("provisional_draft_rows", [])
+        user_data["provisional_draft_rows"] = [
+            existing for existing in provisional if existing is not ai_row
+        ]
+        undelivered = user_data.setdefault("undelivered_draft_rows", [])
+        if delivered:
+            user_data["undelivered_draft_rows"] = [
+                existing for existing in undelivered if existing is not ai_row
+            ]
+        elif not any(existing is ai_row for existing in undelivered):
+            undelivered.append(ai_row)
 
     def record_group_member_turn(self, user_data: dict[str, Any], context: Any) -> None:
         """Keep bounded, actor-attributed user turns for optional member memory."""
@@ -762,6 +809,10 @@ class QQSessionMemoryService:
                 history = getattr(session, "_conversation_history", []) or []
                 if not sender_id or not her_name or not history:
                     return
+                # Generation and this drain use different locks. Freeze the
+                # authorized prefix before the first HTTP await so rows added
+                # after a concurrent opt-out cannot enter a later batch.
+                history_snapshot = list(history)
                 cursor = max(
                     0, int(user_data.get("last_participant_digest_index", 0) or 0),
                 )
@@ -776,7 +827,7 @@ class QQSessionMemoryService:
                 await self._settle_participant_digest_batches(
                     user_data=user_data, sender_id=sender_id,
                     her_name=her_name, reason="participant_digest_backlog",
-                    conversation_history=history,
+                    conversation_history=history_snapshot,
                     last_participant_digest_index=cursor,
                     # 在途草稿处停下（对偶群积压冲刷）：越过后草稿被真投递
                     # 时，那条回复永远进不了 scoped 历史。
@@ -832,7 +883,9 @@ class QQSessionMemoryService:
         display_name = QQDisplayNameService.display_name_from_label(
             speaker_label, sender_id,
         )
-        speaker_trust = self._speaker_trust_for(sender_id)
+        speaker_trust = self._speaker_trust_for(
+            sender_id, user_data.get("permission_level"),
+        )
         subject = self.plugin.memory_bridge.participant_subject(sender_id)
         while True:
             if digest_batches_left <= 0:
@@ -1360,21 +1413,25 @@ class QQSessionMemoryService:
         except Exception:
             return None
 
-    def _speaker_trust_for(self, sender_id: str) -> float:
+    def _speaker_trust_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> float:
         """按权限等级派生的发言人信赖度初值（阶段一只落字段不接消费）。"""
         from config import (
             SPEAKER_TRUST_BY_PERMISSION_LEVEL,
             SPEAKER_TRUST_DEFAULT,
         )
 
-        permission_mgr = getattr(self.plugin, "permission_mgr", None)
-        try:
-            level = (
-                permission_mgr.get_permission_level(sender_id)
-                if permission_mgr is not None else "none"
-            )
-        except Exception:
-            level = "none"
+        level = permission_level
+        if level is None:
+            permission_mgr = getattr(self.plugin, "permission_mgr", None)
+            try:
+                level = (
+                    permission_mgr.get_permission_level(sender_id)
+                    if permission_mgr is not None else "none"
+                )
+            except Exception:
+                level = "none"
         return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
             level, SPEAKER_TRUST_DEFAULT,
         )
