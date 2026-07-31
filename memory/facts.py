@@ -950,7 +950,19 @@ class FactStore:
         if isinstance(entry, str):
             return bool(entry.strip())
         if isinstance(entry, dict):
-            return any(cls._carries_unused_text(v) for v in entry.values())
+            # 键与值一视同仁地往下递归：map 形态的畸形事实
+            # （{"Alice likes cats": 7}）可以裹在任意深度的字段下
+            # （{"fact": {"Alice likes cats": 7}}），只查顶层键会漏。
+            # 字段名形状的键（confidence / start / unit …）不算内容。
+            return any(
+                (
+                    isinstance(key, str)
+                    and key.strip()
+                    and not cls._FIELD_NAME_RE.match(key)
+                )
+                or cls._carries_unused_text(value)
+                for key, value in entry.items()
+            )
         if isinstance(entry, (list, tuple, set)):
             return any(cls._carries_unused_text(v) for v in entry)
         return False

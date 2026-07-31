@@ -2577,7 +2577,11 @@ async def test_map_shaped_malformed_fact_is_not_treated_as_an_empty_shell(
 
     async def _llm(prompt, lanlan_name, **kwargs):
         return [
-            {"segment": 1, "facts": [{"Alice 喜欢猫": 7}]},
+            {"segment": 1, "facts": [
+                {"Alice 喜欢猫": 7},
+                # 同一形态裹在字段名下：键的检查必须逐层递归，只查顶层会漏。
+                {"fact": {"Bob 的生日是 3 月 5 日": 9}},
+            ]},
             {"segment": 2, "facts": []},
         ]
 
