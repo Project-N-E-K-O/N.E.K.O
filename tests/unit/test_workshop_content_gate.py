@@ -1143,6 +1143,9 @@ def _known_to_thread_names(
                     names = after(containing, names)
                 else:
                     names = after(node.body, names) & after(node.orelse, names)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                names &= after(node.body, names)
+                names = after(node.orelse, names)
             elif isinstance(node, ast.Try):
                 branches = (
                     [node.body, node.orelse, node.finalbody]
@@ -1925,20 +1928,6 @@ def _module_level_claiming_workers(trees):
             return claiming, generators, module_aliases, import_facts
 
 
-def _local_instance_class(
-    name: str,
-    line: int,
-    local_instances: dict[
-        str, list[tuple[int, tuple[str, str] | None]]
-    ],
-) -> tuple[str, str] | None:
-    return next((
-        class_name
-        for assigned_line, class_name in reversed(local_instances.get(name, []))
-        if assigned_line < line
-    ), None)
-
-
 def _storage_key(node) -> str | None:
     if isinstance(node, ast.Name):
         return node.id
@@ -1953,50 +1942,50 @@ def _class_protocol_claim(
     module: str,
     claiming_by_scope,
     parents: dict[int, ast.AST],
-    local_instances: dict[
-        str, list[tuple[int, tuple[str, str] | None]]
-    ],
+    instance_classes_before,
     class_aliases: dict[str, tuple[str, str]],
-) -> tuple[tuple[str, str], str] | None:
+) -> set[tuple[tuple[str, str], str]]:
     """Resolve implicit constructor/context protocol calls for a class name."""
     parent = parents.get(id(node))
-    stored_class = _local_instance_class(
-        _storage_key(node) or '', node.lineno, local_instances
+    stored_classes = instance_classes_before(
+        _storage_key(node) or '', node.lineno
     )
     if (
-        stored_class
+        stored_classes
         and isinstance(parent, ast.withitem)
         and parent.context_expr is node
     ):
-        scope = stored_class
-        methods = claiming_by_scope.get(scope, set())
-        for method in ('__enter__', '__exit__', '__aenter__', '__aexit__'):
-            if method in methods:
-                return scope, method
-        return None
-    if stored_class and isinstance(parent, ast.Call) and parent.func is node:
-        if '__call__' in claiming_by_scope.get(stored_class, set()):
-            return stored_class, '__call__'
-        return None
+        return {
+            (scope, method)
+            for scope in stored_classes
+            for method in ('__enter__', '__exit__', '__aenter__', '__aexit__')
+            if method in claiming_by_scope.get(scope, set())
+        }
+    if stored_classes and isinstance(parent, ast.Call) and parent.func is node:
+        return {
+            (scope, '__call__')
+            for scope in stored_classes
+            if '__call__' in claiming_by_scope.get(scope, set())
+        }
     if not isinstance(node, ast.Name):
-        return None
+        return set()
     if not isinstance(parent, ast.Call) or parent.func is not node:
-        return None
+        return set()
     scope = class_aliases.get(node.id, (module, node.id))
     methods = claiming_by_scope.get(scope, set())
     if '__init__' in methods:
-        return scope, '__init__'
+        return {(scope, '__init__')}
     current = parent
     while id(current) in parents:
         current = parents[id(current)]
         if isinstance(current, ast.withitem):
             for method in ('__enter__', '__exit__', '__aenter__', '__aexit__'):
                 if method in methods:
-                    return scope, method
-            return None
+                    return {(scope, method)}
+            return set()
         if isinstance(current, (ast.Call, ast.Lambda, ast.GeneratorExp)):
-            return None
-    return None
+            return set()
+    return set()
 
 
 def _scope_claiming_names_called_on_loop(
@@ -2011,7 +2000,6 @@ def _scope_claiming_names_called_on_loop(
     """Resolve module names and ``self`` methods without cross-scope collisions."""
     parents = _parent_map(func)
     local_names = {}
-    local_instances = {}
     local_module_aliases = dict(module_aliases.get(module, {}))
     module_imports = (import_facts or {}).get(module, {})
     local_class_aliases = dict(module_imports.get('classes', {}))
@@ -2023,26 +2011,6 @@ def _scope_claiming_names_called_on_loop(
         if scope[0] == module and scope[1] is not None
     }
     for child in sorted(own_scope, key=lambda node: getattr(node, 'lineno', -1)):
-        if isinstance(child, (ast.Assign, ast.AnnAssign)):
-            targets = child.targets if isinstance(child, ast.Assign) else [child.target]
-            value = child.value
-            stored_class = (
-                local_class_aliases.get(value.func.id, (module, value.func.id))
-                if isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and (
-                    value.func.id in class_names
-                    or value.func.id in local_class_aliases
-                )
-                else None
-            )
-            for target in targets:
-                key = _storage_key(target)
-                if key is None:
-                    continue
-                local_instances.setdefault(key, []).append((
-                    child.lineno, stored_class
-                ))
         if isinstance(child, ast.ImportFrom):
             if child.module:
                 source_module = _resolve_imported_module(
@@ -2082,6 +2050,63 @@ def _scope_claiming_names_called_on_loop(
             name: set().union(*(state.get(name, set()) for state in states))
             for name in set().union(*(set(state) for state in states))
         }
+
+    def instance_classes_before(name: str, before_line: int):
+        def after(statements, state):
+            state = {key: set(values) for key, values in state.items()}
+            for statement in statements:
+                if statement.lineno >= before_line:
+                    continue
+                if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                    value = statement.value
+                    stored_classes = (
+                        {
+                            local_class_aliases.get(
+                                value.func.id, (module, value.func.id)
+                            )
+                        }
+                        if isinstance(value, ast.Call)
+                        and isinstance(value.func, ast.Name)
+                        and (
+                            value.func.id in class_names
+                            or value.func.id in local_class_aliases
+                        )
+                        else set()
+                    )
+                    targets = (
+                        statement.targets
+                        if isinstance(statement, ast.Assign)
+                        else [statement.target]
+                    )
+                    for target in targets:
+                        key = _storage_key(target)
+                        if key is not None:
+                            state[key] = set(stored_classes)
+                elif isinstance(statement, ast.If):
+                    state = merge_callable_states(
+                        after(statement.body, state),
+                        after(statement.orelse, state),
+                    )
+                elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                    state = merge_callable_states(
+                        state, after(statement.body, state)
+                    )
+                    state = after(statement.orelse, state)
+                elif isinstance(statement, ast.With):
+                    state = after(statement.body, state)
+                elif isinstance(statement, ast.Try):
+                    body_state = after(statement.body, state)
+                    paths = [after(statement.orelse, body_state)]
+                    paths.extend(
+                        after(handler.body, state)
+                        for handler in statement.handlers
+                    )
+                    state = after(
+                        statement.finalbody, merge_callable_states(*paths)
+                    )
+            return state
+
+        return after(func.body, {}).get(name, set())
 
     def callable_aliases_before(before_line: int):
         def resolved_name(name, state):
@@ -2168,16 +2193,16 @@ def _scope_claiming_names_called_on_loop(
             if id(node) in alias_source_ids:
                 continue
             name = node.id
-            protocol_claim = _class_protocol_claim(
+            protocol_claims = _class_protocol_claim(
                 node,
                 module,
                 claiming_by_scope,
                 parents,
-                local_instances,
+                instance_classes_before,
                 local_class_aliases,
             )
-            if protocol_claim:
-                resolutions = {protocol_claim}
+            if protocol_claims:
+                resolutions = protocol_claims
             else:
                 state = callable_aliases_before(node.lineno)
                 resolutions = (
@@ -2187,20 +2212,20 @@ def _scope_claiming_names_called_on_loop(
                 )
         elif isinstance(node, ast.Attribute):
             name = node.attr
-            protocol_claim = _class_protocol_claim(
+            protocol_claims = _class_protocol_claim(
                 node,
                 module,
                 claiming_by_scope,
                 parents,
-                local_instances,
+                instance_classes_before,
                 local_class_aliases,
             )
             receiver_key = _storage_key(node.value)
-            stored_class = _local_instance_class(
-                receiver_key or '', node.lineno, local_instances
+            stored_classes = instance_classes_before(
+                receiver_key or '', node.lineno
             )
-            if protocol_claim:
-                resolutions = {protocol_claim}
+            if protocol_claims:
+                resolutions = protocol_claims
             elif (
                 isinstance(node.value, ast.Name)
                 and node.value.id in {'self', 'cls'}
@@ -2216,8 +2241,10 @@ def _scope_claiming_names_called_on_loop(
                 and class_name
             ):
                 resolutions = {((module, class_name), name)}
-            elif stored_class:
-                resolutions = {(stored_class, name)}
+            elif stored_classes:
+                resolutions = {
+                    (stored_class, name) for stored_class in stored_classes
+                }
             elif (
                 isinstance(node.value, ast.Name)
                 and (module, node.value.id) in claiming_by_scope
@@ -2559,6 +2586,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    else:\n'
         '        dispatch = offload\n'
         '    await dispatch(_claiming_worker)\n'
+        'async def loop_to_thread_alias(items):\n'
+        '    dispatch = offload\n'
+        '    for item in items:\n'
+        '        dispatch = dispatcher\n'
+        '    await dispatch(_claiming_worker)\n'
         'async def local_alias_offloaded():\n'
         '    callback = _claiming_worker\n'
         '    await asyncio.to_thread(callback)\n'
@@ -2598,6 +2630,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'async def stored_method_direct():\n'
         '    service = Service()\n'
+        '    service.worker()\n'
+        'async def conditional_stored_method():\n'
+        '    service = Service()\n'
+        '    if flag:\n'
+        '        service = Other()\n'
         '    service.worker()\n'
         'class AttributeService:\n'
         '    async def attribute_handler(self):\n'
@@ -2774,6 +2811,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('conditional_to_thread_alias'), (
         'local to_thread alias 只有所有分支一致时才能算已证明 offload'
     )
+    assert module_offenders('loop_to_thread_alias'), (
+        'local to_thread alias 必须合并 loop 的 zero/nonzero iteration paths'
+    )
     assert module_offenders('local_alias_offloaded') == []
     assert module_offenders('local_alias_direct'), (
         'local callable alias 直调仍必须继承 claim owner 身份'
@@ -2799,6 +2839,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     ), 'property getter 会在 to_thread 收参前执行，不能算安全 offload'
     assert module_offenders('stored_method_direct'), (
         'stored class instance 的普通 claim-owning method 也必须解析'
+    )
+    assert module_offenders('conditional_stored_method'), (
+        'stored instance class 必须保留所有 conditional path 的可能身份'
     )
     assert _scope_claiming_names_called_on_loop(
         functions['attribute_handler'],
@@ -3229,6 +3272,14 @@ _OS_CONTENT_PATH_MUTATION_ARGS = {
     'replace': ((0, 'src'), (1, 'dst')),
 }
 
+_COPY_CONTENT_PATH_ARGS = {
+    'copy2': ((0, 'src'), (1, 'dst')),
+    'copyfile': ((0, 'src'), (1, 'dst')),
+    'copytree': ((0, 'src'), (1, 'dst')),
+}
+
+_OPEN_WRITE_OPERATION = '<open-write>'
+
 _PACKAGE_OPERATION_CLAIMS = {
     '_publish_workshop_item': {'claim_content_folder'},
     '_cleanup_workshop_voice_reference': {
@@ -3242,6 +3293,9 @@ _FOLDER_OPERATION_CLAIMS = {
     'copyfile': {'claim_content_folder'},
     'copytree': {'claim_content_folder'},
     'remove': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
+    _OPEN_WRITE_OPERATION: {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
     **{
@@ -3315,10 +3369,11 @@ _DEFERRAL_CALLS = {
     'create_task', 'ensure_future', 'partial',
 }
 
-# 结构性豁免：prepare 创建的目录还没返回给任何人；cleanup 本身则是 package-wide
-# sentinel，所有调用点都必须持有 claim，因此它的内部删除继承调用方的占用。
+# 结构性豁免：prepare 创建的目录还没返回给任何人；publish/cleanup 本身则是
+# package-wide sentinel，所有调用点都必须持有 claim，因此内部 I/O 继承调用方占用。
 _ALLOWED_UNCLAIMED = {
     ('publish', 'prepare_workshop_upload'),
+    ('publish', '_publish_workshop_item'),
     ('voice_manifest', '_cleanup_workshop_voice_reference'),
 }
 
@@ -3559,6 +3614,54 @@ def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
     return found
 
 
+def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
+    write_flags = {'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC'}
+    found = []
+    for node in _walk_own_scope(func):
+        if not isinstance(node, ast.Call):
+            continue
+        target = node.func
+        is_os_open = (
+            isinstance(target, ast.Attribute)
+            and target.attr == 'open'
+            and isinstance(target.value, ast.Name)
+            and target.value.id == 'os'
+        )
+        is_builtin_open = isinstance(target, ast.Name) and target.id == 'open'
+        is_path_open = (
+            isinstance(target, ast.Attribute)
+            and target.attr == 'open'
+            and not is_os_open
+        )
+        if not (is_os_open or is_builtin_open or is_path_open):
+            continue
+        if is_os_open:
+            flags = node.args[1] if len(node.args) > 1 else next((
+                item.value for item in node.keywords if item.arg == 'flags'
+            ), None)
+            writes = flags is not None and any(
+                _reference_name(child) in write_flags
+                for child in ast.walk(flags)
+            )
+        else:
+            mode_index = 0 if is_path_open else 1
+            mode = (
+                node.args[mode_index]
+                if len(node.args) > mode_index
+                else next((
+                    item.value for item in node.keywords if item.arg == 'mode'
+                ), None)
+            )
+            writes = (
+                isinstance(mode, ast.Constant)
+                and isinstance(mode.value, str)
+                and any(flag in mode.value for flag in 'wax+')
+            )
+        if writes:
+            found.append((target, _OPEN_WRITE_OPERATION))
+    return found
+
+
 def _inventory_for_function(mapping, short: str, name: str):
     exact = mapping.get((short, name))
     if exact is not None:
@@ -3611,6 +3714,7 @@ def _operation_nodes(
         if canonical in required:
             found.append((node, canonical))
     found.extend(_content_path_mutation_nodes(func))
+    found.extend(_open_write_nodes(func))
     return found
 
 
@@ -3670,6 +3774,42 @@ def _operation_folder_expressions(
     operation, name: str, parents: dict[int, ast.AST]
 ) -> list:
     parent = parents.get(id(operation))
+    if (
+        name == _OPEN_WRITE_OPERATION
+        and isinstance(parent, ast.Call)
+        and parent.func is operation
+    ):
+        if (
+            isinstance(operation, ast.Attribute)
+            and not (
+                isinstance(operation.value, ast.Name)
+                and operation.value.id == 'os'
+            )
+        ):
+            return [operation.value]
+        folder = parent.args[0] if parent.args else next((
+            item.value
+            for item in parent.keywords
+            if item.arg in {'file', 'path'}
+        ), None)
+        return [folder] if folder is not None else []
+    if (
+        name in _COPY_CONTENT_PATH_ARGS
+        and isinstance(parent, ast.Call)
+        and parent.func is operation
+    ):
+        folders = []
+        for index, keyword_name in _COPY_CONTENT_PATH_ARGS[name]:
+            if len(parent.args) > index:
+                folders.append(parent.args[index])
+                continue
+            keyword = next(
+                (item for item in parent.keywords if item.arg == keyword_name),
+                None,
+            )
+            if keyword is not None:
+                folders.append(keyword.value)
+        return folders
     is_os_style = isinstance(operation, ast.Name) or (
         isinstance(operation, ast.Attribute)
         and isinstance(operation.value, ast.Name)
@@ -4047,6 +4187,21 @@ def _unclaimed_folder_operations(
         folder_argument_origin_sets = _operation_folder_argument_origin_sets(
             child, name, parents, func
         )
+        content_folder_argument_origin_sets = [
+            origins
+            for origins in folder_argument_origin_sets
+            if any(_looks_like_content_folder(origin) for origin in origins)
+        ]
+        content_folder_origin_sets = [
+            origins
+            for origins, argument_origins in zip(
+                folder_origin_sets, folder_argument_origin_sets
+            )
+            if any(
+                _looks_like_content_folder(origin)
+                for origin in argument_origins
+            )
+        ]
         stays_within_tree = _stays_within_claimed_tree(child, name, parents)
         folder_rule_kinds = _FOLDER_OPERATION_CLAIMS.get(name)
         if (
@@ -4074,13 +4229,16 @@ def _unclaimed_folder_operations(
                 or (
                     folder_rule_kinds is not None
                     and stays_within_tree
-                    and bool(folder_origin_sets)
-                    and all(origins & target_names for origins in folder_origin_sets)
+                    and bool(content_folder_origin_sets)
+                    and all(
+                        origins & target_names
+                        for origins in content_folder_origin_sets
+                    )
                     and len(target_roots) == 1
-                    and bool(folder_argument_origin_sets)
+                    and bool(content_folder_argument_origin_sets)
                     and all(
                         origins == target_roots
-                        for origins in folder_argument_origin_sets
+                        for origins in content_folder_argument_origin_sets
                     )
                     and bool(required_kinds & kinds)
                 )
@@ -4363,6 +4521,28 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    os.rmdir(content_folder)\n'
         '    os.rename(content_folder, other_content_folder)\n'
         '    os.replace(content_folder, other_content_folder)\n'
+        '\n'
+        'def copy_source(content_folder, dst):\n'
+        '    shutil.copytree(content_folder, dst)\n'
+        '\n'
+        'def claimed_copy_source(content_folder, dst):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        '        shutil.copytree(content_folder, dst)\n'
+        '\n'
+        'def open_writes(content_folder):\n'
+        "    open(os.path.join(content_folder, 'a'), 'w')\n"
+        "    Path(content_folder, 'b').open('a')\n"
+        "    os.open(os.path.join(content_folder, 'c'), os.O_CREAT | os.O_WRONLY)\n"
+        '\n'
+        'def read_only_opens(content_folder):\n'
+        "    open(os.path.join(content_folder, 'a'), 'r')\n"
+        "    Path(content_folder, 'b').open()\n"
+        "    os.open(os.path.join(content_folder, 'c'), os.O_RDONLY)\n"
+        '\n'
+        'def claimed_open_writes(content_folder):\n'
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        "        open(os.path.join(content_folder, 'a'), 'w')\n"
+        "        Path(content_folder, 'b').open('a')\n"
     )
     functions = {node.name: node for node in tree.body}
 
@@ -4396,6 +4576,22 @@ def test_the_claim_guard_discovers_content_path_mutations():
     } >= {'remove', 'unlink', 'rmdir', 'rename', 'replace'}, (
         'os-level content-path mutations 必须全部进入 repository-wide guard'
     )
+    assert _unclaimed_folder_operations(
+        functions['copy_source'], 'new_router'
+    ), 'copy source 读取 content folder 时也必须要求 matching claim'
+    assert _unclaimed_folder_operations(
+        functions['claimed_copy_source'], 'new_router'
+    ) == [], 'external destination 不应让已覆盖的 content-folder source 误报'
+    open_offenders = _unclaimed_folder_operations(
+        functions['open_writes'], 'new_router'
+    )
+    assert sum(item[3] == _OPEN_WRITE_OPERATION for item in open_offenders) == 3
+    assert _unclaimed_folder_operations(
+        functions['read_only_opens'], 'new_router'
+    ) == [], 'read-only open 不应被当成 content-folder writer'
+    assert _unclaimed_folder_operations(
+        functions['claimed_open_writes'], 'new_router'
+    ) == [], 'matching partial claim 应覆盖 mode-aware open writers'
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
