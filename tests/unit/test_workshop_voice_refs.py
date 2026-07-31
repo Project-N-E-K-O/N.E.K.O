@@ -617,3 +617,33 @@ def test_a_manifest_pointing_outside_the_folder_deletes_nothing(tmp_path):
             {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
         )
         assert outsider.read_bytes() == b"not-ours", f"{hostile!r} 让清理删到了目录外面"
+
+
+def test_a_manifest_naming_a_non_audio_asset_deletes_nothing(tmp_path):
+    """`reference_audio` must look like reference audio before we own it.
+
+    A hand-edited manifest naming an in-folder asset such as `preview.png`
+    would otherwise make an ordinary upload permanently remove unrelated
+    workshop content from the publish directory.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    (tmp_path / "preview.png").write_bytes(b"user-artwork")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "reference_audio": "preview.png", "prefix": "old"}),
+        encoding="utf-8",
+    )
+
+    assert voice_refs._current_reference_audio_path(str(tmp_path)) is None
+
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / "voice_sample_bbbbbbbbbbbb.wav"),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+    )
+
+    assert (tmp_path / "preview.png").read_bytes() == b"user-artwork", (
+        "清理把用户的工坊素材删了"
+    )

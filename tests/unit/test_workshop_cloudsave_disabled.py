@@ -716,3 +716,42 @@ def test_an_in_flight_read_cannot_clobber_the_cache_with_a_stale_snapshot(tmp_pa
     assert cm.load_workshop_config()["user_mod_folder"] == "/new", (
         "在飞的旧读把缓存盖回了保存之前的配置"
     )
+
+
+def test_the_fallback_does_not_mask_a_genuinely_broken_config(tmp_path, monkeypatch):
+    """Only the transient replace-busy error may fall back to the cache.
+
+    Masking every failure means malformed JSON or a revoked permission leaves
+    upload and publish silently working against the previous workshop root
+    forever, instead of surfacing the broken configuration.
+    """
+    from utils.config_manager import workshop as workshop_mixin
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text(json.dumps({"user_mod_folder": "/good"}), encoding="utf-8")
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        def __init__(self):
+            import threading
+
+            self._workshop_config_lock = threading.RLock()
+            self.workshop_dir = tmp_path / "default"
+
+        def get_workshop_config_path(self):
+            return config_path
+
+        def _rebase_workshop_config_after_storage_migration(self, config):
+            return config
+
+    cm = _CM()
+    assert cm.load_workshop_config()["user_mod_folder"] == "/good"
+
+    monkeypatch.setattr(
+        workshop_mixin, "read_json_tolerating_replace",
+        lambda *a, **kw: (_ for _ in ()).throw(ValueError("malformed json")),
+    )
+    broken = cm.load_workshop_config()
+    assert "user_mod_folder" not in broken, (
+        "配置真坏了却拿缓存盖住了——upload/publish 会一直对着旧根目录干活"
+    )
+    assert broken["default_workshop_folder"] == str(cm.workshop_dir)

@@ -22,6 +22,7 @@ import json
 import os
 
 from utils.file_utils import (
+    _REPLACE_BUSY_WINERRORS,
     atomic_write_json,
     read_json_tolerating_replace,
     running_on_event_loop,
@@ -292,8 +293,12 @@ class WorkshopMixin:
             # （见 read_json_tolerating_replace），于是这里会收到一个瞬时的
             # PermissionError。直接退回默认配置的话，upload / publish 就拿着默认的
             # 工坊根目录去干活，而用户的配置明明好好的 —— 静默换根目录比报错糟得多。
+            # ⚠️ 只对「瞬时 busy」回落。缓存一旦建立就把**所有**读失败都盖掉的话，
+            # JSON 被改坏、权限被收走这类真故障就永远不会暴露，upload / publish 会
+            # 一直对着旧根目录干活。判据同写入侧：OS 给的 winerror，不是消息猜测。
+            transient = getattr(e, "winerror", None) in _REPLACE_BUSY_WINERRORS
             last_good = getattr(self, "_last_good_workshop_config", None)
-            if last_good is not None:
+            if transient and last_good is not None:
                 logger.warning("加载workshop配置失败，沿用上一次成功读到的配置: %s", e)
                 return dict(last_good)
             error_msg = f"加载workshop配置失败: {e}"
