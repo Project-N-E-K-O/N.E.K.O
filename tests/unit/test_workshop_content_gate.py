@@ -864,20 +864,24 @@ def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
     return False
 
 
-def _claiming_worker_inventory(functions) -> tuple[set[str], set[str]]:
-    """Return claim owners and owners whose body is deferred by ``yield``."""
-    claiming = {
+def _claiming_worker_inventory(
+    functions,
+    seed_claiming: set[str] | None = None,
+    seed_generators: set[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Return claim owners and owners deferred by yield/generator expressions."""
+    claiming = set(seed_claiming or ()) | {
         node.name for node in functions if _claim_calls_in_own_scope(node)
     }
     generators = {
         node.name
         for node in functions
         if any(
-            isinstance(child, (ast.Yield, ast.YieldFrom))
+            isinstance(child, (ast.Yield, ast.YieldFrom, ast.GeneratorExp))
             for child in _walk_own_scope(node)
         )
     }
-    generator_owners = claiming & generators
+    generator_owners = set(seed_generators or ()) | (claiming & generators)
     while True:
         wrappers = {
             func.name
@@ -894,9 +898,12 @@ def _claiming_worker_inventory(functions) -> tuple[set[str], set[str]]:
             func.name
             for func in functions
             if func.name in wrappers
-            and any(
-                isinstance(node, ast.Call) and _tail_name(node) in generator_owners
-                for node in _walk_own_scope(func)
+            and (
+                func.name in generators
+                or any(
+                    isinstance(node, ast.Call) and _tail_name(node) in generator_owners
+                    for node in _walk_own_scope(func)
+                )
             )
         )
         claiming.update(wrappers)
@@ -945,18 +952,88 @@ def _claiming_names_called_on_loop(
     return offenders
 
 
-def _module_level_claiming_workers(trees) -> tuple[set[str], set[str]]:
-    """Find direct claim owners and synchronous wrappers around them."""
-    functions = []
-    for _, tree in trees:
-        stack = list(tree.body)
-        while stack:
-            node = stack.pop()
-            if isinstance(node, ast.FunctionDef):
-                functions.append(node)
-            elif isinstance(node, ast.ClassDef):
-                stack.extend(node.body)
-    return _claiming_worker_inventory(functions)
+def _module_level_claiming_workers(trees):
+    """Find owners per module/class scope, including direct import aliases."""
+    scope_functions = {}
+    module_trees = dict(trees)
+    for module, tree in trees:
+        scope_functions[(module, None)] = [
+            node for node in tree.body if isinstance(node, ast.FunctionDef)
+        ]
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef):
+                scope_functions[(module, node.name)] = [
+                    child for child in node.body if isinstance(child, ast.FunctionDef)
+                ]
+
+    claiming = {}
+    generators = {}
+    for scope, functions in scope_functions.items():
+        claiming[scope], generators[scope] = _claiming_worker_inventory(functions)
+
+    module_names = set(module_trees)
+    while True:
+        changed = False
+        for module, tree in trees:
+            scope = (module, None)
+            imported_claiming = set(claiming[scope])
+            imported_generators = set(generators[scope])
+            for node in tree.body:
+                if not isinstance(node, ast.ImportFrom) or not node.module:
+                    continue
+                source_module = node.module.rsplit('.', 1)[-1]
+                if source_module not in module_names:
+                    continue
+                source_scope = (source_module, None)
+                for alias in node.names:
+                    local_name = alias.asname or alias.name
+                    if alias.name in claiming.get(source_scope, set()):
+                        imported_claiming.add(local_name)
+                    if alias.name in generators.get(source_scope, set()):
+                        imported_generators.add(local_name)
+            next_claiming, next_generators = _claiming_worker_inventory(
+                scope_functions[scope], imported_claiming, imported_generators
+            )
+            if next_claiming != claiming[scope] or next_generators != generators[scope]:
+                claiming[scope] = next_claiming
+                generators[scope] = next_generators
+                changed = True
+        if not changed:
+            return claiming, generators
+
+
+def _scope_claiming_names_called_on_loop(
+    func,
+    module: str,
+    class_name: str | None,
+    claiming_by_scope,
+    generators_by_scope,
+) -> list:
+    """Resolve module names and ``self`` methods without cross-scope collisions."""
+    parents = _parent_map(func)
+    offenders = []
+    for node in _walk_own_scope(func):
+        if isinstance(node, ast.Name):
+            scope = (module, None)
+            name = node.id
+        elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+            name = node.attr
+            if node.value.id in {'self', 'cls'} and class_name:
+                scope = (module, class_name)
+            elif (module, node.value.id) in claiming_by_scope:
+                scope = (module, node.value.id)
+            else:
+                continue
+        else:
+            continue
+        if name not in claiming_by_scope.get(scope, set()):
+            continue
+        if (
+            name in generators_by_scope.get(scope, set())
+            or not _is_deferred_reference(node, parents, func)
+        ):
+            offenders.append((f'{scope[0]}.{scope[1] or "<module>"}.{name}', node.lineno))
+    return offenders
 
 
 def test_the_event_loop_guard_prunes_nested_worker_bodies():
@@ -1040,6 +1117,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    with claim_content_folder(folder, purpose=p):\n'
         '        yield 1\n'
         '\n'
+        'def _generator_expression_wrapper():\n'
+        '    return (_claiming_worker() for _ in items)\n'
+        '\n'
         'async def offloaded():\n'
         '    await asyncio.to_thread(_claiming_wrapper)\n'
         '\n'
@@ -1067,6 +1147,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def generator_constructor_offloaded():\n'
         '    await asyncio.to_thread(_generator_owner)\n'
         '\n'
+        'async def generator_expression_offloaded():\n'
+        '    await asyncio.to_thread(_generator_expression_wrapper)\n'
+        '\n'
         'class Service:\n'
         '    def worker(self):\n'
         '        with claim_content_folder(folder, purpose=p):\n'
@@ -1077,6 +1160,13 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         '    async def handler(self):\n'
         '        self.wrapper()\n'
+        '\n'
+        'class Other:\n'
+        '    def worker(self):\n'
+        '        return 1\n'
+        '\n'
+        '    async def safe_handler(self):\n'
+        '        self.worker()\n'
     )
     functions = {
         node.name: node
@@ -1085,33 +1175,92 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     }
     claiming, generators = _module_level_claiming_workers([('synthetic', tree)])
 
-    assert _claiming_names_called_on_loop(
-        functions['offloaded'], claiming, generators
-    ) == []
-    assert _claiming_names_called_on_loop(
-        functions['direct'], claiming, generators
-    ), '模块级 claim owner 的同步 wrapper 被协程直调时也必须报出来'
-    assert _claiming_names_called_on_loop(
-        functions['lambda_body'], claiming, generators
-    ) == []
-    assert _claiming_names_called_on_loop(
-        functions['lambda_returns_owner'], claiming, generators
-    ), 'offload lambda 只返回 owner 时并没有在 worker 执行它，必须报出来'
-    assert _claiming_names_called_on_loop(
-        functions['eager_lambda_default'], claiming, generators
-    ), 'lambda 默认值在 offload 前求值，里面的 claim owner 必须报出来'
-    assert _claiming_names_called_on_loop(
-        functions['eager_nested_default'], claiming, generators
-    ), 'nested def 默认值在定义 helper 时求值，里面的 claim owner 必须报出来'
-    assert _claiming_names_called_on_loop(
-        functions['eager_nested_decorator'], claiming, generators
-    ), 'nested def decorator 在定义 helper 时求值，里面的 claim owner 必须报出来'
-    assert _claiming_names_called_on_loop(
-        functions['handler'], claiming, generators
+    def module_offenders(name):
+        return _scope_claiming_names_called_on_loop(
+            functions[name], 'synthetic', None, claiming, generators
+        )
+
+    assert module_offenders('offloaded') == []
+    assert module_offenders('direct'), (
+        '模块级 claim owner 的同步 wrapper 被协程直调时也必须报出来'
+    )
+    assert module_offenders('lambda_body') == []
+    assert module_offenders('lambda_returns_owner'), (
+        'offload lambda 只返回 owner 时并没有在 worker 执行它，必须报出来'
+    )
+    assert module_offenders('eager_lambda_default'), (
+        'lambda 默认值在 offload 前求值，里面的 claim owner 必须报出来'
+    )
+    assert module_offenders('eager_nested_default'), (
+        'nested def 默认值在定义 helper 时求值，里面的 claim owner 必须报出来'
+    )
+    assert module_offenders('eager_nested_decorator'), (
+        'nested def decorator 在定义 helper 时求值，里面的 claim owner 必须报出来'
+    )
+    assert _scope_claiming_names_called_on_loop(
+        functions['handler'], 'synthetic', 'Service', claiming, generators
     ), 'class method claim owner 的同步 wrapper 被 async method 直调时必须报出来'
-    assert _claiming_names_called_on_loop(
-        functions['generator_constructor_offloaded'], claiming, generators
-    ), 'offload generator function 只会构造 generator，不会在 worker 执行 claim body'
+    assert _scope_claiming_names_called_on_loop(
+        functions['safe_handler'], 'synthetic', 'Other', claiming, generators
+    ) == [], '另一个 class 的同名安全方法不能被误报'
+    assert module_offenders('generator_constructor_offloaded'), (
+        'offload generator function 只会构造 generator，不会在 worker 执行 claim body'
+    )
+    assert module_offenders('generator_expression_offloaded'), (
+        'offload generator-expression wrapper 也只会构造 generator，必须报出来'
+    )
+
+    source = ast.parse(
+        'def owner():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        pass\n'
+    )
+    consumer = ast.parse(
+        'from .source import owner as imported_owner\n'
+        'async def imported_direct():\n'
+        '    imported_owner()\n'
+        'async def imported_offloaded():\n'
+        '    await asyncio.to_thread(imported_owner)\n'
+    )
+    unrelated = ast.parse(
+        'def owner():\n'
+        '    return 1\n'
+        'async def safe_same_name():\n'
+        '    owner()\n'
+    )
+    imported_claiming, imported_generators = _module_level_claiming_workers([
+        ('source', source),
+        ('consumer', consumer),
+        ('unrelated', unrelated),
+    ])
+    imported_functions = {
+        node.name: node
+        for tree in (consumer, unrelated)
+        for node in tree.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['imported_direct'],
+        'consumer',
+        None,
+        imported_claiming,
+        imported_generators,
+    ), '新模块里的 owner 经直接 import 后仍必须被发现'
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['imported_offloaded'],
+        'consumer',
+        None,
+        imported_claiming,
+        imported_generators,
+    ) == []
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['safe_same_name'],
+        'unrelated',
+        None,
+        imported_claiming,
+        imported_generators,
+    ) == [], '另一个模块的同名安全函数不能被误报'
 
 
 def test_no_claim_is_ever_taken_on_the_event_loop():
@@ -1131,16 +1280,32 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
 
     offenders = []
     for short, tree in trees:
+        parents = {
+            id(child): parent
+            for parent in ast.walk(tree)
+            for child in ast.iter_child_nodes(parent)
+        }
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef):
                 continue
+            class_name = None
+            current = node
+            while id(current) in parents:
+                current = parents[id(current)]
+                if isinstance(current, ast.ClassDef):
+                    class_name = current.name
+                    break
             # 嵌套的 async def 会被这层 walk 单独取到，各查各的作用域。
             for call in _claim_calls_in_own_scope(node):
                 offenders.append(f'{short}.{node.name}:{call.lineno}')
             for helper, line in _claiming_helpers_called_on_loop(node):
                 offenders.append(f'{short}.{node.name}:{line} -> {helper}（在事件循环直调）')
-            for worker, line in _claiming_names_called_on_loop(
-                node, claiming_workers, generator_workers
+            for worker, line in _scope_claiming_names_called_on_loop(
+                node,
+                short,
+                class_name,
+                claiming_workers,
+                generator_workers,
             ):
                 offenders.append(f'{short}.{node.name}:{line} -> {worker}（模块 worker 未 offload）')
 
