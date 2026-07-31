@@ -34,7 +34,7 @@ from memory.event_log import (
 )
 from memory.outbox import OP_POST_TURN_SIGNALS
 
-from . import gates, outbox_infra, runtime, signal_extraction
+from . import gates, locale_state, outbox_infra, runtime, signal_extraction
 from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
 
@@ -106,6 +106,15 @@ async def _spawn_outbox_post_turn_signals(
         )
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
+
+
+async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
+    return await runtime.persona_manager.resolve_corrections(
+        lanlan_name,
+        prompt_locale_resolver=lambda subject: (
+            locale_state.aget_subject_prompt_locale(lanlan_name, subject)
+        ),
+    )
 
 
 @_with_language_context
@@ -291,7 +300,7 @@ async def _run_post_turn_signals(
         try:
             # 4. 审视矛盾队列（如果有 pending corrections）
             # 强力记忆关 → 不跑 LLM 批量审视（corrections queue 累积，等重开消化）
-            resolved = await runtime.persona_manager.resolve_corrections(lanlan_name)
+            resolved = await _resolve_corrections_with_subject_locale(lanlan_name)
             if resolved:
                 logger.info(f"[MemoryServer] {lanlan_name}: 审视了 {resolved} 条 persona 矛盾")
         except Exception as e:

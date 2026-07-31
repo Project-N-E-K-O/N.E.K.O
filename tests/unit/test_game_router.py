@@ -3838,6 +3838,7 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
             "nekoInitiated": True,
             "nekoInviteText": "来踢球吧，玩家。",
             "gameMemoryTailCount": 3,
+            "i18n_language": "zh-TW",
         }),
     )
 
@@ -3857,6 +3858,8 @@ async def test_route_start_accepts_neko_invite_context(monkeypatch):
     assert state["soccer_game_memory_archive_enabled"] is False
     assert state["soccer_game_memory_postgame_context_enabled"] is False
     assert state["game_memory_enabled"] is False
+    assert state["user_language"] == "zh-TW"
+    assert gr_archive._build_game_archive(state)["user_language"] == "zh-TW"
 
 
 @pytest.mark.unit

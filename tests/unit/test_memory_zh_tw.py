@@ -1090,6 +1090,174 @@ async def test_scoped_maintenance_resolvers_receive_subject_locale(
 
 
 @pytest.mark.asyncio
+async def test_post_turn_correction_resolver_receives_subject_locale(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import locale_state, post_turn, runtime
+    from memory.scopes import MemorySubject
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    observed = []
+
+    class PersonaManager:
+        async def resolve_corrections(self, name, *, prompt_locale_resolver):
+            observed.append((
+                name,
+                await prompt_locale_resolver(subject),
+            ))
+            return 1
+
+    subject_locale_path = tmp_path / "prompt_locale_subjects.json"
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(subject_locale_path),
+    )
+    monkeypatch.setattr(runtime, "persona_manager", PersonaManager())
+    locale_state._subject_locale_cache.clear()
+    locale_state.record_subject_prompt_locale("Neko", subject, "zh-TW")
+
+    result = await post_turn._resolve_corrections_with_subject_locale("Neko")
+
+    assert result == 1
+    assert observed == [("Neko", "zh-TW")]
+
+
+@pytest.mark.asyncio
+async def test_reflection_refine_partitions_subject_locales(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import locale_state, refine_loops, runtime
+    from memory.scopes import MemorySubject
+    from utils.language_utils import get_global_language_full, language_context
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    reflections = [
+        {"id": "legacy", "entity": "master"},
+        {"id": "scoped", "entity": "master", **subject.as_entry_fields()},
+    ]
+    observed = []
+
+    class ReflectionEngine:
+        async def aload_reflections(self, _name, *, include_archived):
+            assert include_archived is False
+            return reflections
+
+    async def run_batch(name, *, subject=None):
+        observed.append((name, subject, get_global_language_full()))
+
+    subject_locale_path = tmp_path / "prompt_locale_subjects.json"
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(subject_locale_path),
+    )
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(
+        refine_loops,
+        "_run_reflection_refine_for_character",
+        run_batch,
+    )
+    locale_state._subject_locale_cache.clear()
+    locale_state.record_subject_prompt_locale("Neko", subject, "zh-TW")
+
+    with language_context("zh-CN"):
+        await refine_loops._run_reflection_refine_with_subject_locales("Neko")
+
+    assert observed == [
+        ("Neko", None, "zh-CN"),
+        ("Neko", subject, "zh-TW"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reflection_refine_filters_candidate_pool_to_subject(monkeypatch):
+    from app.memory_server import refine_loops, runtime
+    from memory import refine as memory_refine
+    from memory.scopes import MemorySubject
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    other = MemorySubject.group_chat("qq", "9900")
+    reflections = [
+        {
+            "id": "target-reflection",
+            "entity": "master",
+            "text": "好",
+            **subject.as_entry_fields(),
+        },
+        {
+            "id": "other-reflection",
+            "entity": "master",
+            "text": "嗯",
+            **other.as_entry_fields(),
+        },
+    ]
+    facts = [
+        {
+            "id": "target-fact",
+            "entity": "master",
+            "text": "好",
+            "absorbed": True,
+            **subject.as_entry_fields(),
+        },
+        {
+            "id": "other-fact",
+            "entity": "master",
+            "text": "嗯",
+            "absorbed": True,
+            **other.as_entry_fields(),
+        },
+    ]
+    captured = []
+
+    class ReflectionEngine:
+        async def aload_reflections(self, _name, *, include_archived):
+            assert include_archived is False
+            return reflections
+
+        async def apply_refine_actions(self, *_args, **_kwargs):
+            raise AssertionError("no apply expected")
+
+        async def _abump_refine_attempts(self, *_args, **_kwargs):
+            raise AssertionError("no failure expected")
+
+    class FactStore:
+        async def aload_facts(self, _name):
+            return facts
+
+    class RefineEngine:
+        def __init__(self, _config_manager):
+            pass
+
+        async def refine_pass(self, candidates, **_kwargs):
+            captured.append(candidates)
+            return {
+                "clusters_seen": 0,
+                "clusters_skipped": 0,
+                "clusters_resolved": 0,
+                "clusters_failed": 0,
+            }
+
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(runtime, "fact_store", FactStore())
+    monkeypatch.setattr(runtime, "_config_manager", object())
+    monkeypatch.setattr(memory_refine, "MemoryRefineEngine", RefineEngine)
+
+    await refine_loops._run_reflection_refine_for_character(
+        "Neko",
+        subject=subject,
+    )
+
+    assert len(captured) == 1
+    assert {
+        item["id"]
+        for item in captured[0]["master"]
+    } == {"target-reflection", "target-fact"}
+
+
+@pytest.mark.asyncio
 async def test_periodic_promotion_uses_durable_character_locale(monkeypatch, tmp_path):
     from app.memory_server import evidence_loops, locale_state, runtime
     from utils.language_utils import get_global_language_full

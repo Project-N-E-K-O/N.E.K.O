@@ -150,7 +150,11 @@ async def _periodic_persona_refine_loop():
         await asyncio.sleep(interval)
 
 
-async def _run_reflection_refine_for_character(character: str) -> None:
+async def _run_reflection_refine_for_character(
+    character: str,
+    *,
+    subject=None,
+) -> None:
     """Single-character reflection refine pass. The cluster may mix in absorbed
     facts of the same entity as a read-only information source (facts cannot be
     split/discarded/modified; the apply layer enforces this as a backstop)."""
@@ -159,6 +163,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
         MEMORY_DEAD_LETTER_SELF_HEAL_SECONDS,
     )
     from memory.facts import safe_int_field
+    from memory.scopes import entry_matches_subject
     from memory.temporal import cooldown_elapsed
     from memory.refine import (
         MemoryRefineEngine,
@@ -191,6 +196,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             if isinstance(r, dict)
             and r.get('entity') == entity
             and r.get('id')
+            and entry_matches_subject(r, subject)
             and (
                 safe_int_field(r, 'refine_attempts') < MEMORY_LIVENESS_MAX_ATTEMPTS
                 or cooldown_elapsed(
@@ -204,6 +210,7 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             for f in facts
             if isinstance(f, dict) and f.get('entity') == entity
             and f.get('absorbed') and f.get('id')
+            and entry_matches_subject(f, subject)
         ]
         if entity_refls:  # 至少要有 reflection；fact 是只读补料
             candidates_by_entity[entity] = entity_refls + entity_facts
@@ -223,10 +230,15 @@ async def _run_reflection_refine_for_character(character: str) -> None:
     async def _failure(cluster, cluster_hash):
         await engine_ref._abump_refine_attempts(character, cluster, cluster_hash)
 
+    subject_label = (
+        "legacy"
+        if subject is None
+        else f"{subject.key}/{subject.scope}"
+    )
     result = await engine.refine_pass(
         candidates_by_entity,
         apply_fn=_apply,
-        scope_label=f"reflection/{character}",
+        scope_label=f"reflection/{character}/{subject_label}",
         failure_fn=_failure,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
@@ -236,6 +248,57 @@ async def _run_reflection_refine_for_character(character: str) -> None:
             f"resolved={result['clusters_resolved']}, "
             f"failed={result['clusters_failed']}"
         )
+
+
+async def _run_reflection_refine_with_subject_locales(character: str) -> None:
+    engine_ref = runtime.reflection_engine
+    if engine_ref is None:
+        return
+    reflections = await engine_ref.aload_reflections(
+        character,
+        include_archived=False,
+    )
+    if not reflections:
+        return
+
+    from memory.scopes import is_legacy_private_entry, subject_from_entry
+    from utils.language_utils import language_context
+
+    subjects = []
+    seen_domains: set[tuple[str | None, str | None]] = set()
+    for reflection in reflections:
+        if not isinstance(reflection, dict):
+            continue
+        subject = subject_from_entry(reflection)
+        if subject is not None:
+            domain = (subject.key, subject.scope)
+        elif is_legacy_private_entry(reflection):
+            domain = (None, None)
+        else:
+            continue
+        if domain in seen_domains:
+            continue
+        seen_domains.add(domain)
+        subjects.append(subject)
+
+    for subject in subjects:
+        selected_locale = None
+        if subject is not None:
+            selected_locale = await aget_subject_prompt_locale(
+                character,
+                subject,
+            )
+        if selected_locale:
+            with language_context(selected_locale):
+                await _run_reflection_refine_for_character(
+                    character,
+                    subject=subject,
+                )
+        else:
+            await _run_reflection_refine_for_character(
+                character,
+                subject=subject,
+            )
 
 
 async def _periodic_reflection_refine_loop():
@@ -258,7 +321,7 @@ async def _periodic_reflection_refine_loop():
             try:
                 await run_with_character_prompt_locale(
                     name,
-                    _run_reflection_refine_for_character,
+                    _run_reflection_refine_with_subject_locales,
                     name,
                 )
             except Exception as e:
