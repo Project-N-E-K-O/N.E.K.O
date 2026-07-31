@@ -109,6 +109,11 @@ class QQReplyGenerationService:
                 stage_trace.status = "no_session"
                 return QQModelResult(reply_text=None, source="none", traces=[stage_trace])
 
+            # This evidence belongs to exactly one generation. Clear a
+            # previous turn before prime/streaming can fail and leave a stale
+            # truthy value for the delivery buffer to consume.
+            user_data["human_row_materialized"] = False
+
             user_session, reply_chunks = self.plugin.session_runtime_service.prime_generation_session_state(
                 user_data,
                 session_key=session_key,
@@ -255,6 +260,7 @@ class QQReplyGenerationService:
             # 根本没进历史——此时入 participant bucket 会造出会话里不存在的
             # 成员记忆。
             user_data["human_row_accepted"] = False
+            user_data["human_row_materialized"] = False
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
                 # 私聊会话的 prompt 是建会话时烙进去的：跨群授权打开时建的
@@ -370,9 +376,14 @@ class QQReplyGenerationService:
                     # （引用了召回结论的那条 ai 行）照常保留。
                     self._strip_tool_round_rows(history_now, history_before)
                 appended = list(history_now)[history_before:]
-                user_data["human_row_accepted"] = any(
+                human_row_materialized = any(
                     getattr(row, "type", "") == "human" for row in appended
                 )
+                user_data["human_row_accepted"] = human_row_materialized
+                # run_primary_session_call consumes human_row_accepted while
+                # recording group-member turns. Delivery happens afterward,
+                # so preserve separate evidence for reply buffering.
+                user_data["human_row_materialized"] = human_row_materialized
                 # 本轮真正写进历史的那条 ai 行（没有就是 None）。未投递打标
                 # 按它的身份来：用"raw 输出非空"去推断历史里有行，是推断而
                 # 不是证据——推断错了就会把上一条**已投递**的回复标成未投递，

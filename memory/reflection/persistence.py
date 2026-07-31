@@ -468,6 +468,8 @@ class PersistenceMixin:
                             f"reflection archive unreadable during forget: {exc}"
                         ) from exc
                     for archived in archived_rows:
+                        if not isinstance(archived, dict):
+                            continue
                         reflection_id = archived.get('id')
                         if (
                             reflection_id in unresolved_surfaced_ids

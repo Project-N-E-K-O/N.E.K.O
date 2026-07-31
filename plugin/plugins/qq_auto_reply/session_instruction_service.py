@@ -279,9 +279,16 @@ class QQSessionInstructionService:
             lanlan_name=her_name,
             master_name=master_title,
         )
-        should_use_memory_context = (
-            (not is_group and permission_level == "admin")
-            if use_memory_context is None else bool(use_memory_context)
+        prompt_builder = getattr(self.plugin, "prompt_builder", None)
+        if prompt_builder is None:
+            # Lightweight callers/tests may construct the instruction service
+            # without the full plugin wiring; still reuse the canonical policy.
+            from .prompt_builder import QQPromptBuilder
+            prompt_builder = QQPromptBuilder(self.plugin)
+        should_use_memory_context = prompt_builder.should_use_memory_context(
+            is_group=is_group,
+            permission_level=permission_level,
+            requested=use_memory_context,
         )
 
         def t(key, default):

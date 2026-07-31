@@ -334,7 +334,7 @@ class QQReplyPipelineRunner:
                 first_user_materialized=bool(
                     (
                         getattr(self.plugin, "_user_sessions", {}) or {}
-                    ).get(session_key, {}).get("human_row_accepted", False)
+                    ).get(session_key, {}).get("human_row_materialized", False)
                 ),
                 consent_snapshot=(
                     # 私聊也可能有依赖（跨群开关打开时的会话清单段），

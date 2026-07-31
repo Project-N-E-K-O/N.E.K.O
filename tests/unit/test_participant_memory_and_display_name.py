@@ -997,6 +997,43 @@ def test_prompt_builder_private_policy_follows_participant_switch():
     )
 
 
+@pytest.mark.asyncio
+async def test_session_instructions_reuse_participant_memory_default():
+    from plugin.plugins.qq_auto_reply.prompt_builder import QQPromptBuilder
+    from plugin.plugins.qq_auto_reply.session_instruction_service import (
+        QQSessionInstructionService,
+    )
+
+    plugin = _read_path_plugin()
+    plugin.i18n = SimpleNamespace(
+        t=lambda _key, default="", **_kwargs: default,
+    )
+    plugin._user_sessions = {}
+    plugin.permission_mgr = SimpleNamespace(
+        get_nickname=lambda *_args, **_kwargs: None,
+    )
+    plugin.qq_client = SimpleNamespace(needs_attention=False)
+    plugin.fatigue_service = None
+    plugin.session_runtime_service = SimpleNamespace()
+    plugin.prompt_builder = QQPromptBuilder(plugin)
+    service = QQSessionInstructionService(plugin)
+
+    bundle = await service.build_session_instructions(
+        her_name="Neko",
+        master_name="主人",
+        character_prompt="人设",
+        character_card_fields={},
+        permission_level="trusted",
+        sender_id="1001",
+        user_title="小明",
+        use_memory_context=None,
+        participant_memory=True,
+    )
+
+    assert "scoped 上下文" in bundle.core_memory_text
+    plugin.memory_bridge.fetch_bootstrap_memory.assert_not_awaited()
+
+
 def test_prime_gates_participant_and_demoted_legacy_sessions():
     """prime 的私聊门控三形态：participant 会话跟实时开关走；legacy 会话
     被降权后 fail-closed 停写（绝不把非 admin 的发言并进主人语料）；
@@ -1788,6 +1825,56 @@ async def test_scoped_forget_aborts_on_unreadable_persona(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_uses_cached_persona_before_first_save(tmp_path):
+    from memory.persona.facts import FactsMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    cached = {
+        target.persona_section_key: {
+            "facts": [
+                {"id": "p1", "text": "target", **target.as_entry_fields()},
+            ],
+            **target.as_entry_fields(),
+        },
+    }
+    corrections_path = tmp_path / "persona_corrections.json"
+    corrections_path.write_text("[]", encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = FactsMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._resolve_lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+            self._personas = {"Neko": cached}
+            self.saved = None
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _get_resolve_alock(self, name):
+            return self._resolve_lock
+
+        def _corrections_path(self, name):
+            return str(corrections_path)
+
+        def _persona_path(self, name):
+            return str(tmp_path / "not-yet-written.json")
+
+        async def asave_persona(self, name, value):
+            self.saved = value
+
+    harness = _Harness()
+    stats = await harness.aforget_subject("Neko", target)
+
+    assert stats["persona_entries"] == 1
+    assert stats["persona_section_dropped"] is True
+    assert harness.saved == {}
+    assert harness._personas["Neko"] == {}
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_rejects_non_list_persona_facts(tmp_path):
     from memory.persona.facts import FactsMixin
 
@@ -1977,6 +2064,7 @@ async def test_scoped_forget_purges_surfaced_archive_only_reflection(tmp_path):
     archive_dir = tmp_path / "reflection_archive"
     archive_dir.mkdir()
     (archive_dir / "2026-01-01_abcd1234.json").write_text(json.dumps([
+        "malformed-row",
         {"id": "archived-target", "text": "secret", **target.as_entry_fields()},
     ]), encoding="utf-8")
 
@@ -2640,6 +2728,12 @@ async def test_private_buffer_uses_resolved_participant_consent():
     plugin = SimpleNamespace(
         reply_buffer_service=SimpleNamespace(schedule_reply=schedule),
         _build_session_key=lambda **kwargs: "private:1001",
+        _user_sessions={
+            "private:1001": {
+                "human_row_accepted": False,
+                "human_row_materialized": True,
+            },
+        },
         _emit_log=MagicMock(),
     )
     runner = QQReplyPipelineRunner(plugin)
@@ -2666,6 +2760,7 @@ async def test_private_buffer_uses_resolved_participant_consent():
     await runner._run_delivery(plan, request, outcome, context=context)
 
     assert schedule.await_args.kwargs["consented"] is False
+    assert schedule.await_args.kwargs["first_user_materialized"] is True
 
 
 @pytest.mark.asyncio
@@ -2996,6 +3091,32 @@ def test_private_synthetic_flush_replaces_control_row_with_real_inputs():
     )
     assert len(history2) == 5
     assert user_data2["nonconsent_history_end"] == 5
+
+
+def test_private_synthetic_cursor_consumes_blank_inputs():
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    record = MagicMock(return_value=1)
+    plugin = SimpleNamespace(
+        session_memory_service=SimpleNamespace(
+            record_synthetic_prompt_rows=record,
+        ),
+    )
+    service = QQReplyBufferService(plugin)
+    pending = PendingReply(
+        "first", 0.0, sender_id="1001", is_group=False, group_id="",
+    )
+    pending.buffered_user_texts = ["first", "   ", "second"]
+    pending.materialized_user_count = 1
+    service._synthetic_record_pending = pending
+
+    service._record_synthetic_prompt_rows("private:1001", 0)
+
+    assert record.call_args.kwargs["replacement_user_texts"] == ["   ", "second"]
+    assert pending.materialized_user_count == 3
 
 
 @pytest.mark.asyncio

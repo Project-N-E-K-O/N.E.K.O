@@ -1125,7 +1125,10 @@ class FactsMixin:
                 # that would overwrite every unrelated section, so inspect the
                 # on-disk view strictly and never repair it here.
                 persona_path = self._persona_path(name)
-                persona: dict = {}
+                cached_persona = self._personas.get(name)
+                persona: dict = (
+                    cached_persona if isinstance(cached_persona, dict) else {}
+                )
                 if await asyncio.to_thread(os.path.exists, persona_path):
                     try:
                         persona_data = await read_json_async(persona_path)

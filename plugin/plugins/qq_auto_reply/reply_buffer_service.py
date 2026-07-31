@@ -200,8 +200,17 @@ class QQReplyBufferService:
                 replacement_user_texts=missing_user_texts,
             )
         )
-        if isinstance(materialized, int):
-            pending.materialized_user_count += materialized
+        expected_materialized = sum(
+            1 for value in missing_user_texts if str(value).strip()
+        )
+        if (
+            isinstance(materialized, int)
+            and materialized == expected_materialized
+        ):
+            # The recorder filters blank rows. Once every nonblank row in
+            # this slice was inserted, consume the whole slice so a blank
+            # prefix cannot shift the cursor onto an already-inserted row.
+            pending.materialized_user_count += len(missing_user_texts)
 
     def _clear_undelivered_marks(
         self, session_key: str, pending: "PendingReply",
