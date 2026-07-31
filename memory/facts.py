@@ -650,8 +650,8 @@ class FactStore:
         ——legacy 无戳条目与其它 scope 的条目绝不落入删除面（fail-closed
         方向与读侧过滤一致）。幂等：目标为空时是 no-op。
 
-        FTS 删行失败只告警不中止：索引残留最多让 BM25 命中一个已不存在
-        的 id，读侧对缺失 id 本就容忍；而为它中止会让重试反复重删主存。
+        FTS 使用严格删除并排在 JSON 变更之前：无法确认索引清理时整次
+        forget 失败，保留主存中的 id 供重试；逐 id 的成功删除是幂等的。
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import coerce_subject, entry_matches_subject
         memory_subject = coerce_subject(subject)
@@ -744,6 +744,22 @@ class FactStore:
                 ]
                 removed_archive = len(removed_from_archive)
 
+            # Privacy erasure must fail closed.  The normal FTS helper is
+            # deliberately best-effort, so request strict propagation here
+            # while the authoritative JSON rows still preserve every id for
+            # a retry.  A partial multi-id FTS deletion is harmless because
+            # DELETE is idempotent and no JSON state has changed yet.
+            if self._time_indexed is not None:
+                deleted_fact_ids: set = set()
+                for fact in removed + removed_from_archive:
+                    fact_id = fact.get('id')
+                    if not fact_id or fact_id in deleted_fact_ids:
+                        continue
+                    deleted_fact_ids.add(fact_id)
+                    await self._time_indexed.adelete_fact_from_index(
+                        lanlan_name, fact_id, strict=True,
+                    )
+
             # Archive first: if the later active write fails, facts.json still
             # contains enough subject-stamped rows for a retry. The reverse
             # order is the irrecoverable half-commit reported by Greptile.
@@ -774,22 +790,6 @@ class FactStore:
                     # active file so the retry can still find the subject.
                     facts[:] = previous_facts
                     raise
-            if self._time_indexed is not None:
-                deleted_fact_ids: set = set()
-                for fact in removed + removed_from_archive:
-                    fact_id = fact.get('id')
-                    if not fact_id or fact_id in deleted_fact_ids:
-                        continue
-                    deleted_fact_ids.add(fact_id)
-                    try:
-                        await self._time_indexed.adelete_fact_from_index(
-                            lanlan_name, fact_id,
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            f"[FactStore] {lanlan_name}: forget 清 FTS 索引"
-                            f"失败（残留 id 只影响空命中）: {exc}"
-                        )
         if removed_active or removed_archive:
             logger.info(
                 f"[FactStore] {lanlan_name}: forget "

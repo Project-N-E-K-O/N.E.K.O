@@ -365,6 +365,35 @@ def test_batch_size_must_be_positive(timeindex_module):
         )
 
 
+def test_strict_fact_index_delete_propagates_database_failure(timeindex_module):
+    class _FailingConnection:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def execute(self, *_args, **_kwargs):
+            raise RuntimeError("database locked")
+
+    manager = timeindex_module.TimeIndexedMemory.__new__(
+        timeindex_module.TimeIndexedMemory
+    )
+    manager.engines = {
+        "cat": types.SimpleNamespace(connect=lambda: _FailingConnection())
+    }
+    manager._assert_timeindex_writable = lambda _name: None
+    manager._ensure_engine_exists = lambda _name: True
+    manager._ensure_fts_table = lambda _name: True
+
+    # Ordinary maintenance remains best-effort.
+    manager.delete_fact_from_index("cat", "fact-id")
+
+    # Privacy erasure can now fail closed before deleting authoritative JSON.
+    with pytest.raises(RuntimeError, match="Unable to delete fact fact-id"):
+        manager.delete_fact_from_index("cat", "fact-id", strict=True)
+
+
 class _FakeResult:
     def __init__(self, rows=None, error=None):
         self.rows = rows or []
