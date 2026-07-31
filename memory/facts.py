@@ -867,6 +867,28 @@ class FactStore:
             return ''.join(parts)
         return str(content or '')
 
+    _PROMPT_TEXT_PART_TYPES = frozenset((None, 'text', 'input_text', 'output_text'))
+
+    @classmethod
+    def _message_locale_content(cls, content) -> str:
+        if isinstance(content, str):
+            return content
+        if not isinstance(content, list):
+            return ''
+        parts = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+                continue
+            if not isinstance(item, dict):
+                continue
+            if item.get('type') not in cls._PROMPT_TEXT_PART_TYPES:
+                continue
+            text = item.get('text')
+            if isinstance(text, str):
+                parts.append(text)
+        return '\n'.join(parts)
+
     @classmethod
     def _format_conversation(cls, messages: list, name_mapping: dict) -> str:
         """Serialize messages into the 'role | content' shape used by LLM prompts."""
@@ -882,7 +904,7 @@ class FactStore:
     def _messages_locale_text(cls, messages: list) -> str:
         """Return message bodies without generated speaker or segment labels."""
         return "\n".join(
-            cls._flatten_message_content(getattr(message, 'content', ''))
+            cls._message_locale_content(getattr(message, 'content', ''))
             for message in messages
         )
 
@@ -1117,6 +1139,20 @@ class FactStore:
             segments,
             omission_marker=omission_marker,
         )
+        return cls._render_capped_speaker_segments(
+            segments,
+            capped_bodies,
+            nonce=nonce,
+        )
+
+    @classmethod
+    def _render_capped_speaker_segments(
+        cls,
+        segments: list[dict],
+        capped_bodies: list[list[str]],
+        *,
+        nonce: str,
+    ) -> str:
         blocks = []
         for index, (segment, message_bodies) in enumerate(
             zip(segments, capped_bodies),
@@ -1130,6 +1166,65 @@ class FactStore:
                 lines.extend(f"| {line}" for line in body_lines[1:])
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
+
+    @classmethod
+    def _format_speaker_segments_with_locale(
+        cls,
+        segments: list[dict],
+        *,
+        nonce: str,
+        ui_lang: str,
+    ) -> tuple[str, str]:
+        locale_text = "\n".join(
+            cls._messages_locale_text(segment.get('messages') or [])
+            for segment in segments
+        )
+        lang = detect_prompt_language(locale_text, ui_language=ui_lang)
+
+        # Re-run the cap when its localized marker changes. Locale detection
+        # then sees the same retained head/tail bodies as the rendered prompt,
+        # without generated omission or multimodal markers.
+        capped_bodies: list[list[str]] = []
+        for _ in range(3):
+            omission_marker = get_scoped_batch_middle_omission_marker(lang)
+            capped_bodies = cls._cap_speaker_message_bodies(
+                segments,
+                omission_marker=omission_marker,
+            )
+            generated_markers = {omission_marker}
+            for segment in segments:
+                for message in segment.get('messages') or []:
+                    content = getattr(message, 'content', '')
+                    if not isinstance(content, list):
+                        continue
+                    for item in content:
+                        if not isinstance(item, dict):
+                            continue
+                        item_type = item.get('type')
+                        if item_type not in cls._PROMPT_TEXT_PART_TYPES:
+                            generated_markers.add(
+                                str(item.get('text', f"|{item_type or ''}|"))
+                            )
+            capped_locale_text = "\n".join(
+                body
+                for message_bodies in capped_bodies
+                for body in message_bodies
+            )
+            for marker in generated_markers:
+                capped_locale_text = capped_locale_text.replace(marker, '')
+            detected = detect_prompt_language(
+                capped_locale_text,
+                ui_language=ui_lang,
+            )
+            if detected == lang:
+                break
+            lang = detected
+
+        return lang, cls._render_capped_speaker_segments(
+            segments,
+            capped_bodies,
+            nonce=nonce,
+        )
 
     @staticmethod
     def _strip_code_fence(raw: str) -> str:
@@ -1308,16 +1403,11 @@ class FactStore:
         # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
         ui_lang = get_global_language_full()
-        locale_text = "\n".join(
-            self._messages_locale_text(segment.get('messages') or [])
-            for segment in segments
-        )
-        lang = detect_prompt_language(locale_text, ui_language=ui_lang)
-        rendered_segments = await asyncio.to_thread(
-            self._format_speaker_segments,
+        lang, rendered_segments = await asyncio.to_thread(
+            self._format_speaker_segments_with_locale,
             segments,
             nonce=nonce,
-            lang=lang,
+            ui_lang=ui_lang,
         )
         prompt = (
             get_fact_extraction_batch_prompt(lang)

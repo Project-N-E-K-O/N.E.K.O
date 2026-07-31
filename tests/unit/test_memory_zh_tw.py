@@ -1122,6 +1122,48 @@ async def test_fact_extractors_detect_prompt_locale_from_message_text(monkeypatc
     ]
 
 
+def test_fact_locale_text_excludes_multimodal_markers():
+    from types import SimpleNamespace
+
+    from memory.facts import FactStore
+    from utils.language_utils import detect_prompt_language
+
+    messages = [SimpleNamespace(content=[
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}},
+        {"type": "text", "text": "好"},
+    ])]
+
+    locale_text = FactStore._messages_locale_text(messages)
+    assert locale_text == "好"
+    assert detect_prompt_language(locale_text, ui_language="zh-TW") == "zh-TW"
+
+
+def test_fact_batch_locale_uses_capped_visible_message_bodies(monkeypatch):
+    from types import SimpleNamespace
+
+    from memory import facts
+
+    monkeypatch.setattr(facts, "SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS", 64)
+    monkeypatch.setattr(facts, "SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS", 128)
+    hidden_middle = " english content hidden from the prompt middle" * 200
+    body = ("喜歡貓。" * 20) + hidden_middle + ("我很開心。" * 20)
+    segments = [{
+        "speaker_label": "Alice",
+        "messages": [SimpleNamespace(type="human", content=body)],
+    }]
+
+    lang, rendered = facts.FactStore._format_speaker_segments_with_locale(
+        segments,
+        nonce="abcd1234",
+        ui_lang="zh-TW",
+    )
+
+    assert lang == "zh-TW"
+    assert hidden_middle not in rendered
+    assert "喜歡貓" in rendered
+    assert "我很開心" in rendered
+
+
 def test_promotion_locale_detection_excludes_truncated_pool_tail():
     from memory.reflection.promotion_merge import PromotionMergeMixin
     from utils.language_utils import detect_prompt_language
