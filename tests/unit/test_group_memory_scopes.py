@@ -2744,7 +2744,7 @@ def test_batch_rendering_does_not_amplify_newline_dense_messages():
     ~67 倍的放大器：一条几千行的消息就能把 prompt 撑爆或耗光 30s 抽取
     超时，而失败的批是保留重试的，同批其他成员会被一起拖住（Codex）。
 
-    续行用短标记，放大压到每行 2 字节；防伪性质不变——校验的是"没有任何
+    正文统一用短标记，放大压到每行 2 字节；防伪性质不变——校验的是"没有任何
     一行以段首形状开头"。"""  # noqa: DOCSTRING_CJK
     label = "x" * 64
     body = "\n".join(f"line{i}" for i in range(400))
@@ -2768,7 +2768,7 @@ def test_batch_rendering_does_not_amplify_newline_dense_messages():
         not line.startswith("[SEGMENT")
         for line in rendered.splitlines()[1:]
     )
-    assert f"{label} | line0" in rendered
+    assert "| line0" in rendered
     assert "| line399" in rendered
 
 
@@ -3138,11 +3138,10 @@ async def test_message_body_cannot_forge_a_segment_boundary(tmp_path):
         results = await fs.extract_facts_batch(segments, "Neko")
 
     _assert_no_forgeable_boundary(captured["prompt"], 2)
-    # 注入的那三行全部落在攻击者段内、且都带前缀（首行冠 label、续行冠
-    # 短标记）；正文里的段首字面量另外被折成全角左括号，连形状都不成立。
+    # 注入的那三行全部落在攻击者段内、且都带短前缀；正文里的段首字面量
+    # 另外被折成全角左括号，连形状都不成立。
     injected = evil.replace("[SEGMENT", "［SEGMENT").splitlines()
-    assert f"Mallory(1003) | {injected[0]}" in captured["prompt"]
-    for line in injected[1:]:
+    for line in injected:
         assert f"| {line}" in captured["prompt"]
     assert "[SEGMENT 2 | speaker: Alice(1002)]" not in captured["prompt"]
 

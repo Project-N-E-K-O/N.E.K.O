@@ -27,7 +27,7 @@ def _segment(messages: list[str]) -> dict:
 
 
 def _single_line_bodies(rendered: str) -> list[str]:
-    prefix = "Alice(1001) | "
+    prefix = "| "
     return [
         line.removeprefix(prefix)
         for line in rendered.splitlines()
@@ -89,6 +89,45 @@ def test_scoped_batch_total_budget_is_bounded_without_starving_late_messages():
     assert all(marker in body for body in bodies)
     assert all(body.startswith(f"head-{index} ") for index, body in enumerate(bodies))
     assert all(body.endswith(f" tail-{index}") for index, body in enumerate(bodies))
+
+
+def test_scoped_batch_budget_includes_generated_newline_prefixes():
+    newline_dense = "BEGIN\n" + ("\n" * 16000) + "END"
+
+    rendered = FactStore._format_speaker_segments(
+        [_segment([newline_dense])],
+        nonce="abcd1234",
+        lang="en",
+    )
+    rendered_message = "\n".join(rendered.splitlines()[1:])
+
+    assert count_tokens(rendered_message) <= SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS
+    assert "| BEGIN" in rendered_message
+    assert rendered_message.endswith("| END")
+
+
+@pytest.mark.parametrize("lang", SCOPED_BATCH_MIDDLE_OMISSION_MARKER)
+def test_fallback_dense_batch_markers_leave_room_for_both_ends(monkeypatch, lang):
+    monkeypatch.setitem(tokenize._ENCODERS, PERSONA_RENDER_ENCODING, None)
+    messages = [
+        f"H{index % 10}" + ("x" * 1000) + f"T{index % 10}"
+        for index in range(200)
+    ]
+    marker = get_scoped_batch_middle_omission_marker(lang)
+
+    rendered = FactStore._format_speaker_segments(
+        [_segment(messages)],
+        nonce="abcd1234",
+        lang=lang,
+    )
+    bodies = _single_line_bodies(rendered)
+
+    assert count_tokens(f"| {marker}") < (
+        SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS // len(messages)
+    )
+    assert all(marker in body for body in bodies)
+    assert all(body.startswith(f"H{index % 10}") for index, body in enumerate(bodies))
+    assert all(body.endswith(f"T{index % 10}") for index, body in enumerate(bodies))
 
 
 def test_scoped_batch_fallback_budget_is_conservative_for_emoji(monkeypatch):

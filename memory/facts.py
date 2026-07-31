@@ -661,6 +661,8 @@ class FactStore:
         """
         from utils.tokenize import count_tokens, truncate_head_tail_tokens
 
+        omission_tokens = count_tokens(omission_marker)
+
         raw_by_segment: list[list[str]] = []
         flat_raw: list[str] = []
         for segment in segments:
@@ -674,21 +676,46 @@ class FactStore:
                 flat_raw.append(body)
             raw_by_segment.append(segment_bodies)
 
+        def _rendered_cost(body: str) -> int:
+            body_lines = body.splitlines() or ['']
+            return count_tokens("\n".join(f"| {line}" for line in body_lines))
+
         def _clip(body: str, budget: int) -> str:
-            head = budget // 2
-            return truncate_head_tail_tokens(
-                body,
-                head,
-                budget - head,
-                separator=omission_marker,
-            )
+            if budget <= 0:
+                return ''
+            if _rendered_cost(body) <= budget:
+                return body
+
+            # The budget covers the generated per-line ``| `` prefix too.
+            # Binary-search the largest content allocation whose fully
+            # rendered form fits; this closes the newline-dense amplification
+            # path without discarding either retained end.
+            low = 0
+            high = min(SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS, budget)
+            best = ''
+            while low <= high:
+                content_budget = (low + high) // 2
+                retained_budget = max(0, content_budget - omission_tokens)
+                head = retained_budget // 2
+                candidate = truncate_head_tail_tokens(
+                    body,
+                    head + omission_tokens,
+                    retained_budget - head,
+                    separator=omission_marker,
+                )
+                if _rendered_cost(candidate) <= budget:
+                    best = candidate
+                    low = content_budget + 1
+                else:
+                    high = content_budget - 1
+            return best
 
         individually_capped = [
             _clip(body, SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS)
             for body in flat_raw
         ]
         if (
-            sum(count_tokens(body) for body in individually_capped)
+            sum(_rendered_cost(body) for body in individually_capped)
             <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
         ):
             final_flat = individually_capped
@@ -704,7 +731,7 @@ class FactStore:
                 )
                 clipped = _clip(body, message_budget)
                 final_flat.append(clipped)
-                remaining_budget -= count_tokens(clipped)
+                remaining_budget -= _rendered_cost(clipped)
 
         final_iter = iter(final_flat)
         return [
@@ -734,12 +761,13 @@ class FactStore:
            "| ［SEGMENT 2 | ...]"，明确落在自己那段里。按 ``splitlines()``
            切，覆盖 \\r / \\x85 / U+2028 这些同样会被渲染成换行的分隔符。
 
-           续行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
+           正文每行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
            而消息里的换行数不受任何上游限制（路由只数消息条数、群名片也
            没有长度校验），逐行重复 label 等于给攻击者一个 ~67 倍的放大器
            ——一条几千行的消息就能把 prompt 撑爆或耗光抽取超时，而失败的
-           批是保留重试的，同批其他成员会被一起拖住（Codex）。短标记把
-           放大压到每行 2 字节，防伪性质不变：行首不是段首形状就够了。
+           批是保留重试的，同批其他成员会被一起拖住（Codex）。发言人已在
+           段首唯一标明，正文统一用短标记把固定开销压到每行 2 字节；这些
+           生成前缀也计入 batch token 预算，避免换行密集正文再次放大。
         2. **段首带一次性 nonce**——攻击者的消息在 nonce 生成之前就写死了，
            猜不到本次请求的 token，伪造头与真段首形状对不上。
         3. **label 与正文里的结构字面量中和**——label 剥方括号/竖线/换行，
@@ -761,9 +789,7 @@ class FactStore:
             lines = [f"[SEGMENT {index}:{nonce} | speaker: {label}]"]
             for body in message_bodies:
                 body_lines = body.splitlines() or ['']
-                lines.append(f"{label} | {body_lines[0]}")
-                # 续行只冠短标记：同一条消息的后续行，发言人显然没变。
-                lines.extend(f"| {line}" for line in body_lines[1:])
+                lines.extend(f"| {line}" for line in body_lines)
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 

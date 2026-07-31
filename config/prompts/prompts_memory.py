@@ -1789,14 +1789,14 @@ Retorne um array JSON com **exatamente um objeto por segmento**, na ordem dos n�
 # for the batch-extraction prompt. Keep this prompt-facing text alongside the
 # rest of the backend locale dictionaries.
 SCOPED_BATCH_MIDDLE_OMISSION_MARKER = {
-    "zh": "…[中段因长度限制已省略]…",
-    "zh-TW": "…[中段因長度限制已省略]…",
-    "en": "…[middle omitted for length]…",
-    "ja": "…[長さ制限により中間部分を省略]…",
-    "ko": "…[길이 제한으로 중간 부분 생략]…",
-    "ru": "…[середина опущена из-за ограничения длины]…",
-    "es": "…[parte central omitida por límite de longitud]…",
-    "pt": "…[parte central omitida por limite de tamanho]…",
+    "zh": "…[已省略]…",
+    "zh-TW": "…[已省略]…",
+    "en": "…[omitted]…",
+    "ja": "…[省略]…",
+    "ko": "…[생략]…",
+    "ru": "…[пропуск]…",
+    "es": "…[omitido]…",
+    "pt": "…[omitido]…",
 }
 
 
