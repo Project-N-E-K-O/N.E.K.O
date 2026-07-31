@@ -16,6 +16,7 @@ AVATAR_ROUNDS_PATH = (
     / "director"
     / "avatar-rounds.js"
 )
+AGENT_HUD_TEMPLATE_PATH = REPO_ROOT / "templates" / "agenthud.html"
 LOCALES_PATH = REPO_ROOT / "static" / "locales"
 
 
@@ -133,4 +134,14 @@ def test_day6_tutorial_can_temporarily_show_a_user_hidden_task_hud():
     assert (
         "window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });"
         in director_source
+    )
+
+
+@pytest.mark.unit
+def test_standalone_hud_uses_window_ownership_instead_of_floating_preference():
+    template_source = _read(AGENT_HUD_TEMPLATE_PATH)
+
+    assert (
+        "window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });"
+        in template_source
     )
