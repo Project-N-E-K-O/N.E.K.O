@@ -617,6 +617,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_persona_refine_loop())
             _spawn_background_task(refine_loops._periodic_reflection_refine_loop())
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
+            # 群记忆系列 5/7: scoped 轻量 refine cron
+            _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.

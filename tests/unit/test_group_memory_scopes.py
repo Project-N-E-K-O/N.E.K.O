@@ -7228,10 +7228,11 @@ async def test_group_memory_toggle_syncs_existing_sessions():
 @pytest.mark.asyncio
 async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
     """The dedup queue mixes isolation domains; one resolve batch must not:
-    the prompt may only contain pairs from the FIFO head's domain. Legacy
-    queue items without stored domain fields are classified via their live
-    fact rows, and pairs whose rows are gone are dequeued without ever
-    reaching a prompt."""
+    the prompt may only contain pairs from the FIFO head's domain. Queue
+    items are ids-only — prompt texts come from the AUTHORITATIVE fact rows
+    at resolve time (never from queue copies); legacy queue items without
+    stored domain fields are classified via their live fact rows, and pairs
+    whose rows are gone are dequeued without ever reaching a prompt."""
     import json as _json
 
     from memory.fact_dedup import FactDedupResolver
@@ -7246,8 +7247,12 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
     fact_store._config_manager.aget_model_api_config = AsyncMock(
         return_value=_api_config
     )
-    # Live rows used to classify OLD queue items lacking domain fields.
+    # Authoritative rows: prompt texts must come from HERE, not the queue.
     fact_store.aload_facts = AsyncMock(return_value=[
+        {"id": "c1", "text": "legacy c1 authoritative"},
+        {"id": "e1", "text": "legacy e1 authoritative"},
+        {"id": "c2", "text": "group c2 authoritative", **group.as_entry_fields()},
+        {"id": "e2", "text": "group e2 authoritative", **group.as_entry_fields()},
         {"id": "old_cand", "text": "legacy old cand"},
         {"id": "old_exist", "text": "legacy old exist"},
     ])
@@ -7258,22 +7263,23 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
         {
             # New-schema legacy pair (head -> locks the batch to legacy).
             "candidate_id": "c1", "existing_id": "e1",
-            "candidate_text": "legacy pair text", "existing_text": "legacy sib",
             "entity": "master", "subject_key": None, "scope": None,
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:00",
         },
         {
             # New-schema scoped pair: different domain, must stay queued.
             "candidate_id": "c2", "existing_id": "e2",
-            "candidate_text": "group pair text", "existing_text": "group sib",
             "entity": "group_chat",
             "subject_key": group.key, "scope": group.scope,
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:01",
         },
         {
-            # Old-schema pair (no domain fields): classified legacy via rows.
+            # Old-schema pair (no domain fields, plaintext copies): classified
+            # legacy via rows; the plaintext must be scrubbed from disk and
+            # must NOT be what the prompt renders.
             "candidate_id": "old_cand", "existing_id": "old_exist",
-            "candidate_text": "old schema text", "existing_text": "old sib",
+            "candidate_text": "old schema stale copy",
+            "existing_text": "old sib stale copy",
             "entity": "master",
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:02",
         },
@@ -7313,14 +7319,22 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
         await resolver._aresolve_locked(name)
 
     prompt = captured["prompt"]
-    assert "legacy pair text" in prompt
-    assert "old schema text" in prompt
-    assert "group pair text" not in prompt
+    # Head domain (legacy) pairs render from the authoritative rows.
+    assert "legacy c1 authoritative" in prompt
+    assert "legacy old cand" in prompt
+    # The stale queue-copy wording never reaches a prompt.
+    assert "old schema stale copy" not in prompt
+    # Scoped domain stays out of the legacy batch entirely.
+    assert "group c2 authoritative" not in prompt
     assert "ghost text" not in prompt
     remaining = _json.loads(pending_path.read_text(encoding="utf-8"))
     remaining_ids = {item["candidate_id"] for item in remaining}
     assert "c2" in remaining_ids
     assert "ghost_c" not in remaining_ids
+    # ids-only 迁移：resolve 首轮就把旧 schema 的明文字段 scrub 掉。
+    raw = pending_path.read_text(encoding="utf-8")
+    assert "candidate_text" not in raw
+    assert "stale copy" not in raw
 
 
 @pytest.mark.asyncio

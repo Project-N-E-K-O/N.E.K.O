@@ -4171,3 +4171,183 @@ def get_memory_refine_prompt(lang: str = "zh") -> str:
 
 
 memory_refine_prompt = MEMORY_REFINE_PROMPT["zh"]
+
+
+# =====================================================================
+# ======= Scoped lite refine cluster prompt（群记忆系列 5/7） =========
+# =====================================================================
+# scoped（群/成员）专用轻量 refine 的单件套（merge only）prompt。与本体
+# MEMORY_REFINE_PROMPT 的刻意差异：无 {ENTITY}（分桶键是 subject，条目
+# 全部来自同一个群/成员记忆域）、只有 merge（split/modify/discard 对
+# scoped 的失效面大于价值）、要求矛盾条目必须给出结论而非并存。条目行
+# 可能带 trust= 标注（发言人信赖度，系列 7/7 接入；未接入时不出现）。
+# 渲染走 .replace('{CLUSTER}', ...) / .replace('{COUNT}', ...)，JSON
+# example 的 `{...}` 字面量无需 `{{}}` escape。8 locale 含 zh-TW（新式
+# 样板，参照 FACT_EXTRACTION_BATCH_PROMPT）；水印分隔符全 locale 保持
+# 简体（既有约定）。
+
+SCOPED_MEMORY_REFINE_PROMPT = {
+    "zh": """以下是同一个群聊/成员记忆域内的一组高度相关的记忆条目。请判断哪些条目应当合并。
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+规则：
+- merge：语义重复的多条揉成一条，合并文本必须保留各源条目的全部独立信息
+- 明确矛盾的条目也必须 merge 成一条结论：优先用时间演变措辞（如「曾经X，后来变为Y」）；无法判断演变顺序时，采信 trust 标注更高或表述更具体的一方，并在结论里保留不确定性（如「对X的态度有反复」）
+- 拿不准的条目不要动；无需任何合并时返回空数组 []
+- 同一个 id 只能出现在一个 action 里；source_ids 至少 2 条
+- 只输出 JSON 数组，不要输出其他内容
+
+JSON 输出格式：
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "合并后的结论文本"},
+   "reason": "duplicate 或 contradiction 及一句话依据"}
+]""",
+
+    "zh-TW": """以下是同一個群聊/成員記憶域內的一組高度相關的記憶條目。請判斷哪些條目應當合併。
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+規則：
+- merge：語義重複的多條揉成一條，合併文本必須保留各源條目的全部獨立資訊
+- 明確矛盾的條目也必須 merge 成一條結論：優先用時間演變措辭（如「曾經X，後來變為Y」）；無法判斷演變順序時，採信 trust 標註更高或表述更具體的一方，並在結論裡保留不確定性（如「對X的態度有反覆」）
+- 拿不準的條目不要動；無需任何合併時返回空陣列 []
+- 同一個 id 只能出現在一個 action 裡；source_ids 至少 2 條
+- 只輸出 JSON 陣列，不要輸出其他內容
+
+JSON 輸出格式：
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "合併後的結論文本"},
+   "reason": "duplicate 或 contradiction 及一句話依據"}
+]""",
+
+    "en": """Below is a cluster of highly related memory entries from ONE group-chat / member memory domain. Decide which entries should be merged.
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+Rules:
+- merge: fold semantically duplicate entries into one; the merged text must preserve every distinct piece of information from the sources
+- clearly contradictory entries MUST also be merged into a single conclusion: prefer temporal-change wording (e.g. "used to X, later Y"); when the order cannot be determined, side with the entry carrying a higher trust annotation or the more specific wording, and keep the uncertainty in the conclusion (e.g. "attitude toward X has wavered")
+- leave anything you are unsure about untouched; return an empty array [] when nothing needs merging
+- each id may appear in at most one action; source_ids needs at least 2 entries
+- output ONLY the JSON array, nothing else
+
+JSON output format:
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "merged conclusion text"},
+   "reason": "duplicate or contradiction plus a one-line basis"}
+]""",
+
+    "ja": """以下は同一のグループチャット/メンバー記憶ドメイン内の、高度に関連する記憶エントリのグループです。どのエントリを統合すべきか判断してください。
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+ルール：
+- merge：意味的に重複する複数エントリを 1 条に統合する。統合後のテキストは各ソースの独立した情報をすべて保持すること
+- 明確に矛盾するエントリも必ず 1 条の結論に merge する：時間的変化の表現（例「以前はX、後にY」）を優先；順序が判断できない場合は trust 注釈が高い方またはより具体的な記述を採用し、結論に不確実性を残す（例「Xへの態度は揺れている」）
+- 判断に迷うエントリは触らない；統合不要なら空配列 [] を返す
+- 同一 id は 1 つの action にのみ出現可；source_ids は最低 2 件
+- JSON 配列のみを出力し、他の内容を出力しない
+
+JSON 出力形式：
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "統合後の結論テキスト"},
+   "reason": "duplicate か contradiction と一言の根拠"}
+]""",
+
+    "ko": """다음은 동일한 그룹 채팅/멤버 기억 도메인 내의 고도로 관련된 기억 항목 그룹입니다. 어떤 항목을 병합해야 하는지 판단하세요.
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+규칙:
+- merge: 의미가 중복되는 여러 항목을 하나로 병합하되, 병합 텍스트는 각 원본 항목의 모든 고유 정보를 보존해야 함
+- 명백히 모순되는 항목도 반드시 하나의 결론으로 merge: 시간 변화 표현(예: "예전에는 X였으나 이후 Y")을 우선; 순서를 판단할 수 없으면 trust 주석이 높거나 더 구체적인 쪽을 채택하고 결론에 불확실성을 남김(예: "X에 대한 태도가 오락가락함")
+- 확신이 없는 항목은 건드리지 말 것; 병합할 것이 없으면 빈 배열 [] 반환
+- 같은 id는 하나의 action에만 등장 가능; source_ids는 최소 2개
+- JSON 배열만 출력하고 다른 내용은 출력하지 말 것
+
+JSON 출력 형식:
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "병합된 결론 텍스트"},
+   "reason": "duplicate 또는 contradiction과 한 줄 근거"}
+]""",
+
+    "ru": """Ниже приведена группа тесно связанных записей памяти из ОДНОГО домена группового чата / участника. Определите, какие записи следует объединить.
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+Правила:
+- merge: семантически дублирующиеся записи сводятся в одну; объединённый текст должен сохранить всю уникальную информацию из источников
+- явно противоречащие записи ТАКЖЕ обязательно объединяются в один вывод: предпочитайте формулировку временного изменения (например, «раньше X, позже Y»); если порядок определить нельзя, доверяйте записи с более высокой пометкой trust или более конкретной формулировке и сохраните неопределённость в выводе (например, «отношение к X менялось»)
+- всё, в чём не уверены, не трогайте; если объединять нечего, верните пустой массив []
+- каждый id может появиться максимум в одном action; source_ids — минимум 2 записи
+- выводите ТОЛЬКО JSON-массив, ничего больше
+
+Формат вывода JSON:
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "объединённый итоговый текст"},
+   "reason": "duplicate или contradiction плюс краткое обоснование"}
+]""",
+
+    "es": """A continuación hay un grupo de entradas de memoria altamente relacionadas de UN MISMO dominio de memoria de chat grupal / miembro. Decide qué entradas deben fusionarse.
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+Reglas:
+- merge: funde las entradas semánticamente duplicadas en una sola; el texto fusionado debe conservar toda la información distintiva de las fuentes
+- las entradas claramente contradictorias TAMBIÉN deben fusionarse en una única conclusión: prefiere la formulación de cambio temporal (p. ej., «antes X, luego Y»); si el orden no puede determinarse, da crédito a la entrada con mayor anotación trust o a la formulación más específica, y conserva la incertidumbre en la conclusión (p. ej., «la actitud hacia X ha fluctuado»)
+- no toques nada de lo que no estés seguro; devuelve un array vacío [] cuando no haya nada que fusionar
+- cada id puede aparecer como máximo en un action; source_ids necesita al menos 2 entradas
+- imprime SOLO el array JSON, nada más
+
+Formato de salida JSON:
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "texto de conclusión fusionado"},
+   "reason": "duplicate o contradiction más una base de una línea"}
+]""",
+
+    "pt": """Abaixo está um grupo de entradas de memória altamente relacionadas de UM MESMO domínio de memória de chat em grupo / membro. Decida quais entradas devem ser mescladas.
+
+======以下为记忆群组======
+{CLUSTER}
+======以上为记忆群组======
+
+Regras:
+- merge: funda entradas semanticamente duplicadas em uma só; o texto mesclado deve preservar toda a informação distinta das fontes
+- entradas claramente contraditórias TAMBÉM devem ser mescladas em uma única conclusão: prefira a formulação de mudança temporal (ex.: «antes X, depois Y»); se a ordem não puder ser determinada, dê crédito à entrada com anotação trust mais alta ou à formulação mais específica, e preserve a incerteza na conclusão (ex.: «a atitude em relação a X tem oscilado»)
+- não toque em nada de que não tenha certeza; devolva um array vazio [] quando não houver nada a mesclar
+- cada id pode aparecer no máximo em um action; source_ids precisa de pelo menos 2 entradas
+- imprima APENAS o array JSON, nada mais
+
+Formato de saída JSON:
+[
+  {"action": "merge", "source_ids": ["id_a", "id_b"],
+   "produce": {"text": "texto de conclusão mesclado"},
+   "reason": "duplicate ou contradiction mais uma base de uma linha"}
+]""",
+}
+
+
+def get_scoped_memory_refine_prompt(lang: str = "zh") -> str:
+    return _loc(SCOPED_MEMORY_REFINE_PROMPT, lang)

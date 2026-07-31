@@ -593,6 +593,157 @@ class FactStore:
         logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(facts)} 条")
         return len(to_archive)
 
+    # ── scoped subject archival (time-driven, 群记忆系列 5/7) ────────
+
+    def _archive_subject_facts(
+        self, name: str, subject: MemorySubject, archived_at_iso: str,
+    ) -> int:
+        """Move ALL active facts of one scoped subject into facts_archive.json.
+
+        Time-driven counterpart of `_archive_absorbed` (score/absorbed-driven).
+        Every moved row is stamped with ``subject_archived_at`` — the marker
+
+          * excludes the row from both recall paths' archive pool
+            (`hybrid_recall._aload_archive_facts` filters on it), unlike
+            absorbed-archived rows which stay recallable by design;
+          * excludes the row from the FTS near-dup guard in
+            `_apersist_new_facts_locked`, so a revived subject re-stating an
+            archived fact lands a NEW active fact instead of being silently
+            deduped into invisibility;
+          * is what `_restore_subject_facts` strips when moving rows back.
+
+        Same two-file commit discipline as `_archive_absorbed`: archive first,
+        facts.json second — an interruption leaves the row in BOTH files
+        (readers converge by id, next run is idempotent), never in neither.
+        """
+        self.load_facts(name)  # ensure cache before taking the lock (non-reentrant)
+        with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="archive",
+                target=f"memory/{name}/facts.json",
+            )
+            facts = self._facts.get(name, [])
+            to_archive = [
+                f for f in facts
+                if isinstance(f, dict) and entry_matches_subject(f, subject)
+            ]
+            if not to_archive:
+                return 0
+            archive_path = self._facts_archive_path(name)
+            existing_archive: list[dict] = []
+            if os.path.exists(archive_path):
+                try:
+                    with open(archive_path, encoding='utf-8') as fh:
+                        data = json.load(fh)
+                    if isinstance(data, list):
+                        existing_archive = data
+                except (json.JSONDecodeError, OSError) as e:
+                    logger.warning(
+                        f"[FactStore] {name}: 读取归档文件失败，跳过本次 subject 归档: {e}"
+                    )
+                    return 0
+            stamped = []
+            for f in to_archive:
+                copy = dict(f)
+                copy['subject_archived_at'] = archived_at_iso
+                stamped.append(copy)
+            existing_archive = _merge_archive_entries(existing_archive, stamped)
+            atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
+            active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
+            atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+            # 缓存按身份原地剔除（并发 append 的行保留在缓存里，下次 save 落盘）。
+            archived_identities = {id(f) for f in to_archive}
+            facts[:] = [f for f in facts if id(f) not in archived_identities]
+            # 隐私口径：只打域标识与条数，不打原文。
+            logger.info(
+                f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
+                f"/{subject.subject_id}] {len(to_archive)} 条 facts"
+            )
+            return len(to_archive)
+
+    async def aarchive_subject_facts(
+        self, name: str, subject: MemorySubject, archived_at_iso: str,
+    ) -> int:
+        return await asyncio.to_thread(
+            self._archive_subject_facts, name, subject, archived_at_iso,
+        )
+
+    def _restore_subject_facts(self, name: str, subject: MemorySubject) -> int:
+        """Move a subject's ``subject_archived_at`` rows back into facts.json.
+
+        Inverse of `_archive_subject_facts`; absorbed-archived rows (no
+        marker) are untouched. Write order is the mirror image — facts.json
+        (with the restored rows) first, archive (without them) second — so an
+        interruption again leaves rows in BOTH files, and every reader's
+        by-id convergence keeps the active copy.
+        """
+        self.load_facts(name)
+        with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/facts.json",
+            )
+            archive_path = self._facts_archive_path(name)
+            if not os.path.exists(archive_path):
+                return 0
+            try:
+                with open(archive_path, encoding='utf-8') as fh:
+                    archived = json.load(fh)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(
+                    f"[FactStore] {name}: 读取归档文件失败，跳过 subject 恢复: {e}"
+                )
+                return 0
+            if not isinstance(archived, list):
+                return 0
+
+            def _is_subject_archived_row(f) -> bool:
+                return (
+                    isinstance(f, dict)
+                    and f.get('subject_archived_at')
+                    and entry_matches_subject(f, subject)
+                )
+
+            to_restore = [f for f in archived if _is_subject_archived_row(f)]
+            if not to_restore:
+                return 0
+            facts = self._facts.get(name, [])
+            active_ids = {
+                fid for fid in (
+                    _readable_fact_id(f) for f in facts if isinstance(f, dict)
+                ) if fid is not None
+            }
+            restored: list[dict] = []
+            for f in to_restore:
+                fid = _readable_fact_id(f)
+                if fid is not None and fid in active_ids:
+                    # 上次恢复被打断留下的「两边都有」：active 赢，归档副本
+                    # 直接收敛掉即可。
+                    continue
+                copy = dict(f)
+                copy.pop('subject_archived_at', None)
+                restored.append(copy)
+            remaining_archive = [
+                f for f in archived if not _is_subject_archived_row(f)
+            ]
+            atomic_write_json(
+                self._facts_path(name), facts + restored, indent=2, ensure_ascii=False,
+            )
+            atomic_write_json(
+                archive_path, remaining_archive, indent=2, ensure_ascii=False,
+            )
+            facts.extend(restored)
+            logger.info(
+                f"[FactStore] {name}: subject 恢复 [scoped {subject.kind}"
+                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池"
+            )
+            return len(restored)
+
+    async def arestore_subject_facts(self, name: str, subject: MemorySubject) -> int:
+        return await asyncio.to_thread(self._restore_subject_facts, name, subject)
+
     # ── extraction ───────────────────────────────────────────────────
 
     @staticmethod
@@ -1555,7 +1706,16 @@ class FactStore:
                         hit = facts_by_id.get(fid)
                         if hit is None:
                             hit = (await _aarchived_by_id()).get(fid)
-                        if hit is None or not entry_matches_subject(hit, memory_subject):
+                        # subject 时间归档的行（subject_archived_at 标记）不算
+                        # 去重障碍：subject 复活时重述的旧事实必须能落新
+                        # active fact——归档行已退出召回与渲染，挡住重述等于
+                        # 让这条信息永久不可见。absorbed 归档行（无标记）仍
+                        # 照旧挡重复。
+                        if (
+                            hit is None
+                            or hit.get('subject_archived_at')
+                            or not entry_matches_subject(hit, memory_subject)
+                        ):
                             continue
                         same_subject_seen += 1
                         if same_subject_seen > 3:

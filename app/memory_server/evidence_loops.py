@@ -784,11 +784,51 @@ async def _periodic_slow_memory_recheck_loop():
         await asyncio.sleep(MEMORY_RECHECK_INTERVAL_SECONDS)
 
 
+# scoped subject 时间归档的进程内节流（判据粒度是天，无须持久化：重启后
+# 首轮 sweep 多跑一次也是幂等的）。
+_subject_archive_last_run: dict[str, datetime] = {}
+
+
+async def _amaybe_sweep_subject_archive(name: str, now: datetime) -> None:
+    """Scoped subject time-driven archival stage inside the archive sweep.
+
+    Dual of the score-driven sweep body: legacy entries leave via
+    ``sub_zero_days`` accumulation, scoped subjects leave via last-write
+    age (they can never accumulate ``sub_zero_days`` — no evidence signal
+    path reaches them). Throttled per character because the staleness
+    criterion has day granularity while the sweep loop runs hourly.
+    """
+    import config as _config
+    if not getattr(_config, 'SCOPED_SUBJECT_ARCHIVE_ENABLED', True):
+        return
+    min_interval = _config.SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS
+    last = _subject_archive_last_run.get(name)
+    if last is not None and (now - last).total_seconds() < min_interval:
+        return
+    # 先占窗口再跑：持续性失败也按节流间隔重试，不放大为每小时重打。
+    _subject_archive_last_run[name] = now
+    from memory.subject_archive import asweep_scoped_subject_archive
+    try:
+        await asweep_scoped_subject_archive(
+            name,
+            fact_store=runtime.fact_store,
+            persona_manager=runtime.persona_manager,
+            reflection_engine=runtime.reflection_engine,
+            now=now,
+        )
+    except Exception as e:
+        logger.warning(f"[SubjectArchive] {name}: sweep 失败: {e}")
+
+
 async def _periodic_archive_sweep_loop():
     """Periodically scan all non-protected reflection / persona entries
     and (a) bump `sub_zero_days` for those with `evidence_score < 0`
     today, (b) move entries with `sub_zero_days >= EVIDENCE_ARCHIVE_DAYS`
     into a sharded archive file.
+
+    Additionally runs the scoped-subject time-driven archival stage
+    (``_amaybe_sweep_subject_archive``) per character, throttled to
+    ``SCOPED_SUBJECT_ARCHIVE_MIN_INTERVAL_SECONDS``.
 
     Runs every `EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS`. The
     `maybe_mark_sub_zero` helper has its own day-based debounce so a
@@ -913,6 +953,9 @@ async def _periodic_archive_sweep_loop():
                             logger.warning(
                                 f"[ArchiveSweep] {name}: persona {entity_key}/{eid} 归档失败: {e}"
                             )
+
+                # ── scoped subjects（时间驱动，群记忆系列 5/7） ──
+                await _amaybe_sweep_subject_archive(name, now)
             except Exception as e:
                 logger.debug(f"[ArchiveSweep] {name}: 扫描失败，跳过: {e}")
 
