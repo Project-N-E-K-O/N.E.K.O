@@ -2339,6 +2339,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     _install_ready_memory_browser_routes(mock_page, seed_memory_file)
     memory_content = {"value": seed_memory_file.read_text(encoding="utf-8")}
     request_counts = {"recent_files": 0, "recent_file": 0}
+    commit_payloads = []
 
     def handle_recent_files(route):
         request_counts["recent_files"] += 1
@@ -2374,6 +2375,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
         )
 
     def handle_commit(route):
+        commit_payloads.append(route.request.post_data_json)
         memory_content["value"] = json.dumps(
             [
                 {
@@ -2419,6 +2421,8 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.route("**/api/memory/external_import/commit", handle_commit)
 
     mock_page.goto(f"{running_server}/memory_browser")
+    mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
+    mock_page.evaluate("() => window.i18next.changeLanguage('zh-TW')")
     memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
     expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
     if edit_during_import or refresh_failure:
@@ -2469,6 +2473,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     expect(mock_page.locator("#external-memory-files")).to_be_enabled()
     expect(mock_page.locator("#external-memory-format")).to_be_enabled()
     assert mock_page.evaluate("window._memoryImportInProgress") is False
+    assert commit_payloads[0]["language"] == "zh-TW"
     if refresh_failure:
         assert request_counts["recent_files"] == 1
     else:

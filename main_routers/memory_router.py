@@ -876,6 +876,7 @@ async def commit_external_memory_import(request: Request):
                 "imported_files": analysis["files"],
                 "candidates": analysis["candidates"],
                 "warning_count": len(analysis["warnings"]),
+                "language": payload.get("language"),
             },
             # persona 导入现在按 entity 同步跑 LLM 融合（每 entity 可数十秒），
             # 30s 不够；放宽到 240s 覆盖 master+neko 两段融合。前端 commit 超时

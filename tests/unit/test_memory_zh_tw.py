@@ -207,6 +207,84 @@ async def test_new_dialog_request_forwards_session_locale(monkeypatch):
     assert calls[0]["params"] == {"language": "zh-TW"}
 
 
+@pytest.mark.asyncio
+async def test_pregame_history_request_forwards_session_locale(monkeypatch):
+    from main_routers.game_router import pregame
+    from utils import internal_http_client
+
+    calls: list[dict] = []
+
+    class Response:
+        is_success = True
+        text = "history"
+
+    class Client:
+        async def get(self, _url, **kwargs):
+            calls.append(kwargs)
+            return Response()
+
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
+
+    history, error = await pregame._fetch_recent_history_for_pregame(
+        "Neko",
+        language="zh-TW",
+    )
+
+    assert history == "history"
+    assert error == ""
+    assert calls[0]["params"] == {"language": "zh-TW"}
+
+
+@pytest.mark.asyncio
+async def test_external_import_commit_forwards_ui_locale(monkeypatch):
+    from main_routers import memory_router
+    from utils import config_manager, internal_http_client
+
+    forwarded: list[dict] = []
+    analysis = {
+        "source_format": "openclaw",
+        "files": ["MEMORY.md"],
+        "candidates": [{"text": "Uses Python"}],
+        "warnings": [],
+    }
+
+    class Request:
+        async def json(self):
+            return {"character_name": "Neko", "language": "zh-TW"}
+
+    class Response:
+        status_code = 200
+
+        def json(self):
+            return {
+                "status": "success",
+                "source_format": "openclaw",
+                "added_persona": 0,
+                "added_facts": 1,
+                "skipped_duplicates": 0,
+                "warning_count": 0,
+            }
+
+    class Client:
+        async def post(self, _url, **kwargs):
+            forwarded.append(kwargs["json"])
+            return Response()
+
+    monkeypatch.setattr(
+        memory_router,
+        "_prepare_external_import",
+        lambda _payload: ("Neko", analysis),
+    )
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *_a, **_k: None)
+    monkeypatch.setattr(config_manager, "get_config_manager", lambda: object())
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
+
+    result = await memory_router.commit_external_memory_import(Request())
+
+    assert result["success"] is True
+    assert forwarded[0]["language"] == "zh-TW"
+
+
 def test_signal_loop_remembers_latest_session_locale():
     from app.memory_server import signal_extraction
 

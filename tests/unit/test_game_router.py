@@ -2333,9 +2333,11 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
         "base_url": "http://fake",
         "api_type": "local",
         "api_key": "key",
+        "user_language": "zh-TW",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
         return "", "recent_history_failed"
 
     async def fake_ai(**kwargs):
@@ -2376,7 +2378,7 @@ async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
         "api_key": "key",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 来踢球", ""
 
     async def fake_ai(**_kwargs):
@@ -2412,7 +2414,7 @@ async def test_build_pregame_context_partial_invalid_fields(monkeypatch):
         "api_key": "key",
     })
 
-    async def fake_fetch(_lanlan_name):
+    async def fake_fetch(_lanlan_name, **_kwargs):
         return "玩家 | 你这个笨蛋！", ""
 
     async def fake_ai(**_kwargs):

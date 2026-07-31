@@ -2409,6 +2409,13 @@
         return btoa(binary);
     }
 
+    function getCurrentUiLanguage() {
+        const language = (window.i18n && window.i18n.language)
+            || (window.i18next && window.i18next.language)
+            || document.documentElement.lang;
+        return typeof language === 'string' && language.trim() ? language.trim() : null;
+    }
+
     async function buildExternalImportPayload(targetCharacter) {
         const input = document.getElementById('external-memory-files');
         const format = document.getElementById('external-memory-format');
@@ -2430,6 +2437,7 @@
             return {
                 character_name: targetCharacter,
                 source_format: format ? format.value : 'auto',
+                language: getCurrentUiLanguage(),
                 archive_b64: bytesToBase64(await zipFiles[0].arrayBuffer())
             };
         }
@@ -2451,6 +2459,7 @@
         return {
             character_name: targetCharacter,
             source_format: format ? format.value : 'auto',
+            language: getCurrentUiLanguage(),
             files: files
         };
     }

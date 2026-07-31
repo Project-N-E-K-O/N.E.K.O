@@ -394,7 +394,11 @@ def _format_badminton_pregame_context_for_prompt(
     )
 
 
-async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]:
+async def _fetch_recent_history_for_pregame(
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+) -> tuple[str, str]:
     try:
         from config import MEMORY_SERVER_PORT
         from utils.internal_http_client import get_internal_http_client
@@ -402,6 +406,7 @@ async def _fetch_recent_history_for_pregame(lanlan_name: str) -> tuple[str, str]
         client = get_internal_http_client()
         response = await client.get(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/get_recent_history/{lanlan_name}",
+            params={"language": language} if language else None,
             timeout=5.0,
         )
         if not response.is_success:
@@ -498,7 +503,10 @@ async def _build_soccer_pregame_context(
     neko_invite_text: str,
 ) -> tuple[dict, str, str]:
     char_info = _get_character_info(lanlan_name)
-    recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
+    recent_history, history_error = await _fetch_recent_history_for_pregame(
+        lanlan_name,
+        language=char_info.get("user_language"),
+    )
     _log_game_debug_material(
         "pregame_recent_history",
         recent_history or "开始聊天前，没有历史记录。",
@@ -557,7 +565,10 @@ async def _build_badminton_pregame_context(
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_badminton_mode(mode)
     char_info = _get_character_info(lanlan_name)
-    recent_history, history_error = await _fetch_recent_history_for_pregame(lanlan_name)
+    recent_history, history_error = await _fetch_recent_history_for_pregame(
+        lanlan_name,
+        language=char_info.get("user_language"),
+    )
     _log_game_debug_material(
         "pregame_recent_history",
         recent_history or "开始聊天前，没有历史记录。",
