@@ -136,6 +136,23 @@ class QQSessionBootstrapService:
             async def on_text_delta(text: str, is_first: bool):
                 reply_chunks.append(text)
 
+            def _drop_rejected_tool_rows() -> None:
+                history = getattr(user_session, "_conversation_history", None)
+                if not isinstance(history, list):
+                    return
+                for index in range(len(history) - 1, -1, -1):
+                    row = history[index]
+                    if getattr(row, "type", "") == "human":
+                        break
+                    if isinstance(row, dict) and (
+                        row.get("role") == "tool"
+                        or (
+                            row.get("role") == "assistant"
+                            and bool(row.get("tool_calls"))
+                        )
+                    ):
+                        del history[index]
+
             async def on_response_discarded(
                 reason: str,
                 attempt: int,
@@ -143,30 +160,37 @@ class QQSessionBootstrapService:
                 will_retry: bool,
                 message: str | None,
             ):
-                # core 已判定当前 attempt 不可投递；只丢弃这一 attempt 已流出
-                # 的分片。后续重试仍经 on_text_delta 写入，合法 pre-tool 不受影响。
+                recovered = None
+                if not will_retry and message:
+                    try:
+                        payload = json.loads(message)
+                    except (TypeError, ValueError):
+                        payload = None
+                    if (
+                        isinstance(payload, dict)
+                        and payload.get("code") == "RESPONSE_LENGTH_TRUNCATED"
+                    ):
+                        candidate = payload.get("text")
+                        if isinstance(candidate, str) and candidate.strip():
+                            recovered = candidate
+
+                # core 已判定当前流式分片不可直接投递；终态截断的 recovered
+                # text 是同一 attempt 的合法成功输出，只替换 buffer，不得让
+                # epoch 失效。真正 reroll/终态失败才推进 epoch，并删除该失败
+                # attempt 已经 inline 持久化的 assistant/tool 裸行。
                 reply_chunks.clear()
+                if recovered is not None:
+                    # 终态截断正文不会再经 on_text_delta 重发；callback
+                    # 就是它唯一的交付与入史通道，因此两边同步替换。
+                    reply_chunks.append(recovered)
+                    history = getattr(
+                        user_session, "_conversation_history", None
+                    )
+                    if isinstance(history, list):
+                        history.append(AIMessage(content=recovered))
+                    return
                 reply_attempt_state["discard_epoch"] += 1
-                if will_retry or not message:
-                    return
-                try:
-                    payload = json.loads(message)
-                except (TypeError, ValueError):
-                    return
-                if (
-                    isinstance(payload, dict)
-                    and payload.get("code") == "RESPONSE_LENGTH_TRUNCATED"
-                ):
-                    recovered = payload.get("text")
-                    if isinstance(recovered, str) and recovered.strip():
-                        # 终态截断正文不会再经 on_text_delta 重发；callback
-                        # 就是它唯一的交付与入史通道，因此两边同步替换。
-                        reply_chunks.append(recovered)
-                        history = getattr(
-                            user_session, "_conversation_history", None
-                        )
-                        if isinstance(history, list):
-                            history.append(AIMessage(content=recovered))
+                _drop_rejected_tool_rows()
 
             user_session = OmniOfflineClient(
                 base_url=base_url,

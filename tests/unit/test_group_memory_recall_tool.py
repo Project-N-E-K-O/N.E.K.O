@@ -1284,6 +1284,49 @@ async def test_discarded_attempt_resets_the_structural_tool_boundary():
 
 
 @pytest.mark.asyncio
+async def test_terminal_recovery_retains_a_zero_execution_tool_boundary():
+    """Successful truncation recovery stays in the same boundary epoch."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    prefix = "literal <msg> example remains text: "
+    recovered = prefix + "final"
+    attempt_state = {"discard_epoch": 0}
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append(prefix)
+        await client.on_tool_round_start()
+        # Terminal recovery replaces the raw chunks but is not a reroll.
+        client.reply_chunks_ref.clear()
+        client.reply_chunks_ref.append(recovered)
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=recovered)
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {
+        "lock": asyncio.Lock(),
+        "reply_attempt_state": attempt_state,
+    }
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == recovered
+    assert client._conversation_history[-1].content == recovered
+    assert user_data["current_pre_tool_text"] == prefix
+
+
+@pytest.mark.asyncio
 async def test_pre_tool_text_remains_when_no_tool_call_executes():
     """A nameless tool fragment must not make QQ discard prior model text."""
     plugin = _tool_plugin()
@@ -1791,8 +1834,12 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     on_text_delta = built[-1].kwargs["on_text_delta"]
     on_response_discarded = built[-1].kwargs["on_response_discarded"]
     await on_text_delta("旧 attempt", True)
+    built[-1]._conversation_history.extend(
+        _tool_round_rows("rejected scoped output")
+    )
     await on_response_discarded("retry", 1, 3, True, None)
     assert created["reply_attempt_state"]["discard_epoch"] == 1
+    assert built[-1]._conversation_history == []
     await on_text_delta("我查", True)
     await on_text_delta("一下", False)
     assert created["reply_chunks"] == ["我查", "一下"]
@@ -1809,6 +1856,7 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
             "text": "保留到最后一个完整句子。",
         }),
     )
+    assert created["reply_attempt_state"]["discard_epoch"] == 1
     assert created["reply_chunks"] == ["保留到最后一个完整句子。"]
     assert [row.content for row in built[-1]._conversation_history] == [
         "保留到最后一个完整句子。"
