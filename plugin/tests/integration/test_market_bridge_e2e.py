@@ -1906,6 +1906,98 @@ async def test_oauth_status_resolves_a_pending_auth_subject(
     assert saved["subject_pending"] is False
 
 
+@pytest.mark.asyncio
+async def test_oauth_status_refreshes_a_rejected_pending_access_token(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "rejected-pending-token",
+                "refresh_token": "valid-pending-refresh",
+                "expires_at": time.time() + 3600,
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": None,
+                "subject_pending": True,
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    userinfo_tokens: list[Any] = []
+
+    async def fetch_auth_userinfo(access_token: Any) -> dict[str, str]:
+        userinfo_tokens.append(access_token)
+        if access_token == "rejected-pending-token":
+            raise market_bridge_module._OAuthAccessTokenRejected
+        assert access_token == "refreshed-pending-token"
+        return {"sub": "resolved-pending-subject"}
+
+    async def refresh_oauth_token(token_data: dict[str, Any]) -> dict[str, Any]:
+        refreshed = dict(token_data)
+        refreshed.update(
+            {
+                "access_token": "refreshed-pending-token",
+                "expires_at": time.time() + 3600,
+                "refresh_generation": 1,
+            }
+        )
+        return refreshed
+
+    async def probe_market_user(access_token: Any) -> Any:
+        assert access_token == "refreshed-pending-token"
+        return market_bridge_module._MarketUserProbe(
+            state="ready",
+            user={
+                "auth_user_id": "resolved-pending-subject",
+                "username": "pending-user",
+            },
+        )
+
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_fetch_auth_userinfo",
+        fetch_auth_userinfo,
+    )
+    monkeypatch.setattr(
+        market_bridge_module,
+        "_refresh_oauth_token",
+        refresh_oauth_token,
+    )
+    monkeypatch.setattr(market_bridge_module, "_probe_market_user", probe_market_user)
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    response = await client.get(
+        "/market/oauth/status",
+        headers={"Authorization": f"Bearer {token}"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["authenticated"] is True
+    assert response.json()["auth_state"] == "ready"
+    assert response.json()["market_state"] == "ready"
+    assert userinfo_tokens == [
+        "rejected-pending-token",
+        "refreshed-pending-token",
+    ]
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["access_token"] == "refreshed-pending-token"
+    assert saved["subject"] == "resolved-pending-subject"
+    assert saved["subject_pending"] is False
+
+
 @pytest.mark.parametrize(
     ("accept_language", "expected"),
     [
@@ -1933,6 +2025,7 @@ def test_oauth_callback_locale_prefers_supported_weighted_language(
     ("status_code", "expected_state", "retryable", "message"),
     [
         (503, "unavailable", True, "auth_login_complete:unavailable"),
+        (408, "unavailable", True, "auth_login_complete:unavailable"),
         (409, "identity_conflict", False, "auth_login_complete:identity_conflict"),
         (404, "invalid_response", False, "auth_login_complete:invalid_response"),
     ],

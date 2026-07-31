@@ -54,13 +54,14 @@
               <el-button
                 v-if="marketUrl && marketAuth.auth_state === 'pending'"
                 class="market-auth-trigger"
-                :loading="true"
-                disabled
+                :loading="marketLogoutBusy"
                 aria-live="polite"
+                :title="$t('market.logout')"
                 plain
+                @click="confirmMarketLogout"
               >
                 <el-icon><User /></el-icon>
-                {{ $t('market.authVerificationPendingLabel') }}
+                {{ $t('market.authVerificationPendingLabel') }} · {{ $t('market.logout') }}
               </el-button>
               <el-popover
                 v-else-if="marketUrl && marketAuth.authenticated"
@@ -459,6 +460,7 @@ const marketUrl = ref('')
 const {
   marketAuth,
   marketAuthBusy,
+  marketLogoutBusy,
   marketAuthDisplayName,
   marketAuthStateMessageKey,
   marketAccountSummary,

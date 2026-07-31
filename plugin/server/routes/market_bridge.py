@@ -1017,15 +1017,35 @@ async def market_oauth_status(
     token_snapshot = dict(token_data)
 
     if token_data.get("subject_pending"):
+        access_token = token_data.get("access_token")
         try:
-            auth_user = await _fetch_auth_userinfo(token_data.get("access_token"))
+            auth_user = await _fetch_auth_userinfo(access_token)
         except _OAuthAccessTokenRejected:
-            if _unlink_oauth_token_if_matches(token_snapshot):
-                _clear_account_summary_cache()
-            return MarketOAuthStatusResponse(
-                authenticated=False,
-                market_web_url=MARKET_WEB_URL,
+            token_data = await _ensure_valid_oauth_token(
+                force_refresh=True,
+                rejected_access_token=(
+                    access_token if isinstance(access_token, str) else None
+                ),
             )
+            if not token_data:
+                _clear_account_summary_cache()
+                return MarketOAuthStatusResponse(
+                    authenticated=False,
+                    market_web_url=MARKET_WEB_URL,
+                )
+            token_snapshot = dict(token_data)
+            try:
+                auth_user = await _fetch_auth_userinfo(token_data.get("access_token"))
+            except _OAuthAccessTokenRejected:
+                logger.info(
+                    "Refreshed Auth access token was rejected while resolving subject"
+                )
+                if _unlink_oauth_token_if_matches(token_snapshot):
+                    _clear_account_summary_cache()
+                return MarketOAuthStatusResponse(
+                    authenticated=False,
+                    market_web_url=MARKET_WEB_URL,
+                )
         subject = _extract_auth_subject(auth_user)
         if not _oauth_token_snapshot_matches(token_snapshot):
             return MarketOAuthStatusResponse(
@@ -1417,7 +1437,7 @@ def _market_auth_http_failure_category(status_code: int) -> str:
         return "identity_conflict"
     if status_code == 429:
         return "rate_limited"
-    if status_code >= 500:
+    if status_code == 408 or status_code >= 500:
         return "market_unavailable"
     return "unexpected_status"
 
@@ -2190,7 +2210,7 @@ async def _probe_market_user(access_token: Any) -> _MarketUserProbe:
                         state="identity_conflict",
                         status_code=res.status_code,
                     )
-                if res.status_code != 429 and res.status_code < 500:
+                if res.status_code not in {408, 429} and res.status_code < 500:
                     return _MarketUserProbe(
                         state="invalid_response",
                         status_code=res.status_code,

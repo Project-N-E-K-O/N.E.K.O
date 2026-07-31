@@ -351,17 +351,38 @@ describe('useMarketAuth', () => {
     expect(ElMessage.success).not.toHaveBeenCalled()
   })
 
-  it('keeps the authenticated state when logout returns an HTTP error', async () => {
-    vi.stubGlobal(
-      'fetch',
-      vi.fn(async () => jsonResponse({ detail: 'logout rejected' }, 500))
-    )
+  it('keeps readiness retries active when logout returns an HTTP error', async () => {
+    vi.useFakeTimers()
+    let statusCalls = 0
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/market/bridge-token') {
+        return jsonResponse({ bridge_token: 'fresh-bridge-token' })
+      }
+      if (path === '/market/oauth/status') {
+        statusCalls += 1
+        return jsonResponse({
+          authenticated: true,
+          auth_state: 'ready',
+          market_state: 'unavailable',
+          retryable: true,
+        })
+      }
+      if (path === '/market/oauth/logout') {
+        return jsonResponse({ detail: 'logout rejected' }, 500)
+      }
+      throw new Error(`Unexpected request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
     const auth = useMarketAuth()
-    auth.marketAuth.value = { authenticated: true }
+
+    expect(await auth.loadMarketAuthStatus()).toBe(true)
 
     await expect(auth.logoutMarketAccount()).rejects.toThrow('logout rejected')
+    await vi.advanceTimersByTimeAsync(5000)
 
     expect(auth.marketAuth.value.authenticated).toBe(true)
+    expect(statusCalls).toBe(2)
     expect(ElMessage.success).not.toHaveBeenCalled()
     expect(auth.marketAuthBusy.value).toBe(false)
   })

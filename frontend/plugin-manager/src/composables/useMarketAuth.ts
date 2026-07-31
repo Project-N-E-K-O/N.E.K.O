@@ -72,6 +72,7 @@ export function useMarketAuth() {
   const marketAccountSummary = ref<MarketAccountSummary | null>(null)
   const marketAccountSummaryBusy = ref(false)
   const marketAuthBusy = ref(false)
+  const marketLogoutBusy = ref(false)
   const bridgeToken = ref(localStorage.getItem('neko_bridge_token') || '')
   let marketAuthPollTimer: number | null = null
   let marketReadinessRetryTimer: number | null = null
@@ -480,9 +481,8 @@ export function useMarketAuth() {
   }
 
   async function logoutMarketAccount(): Promise<void> {
-    stopMarketAuthPolling()
-    stopMarketReadinessRetry()
-    invalidateAccountSummaryRequests()
+    if (marketLogoutBusy.value) return
+    marketLogoutBusy.value = true
     marketAuthBusy.value = true
     try {
       const token = await ensureBridgeToken()
@@ -501,10 +501,14 @@ export function useMarketAuth() {
         }
         throw new Error(detail || t('market.logoutFailed'))
       }
+      stopMarketAuthPolling()
+      stopMarketReadinessRetry()
+      invalidateAccountSummaryRequests()
       marketAuth.value = { authenticated: false }
       marketAccountSummary.value = null
       ElMessage.success(t('market.logoutSuccess'))
     } finally {
+      marketLogoutBusy.value = false
       marketAuthBusy.value = false
     }
   }
@@ -520,6 +524,7 @@ export function useMarketAuth() {
     marketAccountSummary,
     marketAccountSummaryBusy,
     marketAuthBusy,
+    marketLogoutBusy,
     marketAuthDisplayName,
     marketAuthStateMessageKey,
     loadMarketAuthStatus,
