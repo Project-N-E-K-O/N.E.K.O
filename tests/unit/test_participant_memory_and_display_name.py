@@ -853,6 +853,36 @@ async def test_participant_finalize_honors_cutoff_and_floor_exemption():
 
 
 @pytest.mark.asyncio
+async def test_participant_opt_out_retain_stops_at_provisional_reply():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    pending_reply = SimpleNamespace(type="ai", content="仍在投递")
+    history = [
+        SimpleNamespace(type="human", content="授权消息"),
+        pending_reply,
+        SimpleNamespace(type="human", content="后续消息"),
+    ]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    user_data["participant_opt_out_cutoff"] = 3
+    user_data["pending_disable_settle"] = True
+    user_data["provisional_draft_rows"] = [pending_reply]
+    user_data["undelivered_draft_rows"] = [pending_reply]
+    service = QQSessionMemoryService(plugin)
+
+    completed = await service.finalize_user_memory_session(
+        "private:1001", reason="test", retain_session=True,
+    )
+
+    assert completed is False
+    assert user_data["last_participant_digest_index"] == 1
+    assert user_data["participant_opt_out_cutoff"] == 3
+    sent = bridge.post_scoped_memory_history.await_args.args[1]
+    assert [m["content"][0]["text"] for m in sent] == ["授权消息"]
+
+
+@pytest.mark.asyncio
 async def test_participant_digest_uses_session_permission_snapshot():
     """A dashboard trust change mutates permission_mgr before old history is
     settled. That history keeps the permission stamped on its session."""
@@ -1862,6 +1892,54 @@ async def test_scoped_forget_reflection_retry_keeps_ids_after_partial_failure(
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_purges_surfaced_archive_only_reflection(tmp_path):
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    reflections_path = tmp_path / "reflections.json"
+    reflections_path.write_text("[]", encoding="utf-8")
+    surfaced_path = tmp_path / "surfaced.json"
+    surfaced_path.write_text(json.dumps([
+        {"reflection_id": "archived-target", "text": "secret", "feedback": None},
+        {"reflection_id": "other", "text": "keep", "feedback": None},
+    ]), encoding="utf-8")
+    archive_dir = tmp_path / "reflection_archive"
+    archive_dir.mkdir()
+    (archive_dir / "2026-01-01_abcd1234.json").write_text(json.dumps([
+        {"id": "archived-target", "text": "secret", **target.as_entry_fields()},
+    ]), encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = PersistenceMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _reflections_path(self, name):
+            return str(reflections_path)
+
+        def _surfaced_path(self, name):
+            return str(surfaced_path)
+
+        def _reflections_archive_dir(self, name):
+            return str(archive_dir)
+
+        async def asave_surfaced(self, name, surfaced):
+            surfaced_path.write_text(json.dumps(surfaced), encoding="utf-8")
+
+    with patch("memory.reflection.persistence.assert_cloudsave_writable"):
+        stats = await _Harness().aforget_subject("Neko", target)
+
+    assert stats == {"reflections": 0, "surfaced": 1}
+    surfaced = json.loads(surfaced_path.read_text(encoding="utf-8"))
+    assert [row["reflection_id"] for row in surfaced] == ["other"]
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_aborts_on_unreadable_surfaced_state(tmp_path):
     from memory.reflection.persistence import PersistenceMixin
 
@@ -2565,12 +2643,20 @@ async def test_failed_participant_permission_settlement_retains_session(
         logger=MagicMock(),
     )
     service = QQSessionMemoryService(plugin)
-    service.finalize_user_memory_session = AsyncMock(return_value=False)
+    memory_enabled_during_finalize = []
+
+    async def _finalize(*args, **kwargs):
+        memory_enabled_during_finalize.append(user_data["memory_enabled"])
+        return False
+
+    service.finalize_user_memory_session = AsyncMock(side_effect=_finalize)
 
     await service.invalidate_private_session("1001")
 
     assert plugin._user_sessions["private:1001"] is user_data
     assert user_data["pending_permission_discard"] is True
+    assert memory_enabled_during_finalize == [True]
+    assert user_data["memory_enabled"] is memory_enabled
     service.finalize_user_memory_session.assert_awaited_once_with(
         "private:1001", reason="permission_change",
     )

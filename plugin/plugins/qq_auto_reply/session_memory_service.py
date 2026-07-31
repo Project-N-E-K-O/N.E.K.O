@@ -902,6 +902,21 @@ class QQSessionMemoryService:
                 stop_at_provisional=stop_at_provisional,
             )
             if not scoped_messages:
+                if (
+                    stop_at_provisional
+                    and next_index < len(conversation_history)
+                    and any(
+                        row is conversation_history[next_index]
+                        for row in (
+                            user_data.get("provisional_draft_rows") or []
+                        )
+                    )
+                ):
+                    # Retained opt-out sessions must keep their marker/cutoff
+                    # until this in-flight reply's delivery is decided. A
+                    # successful empty result would consume the cutoff and
+                    # leave no later settlement owner for the delivered row.
+                    return False
                 if next_index > last_participant_digest_index:
                     # 尾部全是被过滤的行：推进游标即可，无须发送。
                     user_data["last_participant_digest_index"] = next_index
@@ -1743,6 +1758,7 @@ class QQSessionMemoryService:
                                 last_participant_digest_index=(
                                     last_participant_digest_index
                                 ),
+                                stop_at_provisional=retain_session,
                             )
                         )
                     except Exception as digest_error:
@@ -2019,7 +2035,22 @@ class QQSessionMemoryService:
                 user_data.get("memory_enabled")
                 or user_data.get("pending_disable_settle")
             ):
-                finalized = await self.finalize_user_memory_session(session_key, reason="permission_change")
+                retrying_disabled_settlement = bool(
+                    user_data.get("pending_disable_settle")
+                    and not user_data.get("memory_enabled")
+                )
+                if retrying_disabled_settlement:
+                    # The cutoff is the authorization boundary; temporarily
+                    # enable the finalizer exactly as discard/shutdown do.
+                    user_data["memory_enabled"] = True
+                try:
+                    finalized = await self.finalize_user_memory_session(
+                        session_key, reason="permission_change",
+                    )
+                finally:
+                    survivor = self.plugin._user_sessions.get(session_key)
+                    if retrying_disabled_settlement and survivor is user_data:
+                        user_data["memory_enabled"] = False
                 if finalized:
                     return
                 if user_data.get("private_memory_mode") == "participant":

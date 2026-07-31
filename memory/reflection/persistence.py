@@ -391,7 +391,9 @@ class PersistenceMixin:
         merged / promote_blocked 条目并回主文件，删除会被静默 undo；这里
         在角色锁内读主文件全量、过滤后直写。surfaced.json 里引用被删
         reflection 的行一并清（surfaced 条目自带 text，会进 feedback
-        prompt）。归档分片不清：分片不进任何渲染/召回读路径，属事件留底。
+        prompt）。归档分片不清：分片不进任何渲染/召回读路径，属事件留底；
+        但会严格扫描其 subject 元数据以找回 archive-only reflection ID，
+        防止 surfaced 副本漏删。
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import coerce_subject, entry_matches_subject
         memory_subject = coerce_subject(subject)
@@ -420,25 +422,62 @@ class PersistenceMixin:
                 r.get('id') for r in removed if isinstance(r, dict) and r.get('id')
             }
             surfaced_removed = 0
-            if removed_ids:
+            surfaced_path = self._surfaced_path(name)
+            surfaced: list = []
+            if await asyncio.to_thread(os.path.exists, surfaced_path):
                 # Erasure cannot use the best-effort reader: treating a corrupt
                 # or transiently unreadable sidecar as [] would delete the
                 # source reflections and permanently lose the IDs needed to
                 # find their copied surfaced text on retry.
-                surfaced_path = self._surfaced_path(name)
-                surfaced: list = []
-                if await asyncio.to_thread(os.path.exists, surfaced_path):
+                try:
+                    surfaced_data = await read_json_async(surfaced_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"surfaced state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(surfaced_data, list):
+                    raise RuntimeError(
+                        "surfaced state is not a list during forget"
+                    )
+                surfaced = surfaced_data
+
+            surfaced_ids = {
+                s.get('reflection_id') for s in surfaced
+                if isinstance(s, dict) and s.get('reflection_id')
+            }
+            unresolved_surfaced_ids = surfaced_ids - removed_ids
+            archive_dir_getter = getattr(
+                self, '_reflections_archive_dir', None,
+            )
+            if unresolved_surfaced_ids and callable(archive_dir_getter):
+                from memory.archive_shards import (
+                    ShardCorruptError,
+                    _aread_shard,
+                    _list_shard_files,
+                )
+
+                archive_dir = archive_dir_getter(name)
+                for filename, _date, _uuid in await asyncio.to_thread(
+                    _list_shard_files, archive_dir,
+                ):
+                    shard_path = os.path.join(archive_dir, filename)
                     try:
-                        surfaced_data = await read_json_async(surfaced_path)
-                    except (json.JSONDecodeError, OSError) as exc:
+                        archived_rows = await _aread_shard(shard_path)
+                    except ShardCorruptError as exc:
                         raise RuntimeError(
-                            f"surfaced state unreadable during forget: {exc}"
+                            f"reflection archive unreadable during forget: {exc}"
                         ) from exc
-                    if not isinstance(surfaced_data, list):
-                        raise RuntimeError(
-                            "surfaced state is not a list during forget"
-                        )
-                    surfaced = surfaced_data
+                    for archived in archived_rows:
+                        reflection_id = archived.get('id')
+                        if (
+                            reflection_id in unresolved_surfaced_ids
+                            and entry_matches_subject(
+                                archived, memory_subject,
+                            )
+                        ):
+                            removed_ids.add(reflection_id)
+
+            if removed_ids:
                 kept_surfaced = [
                     s for s in surfaced
                     if not (

@@ -629,8 +629,9 @@ class FactStore:
                 # to_thread keeps running after its awaiter is cancelled. Let
                 # it acquire, then release, so cancellation cannot strand the
                 # per-character lock forever.
-                await acquire_task
-                fact_lock.release()
+                acquired = await acquire_task
+                if acquired:
+                    fact_lock.release()
                 raise
             try:
                 return await self._aforget_subject_with_fact_lock(
