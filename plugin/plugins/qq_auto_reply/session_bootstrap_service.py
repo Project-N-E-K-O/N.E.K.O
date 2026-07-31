@@ -7,6 +7,7 @@ from typing import Any, Optional
 
 from main_logic.omni_offline_client import OmniOfflineClient
 from utils.config_manager import get_config_manager
+from utils.llm_client import AIMessage
 
 from .pipeline_models import QQReplyContext
 
@@ -157,8 +158,13 @@ class QQSessionBootstrapService:
                     recovered = payload.get("text")
                     if isinstance(recovered, str) and recovered.strip():
                         # 终态截断正文不会再经 on_text_delta 重发；callback
-                        # 就是它唯一的交付通道，因此用恢复文本替换废弃分片。
+                        # 就是它唯一的交付与入史通道，因此两边同步替换。
                         reply_chunks.append(recovered)
+                        history = getattr(
+                            user_session, "_conversation_history", None
+                        )
+                        if isinstance(history, list):
+                            history.append(AIMessage(content=recovered))
 
             user_session = OmniOfflineClient(
                 base_url=base_url,

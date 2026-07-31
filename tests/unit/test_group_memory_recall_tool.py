@@ -884,6 +884,51 @@ async def test_primary_result_carries_the_pre_tool_boundary():
 
 
 @pytest.mark.asyncio
+async def test_terminal_recovery_history_is_not_duplicated_on_tool_cleanup():
+    """Callback-owned recovery already contains the complete visible turn."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    recovered = "我查一下。最终保留到这里。"
+
+    async def _script(client, message):
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content="我查一下。",
+            )
+        )
+        # RESPONSE_LENGTH_TRUNCATED callback owns this append.
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=recovered)
+        )
+        client.reply_chunks_ref.append(recovered)
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {"lock": asyncio.Lock()}
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == recovered
+    assert [getattr(row, "content", "") for row in client._conversation_history] == [
+        "hi",
+        recovered,
+    ]
+    assert user_data["current_pre_tool_text"] == "我查一下。"
+
+
+@pytest.mark.asyncio
 async def test_pre_tool_text_creates_history_row_without_a_final_segment():
     """A pre-tool-only reply must still have one durable assistant row."""
     plugin = _tool_plugin()
@@ -1502,6 +1547,7 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
             self.kwargs = kwargs
             self.base_url = kwargs.get("base_url")
             self.model = kwargs.get("model")
+            self._conversation_history = []
             built.append(self)
 
         async def connect(self, instructions=""):
@@ -1581,6 +1627,9 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
         }),
     )
     assert created["reply_chunks"] == ["保留到最后一个完整句子。"]
+    assert [row.content for row in built[-1]._conversation_history] == [
+        "保留到最后一个完整句子。"
+    ]
 
     await on_text_delta("故障前半句", True)
     await on_response_discarded(

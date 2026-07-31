@@ -576,6 +576,32 @@ class QQReplyGenerationService:
             sanitized = str(sanitize(pre_tool_text) or "")
             pre_tool_text = sanitized + trailing_space if sanitized else ""
 
+        # terminal truncation 的 callback 已把恢复后的整轮正文写成 final AI
+        # row，此时 history 无需再 prepend，但 postprocess 仍需要 tool 轮的
+        # 结构边界。provider 持久化的前缀可能裁掉尾空格；能与真实出站开头
+        # 对齐时，把紧随其后的空白一并收回为边界分隔符。
+        boundary_pre_tool_text = pre_tool_text
+        if (
+            assistant_tool_rows
+            and not boundary_pre_tool_text.strip()
+            and persisted_pre_tool_text.strip()
+        ):
+            boundary_candidate = persisted_pre_tool_text
+            if callable(sanitize):
+                boundary_candidate = str(sanitize(boundary_candidate) or "")
+            if (
+                boundary_candidate
+                and isinstance(outbound_text, str)
+                and outbound_text.startswith(boundary_candidate)
+            ):
+                boundary_end = len(boundary_candidate)
+                while (
+                    boundary_end < len(outbound_text)
+                    and outbound_text[boundary_end].isspace()
+                ):
+                    boundary_end += 1
+                boundary_pre_tool_text = outbound_text[:boundary_end]
+
         # stream_text 不外发纯空白 chunk；相同内容即使进了 provider 的
         # assistant tool-call history，也不能凭空合成一条用户没看到的 AI 行。
         if pre_tool_text.strip():
@@ -592,7 +618,12 @@ class QQReplyGenerationService:
             if self._is_tool_round_row(history[index]):
                 del history[index]
                 removed += 1
-        return removed, pre_tool_text if assistant_tool_rows else ""
+        return (
+            removed,
+            boundary_pre_tool_text
+            if assistant_tool_rows and boundary_pre_tool_text.strip()
+            else "",
+        )
 
     async def _run_memory_housekeeping(
         self, session_key: str, user_data: dict[str, Any],
