@@ -1209,11 +1209,13 @@ def test_a_keyword_that_does_not_mean_the_emotion_it_spells(text):
 
 @pytest.mark.parametrize("text", ["我很生氣", "他生氣了", "好生氣", "他有生氣"])
 def test_real_anger_survives_the_false_friend_list(text):
-    """`有` + verb is the Taiwanese perfective, so the last one is real anger.
+    """The last one uses the Taiwanese perfective marker: it is real anger.
 
-    That is why the vitality list deliberately omits it, at the cost of the
-    literary reading. Pinned so the trade-off is not silently reversed.
+    That is why the vitality list deliberately omits that construction, at the
+    cost of the literary reading. Pinned so the trade-off is not silently
+    reversed.
     """
+    # 台湾华语 `有 + 动词` 是完成体（`他有生氣` ＝ 他生气了），不是「有生机」。
     assert _heur(text) == "angry"
 
 
