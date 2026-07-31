@@ -654,11 +654,17 @@ class FactStore:
         的群成员就能把自己的内容写进别人的 subject，并借到别人的
         speaker_trust 信任基线）：
 
-        1. **每行都冠 label 前缀**——正文永远不出现在行首，注入进来的
+        1. **每一行都带前缀**——正文永远不出现在行首，注入进来的
            "\\n[SEGMENT 2 | speaker: Alice]" 只会渲染成
-           "Mallory(1003) | [SEGMENT 2 | ...]"，明确落在自己那段里。
-           按 ``splitlines()`` 切，覆盖 \\r / \\x85 / U+2028 这些同样会被
-           渲染成换行的分隔符。
+           "| ［SEGMENT 2 | ...]"，明确落在自己那段里。按 ``splitlines()``
+           切，覆盖 \\r / \\x85 / U+2028 这些同样会被渲染成换行的分隔符。
+
+           续行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
+           而消息里的换行数不受任何上游限制（路由只数消息条数、群名片也
+           没有长度校验），逐行重复 label 等于给攻击者一个 ~67 倍的放大器
+           ——一条几千行的消息就能把 prompt 撑爆或耗光抽取超时，而失败的
+           批是保留重试的，同批其他成员会被一起拖住（Codex）。短标记把
+           放大压到每行 2 字节，防伪性质不变：行首不是段首形状就够了。
         2. **段首带一次性 nonce**——攻击者的消息在 nonce 生成之前就写死了，
            猜不到本次请求的 token，伪造头与真段首形状对不上。
         3. **label 与正文里的结构字面量中和**——label 剥方括号/竖线/换行，
@@ -675,8 +681,10 @@ class FactStore:
                     '［SEGMENT',
                     cls._flatten_message_content(getattr(msg, 'content', '')),
                 )
-                for line in (body.splitlines() or ['']):
-                    lines.append(f"{label} | {line}")
+                body_lines = body.splitlines() or ['']
+                lines.append(f"{label} | {body_lines[0]}")
+                # 续行只冠短标记：同一条消息的后续行，发言人显然没变。
+                lines.extend(f"| {line}" for line in body_lines[1:])
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 
@@ -935,12 +943,10 @@ class FactStore:
 
     @classmethod
     def _carries_unused_text(cls, entry) -> bool:
-        """True when a rejected element still holds non-blank text somewhere.
+        """True when a value still holds non-blank text somewhere.
 
-        判据是"我们正要丢掉的这个东西里还攥着没被用上的文字"——
-        ``{"importance": 5}`` / ``{"text": ""}`` 是空壳（丢了不丢内容），
-        而 ``{"note": "Alice 养猫"}`` / ``["Alice 养猫"]`` 是我们看不懂的
-        形状里裹着内容，绝不能静默丢。"""  # noqa: DOCSTRING_CJK
+        纯粹看"这个值里有没有文字"，不认字段名——字段名那层由
+        :meth:`_has_unconsumed_text` 负责。"""  # noqa: DOCSTRING_CJK
         if isinstance(entry, str):
             return bool(entry.strip())
         if isinstance(entry, dict):
@@ -948,6 +954,63 @@ class FactStore:
         if isinstance(entry, (list, tuple, set)):
             return any(cls._carries_unused_text(v) for v in entry)
         return False
+
+    # JSON 里像"字段名"的键：ASCII 标识符。模型给 schema 加字段时用的是
+    # confidence / reason / evidence 这种；而把事实文本塞进键的畸形形态
+    # （{"Alice likes cats": 7}）几乎不可能长成标识符——自然语言带空格或
+    # 非 ASCII。用它区分"键是字段名"与"键就是内容"。
+    _FIELD_NAME_RE = re.compile(r'^[A-Za-z_][A-Za-z0-9_]*$')
+
+    @classmethod
+    def _holds_unextracted_text(cls, entry, *, always_consumed: tuple = ()) -> bool:
+        """True when a **rejected** entry still holds text nobody extracted.
+
+        只对"这一条什么都没抽出来"的元素问这个问题，理由是**重试能不能救**：
+        - 什么都没抽出来 → 重来一次抽取，模型完全可能给出规范形状，那截
+          内容就回来了。保留桶重试是有意义的；
+        - 已经抽出了事实、只是旁边还挂着别的字段 → 重抽会复现同一个形状，
+          那个字段照样没人读。判 failed 换不回任何东西，只会让这个成员的
+          记忆**永远结算不掉**：桶一路涨到硬顶后连原始消息一起丢，比丢一个
+          附注严重得多。那种情况只记一条 WARNING（见调用方），段照常 ok。
+
+        ⚠️ **键本身也可能就是内容**：``{"Alice likes cats": 7}`` 这种 map
+        形态的畸形事实，文本全在键上、值是个数字——只查值会把它当空壳丢掉
+        （Codex）。所以非字段名形状的键（见 :attr:`_FIELD_NAME_RE`）只要
+        非空白就算内容。
+
+        ``always_consumed``：调用方已经逐条解析过的键（段对象的 ``segment``
+        / ``facts``），当作已读走。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(entry, dict):
+            return cls._carries_unused_text(entry)
+        for key, value in entry.items():
+            if isinstance(key, str) and key in always_consumed:
+                continue
+            if (
+                isinstance(key, str)
+                and key.strip()
+                and not cls._FIELD_NAME_RE.match(key)
+            ):
+                return True
+            if cls._carries_unused_text(value):
+                return True
+        return False
+
+    @classmethod
+    def _unread_fields_of_accepted_fact(cls, fact, *, always_consumed=()) -> list:
+        """Field names on an accepted fact that nobody downstream reads.
+
+        只用于打日志（见 :meth:`_holds_unextracted_text` 里的理由：判 failed
+        换不回内容、只会让这个成员永远结算不掉）。留这条日志是为了让"模型
+        开始往事实上挂别的文字"这件事看得见——真发生了就去改 prompt，而不是
+        靠一个永远重试的闸门去发现。"""  # noqa: DOCSTRING_CJK
+        if not isinstance(fact, dict):
+            return []
+        return sorted(
+            str(key) for key, value in fact.items()
+            if key not in cls._PERSISTED_FACT_FIELDS
+            and key not in always_consumed
+            and cls._carries_unused_text(value)
+        )
 
     @classmethod
     def _parse_batch_segment_entry(
@@ -992,14 +1055,19 @@ class FactStore:
         kept: list[dict] = []
         dropped = 0
         suspect = 0
+        unread_fields: list[str] = []
         for entry in (raw_facts or []):
             fact = cls._as_fact_entry(entry)
-            if fact is not None:
-                kept.append(fact)
-            elif cls._carries_unused_text(entry):
-                suspect += 1
-            else:
-                dropped += 1
+            if fact is None:
+                # 读不成事实：里面还攥着没人抽走的文字就 suspect（重抽有可能
+                # 把它变成规范形状救回来），纯空壳才丢。
+                if cls._holds_unextracted_text(entry):
+                    suspect += 1
+                else:
+                    dropped += 1
+                continue
+            kept.append(fact)
+            unread_fields.extend(cls._unread_fields_of_accepted_fact(fact))
         own_fact = cls._as_fact_entry(item)
         # 段对象上还剩什么没人读？剩下的键里若攥着文字，说明这个形状我们
         # 没读懂，别把它当成"本段的结论"——那会让调用方 pop 掉桶，那截
@@ -1013,15 +1081,22 @@ class FactStore:
         #   里的 note——那截内容确实会随着 pop 一起消失，仍要判 suspect。
         # - item 读不成事实 → 连 text 都没被消费（{"text": ["Alice 养猫"]}
         #   这种内容裹在非字符串里），一个都不能排除。
-        consumed = ('segment', 'facts')
         if own_fact is not None:
             kept.append(own_fact)
-            consumed = (*consumed, *cls._PERSISTED_FACT_FIELDS)
-        if cls._carries_unused_text({
-            key: value for key, value in item.items()
-            if key not in consumed
-        }):
+            unread_fields.extend(cls._unread_fields_of_accepted_fact(
+                item, always_consumed=('segment', 'facts'),
+            ))
+        elif cls._holds_unextracted_text(
+            item, always_consumed=('segment', 'facts'),
+        ):
             suspect += 1
+        if unread_fields:
+            logger.warning(
+                f"[FactStore] 批抽取：模型往事实上挂了没人读的字段 "
+                f"{sorted(set(unread_fields))}——那部分内容不会入库。判 failed "
+                f"换不回它（重抽会复现同一个形状），所以只记一条日志；真频繁"
+                f"出现就去改 prompt。"
+            )
         return index, kept, dropped, suspect
 
     @staticmethod

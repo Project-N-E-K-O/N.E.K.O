@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import re
 from pathlib import Path
 from types import SimpleNamespace
@@ -2559,24 +2560,24 @@ async def test_flat_fact_own_schema_fields_are_not_stray_text(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_flat_fact_with_an_unread_text_field_fails_the_segment(tmp_path):
-    """扁平事实**旁边**还挂着没人读的文字：本段仍要 failed。
+async def test_map_shaped_malformed_fact_is_not_treated_as_an_empty_shell(
+    tmp_path,
+):
+    """``{"Alice 喜欢猫": 7}``：文本全在**键**上、值是个数字。
 
-    ``{"segment": 1, "text": "A", "note": "B"}`` 里 persist 只读 text，
-    ``note`` 那截内容没有任何人消费——段照报 ok 的话，调用方 pop 掉桶，
-    B 就此消失。这与"扁平事实自己的 schema 字段不算旁挂文字"是**两回事**：
-    前者没人读，后者被 persist 读走（Codex 在两轮 review 里各指了一头，
-    两头都要成立）。"""  # noqa: DOCSTRING_CJK
+    只查 dict 的值会把它判成空壳丢掉、段照报 ok、桶被 pop——那条内容就此
+    消失。这一条什么都没抽出来，重抽完全可能给出规范形状把它救回来，所以
+    判 failed 保留重试是有意义的（Codex）。
+
+    键用 ASCII 标识符形状区分"字段名"与"内容"：模型给 schema 加字段用的是
+    confidence / reason 这种标识符，而事实文本带空格或非 ASCII。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
 
     async def _llm(prompt, lanlan_name, **kwargs):
         return [
-            {
-                "segment": 1, "text": "Alice 喜欢猫", "importance": 7,
-                "note": "Bob 的生日是 3 月 5 日",
-            },
+            {"segment": 1, "facts": [{"Alice 喜欢猫": 7}]},
             {"segment": 2, "facts": []},
         ]
 
@@ -2589,10 +2590,204 @@ async def test_flat_fact_with_an_unread_text_field_fails_the_segment(tmp_path):
         results = await fs.extract_facts_batch(segments, "Neko")
 
     assert [r["status"] for r in results] == ["failed", "ok"], (
-        "没人读的旁挂文字被当成已消费，段照报 ok——那截内容会随 pop 消失"
+        "文本在键上的畸形事实被当成空壳，段照报 ok，桶会被 pop"
     )
-    # 认得出的那条仍照常落盘。
-    assert [f["text"] for f in results[0]["created"]] == ["Alice 喜欢猫"]
+    assert results[0]["dropped"] == 0, "它不是空壳，不该记进 dropped"
+
+
+@contextlib.contextmanager
+def _capture_memory_logs():
+    """Capture the memory module logger directly.
+
+    它被 utils/logger_config 配成 propagate=False，caplog 的 root handler
+    抓不到——挂一个临时 handler 到 logger 本体上。"""  # noqa: DOCSTRING_CJK
+    import logging
+
+    import memory.facts as facts_module
+
+    records: list = []
+
+    class _ListHandler(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _ListHandler(level=logging.DEBUG)
+    target = facts_module.logger
+    old_level = target.level
+    target.addHandler(handler)
+    target.setLevel(logging.DEBUG)
+    try:
+        yield records
+    finally:
+        target.removeHandler(handler)
+        target.setLevel(old_level)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("payload", [
+    # 嵌套形态：facts 数组里的事实旁边挂着 note。
+    {"segment": 1, "facts": [
+        {"text": "Alice 喜欢猫", "note": "Bob 的生日是 3 月 5 日"},
+        {"text": "Alice 会法语", "confidence": 0.9},
+    ]},
+    # 扁平形态：段对象本身就是那条事实，note 挂在它旁边。
+    {"segment": 1, "text": "Alice 喜欢猫", "importance": 7,
+     "note": "Bob 的生日是 3 月 5 日", "confidence": 0.9,
+     "facts": [{"text": "Alice 会法语"}]},
+])
+async def test_extra_fields_on_an_accepted_fact_are_logged_not_retried(
+    tmp_path, payload,
+):
+    """事实已经抽出来了、旁边多挂个字段 → 记日志，**不判 failed**。
+
+    判 failed 在这里换不回任何东西：重抽会复现同一个形状，那个字段照样
+    没人读。代价却很实在——模型只要习惯性地加个 ``confidence`` / ``note``，
+    这个成员的记忆就**永远结算不掉**，桶一路涨到硬顶后连原始消息一起丢，
+    比丢一个附注严重得多。
+
+    对照 ``test_map_shaped_malformed_fact_is_not_treated_as_an_empty_shell``：
+    那一条什么都没抽出来，重抽有救，才值得保留重试。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [payload, {"segment": 2, "facts": []}]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with _capture_memory_logs() as records:
+        with patch("memory.facts.get_global_language_full", return_value="zh"):
+            results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "ok"], (
+        "抽出来的事实旁边多挂个字段就判 failed，这个成员永远结算不掉"
+    )
+    assert len(results[0]["created"]) == 2
+    unread_logs = [
+        r.getMessage() for r in records
+        if "没人读的字段" in r.getMessage()
+    ]
+    assert unread_logs, "静默丢弃：模型开始往事实上挂文字时没有任何痕迹"
+    assert "'note'" in unread_logs[0]
+    assert "confidence" not in unread_logs[0], (
+        "值不是文本的元数据字段不该记进来——那会把日志刷成噪声"
+    )
+
+
+@pytest.mark.asyncio
+async def test_canonical_nested_payload_is_not_flagged(tmp_path):
+    """对照：规范嵌套输出一条 suspect 都不该有。
+
+    ``facts`` 数组是解析方逐条读过的，把它当"没人读"会让**每一个**规范
+    段对象都误判成 failed——防御做过头和做不够一样是产品缺陷。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {"segment": 1, "facts": [
+                {"text": "Alice 昨晚没睡好", "importance": 6,
+                 "event_when": {"start": {"offset": -1, "unit": "day"}}},
+                {"text": "Alice 对花生过敏", "importance": 8,
+                 "entity": "master", "source": "user_observation"},
+                "裸字符串也算规范容忍范围",
+            ]},
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    assert [r["dropped"] for r in results] == [0, 0]
+    assert len(results[0]["created"]) == 3
+
+
+def test_batch_rendering_does_not_amplify_newline_dense_messages():
+    """逐行前缀不得成为放大器。
+
+    label 可以到 64 字符，而消息里的换行数不受任何上游限制（路由只数消息
+    条数，群名片也没有长度校验）。逐行重复整条 label 等于给攻击者一个
+    ~67 倍的放大器：一条几千行的消息就能把 prompt 撑爆或耗光 30s 抽取
+    超时，而失败的批是保留重试的，同批其他成员会被一起拖住（Codex）。
+
+    续行用短标记，放大压到每行 2 字节；防伪性质不变——校验的是"没有任何
+    一行以段首形状开头"。"""  # noqa: DOCSTRING_CJK
+    label = "x" * 64
+    body = "\n".join(f"line{i}" for i in range(400))
+    segments = [{
+        "speaker_label": label,
+        "messages": [SimpleNamespace(type="human", content=body)],
+    }]
+    rendered = FactStore._format_speaker_segments(segments, nonce="abcd1234")
+
+    line_count = len(body.splitlines())
+    overhead = len(rendered) - len(body)
+    # 续行标记 2 字节/行 + 首行 label + 段首那一行；给点余量但**远**低于
+    # "每行重复整条 label"（那是 line_count × 64）。
+    assert overhead <= 4 * line_count + 200, (
+        f"逐行前缀把 {len(body)} 字节的正文放大了 {overhead} 字节"
+        f"（{line_count} 行）——label 每行重复一遍就是这个后果"
+    )
+    assert overhead < line_count * len(label) / 10
+    # 防伪性质仍然成立：正文一行都不在行首。
+    assert all(
+        not line.startswith("[SEGMENT")
+        for line in rendered.splitlines()[1:]
+    )
+    assert f"{label} | line0" in rendered
+    assert "| line399" in rendered
+
+
+def test_member_label_keeps_the_sender_id_suffix_under_any_nickname():
+    """label 的 "(sender_id)" 后缀必须活过截断。
+
+    昵称两条来源都没有长度/字符校验（群名片是用户自己改的，后台备注名的
+    setter 也只 strip 一下）。先拼再整体截到 64 的话，一个 64 字以上的昵称
+    会把后缀整个挤掉；若那些字符又全是结构字符，服务端中和完只剩空串——
+    这一批就再也发不出去，同批其他成员跟着无限重试（Codex）。"""  # noqa: DOCSTRING_CJK
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    cap = QQSessionMemoryService.MEMBER_LABEL_MAX_CHARS
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        permission_mgr=None,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+
+    for nickname in ("正常昵称", "[]|" * 40, "水" * 200, ""):
+        user_data: dict = {}
+        context = SimpleNamespace(
+            is_group=True, group_facing=False, group_scene_mode="",
+            source_kind="", member_memory_enabled=True,
+            sender_id="1003", message="hi", user_nickname=nickname,
+        )
+        service.record_group_member_turn(user_data, context)
+        label = user_data["group_member_memory_labels"]["1003"]
+        assert len(label) <= cap, f"{nickname!r} → label 超长: {label!r}"
+        assert label.endswith("(1003)") or label == "1003", (
+            f"{nickname!r} → 保底的 sender_id 后缀被截掉了: {label!r}"
+        )
+        # 服务端中和之后仍然非空 —— 这才是 422 不会被触发的真正依据。
+        assert FactStore.sanitize_speaker_label(label), (
+            f"{nickname!r} → 中和后为空，服务端会拒掉整批"
+        )
 
 
 def test_persisted_fact_fields_matches_what_persist_actually_reads():
@@ -2912,10 +3107,12 @@ async def test_message_body_cannot_forge_a_segment_boundary(tmp_path):
         results = await fs.extract_facts_batch(segments, "Neko")
 
     _assert_no_forgeable_boundary(captured["prompt"], 2)
-    # 注入的那三行全部落在攻击者段内、且都被冠上他的 label；正文里的段首
-    # 字面量另外被折成全角左括号，连形状都不成立。
-    for line in evil.replace("[SEGMENT", "［SEGMENT").splitlines():
-        assert f"Mallory(1003) | {line}" in captured["prompt"]
+    # 注入的那三行全部落在攻击者段内、且都带前缀（首行冠 label、续行冠
+    # 短标记）；正文里的段首字面量另外被折成全角左括号，连形状都不成立。
+    injected = evil.replace("[SEGMENT", "［SEGMENT").splitlines()
+    assert f"Mallory(1003) | {injected[0]}" in captured["prompt"]
+    for line in injected[1:]:
+        assert f"| {line}" in captured["prompt"]
     assert "[SEGMENT 2 | speaker: Alice(1002)]" not in captured["prompt"]
 
     # 落盘归属：内容进的是攻击者的 subject，盖的是攻击者的信赖度。
@@ -3062,17 +3259,22 @@ async def test_scoped_history_batch_route_validation():
             )
         assert excinfo.value.status_code == 422
 
-        # 整条 label 都是结构字符：长度合法但中和后什么都不剩，按契约违例
-        # fail loud，绝不静默换占位符（那会让一条无从追溯归属的 fact 落进
-        # 某个人的 subject）。
-        with pytest.raises(HTTPException) as excinfo:
-            await memory_routes.process_scoped_history(
-                "Neko",
-                ScopedHistoryRequest(segments=[_seg(label="[]|")]),
-            )
-        assert excinfo.value.status_code == 422
-
         store.extract_facts_batch.assert_not_awaited()
+
+        # 整条 label 都是结构字符：中和后什么都不剩，但**不能 422**——
+        # label 只影响 prompt 里怎么称呼这个人，归属钉在 subject 上；422
+        # 会让整批保留重试，一个成员的群名片就能无限期卡住同批其他人的
+        # 抽取。降级成服务端自己派生的标识（不受调用方污染）。
+        store.extract_facts_batch = AsyncMock(return_value=[
+            {"status": "ok", "created": [], "dropped": 0},
+        ])
+        await memory_routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[_seg(label="[]|")]),
+        )
+        sent = store.extract_facts_batch.await_args.args[0]
+        assert sent[0]["speaker_label"] == "qq:100:1001", (
+            "label 被中和空之后没有降级到服务端派生的标识"
+        )
 
         # 长度合法的恶意群名片：入口就把结构字符剥掉再往下传，抽取层拿到
         # 的 label 已经不可能在 prompt 里拉出第二条段首。

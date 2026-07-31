@@ -44,6 +44,8 @@ class QQSessionMemoryService:
     # "波数 × 单发超时"推导的等待上限在最坏情形下与逐成员时代一致。
     # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
+    # speaker_label 的长度上限，与 /scoped_history 路由的校验同一个数。
+    MEMBER_LABEL_MAX_CHARS = 64
     SCOPED_HISTORY_TIMEOUT_SECONDS = 30.0
     # 结算前等待该会话在途排空的上限。分两档，判据是"放弃等待要付什么"：
     # · 短档（idle sweep）：放弃只是多等一个 sweep 周期，下轮自然重来。
@@ -467,7 +469,17 @@ class QQSessionMemoryService:
             custom_nickname or getattr(context, "user_nickname", "") or ""
         ).strip()
         labels = user_data.setdefault("group_member_memory_labels", {})
-        labels[sender_id] = f"{nickname}({sender_id})" if nickname else sender_id
+        # "(sender_id)" 后缀是这条 label 的**保底可追溯部分**，必须活过截断：
+        # 昵称既可能是群名片（用户自己改）也可能是后台设的备注名，两条路径
+        # 都没有长度或字符校验。先按剩余额度裁昵称再拼后缀，否则一个 64 字
+        # 以上的昵称会把后缀整个挤掉——服务端中和完只剩空串，那一批直接
+        # 422，同批其他成员跟着无限重试（Codex）。
+        suffix = f"({sender_id})"
+        nickname_budget = self.MEMBER_LABEL_MAX_CHARS - len(suffix)
+        if nickname and nickname_budget > 0:
+            labels[sender_id] = f"{nickname[:nickname_budget]}{suffix}"
+        else:
+            labels[sender_id] = sender_id[:self.MEMBER_LABEL_MAX_CHARS]
         messages = buckets.setdefault(sender_id, [])
         messages.append({
             "role": "user",

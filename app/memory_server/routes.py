@@ -1031,18 +1031,25 @@ async def _process_scoped_history_segments(
         # Alice 的 speaker_trust）。入口就剥掉结构字符，渲染侧再剥一次
         # （两侧都要——渲染是唯一真正把 label 拼进 prompt 的地方，而路由
         # 是唯一能对畸形输入 fail loud 的地方）。
+        subject = segment.subject.to_domain()
         speaker_label = FactStore.sanitize_speaker_label(raw_label)
         if not speaker_label:
-            raise HTTPException(
-                status_code=422,
-                detail=(
-                    f"segment {position}: speaker_label is entirely "
-                    f"structural characters"
-                ),
+            # 中和完什么都不剩（整条 label 都是结构字符）。**不能 422**：
+            # label 只影响 prompt 里怎么称呼这个人，归属钉在 subject 上，
+            # 它不是安全边界；而 422 会让整批保留重试，一个成员的群名片
+            # 就能无限期卡住同批其他人的记忆抽取（Codex）。降级成服务端
+            # 自己派生的标识（不受调用方污染），并留一条 warning 让调用方
+            # 侧的 label 组装 bug 仍然看得见。
+            speaker_label = FactStore.sanitize_speaker_label(
+                subject.subject_id
+            ) or "unknown speaker"
+            logger.warning(
+                f"[scoped_history] segment {position}: speaker_label 中和后为空，"
+                f"降级为 {speaker_label!r}（调用方应保证 label 带可追溯后缀）"
             )
         parsed.append({
             "messages": messages,
-            "subject": segment.subject.to_domain(),
+            "subject": subject,
             "speaker_label": speaker_label,
             "speaker_trust": segment.speaker_trust,
         })
