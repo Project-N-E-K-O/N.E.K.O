@@ -1914,3 +1914,96 @@ async def test_a_turn_starting_inside_the_done_hook_still_gets_a_speech_id():
         "the rotation repairs the speech id the done hook just closed; "
         "skipping it strands the successor on a dead one"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_released_turns_late_terminal_is_still_accounted_for():
+    # Codex P2. The release clears _current_response_id on purpose, so the
+    # released response's real terminal always takes the stale-event branch.
+    # That branch forwarded it to the arbiter and dropped everything else,
+    # including the provider's exact token counts — so every turn the hatch
+    # recovered vanished from usage statistics.
+    import json
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    client = _free_client()
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-2"}}),
+        # The released turn's real terminal, arriving after a successor
+        # became current — which is what the release guarantees.
+        json.dumps(
+            {
+                "type": "response.done",
+                "response": {
+                    "id": "resp-1",
+                    "model": "free-model",
+                    "usage": {
+                        "input_tokens": 11,
+                        "output_tokens": 22,
+                        "total_tokens": 33,
+                    },
+                },
+            }
+        ),
+    ]
+
+    tracker = MagicMock()
+    with patch(
+        "utils.token_tracker.TokenTracker.get_instance", return_value=tracker
+    ):
+        try:
+            await client.handle_messages()
+        finally:
+            await client._response_arbiter.shutdown("test teardown")
+
+    assert tracker.record.call_count == 1, (
+        "a stale terminal still cost tokens; quarantining the host "
+        "finalization must not quarantine the accounting"
+    )
+    booked = tracker.record.call_args.kwargs
+    assert booked["prompt_tokens"] == 11
+    assert booked["completion_tokens"] == 22
+    assert booked["total_tokens"] == 33
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_current_turns_terminal_is_accounted_for_exactly_once():
+    # The dual, both ways: the ordinary path still books its usage, and the
+    # shared helper does not let a terminal be counted twice.
+    import json
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    client = _free_client()
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+        json.dumps(
+            {
+                "type": "response.done",
+                "response": {
+                    "id": "resp-1",
+                    "model": "free-model",
+                    "usage": {
+                        "input_tokens": 5,
+                        "output_tokens": 6,
+                        "total_tokens": 11,
+                    },
+                },
+            }
+        ),
+    ]
+
+    tracker = MagicMock()
+    with patch(
+        "utils.token_tracker.TokenTracker.get_instance", return_value=tracker
+    ):
+        try:
+            await client.handle_messages()
+        finally:
+            await client._response_arbiter.shutdown("test teardown")
+
+    assert tracker.record.call_count == 1
+    assert tracker.record.call_args.kwargs["total_tokens"] == 11

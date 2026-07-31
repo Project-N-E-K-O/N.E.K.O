@@ -987,6 +987,33 @@ class _TransportMixin:
             self._take_pending_output_transcript()
         )
 
+    def _record_response_usage(self, resp_data: Any) -> None:
+        """Book the provider's token counts for one finished response.
+
+        Shared by the terminal path and the stale-terminal path, because a
+        response's cost does not depend on whose turn the host thinks is
+        current when its ``response.done`` finally arrives.
+        """
+
+        if not isinstance(resp_data, dict):
+            return
+        try:
+            usage = resp_data.get("usage")
+            if not usage:
+                return
+            from utils.token_tracker import TokenTracker
+
+            TokenTracker.get_instance().record(
+                model=resp_data.get("model", self.model or "realtime"),
+                prompt_tokens=usage.get("input_tokens", 0),
+                completion_tokens=usage.get("output_tokens", 0),
+                total_tokens=usage.get("total_tokens", 0),
+                call_type="conversation_realtime",
+                source="main_logic/omni_realtime_client",
+            )
+        except Exception:
+            pass
+
     def _take_response_transcript(self) -> str:
         """Close the books on what this turn actually said.
 
@@ -1415,6 +1442,18 @@ class _TransportMixin:
                             # owner. Content of the stale response stays
                             # filtered below.
                             self._response_arbiter.notify_response_terminal(event)
+                            # The tokens were spent whoever the turn belonged
+                            # to, and this is the ONLY path a fail-open
+                            # released turn's terminal can take: the release
+                            # clears _current_response_id on purpose, so its
+                            # real terminal always lands here. Quarantining
+                            # the host finalization must not also quarantine
+                            # the accounting, or every recovered turn vanishes
+                            # from usage stats even though the provider sent
+                            # exact counts. Counted here and only here — the
+                            # branch continues, so nothing double-counts.
+                            self._response_done_total += 1
+                            self._record_response_usage(event.get("response"))
                         logger.info(
                             "Dropping stale response event type=%s response_id=%s current_response_id=%s",
                             event_type,
@@ -1502,22 +1541,8 @@ class _TransportMixin:
                     self._response_arbiter.notify_response_terminal(event)
                     self._response_done_total += 1
                     self._last_response_done_time = time.time()
-                    resp_data = event.get("response", {})
                     # 解析实时 API 返回的 token 用量
-                    try:
-                        _rt_usage = resp_data.get("usage")
-                        if _rt_usage:
-                            from utils.token_tracker import TokenTracker
-                            TokenTracker.get_instance().record(
-                                model=resp_data.get("model", self.model or "realtime"),
-                                prompt_tokens=_rt_usage.get("input_tokens", 0),
-                                completion_tokens=_rt_usage.get("output_tokens", 0),
-                                total_tokens=_rt_usage.get("total_tokens", 0),
-                                call_type="conversation_realtime",
-                                source="main_logic/omni_realtime_client",
-                            )
-                    except Exception:
-                        pass
+                    self._record_response_usage(event.get("response"))
                     self._clear_turn_response_state()
                     # 响应完成，检测重复度
                     await self._record_response_repetition(
