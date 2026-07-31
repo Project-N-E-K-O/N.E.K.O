@@ -206,6 +206,9 @@ class QQModelResult:
     allow_fallback: bool = False
     fallback_reason: str = ""
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
+    # Exact session-history row produced by this generation. Delivery can
+    # finish after a later turn has overwritten the session-wide current row.
+    history_ai_row: Any = None
 
 
 @dataclass(slots=True)
@@ -275,3 +278,4 @@ class QQReplyOutcome:
     delivery_plan: QQDeliveryPlan | None = None
     delivery_result: QQDeliveryResult | None = None
     traces: list[QQPipelineStageTrace] = field(default_factory=list)
+    history_ai_row: Any = None

@@ -172,7 +172,12 @@ class QQReplyGenerationService:
             self.plugin.logger.info(f"AI 生成回复完成 (会话: {session_key}, length: {len(ai_reply)})")
             stage_trace.status = "success"
             stage_trace.metadata["reply_length"] = len(ai_reply)
-            return QQModelResult(reply_text=ai_reply, source="session", traces=[stage_trace])
+            return QQModelResult(
+                reply_text=ai_reply,
+                source="session",
+                history_ai_row=user_data.get("current_turn_ai_row"),
+                traces=[stage_trace],
+            )
 
         except asyncio.TimeoutError:
             # discard_session 内部会先结算群 scoped 缓冲再丢弃（集中抢救）。

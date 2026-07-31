@@ -1553,6 +1553,54 @@ async def test_scoped_forget_aborts_on_unreadable_persona(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_rejects_non_list_persona_facts(tmp_path):
+    from memory.persona.facts import FactsMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    persona_path = tmp_path / "persona.json"
+    malformed = {
+        target.persona_section_key: {
+            "facts": {"recoverable": [
+                {"id": "p1", "text": "target", **target.as_entry_fields()},
+            ]},
+            **target.as_entry_fields(),
+        }
+    }
+    persona_path.write_text(json.dumps(malformed), encoding="utf-8")
+    corrections_path = tmp_path / "persona_corrections.json"
+    corrections_path.write_text("[]", encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = FactsMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._resolve_lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+            self._personas = {}
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _get_resolve_alock(self, name):
+            return self._resolve_lock
+
+        def _corrections_path(self, name):
+            return str(corrections_path)
+
+        def _persona_path(self, name):
+            return str(persona_path)
+
+        async def asave_persona(self, name, value):
+            raise AssertionError("must fail before persona save")
+
+    with pytest.raises(RuntimeError, match="section facts are not a list"):
+        await _Harness().aforget_subject("Neko", target)
+
+    assert json.loads(persona_path.read_text(encoding="utf-8")) == malformed
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
     """reflection 侧不走 asave_reflections：它的归档合并会把磁盘上
     merged / promote_blocked 的条目并回主文件，删除被静默 undo。直写后
@@ -2327,6 +2375,29 @@ def test_private_synthetic_flush_replaces_control_row_with_real_inputs():
         ("ai", "summary"),
     ]
     assert user_data.get("undelivered_draft_rows", []) == []
+
+    # Generation stamped the old four-row length before one synthetic human
+    # row expanded into two real OFF-era inputs. Advance the floor to the new
+    # length so the last inserted row cannot be collected after re-enable.
+    history2 = [
+        _msg("human", "first"), _msg("ai", "draft"),
+        _msg("human", "[system] summarize"), _msg("ai", "summary"),
+    ]
+    user_data2 = {
+        "is_group": False,
+        "private_memory_mode": "participant",
+        "nonconsent_history_end": 4,
+        "session": SimpleNamespace(_conversation_history=history2),
+    }
+    service2 = QQSessionMemoryService(SimpleNamespace(
+        _user_sessions={"private:1001": user_data2},
+    ))
+    service2.record_synthetic_prompt_rows(
+        "private:1001", 2, include_ai_rows=True,
+        replacement_user_texts=["second", "third"],
+    )
+    assert len(history2) == 5
+    assert user_data2["nonconsent_history_end"] == 5
 
 
 @pytest.mark.asyncio

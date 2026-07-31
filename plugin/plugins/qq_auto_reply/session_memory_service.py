@@ -8,6 +8,9 @@ import time
 from typing import Any
 
 
+_CURRENT_TURN_AI_ROW = object()
+
+
 
 class _HistoryBoundary(int):
     """A history length that remembers which session object produced it.
@@ -421,6 +424,14 @@ class QQSessionMemoryService:
                         and not any(existing is msg for existing in rows)
                     ):
                         rows.append(msg)
+                # _run_session_generation stamped the OFF-era boundary before
+                # this synthetic control row was expanded into multiple real
+                # inputs. Move the floor past every newly materialized row so
+                # none can be collected after participant memory is re-enabled.
+                user_data["nonconsent_history_end"] = max(
+                    int(user_data.get("nonconsent_history_end", 0) or 0),
+                    len(history),
+                )
             return inserted
 
         if not user_data.get("is_group"):
@@ -438,7 +449,9 @@ class QQSessionMemoryService:
                 rows.append(msg)
         return 0
 
-    def record_tail_undelivered_ai_row(self, session_key: str) -> None:
+    def record_tail_undelivered_ai_row(
+        self, session_key: str, ai_row: Any = _CURRENT_TURN_AI_ROW,
+    ) -> None:
         """Mark the newest ai row as undelivered after a FAILED direct send.
 
         History-backed replies that bypass the buffer (synthetic turns, or
@@ -458,6 +471,17 @@ class QQSessionMemoryService:
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
+        if ai_row is not _CURRENT_TURN_AI_ROW:
+            # Direct delivery carries the originating row identity across its
+            # await. A later generation may already have replaced the mutable
+            # session-wide pointer by the time this send fails.
+            row = ai_row
+            if row is None or not any(existing is row for existing in history):
+                return
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            if not any(existing is row for existing in rows):
+                rows.append(row)
+            return
         if "current_turn_ai_row" in user_data:
             # 生成路径记下了本轮到底写没写 ai 行：按身份标，没写就什么都不
             # 标。扫"最新一条 ai"在本轮无行时会打到上一条已投递的回复上。

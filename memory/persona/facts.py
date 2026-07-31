@@ -1146,16 +1146,23 @@ class FactsMixin:
                 section = persona.get(section_key)
                 if isinstance(section, dict):
                     entries = section.get('facts')
-                    if isinstance(entries, list):
-                        kept = [
-                            e for e in entries
-                            if not (
-                                isinstance(e, dict)
-                                and entry_matches_subject(e, memory_subject)
-                            )
-                        ]
-                        removed_entries = len(entries) - len(kept)
-                        entries[:] = kept
+                    if not isinstance(entries, list):
+                        # This section key already identifies the requested
+                        # subject id. A malformed collection cannot be
+                        # inspected for the exact scope, so reporting success
+                        # would leave potentially recoverable target entries.
+                        raise RuntimeError(
+                            "persona section facts are not a list during forget"
+                        )
+                    kept = [
+                        e for e in entries
+                        if not (
+                            isinstance(e, dict)
+                            and entry_matches_subject(e, memory_subject)
+                        )
+                    ]
+                    removed_entries = len(entries) - len(kept)
+                    entries[:] = kept
                     section_subject = persona_subject_from_section(
                         section_key, section,
                     )

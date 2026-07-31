@@ -4353,7 +4353,10 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     )
     runner = QQReplyPipelineRunner(plugin)
     context = SimpleNamespace(is_group=True, group_id="7788")
-    outcome = QQReplyOutcome(action="reply", reply_text="回复")
+    originating_row = SimpleNamespace(type="ai", content="回复")
+    outcome = QQReplyOutcome(
+        action="reply", reply_text="回复", history_ai_row=originating_row,
+    )
     plan = QQDeliveryPlan(
         target_type="group", target_id="7788",
         blocks=[QQMessageBlock(text="回复")],
@@ -4400,7 +4403,7 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     await runner._run_delivery(plan, failed_request, outcome, context=context)
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
     plugin.session_memory_service.record_tail_undelivered_ai_row.assert_called_once_with(
-        "group:7788"
+        "group:7788", originating_row,
     )
     # Fallback replies have no history row: nothing to mark.
     plugin.session_memory_service.record_tail_undelivered_ai_row.reset_mock()
@@ -4422,7 +4425,7 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     with pytest.raises(RuntimeError):
         await runner._run_delivery(plan, failed_request, outcome, context=context)
     plugin.session_memory_service.record_tail_undelivered_ai_row.assert_called_once_with(
-        "group:7788"
+        "group:7788", originating_row,
     )
 
 
@@ -8724,7 +8727,7 @@ async def test_direct_delivery_gated_on_consent_at_send_time():
     )
     deliver.assert_not_awaited()
     assert result.delivered is False
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
 
     # Consent intact: delivery proceeds as usual.
     plugin._qq_settings["group_memory_enabled"] = True
@@ -10250,7 +10253,7 @@ async def test_cancelled_delivery_marks_the_history_row():
                 is_group=True, group_id="7788", consent_snapshot={},
             ),
         )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
 
     # A fallback reply has no history row of its own: nothing to mark.
     mark.reset_mock()
@@ -11371,7 +11374,7 @@ async def test_default_reply_replaces_the_unsent_primary_row():
         ),
         context=context,
     )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
     # ...and what the user actually received takes its place in history.
     assert append.call_args.args[1] == "嗯嗯~"
 
@@ -11516,7 +11519,7 @@ async def test_buffered_default_reply_still_replaces_the_primary_row():
             is_group=True, group_id="7788", consent_snapshot={},
         ),
     )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
     # ...and the buffered delivery knows it has to append what was sent.
     assert schedule.await_args.kwargs["used_fallback_reply"] is True
 
@@ -11799,6 +11802,16 @@ async def test_undelivered_marking_uses_this_turns_row_identity():
     marked = ud["undelivered_draft_rows"]
     assert len(marked) == 1 and marked[0] is this_turn
 
+    # Delivery of this turn can finish after a later generation replaced the
+    # mutable pointer. An explicitly carried row must win over that newer row.
+    next_turn = SimpleNamespace(type="ai", content="后一轮已生成的回复")
+    history.append(next_turn)
+    ud["current_turn_ai_row"] = next_turn
+    ud["undelivered_draft_rows"] = []
+    service.record_tail_undelivered_ai_row("group:7788", this_turn)
+    assert ud["undelivered_draft_rows"] == [this_turn]
+    history.pop()
+
     # This turn wrote no ai row at all: nothing may be marked.
     ud["undelivered_draft_rows"] = []
     ud["current_turn_ai_row"] = None
@@ -11870,7 +11883,7 @@ async def test_mixed_block_primary_row_is_replaced_with_what_was_sent():
         QQReplyOutcome(action="reply", reply_text="没送出去的文本"),
         context=context,
     )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
     assert append.call_args.args[1] == "用户听到的语音"
 
     # An ordinary text-only reply is left alone: its row IS what went out.

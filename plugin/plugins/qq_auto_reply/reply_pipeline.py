@@ -46,6 +46,7 @@ class QQReplyPipelineRunner:
         context = await self._run_context(request, decision)
         model_result = await self._run_model(context)
         outcome = await self._run_postprocess(context, model_result)
+        outcome.history_ai_row = model_result.history_ai_row
         outcome.traces.extend([
             decision_trace,
             *context.traces,
@@ -257,7 +258,8 @@ class QQReplyPipelineRunner:
                     sender_id=request.sender_id,
                     is_group=request.is_group,
                     group_id=request.group_id if request.is_group else None,
-                )
+                ),
+                outcome.history_ai_row,
             )
 
         # 缓冲内部调用的请求（buffer_delayed/rapid_fire_flush/proactive_speech）不再次走缓冲
@@ -352,7 +354,8 @@ class QQReplyPipelineRunner:
                         sender_id=request.sender_id,
                         is_group=request.is_group,
                         group_id=request.group_id if request.is_group else None,
-                    )
+                    ),
+                    outcome.history_ai_row,
                 )
             from .pipeline_models import QQDeliveryResult
             return QQDeliveryResult(
@@ -372,7 +375,8 @@ class QQReplyPipelineRunner:
                         sender_id=request.sender_id,
                         is_group=request.is_group,
                         group_id=request.group_id if request.is_group else None,
-                    )
+                    ),
+                    outcome.history_ai_row,
                 )
 
         try:
@@ -413,7 +417,7 @@ class QQReplyPipelineRunner:
                 group_id=request.group_id if request.is_group else None,
             )
             self.plugin.session_memory_service.record_tail_undelivered_ai_row(
-                session_key
+                session_key, outcome.history_ai_row,
             )
         if (
             result is not None
