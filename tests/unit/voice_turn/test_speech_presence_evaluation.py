@@ -267,6 +267,39 @@ def test_online_replay_aligns_silero_activity_with_rnnoise_chunks() -> None:
     assert metrics.rnnoise_silero_disagreement_count == 1
 
 
+def test_online_replay_reports_rnnoise_count_from_trigger_trajectory() -> None:
+    chunks = [
+        evaluation.RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        )
+        for _ in range(20)
+    ]
+    chunks.extend(
+        evaluation.RnnoiseEvidence.from_legacy_probability(
+            0.19,
+            available=True,
+        )
+        for _ in range(100)
+    )
+    chunks.append(
+        evaluation.RnnoiseEvidence.from_legacy_probability(
+            0.25,
+            available=True,
+        )
+    )
+
+    trigger, metrics = evaluation._replay_rnnoise_policy(
+        chunks,
+        chunk_ms=evaluation.RNNOISE_CHUNK_MS,
+        silero_probabilities=[0.9] * evaluation.SILERO_MINIMUM_WINDOWS,
+    )
+
+    assert trigger is None
+    assert metrics.rnnoise_trigger_count == 0
+    assert metrics.silero_trigger_count > 0
+
+
 def test_online_replay_delegates_to_production_throttle_policy(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

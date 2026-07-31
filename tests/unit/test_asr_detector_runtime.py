@@ -829,6 +829,43 @@ async def test_candidate_open_prevents_rnnoise_from_skipping_followup_pcm() -> N
     await detector.close()
 
 
+async def test_smart_turn_activity_updates_throttle_shadow_metrics() -> None:
+    policy = VoiceThrottlePolicy(resource_optimization_enabled=True)
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.SPEECH_STARTED,)),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+        throttle_policy=policy,
+    )
+
+    result = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    adapter = detector._semantic_adapter
+    assert adapter is not None
+    await adapter.wait_idle()
+    await detector.submit_audio(
+        b"\x02\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.9,
+        rnnoise_available=True,
+    )
+    await adapter.wait_idle()
+
+    assert result.status is DetectorSubmitStatus.ACCEPTED
+    assert detector.throttle_shadow_metrics.rnnoise_trigger_count == 2
+    assert detector.throttle_shadow_metrics.silero_trigger_count == 1
+    assert detector.throttle_shadow_metrics.rnnoise_silero_disagreement_count == 1
+    await detector.close()
+
+
 async def test_disabled_resource_optimization_never_skips_quiet_smart_turn_pcm() -> None:
     detector = DetectorRuntime(
         vad=_Vad(),

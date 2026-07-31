@@ -1167,6 +1167,7 @@ class DetectorRuntime:
                     await on_turn_complete()
 
             async def activity(event: SpeechActivityEvent) -> None:
+                self._throttle_policy.observe_silero(event)
                 self._events.append(event)
 
             async def scoped_activity(

@@ -660,15 +660,21 @@ def _replay_rnnoise_policy(
     finally:
         replay_vad.close()
 
-    metrics = shadow_policy.shadow_metrics
-    if not silero_probabilities:
-        metrics = ThrottleShadowMetrics(
-            evidence_chunk_count=metrics.evidence_chunk_count,
-            incomplete_chunk_count=metrics.incomplete_chunk_count,
-            rnnoise_trigger_count=metrics.rnnoise_trigger_count,
-            silero_trigger_count=0,
-            rnnoise_silero_disagreement_count=0,
-        )
+    rnnoise_metrics = rnnoise_policy.shadow_metrics
+    shadow_metrics = shadow_policy.shadow_metrics
+    metrics = ThrottleShadowMetrics(
+        evidence_chunk_count=rnnoise_metrics.evidence_chunk_count,
+        incomplete_chunk_count=rnnoise_metrics.incomplete_chunk_count,
+        rnnoise_trigger_count=rnnoise_metrics.rnnoise_trigger_count,
+        silero_trigger_count=(
+            shadow_metrics.silero_trigger_count if silero_probabilities else 0
+        ),
+        rnnoise_silero_disagreement_count=(
+            shadow_metrics.rnnoise_silero_disagreement_count
+            if silero_probabilities
+            else 0
+        ),
+    )
     return trigger_ms, metrics
 
 
