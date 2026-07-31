@@ -188,6 +188,7 @@ if (-not [string]::IsNullOrWhiteSpace($PreviousReleaseTag) -and -not (Get-Comman
     throw 'GitHub CLI is required when -PreviousReleaseTag is supplied.'
 }
 
+$OutputDirectory = $ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath($OutputDirectory)
 $versionOutputDirectory = Join-Path (Join-Path $OutputDirectory $Version) $target.Key
 if (Test-Path -LiteralPath $versionOutputDirectory) {
     throw "Refusing to overwrite existing staged assets: $versionOutputDirectory"

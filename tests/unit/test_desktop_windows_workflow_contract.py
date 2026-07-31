@@ -344,6 +344,18 @@ def test_local_release_build_falls_back_when_previous_manifest_is_absent() -> No
     assert "if ($appImageManifestNames.Count -eq 1)" in local_script
 
 
+def test_local_release_build_pins_output_directory_before_changing_location() -> None:
+    local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+
+    resolve_output = local_script.index(
+        "$ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath("
+        "$OutputDirectory)"
+    )
+    staged_output = local_script.index("$versionOutputDirectory = Join-Path")
+    change_location = local_script.index("Push-Location $ElectronPath")
+    assert resolve_output < staged_output < change_location
+
+
 def test_local_release_build_rejects_unsupported_architecture_and_handles_missing_linux_config() -> None:
     local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 
