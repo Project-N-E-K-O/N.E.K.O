@@ -10,6 +10,9 @@ WINDOWS_WORKFLOW = ROOT / ".github" / "workflows" / "build-desktop-windows.yml"
 SYNC_UPDATE_WORKFLOW = ROOT / ".github" / "workflows" / "sync-update-release.yml"
 LOCAL_RELEASE_SCRIPT = ROOT / "scripts" / "build-desktop-release.ps1"
 LOCAL_ASSET_PUBLISH_SCRIPT = ROOT / "scripts" / "publish-desktop-release-assets.ps1"
+MANUAL_DESKTOP_RELEASE_DOC = (
+    ROOT / "docs" / "zh-CN" / "deployment" / "manual-desktop-release.md"
+)
 
 
 def _load_workflow(path: Path) -> dict:
@@ -298,6 +301,21 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
         < cdn_hash
         < sync
     )
+
+
+def test_manual_release_guide_matches_workflow_triggers_and_script_parameters() -> None:
+    guide = MANUAL_DESKTOP_RELEASE_DOC.read_text(encoding="utf-8")
+    publish_script = LOCAL_ASSET_PUBLISH_SCRIPT.read_text(encoding="utf-8")
+
+    assert all(
+        event in guide
+        for event in ("`schedule`", "`workflow_dispatch`", "`workflow_call`")
+    )
+    assert "`refs/tags/v*` 仅在工作流已被调用时参与版本计算" in guide
+    assert "发布 GitHub Release 后，它只校验必需的 Portable 资产" in guide
+    assert "-ManifestVerifierPath" in guide
+    assert "[string]$ManifestVerifierPath" in publish_script
+    assert "向 `publish-desktop-release-assets.ps1` 传入 `-ManifestVerifierPath`" in guide
 
 
 def test_portable_manifest_signing_is_required_for_nightly_and_local_stable_builds() -> None:
