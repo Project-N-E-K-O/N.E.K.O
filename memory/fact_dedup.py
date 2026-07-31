@@ -122,11 +122,11 @@ class FactDedupResolver:
     writing the file directly."""
 
     @staticmethod
-    def _locale_text(batch: list[dict]) -> str:
+    def _locale_text(batch_texts: list[tuple[str, str]]) -> str:
         """Return only user-authored fact text for prompt locale detection."""
         return "\n".join(
-            f"{item.get('candidate_text', '')}\n{item.get('existing_text', '')}"
-            for item in batch
+            f"{candidate_text}\n{existing_text}"
+            for candidate_text, existing_text in batch_texts
         )
 
     def __init__(self, fact_store: "FactStore") -> None:
@@ -601,7 +601,7 @@ class FactDedupResolver:
         prompt = (
             get_fact_dedup_prompt(
                 detect_prompt_language(
-                    self._locale_text(batch),
+                    self._locale_text(batch_texts),
                     ui_language=prompt_ui_language,
                 )
             )

@@ -1047,6 +1047,58 @@ async def test_resolve_prompt_uses_current_authoritative_text(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_resolve_detects_locale_from_hydrated_fact_text(tmp_path):
+    from utils.language_utils import (
+        detect_prompt_language as real_detect_prompt_language,
+        language_context,
+    )
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "I love coffee", embedding=[1.0, 0.0])
+    existing = _fact("e1", "I enjoy coffee", embedding=[0.99, 0.05])
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    observed = []
+    resp = MagicMock()
+    resp.content = json.dumps([{"index": 0, "action": "keep_both"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, _prompt, *_a, **_k):
+            return resp
+
+        async def aclose(self):
+            return None
+
+    def detect(text, *, ui_language):
+        selected = real_detect_prompt_language(text, ui_language=ui_language)
+        observed.append((text, ui_language, selected))
+        return selected
+
+    with patch(
+        "utils.language_utils.detect_prompt_language",
+        side_effect=detect,
+    ), patch(
+        "utils.llm_client.create_chat_llm",
+        return_value=_RecordingLLM(),
+    ), language_context("zh-TW"):
+        resolved = await resolver.aresolve("小天")
+
+    assert resolved == 1
+    assert observed == [(
+        "I love coffee\nI enjoy coffee",
+        "zh-TW",
+        "en",
+    )]
+    raw_queue = _read_queue_file_raw(tmp_path)
+    assert "I love coffee" not in raw_queue
+    assert "I enjoy coffee" not in raw_queue
+
+
+@pytest.mark.asyncio
 async def test_resolve_dequeues_pair_with_both_rows_missing_without_llm(tmp_path):
     """Both rows gone (merged away / archived) ⇒ the pair is consumed
     via the stale path BEFORE any prompt is assembled — there is no

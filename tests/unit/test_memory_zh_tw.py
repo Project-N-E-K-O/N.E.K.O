@@ -777,12 +777,7 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
     from memory.reflection.synthesis import SynthesisMixin
     from utils.language_utils import detect_prompt_language
 
-    dedup_text = FactDedupResolver._locale_text([{
-        "candidate_text": "王",
-        "existing_text": "李",
-        "candidate_id": "abcdef1234567890",
-        "existing_id": "fedcba0987654321",
-    }])
+    dedup_text = FactDedupResolver._locale_text([("王", "李")])
     refine_text = MemoryRefineEngine._cluster_locale_text([{
         "id": "reflection.abcdef1234567890",
         "text": "怕貓",
