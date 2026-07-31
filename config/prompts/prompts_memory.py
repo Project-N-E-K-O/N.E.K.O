@@ -1240,6 +1240,50 @@ MEMORY_RESULTS_HEADER = {
     "pt": "======Memórias relacionadas de {name}======\n",
 }
 
+MEMORY_UNAVAILABLE_NOTICE = {
+    "zh": "（语义记忆已下线，暂无相关记忆片段。）",
+    "zh-TW": "（語意記憶已下線，暫無相關記憶片段。）",
+    "en": "(Semantic memory is offline; no relevant memory snippets are available.)",
+    "ja": "（意味記憶は停止中のため、関連する記憶の断片はありません。）",
+    "ko": "(의미 기억 기능이 중단되어 관련 기억 조각이 없습니다.)",
+    "ru": "(Семантическая память отключена; релевантных фрагментов памяти нет.)",
+    "es": "(La memoria semántica está desactivada; no hay fragmentos relacionados.)",
+    "pt": "(A memória semântica está desativada; não há trechos relacionados.)",
+}
+
+LEGACY_SETTINGS_HEADER = {
+    "zh": "{name}记得：",
+    "zh-TW": "{name}記得：",
+    "en": "{name} remembers:",
+    "ja": "{name}が覚えていること：",
+    "ko": "{name}이 기억하는 내용:",
+    "ru": "{name} помнит:",
+    "es": "{name} recuerda:",
+    "pt": "{name} se lembra:",
+}
+
+LEGACY_SETTINGS_EMPTY = {
+    "zh": "（暂无记录）",
+    "zh-TW": "（暫無紀錄）",
+    "en": "(No records yet)",
+    "ja": "（記録はまだありません）",
+    "ko": "(아직 기록이 없습니다)",
+    "ru": "(Записей пока нет)",
+    "es": "(Aún no hay registros)",
+    "pt": "(Ainda não há registros)",
+}
+
+LEGACY_SETTINGS_SECTION_HEADER = {
+    "zh": "关于{subject}：",
+    "zh-TW": "關於{subject}：",
+    "en": "About {subject}:",
+    "ja": "{subject}について：",
+    "ko": "{subject}에 관하여:",
+    "ru": "О {subject}:",
+    "es": "Sobre {subject}:",
+    "pt": "Sobre {subject}:",
+}
+
 # ---------- Persona header (static prefix) ----------
 PERSONA_HEADER = {
     "zh": "\n======{name}的长期记忆======\n",

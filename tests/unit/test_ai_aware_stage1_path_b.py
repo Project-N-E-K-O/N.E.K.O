@@ -1544,7 +1544,7 @@ def test_post_turn_signals_only_bumps_counter_for_user_turn():
 
     src = inspect.getsource(memory_server._run_post_turn_signals)
 
-    record_idx = src.find("_signal_check_record_turn(")
+    record_idx = src.find("signal_extraction._signal_check_record_turn")
     assert record_idx > 0, "_signal_check_record_turn 调用必须存在"
 
     # 往前找最近的非空 `if ...` 行：必须是 `if user_msgs:`

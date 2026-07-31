@@ -870,21 +870,99 @@ def test_signal_loop_records_latest_session_locale(monkeypatch):
     assert recorded == [("Neko", "zh-TW", 123)]
 
 
-def test_signal_loop_records_missing_session_locale(monkeypatch):
+def test_signal_loop_missing_locale_preserves_durable_session_locale(
+    monkeypatch,
+    tmp_path,
+):
     from app.memory_server import locale_state, signal_extraction
 
-    recorded = []
-    monkeypatch.setattr(
-        locale_state,
-        "record_character_prompt_locale",
-        lambda name, language, **kwargs: recorded.append(
-            (name, language, kwargs["order"])
-        ),
-    )
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
     signal_extraction._signal_check_state.clear()
-    signal_extraction._signal_check_record_turn("Neko")
+    locale_state.record_character_prompt_locale(
+        "Neko",
+        "zh-TW",
+        order=100,
+    )
 
-    assert recorded == [("Neko", None, None)]
+    signal_extraction._signal_check_record_turn(
+        "Neko",
+        locale_order=200,
+    )
+
+    locale_state._locale_cache.clear()
+    assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_post_turn_locale_persistence_runs_off_event_loop(monkeypatch):
+    from app.memory_server import gates, post_turn, signal_extraction
+    from utils.llm_client import HumanMessage
+
+    calls = []
+
+    async def fake_to_thread(function, *args, **kwargs):
+        calls.append((function, args, kwargs))
+        return function(*args, **kwargs)
+
+    class StopAfterLocale(Exception):
+        pass
+
+    async def stop_after_locale():
+        raise StopAfterLocale
+
+    monkeypatch.setattr(post_turn.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(
+        signal_extraction,
+        "_signal_check_record_turn",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", stop_after_locale)
+
+    with pytest.raises(StopAfterLocale):
+        await post_turn._run_post_turn_signals(
+            [HumanMessage(content="我喜歡貓")],
+            "Neko",
+            language="zh-TW",
+            locale_order=123,
+        )
+
+    assert calls == [
+        (
+            signal_extraction._signal_check_record_turn,
+            ("Neko",),
+            {"language": "zh-TW", "locale_order": 123},
+        ),
+    ]
+
+
+def test_legacy_settings_fallback_uses_traditional_labels():
+    from app.memory_server import routes
+
+    rendered = routes._format_legacy_settings_as_text(
+        {"Alice": {"喜好": "貓"}},
+        "Neko",
+        "zh-TW",
+    )
+    empty = routes._format_legacy_settings_as_text({}, "Neko", "zh-TW")
+
+    assert rendered == "Neko記得：\n關於Alice：\n- 喜好：貓"
+    assert empty == "Neko記得：（暫無紀錄）"
+
+
+@pytest.mark.asyncio
+async def test_legacy_recall_placeholder_uses_traditional_locale():
+    from app.memory_server import routes
+
+    rendered = await routes.get_memory(
+        query="貓",
+        lanlan_name="Neko",
+        language="zh-TW",
+    )
+
+    assert "語意記憶已下線，暫無相關記憶片段" in rendered
+    assert "语义记忆已下线" not in rendered
 
 
 @pytest.mark.asyncio

@@ -102,10 +102,15 @@ def _signal_check_record_turn(
     language: str | None = None,
     locale_order: int | None = None,
 ) -> None:
-    from .locale_state import record_character_prompt_locale
-
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
+    from utils.language_utils import is_supported_language_code
+
+    if not is_supported_language_code(language):
+        return
+
+    from .locale_state import record_character_prompt_locale
+
     record_character_prompt_locale(
         name,
         language,

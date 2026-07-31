@@ -35,7 +35,12 @@ from config.prompts.prompts_memory import (
     INNER_THOUGHTS_HEADER,
     CHAT_GAP_NOTICE, CHAT_GAP_LONG_HINT, CHAT_GAP_CURRENT_TIME,
     CHAT_HOLIDAY_CONTEXT,
-    MEMORY_RECALL_HEADER, MEMORY_RESULTS_HEADER,
+    LEGACY_SETTINGS_EMPTY,
+    LEGACY_SETTINGS_HEADER,
+    LEGACY_SETTINGS_SECTION_HEADER,
+    MEMORY_RECALL_HEADER,
+    MEMORY_RESULTS_HEADER,
+    MEMORY_UNAVAILABLE_NOTICE,
     PERSONA_HEADER, INNER_THOUGHTS_DYNAMIC,
     RECENT_HISTORY_INTRO, NO_RECENT_HISTORY,
     _normalize_memory_prompt_lang,
@@ -370,10 +375,17 @@ _new_dialog_qps_counter: dict[str, int] = {}
 NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
 
 
-def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
+def _format_legacy_settings_as_text(
+    settings: dict,
+    lanlan_name: str,
+    language: str | None = None,
+) -> str:
     """Convert legacy settings JSON into natural-language form, replacing the raw json.dumps output."""
+    lang = _normalize_memory_prompt_lang(language or get_global_language_full())
+    header = _loc(LEGACY_SETTINGS_HEADER, lang).format(name=lanlan_name)
+    empty = _loc(LEGACY_SETTINGS_EMPTY, lang)
     if not settings:
-        return f"{lanlan_name}记得：（暂无记录）"
+        return header + empty
 
     sections = []
     for name, data in settings.items():
@@ -392,11 +404,15 @@ def _format_legacy_settings_as_text(settings: dict, lanlan_name: str) -> str:
                 value_str = str(value)
             lines.append(f"- {key}：{value_str}")
         if lines:
-            sections.append(f"关于{name}：\n" + "\n".join(lines))
+            section_header = _loc(
+                LEGACY_SETTINGS_SECTION_HEADER,
+                lang,
+            ).format(subject=name)
+            sections.append(section_header + "\n" + "\n".join(lines))
 
     if not sections:
-        return f"{lanlan_name}记得：（暂无记录）"
-    return f"{lanlan_name}记得：\n" + "\n".join(sections)
+        return header + empty
+    return header + "\n" + "\n".join(sections)
 
 
 async def _periodic_new_dialog_qps_log_loop():
@@ -757,7 +773,8 @@ async def get_memory(
         + query
         + "\n\n"
         + _loc(MEMORY_RESULTS_HEADER, _lang).format(name=lanlan_name)
-        + "\n（语义记忆已下线，暂无相关记忆片段。）"
+        + "\n"
+        + _loc(MEMORY_UNAVAILABLE_NOTICE, _lang)
     )
 
 
@@ -1568,7 +1585,14 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
             # 兼容回退：使用旧 settings（自然语言格式）
             # get_settings 内部 open() + json.load()，offload 避免阻塞（冷回退路径，但触发时多文件 IO）
             legacy_settings = await asyncio.to_thread(runtime.settings_manager.get_settings, lanlan_name)
-            result += _format_legacy_settings_as_text(legacy_settings, lanlan_name) + "\n"
+            result += (
+                _format_legacy_settings_as_text(
+                    legacy_settings,
+                    lanlan_name,
+                    _lang,
+                )
+                + "\n"
+            )
 
         # ── [动态部分] 内心活动（每次变化） ──
         result += _loc(INNER_THOUGHTS_HEADER, _lang).format(name=lanlan_name)

@@ -152,7 +152,8 @@ async def _run_post_turn_signals(
     # memory；只有 user 印证过的才升级到神明降临层。
     try:
         if user_msgs:
-            signal_extraction._signal_check_record_turn(
+            await asyncio.to_thread(
+                signal_extraction._signal_check_record_turn,
                 lanlan_name,
                 language=language,
                 locale_order=locale_order,
