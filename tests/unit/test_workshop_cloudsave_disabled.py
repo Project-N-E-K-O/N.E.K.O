@@ -1045,9 +1045,13 @@ class _RecordingLogger:
 
     def __init__(self):
         self.errors = []
+        self.warnings = []
 
     def error(self, *args, **kwargs):
         self.errors.append(args)
+
+    def warning(self, *args, **kwargs):
+        self.warnings.append(args)
 
     def __getattr__(self, _name):
         return lambda *a, **kw: None
@@ -1108,6 +1112,10 @@ def test_a_persistent_access_denial_stops_looking_transient(tmp_path, monkeypatc
     clock.now += 100.0
     assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
     assert len(recorder.errors) == 1, "每次读失败都报一遍 ERROR，日志会被刷爆"
+
+    # warning 同理：这个端点被 get_workshop_path 之类反复调用，持续故障下每次一条
+    # warning 会把上面那条真正要人看的 ERROR 埋掉。只在第一次失败时说一句。
+    assert len(recorder.warnings) == 1, "持续故障下每次读失败都打 warning，日志会被刷爆"
 
 
 @pytest.mark.unit

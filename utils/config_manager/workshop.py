@@ -180,12 +180,15 @@ class WorkshopMixin:
         now = time.monotonic()
         with self._last_good_workshop_config_lock:
             since = getattr(self, "_workshop_config_fallback_since", None)
+            escalated = getattr(self, "_workshop_config_fallback_escalated", False)
             if since is None:
                 self._workshop_config_fallback_since = now
+                logger.warning("加载workshop配置失败，沿用上一次成功读到的配置: %s", exc)
                 return
-            if getattr(self, "_workshop_config_fallback_escalated", False):
-                return
-            if now - since < _WORKSHOP_CONFIG_FALLBACK_GRACE_S:
+            if escalated or now - since < _WORKSHOP_CONFIG_FALLBACK_GRACE_S:
+                # 这个端点会被反复调用（get_workshop_path 之类）。持续故障下每次都打
+                # 一条 warning 会把日志刷爆，反而埋掉下面那条真正要人看的 ERROR。
+                logger.debug("workshop 配置仍读不出来，继续沿用 last-good: %s", exc)
                 return
             self._workshop_config_fallback_escalated = True
         logger.error(
@@ -374,7 +377,9 @@ class WorkshopMixin:
             busy_code = getattr(e, "winerror", None) in _REPLACE_BUSY_WINERRORS
             last_good = getattr(self, "_last_good_workshop_config", None)
             if busy_code and last_good is not None:
-                logger.warning("加载workshop配置失败，沿用上一次成功读到的配置: %s", e)
+                # 日志分级整个交给它：首次 warning，宽限期内 debug，撑过宽限期 ERROR
+                # 一次，之后回落到 debug。这个端点被反复调用，每次一条 warning 会把
+                # 真正要人看的那条埋掉。
                 self._note_workshop_config_fallback(e)
                 return dict(last_good)
             error_msg = f"加载workshop配置失败: {e}"
