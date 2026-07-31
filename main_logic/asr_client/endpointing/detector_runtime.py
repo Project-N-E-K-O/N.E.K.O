@@ -1740,7 +1740,7 @@ class DetectorRuntime:
                 self._speech_active = False
                 self._policy_event_candidate = None
                 self._throttle_policy.reset_candidate_activity()
-            return successor_confirmed
+            return successor_present
 
     async def submit_audio(
         self,

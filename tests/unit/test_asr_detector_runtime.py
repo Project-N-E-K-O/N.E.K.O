@@ -547,7 +547,7 @@ async def test_provider_candidate_fence_preserves_post_discard_successor() -> No
     await detector.close()
 
 
-async def test_provider_fence_buffers_quiet_pcm_until_final_then_closes() -> None:
+async def test_provider_fence_preserves_quiet_pcm_then_closes_candidate() -> None:
     gate = _Gate()
     detector = DetectorRuntime(
         vad=_Vad(),
@@ -577,7 +577,7 @@ async def test_provider_fence_buffers_quiet_pcm_until_final_then_closes() -> Non
 
     assert successor.throttle_action is ThrottleAction.KEEP_CANDIDATE_OPEN
     assert gate.inputs == [b"\x01\x00", b"\x02\x00"]
-    assert await detector.complete_provider_candidate(fence) is False
+    assert await detector.complete_provider_candidate(fence) is True
     assert detector.candidate_open is False
     quiet = await detector.feed(
         b"\x03\x00",
