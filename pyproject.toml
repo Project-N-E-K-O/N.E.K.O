@@ -34,7 +34,7 @@ dependencies = [
   "pyrnnoise>=0.4.3",
   "aiotieba>=4.7.1",
   "beautifulsoup4>=4.12.0",
-  "bilibili-api-python>=17.4.0",
+  "bilibili-api-dev==18.0.0a1",
   # Twitch read-only Helix/EventSub integration. OAuth Device Code Flow remains
   # in-tree because TwitchIO 3.2 does not expose the client-secret-free flow.
   "twitchio==3.2.2",
@@ -43,7 +43,7 @@ dependencies = [
   "tomli>=2.3.0",
   "tomli-w>=1.2.0",
   # sts2_autoplay/strategy_parser.py parses YAML strategy frontmatter. Declared
-  # explicitly rather than leaning on bilibili-api-python's transitive pull, so a
+  # explicitly rather than leaning on the Bilibili SDK's transitive pull, so a
   # change upstream can't silently break strategy loading in the packaged build.
   "pyyaml>=6.0",
   # ⚠ 严禁再加 loguru / structlog / logbook。日志统一走 utils.logger_config。

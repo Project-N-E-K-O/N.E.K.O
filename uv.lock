@@ -256,14 +256,17 @@ wheels = [
 ]
 
 [[package]]
-name = "bilibili-api-python"
-version = "17.4.1"
+name = "bilibili-api-dev"
+version = "18.0.0a1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
+    { name = "anyio" },
     { name = "apscheduler" },
     { name = "beautifulsoup4" },
     { name = "brotli" },
+    { name = "chompjs" },
     { name = "colorama" },
+    { name = "frozendict" },
     { name = "lxml" },
     { name = "pillow" },
     { name = "pycryptodomex" },
@@ -273,9 +276,9 @@ dependencies = [
     { name = "qrcode-terminal" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/54/16/475f1fdb841d2fad6223ef2eab9c1ec99d680a4271505946c25855265065/bilibili_api_python-17.4.1.tar.gz", hash = "sha256:5b0f16468cfbb3ee801c7d7cc970f9082252f6758c6d8c48c5d8dac42235cb62", size = 1420338, upload-time = "2025-12-20T10:59:40.299Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/5e/83/f1009b0614cf844ea1a7df803e99cfaa79cc7886b365837a160b6651744c/bilibili_api_dev-18.0.0a1.tar.gz", hash = "sha256:5482bd061e8b388dee73c861bfc29c35440e883ff66667987961e6ab75572a1c", size = 1448272, upload-time = "2026-06-19T12:58:42.895Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/07/50/520f98ef607687d686c9170b3ff2db944152bb0dc43bef0df7b4face8c5b/bilibili_api_python-17.4.1-py3-none-any.whl", hash = "sha256:3054b824f0f7ac81917329f19909f39d24fb3b7d9de1672c6dd4cb9fa6e5757d", size = 387124, upload-time = "2025-12-20T10:59:38.974Z" },
+    { url = "https://files.pythonhosted.org/packages/55/2e/7e3f072c5ef8f0e6697dc5fc57856650529c4ed0826c073c38df413238b9/bilibili_api_dev-18.0.0a1-py3-none-any.whl", hash = "sha256:cf461e1aff646d52f34f7fd7b53d5370434d4a64256a594c0ef59d5a049f8882", size = 417225, upload-time = "2026-06-19T12:58:41.475Z" },
 ]
 
 [[package]]
@@ -461,6 +464,19 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/64/d4/9eb4ff2c167edbbf08cdd28e19078bf195762e9bd63371689cab5ecd3d0d/charset_normalizer-3.4.3-cp311-cp311-win32.whl", hash = "sha256:6cf8fd4c04756b6b60146d98cd8a77d0cdae0e1ca20329da2ac85eed779b6849", size = 99616, upload-time = "2025-08-09T07:56:05.658Z" },
     { url = "https://files.pythonhosted.org/packages/f4/9c/996a4a028222e7761a96634d1820de8a744ff4327a00ada9c8942033089b/charset_normalizer-3.4.3-cp311-cp311-win_amd64.whl", hash = "sha256:31a9a6f775f9bcd865d88ee350f0ffb0e25936a7f930ca98995c05abf1faf21c", size = 107108, upload-time = "2025-08-09T07:56:07.176Z" },
     { url = "https://files.pythonhosted.org/packages/8a/1f/f041989e93b001bc4e44bb1669ccdcf54d3f00e628229a85b08d330615c5/charset_normalizer-3.4.3-py3-none-any.whl", hash = "sha256:ce571ab16d890d23b5c278547ba694193a45011ff86a9162a71307ed9f86759a", size = 53175, upload-time = "2025-08-09T07:57:26.864Z" },
+]
+
+[[package]]
+name = "chompjs"
+version = "1.4.1"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/8a/f1/cbf1868cf274bfe2b35c43e160bba21b47ee2a85fd1ddd6247106b1e1859/chompjs-1.4.1.tar.gz", hash = "sha256:fc1a6d7f03fa6381351306a8cefaa5e0946e841c25fba919c726f35f1a3fc614", size = 17439, upload-time = "2026-05-17T22:08:08.33Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c4/72/fd7821715128c1c2c9d5783544ab6ee09b31f9a92875a3981e391ab152af/chompjs-1.4.1-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:261a287799bfa9aee888bd6fca349114d66477019bc05fdc9755de0cd0f9323d", size = 17479, upload-time = "2026-05-17T22:07:30.676Z" },
+    { url = "https://files.pythonhosted.org/packages/16/bc/963e37bf6c1e38c948c38f1cd59bb96ff4157366c409b4c9d7b2197ba9ac/chompjs-1.4.1-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:0315464301c893e3889e1d322432cd76802ffc94a7bb59209d6a89dc508c81a5", size = 33974, upload-time = "2026-05-17T22:07:32.375Z" },
+    { url = "https://files.pythonhosted.org/packages/76/bc/505d8ce570ddbbfb62b49686a9dbb7fab1e4cbbca809b78fefd3d286d6eb/chompjs-1.4.1-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:a40b1dac781a1ff3735d3676a5f4c6d9d02702f417a4c54d2398fc6eac28e852", size = 33454, upload-time = "2026-05-17T22:07:34.115Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/01/3cd137be3ad3a63ee8a814e1353697af787a48b6dbf68291b8ec58a147cc/chompjs-1.4.1-cp311-cp311-win32.whl", hash = "sha256:419d0d9feaa8f21e3ef1e4095ec34e0f574ea373b67bcf7cafae8915e5d78658", size = 17720, upload-time = "2026-05-17T22:07:35.23Z" },
+    { url = "https://files.pythonhosted.org/packages/8a/a1/c0475a38c7277096b0ac4730a50aef9569d621e6369f1c4d7eae33fac0bc/chompjs-1.4.1-cp311-cp311-win_amd64.whl", hash = "sha256:9e5d91417ab200c428348f74dc75078b377ea1cd0dafb78131d747392cf1cc94", size = 18544, upload-time = "2026-05-17T22:07:36.919Z" },
 ]
 
 [[package]]
@@ -724,6 +740,15 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/7f/5f/3dd00ce0dba6759943c707b1830af8c0bcf6f8f1a9fe46cb82e7ac2aaa74/fonttools-4.61.0-cp311-cp311-win32.whl", hash = "sha256:787ef9dfd1ea9fe49573c272412ae5f479d78e671981819538143bec65863865", size = 2276035, upload-time = "2025-11-28T17:04:42.59Z" },
     { url = "https://files.pythonhosted.org/packages/4e/44/798c472f096ddf12955eddb98f4f7c906e7497695d04ce073ddf7161d134/fonttools-4.61.0-cp311-cp311-win_amd64.whl", hash = "sha256:14fafda386377b6131d9e448af42d0926bad47e038de0e5ba1d58c25d621f028", size = 2327290, upload-time = "2025-11-28T17:04:44.57Z" },
     { url = "https://files.pythonhosted.org/packages/0c/14/634f7daea5ffe6a5f7a0322ba8e1a0e23c9257b80aa91458107896d1dfc7/fonttools-4.61.0-py3-none-any.whl", hash = "sha256:276f14c560e6f98d24ef7f5f44438e55ff5a67f78fa85236b218462c9f5d0635", size = 1144485, upload-time = "2025-11-28T17:05:47.573Z" },
+]
+
+[[package]]
+name = "frozendict"
+version = "2.4.7"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/90/b2/2a3d1374b7780999d3184e171e25439a8358c47b481f68be883c14086b4c/frozendict-2.4.7.tar.gz", hash = "sha256:e478fb2a1391a56c8a6e10cc97c4a9002b410ecd1ac28c18d780661762e271bd", size = 317082, upload-time = "2025-11-11T22:40:14.251Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/38/74/f94141b38a51a553efef7f510fc213894161ae49b88bffd037f8d2a7cb2f/frozendict-2.4.7-py3-none-any.whl", hash = "sha256:972af65924ea25cf5b4d9326d549e69a9a4918d8a76a9d3a7cd174d98b237550", size = 16264, upload-time = "2025-11-11T22:40:12.836Z" },
 ]
 
 [[package]]
@@ -1442,7 +1467,7 @@ dependencies = [
     { name = "anthropic" },
     { name = "backoff" },
     { name = "beautifulsoup4" },
-    { name = "bilibili-api-python" },
+    { name = "bilibili-api-dev" },
     { name = "browser-use" },
     { name = "cachetools" },
     { name = "cryptography" },
@@ -1519,7 +1544,7 @@ requires-dist = [
     { name = "anthropic" },
     { name = "backoff" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
-    { name = "bilibili-api-python", specifier = ">=17.4.0" },
+    { name = "bilibili-api-dev", specifier = "==18.0.0a1" },
     { name = "browser-use", specifier = ">=0.11.0" },
     { name = "cachetools", specifier = ">=5.3" },
     { name = "cryptography", specifier = ">=45.0.6" },
