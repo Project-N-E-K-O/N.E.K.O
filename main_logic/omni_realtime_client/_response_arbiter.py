@@ -949,7 +949,7 @@ class RealtimeResponseArbiter:
             transport_write_failed=transport_write_failed
         )
         if self._fail_open and blocker is None:
-            await self._release_stuck_lifecycle(reason)
+            await self._release_stuck_lifecycle(reason, observed=observed)
             return
         if self._fail_open:
             logger.warning(
@@ -1028,7 +1028,9 @@ class RealtimeResponseArbiter:
         finally:
             self._worker_send_in_flight = False
 
-    async def _release_stuck_lifecycle(self, reason: str) -> None:
+    async def _release_stuck_lifecycle(
+        self, reason: str, *, observed: _QueuedResponse | None = None
+    ) -> None:
         """Drop the stuck turn and keep the connection.
 
         Deliberately narrower than ``_mark_connection_lost``, which is for a
@@ -1050,16 +1052,23 @@ class RealtimeResponseArbiter:
         exc = RuntimeError(reason)
         owner = self._response_owner
         current = self._current
-        seen: set[int] = set()
-        for target in (owner, current):
-            if target is None or id(target) in seen:
-                continue
-            seen.add(id(target))
-            # Unwinds ``_process`` now rather than letting it park until its
-            # own timeout escalates a second time.
-            target.interrupted = True
-            target.interrupt_event.set()
-            self._wake_current_with_error(target, exc)
+        # Wake the request the CALLER watched, and only that one. The scoping
+        # check in ``_escalate`` has already established it is still the
+        # current or the owning lifecycle, so this both unwinds ``_process``
+        # now — rather than letting it park until its own timeout escalates a
+        # second time — and cannot reach anything else.
+        #
+        # "Anything else" is not hypothetical: ``cancel_current``'s unowned
+        # branch names nothing, because what is stuck there is a
+        # server-initiated response that has no ticket at all. A request
+        # enqueued while that cancellation waits becomes ``_current`` as the
+        # worker parks behind the live server response — undispatched, and
+        # nothing to do with the stuck lifecycle. Failing it would drain
+        # queued work, which ``cancel_current`` documents that it never does.
+        if observed is not None:
+            observed.interrupted = True
+            observed.interrupt_event.set()
+            self._wake_current_with_error(observed, exc)
 
         # Everything below straddles an await, so the release is scoped to
         # what was captured before it and finishes even if this task is

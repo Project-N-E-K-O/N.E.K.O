@@ -153,6 +153,52 @@ async def _stick_a_cancel(harness: _Harness) -> Exception | None:
     return None
 
 
+def _free_client(**hooks):
+    """A client on a provider WITHOUT server VAD, where sid rotation matters.
+
+    The lanlan.app host is load-bearing, not decoration: ``_is_free_proxy``
+    keys on it, and that is what makes ``_has_server_vad`` False. With any
+    other host the same ``api_type="free"`` client HAS server VAD, rotates
+    from ``speech_stopped`` instead, and these tests would pass without ever
+    reaching the hook they are about.
+    """
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        **hooks,
+    )
+    assert client._has_server_vad is False, (
+        "this fixture exists to cover the providers whose only sid rotation "
+        "point is the turn-finished hook"
+    )
+    return client
+
+
+def _released_client(**hooks):
+    """A fail-open client whose arbiter writes to a list instead of a socket.
+
+    Returns ``(client, arbiter, sent)``. Every test that drives a real release
+    through a real client needs exactly this trio, and hand-rolling it made
+    the one line that actually differs between them hard to find.
+    """
+
+    client = _free_client(**hooks)
+    sent: list[dict] = []
+
+    async def _send(event: dict) -> None:
+        sent.append(event)
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    arbiter._fail_open = True
+    return client, arbiter, sent
+
+
 # ---------------------------------------------------------------------------
 # Contract 1: the shipped default is untouched.
 # ---------------------------------------------------------------------------
@@ -704,20 +750,7 @@ async def test_the_release_flushes_transcript_the_turn_never_got_to_send():
     async def _on_output_transcript(text: str, is_first: bool) -> None:
         transcripts.append((text, is_first))
 
-    client = OmniRealtimeClient(
-        "wss://example.invalid/realtime",
-        "test-key",
-        model="free-model",
-        api_type="free",
-        on_output_transcript=_on_output_transcript,
-    )
-
-    async def _send(event: dict) -> None:
-        return None
-
-    arbiter = client._response_arbiter
-    arbiter._send_event = _send
-    arbiter._fail_open = True
+    client, arbiter, sent = _released_client(on_output_transcript=_on_output_transcript)
     try:
         ticket = await arbiter.enqueue(source="native")
         await asyncio.wait_for(ticket.sent, timeout=1)
@@ -757,20 +790,7 @@ async def test_the_release_does_not_flush_a_turn_that_never_spoke():
     async def _on_output_transcript(text: str, is_first: bool) -> None:
         transcripts.append((text, is_first))
 
-    client = OmniRealtimeClient(
-        "wss://example.invalid/realtime",
-        "test-key",
-        model="free-model",
-        api_type="free",
-        on_output_transcript=_on_output_transcript,
-    )
-
-    async def _send(event: dict) -> None:
-        return None
-
-    arbiter = client._response_arbiter
-    arbiter._send_event = _send
-    arbiter._fail_open = True
+    client, arbiter, sent = _released_client(on_output_transcript=_on_output_transcript)
     try:
         ticket = await arbiter.enqueue(source="native")
         await asyncio.wait_for(ticket.sent, timeout=1)
@@ -803,21 +823,7 @@ async def test_the_release_runs_the_hosts_own_end_of_turn_work():
     async def _on_done() -> None:
         done_calls.append("done")
 
-    client = OmniRealtimeClient(
-        "wss://example.invalid/realtime",
-        "test-key",
-        model="free-model",
-        api_type="free",
-        on_response_done=_on_done,
-    )
-    sent: list[dict] = []
-
-    async def _send(event: dict) -> None:
-        sent.append(event)
-
-    arbiter = client._response_arbiter
-    arbiter._send_event = _send
-    arbiter._fail_open = True
+    client, arbiter, sent = _released_client(on_response_done=_on_done)
     try:
         ticket = await arbiter.enqueue(source="native")
         await asyncio.wait_for(ticket.sent, timeout=1)
@@ -883,8 +889,11 @@ async def test_a_cancelled_release_still_finishes_its_bookkeeping(make_harness):
     owner = await harness.own_a_live_response("resp-1")
     assert owner is not None
 
+    observed = harness.arbiter._response_owner
     release = asyncio.create_task(
-        harness.arbiter._release_stuck_lifecycle("cancelled mid-notify")
+        harness.arbiter._release_stuck_lifecycle(
+            observed=observed, reason="cancelled mid-notify"
+        )
     )
     await asyncio.wait_for(entered.wait(), timeout=1)
     release.cancel()
@@ -921,8 +930,11 @@ async def test_the_release_does_not_erase_an_owner_that_arrived_meanwhile(
     harness = make_harness(fail_open=True, on_stuck_release=_hands_control_back)
     first = await harness.own_a_live_response("resp-1")
 
+    observed = harness.arbiter._response_owner
     release = asyncio.create_task(
-        harness.arbiter._release_stuck_lifecycle("overtaken by a new owner")
+        harness.arbiter._release_stuck_lifecycle(
+            observed=observed, reason="overtaken by a new owner"
+        )
     )
     await asyncio.wait_for(notified.wait(), timeout=1)
 
@@ -986,7 +998,9 @@ async def test_an_undisturbed_release_still_clears_its_own_owner(make_harness):
     assert harness.arbiter._response_owner is None, "the worker dropped it"
     harness.arbiter._response_owner = owner
 
-    await harness.arbiter._release_stuck_lifecycle("ordinary release")
+    await harness.arbiter._release_stuck_lifecycle(
+        observed=owner, reason="ordinary release"
+    )
 
     assert harness.arbiter._response_owner is None, (
         "an undisturbed release must give up the owner it captured"
@@ -1008,7 +1022,10 @@ async def test_the_release_tells_the_host_which_response_it_abandoned(make_harne
     harness = make_harness(fail_open=True, on_stuck_release=_record)
     await harness.own_a_live_response("resp-abandoned")
 
-    await harness.arbiter._release_stuck_lifecycle("named release")
+    observed = harness.arbiter._response_owner
+    await harness.arbiter._release_stuck_lifecycle(
+        observed=observed, reason="named release"
+    )
     await _settle()
 
     assert seen == [("named release", "resp-abandoned")], (
@@ -1237,32 +1254,6 @@ async def test_a_blocked_transcript_flush_cannot_strand_this_turns_state():
 # arbiter cannot serialize against a turn the user starts through
 # handle_new_message, because that path never consults the lane.
 # --------------------------------------------------------------------------
-
-
-def _free_client(**hooks):
-    """A client on a provider WITHOUT server VAD, where sid rotation matters.
-
-    The lanlan.app host is load-bearing, not decoration: ``_is_free_proxy``
-    keys on it, and that is what makes ``_has_server_vad`` False. With any
-    other host the same ``api_type="free"`` client HAS server VAD, rotates
-    from ``speech_stopped`` instead, and these tests would pass without ever
-    reaching the hook they are about.
-    """
-
-    from main_logic.omni_realtime_client import OmniRealtimeClient
-
-    client = OmniRealtimeClient(
-        "wss://lanlan.app/realtime",
-        "test-key",
-        model="free-model",
-        api_type="free",
-        **hooks,
-    )
-    assert client._has_server_vad is False, (
-        "this fixture exists to cover the providers whose only sid rotation "
-        "point is the turn-finished hook"
-    )
-    return client
 
 
 @pytest.mark.unit
@@ -1570,8 +1561,11 @@ async def test_the_release_leaves_the_lane_to_a_successor_that_took_over(make_ha
     harness = make_harness(fail_open=True, on_stuck_release=_hands_control_back)
     first = await harness.own_a_live_response("resp-1")
 
+    observed = harness.arbiter._response_owner
     release = asyncio.create_task(
-        harness.arbiter._release_stuck_lifecycle("overtaken by a new owner")
+        harness.arbiter._release_stuck_lifecycle(
+            observed=observed, reason="overtaken by a new owner"
+        )
     )
     await asyncio.wait_for(notified.wait(), timeout=1)
     with pytest.raises(RuntimeError):
@@ -1638,21 +1632,7 @@ async def test_a_release_with_nothing_to_release_does_not_end_a_host_turn():
     async def _on_done() -> None:
         done_calls.append("done")
 
-    client = OmniRealtimeClient(
-        "wss://lanlan.app/realtime",
-        "test-key",
-        model="free-model",
-        api_type="free",
-        on_response_done=_on_done,
-    )
-    sent: list[dict] = []
-
-    async def _send(event: dict) -> None:
-        sent.append(event)
-
-    arbiter = client._response_arbiter
-    arbiter._send_event = _send
-    arbiter._fail_open = True
+    client, arbiter, sent = _released_client(on_response_done=_on_done)
     try:
         # A server-initiated response the arbiter never owned, with an id.
         arbiter.notify_response_created(
@@ -1695,21 +1675,7 @@ async def test_a_release_that_gave_up_a_lifecycle_still_ends_the_host_turn():
     async def _on_done() -> None:
         done_calls.append("done")
 
-    client = OmniRealtimeClient(
-        "wss://lanlan.app/realtime",
-        "test-key",
-        model="free-model",
-        api_type="free",
-        on_response_done=_on_done,
-    )
-    sent: list[dict] = []
-
-    async def _send(event: dict) -> None:
-        sent.append(event)
-
-    arbiter = client._response_arbiter
-    arbiter._send_event = _send
-    arbiter._fail_open = True
+    client, arbiter, sent = _released_client(on_response_done=_on_done)
     try:
         ticket = await arbiter.enqueue(source="native")
         await asyncio.wait_for(ticket.sent, timeout=1)
@@ -2189,3 +2155,49 @@ async def test_reconnecting_forgets_which_responses_were_already_billed():
         "usage deduplication is scoped to one connection, like the tool-call "
         "flood window it sits beside"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_unowned_cancellation_does_not_fail_work_queued_behind_it(
+    make_harness,
+):
+    # Codex P2. cancel_current() documents that it cancels only the active or
+    # pre-created request and never drains the queue. On its unowned branch
+    # what is stuck is a server-initiated response with no ticket at all — but
+    # a request enqueued while that cancellation waits becomes `_current` as
+    # the worker parks behind the live server response, and the release used
+    # to wake "owner and current" by state rather than by what the caller
+    # actually watched. That failed an undispatched request with a
+    # RuntimeError: draining queued work, which is what the method promises
+    # not to do.
+    harness = make_harness(fail_open=True)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-1"}}
+    )
+
+    cancelling = asyncio.create_task(harness.arbiter.cancel_current(timeout=0.2))
+    await _settle()
+    # Queued while the cancellation waits; the worker parks it behind srv-1.
+    queued = await harness.arbiter.enqueue(source="queued-behind")
+    await _settle()
+    assert harness.arbiter._current is not None, (
+        "the worker must have taken it as current for this to be the case "
+        "under test"
+    )
+    assert not queued.sent.done(), "and it must not have dispatched yet"
+
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(cancelling, timeout=2)
+    await _settle()
+
+    assert not queued.done.done(), (
+        "a request that never reached the provider is not part of the stuck "
+        "lifecycle; cancel_current does not drain the queue"
+    )
+
+    # And it still runs once the server response ends.
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "srv-1"}}
+    )
+    await asyncio.wait_for(queued.sent, timeout=1)
