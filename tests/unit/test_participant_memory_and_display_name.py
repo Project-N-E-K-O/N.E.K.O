@@ -1506,6 +1506,27 @@ async def test_scoped_forget_deletes_archive_only_fact_from_fts(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_deletes_zero_fact_id_from_fts(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    active = {"id": 0, "text": "secret", **target.as_entry_fields()}
+    archive_path = tmp_path / "facts_archive.json"
+    archive_path.write_text(json.dumps([
+        {"id": 0, "text": "archived secret", **target.as_entry_fields()},
+    ]), encoding="utf-8")
+    store = _ForgetFactStore([active], archive_path)
+    delete_from_index = AsyncMock()
+    store._time_indexed = SimpleNamespace(
+        adelete_fact_from_index=delete_from_index,
+    )
+
+    with patch("memory.facts.assert_cloudsave_writable"):
+        stats = await store.aforget_subject("Neko", target)
+
+    assert stats == {"facts": 1, "facts_archive": 1}
+    delete_from_index.assert_awaited_once_with("Neko", 0, strict=True)
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_keeps_json_when_strict_fts_delete_fails(tmp_path):
     target = MemorySubject.participant("qq", "1001")
     active = {"id": "active", "text": "secret", **target.as_entry_fields()}

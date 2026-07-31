@@ -797,8 +797,8 @@ class FactStore:
             if self._time_indexed is not None:
                 deleted_fact_ids: set = set()
                 for fact in removed + removed_from_archive:
-                    fact_id = fact.get('id')
-                    if not fact_id or fact_id in deleted_fact_ids:
+                    fact_id = _readable_fact_id(fact)
+                    if fact_id is None or fact_id in deleted_fact_ids:
                         continue
                     deleted_fact_ids.add(fact_id)
                     await self._time_indexed.adelete_fact_from_index(

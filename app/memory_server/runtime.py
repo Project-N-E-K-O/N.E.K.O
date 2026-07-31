@@ -456,6 +456,10 @@ async def _bootstrap_embedding_worker() -> None:
                 get_character_names=_current_catgirl_names,
                 warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
                 get_dedup_resolver=lambda: fact_dedup_resolver,
+                # The same barrier brackets reload and scoped forget. A sweep
+                # that captured old managers must finish saving before either
+                # operation can erase through replacement instances.
+                get_sweep_barrier=lambda: _reload_lock,
             )
             return worker, resolver, bound_fact_store
 
