@@ -106,6 +106,7 @@ The blockers are:
 | a transport write just failed | The connection refused a send moments earlier; on the fatal branch it has already dropped its socket. |
 | the abandoned response has no id to attribute later events by | Its `response.create` reached the provider, so it may still be announced — and without an id that announcement is indistinguishable from the next turn's. |
 | an announced server-VAD response has no id yet | The same, for a response the provider announced but has not yet identified. |
+| an unowned response is live with no id at all | A response nobody requested announced itself without an id. Nothing identifies it, so its terminal cannot be told from the next turn's and would end whichever turn holds the lane by then. |
 
 If every escalation in your logs carries one of these, the variable is working
 as designed and the disconnects have a different cause — attach those lines to

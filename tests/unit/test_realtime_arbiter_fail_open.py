@@ -957,19 +957,35 @@ async def test_the_release_does_not_erase_an_owner_that_arrived_meanwhile(
 @pytest.mark.asyncio
 async def test_an_undisturbed_release_still_clears_its_own_owner(make_harness):
     # The dual. "Only clear what you captured" must not become "never clear":
-    # in the ordinary case nothing intervenes and the owner is still the one
+    # in the ordinary case nothing intervened and the owner is still the one
     # captured, so it goes.
+    #
+    # The worker clears ownership on its own way out too (_process's unwind),
+    # which is enough to satisfy a naive assertion here — the first version of
+    # this test passed even with the release's clear deleted. So the worker is
+    # retired first and the same owner reinstalled by hand: with nothing else
+    # running, the release is the only thing that can clear it.
     async def _returns_promptly(reason: str, response_id: str | None) -> None:
         return None
 
     harness = make_harness(fail_open=True, on_stuck_release=_returns_promptly)
-    await harness.own_a_live_response("resp-1")
+    ticket = await harness.own_a_live_response("resp-1")
+    owner = harness.arbiter._response_owner
+    assert owner is not None
+
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-1"}}
+    )
+    await asyncio.wait_for(ticket.done, timeout=1)
+    await _settle()
+    assert harness.arbiter._response_owner is None, "the worker dropped it"
+    harness.arbiter._response_owner = owner
 
     await harness.arbiter._release_stuck_lifecycle("ordinary release")
-    await _settle()
 
-    assert harness.arbiter._response_owner is None
-    assert harness.arbiter.is_busy is False
+    assert harness.arbiter._response_owner is None, (
+        "an undisturbed release must give up the owner it captured"
+    )
 
 
 @pytest.mark.unit
