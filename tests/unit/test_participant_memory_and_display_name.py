@@ -288,7 +288,11 @@ def test_scoped_header_language_tables_cover_all_kinds_and_langs():
         SCOPED_PERSONA_SECTION_HEADER
     )
     for kind, table in SCOPED_PERSONA_SECTION_HEADER_NAMED.items():
-        assert set(table) == set(SCOPED_PERSONA_SECTION_HEADER[kind]), kind
+        # named 表至少覆盖既有表的全部语言；额外的 zh-TW 是 CI ratchet
+        # （check_prompt_zh_tw）要求的新表模板，既有表的繁中 backfill
+        # 归 #2500 批处理。
+        assert set(table) >= set(SCOPED_PERSONA_SECTION_HEADER[kind]), kind
+        assert "zh-TW" in table, kind
         for lang, template in table.items():
             assert "{display_name}" in template, (kind, lang)
             assert "{subject_id}" in template, (kind, lang)

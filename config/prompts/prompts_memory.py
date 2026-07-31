@@ -3359,6 +3359,7 @@ SCOPED_PERSONA_SECTION_HEADER = {
 SCOPED_PERSONA_SECTION_HEADER_NAMED = {
     "group_chat": {
         "zh": "群聊记忆（{display_name}，{subject_id}）",
+        "zh-TW": "群聊記憶（{display_name}，{subject_id}）",
         "en": "Group chat memory ({display_name}, {subject_id})",
         "ja": "グループチャットの記憶（{display_name}、{subject_id}）",
         "ko": "그룹 채팅 기억 ({display_name}, {subject_id})",
@@ -3368,6 +3369,7 @@ SCOPED_PERSONA_SECTION_HEADER_NAMED = {
     },
     "participant": {
         "zh": "成员记忆（{display_name}，{subject_id}）",
+        "zh-TW": "成員記憶（{display_name}，{subject_id}）",
         "en": "Participant memory ({display_name}, {subject_id})",
         "ja": "メンバーの記憶（{display_name}、{subject_id}）",
         "ko": "멤버 기억 ({display_name}, {subject_id})",
@@ -3377,6 +3379,7 @@ SCOPED_PERSONA_SECTION_HEADER_NAMED = {
     },
     "group_participant": {
         "zh": "群内成员记忆（{display_name}，{subject_id}）",
+        "zh-TW": "群內成員記憶（{display_name}，{subject_id}）",
         "en": "Group member memory ({display_name}, {subject_id})",
         "ja": "グループメンバーの記憶（{display_name}、{subject_id}）",
         "ko": "그룹 멤버 기억 ({display_name}, {subject_id})",
