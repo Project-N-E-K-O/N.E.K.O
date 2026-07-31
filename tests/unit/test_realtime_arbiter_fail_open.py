@@ -23,13 +23,14 @@ Contracts, written so each can be falsified:
 
 2.  **Fail-open applies only when the connection can be kept.** That means
     both halves: the transport is still usable, AND the arbiter can still
-    tell whose events are whose. Four things falsify it, each with a paired
+    tell whose events are whose. Five things falsify it, each with a paired
     case here so "always stand down" cannot pass for correct:
 
     - the queue consumer is suspended inside a transport write
     - a transport write just failed
     - the abandoned response has no id to attribute its later events by
     - an announced server-VAD response has no id yet
+    - an unowned response is live with no id at all
 
 3.  **A released turn is ended, not merely dropped.** The host runs the same
     end-of-turn work its terminal event drives — because it is the same
@@ -884,7 +885,7 @@ async def test_a_cancelled_release_still_finishes_its_bookkeeping(make_harness):
     await asyncio.wait_for(entered.wait(), timeout=1)
     release.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await release
+        await asyncio.wait_for(release, timeout=1)
     await _settle()
 
     assert harness.arbiter._response_owner is None, (
@@ -940,7 +941,7 @@ async def test_the_release_does_not_erase_an_owner_that_arrived_meanwhile(
     assert successor is not None and successor.source == "native-next"
 
     resumed.set()
-    await release
+    await asyncio.wait_for(release, timeout=1)
     await _settle()
 
     assert harness.arbiter._response_owner is successor, (
@@ -1159,7 +1160,7 @@ async def test_a_blocked_transcript_flush_cannot_strand_this_turns_state():
     await asyncio.wait_for(entered.wait(), timeout=1)
     release.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await release
+        await asyncio.wait_for(release, timeout=1)
 
     assert client._is_responding is False
     assert client._current_response_id is None
