@@ -143,6 +143,39 @@ def test_scope_handoff_clears_previous_display_name():
     assert section["scope"] == new_scope.scope
 
 
+def test_scoped_render_hides_display_name_owned_by_another_scope():
+    from memory.persona.rendering import RenderingMixin
+
+    scope_a = MemorySubject.create(
+        "participant", "qq:1001", scope="scope:a",
+    )
+    scope_b = MemorySubject.create(
+        "participant", "qq:1001", scope="scope:b",
+    )
+    section = {
+        "display_name": "Scope B Alias",
+        "facts": [
+            {"id": "a", "text": "fact a", **scope_a.as_entry_fields()},
+            {"id": "b", "text": "fact b", **scope_b.as_entry_fields()},
+        ],
+        **scope_b.as_entry_fields(),
+    }
+    persona = {scope_a.persona_section_key: section}
+
+    view_a = RenderingMixin._persona_view_for_subjects(
+        persona, [scope_a], include_legacy_private=False,
+    )
+    assert "display_name" not in view_a[scope_a.persona_section_key]
+    assert [
+        fact["id"] for fact in view_a[scope_a.persona_section_key]["facts"]
+    ] == ["a"]
+
+    view_b = RenderingMixin._persona_view_for_subjects(
+        persona, [scope_b], include_legacy_private=False,
+    )
+    assert view_b[scope_b.persona_section_key]["display_name"] == "Scope B Alias"
+
+
 @pytest.mark.asyncio
 async def test_display_name_all_structural_is_dropped_not_cleared():
     """整条名字都是结构字符 → 中和后为空：按"没有名字"丢弃，且不清掉已

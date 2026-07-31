@@ -78,6 +78,7 @@ class RenderingMixin:
             SCOPED_PERSONA_PREFIX,
             normalize_subjects,
             persona_subject_from_section,
+            subject_from_entry,
         )
         allowed = normalize_subjects(subjects)
         if include_legacy_private is None:
@@ -116,6 +117,19 @@ class RenderingMixin:
                     continue
                 filtered = dict(section)
                 filtered['facts'] = scoped_facts
+                rendered_subjects = {
+                    (entry_subject.key, entry_subject.scope)
+                    for entry in scoped_facts
+                    if (entry_subject := subject_from_entry(entry)) is not None
+                }
+                if rendered_subjects != {
+                    (scoped_subject.key, scoped_subject.scope),
+                }:
+                    # Section metadata belongs to the last writer, while this
+                    # view is authorized entry-by-entry. Do not carry that
+                    # writer's label into another scope's rendered header (or
+                    # into a mixed-scope header where no single label applies).
+                    filtered.pop('display_name', None)
                 view[section_key] = filtered
             elif (scoped_subject.key, scoped_subject.scope) in allowed_keys:
                 view[section_key] = section
@@ -1231,4 +1245,3 @@ class RenderingMixin:
             if isinstance(entry, dict) and entry.get('suppress') and entry.get('text') == text:
                 return True
         return False
-
