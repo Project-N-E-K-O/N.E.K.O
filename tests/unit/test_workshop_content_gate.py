@@ -91,6 +91,9 @@ def test_reference_writers_remain_shared(tmp_path):
     with claim_reference_pair(str(tmp_path)):
         with claim_reference_pair(str(tmp_path)):
             pass
+        with pytest.raises(ContentFolderBusy, match='参考语音正在写入'):
+            with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
+                pass
 
 
 def test_claim_releases_after_exception(tmp_path):
@@ -846,57 +849,20 @@ def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
     return False
 
 
-def _claiming_helpers_called_on_loop(func) -> list:
-    """Nested claim helpers are legal only when every use is offloaded."""
-    helpers = {
-        node.name: node
-        for node in _walk_own_scope(func)
-        if isinstance(node, ast.FunctionDef) and _claim_calls_in_own_scope(node)
-    }
-    if not helpers:
-        return []
-
-    return _claiming_names_called_on_loop(func, set(helpers))
-
-
-def _reference_name(node) -> str | None:
-    if isinstance(node, ast.Name):
-        return node.id
-    if isinstance(node, ast.Attribute):
-        return node.attr
-    return None
-
-
-def _claiming_names_called_on_loop(func, claiming_names: set[str]) -> list:
-    """References to claim-owning sync workers must be worker callables."""
-    if not claiming_names:
-        return []
-
-    parents = _parent_map(func)
-    offenders = []
-    for node in _walk_own_scope(func):
-        name = _reference_name(node)
-        if name not in claiming_names:
-            continue
-        if not _is_deferred_reference(node, parents, func):
-            offenders.append((name, node.lineno))
-    return offenders
-
-
-def _module_level_claiming_workers(trees) -> set[str]:
-    """Find direct claim owners and synchronous wrappers around them."""
-    functions = []
-    for _, tree in trees:
-        stack = list(tree.body)
-        while stack:
-            node = stack.pop()
-            if isinstance(node, ast.FunctionDef):
-                functions.append(node)
-            elif isinstance(node, ast.ClassDef):
-                stack.extend(node.body)
+def _claiming_worker_inventory(functions) -> tuple[set[str], set[str]]:
+    """Return claim owners and owners whose body is deferred by ``yield``."""
     claiming = {
         node.name for node in functions if _claim_calls_in_own_scope(node)
     }
+    generators = {
+        node.name
+        for node in functions
+        if any(
+            isinstance(child, (ast.Yield, ast.YieldFrom))
+            for child in _walk_own_scope(node)
+        )
+    }
+    generator_owners = claiming & generators
     while True:
         wrappers = {
             func.name
@@ -908,8 +874,74 @@ def _module_level_claiming_workers(trees) -> set[str]:
             )
         }
         if not wrappers:
-            return claiming
+            return claiming, generator_owners
+        generator_owners.update(
+            func.name
+            for func in functions
+            if func.name in wrappers
+            and any(
+                isinstance(node, ast.Call) and _tail_name(node) in generator_owners
+                for node in _walk_own_scope(func)
+            )
+        )
         claiming.update(wrappers)
+
+
+def _claiming_helpers_called_on_loop(func) -> list:
+    """Nested claim helpers are legal only when every use is offloaded."""
+    helpers = [
+        node
+        for node in _walk_own_scope(func)
+        if isinstance(node, ast.FunctionDef)
+    ]
+    if not helpers:
+        return []
+
+    claiming, generators = _claiming_worker_inventory(helpers)
+    return _claiming_names_called_on_loop(func, claiming, generators)
+
+
+def _reference_name(node) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _claiming_names_called_on_loop(
+    func,
+    claiming_names: set[str],
+    generator_names: set[str] | None = None,
+) -> list:
+    """References to claim-owning sync workers must be worker callables."""
+    if not claiming_names:
+        return []
+
+    generator_names = generator_names or set()
+    parents = _parent_map(func)
+    offenders = []
+    for node in _walk_own_scope(func):
+        name = _reference_name(node)
+        if name not in claiming_names:
+            continue
+        if name in generator_names or not _is_deferred_reference(node, parents, func):
+            offenders.append((name, node.lineno))
+    return offenders
+
+
+def _module_level_claiming_workers(trees) -> tuple[set[str], set[str]]:
+    """Find direct claim owners and synchronous wrappers around them."""
+    functions = []
+    for _, tree in trees:
+        stack = list(tree.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.FunctionDef):
+                functions.append(node)
+            elif isinstance(node, ast.ClassDef):
+                stack.extend(node.body)
+    return _claiming_worker_inventory(functions)
 
 
 def test_the_event_loop_guard_prunes_nested_worker_bodies():
@@ -942,6 +974,22 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
         'async def hoisted():\n'
         "    with claim_content_folder(folder, purpose='x'):\n"
         '        pass\n'
+        '\n'
+        'async def wrapped_helper():\n'
+        '    def owner():\n'
+        '        with claim_reference_pair(folder):\n'
+        '            pass\n'
+        '    def wrapper():\n'
+        '        return owner()\n'
+        '    wrapper()\n'
+        '\n'
+        'async def offloaded_wrapper():\n'
+        '    def owner():\n'
+        '        with claim_reference_pair(folder):\n'
+        '            pass\n'
+        '    def wrapper():\n'
+        '        return owner()\n'
+        '    await asyncio.to_thread(wrapper)\n'
     )
     functions = {node.name: node for node in tree.body}
 
@@ -958,6 +1006,10 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
     assert _claim_calls_in_own_scope(functions['hoisted']), (
         '直接写在协程体里的占用必须被报出来，否则守卫什么都没守'
     )
+    assert _claiming_helpers_called_on_loop(functions['wrapped_helper']), (
+        'nested claim owner 的同步 wrapper 被协程直调时必须报出来'
+    )
+    assert _claiming_helpers_called_on_loop(functions['offloaded_wrapper']) == []
 
 
 def test_the_event_loop_guard_checks_module_level_claim_owners():
@@ -968,6 +1020,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'def _claiming_wrapper():\n'
         '    return _claiming_worker()\n'
+        '\n'
+        'def _generator_owner():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        yield 1\n'
         '\n'
         'async def offloaded():\n'
         '    await asyncio.to_thread(_claiming_wrapper)\n'
@@ -990,6 +1046,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    def helper():\n'
         '        pass\n'
         '\n'
+        'async def generator_constructor_offloaded():\n'
+        '    await asyncio.to_thread(_generator_owner)\n'
+        '\n'
         'class Service:\n'
         '    def worker(self):\n'
         '        with claim_content_folder(folder, purpose=p):\n'
@@ -1006,29 +1065,32 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    claiming = _module_level_claiming_workers([('synthetic', tree)])
+    claiming, generators = _module_level_claiming_workers([('synthetic', tree)])
 
     assert _claiming_names_called_on_loop(
-        functions['offloaded'], claiming
+        functions['offloaded'], claiming, generators
     ) == []
     assert _claiming_names_called_on_loop(
-        functions['direct'], claiming
+        functions['direct'], claiming, generators
     ), '模块级 claim owner 的同步 wrapper 被协程直调时也必须报出来'
     assert _claiming_names_called_on_loop(
-        functions['lambda_body'], claiming
+        functions['lambda_body'], claiming, generators
     ) == []
     assert _claiming_names_called_on_loop(
-        functions['eager_lambda_default'], claiming
+        functions['eager_lambda_default'], claiming, generators
     ), 'lambda 默认值在 offload 前求值，里面的 claim owner 必须报出来'
     assert _claiming_names_called_on_loop(
-        functions['eager_nested_default'], claiming
+        functions['eager_nested_default'], claiming, generators
     ), 'nested def 默认值在定义 helper 时求值，里面的 claim owner 必须报出来'
     assert _claiming_names_called_on_loop(
-        functions['eager_nested_decorator'], claiming
+        functions['eager_nested_decorator'], claiming, generators
     ), 'nested def decorator 在定义 helper 时求值，里面的 claim owner 必须报出来'
     assert _claiming_names_called_on_loop(
-        functions['handler'], claiming
+        functions['handler'], claiming, generators
     ), 'class method claim owner 的同步 wrapper 被 async method 直调时必须报出来'
+    assert _claiming_names_called_on_loop(
+        functions['generator_constructor_offloaded'], claiming, generators
+    ), 'offload generator function 只会构造 generator，不会在 worker 执行 claim body'
 
 
 def test_no_claim_is_ever_taken_on_the_event_loop():
@@ -1043,7 +1105,7 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
 
     modules = (publish, voice_refs, preview_cards, voice_manifest, content_gate)
     trees = [(module, ast.parse(inspect.getsource(module))) for module in modules]
-    claiming_workers = _module_level_claiming_workers(trees)
+    claiming_workers, generator_workers = _module_level_claiming_workers(trees)
 
     offenders = []
     for module, tree in trees:
@@ -1056,7 +1118,9 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
                 offenders.append(f'{short}.{node.name}:{call.lineno}')
             for helper, line in _claiming_helpers_called_on_loop(node):
                 offenders.append(f'{short}.{node.name}:{line} -> {helper}（在事件循环直调）')
-            for worker, line in _claiming_names_called_on_loop(node, claiming_workers):
+            for worker, line in _claiming_names_called_on_loop(
+                node, claiming_workers, generator_workers
+            ):
                 offenders.append(f'{short}.{node.name}:{line} -> {worker}（模块 worker 未 offload）')
 
     assert not offenders, f'这些占用是在协程里拿的，取消会把它们提前放开：{offenders}'
@@ -1214,9 +1278,15 @@ def _unclaimed_folder_operations(func, short: str) -> list:
         current = operation
         while id(current) in parents:
             parent = parents[id(current)]
-            if isinstance(parent, ast.Call) and parent.func is current:
+            if isinstance(parent, ast.Call):
+                if parent.func is current:
+                    break
+                deferred_nodes.add(id(operation))
                 break
             if isinstance(parent, (ast.Assign, ast.AnnAssign, ast.NamedExpr)):
+                deferred_nodes.add(id(operation))
+                break
+            if isinstance(parent, (ast.Return, ast.Yield, ast.YieldFrom)):
                 deferred_nodes.add(id(operation))
                 break
             current = parent
@@ -1310,6 +1380,14 @@ def test_the_claim_guard_sees_through_deferred_work():
         '    with claim_content_folder(folder, purpose=p):\n'
         '        return (_publish_workshop_item(folder) for _ in items)\n'
         '\n'
+        'def returned_reference():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        return _publish_workshop_item\n'
+        '\n'
+        'def appended_reference():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        callbacks.append(_publish_workshop_item)\n'
+        '\n'
         'def direct():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        _publish_workshop_item(folder)\n'
@@ -1336,6 +1414,12 @@ def test_the_claim_guard_sees_through_deferred_work():
     )
     assert _unclaimed_folder_operations(functions['generated'], 'publish'), (
         'generator expression 的 body 会在迭代时才运行，必须被报出来'
+    )
+    assert _unclaimed_folder_operations(functions['returned_reference'], 'publish'), (
+        '返回受保护 callable 会让它逃逸 claim，必须被报出来'
+    )
+    assert _unclaimed_folder_operations(functions['appended_reference'], 'publish'), (
+        '把受保护 callable 传给未知调用会让它逃逸 claim，必须被报出来'
     )
     assert _unclaimed_folder_operations(functions['direct'], 'publish') == [], (
         '直接在占用里同步跑完是合法的，守卫不该报它'
