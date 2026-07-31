@@ -686,16 +686,25 @@ async def test_character_management_and_recent_save_regression():
             assert switch_result["success"] is True
             assert cm.load_characters()["当前猫娘"] == "测试角色"
 
+            from utils.recent_file import write_recent_payload
+
+            recent_path = Path(cm.memory_dir) / "测试角色" / "recent.json"
+            write_recent_payload(recent_path, [])
+            recent_snapshot = await memory_router_module.get_recent_file(
+                "recent_测试角色.json"
+            )
             save_recent_result = await memory_router_module.save_recent_file(
                 _DummyRequest(
                     {
                         "filename": "recent_测试角色.json",
                         "chat": [{"role": "user", "text": "你好"}],
+                        "fingerprint": recent_snapshot["fingerprint"],
+                        "identity_token": recent_snapshot["identity_token"],
                     }
                 )
             )
             assert save_recent_result["success"] is True
-            assert (Path(cm.memory_dir) / "测试角色" / "recent.json").is_file()
+            assert recent_path.is_file()
 
             switch_back_result = await characters_router_module.set_current_catgirl(
                 _DummyRequest({"catgirl_name": initial_name})

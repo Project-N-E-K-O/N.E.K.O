@@ -456,6 +456,7 @@ async def _rollback_character_operation(
     recent_delete_result: dict | None = None,
     recent_rename_result: dict | None = None,
     recent_transaction: dict | None = None,
+    resume_derived_task_names: tuple[str, ...] = (),
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
@@ -505,7 +506,10 @@ async def _rollback_character_operation(
         rollback_errors.append(f"initialize_character_data failed: {exc}")
 
     try:
-        reload_notified = await notify_memory_server_reload(reason=reason)
+        reload_notified = await notify_memory_server_reload(
+            reason=reason,
+            resume_derived_task_names=resume_derived_task_names,
+        )
         if not reload_notified:
             rollback_errors.append("notify_memory_server_reload failed: returned False")
     except Exception as exc:
@@ -634,6 +638,7 @@ async def rename_catgirl(old_name: str, request: Request):
     released_memory_handle = await release_memory_server_character(
         old_name,
         reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
+        hold_derived_task_admission=True,
     )
     if not released_memory_handle:
         logger.warning("角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s", old_name, new_name)
@@ -733,6 +738,7 @@ async def rename_catgirl(old_name: str, request: Request):
 
             memory_server_reloaded = await notify_memory_server_reload(
                 reason=f"角色重命名: {old_name} -> {new_name}",
+                resume_derived_task_names=(new_name,),
             )
             if not memory_server_reloaded:
                 rollback_error = await _rollback_character_operation(
@@ -741,6 +747,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     memory_snapshot_records=memory_snapshot_records,
                     recent_rename_result=memory_rename_result,
                     recent_transaction=recent_transaction,
+                    resume_derived_task_names=(old_name,),
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -780,6 +787,7 @@ async def rename_catgirl(old_name: str, request: Request):
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
+                        resume_derived_task_names=(old_name,),
                         reason=f"任务取消：角色重命名回滚 {old_name} -> {new_name}",
                     )
                 )
@@ -791,6 +799,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 memory_snapshot_records=memory_snapshot_records,
                 recent_rename_result=memory_rename_result,
                 recent_transaction=recent_transaction,
+                resume_derived_task_names=(old_name,),
                 reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
             )
             if rollback_error:
@@ -803,6 +812,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 memory_snapshot_records=memory_snapshot_records,
                 recent_rename_result=memory_rename_result,
                 recent_transaction=recent_transaction,
+                resume_derived_task_names=(old_name,),
                 reason=f"角色重命名回滚: {old_name} -> {new_name}",
             )
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
@@ -1129,7 +1139,10 @@ async def add_catgirl(request: Request):
     init_one_catgirl = get_init_one_catgirl()
     await init_one_catgirl(key, is_new=True)
 
-    memory_server_reloaded = await notify_memory_server_reload(reason=f"新角色: {key}")
+    memory_server_reloaded = await notify_memory_server_reload(
+        reason=f"新角色: {key}",
+        resume_derived_task_names=(key,),
+    )
 
     response: dict = {
         "success": True,
@@ -1395,6 +1408,7 @@ async def _delete_catgirl_by_name(name: str):
     released_memory_handle = await release_memory_server_character(
         name,
         reason=f"角色删除前释放 SQLite 句柄: {name}",
+        hold_derived_task_admission=True,
     )
     if not released_memory_handle:
         logger.warning("角色删除前释放记忆服务器句柄失败，已阻止删除: %s", name)
@@ -1502,6 +1516,7 @@ async def _delete_catgirl_by_name(name: str):
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
                         recent_transaction=recent_transaction,
+                        resume_derived_task_names=(name,),
                         reason=f"任务取消：删除角色回滚 {name}",
                     )
                 )
@@ -1514,6 +1529,7 @@ async def _delete_catgirl_by_name(name: str):
                 tombstone_snapshot=tombstone_snapshot,
                 recent_delete_result=recent_delete_result,
                 recent_transaction=recent_transaction,
+                resume_derived_task_names=(name,),
                 reason=f"维护模式：删除角色回滚 {name}",
             )
             if rollback_error:
@@ -1527,6 +1543,7 @@ async def _delete_catgirl_by_name(name: str):
                 tombstone_snapshot=tombstone_snapshot,
                 recent_delete_result=recent_delete_result,
                 recent_transaction=recent_transaction,
+                resume_derived_task_names=(name,),
                 reason=f"删除角色回滚: {name}",
             )
             logger.exception("删除角色失败，已尝试回滚: %s", name)

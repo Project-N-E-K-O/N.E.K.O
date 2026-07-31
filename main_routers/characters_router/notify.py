@@ -82,11 +82,20 @@ async def send_reload_page_notice(
         return False
 
 
-async def notify_memory_server_reload(*, reason: str = "") -> bool:
+async def notify_memory_server_reload(
+    *,
+    reason: str = "",
+    resume_derived_task_names: list[str] | tuple[str, ...] = (),
+) -> bool:
     try:
         async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
             response = await client.post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
+                json={
+                    "resume_derived_task_names": sorted(
+                        set(resume_derived_task_names)
+                    ),
+                },
                 timeout=5.0,
             )
         if response.status_code != 200:
@@ -112,7 +121,12 @@ async def notify_memory_server_reload(*, reason: str = "") -> bool:
     return False
 
 
-async def release_memory_server_character(character_name: str, *, reason: str = "") -> bool:
+async def release_memory_server_character(
+    character_name: str,
+    *,
+    reason: str = "",
+    hold_derived_task_admission: bool = False,
+) -> bool:
     from urllib.parse import quote
     from utils.internal_http_client import get_internal_http_client
 
@@ -124,6 +138,11 @@ async def release_memory_server_character(character_name: str, *, reason: str = 
         client = get_internal_http_client()
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/release_character/{encoded_name}",
+            params={
+                "hold_derived_task_admission": str(
+                    hold_derived_task_admission
+                ).lower(),
+            },
             timeout=5.0,
         )
         if response.status_code != 200:

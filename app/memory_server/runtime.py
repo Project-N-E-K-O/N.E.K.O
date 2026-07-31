@@ -203,7 +203,10 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     _deferred_time_managers.append(manager)
     logger.info("[MemoryServer] 旧的 TimeIndexedMemory 已加入延迟清理队列")
 
-async def reload_memory_components():
+async def reload_memory_components(
+    *,
+    resume_derived_task_names: set[str] | None = None,
+):
     """Reload memory component config (used after a new character is created)
 
     The reload is protected by a lock to guarantee an atomic swap and avoid race
@@ -282,7 +285,10 @@ async def reload_memory_components():
             try:
                 characters = await asyncio.to_thread(_config_manager.load_characters)
                 active_names = set((characters.get("猫娘") or {}).keys())
-                await review.reconcile_character_derived_task_admission(active_names)
+                await review.reconcile_character_derived_task_admission(
+                    active_names,
+                    resume_names=resume_derived_task_names,
+                )
             except Exception as reconcile_exc:
                 # 组件引用已经完成原子替换；协调失败不能把真实成功的 reload
                 # 伪装成失败，调用方据此回滚会与当前已生效实例产生二次分叉。
@@ -299,7 +305,10 @@ async def reload_memory_components():
 
 
 @app.post("/release_character/{lanlan_name}")
-async def release_character_resources(lanlan_name: str):
+async def release_character_resources(
+    lanlan_name: str,
+    hold_derived_task_admission: bool = False,
+):
     """Proactively release the corresponding SQLite handles before a character rename/delete."""
     try:
         lanlan_name = validate_lanlan_name(lanlan_name)
@@ -315,7 +324,10 @@ async def release_character_resources(lanlan_name: str):
     # 会沿 recent redirect 把旧名字生成的 memo/correction 写进新角色。
     from . import review
 
-    cancelled_tasks = await review.cancel_character_derived_tasks(lanlan_name)
+    cancelled_tasks = await review.cancel_character_derived_tasks(
+        lanlan_name,
+        hold_until_publication=hold_derived_task_admission,
+    )
     async with _reload_lock:
         try:
             time_manager.dispose_engine(lanlan_name)
@@ -822,10 +834,21 @@ async def shutdown_event_handler():
 
 
 @app.post("/reload")
-async def reload_config():
+async def reload_config(request: Request):
     """Reload the memory server config (used after a new character is created)"""
     try:
-        success = await reload_memory_components()
+        try:
+            payload = await request.json()
+        except Exception:
+            payload = {}
+        raw_resume_names = payload.get("resume_derived_task_names", []) if isinstance(payload, dict) else []
+        resume_names = {
+            name for name in raw_resume_names
+            if isinstance(name, str) and name
+        } if isinstance(raw_resume_names, list) else set()
+        success = await reload_memory_components(
+            resume_derived_task_names=resume_names,
+        )
         if success:
             return {"status": "success", "message": "配置已重新加载"}
         else:

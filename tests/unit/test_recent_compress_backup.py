@@ -89,6 +89,40 @@ async def test_release_blocks_review_respawn_until_published_identity_reload():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_publication_hold_survives_unrelated_reload_until_explicit_resume():
+    """An unrelated reload must not reopen a lifecycle-held identity."""
+    from app import memory_server
+
+    name = "改名发布窗口显式提交"
+    fake_mgr = MagicMock()
+    fake_mgr.aget_recent_history = AsyncMock(return_value=([], ("path", 0)))
+
+    await memory_server.review.cancel_character_derived_tasks(
+        name,
+        hold_until_publication=True,
+    )
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), patch.object(
+        memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True),
+    ):
+        await memory_server.review.reconcile_character_derived_task_admission({name})
+        await memory_server.review.maybe_spawn_review(name)
+        fake_mgr.aget_recent_history.assert_not_awaited()
+
+        await memory_server.review.reconcile_character_derived_task_admission(
+            {name},
+            resume_names={name},
+        )
+        await memory_server.review.maybe_spawn_review(name)
+        fake_mgr.aget_recent_history.assert_awaited_once_with(
+            name, include_admission=True,
+        )
+
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_on_compress_done_failure_spawns_backup():
     from app import memory_server
     name = "测试角色C"
@@ -208,6 +242,57 @@ async def test_on_compress_done_deadletter_resets_when_input_changed():
         await _cleanup_task(task)
 
     memory_server.compress_backup_tasks.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_compress_callback_cannot_spawn_after_release_drains_registry():
+    """Retirement during an awaited gate must win over fallback spawning."""
+    from app import memory_server
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+
+    name = "压缩回调退休竞态"
+    snapshot = _history(6)
+    gate_entered = asyncio.Event()
+    release_gate = asyncio.Event()
+    memory_server.compress_backup_tasks.pop(name, None)
+    memory_server.gates._maint_state[name] = {
+        "compress_backup_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
+        "compress_backup_generation": None,
+    }
+
+    async def _blocked_gate(*args, **kwargs):
+        gate_entered.set()
+        await release_gate.wait()
+        return "retry"
+
+    spawn = MagicMock()
+    with patch.object(
+        memory_server.gates,
+        "_amutate_maint_state",
+        side_effect=_blocked_gate,
+    ), patch.object(memory_server.runtime, "_spawn_background_task", spawn):
+        callback = asyncio.create_task(
+            memory_server._on_compress_done(
+                name,
+                snapshot,
+                ok=False,
+                detailed=False,
+            )
+        )
+        await asyncio.wait_for(gate_entered.wait(), timeout=1)
+        await memory_server.review.cancel_character_derived_tasks(
+            name,
+            hold_until_publication=True,
+        )
+        release_gate.set()
+        await asyncio.wait_for(callback, timeout=1)
+
+    spawn.assert_not_called()
+    assert name not in memory_server.compress_backup_tasks
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    memory_server.review._retired_derived_task_names.discard(name)
     memory_server.gates._maint_state.pop(name, None)
 
 

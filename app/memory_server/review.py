@@ -54,6 +54,7 @@ correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 # 串行化 gate+spawn 这一段，确保同名角色至多一个 review 在跑。
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
 _retired_derived_task_names: set[str] = set()
+_publication_held_derived_task_names: set[str] = set()
 
 
 async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
@@ -141,19 +142,34 @@ def _get_review_spawn_lock(name: str) -> asyncio.Lock:
     return lock
 
 
-async def cancel_character_derived_tasks(lanlan_name: str) -> int:
+async def cancel_character_derived_tasks(
+    lanlan_name: str,
+    *,
+    hold_until_publication: bool = False,
+) -> int:
     """Retire derived-task admission, then cancel and drain existing work."""
     async with _get_review_spawn_lock(lanlan_name):
         _retired_derived_task_names.add(lanlan_name)
+        if hold_until_publication:
+            _publication_held_derived_task_names.add(lanlan_name)
         return await _cancel_character_derived_tasks_unlocked(lanlan_name)
 
 
 async def reconcile_character_derived_task_admission(
     active_names: set[str],
+    *,
+    resume_names: set[str] | None = None,
 ) -> None:
     """Re-enable a retired name only after reload observes a published identity."""
+    explicit_resume = resume_names or set()
     for name in sorted(_retired_derived_task_names.intersection(active_names)):
         async with _get_review_spawn_lock(name):
+            if (
+                name in _publication_held_derived_task_names
+                and name not in explicit_resume
+            ):
+                continue
+            _publication_held_derived_task_names.discard(name)
             _retired_derived_task_names.discard(name)
 
 
@@ -720,16 +736,30 @@ async def _on_compress_done(
                 expected_generation=admission_generation,
             )
             return
-    task = runtime._spawn_background_task(
-        _run_backup_compress(
-            lanlan_name,
-            list(snapshot),
-            detailed,
-            admission_generation,
+    # 上面的 dead-letter RMW / hard-cap 都可能 await；角色生命周期事务可能在
+    # 这段窗口里退休旧名并排空 registry。spawn+register 必须回到与 release 共用
+    # 的准入锁下复查，不能在 drain 完成后再把旧身份任务塞回 registry。
+    async with _get_review_spawn_lock(lanlan_name):
+        if (
+            lanlan_name in _retired_derived_task_names
+            or not _generation_is_current(admission_generation)
+        ):
+            return
+        existing = compress_backup_tasks.get(lanlan_name)
+        if existing is not None and not existing.done():
+            if compress_backup_task_generations.get(lanlan_name) == admission_generation:
+                return
+            existing.cancel()
+        task = runtime._spawn_background_task(
+            _run_backup_compress(
+                lanlan_name,
+                list(snapshot),
+                detailed,
+                admission_generation,
+            )
         )
-    )
-    compress_backup_tasks[lanlan_name] = task
-    compress_backup_task_generations[lanlan_name] = admission_generation
+        compress_backup_tasks[lanlan_name] = task
+        compress_backup_task_generations[lanlan_name] = admission_generation
     logger.info(f"[CompressBackup] {lanlan_name} 主路径压缩失败，已起后台兜底压缩任务")
 
 
