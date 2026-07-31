@@ -31,6 +31,7 @@ from .voice_manifest import (
     WORKSHOP_VOICE_MANIFEST_NAME,
     _cleanup_workshop_voice_reference,
     _normalize_workshop_voice_manifest,
+    _reference_is_managed,
     resolve_voice_reference_serialized,
     _sanitize_voice_prefix,
     voice_reference_lock,
@@ -68,7 +69,7 @@ def _current_reference_audio_path(content_folder: str) -> str | None:
     reference = manifest.get('reference_audio') if isinstance(manifest, dict) else None
     if not isinstance(reference, str) or not reference:
         return None
-    if manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY) != reference:
+    if not _reference_is_managed(manifest):
         # A manifest is valid input for playback/publishing, but it is not by
         # itself proof that this process created (and therefore owns) the file.
         # Imported and hand-edited manifests commonly point at user assets.

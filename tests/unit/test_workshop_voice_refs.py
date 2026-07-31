@@ -664,6 +664,116 @@ def test_explicit_remove_preserves_audio_without_the_managed_marker(tmp_path):
     assert not manifest_path.exists()
 
 
+def _seed_legacy_reference(folder, audio_name: str) -> None:
+    """Write the exact manifest shape shipped before the marker existed."""
+    # 改动前 upload 写的是固定名 voice_sample<ext>（见 main 的 voice_refs.py:109），
+    # manifest 里没有 marker。存量用户盘上就是这个样子。
+    (folder / audio_name).write_bytes(b"legacy-audio")
+    (folder / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({
+            "version": 1,
+            "reference_audio": audio_name,
+            "prefix": "legacy",
+        }),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.parametrize("audio_name", ["voice_sample.wav", "voice_sample.mp3"])
+def test_replacement_still_cleans_up_a_pre_marker_reference(tmp_path, audio_name):
+    """Upgrading an existing install must not orphan the audio it already owns."""
+    # 没有这条兼容，存量用户升级后第一次换参考语音会把旧的 voice_sample.<ext> 永远留在
+    # 内容目录里；publish 是把整个目录交给 SetItemContent 的，它会跟着发出去。
+    from main_routers.workshop_router import voice_refs
+
+    _seed_legacy_reference(tmp_path, audio_name)
+    new_name = "voice_sample_cccccccccccc.wav"
+
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / new_name),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {
+            "version": 1,
+            "reference_audio": new_name,
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: new_name,
+            "prefix": "new",
+        },
+    )
+
+    assert not (tmp_path / audio_name).exists(), (
+        f"{audio_name} 是改动前本模块自己生成的名字，换参考语音后不该留在目录里"
+    )
+    assert (tmp_path / new_name).read_bytes() == b"new-audio"
+
+
+@pytest.mark.parametrize("audio_name", ["voice_sample.wav", "voice_sample.mp3"])
+def test_explicit_remove_still_deletes_a_pre_marker_reference(tmp_path, audio_name):
+    """Remove must delete the recording an upgraded install already owned."""
+    from main_routers.workshop_router.voice_manifest import (
+        _cleanup_workshop_voice_reference,
+    )
+
+    _seed_legacy_reference(tmp_path, audio_name)
+
+    _cleanup_workshop_voice_reference(str(tmp_path))
+
+    assert not (tmp_path / audio_name).exists(), (
+        "用户点了「移除」，那份录音必须真的从盘上消失，否则它还会被 publish 带出去"
+    )
+    assert not (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).exists()
+
+
+def test_the_legacy_allowlist_is_exactly_the_two_names_the_old_code_wrote(tmp_path):
+    """The compatibility set is frozen at two literals; it never widens."""
+    # 这条兼容是「保持 main 已有的删除行为」，不是「按名字形状猜所有权」。一旦有人
+    # 把它放宽成前缀/通配（voice_sample*），用户自己放进内容目录的同前缀文件就会被
+    # 静默删掉 —— 那正是 marker 要终结的东西。
+    from main_routers.workshop_router import voice_refs
+
+    for near_miss in ("voice_sample_extra.wav", "voice_sample.WAV.wav", "my_voice_sample.wav"):
+        folder = tmp_path / near_miss.replace(".", "_")
+        folder.mkdir()
+        _seed_legacy_reference(folder, near_miss)
+        assert voice_refs._current_reference_audio_path(str(folder)) is None, (
+            f"{near_miss} 不是旧代码写过的名字，不该被当成本模块托管的文件"
+        )
+
+
+def test_a_mismatched_marker_never_falls_through_to_the_legacy_allowlist(tmp_path):
+    """Carrying a marker proves the manifest is not pre-marker, match or not."""
+    # 存量兼容只赦免「marker 出现之前写的」manifest。带着一个对不上的 marker 又正好
+    # 叫 voice_sample.wav 的，不算存量 —— 否则伪造一个不匹配的 marker 就能重新拿到
+    # 那条无条件删除的老路径。
+    # ⚠️ 两条路径要一起验：_current_reference_audio_path 读的是**生 manifest**，
+    # _cleanup_workshop_voice_reference 拿到的是 _normalize_... 归一化之后的。归一化
+    # 若把对不上的 marker 丢掉，后者就会把这份 manifest 误判成「没有 marker」。
+    from main_routers.workshop_router import voice_refs
+    from main_routers.workshop_router.voice_manifest import (
+        _cleanup_workshop_voice_reference,
+    )
+
+    audio = tmp_path / "voice_sample.wav"
+    audio.write_bytes(b"disputed")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({
+            "version": 1,
+            "reference_audio": audio.name,
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: "something_else.wav",
+            "prefix": "forged",
+        }),
+        encoding="utf-8",
+    )
+
+    assert voice_refs._current_reference_audio_path(str(tmp_path)) is None
+
+    _cleanup_workshop_voice_reference(str(tmp_path))
+    assert audio.read_bytes() == b"disputed", (
+        "归一化把对不上的 marker 丢掉了，这份 manifest 被误判成 pre-marker"
+    )
+
+
 def test_nothing_is_deleted_when_no_manifest_claims_anything(tmp_path):
     """A folder with no manifest claims nothing; the swap must add, not remove."""
     from main_routers.workshop_router import voice_refs

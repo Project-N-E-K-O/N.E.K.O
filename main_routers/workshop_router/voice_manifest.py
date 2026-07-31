@@ -36,6 +36,41 @@ WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY = '_neko_managed_reference_audio'
 WORKSHOP_REFERENCE_AUDIO_EXTENSIONS = {'.mp3', '.wav'}
 
 
+# 冻结的存量兼容集：marker 出现之前，upload 写的参考音频是固定名 voice_sample<ext>，
+# 这两个字面量是旧代码**唯一**写过的名字。存量用户盘上的 manifest 没有 marker，不认
+# 它们就会在升级后第一次换/移除参考语音时把自己生成的录音永远留在内容目录里（publish
+# 是把整个目录交给 SetItemContent 的，它会跟着发出去）。
+# ⚠️ 这是「保持改动前已有的删除行为」，不是「按名字形状猜所有权」。永远不要把它放宽成
+# 前缀或通配（voice_sample*）—— 内容目录是用户自己的目录，那样他放进去的同前缀文件就会
+# 被静默删掉，而那正是 marker 要终结的东西。
+WORKSHOP_LEGACY_MANAGED_REFERENCE_NAMES = frozenset(
+    f'voice_sample{ext}' for ext in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS
+)
+
+
+def _reference_is_managed(manifest: dict) -> bool:
+    """Whether this module may delete the audio the manifest points at.
+
+    Deletion needs proof of ownership, not merely a usable reference: imported
+    and hand-edited manifests routinely point at the user's own assets.
+
+    Two things count as proof, and nothing else. The private marker, written
+    only when this route commits a file it generated, and a frozen two-name
+    legacy set for manifests written before the marker existed. A manifest that
+    carries a marker is not pre-marker, so a mismatched marker never falls
+    through to the legacy branch.
+    """
+    reference = manifest.get('reference_audio')
+    if not isinstance(reference, str) or not reference:
+        return False
+    if manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY) == reference:
+        return True
+    return (
+        WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY not in manifest
+        and reference in WORKSHOP_LEGACY_MANAGED_REFERENCE_NAMES
+    )
+
+
 WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES = {
     'audio/mpeg': '.mp3',
     'audio/mp3': '.mp3',
@@ -102,14 +137,19 @@ def _normalize_workshop_voice_manifest(raw_manifest: dict, *, default_prefix: st
         'provider_hint': provider_hint,
     }
     # This private marker is ownership metadata, not merely a second spelling
-    # of reference_audio. Only upload-reference-audio writes it. Cleanup may
-    # delete an audio file only when the marker and live reference agree, so a
-    # hand-edited/imported manifest cannot claim an unrelated user-owned file.
-    managed_reference = str(
-        raw_manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY, '') or ''
-    ).strip()
-    if managed_reference == reference_audio:
-        normalized[WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY] = managed_reference
+    # of reference_audio. Only upload-reference-audio writes it, and only
+    # ``_reference_is_managed`` interprets it.
+    #
+    # Presence is carried through even when the value disagrees with the live
+    # reference. Dropping a mismatched marker here would erase the difference
+    # between "written before the marker existed" and "carries a marker that
+    # does not match", and the first of those is the only one the legacy
+    # allowlist may forgive. Keeping it makes the predicate read the same on a
+    # raw manifest and on a normalized one.
+    if WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY in raw_manifest:
+        normalized[WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY] = str(
+            raw_manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY) or ''
+        ).strip()
     return normalized
 
 
@@ -199,12 +239,7 @@ def _cleanup_workshop_voice_reference(content_folder: str) -> None:
     if voice_ref:
         manifest = voice_ref.get('manifest') or {}
         audio_path = voice_ref.get('audio_path')
-        managed_audio = manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY)
-        if (
-            managed_audio == manifest.get('reference_audio')
-            and audio_path
-            and os.path.exists(audio_path)
-        ):
+        if _reference_is_managed(manifest) and audio_path and os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
             except OSError as e:
