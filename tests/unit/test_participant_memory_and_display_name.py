@@ -1177,6 +1177,22 @@ async def test_scoped_forget_validates_archive_before_active_delete(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_reads_cold_active_facts_strictly(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text("{broken", encoding="utf-8")
+    store = FactStore(time_indexed_memory=None)
+    store._facts_path = lambda name: str(facts_path)
+    store._facts_archive_path = lambda name: str(tmp_path / "missing-archive.json")
+
+    with pytest.raises(RuntimeError, match="facts state unreadable"):
+        await store.aforget_subject("Neko", target)
+
+    assert facts_path.read_text(encoding="utf-8") == "{broken"
+    assert "Neko" not in store._facts
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_fences_inflight_fact_extraction(tmp_path):
     target = MemorySubject.participant("qq", "1001")
     archive_path = tmp_path / "missing-archive.json"
@@ -1200,6 +1216,34 @@ async def test_scoped_forget_fences_inflight_fact_extraction(tmp_path):
     )
     await extraction_started.wait()
     await store.aforget_subject("Neko", target)
+    release_extraction.set()
+
+    assert await task == []
+    assert store._facts["Neko"] == []
+
+
+@pytest.mark.asyncio
+async def test_fact_forget_route_bracket_rejects_work_started_inside(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    store = _ForgetFactStore([], tmp_path / "missing-archive.json")
+    extraction_started = asyncio.Event()
+    release_extraction = asyncio.Event()
+
+    async def _extract(*args, **kwargs):
+        extraction_started.set()
+        await release_extraction.wait()
+        return [{"text": "inside forget", "importance": 8}]
+
+    store._allm_extract_facts = _extract
+    await store.abegin_subject_forget("Neko", target)
+    task = asyncio.create_task(store.extract_facts(
+        [{"role": "user", "content": "inside"}],
+        "Neko",
+        subject=target,
+        fail_closed=True,
+    ))
+    await extraction_started.wait()
+    await store.aend_subject_forget("Neko", target)
     release_extraction.set()
 
     assert await task == []
@@ -1261,6 +1305,11 @@ async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
             self._config_manager = MagicMock()
             self.saved = 0
             self.corrections_written: list | None = None
+            self._personas = {}
+            self.persona_path = tmp_path / f"persona-{id(self)}.json"
+            self.persona_path.write_text(
+                json.dumps(persona), encoding="utf-8",
+            )
             self.corrections_path = tmp_path / f"corrections-{id(self)}.json"
             self.corrections_path.write_text(
                 json.dumps(corrections), encoding="utf-8",
@@ -1272,10 +1321,11 @@ async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
         def _get_resolve_alock(self, name):
             return self._resolve_lock
 
-        async def _aensure_persona_locked(self, name):
-            return self.persona
+        def _persona_path(self, name):
+            return str(self.persona_path)
 
         async def asave_persona(self, name, persona):
+            self.persona = persona
             self.saved += 1
 
         async def aload_pending_corrections(self, name):
@@ -1319,10 +1369,10 @@ async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
     assert stats["persona_entries"] == 1
     assert stats["persona_section_dropped"] is False
     assert stats["corrections"] == 2
-    assert target.persona_section_key in persona
-    assert [e["id"] for e in section["facts"]] == ["p2"]
-    assert "display_name" not in section
-    assert section["scope"] == mixed.scope
+    remaining_section = harness.persona[target.persona_section_key]
+    assert [e["id"] for e in remaining_section["facts"]] == ["p2"]
+    assert "display_name" not in remaining_section
+    assert remaining_section["scope"] == mixed.scope
     assert [c["old_text"] for c in harness.corrections_written] == ["keep"]
 
     # 纯净 section：删净后整段消失（连 display_name 元数据）
@@ -1386,6 +1436,48 @@ async def test_scoped_forget_aborts_on_unreadable_corrections(tmp_path):
 
     assert persona[target.persona_section_key]["facts"][0]["id"] == "p1"
     assert harness.saved == 0
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_aborts_on_unreadable_persona(tmp_path):
+    from memory.persona.facts import FactsMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    persona_path = tmp_path / "persona.json"
+    persona_path.write_text("{broken", encoding="utf-8")
+    corrections_path = tmp_path / "persona_corrections.json"
+    corrections_path.write_text("[]", encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = FactsMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._resolve_lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+            self._personas = {}
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _get_resolve_alock(self, name):
+            return self._resolve_lock
+
+        def _corrections_path(self, name):
+            return str(corrections_path)
+
+        def _persona_path(self, name):
+            return str(persona_path)
+
+        async def asave_persona(self, name, value):
+            raise AssertionError("must fail before persona save")
+
+    harness = _Harness()
+    with pytest.raises(RuntimeError, match="persona state unreadable"):
+        await harness.aforget_subject("Neko", target)
+
+    assert persona_path.read_text(encoding="utf-8") == "{broken"
+    assert harness._personas == {}
 
 
 @pytest.mark.asyncio
@@ -1559,6 +1651,12 @@ async def test_scoped_forget_route_wires_all_three_stores():
 
     calls: list[str] = []
     store = MagicMock()
+    store.abegin_subject_forget = AsyncMock(
+        side_effect=lambda *args: calls.append("fact_begin"),
+    )
+    store.aend_subject_forget = AsyncMock(
+        side_effect=lambda *args: calls.append("fact_end"),
+    )
     store.aforget_subject = AsyncMock(
         side_effect=lambda *args: (
             calls.append("facts")
@@ -1599,7 +1697,10 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["facts"] == 1
     assert result["reflections"] == 2
     assert result["persona_entries"] == 3
-    assert calls == ["epoch", "facts", "reflections", "persona", "epoch"]
+    assert calls == [
+        "fact_begin", "epoch", "facts", "reflections", "persona", "epoch",
+        "fact_end",
+    ]
     for double in (store, reflection, persona):
         forgotten = double.aforget_subject.await_args.args[1]
         assert forgotten.subject_id == "qq:1001"
@@ -2202,3 +2303,45 @@ async def test_participant_discard_retries_pending_optout_with_flag_restored():
     assert plugin._user_sessions["private:1001"] is user_data
     assert user_data["memory_enabled"] is False
     assert user_data["pending_disable_settle"] is True
+
+
+def test_delivered_private_fallback_enters_participant_history():
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    history = [SimpleNamespace(type="human", content="问题")]
+    user_data = {
+        "memory_enabled": True,
+        "private_memory_mode": "participant",
+        "session": SimpleNamespace(_conversation_history=history),
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"private:1001": user_data},
+        session_runtime_service=SimpleNamespace(
+            build_generation_session_key=lambda context: "private:1001",
+        ),
+    )
+    service = QQReplyGenerationService.__new__(QQReplyGenerationService)
+    service.plugin = plugin
+    context = SimpleNamespace(
+        is_group=False,
+        participant_memory_enabled=True,
+        ephemeral_session=False,
+        current_message_id="msg-1",
+    )
+
+    service.append_fallback_ai_row(context, "已投递 fallback")
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "已投递 fallback"
+
+    # The same private turn without participant authorization, or a legacy
+    # private session, must never gain a scoped-history row.
+    context.participant_memory_enabled = False
+    context.current_message_id = "msg-2"
+    service.append_fallback_ai_row(context, "未授权")
+    assert len(history) == 2
+    context.participant_memory_enabled = True
+    user_data["private_memory_mode"] = "legacy"
+    service.append_fallback_ai_row(context, "legacy")
+    assert len(history) == 2

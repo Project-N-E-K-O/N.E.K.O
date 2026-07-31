@@ -765,10 +765,15 @@ class QQReplyGenerationService:
 
         The primary session accepted the human row but produced nothing, so
         the fallback's text exists only in the outbound message: without
-        this the group digest persists a one-sided conversation and loses
+        this a scoped digest persists a one-sided conversation and loses
         whatever the bot disclosed. Idempotent — the row is tagged so a
         second delivery hook cannot double-append."""
-        if not getattr(context, "is_group", False) or not reply_text:
+        is_group = bool(getattr(context, "is_group", False))
+        is_participant = bool(
+            not is_group
+            and getattr(context, "participant_memory_enabled", False)
+        )
+        if not (is_group or is_participant) or not reply_text:
             return
         if getattr(context, "ephemeral_session", False):
             return
@@ -777,6 +782,11 @@ class QQReplyGenerationService:
             session_key
         )
         if not user_data or not user_data.get("memory_enabled"):
+            return
+        if (
+            is_participant
+            and user_data.get("private_memory_mode") != "participant"
+        ):
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None)

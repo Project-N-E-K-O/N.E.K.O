@@ -1295,11 +1295,15 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         )
     subject = req.subject.to_domain()
     stats: dict = {}
+    fact_forget_started = False
     forget_epoch_started = False
     try:
-        # Bracket all stores with erase generations. Scoped synthesis releases
-        # its lock during the LLM call, so a late result derived from old facts
-        # must be invalidated before this endpoint can report success.
+        # Bracket the whole multi-store transaction on both write paths.
+        # Fact extraction and reflection synthesis release their locks during
+        # LLM calls; work that starts before *or anywhere inside* this interval
+        # must not write after the endpoint reports forgotten.
+        await runtime.fact_store.abegin_subject_forget(lanlan_name, subject)
+        fact_forget_started = True
         await runtime.reflection_engine.abump_subject_forget_epoch(
             lanlan_name, subject,
         )
@@ -1318,10 +1322,18 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             detail="scoped forget failed; retry is safe and idempotent",
         ) from exc
     finally:
-        if forget_epoch_started:
-            await runtime.reflection_engine.abump_subject_forget_epoch(
-                lanlan_name, subject,
-            )
+        try:
+            if forget_epoch_started:
+                await runtime.reflection_engine.abump_subject_forget_epoch(
+                    lanlan_name, subject,
+                )
+        finally:
+            # Never strand the fact-write tombstone if the independent
+            # reflection closing bump encounters an unexpected failure.
+            if fact_forget_started:
+                await runtime.fact_store.aend_subject_forget(
+                    lanlan_name, subject,
+                )
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),

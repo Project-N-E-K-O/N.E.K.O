@@ -1086,7 +1086,29 @@ class FactsMixin:
                         indent=2, ensure_ascii=False,
                     )
 
-                persona = await self._aensure_persona_locked(name)
+                # The normal ensure path is allowed to recover a corrupt read
+                # by constructing and saving an empty persona. During erasure
+                # that would overwrite every unrelated section, so inspect the
+                # on-disk view strictly and never repair it here.
+                persona_path = self._persona_path(name)
+                persona: dict = {}
+                if await asyncio.to_thread(os.path.exists, persona_path):
+                    try:
+                        persona_data = await read_json_async(persona_path)
+                    except (
+                        json.JSONDecodeError,
+                        UnicodeDecodeError,
+                        OSError,
+                    ) as exc:
+                        raise RuntimeError(
+                            f"persona state unreadable during forget: {exc}"
+                        ) from exc
+                    if not isinstance(persona_data, dict):
+                        raise RuntimeError(
+                            "persona state is not an object during forget"
+                        )
+                    persona = persona_data
+                self._personas[name] = persona
                 section = persona.get(section_key)
                 if isinstance(section, dict):
                     entries = section.get('facts')

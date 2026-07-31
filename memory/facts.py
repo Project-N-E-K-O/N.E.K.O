@@ -229,6 +229,7 @@ class FactStore:
         # captures one before its LLM call and rechecks it under the persistence
         # lock, so an in-flight pre-forget request cannot recreate erased facts.
         self._subject_forget_generations: dict[tuple[str, str, str], int] = {}
+        self._active_subject_forgets: set[tuple[str, str, str]] = set()
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -266,6 +267,51 @@ class FactStore:
         key = (name, subject.key, subject.scope)
         generations[key] = generations.get(key, 0) + 1
         return generations[key]
+
+    @staticmethod
+    def _subject_forget_key(
+        name: str, subject: MemorySubject,
+    ) -> tuple[str, str, str]:
+        return (name, subject.key, subject.scope)
+
+    def _subject_forget_is_active(
+        self, name: str, subject: MemorySubject,
+    ) -> bool:
+        active = getattr(self, '_active_subject_forgets', None)
+        return bool(
+            active is not None
+            and self._subject_forget_key(name, subject) in active
+        )
+
+    async def abegin_subject_forget(self, name: str, subject) -> None:
+        """Open a fact-write tombstone for the complete scoped-forget route."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("abegin_subject_forget requires an explicit subject")
+        async with self._get_persist_alock(name):
+            active = getattr(self, '_active_subject_forgets', None)
+            if active is None:
+                active = set()
+                self._active_subject_forgets = active
+            key = self._subject_forget_key(name, memory_subject)
+            if key in active:
+                raise RuntimeError("subject forget is already active")
+            active.add(key)
+            self._bump_subject_forget_generation(name, memory_subject)
+
+    async def aend_subject_forget(self, name: str, subject) -> None:
+        """Close the route tombstone and invalidate work started inside it."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aend_subject_forget requires an explicit subject")
+        async with self._get_persist_alock(name):
+            active = getattr(self, '_active_subject_forgets', None)
+            if active is None:
+                return
+            key = self._subject_forget_key(name, memory_subject)
+            if key in active:
+                self._bump_subject_forget_generation(name, memory_subject)
+                active.remove(key)
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -571,8 +617,31 @@ class FactStore:
             # Fence every scoped extraction that captured the previous
             # generation before this critical section.
             self._bump_subject_forget_generation(lanlan_name, memory_subject)
-            await self.aload_facts(lanlan_name)
-            facts = self._facts.get(lanlan_name, [])
+            facts = self._facts.get(lanlan_name)
+            if facts is None:
+                # The normal loader is intentionally best-effort and maps a
+                # malformed/transiently unreadable facts.json to cached []. An
+                # erasure must fail closed or it can report success while the
+                # active subject rows remain on disk.
+                facts_path = self._facts_path(lanlan_name)
+                facts = []
+                if await asyncio.to_thread(os.path.exists, facts_path):
+                    def _read_active_facts() -> object:
+                        with open(facts_path, encoding='utf-8') as f:
+                            return json.load(f)
+
+                    try:
+                        facts_data = await asyncio.to_thread(_read_active_facts)
+                    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            f"facts state unreadable during forget: {exc}"
+                        ) from exc
+                    if not isinstance(facts_data, list):
+                        raise RuntimeError(
+                            "facts state is not a list during forget"
+                        )
+                    facts = facts_data
+                self._facts[lanlan_name] = facts
             removed = [
                 f for f in facts
                 if isinstance(f, dict) and entry_matches_subject(f, memory_subject)
@@ -1485,10 +1554,17 @@ class FactStore:
             memory_subject = coerce_subject(subject)
             if (
                 memory_subject is not None
-                and expected_subject_generation is not None
-                and self._subject_forget_generation(
-                    lanlan_name, memory_subject,
-                ) != expected_subject_generation
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or (
+                        expected_subject_generation is not None
+                        and self._subject_forget_generation(
+                            lanlan_name, memory_subject,
+                        ) != expected_subject_generation
+                    )
+                )
             ):
                 logger.info(
                     f"[FactStore] {lanlan_name}: 丢弃撤回期间完成的 scoped "
