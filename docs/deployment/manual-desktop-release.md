@@ -19,6 +19,10 @@ it in the adjacent `N.E.K.O.-PC/bin` directory (`projectneko_server.exe` on
 Windows, `projectneko_server` on macOS/Linux). The script packages that backend
 with the locally available Electron signing identity.
 
+The publishing script also reuses the trusted manifest verifier from the sibling
+`N.E.K.O.-PC/src/main/portable-update.js` checkout. If the PC repository is stored
+elsewhere, pass its full path with `-ManifestVerifierPath`.
+
 ```powershell
 ./scripts/build-desktop-release.ps1 `
   -Version 0.8.4 `

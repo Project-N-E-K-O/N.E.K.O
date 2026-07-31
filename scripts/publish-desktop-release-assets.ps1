@@ -131,6 +131,9 @@ if ([string]::IsNullOrWhiteSpace($ManifestVerifierPath)) {
     $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
     $ManifestVerifierPath = Join-Path $workspaceRoot 'N.E.K.O.-PC/src/main/portable-update.js'
 }
+if (-not (Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf)) {
+    throw "Manifest verifier not found at $ManifestVerifierPath. Checkout N.E.K.O.-PC as a sibling directory or pass -ManifestVerifierPath explicitly."
+}
 $ManifestVerifierPath = (Resolve-Path -LiteralPath $ManifestVerifierPath).Path
 
 $version = $Tag.Substring(1)

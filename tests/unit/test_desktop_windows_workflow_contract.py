@@ -43,6 +43,10 @@ def test_windows_workflow_calls_cross_platform_workflow_in_windows_only_mode() -
 
 def test_cross_platform_workflow_limits_both_matrices_for_windows_only_calls() -> None:
     workflow = _load_workflow(CROSS_PLATFORM_WORKFLOW)
+    assert workflow["concurrency"] == {
+        "group": "build-desktop-nightly-release",
+        "cancel-in-progress": False,
+    }
     jobs = workflow["jobs"]
     matrices = [
         jobs["build-python"]["strategy"]["matrix"]["include"],
@@ -235,6 +239,8 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     assert "Portable signature has no matching manifest" in script
     assert "function Assert-PortableManifestSignature" in script
     assert "verifyPortableManifestSignature" in script
+    assert "Manifest verifier not found at $ManifestVerifierPath" in script
+    assert "pass -ManifestVerifierPath explicitly" in script
     assert "Unable to determine whether OSS object exists" in script
     assert "NoSuchKey" in script
     assert "PSObject.Properties['digest']" in script
@@ -251,6 +257,12 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     assert "NEKO_UPDATE_ADMIN_TOKEN" in script
 
     staged_hashes = script.index("$assetHashes[$asset.Name] = Get-Sha256")
+    verifier_exists = script.index(
+        "Test-Path -LiteralPath $ManifestVerifierPath -PathType Leaf"
+    )
+    verifier_resolved = script.index(
+        "$ManifestVerifierPath = (Resolve-Path -LiteralPath $ManifestVerifierPath).Path"
+    )
     signature_check = script.index(
         "Assert-PortableManifestSignature -VerifierPath $ManifestVerifierPath"
     )
@@ -265,7 +277,9 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     cdn_hash = script.index("if ((Get-Sha256 -Path $downloadedAsset)")
     sync = script.rindex("Invoke-UpdateMirrorSync -Endpoint $endpoint")
     assert (
-        staged_hashes
+        verifier_exists
+        < verifier_resolved
+        < staged_hashes
         < signature_check
         < release_fetch
         < github_digest
