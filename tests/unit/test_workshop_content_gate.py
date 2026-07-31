@@ -1009,6 +1009,29 @@ def _claim_calls_in_own_scope(func) -> list:
     text -- would then be reported as a violation. Prune by refusing to
     descend, not by skipping a single node.
     """
+    own_scope = list(_walk_own_scope(func))
+    eager_generator_consumers = {
+        'all', 'any', 'deque', 'list', 'max', 'min', 'set', 'sorted', 'sum', 'tuple'
+    }
+    invoked_names = {
+        node.func.id
+        for node in own_scope
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    iterated_names = {
+        node.iter.id
+        for node in own_scope
+        if isinstance(node, (ast.For, ast.AsyncFor))
+        and isinstance(node.iter, ast.Name)
+    }
+    iterated_names.update({
+        node.args[0].id
+        for node in own_scope
+        if isinstance(node, ast.Call)
+        and _tail_name(node) in eager_generator_consumers
+        and node.args
+        and isinstance(node.args[0], ast.Name)
+    })
     found = []
     stack = [(func, node) for node in ast.iter_child_nodes(func)]
     while stack:
@@ -1021,14 +1044,46 @@ def _claim_calls_in_own_scope(func) -> list:
             # deferred nested scope and must be attributed when it is invoked.
             eager = list(node.args.defaults)
             eager.extend(default for default in node.args.kw_defaults if default)
-            if isinstance(parent, ast.Call) and parent.func is node:
+            stored_name = (
+                parent.targets[0].id
+                if isinstance(parent, ast.Assign)
+                and len(parent.targets) == 1
+                and isinstance(parent.targets[0], ast.Name)
+                else parent.target.id
+                if isinstance(parent, ast.AnnAssign)
+                and isinstance(parent.target, ast.Name)
+                else None
+            )
+            if (
+                isinstance(parent, ast.Call) and parent.func is node
+                or stored_name in invoked_names
+            ):
                 eager.append(node.body)
             stack.extend((node, child) for child in eager)
             continue
         if isinstance(node, ast.GeneratorExp):
             # Only the outermost iterable is eager; the element, conditions,
             # and nested iterables execute when the generator is consumed.
-            stack.append((node, node.generators[0].iter))
+            stored_name = (
+                parent.targets[0].id
+                if isinstance(parent, ast.Assign)
+                and len(parent.targets) == 1
+                and isinstance(parent.targets[0], ast.Name)
+                else parent.target.id
+                if isinstance(parent, ast.AnnAssign)
+                and isinstance(parent.target, ast.Name)
+                else None
+            )
+            consumed_now = (
+                isinstance(parent, (ast.For, ast.AsyncFor)) and parent.iter is node
+                or isinstance(parent, ast.Call)
+                and _tail_name(parent) in eager_generator_consumers
+                or stored_name in iterated_names
+            )
+            if consumed_now:
+                stack.extend((node, child) for child in ast.iter_child_nodes(node))
+            else:
+                stack.append((node, node.generators[0].iter))
             continue
         if isinstance(node, ast.Call):
             aliases = _claim_aliases(func, node.lineno)
@@ -1069,7 +1124,8 @@ def _known_event_loop_names(func, before_line: int) -> set[str]:
                     isinstance(value, ast.Call)
                     and isinstance(value.func, ast.Attribute)
                     and isinstance(value.func.value, ast.Name)
-                    and value.func.value.id == 'asyncio'
+                    and value.func.value.id
+                    in _known_asyncio_module_names(func, node.lineno)
                     and value.func.attr in {'get_event_loop', 'get_running_loop'}
                 )
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
@@ -1224,7 +1280,7 @@ def _is_worker_offload_call(
     )
 
 
-def _known_asyncio_module_names(func, before_line: int) -> set[str]:
+def _known_module_names(func, module: str, before_line: int) -> set[str]:
     parameters = {
         arg.arg
         for arg in (
@@ -1245,7 +1301,7 @@ def _known_asyncio_module_names(func, before_line: int) -> set[str]:
             if isinstance(statement, ast.Import):
                 for alias in statement.names:
                     local = alias.asname or alias.name.split('.')[0]
-                    if alias.name == 'asyncio':
+                    if alias.name == module:
                         names.add(local)
                     else:
                         names.discard(local)
@@ -1260,6 +1316,19 @@ def _known_asyncio_module_names(func, before_line: int) -> set[str]:
                         names.discard(target.id)
             elif isinstance(statement, ast.If):
                 names = after(statement.body, names) & after(statement.orelse, names)
+            elif isinstance(statement, ast.Match):
+                paths = [after(case.body, names) for case in statement.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(names)
+                names = set.intersection(*paths)
+            elif isinstance(statement, ast.With):
+                names = after(statement.body, names)
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                 names &= after(statement.body, names)
                 names = after(statement.orelse, names)
@@ -1271,7 +1340,15 @@ def _known_asyncio_module_names(func, before_line: int) -> set[str]:
                 names = after(statement.finalbody, names)
         return names
 
-    return after(func.body, {'asyncio'} - parameters)
+    return after(func.body, {module} - parameters)
+
+
+def _known_asyncio_module_names(func, before_line: int) -> set[str]:
+    return _known_module_names(func, 'asyncio', before_line)
+
+
+def _known_os_module_names(func, before_line: int) -> set[str]:
+    return _known_module_names(func, 'os', before_line)
 
 
 def _contains_node(root, target) -> bool:
@@ -1714,9 +1791,12 @@ def _walk_module_scope(statements):
         if isinstance(node, ast.If):
             yield from _walk_module_scope(node.body)
             yield from _walk_module_scope(node.orelse)
-        elif isinstance(node, (ast.For, ast.AsyncFor)):
+        elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
             yield from _walk_module_scope(node.body)
             yield from _walk_module_scope(node.orelse)
+        elif isinstance(node, ast.Match):
+            for case in node.cases:
+                yield from _walk_module_scope(case.body)
         elif isinstance(node, ast.With):
             yield from _walk_module_scope(node.body)
         elif isinstance(node, ast.Try):
@@ -1753,9 +1833,21 @@ def _module_to_thread_aliases(tree) -> set[str]:
                         state.discard(target.id)
             elif isinstance(node, ast.If):
                 state = merge(after(node.body, state), after(node.orelse, state))
-            elif isinstance(node, (ast.For, ast.AsyncFor)):
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
                 state = merge(state, after(node.body, state))
                 state = after(node.orelse, state)
+            elif isinstance(node, ast.Match):
+                paths = [after(case.body, state) for case in node.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in node.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                if paths:
+                    state = set.intersection(*paths)
             elif isinstance(node, ast.With):
                 state = after(node.body, state)
             elif isinstance(node, ast.Try):
@@ -2183,6 +2275,17 @@ def _scope_claiming_names_called_on_loop(
                         after(statement.body, state),
                         after(statement.orelse, state),
                     )
+                elif isinstance(statement, ast.Match):
+                    paths = [after(case.body, state) for case in statement.cases]
+                    exhaustive = any(
+                        case.guard is None
+                        and isinstance(case.pattern, ast.MatchAs)
+                        and case.pattern.pattern is None
+                        for case in statement.cases
+                    )
+                    if not exhaustive:
+                        paths.append(state)
+                    state = merge_callable_states(*paths)
                 elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                     state = merge_callable_states(
                         state, after(statement.body, state)
@@ -2252,6 +2355,17 @@ def _scope_claiming_names_called_on_loop(
                         after(statement.body, state),
                         after(statement.orelse, state),
                     )
+                elif isinstance(statement, ast.Match):
+                    paths = [after(case.body, state) for case in statement.cases]
+                    exhaustive = any(
+                        case.guard is None
+                        and isinstance(case.pattern, ast.MatchAs)
+                        and case.pattern.pattern is None
+                        for case in statement.cases
+                    )
+                    if not exhaustive:
+                        paths.append(state)
+                    state = merge_callable_states(*paths)
                 elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                     state = merge_callable_states(
                         state, after(statement.body, state)
@@ -2480,6 +2594,16 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    with claim_content_folder(folder, purpose=p):\n'
         '        pass\n'
         '\n'
+        'while register:\n'
+        '    def _while_claiming_worker():\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        'match register:\n'
+        '    case _:\n'
+        '        def _match_claiming_worker():\n'
+        '            with claim_content_folder(folder, purpose=p):\n'
+        '                pass\n'
+        '\n'
         'def _claiming_wrapper():\n'
         '    return _claiming_worker()\n'
         '\n'
@@ -2535,8 +2659,22 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'dispatch = offload\n'
         'dispatch = dispatcher\n'
+        'loop_dispatch = offload\n'
+        'while register:\n'
+        '    loop_dispatch = dispatcher\n'
+        'match_dispatch = offload\n'
+        'match register:\n'
+        '    case _:\n'
+        '        match_dispatch = dispatcher\n'
         'async def rebound_imported_to_thread():\n'
         '    await dispatch(_claiming_wrapper)\n'
+        'async def module_loop_to_thread_alias():\n'
+        '    await loop_dispatch(_claiming_wrapper)\n'
+        'async def module_match_to_thread_alias():\n'
+        '    await match_dispatch(_claiming_wrapper)\n'
+        'async def nested_module_owners_direct():\n'
+        '    _while_claiming_worker()\n'
+        '    _match_claiming_worker()\n'
         '\n'
         'async def direct():\n'
         '    _claiming_wrapper()\n'
@@ -2740,8 +2878,23 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '        callback = _claiming_worker\n'
         '        break\n'
         '    callback()\n'
+        'async def match_local_alias(value):\n'
+        '    callback = harmless\n'
+        '    match value:\n'
+        '        case _:\n'
+        '            callback = _claiming_worker\n'
+        '    callback()\n'
         'async def shadowed_asyncio(asyncio):\n'
         '    await asyncio.to_thread(_claiming_worker)\n'
+        'async def shadowed_executor_loop(asyncio):\n'
+        '    loop = asyncio.get_running_loop()\n'
+        '    await loop.run_in_executor(None, _claiming_worker)\n'
+        'async def stored_lambda_claim_direct():\n'
+        '    worker = lambda: claim_content_folder(folder)\n'
+        '    worker()\n'
+        'async def consumed_generator_claim_direct(items):\n'
+        '    work = (claim_content_folder(folder) for _ in items)\n'
+        '    list(work)\n'
         'async def deferred_generator_claim(items):\n'
         '    work = (_raise_inside(claim_content_folder(folder)) for _ in items)\n'
         '    await asyncio.to_thread(list, work)\n'
@@ -2845,6 +2998,15 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('local_imported_to_thread') == []
     assert module_offenders('rebound_imported_to_thread'), (
         'module-level to_thread alias 被普通 dispatcher 重绑定后必须失效'
+    )
+    assert module_offenders('module_loop_to_thread_alias'), (
+        'module-level to_thread alias 必须合并 while 的 zero/nonzero 路径'
+    )
+    assert module_offenders('module_match_to_thread_alias'), (
+        'module-level to_thread alias 必须合并 match 的全部可达 case'
+    )
+    assert len(module_offenders('nested_module_owners_direct')) == 2, (
+        'while 和 match 下定义的 module claim owners 都必须被发现'
     )
     assert module_offenders('direct'), (
         '模块级 claim owner 的同步 wrapper 被协程直调时也必须报出来'
@@ -2986,9 +3148,21 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('while_local_alias'), (
         'local callable owner alias 必须合并 while 的 zero/nonzero 路径'
     )
+    assert module_offenders('match_local_alias'), (
+        'local callable owner alias 必须合并 match 的全部可达 case'
+    )
     assert module_offenders('shadowed_asyncio'), (
         '同名参数遮蔽 asyncio module 后不能把 receiver 当成已证明 offload'
     )
+    assert module_offenders('shadowed_executor_loop'), (
+        '被参数遮蔽的 asyncio 不能伪造 event-loop receiver 身份'
+    )
+    assert _claim_calls_in_own_scope(functions['stored_lambda_claim_direct']), (
+        'event loop 上同步调用 stored lambda 时必须扫描它的 body'
+    )
+    assert _claim_calls_in_own_scope(
+        functions['consumed_generator_claim_direct']
+    ), 'event loop 上被立即耗尽的 stored generator 必须扫描其 body'
     assert _claim_calls_in_own_scope(functions['deferred_generator_claim']) == [], (
         'generator body 是 deferred scope，在 worker 消费时不属于 handler 直接 claim'
     )
@@ -3723,10 +3897,17 @@ def _operation_aliases(
                     for path in paths[1:]:
                         state = merge_possible(state, path)
             elif isinstance(node, ast.Try):
-                paths = [after(node.body, state)]
-                paths.extend(after(handler.body, state) for handler in node.handlers)
-                if node.orelse:
-                    paths.append(after(node.orelse, paths[0]))
+                prefix_states = [state]
+                body_state = state
+                for statement in node.body:
+                    body_state = after([statement], body_state)
+                    prefix_states.append(body_state)
+                paths = [after(node.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in node.handlers
+                    for prefix_state in prefix_states
+                )
                 state = paths[0]
                 for path in paths[1:]:
                     state = merge_possible(state, path)
@@ -3807,7 +3988,7 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                             state[name] = origins
                         else:
                             state.pop(name, None)
-            elif isinstance(statement, ast.If):
+            elif isinstance(statement, (ast.If, ast.While)):
                 for named in ast.walk(statement.test):
                     if not isinstance(named, ast.NamedExpr):
                         continue
@@ -3819,9 +4000,13 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                             state.pop(name, None)
                 # A write is relevant if either reachable path can still point
                 # into the content folder.
-                state = merge(
-                    after(statement.body, state), after(statement.orelse, state)
-                )
+                if isinstance(statement, ast.If):
+                    state = merge(
+                        after(statement.body, state), after(statement.orelse, state)
+                    )
+                else:
+                    state = merge(state, after(statement.body, state))
+                    state = after(statement.orelse, state)
             elif isinstance(statement, ast.Match):
                 paths = [after(case.body, state) for case in statement.cases]
                 exhaustive = any(
@@ -3838,7 +4023,7 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                         state = merge(state, path)
             elif isinstance(statement, ast.With):
                 state = after(statement.body, state)
-            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+            elif isinstance(statement, (ast.For, ast.AsyncFor)):
                 state = merge(state, after(statement.body, state))
                 state = after(statement.orelse, state)
             elif isinstance(statement, ast.Try):
@@ -3908,7 +4093,7 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
             isinstance(target, ast.Attribute)
             and target.attr == 'open'
             and isinstance(target.value, ast.Name)
-            and target.value.id == 'os'
+            and target.value.id in _known_os_module_names(func, node.lineno)
         )
         is_builtin_open = isinstance(target, ast.Name) and target.id == 'open'
         is_path_open = (
@@ -4213,12 +4398,94 @@ def _operation_folder_argument_origin_sets(
     ]
 
 
+def _literal_path_escapes(value: str) -> bool:
+    return (
+        '..' in value.replace('\\', '/').split('/')
+        or value.startswith(('/', '\\'))
+        or (
+            len(value) >= 3
+            and value[1] == ':'
+            and value[2] in {'/', '\\'}
+        )
+    )
+
+
+def _known_string_constants(func, before_line: int) -> dict[str, set[str]]:
+    def merge(*states):
+        return {
+            name: set().union(*(state.get(name, set()) for state in states))
+            for name in set().union(*(set(state) for state in states))
+        }
+
+    def after(statements, state):
+        state = {name: set(values) for name, values in state.items()}
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                value = statement.value
+                values = (
+                    {value.value}
+                    if isinstance(value, ast.Constant)
+                    and isinstance(value.value, str)
+                    else set()
+                )
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    bound_names = {
+                        child.id
+                        for child in ast.walk(target)
+                        if isinstance(child, ast.Name)
+                        and isinstance(child.ctx, ast.Store)
+                    }
+                    for bound in bound_names:
+                        if values:
+                            state[bound] = values
+                        else:
+                            state.pop(bound, None)
+            elif isinstance(statement, ast.If):
+                state = merge(
+                    after(statement.body, state), after(statement.orelse, state)
+                )
+            elif isinstance(statement, ast.Match):
+                paths = [after(case.body, state) for case in statement.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                state = merge(*paths)
+            elif isinstance(statement, ast.With):
+                state = after(statement.body, state)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                state = merge(state, after(statement.body, state))
+                state = after(statement.orelse, state)
+            elif isinstance(statement, ast.Try):
+                body_state = after(statement.body, state)
+                paths = [after(statement.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, state) for handler in statement.handlers
+                )
+                state = after(statement.finalbody, merge(*paths))
+        return state
+
+    return after(func.body, {})
+
+
 def _stays_within_claimed_tree(
-    operation, name: str, parents: dict[int, ast.AST]
+    operation, name: str, parents: dict[int, ast.AST], func
 ) -> bool:
     folders = _operation_folder_expressions(operation, name, parents)
     if not folders:
         return False
+    constants = _known_string_constants(func, operation.lineno)
     return not any(
         (
             isinstance(node, ast.Attribute)
@@ -4227,15 +4494,12 @@ def _stays_within_claimed_tree(
         or (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
-            and (
-                '..' in node.value.replace('\\', '/').split('/')
-                or node.value.startswith(('/', '\\'))
-                or (
-                    len(node.value) >= 3
-                    and node.value[1] == ':'
-                    and node.value[2] in {'/', '\\'}
-                )
-            )
+            and _literal_path_escapes(node.value)
+        )
+        or (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and any(_literal_path_escapes(value) for value in constants.get(node.id, ()))
         )
         for folder in folders
         for node in ast.walk(folder)
@@ -4418,6 +4682,23 @@ def _unclaimed_folder_operations(
                 body_state = claim_state_after(statement.body, state)
                 else_state = claim_state_after(statement.orelse, state)
                 state = merge_claim_states(body_state, else_state)
+            elif isinstance(statement, ast.Match):
+                paths = [
+                    claim_state_after(case.body, state)
+                    for case in statement.cases
+                ]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                merged = paths[0]
+                for path in paths[1:]:
+                    merged = merge_claim_states(merged, path)
+                state = merged
             elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                 state = merge_claim_states(
                     state, claim_state_after(statement.body, state)
@@ -4601,7 +4882,9 @@ def _unclaimed_folder_operations(
                 for origin in argument_origins
             )
         ]
-        stays_within_tree = _stays_within_claimed_tree(child, name, parents)
+        stays_within_tree = _stays_within_claimed_tree(
+            child, name, parents, func
+        )
         folder_rule_kinds = _FOLDER_OPERATION_CLAIMS.get(name)
         if (
             name in _CONTENT_PATH_MUTATION_METHODS
@@ -4882,6 +5165,19 @@ def test_the_claim_guard_resolves_operation_aliases():
     assert _unclaimed_folder_operations(loop_reassigned, 'publish'), (
         'zero-iteration loop 必须保留进入 loop 前的 protected alias 路径'
     )
+    exceptional_prefix = ast.parse(
+        'def publish():\n'
+        '    callback = harmless\n'
+        '    try:\n'
+        '        callback = _publish_workshop_item\n'
+        '        may_raise()\n'
+        '    except Exception:\n'
+        '        pass\n'
+        '    callback(a, b, c, folder)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(exceptional_prefix, 'publish'), (
+        'try body 的任一异常前缀都必须保留可能的 protected operation alias'
+    )
 
 
 def test_the_claim_guard_discovers_content_path_mutations():
@@ -4949,6 +5245,11 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    if target := content_folder:\n'
         '        shutil.rmtree(target)\n'
         '\n'
+        'def while_walrus_target(content_folder):\n'
+        '    while target := content_folder:\n'
+        '        break\n'
+        '    shutil.rmtree(target)\n'
+        '\n'
         'def os_mutations(content_folder, other_content_folder):\n'
         "    os.mkdir(os.path.join(content_folder, 'generated'))\n"
         "    os.makedirs(os.path.join(content_folder, 'nested'))\n"
@@ -4993,6 +5294,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "    Path(content_folder, 'b').open('a')\n"
         "    os.open(os.path.join(content_folder, 'c'), os.O_CREAT | os.O_WRONLY)\n"
         '\n'
+        'def aliased_os_open(content_folder):\n'
+        '    import os as filesystem\n'
+        '    filesystem.open(content_folder, filesystem.O_WRONLY)\n'
+        '\n'
         'def read_only_opens(content_folder):\n'
         "    open(os.path.join(content_folder, 'a'), 'r')\n"
         "    Path(content_folder, 'b').open()\n"
@@ -5026,6 +5331,11 @@ def test_the_claim_guard_discovers_content_path_mutations():
         'def absolute_escape(content_folder):\n'
         '    with claim_partial_writer(content_folder, purpose=p):\n'
         "        Path(content_folder, '/tmp/out').write_text(data)\n"
+        '\n'
+        'def assigned_absolute_escape(content_folder):\n'
+        "    segment = '/tmp/out'\n"
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        '        Path(content_folder, segment).write_text(data)\n'
         '\n'
         'def descendant_claim(content_folder):\n'
         "    with claim_content_folder(Path(content_folder) / 'child', purpose=p):\n"
@@ -5072,6 +5382,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['walrus_target'], 'new_router'
     ), 'If.test 中 walrus 绑定的 target 必须传播 content-folder origin'
+    assert _unclaimed_folder_operations(
+        functions['while_walrus_target'], 'new_router'
+    ), 'While.test 中 walrus 绑定的 target 必须传播 content-folder origin'
     os_offenders = _unclaimed_folder_operations(
         functions['os_mutations'], 'new_router'
     )
@@ -5109,6 +5422,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     )
     assert sum(item[3] == _OPEN_WRITE_OPERATION for item in open_offenders) == 3
     assert _unclaimed_folder_operations(
+        functions['aliased_os_open'], 'new_router'
+    ), 'import os as ... 的 alias 也必须识别 os.open writer'
+    assert _unclaimed_folder_operations(
         functions['read_only_opens'], 'new_router'
     ) == [], 'read-only open 不应被当成 content-folder writer'
     assert _unclaimed_folder_operations(
@@ -5132,6 +5448,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['absolute_escape'], 'new_router'
     ), 'absolute path segment 覆盖 claimed prefix 时必须视为逃逸'
+    assert _unclaimed_folder_operations(
+        functions['assigned_absolute_escape'], 'new_router'
+    ), '赋给局部变量的 absolute segment 也不能逃出 claimed tree'
     for name in ('descendant_claim', 'sibling_claim'):
         assert _unclaimed_folder_operations(functions[name], 'new_router'), (
             f'{name} 的 claim 不覆盖 parent 或 sibling mutation'
@@ -5252,6 +5571,15 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with claim:\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    match_reassigned_context = ast.parse(
+        'def publish(value):\n'
+        "    guard = claim_content_folder(folder, purpose='publish')\n"
+        '    match value:\n'
+        '        case _:\n'
+        '            guard = nullcontext()\n'
+        '    with guard:\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     loop_reassigned_factory = ast.parse(
         'def publish(items):\n'
         '    factory = claim_content_folder\n'
@@ -5333,6 +5661,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(try_reassigned_context, 'publish'), (
         'stored claim context 必须在 try 的全部可达路径上一致'
+    )
+    assert _unclaimed_folder_operations(match_reassigned_context, 'publish'), (
+        'stored claim context 必须合并 match 的全部可达 case'
     )
     assert _unclaimed_folder_operations(loop_reassigned_factory, 'publish'), (
         'claim factory alias 必须合并 zero/nonzero loop 路径'
