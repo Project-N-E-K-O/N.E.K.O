@@ -91,6 +91,7 @@ except ImportError:
     _warn_once(__name__)
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
+from memory.temporal import to_naive_local
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -107,6 +108,23 @@ VALID_SCOPED_REFINE_ACTIONS = frozenset({'merge'})
 
 # trust_of 回调签名（系列 7/7 的 speaker_trust 接入点）。
 TrustFn = Callable[[dict], float | None]
+
+
+def _pick_temporal_boundary(values: list[str], *, latest: bool) -> str | None:
+    """Pick an original ISO boundary after ordering represented instants."""
+    parsed: list[tuple[datetime, str]] = []
+    for value in values:
+        try:
+            instant = to_naive_local(datetime.fromisoformat(value))
+        except (TypeError, ValueError):
+            continue
+        if instant is not None:
+            parsed.append((instant, value))
+    if parsed:
+        pick = max if latest else min
+        return pick(parsed, key=lambda item: item[0])[1]
+    # Preserve a legacy malformed boundary instead of silently deleting it.
+    return values[0] if values else None
 
 
 @dataclass
@@ -833,15 +851,14 @@ async def apply_scoped_reflection_merge(
             # 全部源的时间跨度，只抄首源会把结论锚在旧时段，recall_by_time
             # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
             # （pattern/进行中，无结束点）则并集也无结束点，否则取最晚。
-            # ISO 字符串比较即时间序（同 persona merge 的既有约定）。
             starts = [
                 s.get('event_start_at') for s in sources if s.get('event_start_at')
             ]
             ends = [s.get('event_end_at') for s in sources]
-            merged_start = min(starts) if starts else None
+            merged_start = _pick_temporal_boundary(starts, latest=False)
             merged_end = (
                 None if (not ends or any(e is None for e in ends))
-                else max(ends)
+                else _pick_temporal_boundary(ends, latest=True)
             )
             merged = normalize_reflection({
                 'id': refine_reflection_id(text),

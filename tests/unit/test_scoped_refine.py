@@ -721,6 +721,39 @@ async def test_reflection_merge_unions_event_window(tmp_path):
     assert merged2['event_start_at'] == "2026-03-01T00:00:00"
     assert merged2['event_end_at'] is None
 
+    # Offset-bearing imports must be ordered by represented instant, not by
+    # their lexicographic wall-clock strings. These two values make both the
+    # lexical min and max choose the wrong source.
+    offset_a = _r_entry(
+        "r4", "跨时区较早", GROUP_A,
+        event_start_at="2026-01-01T00:30:00+02:00",
+        event_end_at="2026-01-01T00:30:00+02:00",
+    )
+    offset_b = _r_entry(
+        "r5", "跨时区较晚", GROUP_A,
+        event_start_at="2025-12-31T23:00:00+00:00",
+        event_end_at="2025-12-31T23:00:00+00:00",
+    )
+    await re.asave_reflections(
+        "小天", (await re.aload_reflections("小天")) + [offset_a, offset_b],
+    )
+    active3 = await re.aload_reflections("小天")
+    cluster3 = [dict(r) for r in active3 if r['id'] in ("r4", "r5")]
+    actions3 = [{
+        'action': 'merge', 'source_ids': ['r4', 'r5'],
+        'produce': {'text': '跨时区时间窗'},
+    }]
+    await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster3, actions3, "hashW3",
+    )
+    full3 = await re._aload_reflections_full("小天")
+    merged3 = next(
+        r for r in full3
+        if set(r.get('merged_from_ids') or []) == {"r4", "r5"}
+    )
+    assert merged3['event_start_at'] == "2026-01-01T00:30:00+02:00"
+    assert merged3['event_end_at'] == "2025-12-31T23:00:00+00:00"
+
 
 @pytest.mark.asyncio
 async def test_persona_merge_preserves_all_upstream_source_ids(tmp_path):
@@ -988,3 +1021,28 @@ def test_scoped_refine_loop_gated_on_powerful_memory():
 
     src = inspect.getsource(refine_loops._periodic_scoped_refine_loop)
     assert "_ais_powerful_memory_enabled" in src
+
+
+@pytest.mark.asyncio
+async def test_scoped_refine_round_caps_calls_and_rotates_characters(monkeypatch):
+    """One global round serves at most one character and rotates fairly."""
+    from app.memory_server import refine_loops
+
+    calls = []
+    served = {"甲": False, "乙": True, "丙": True}
+
+    async def _fake_run(name):
+        calls.append(name)
+        return served[name]
+
+    monkeypatch.setattr(refine_loops, "_run_scoped_refine_for_character", _fake_run)
+    monkeypatch.setattr(refine_loops, "_scoped_refine_character_cursor", None)
+
+    await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
+    assert calls == ["甲", "乙"]
+    assert refine_loops._scoped_refine_character_cursor == "乙"
+
+    calls.clear()
+    await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
+    assert calls == ["丙"]
+    assert refine_loops._scoped_refine_character_cursor == "丙"

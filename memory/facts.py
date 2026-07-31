@@ -686,8 +686,13 @@ class FactStore:
                 try:
                     with open(archive_path, encoding='utf-8') as fh:
                         data = json.load(fh)
-                    if isinstance(data, list):
-                        existing_archive = data
+                    if not isinstance(data, list):
+                        logger.warning(
+                            f"[FactStore] {name}: 归档文件顶层不是列表，"
+                            "中止本轮 subject 归档"
+                        )
+                        return None
+                    existing_archive = data
                 except (json.JSONDecodeError, OSError) as e:
                     # 归档文件损坏时按中止（None）而非普通零结果返回：让
                     # caller 跳过 reflection/persona——否则每轮都在同一处

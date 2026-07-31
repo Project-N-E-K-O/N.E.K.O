@@ -389,6 +389,33 @@ async def test_fact_archival_aborts_on_fresh_write_in_window(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_fact_archival_aborts_when_archive_top_level_is_not_list(tmp_path):
+    """A valid JSON object must not be overwritten as an empty archive."""
+    from utils.file_utils import atomic_write_json
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    fs._facts["小天"] = [
+        _scoped_fact("fs1", "陈年事实", SUBJ_STALE, created_at=_iso(120)),
+    ]
+    await fs.asave_facts("小天")
+    malformed = {"unexpected": "object"}
+    atomic_write_json(
+        fs._facts_archive_path("小天"), malformed,
+        indent=2, ensure_ascii=False,
+    )
+
+    moved = await fs.aarchive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(),
+        NOW - timedelta(days=STALE_DAYS),
+    )
+
+    assert moved is None
+    assert {f['id'] for f in await fs.aload_facts("小天")} == {"fs1"}
+    with open(fs._facts_archive_path("小天"), encoding="utf-8") as fh:
+        assert json.load(fh) == malformed
+
+
+@pytest.mark.asyncio
 async def test_sweep_skips_other_stores_when_fact_archival_aborts(tmp_path):
     """greptile/codex round-2 P1: when the fact store aborts because the
     subject revived mid-window, the sweep must NOT go on to archive the

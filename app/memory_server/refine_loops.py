@@ -259,9 +259,10 @@ async def _periodic_reflection_refine_loop():
 # scoped refine 的进程内轮转游标（对偶 synthesize_scoped_reflections 的
 # _scoped_synth_cursor：重启从头轮即可，无须持久化）。
 _scoped_refine_cursor: dict[str, tuple] = {}
+_scoped_refine_character_cursor: str | None = None
 
 
-async def _run_scoped_refine_for_character(character: str) -> None:
+async def _run_scoped_refine_for_character(character: str) -> bool:
     """Single-character scoped lite refine pass (at most ONE cluster).
 
     Buckets scoped persona entries + active scoped reflections by
@@ -282,12 +283,12 @@ async def _run_scoped_refine_for_character(character: str) -> None:
     pm = runtime.persona_manager
     engine_ref = runtime.reflection_engine
     if pm is None or engine_ref is None:
-        return
+        return False
     persona = await pm.aensure_persona(character)
     refls = await engine_ref.aload_reflections(character, include_archived=False)
     buckets = gather_scoped_refine_buckets(persona, refls)
     if not buckets:
-        return
+        return False
 
     lite = ScopedLiteRefineEngine(runtime._config_manager)
 
@@ -331,16 +332,39 @@ async def _run_scoped_refine_for_character(character: str) -> None:
             f"skipped={result['clusters_skipped']}, "
             f"resolved={result['resolved']}, failed={result['failed']}"
         )
+    return result.get('served') is not None
+
+
+async def _run_scoped_refine_round(catgirl_names: list[str]) -> None:
+    """Scan characters fairly and stop after one character serves a cluster."""
+    global _scoped_refine_character_cursor
+    names = list(dict.fromkeys(catgirl_names))
+    if not names:
+        return
+    start = 0
+    if _scoped_refine_character_cursor in names:
+        start = (names.index(_scoped_refine_character_cursor) + 1) % len(names)
+    rotation = names[start:] + names[:start]
+    for name in rotation:
+        try:
+            served = await _run_scoped_refine_for_character(name)
+        except Exception as e:
+            logger.warning(f"[ScopedRefine] {name} cron 异常: {e}")
+            continue
+        if served:
+            _scoped_refine_character_cursor = name
+            break
 
 
 async def _periodic_scoped_refine_loop():
-    """Run one SCOPED_REFINE round per character every N seconds.
+    """Run one globally cost-capped SCOPED_REFINE round every N seconds.
 
     Cost contract (the reason this engine exists separately from the two
-    legacy refine crons): per character per round at most ONE summary-tier
-    no-thinking LLM call, and only when some subject's pool crossed the
-    entry threshold. Gated on powerful_memory like the rest of the refine /
-    dedup family — with it off the queue of mergeable entries just waits.
+    legacy refine crons): across all characters per round at most ONE
+    summary-tier no-thinking LLM call, and only when some subject's pool
+    crossed the entry threshold. Gated on powerful_memory like the rest of
+    the refine / dedup family — with it off the queue of mergeable entries
+    just waits.
     """
     await asyncio.sleep(_INITIAL_DELAY_SCOPED_REFINE)
     interval = SCOPED_REFINE_CRON_INTERVAL_SECONDS
@@ -355,11 +379,7 @@ async def _periodic_scoped_refine_loop():
             logger.debug(f"[ScopedRefine] 加载角色列表失败: {e}")
             await asyncio.sleep(interval)
             continue
-        for name in catgirl_names:
-            try:
-                await _run_scoped_refine_for_character(name)
-            except Exception as e:
-                logger.warning(f"[ScopedRefine] {name} cron 异常: {e}")
+        await _run_scoped_refine_round(catgirl_names)
         await asyncio.sleep(interval)
 
 
