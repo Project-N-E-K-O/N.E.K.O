@@ -268,6 +268,20 @@ def _swap_args(content_folder, audio_name: str, audio: bytes, prefix: str) -> tu
     )
 
 
+async def _parked(gate: threading.Event, what: str) -> None:
+    """Wait for the worker to reach its gate, and say so plainly if it never does.
+
+    Dropping the flag ``Event.wait`` returns would let a synchronisation
+    timeout fall straight through into the assertions below, which then fail
+    for the wrong reason: "DID NOT RAISE" reads like the exclusion is broken
+    when in fact the interleaving these tests exist to force was never
+    established.
+    """
+    assert await asyncio.to_thread(gate.wait, 5), (
+        f'{what} 没在 5s 内就位——交错没建立起来，后面的断言证明不了任何东西'
+    )
+
+
 def _wait_until_nobody_holds(content_folder: str, *, timeout: float = 5.0) -> bool:
     """Poll until no claim of either kind is left, so a test can assert release.
 
@@ -328,15 +342,20 @@ async def test_a_reference_swap_cannot_slip_into_the_steam_upload(tmp_path, monk
     publishing = asyncio.create_task(
         asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
     )
-    await asyncio.to_thread(uploading.wait, 5)
+    await _parked(uploading, '假 SetItemContent')
 
-    with pytest.raises(ContentFolderBusy):
-        await asyncio.to_thread(
-            voice_refs._replace_voice_reference,
-            *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'sneaked-in', 'sneaked'),
-        )
+    # finally 而不是顺着往下写：断言失败时假上传还卡在门上，它会攥着占用直到 5s
+    # 超时，清账 fixture 于是在真正的失败上面再叠一条「占用泄漏」，把人往错误的
+    # 方向带。放行永远要发生。
+    try:
+        with pytest.raises(ContentFolderBusy):
+            await asyncio.to_thread(
+                voice_refs._replace_voice_reference,
+                *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'sneaked-in', 'sneaked'),
+            )
+    finally:
+        finish.set()
 
-    finish.set()
     assert await publishing == 4242
 
     assert seen[0] == seen[1], f'Steam 读的过程中这对文件被换掉了：{seen}'
@@ -368,13 +387,15 @@ async def test_a_delete_cannot_slip_into_the_steam_upload(tmp_path, monkeypatch)
     publishing = asyncio.create_task(
         asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
     )
-    await asyncio.to_thread(uploading.wait, 5)
+    await _parked(uploading, '假 SetItemContent')
 
-    with pytest.raises(ContentFolderBusy):
-        await asyncio.to_thread(voice_refs._remove_voice_reference, str(tmp_path))
+    try:
+        with pytest.raises(ContentFolderBusy):
+            await asyncio.to_thread(voice_refs._remove_voice_reference, str(tmp_path))
+    finally:
+        finish.set()
 
-    finish.set()
-    await publishing
+    assert await publishing == 7, '发布本身必须照常跑完——被挡的是删，不是它'
 
     assert (tmp_path / 'voice_sample.wav').read_bytes() == b'validated-audio'
     assert _snapshot_pair(str(tmp_path))['prefix'] == 'validated'
@@ -407,13 +428,18 @@ async def test_a_publish_cannot_start_on_top_of_a_running_swap(tmp_path, monkeyp
             *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'new-audio', 'new'),
         )
     )
-    await asyncio.to_thread(mid_swap.wait, 5)
+    await _parked(mid_swap, 'swap 的提交点')
 
-    with pytest.raises(ContentFolderBusy):
-        await asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
+    try:
+        with pytest.raises(ContentFolderBusy):
+            await asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
+    finally:
+        finish.set()
 
-    finish.set()
     await swapping
+    assert _snapshot_pair(str(tmp_path))['prefix'] == 'new', (
+        '被挡下的发布不该影响 swap 自己——它必须照常提交完'
+    )
 
 
 async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, monkeypatch):
@@ -441,19 +467,21 @@ async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, m
     task = asyncio.create_task(
         asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
     )
-    await asyncio.to_thread(uploading.wait, 5)
+    await _parked(uploading, '假 SetItemContent')
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
-    with pytest.raises(ContentFolderBusy):
-        await asyncio.to_thread(
-            voice_refs._replace_voice_reference,
-            *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'sneaked-in', 'sneaked'),
-        )
+        with pytest.raises(ContentFolderBusy):
+            await asyncio.to_thread(
+                voice_refs._replace_voice_reference,
+                *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'sneaked-in', 'sneaked'),
+            )
+    finally:
+        finish.set()
 
-    finish.set()
     assert await asyncio.to_thread(_wait_until_nobody_holds, str(tmp_path)), (
         'worker 跑完之后目录还是被占着——占用泄漏了'
     )
@@ -488,16 +516,18 @@ async def test_cancelling_the_upload_does_not_free_the_pair_early(tmp_path, monk
             *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'new-audio', 'new'),
         )
     )
-    await asyncio.to_thread(swapping.wait, 5)
+    await _parked(swapping, 'swap 的提交点')
 
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    try:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
 
-    with pytest.raises(ContentFolderBusy):
-        await asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
+        with pytest.raises(ContentFolderBusy):
+            await asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
+    finally:
+        finish.set()
 
-    finish.set()
     assert await asyncio.to_thread(_wait_until_nobody_holds, str(tmp_path)), (
         'swap 跑完之后这对文件还是被占着——占用泄漏了'
     )
@@ -635,6 +665,64 @@ def _referenced_names(node) -> set:
     return names
 
 
+def _claim_calls_in_own_scope(func) -> list:
+    """Claim calls whose *nearest enclosing function* is ``func`` itself.
+
+    ``ast.walk`` cannot express that. It queues every descendant up front, so
+    skipping a nested ``def`` node still visits that def's body afterwards and
+    attributes its calls to the outer function. A handler that defines a
+    synchronous worker locally and hands it to ``asyncio.to_thread`` -- the
+    one shape that legitimately takes a claim from inside a coroutine's source
+    text -- would then be reported as a violation. Prune by refusing to
+    descend, not by skipping a single node.
+    """
+    found = []
+    stack = list(ast.iter_child_nodes(func))
+    while stack:
+        node = stack.pop()
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue  # 嵌套函数自己就是一个 worker 单元，不属于这个协程的作用域
+        if isinstance(node, ast.Call):
+            name = (
+                node.func.id if isinstance(node.func, ast.Name)
+                else node.func.attr if isinstance(node.func, ast.Attribute)
+                else None
+            )
+            if name in _CLAIM_CALLS:
+                found.append(node)
+        stack.extend(ast.iter_child_nodes(node))
+    return found
+
+
+def test_the_event_loop_guard_prunes_nested_worker_bodies():
+    """The guard below must not fire on the one shape it explicitly permits.
+
+    A false positive here is not harmless: it would block the correct fix
+    (define the worker locally, hand it to ``to_thread``) and push whoever
+    hits it toward hoisting the claim onto the loop instead -- the precise
+    regression the guard exists to prevent.
+    """
+    tree = ast.parse(
+        'async def handler():\n'
+        '    def _unit():\n'
+        '        with claim_reference_pair(folder):\n'
+        '            pass\n'
+        '    await asyncio.to_thread(_unit)\n'
+        '\n'
+        'async def hoisted():\n'
+        "    with claim_content_folder(folder, purpose='x'):\n"
+        '        pass\n'
+    )
+    functions = {node.name: node for node in tree.body}
+
+    assert _claim_calls_in_own_scope(functions['handler']) == [], (
+        '嵌套的同步 worker 里拿占用是合法的，守卫不该报它'
+    )
+    assert _claim_calls_in_own_scope(functions['hoisted']), (
+        '直接写在协程体里的占用必须被报出来，否则守卫什么都没守'
+    )
+
+
 def test_no_claim_is_ever_taken_on_the_event_loop():
     """Rule 1, pinned: a claim taken in an ``async def`` is released by cancellation.
 
@@ -648,22 +736,13 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
     offenders = []
     for module in (publish, voice_refs, voice_manifest, content_gate):
         tree = ast.parse(inspect.getsource(module))
+        short = module.__name__.rsplit('.', 1)[-1]
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef):
                 continue
-            for child in ast.walk(node):
-                if isinstance(child, (ast.FunctionDef, ast.Lambda)) and child is not node:
-                    continue  # 嵌套的同步 def 自己就是个 worker 单元
-                if not isinstance(child, ast.Call):
-                    continue
-                name = (
-                    child.func.id if isinstance(child.func, ast.Name)
-                    else child.func.attr if isinstance(child.func, ast.Attribute)
-                    else None
-                )
-                if name in _CLAIM_CALLS:
-                    short = module.__name__.rsplit('.', 1)[-1]
-                    offenders.append(f'{short}.{node.name}:{child.lineno}')
+            # 嵌套的 async def 会被这层 walk 单独取到，各查各的作用域。
+            for call in _claim_calls_in_own_scope(node):
+                offenders.append(f'{short}.{node.name}:{call.lineno}')
 
     assert not offenders, f'这些占用是在协程里拿的，取消会把它们提前放开：{offenders}'
 
