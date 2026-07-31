@@ -769,6 +769,44 @@ async def test_persona_merge_preserves_all_upstream_source_ids(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_apply_rejects_whole_action_when_one_of_many_sources_invalidated(tmp_path):
+    """greptile round-5 P1: with >=3 named sources, invalidating ONE must
+    reject the WHOLE action — the conclusion was generated from the full
+    snapshot, so merging the surviving pair would persist content whose
+    only support was the invalidated (e.g. freshly suppressed) source."""
+    fs, pm, re = _install(str(tmp_path))
+    refls = [
+        _r_entry("r0", "甲说喜欢猫", GROUP_A),
+        _r_entry("r1", "甲对猫很感兴趣", GROUP_A),
+        _r_entry("r2", "甲养了一只猫", GROUP_A),
+    ]
+    await re.asave_reflections("小天", refls)
+    active = await re.aload_reflections("小天")
+    cluster = [dict(r) for r in active]
+
+    # LLM 窗口内第三个源被 suppress（文本未变）。
+    live = await re.aload_reflections("小天")
+    next(r for r in live if r['id'] == "r2")['suppress'] = True
+    await re.asave_reflections("小天", live)
+
+    actions = [{
+        'action': 'merge', 'source_ids': ['r0', 'r1', 'r2'],
+        'produce': {'text': '甲喜欢猫、感兴趣并且养了一只'},
+    }]
+    applied = await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, actions, "hashAON",
+    )
+    # 整条 action 拒绝——绝不「剔除 r2、合并 r0+r1」把 r2 的内容经结论
+    # 文本洗出来。
+    assert applied == 0
+    full = await re._aload_reflections_full("小天")
+    by_id = {r['id']: r for r in full}
+    assert set(by_id) == {"r0", "r1", "r2"}
+    assert by_id['r0']['status'] == 'confirmed'
+    assert by_id['r1']['status'] == 'confirmed'
+
+
+@pytest.mark.asyncio
 async def test_apply_skips_stamp_for_survivor_whose_text_drifted(tmp_path):
     """codex round-3: the id-only cluster hash doesn't change when a
     survivor's text is edited during the LLM window — stamping it anyway

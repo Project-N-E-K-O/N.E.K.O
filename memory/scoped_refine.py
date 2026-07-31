@@ -536,31 +536,44 @@ def _valid_merge_source_ids(
     action: dict, cluster_ids: set, by_id: dict, consumed: set,
     cluster_text_by_id: dict,
 ) -> list[str]:
+    """Return the action's source ids, or ``[]`` unless EVERY one is valid.
+
+    All-or-nothing on purpose: the LLM wrote its conclusion text from the
+    COMPLETE snapshot it was shown. If any named source became invalid
+    during the unlocked LLM window (edited / suppressed / protected /
+    consumed / gone terminal / hallucinated foreign id), partially merging
+    the remaining sources would persist a conclusion asserting content
+    whose only support was the invalidated source — suppressed content in
+    particular would resurface through that seam. Rejecting the whole
+    action costs one retry round; the cluster re-forms and gets re-judged
+    on current state.
+    """
     src_ids_raw = action.get('source_ids') or []
     if not isinstance(src_ids_raw, list):
         return []
-    # 文本快照校验：LLM 决策是针对 cluster 里那份文本做出的。锁外 LLM
-    # 窗口期间若有并发写者改了该行文本，按 id 盲信会把「模型没见过的
-    # 内容」合并掉——文本不一致的源直接失效，cluster 下轮重聚重审。
-    # suppress 同理要在锁内重验：gather 时未抑制、LLM 窗口内被标记
-    # suppress 的源若被消费，其内容会以普通可见条目的身份复活。
-    valid = [
-        sid for sid in src_ids_raw
-        if sid in cluster_ids
-        and sid in by_id
-        and sid not in consumed
-        and not by_id[sid].get('protected')
-        and not by_id[sid].get('suppress')
-        and by_id[sid].get('text') == cluster_text_by_id.get(sid)
-    ]
     # 去重保序（LLM 偶发重复 id 会让 evidence 继承重复计数）。
     seen: set = set()
-    out: list[str] = []
-    for sid in valid:
+    unique_ids: list[str] = []
+    for sid in src_ids_raw:
         if sid not in seen:
-            out.append(sid)
+            unique_ids.append(sid)
             seen.add(sid)
-    return out
+    # 文本快照校验：LLM 决策是针对 cluster 里那份文本做出的。锁外 LLM
+    # 窗口期间若有并发写者改了该行文本，按 id 盲信会把「模型没见过的
+    # 内容」合并掉。suppress 同理在锁内重验：gather 时未抑制、窗口内被
+    # 标记 suppress 的源若被消费，其内容会以普通可见条目的身份复活。
+    # 任一源失效 → 整条 action 拒绝（见 docstring 的 all-or-nothing）。
+    for sid in unique_ids:
+        if (
+            sid not in cluster_ids
+            or sid not in by_id
+            or sid in consumed
+            or by_id[sid].get('protected')
+            or by_id[sid].get('suppress')
+            or by_id[sid].get('text') != cluster_text_by_id.get(sid)
+        ):
+            return []
+    return unique_ids
 
 
 async def apply_scoped_persona_merge(
