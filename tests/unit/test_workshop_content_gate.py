@@ -279,13 +279,19 @@ def _swap_args(content_folder, audio_name: str, audio: bytes, prefix: str) -> tu
 # 提前离开它该卡住的位置、提前放开占用，于是竞争方合法地拿到了 claim，用例把这
 # 报成一次「互斥失效」——一个纯粹由超时造出来的假回归。
 _SYNC_TIMEOUT = 30.0
+_DRAIN_TIMEOUT = 5.0
 
 
-async def _drain(task) -> None:
-    """Wait the task out and retrieve its outcome, without changing the verdict."""
-    await asyncio.wait({task})
+async def _drain(task, *, timeout: float = _DRAIN_TIMEOUT) -> bool:
+    """Bound cleanup and retrieve the outcome without masking the test verdict."""
+    _, pending = await asyncio.wait({task}, timeout=timeout)
+    if pending:
+        task.cancel()
+        await asyncio.wait({task}, timeout=1.0)
+        return False
     if not task.cancelled():
         task.exception()
+    return True
 
 
 def _run_worker(done: threading.Event, func, *args):
@@ -294,6 +300,15 @@ def _run_worker(done: threading.Event, func, *args):
         return func(*args)
     finally:
         done.set()
+
+
+@pytest.mark.asyncio
+async def test_drain_is_bounded():
+    blocker = asyncio.Event()
+    task = asyncio.create_task(blocker.wait())
+
+    assert await _drain(task, timeout=0.01) is False
+    assert task.cancelled()
 
 
 @asynccontextmanager
@@ -320,19 +335,29 @@ async def _worker_parked_at(
       the wrong thing, or as the worker running on after monkeypatch put the
       real upload function back.
     """
+    failed = False
     try:
         assert await asyncio.to_thread(gate.wait, _SYNC_TIMEOUT), (
             f'{what} 没在 {_SYNC_TIMEOUT:.0f}s 内就位——交错没建立起来，'
             f'后面的断言证明不了任何东西'
         )
         yield
+    except BaseException:
+        failed = True
+        raise
     finally:
         release.set()
+        worker_finished = True
         if worker_done is not None:
-            assert await asyncio.to_thread(worker_done.wait, _SYNC_TIMEOUT), (
+            worker_finished = await asyncio.to_thread(
+                worker_done.wait, _DRAIN_TIMEOUT
+            )
+        drained = await _drain(task)
+        if not failed:
+            assert worker_finished, (
                 f'{what} 的 asyncio 等待方已经结束，但 worker 没有真正收尾'
             )
-        await _drain(task)
+            assert drained, f'{what} 放行后仍未在 {_DRAIN_TIMEOUT:.0f}s 内结束'
 
 
 def _wait_until_nobody_holds(content_folder: str, *, timeout: float = _SYNC_TIMEOUT) -> bool:
@@ -768,6 +793,27 @@ def _tail_name(call: ast.Call) -> str | None:
     return None
 
 
+def _eager_definition_nodes(node) -> list[ast.AST]:
+    """Expressions evaluated while a nested function object is created."""
+    eager = list(node.decorator_list) + list(node.args.defaults)
+    eager.extend(default for default in node.args.kw_defaults if default)
+    eager.extend(
+        arg.annotation
+        for arg in (
+            list(node.args.posonlyargs)
+            + list(node.args.args)
+            + list(node.args.kwonlyargs)
+        )
+        if arg.annotation is not None
+    )
+    for arg in (node.args.vararg, node.args.kwarg):
+        if arg is not None and arg.annotation is not None:
+            eager.append(arg.annotation)
+    if node.returns is not None:
+        eager.append(node.returns)
+    return eager
+
+
 def _walk_own_scope(func):
     """Walk one function body without attributing nested defs to its parent."""
     stack = list(ast.iter_child_nodes(func))
@@ -775,11 +821,8 @@ def _walk_own_scope(func):
         node = stack.pop()
         yield node
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            # The body runs later, but decorators and defaults run now, while
-            # the enclosing function is defining this nested helper.
-            stack.extend(node.decorator_list)
-            stack.extend(node.args.defaults)
-            stack.extend(default for default in node.args.kw_defaults if default)
+            # The body runs later, but decorators/defaults/annotations run now.
+            stack.extend(_eager_definition_nodes(node))
             continue
         stack.extend(ast.iter_child_nodes(node))
 
@@ -810,9 +853,7 @@ def _parent_map(func) -> dict[int, ast.AST]:
     parents = {}
     for node in _walk_own_scope(func):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            eager = list(node.decorator_list) + list(node.args.defaults)
-            eager.extend(default for default in node.args.kw_defaults if default)
-            for child in eager:
+            for child in _eager_definition_nodes(node):
                 parents[id(child)] = node
             continue
         for child in ast.iter_child_nodes(node):
@@ -901,20 +942,59 @@ def _generator_expression_escapes(node, parents: dict[int, ast.AST]) -> bool:
                 _tail_name(parent) in _EAGER_ITERATOR_CONSUMERS
                 and current in list(parent.args) + [kw.value for kw in parent.keywords]
             )
+        if isinstance(parent, ast.For) and parent.iter is current:
+            return False
         if isinstance(parent, (ast.Lambda, ast.GeneratorExp)):
             return True
         current = parent
     return True
 
 
-def _function_has_deferred_generator(func) -> bool:
+def _function_is_generator(func) -> bool:
+    return any(
+        isinstance(child, (ast.Yield, ast.YieldFrom))
+        for child in _walk_own_scope(func)
+    )
+
+
+def _call_is_in_deferred_expression(
+    call, func, parents: dict[int, ast.AST]
+) -> bool:
+    """Whether a call is hidden in a callable/iterator that escapes ``func``."""
+    current = call
+    while current is not func and id(current) in parents:
+        parent = parents[id(current)]
+        if isinstance(parent, ast.Lambda):
+            lambda_parent = parents.get(id(parent))
+            if not (
+                isinstance(lambda_parent, ast.Call)
+                and lambda_parent.func is parent
+            ):
+                return True
+        if isinstance(parent, ast.GeneratorExp):
+            return _generator_expression_escapes(parent, parents)
+        current = parent
+    return False
+
+
+def _function_defers_claiming_call(
+    func,
+    claiming: set[str],
+    attribute_claiming: set[tuple[str, str]],
+    class_scope: bool,
+) -> bool:
+    """Whether calling ``func`` only constructs deferred claim-owning work."""
     parents = _parent_map(func)
+    if func.name in claiming and _function_is_generator(func):
+        return True
     for child in _walk_own_scope(func):
-        if isinstance(child, (ast.Yield, ast.YieldFrom)):
-            return True
-        if isinstance(child, ast.GeneratorExp) and _generator_expression_escapes(
-            child, parents
+        if not isinstance(child, ast.Call):
+            continue
+        if not _resolved_claim_name(
+            child, claiming, attribute_claiming, class_scope
         ):
+            continue
+        if _call_is_in_deferred_expression(child, func, parents):
             return True
     return False
 
@@ -933,10 +1013,14 @@ def _claiming_worker_inventory(
     claiming = set(seed_claiming or ()) | {
         node.name for node in functions if _claim_calls_in_own_scope(node)
     }
-    generators = {
-        node.name for node in functions if _function_has_deferred_generator(node)
-    }
-    generator_owners = set(seed_generators or ()) | (claiming & generators)
+    generator_owners = set(seed_generators or ())
+    generator_owners.update(
+        node.name
+        for node in functions
+        if _function_defers_claiming_call(
+            node, claiming, attribute_claiming, class_scope
+        )
+    )
     while True:
         wrappers = {
             func.name
@@ -957,7 +1041,9 @@ def _claiming_worker_inventory(
             for func in functions
             if func.name in wrappers
             and (
-                func.name in generators
+                _function_defers_claiming_call(
+                    func, claiming, attribute_claiming, class_scope
+                )
                 or any(
                     isinstance(node, ast.Call)
                     and _resolved_claim_name(
@@ -1149,30 +1235,60 @@ def _scope_claiming_names_called_on_loop(
 ) -> list:
     """Resolve module names and ``self`` methods without cross-scope collisions."""
     parents = _parent_map(func)
+    local_names = {}
+    local_module_aliases = dict(module_aliases.get(module, {}))
+    module_names = {scope[0] for scope in claiming_by_scope}
+    for child in _walk_own_scope(func):
+        if isinstance(child, ast.ImportFrom):
+            if child.module:
+                source_module = child.module.rsplit('.', 1)[-1]
+                source_scope = (source_module, None)
+                if source_module in module_names:
+                    for alias in child.names:
+                        if alias.name in claiming_by_scope.get(source_scope, set()):
+                            local_names[alias.asname or alias.name] = (
+                                source_scope, alias.name
+                            )
+            else:
+                for alias in child.names:
+                    source_module = alias.name.rsplit('.', 1)[-1]
+                    if source_module in module_names:
+                        local_module_aliases[alias.asname or alias.name] = source_module
+        elif isinstance(child, ast.Import):
+            for alias in child.names:
+                source_module = alias.name.rsplit('.', 1)[-1]
+                if source_module in module_names and alias.asname:
+                    local_module_aliases[alias.asname] = source_module
     offenders = []
     for node in _walk_own_scope(func):
         if isinstance(node, ast.Name):
-            scope = (module, None)
             name = node.id
+            scope, resolved_name = local_names.get(
+                name, ((module, None), name)
+            )
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             name = node.attr
             if node.value.id in {'self', 'cls'} and class_name:
                 scope = (module, class_name)
             elif (module, node.value.id) in claiming_by_scope:
                 scope = (module, node.value.id)
-            elif node.value.id in module_aliases.get(module, {}):
-                scope = (module_aliases[module][node.value.id], None)
+            elif node.value.id in local_module_aliases:
+                scope = (local_module_aliases[node.value.id], None)
             else:
                 continue
         else:
             continue
-        if name not in claiming_by_scope.get(scope, set()):
+        if not isinstance(node, ast.Name):
+            resolved_name = name
+        if resolved_name not in claiming_by_scope.get(scope, set()):
             continue
         if (
-            name in generators_by_scope.get(scope, set())
+            resolved_name in generators_by_scope.get(scope, set())
             or not _is_deferred_reference(node, parents, func)
         ):
-            offenders.append((f'{scope[0]}.{scope[1] or "<module>"}.{name}', node.lineno))
+            offenders.append((
+                f'{scope[0]}.{scope[1] or "<module>"}.{resolved_name}', node.lineno
+            ))
     return offenders
 
 
@@ -1275,6 +1391,13 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    _claiming_worker()\n'
         '    return list(x for x in items)\n'
         '\n'
+        'def _callable_wrapper():\n'
+        '    return lambda: _claiming_worker()\n'
+        '\n'
+        'def _for_generator_wrapper():\n'
+        '    for value in (_claiming_worker() for _ in items):\n'
+        '        pass\n'
+        '\n'
         'class Safe:\n'
         '    def _claiming_worker(self):\n'
         '        return 1\n'
@@ -1312,6 +1435,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    def helper():\n'
         '        pass\n'
         '\n'
+        'async def eager_nested_annotations():\n'
+        '    def helper(arg: _claiming_worker()) -> _claiming_worker():\n'
+        '        pass\n'
+        '\n'
         'async def generator_constructor_offloaded():\n'
         '    await asyncio.to_thread(_generator_owner)\n'
         '\n'
@@ -1320,6 +1447,12 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'async def eager_generator_offloaded():\n'
         '    await asyncio.to_thread(_eager_generator_wrapper)\n'
+        '\n'
+        'async def callable_wrapper_offloaded():\n'
+        '    await asyncio.to_thread(_callable_wrapper)\n'
+        '\n'
+        'async def for_generator_offloaded():\n'
+        '    await asyncio.to_thread(_for_generator_wrapper)\n'
         '\n'
         'async def safe_attribute_handler():\n'
         '    safe_attribute_wrapper()\n'
@@ -1377,6 +1510,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('eager_nested_decorator'), (
         'nested def decorator 在定义 helper 时求值，里面的 claim owner 必须报出来'
     )
+    assert len(module_offenders('eager_nested_annotations')) == 2, (
+        'nested def 参数和返回注解都在定义 helper 时求值，必须报出来'
+    )
     assert _scope_claiming_names_called_on_loop(
         functions['handler'], 'synthetic', 'Service', claiming, generators, aliases
     ), 'class method claim owner 的同步 wrapper 被 async method 直调时必须报出来'
@@ -1391,6 +1527,12 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     )
     assert module_offenders('eager_generator_offloaded') == [], (
         '已由 list 当场耗尽的 generator expression 不应把 worker 误报成构造器'
+    )
+    assert module_offenders('callable_wrapper_offloaded'), (
+        'offload 只会拿到 named wrapper 返回的 lambda，claim body 仍未执行'
+    )
+    assert module_offenders('for_generator_offloaded') == [], (
+        '同步 for 会在 worker 内当场耗尽 generator expression，不应误报'
     )
     assert module_offenders('safe_attribute_handler') == [], (
         'Safe().owner() 不能因 tail name 与模块 owner 相同而污染 wrapper'
@@ -1412,6 +1554,15 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    workers.owner()\n'
         'async def qualified_offloaded():\n'
         '    await asyncio.to_thread(workers.owner)\n'
+        'async def local_import_direct():\n'
+        '    from .source import owner as local_owner\n'
+        '    local_owner()\n'
+        'async def local_import_offloaded():\n'
+        '    from .source import owner as local_owner\n'
+        '    await asyncio.to_thread(local_owner)\n'
+        'async def local_module_direct():\n'
+        '    from . import source as local_workers\n'
+        '    local_workers.owner()\n'
     )
     unrelated = ast.parse(
         'def owner():\n'
@@ -1465,6 +1616,18 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_generators,
         imported_aliases,
     ) == []
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['local_import_direct'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
+    ), 'handler 内 import 的 claim owner 直调也必须被发现'
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['local_import_offloaded'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
+    ) == []
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['local_module_direct'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
+    ), 'handler 内 module alias 的 owner 直调也必须被发现'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['safe_same_name'],
         'unrelated',
@@ -1616,11 +1779,48 @@ _KNOWN_GAPS = {
 
 
 def _operation_name(node) -> str | None:
-    if isinstance(node, ast.Name):
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
         return node.id
-    if isinstance(node, ast.Attribute):
+    if isinstance(node, ast.Attribute) and isinstance(node.ctx, ast.Load):
         return node.attr
     return None
+
+
+def _known_operation_names() -> set[str]:
+    names = set(_PACKAGE_WIDE_OPERATIONS) | set(_MUST_BE_CLAIMED)
+    for inventory in _UNIT_OPERATIONS.values():
+        names.update(inventory)
+    for inventory in _SCOPED_OPERATIONS.values():
+        names.update(inventory)
+    return names
+
+
+def _operation_aliases(nodes, seed=None) -> dict[str, str]:
+    """Resolve imported and assigned aliases of protected operations."""
+    known = _known_operation_names()
+    aliases = dict(seed or {})
+    candidates = list(nodes)
+    changed = True
+    while changed:
+        changed = False
+        for node in candidates:
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    canonical = aliases.get(alias.name, alias.name)
+                    local = alias.asname or alias.name
+                    if canonical in known and aliases.get(local) != canonical:
+                        aliases[local] = canonical
+                        changed = True
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                canonical = aliases.get(_operation_name(value) or '', _operation_name(value))
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if canonical in known:
+                    for target in targets:
+                        if isinstance(target, ast.Name) and aliases.get(target.id) != canonical:
+                            aliases[target.id] = canonical
+                            changed = True
+    return aliases
 
 
 def _inventory_for_function(mapping, short: str, name: str):
@@ -1631,7 +1831,9 @@ def _inventory_for_function(mapping, short: str, name: str):
     return matches[0] if len(matches) == 1 else (None, None)
 
 
-def _operation_nodes(func, short: str) -> list[tuple[ast.AST, str]]:
+def _operation_nodes(
+    func, short: str, aliases: dict[str, str] | None = None
+) -> list[tuple[ast.AST, str]]:
     required = set(_PACKAGE_WIDE_OPERATIONS)
     if short in {'publish', 'voice_refs'}:
         required |= _MUST_BE_CLAIMED
@@ -1643,15 +1845,19 @@ def _operation_nodes(func, short: str) -> list[tuple[ast.AST, str]]:
     )
     required |= set(unit_inventory or {})
     required |= set(scoped_operations or ())
+    aliases = _operation_aliases(_walk_own_scope(func), aliases)
     found = []
     for node in _walk_own_scope(func):
         name = _operation_name(node)
-        if name in required:
-            found.append((node, name))
+        canonical = aliases.get(name, name)
+        if canonical in required:
+            found.append((node, canonical))
     return found
 
 
-def _unclaimed_folder_operations(func, short: str) -> list:
+def _unclaimed_folder_operations(
+    func, short: str, aliases: dict[str, str] | None = None
+) -> list:
     """Sentinel operations in ``func`` that no claim covers.
 
     Two ways to be uncovered, and the second one is why lexical containment
@@ -1723,7 +1929,7 @@ def _unclaimed_folder_operations(func, short: str) -> list:
                 break
 
     offenders = []
-    operations = _operation_nodes(func, short)
+    operations = _operation_nodes(func, short, aliases)
     for child, name in operations:
         if id(child) in deferred_nodes:
             offenders.append((short, func.name, child.lineno, name, '交给别处延后跑'))
@@ -1857,6 +2063,25 @@ def test_the_claim_guard_sees_through_deferred_work():
     )
 
 
+def test_the_claim_guard_resolves_operation_aliases():
+    tree = ast.parse(
+        'def imported_alias():\n'
+        '    from shutil import rmtree as delete_tree\n'
+        '    delete_tree(folder)\n'
+        '\n'
+        'def assigned_alias():\n'
+        '    delete_tree = shutil.rmtree\n'
+        '    delete_tree(folder)\n'
+    )
+    functions = {node.name: node for node in tree.body}
+
+    for name in ('imported_alias', 'assigned_alias'):
+        offenders = _unclaimed_folder_operations(functions[name], 'publish')
+        assert any(item[3] == 'rmtree' for item in offenders), (
+            f'{name} 必须把 alias 还原成受保护的 rmtree'
+        )
+
+
 def test_the_claim_guard_requires_one_continuous_claim():
     """Two individually protected halves still leave an acquisition window."""
     split = ast.parse(
@@ -1921,6 +2146,7 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
     """
     offenders = []
     for short, tree in _workshop_router_trees():
+        module_aliases = _operation_aliases(tree.body)
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
@@ -1928,7 +2154,7 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
                 name == node.name for _, name in _ALLOWED_UNCLAIMED
             ):
                 continue
-            offenders.extend(_unclaimed_folder_operations(node, short))
+            offenders.extend(_unclaimed_folder_operations(node, short, module_aliases))
 
     offenders = _consume_known_gaps(offenders)
     assert not offenders, (
