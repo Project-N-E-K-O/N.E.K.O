@@ -534,11 +534,16 @@ class ProactiveMixin:
                 # Turn-end push is best-effort; the client may have gone away.
                 pass
 
-            # 落盘排在所有收尾信号之后（内存更新已经在投递后立刻做了，见上）。
+            # 落盘排在所有收尾信号之后（内存更新已经在投递后立刻做了，见上），而且
+            # **摘下来不 await**：到这里这一轮对用户已经发生完了，但下面那句
+            # `return True` 才是调用方的记账凭据（break reminder / 小游戏邀请看它决定
+            # 要不要把这条来源标记成已消费）。在这里 await 就等于把一个取消点插在
+            # 「已投递」和「报告已投递」之间 —— CancelledError 是 BaseException，
+            # 下面的 except Exception 接不住，同一条提醒会被再发一次。
             if staged_anti_repeat is not None:
                 try:
                     from memory.anti_repeat import get_anti_repeat_corpus
-                    await get_anti_repeat_corpus().aflush_staged(staged_anti_repeat)
+                    get_anti_repeat_corpus().flush_staged_detached(staged_anti_repeat)
                 except Exception as _exc:  # pragma: no cover
                     logger.debug("[AntiRepeat] flush proactive skipped: %s", _exc)
         # proactive 原文不写 logger（隐私）；本地 print 兜底

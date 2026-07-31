@@ -695,17 +695,56 @@ def test_the_per_turn_callers_use_the_async_twin():
     import pathlib
 
     repo_root = pathlib.Path(__file__).resolve().parents[2]
-    for rel in (
-        "main_logic/omni_offline_client/_lifecycle.py",
-        "main_logic/core/proactive.py",
-    ):
+    for rel in _PER_TURN_CALL_SITES:
         source = (repo_root / rel).read_text(encoding="utf-8")
-        assert "stage_output(" in source and "aflush_staged(" in source, (
-            f"{rel} 必须走两段式：内存更新在收尾信号之前，落盘在之后"
+        assert "stage_output(" in source and "flush_staged_detached(" in source, (
+            f"{rel} 必须走两段式：内存更新在收尾信号之前，落盘摘出去"
         )
         assert ".record_output(" not in source, (
             f"{rel} 回退到了同步 record_output —— 那会把 fsync 压在会话循环上"
         )
+
+
+_PER_TURN_CALL_SITES = (
+    "main_logic/omni_offline_client/_lifecycle.py",
+    "main_logic/core/proactive.py",
+)
+
+
+def test_the_per_turn_callers_never_await_the_flush():
+    """Nothing cancellable may sit between "delivered" and "report delivered".
+
+    Both call sites flush after the turn's terminal signals are already out,
+    and both then return the value their caller uses as the record that the
+    turn committed. An ``await`` in that stretch reintroduces a cancellation
+    point past the point of no return: ``CancelledError`` is a
+    ``BaseException``, so it skips the surrounding ``except Exception`` and the
+    ``return``, and the caller books an already-visible turn as undelivered.
+    """
+    import ast
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    offenders = []
+    for rel in _PER_TURN_CALL_SITES:
+        tree = ast.parse((repo_root / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Await):
+                continue
+            call = node.value
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in {"aflush_staged", "arecord_output"}:
+                offenders.append(f"{rel}:{node.lineno} await {name}(...)")
+
+    assert not offenders, (
+        "这些 per-turn 调用点又把落盘 await 回了提交路径上：\n  "
+        + "\n  ".join(offenders)
+        + "\n用 flush_staged_detached() —— 到这一步这轮对用户已经发生完了，"
+        "取消不该把「已投递」倒回成「没投递」"
+    )
 
 
 def test_the_data_lock_is_never_held_across_the_disk_write(tmp_path):
@@ -831,3 +870,103 @@ async def test_the_corpus_is_updated_before_arecord_output_yields(tmp_path, monk
 
     release.set()
     await asyncio.wait_for(task, timeout=5)
+
+
+# ── 9. flush_staged_detached：提交路径上不许有取消点 ──────────
+
+
+@pytest.mark.asyncio
+async def test_detached_flush_still_reaches_disk(tmp_path):
+    """Detaching must not turn the write into a no-op."""
+    store = _build_store(tmp_path)
+    staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+    assert staged is not None
+
+    store.flush_staged_detached(staged)
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if not store._detached_flushes:
+            break
+    assert not store._detached_flushes, "摘下来的落盘 task 没跑完"
+
+    reloaded = _build_store(tmp_path)
+    total, _terms = reloaded.score_draft("妮可", LONG_TIGER, now=1.0)
+    assert total > 0, "落盘没到盘上，重启后这条就丢了"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_caller_cannot_rewind_a_delivered_turn(tmp_path):
+    """The caller must reach its `return` even when cancelled at the flush.
+
+    This is the whole reason the flush is detached. The turn's terminal
+    signals are already out by this point, so the delivery has happened; if
+    cancellation could still unwind past the return, the caller would book it
+    as undelivered and the same proactive line could be sent again.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    terminal_signals = asyncio.Event()
+    reached_return = asyncio.Event()
+
+    # 把落盘卡死在 to_thread 上。这样「落盘是不是取消点」就是确定性的差异，不用赌
+    # 一次 to_thread 往返能不能在某个 sleep(0) 里跑完。
+    reached_disk = asyncio.Event()
+    release_disk = asyncio.Event()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        anti_repeat_module, "asyncio", _GatedAsyncio(reached_disk, release_disk),
+    )
+    try:
+        async def _deliver() -> bool:
+            staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+            await terminal_signals.wait()   # 模拟 TTS 收尾 + 两处 turn end
+            store.flush_staged_detached(staged)
+            reached_return.set()
+            return True
+
+        task = asyncio.create_task(_deliver())
+        await asyncio.sleep(0)
+        terminal_signals.set()
+        await asyncio.sleep(0)
+
+        # 收尾信号一发完，协程就该已经跑到 return 了：落盘摘出去之后，这段里再没有
+        # 挂起点。谁要是把 aflush_staged await 回来，协程此刻还挂在落盘上。
+        assert reached_return.is_set(), (
+            "收尾信号之后仍有挂起点 —— 落盘被 await 回了提交路径上"
+        )
+
+        # 取消请求这时才到。已经没有挂起点可以让它落进去，凭据必须照常返回。
+        task.cancel()
+        assert await task is True
+    finally:
+        release_disk.set()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if not store._detached_flushes:
+                break
+        monkeypatch.undo()
+
+    assert not store._detached_flushes, "摘出去的落盘 task 没跑完就泄漏了"
+
+
+def test_detached_flush_without_a_running_loop_is_a_no_op(tmp_path):
+    """No loop to attach to must degrade quietly, never fsync inline."""
+    # 同步调用方 / 循环已关停时，回退成「就地同步落盘」会把这轮改动移走的 fsync
+    # 又搬回来。best-effort 的东西宁可丢。
+    store = _build_store(tmp_path)
+    staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+
+    store.flush_staged_detached(staged)
+
+    assert not store._detached_flushes
+    assert not os.path.exists(store._file_path("妮可")), (
+        "没有事件循环时不该就地落盘"
+    )
+
+
+def test_detached_flush_ignores_a_none_handle(tmp_path):
+    """stage_output returns None for skipped text; that must stay harmless."""
+    store = _build_store(tmp_path)
+    store.flush_staged_detached(None)
+    assert not store._detached_flushes

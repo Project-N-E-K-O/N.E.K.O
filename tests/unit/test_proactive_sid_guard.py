@@ -391,11 +391,14 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     mgr.last_user_engagement_time = None
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
-    # 两段式：stage_output 是同步的（在收尾信号之前），aflush_staged 是 async 的
-    # （在之后）。aflush 必须是 AsyncMock —— 用 MagicMock 的话 await 会抛，被调用点
-    # 的 except 吞掉，这条用例就变成永远绿的空断言。
+    # 两段式：stage_output 在收尾信号之前，落盘在之后。落盘走 flush_staged_detached
+    # ——同步返回、内部自己起 task——所以这一段里没有挂起点，取消不能把已经投递出去
+    # 的一轮倒回成「没投递」（见 test_anti_repeat 的对偶用例）。
+    # aflush_staged 仍留 AsyncMock：万一有人把它 await 回来，MagicMock 会让 await 抛、
+    # 被调用点的 except 吞掉，这条用例就变成永远绿的空断言。
     corpus = MagicMock()
     corpus.stage_output = MagicMock(return_value=("Test", {"window": []}, 1))
+    corpus.flush_staged_detached = MagicMock()
     corpus.aflush_staged = AsyncMock()
     monkeypatch.setattr(
         anti_repeat,
@@ -424,7 +427,10 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
         is_proactive=True,
         now=100.0,
     )
-    corpus.aflush_staged.assert_awaited_once()
+    corpus.flush_staged_detached.assert_called_once_with(
+        corpus.stage_output.return_value
+    )
+    corpus.aflush_staged.assert_not_awaited()
     corpus.record_output.assert_not_called()
 
 

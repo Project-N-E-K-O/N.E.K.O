@@ -297,6 +297,9 @@ class AntiRepeatCorpus:
         self._write_locks: Dict[str, threading.Lock] = {}
         self._staged_seq: Dict[str, int] = {}
         self._written_seq: Dict[str, int] = {}
+        # 已摘下的落盘 task。只被局部变量引用的 task 会被 GC 回收，事件循环不保证
+        # 跑完它 —— 必须由这里持强引用到完成为止。见 flush_staged_detached。
+        self._detached_flushes: set = set()
 
     # ── path / lock ────────────────────────────────────────
 
@@ -537,6 +540,50 @@ class AntiRepeatCorpus:
             return
         name, payload, seq = staged
         await asyncio.to_thread(self._flush_snapshot, name, payload, seq)
+
+    def flush_staged_detached(
+        self, staged: Optional[Tuple[str, Dict[str, Any], int]],
+    ) -> None:
+        """Schedule the disk half without adding a cancellation point.
+
+        Use this wherever the caller still has to report a commit after the
+        flush. ``aflush_staged`` is an ``await``, and by the time it runs the
+        reply is already visible and the turn's terminal signals are already
+        out — the turn has happened no matter what the caller's task does next.
+        A ``CancelledError`` raised at that await is a ``BaseException``, so it
+        slips past the caller's ``except Exception`` and past the ``return``
+        that records the delivery. The caller's bookkeeping then reports "not
+        delivered" for a turn the user watched, and the same proactive line
+        becomes eligible to be sent a second time.
+
+        Detaching keeps that stretch free of cancellation points. Ordering
+        survives losing the caller: ``_flush_snapshot`` discards any snapshot
+        older than what is already on disk.
+        """
+        if staged is None:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 没有循环可挂（同步调用方，或循环已经关停）。落盘是 best-effort，放弃它
+            # 比在这里同步 fsync 更安全 —— 后者正是这轮改动要移出事件循环的东西。
+            logger.debug("[AntiRepeat] detached flush skipped: no running loop")
+            return
+
+        task = loop.create_task(self.aflush_staged(staged))
+        self._detached_flushes.add(task)
+
+        def _done(finished: "asyncio.Task") -> None:
+            self._detached_flushes.discard(finished)
+            if finished.cancelled():
+                return
+            exc = finished.exception()
+            if exc is not None:
+                # 摘下来之后没人 await 它了，异常不主动取一次会变成
+                # "Task exception was never retrieved"。
+                logger.debug("[AntiRepeat] detached flush failed: %s", exc)
+
+        task.add_done_callback(_done)
 
     async def arecord_output(
         self,

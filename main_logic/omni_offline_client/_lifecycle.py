@@ -461,10 +461,13 @@ class _LifecycleMixin:
                     await self.on_response_done()
                 # 只录常规 reply（completion_mode == "response"）。proactive 路径
                 # 已经在 ``core.finish_proactive_delivery`` 上录，这里再录会双写。
+                # 与 core.finish_proactive_delivery 同因同治：摘下来不 await。下面的
+                # `return content_committed` 是调用方判断这轮有没有提交的依据，在它
+                # 之前留一个取消点，就会让一次已经发出去的回复被记成没发。
                 if staged_anti_repeat is not None:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
-                        await get_anti_repeat_corpus().aflush_staged(staged_anti_repeat)
+                        get_anti_repeat_corpus().flush_staged_detached(staged_anti_repeat)
                     except Exception as _exc:  # pragma: no cover
                         logger.debug(
                             "[AntiRepeat] flush reply skipped: %s", _exc,
