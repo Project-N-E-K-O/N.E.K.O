@@ -16,6 +16,9 @@ def generation_session_is_reusable(
     login_self_id: Any,
     her_name: Any,
     conversation_route: tuple[str, str] | None = None,
+    is_group: bool | None = None,
+    private_memory_mode: str | None = None,
+    permission_level: str | None = None,
 ) -> bool:
     """Whether this turn keeps an existing session instead of rebuilding it.
 
@@ -34,7 +37,12 @@ def generation_session_is_reusable(
     recall channel at all: the context skips the synchronous recall per
     the new config while the arm step refuses the old client's route.
     Entries without a stored route (pre-upgrade / lightweight callers)
-    skip the comparison."""
+    skip the comparison.
+
+    Private sessions additionally bind one permission/memory-domain contract.
+    A receipt-stamped handler may create an old-domain session after settings
+    invalidation already finished, so pending-discard markers alone cannot
+    prove that the cached prompt is safe for the current turn."""
     if not entry:
         return False
     if entry.get("login_self_id") != login_self_id:
@@ -44,6 +52,11 @@ def generation_session_is_reusable(
     if entry.get("pending_identity_discard"):
         return False
     if entry.get("pending_permission_discard"):
+        return False
+    if is_group is False and (
+        entry.get("private_memory_mode") != private_memory_mode
+        or entry.get("permission_level") != permission_level
+    ):
         return False
     stored_route = entry.get("conversation_route")
     if (
@@ -81,11 +94,26 @@ class QQSessionBootstrapService:
                 )
             except Exception:
                 current_route = None
+        private_contract_changed = bool(
+            existing_session
+            and not context.is_group
+            and (
+                existing_session.get("private_memory_mode")
+                != getattr(context, "private_memory_mode", None)
+                or existing_session.get("permission_level")
+                != context.permission_level
+            )
+        )
         if existing_session and not generation_session_is_reusable(
             existing_session,
             login_self_id=context.login_self_id,
             her_name=getattr(context, "her_name", None),
             conversation_route=current_route,
+            is_group=context.is_group,
+            private_memory_mode=getattr(
+                context, "private_memory_mode", None,
+            ),
+            permission_level=context.permission_level,
         ):
             # her_name 失配=活跃角色切换：旧会话的 scoped 缓冲仍属旧角色，
             # discard 内的集中抢救会以旧 her_name 结算——新角色的对话绝不
@@ -95,8 +123,10 @@ class QQSessionBootstrapService:
             )
             permission_changed = bool(
                 existing_session.get("pending_permission_discard")
+            ) or private_contract_changed
+            discarded = await self.plugin.session_runtime_service.discard_session(
+                session_key, reason="登录身份/角色/线路/私聊权限变化",
             )
-            discarded = await self.plugin.session_runtime_service.discard_session(session_key, reason="登录身份/角色/线路变化")
             if discarded is False:
                 # 粘性标记：prime 会把 login_self_id 刷成新值，若只靠 id
                 # 不匹配做重试条件，下一轮就再也进不来这里了。

@@ -1285,6 +1285,52 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     discard.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_bootstrap_rejects_late_stale_private_mode(monkeypatch):
+    """A queued old-permission turn can create a session after permission
+    invalidation has already finished; the next current turn must still
+    reject that unmarked stale-mode session."""
+    from plugin.plugins.qq_auto_reply import session_bootstrap_service as sbs
+
+    route = (TOOL_CAPABLE_BASE_URL, TOOL_CAPABLE_MODEL)
+    config = SimpleNamespace(
+        aensure_region_resolved=AsyncMock(),
+        get_model_api_config=lambda kind: {
+            "base_url": route[0], "model": route[1], "api_key": "k",
+        },
+    )
+    monkeypatch.setattr(sbs, "get_config_manager", lambda: config)
+    stale_entry = {
+        "login_self_id": "10000",
+        "her_name": "Neko",
+        "conversation_route": route,
+        "private_memory_mode": "legacy",
+        "permission_level": "trusted",
+        "session": SimpleNamespace(),
+    }
+    discard = AsyncMock(return_value=False)
+    plugin = SimpleNamespace(
+        _user_sessions={"private:2046": stale_entry},
+        logger=MagicMock(),
+        session_runtime_service=SimpleNamespace(discard_session=discard),
+    )
+    context = SimpleNamespace(
+        ephemeral_session=False,
+        login_self_id="10000",
+        her_name="Neko",
+        is_group=False,
+        private_memory_mode="participant",
+        permission_level="trusted",
+    )
+
+    service = sbs.QQSessionBootstrapService(plugin)
+    assert await service.ensure_generation_session(
+        context, "private:2046",
+    ) is None
+    discard.assert_awaited_once()
+    assert stale_entry["pending_identity_discard"] is True
+
+
 
 # ---------------------------------------------------------------------------
 # Bridge: time passthrough

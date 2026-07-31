@@ -341,6 +341,9 @@ class QQReplyContextNode:
                     login_self_id=login_self_id,
                     her_name=config_manager.get_character_data()[1],
                     conversation_route=_prediction_route,
+                    is_group=is_group,
+                    private_memory_mode=private_memory_mode,
+                    permission_level=permission_level,
                 )
             except Exception:
                 session_cached = False
