@@ -481,6 +481,34 @@ async def test_recall_tool_disarmed_after_every_turn():
 
 
 @pytest.mark.asyncio
+async def test_final_disarm_clears_handler_when_tool_cleanup_fails():
+    """Final cleanup must reset each mounted slot independently."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    class _StickyToolClient(_RecallToolClient):
+        def set_tools(self, tool_definitions):
+            if tool_definitions is None:
+                raise RuntimeError("tool slot refused cleanup")
+            super().set_tools(tool_definitions)
+
+    async def _quiet(client, message):
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+
+    client = _StickyToolClient(_quiet)
+    await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=[],
+    )
+    assert client.on_tool_call is None
+
+
+@pytest.mark.asyncio
 async def test_arm_respects_the_session_clients_frozen_route():
     """Arming binds to the CLIENT's route, not the current config: a
     cached session can outlive a provider switch, and a route that
@@ -523,6 +551,37 @@ async def test_arm_respects_the_session_clients_frozen_route():
     ) is True
     assert capable_client.armed_tool_names[-1] == ["recall_memory"]
     assert capable_client.on_tool_call is not None
+
+
+def test_failed_arm_clears_tool_slots_independently():
+    """One failing cleanup action must not leave the other slot mounted."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    calls: list[str] = []
+
+    class _HalfMountClient(_RecallToolClient):
+        def set_tools(self, tool_definitions):
+            if tool_definitions is None:
+                calls.append("clear-tools")
+                raise RuntimeError("tool slot refused cleanup")
+            calls.append("set-tools")
+
+        def set_tool_call_handler(self, handler):
+            if handler is None:
+                calls.append("clear-handler")
+                return
+            calls.append("set-handler")
+            raise RuntimeError("handler mount failed")
+
+    client = _HalfMountClient(AsyncMock())
+    assert service._arm_recall_tool(
+        context=_group_context(),
+        user_session=client,
+        consent_before={},
+    ) is False
+    assert calls == [
+        "set-tools", "set-handler", "clear-tools", "clear-handler",
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -781,6 +840,74 @@ async def test_pre_tool_text_remains_in_the_outbound_message():
     history = client._conversation_history
     assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
     assert history[-1].content == "我查一下查到了，是不剧透"
+
+
+@pytest.mark.asyncio
+async def test_pre_tool_text_creates_history_row_without_a_final_segment():
+    """A pre-tool-only reply must still have one durable assistant row."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("我查一下")
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(result.output_as_json_string())
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "我查一下"
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "我查一下"
+
+
+@pytest.mark.asyncio
+async def test_repeated_pre_tool_prefix_is_preserved_in_history():
+    """Equal text in separate stream segments must not be deduplicated."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("我查一下")
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(result.output_as_json_string())
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="我查一下，结果是不剧透")
+        )
+        client.reply_chunks_ref.append("我查一下，结果是不剧透")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "我查一下我查一下，结果是不剧透"
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "我查一下我查一下，结果是不剧透"
 
 
 @pytest.mark.asyncio

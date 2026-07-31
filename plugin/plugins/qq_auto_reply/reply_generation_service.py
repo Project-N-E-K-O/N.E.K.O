@@ -6,7 +6,7 @@ from typing import Any, Optional
 
 from main_logic.omni_offline_client import route_supports_tool_calls
 from main_logic.tool_calling import ToolResult
-from utils.llm_client import SystemMessage, create_chat_llm_async
+from utils.llm_client import AIMessage, SystemMessage, create_chat_llm_async
 from utils.token_tracker import set_call_type
 
 from .memory_tool_service import RECALL_TOOL_HTTP_TIMEOUT_SECONDS
@@ -277,6 +277,7 @@ class QQReplyGenerationService:
                 user_session=user_session,
                 consent_before=consent_before,
             )
+            generation_completed = False
             try:
                 turn_timeout = self.plugin._ai_turn_timeout_seconds
                 if armed_recall_tool:
@@ -322,19 +323,23 @@ class QQReplyGenerationService:
                     # 在抢救前就没了（原本也是双重 discard）。
                     self.plugin.logger.warning(f"会话 {session_key} 响应超时，关闭并丢弃该会话")
                     raise asyncio.TimeoutError
+                generation_completed = True
             finally:
                 if armed_recall_tool:
                     # 按轮挂载的对偶收尾：工具与 handler 不得越轮存活——
                     # 同一 client 上的其他生成路径（proactive 的
                     # prompt_ephemeral 等）绝不能带着本轮的 subject 闭包
                     # 发起召回。
-                    try:
-                        user_session.set_tools(None)
-                        user_session.set_tool_call_handler(None)
-                    except Exception:
-                        # 卸载失败不能连累收尾（下面还有历史清理与成员轮
-                        # 记录），下一轮挂载会整体覆盖这两个槽位。
-                        pass
+                    for clear_slot in (
+                        user_session.set_tools,
+                        user_session.set_tool_call_handler,
+                    ):
+                        try:
+                            clear_slot(None)
+                        except Exception:
+                            # 单个卸载失败不能阻止另一槽位复位，也不能连累
+                            # 下面的历史清理与成员轮记录。
+                            pass
                 restore_session_prompt()
                 history_now = getattr(user_session, "_conversation_history", []) or []
                 if isinstance(history_now, list):
@@ -345,7 +350,11 @@ class QQReplyGenerationService:
                     # 行里的 pre-tool 可见文本先折叠进最终 ai 行，再删掉携带
                     # tool metadata 的裸 dict，保证用户看到的文本与后续上下文
                     # 一致。
-                    self._strip_tool_round_rows(history_now, history_before)
+                    self._strip_tool_round_rows(
+                        history_now,
+                        history_before,
+                        create_missing_ai_row=generation_completed,
+                    )
                 appended = list(history_now)[history_before:]
                 user_data["human_row_accepted"] = any(
                     getattr(row, "type", "") == "human" for row in appended
@@ -413,13 +422,13 @@ class QQReplyGenerationService:
             self.plugin.logger.warning(
                 f"recall_memory 工具挂载失败（本轮无召回）: {exc}"
             )
-            try:
-                set_tools(None)
-                set_handler(None)
-            except Exception:
-                # 挂载半途失败后的兜底清理：清不掉也只影响本轮（返回
-                # False 已宣布未挂载），finally 不会再动这两个槽位。
-                pass
+            # 两个槽位独立做 best-effort 清理：任一个卸载失败都不能阻止
+            # 另一个复位，否则返回 False 后可能把半挂载状态带到下一轮。
+            for clear_slot in (set_tools, set_handler):
+                try:
+                    clear_slot(None)
+                except Exception:
+                    pass
             return False
 
     def _build_recall_tool_handler(
@@ -497,7 +506,13 @@ class QQReplyGenerationService:
         )
 
     @classmethod
-    def _strip_tool_round_rows(cls, history: list, start_index: int) -> int:
+    def _strip_tool_round_rows(
+        cls,
+        history: list,
+        start_index: int,
+        *,
+        create_missing_ai_row: bool = False,
+    ) -> int:
         """Fold visible pre-tool text into the final AI row, then remove tool rows.
 
         Only rows appended at or after ``start_index`` are considered —
@@ -525,13 +540,14 @@ class QQReplyGenerationService:
                 ),
                 None,
             )
-            final_content = getattr(final_ai_row, "content", None)
-            if (
-                final_ai_row is not None
-                and isinstance(final_content, str)
-                and not final_content.startswith(pre_tool_text)
-            ):
-                final_ai_row.content = pre_tool_text + final_content
+            if final_ai_row is None and create_missing_ai_row:
+                history.append(AIMessage(content=pre_tool_text))
+            elif final_ai_row is not None:
+                final_content = getattr(final_ai_row, "content", None)
+                if isinstance(final_content, str):
+                    # sentinel 已把最终段与 pre-tool 段切开；即使最终段碰巧
+                    # 以同一句开头，也必须按结构再拼一次以匹配实际外发文本。
+                    final_ai_row.content = pre_tool_text + final_content
 
         removed = 0
         for index in range(len(history) - 1, start - 1, -1):
