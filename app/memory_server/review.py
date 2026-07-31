@@ -742,6 +742,9 @@ async def _run_review_in_background(
       identity check is cheap defense.
     """
     try:
+        if not _generation_is_current(admission_generation):
+            logger.info(f"ℹ️ {lanlan_name} 的旧身份记忆整理在调用 LLM 前失效，已丢弃")
+            return
         # 只把 review_history 调用本身包进内层 try：它抛异常才算"review 失败"，
         # 收口成 ('failed', None) 走下面统一的失败分支记一次退避。成功后的 result
         # 处理 / state 落盘异常**不**能被当成 review 失败（否则 patched/white 的

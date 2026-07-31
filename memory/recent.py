@@ -1464,6 +1464,12 @@ class CompressedRecentHistoryManager:
         retries = 0
         max_retries = 3
         while retries < max_retries:
+            # 身份可能在 spawn 后、首次 LLM 调用前，或重试退避期间被角色
+            # 复用/云导入替换。提交门只能保护磁盘，不能阻止旧任务继续占用
+            # correction_tasks 并空烧 LLM；每次调用前都要用原 admission token
+            # fail closed。
+            if recent_file.capture_recent_generation(file_path) != admission_generation:
+                return ('failed', None)
             try:
                 # 使用LLM审阅历史记录
                 set_call_type("memory_review")

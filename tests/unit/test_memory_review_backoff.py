@@ -180,13 +180,16 @@ async def _drive_spawn(memory_server, name, history):
 async def test_spawn_passes_snapshot_admission_generation():
     """The background review must retain the identity token from its snapshot read."""
     from app import memory_server
+    from utils import recent_file
 
     name = "测试角色review-generation"
     history = _history(12)
     memory_server.correction_tasks.pop(name, None)
     memory_server.gates._maint_state.pop(name, None)
 
-    admission_generation = ("review-test-recent.json", 0)
+    admission_generation = recent_file.capture_recent_generation(
+        "review-test-recent.json",
+    )
     fake_mgr = MagicMock()
     fake_mgr.aget_recent_history = AsyncMock(
         return_value=(history, admission_generation),
@@ -227,6 +230,29 @@ async def test_stale_review_failure_cannot_mutate_reused_identity(tmp_path):
     assert attempts is None
     assert memory_server.gates._maint_state.get(name) == {}
     memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_background_review_skips_manager_call(tmp_path):
+    """A review invalidated before task start must not enter the LLM manager."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-before-review-call"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    fake_mgr = MagicMock()
+    fake_mgr.review_history = AsyncMock(return_value=("failed", None))
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr):
+        await memory_server._run_review_in_background(
+            name, _history(10), asyncio.Event(), old_generation,
+        )
+
+    fake_mgr.review_history.assert_not_awaited()
 
 
 @pytest.mark.unit

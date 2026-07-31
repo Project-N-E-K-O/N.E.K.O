@@ -1332,12 +1332,16 @@ def test_review_unreadable_current_returns_failed_exactly(tmp_path, monkeypatch)
 
 
 def test_review_rejects_reused_identity_with_same_snapshot(tmp_path):
-    """A review admitted for an old identity must not patch reused bytes."""
+    """A stale review must not invoke the LLM or patch reused bytes."""
     snapshot = _review_snapshot()
     mgr, name, path = _make_manager(tmp_path)
     _write_disk(path, snapshot)
     admission_generation = recent_file.capture_recent_generation(path)
-    setattr(mgr, "_get_review_llm", lambda: _ReviewLLM(_review_corrected()))
+
+    def _unexpected_llm():
+        raise AssertionError("stale review reached the LLM")
+
+    setattr(mgr, "_get_review_llm", _unexpected_llm)
 
     recent_file.activate_recent_paths([path])
     _write_disk(path, snapshot)
@@ -1352,6 +1356,43 @@ def test_review_rejects_reused_identity_with_same_snapshot(tmp_path):
     assert [message.content for message in _read_disk(path)] == [
         message.content for message in snapshot
     ]
+
+
+def test_review_stops_before_retry_after_identity_changes(tmp_path, monkeypatch):
+    """An identity change during retry backoff must prevent a second LLM call."""
+    from memory import recent as recent_module
+
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+    admission_generation = recent_file.capture_recent_generation(path)
+    calls = 0
+
+    class _RetryingLLM:
+        async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+            nonlocal calls
+            calls += 1
+            recent_file.activate_recent_paths([path])
+            raise RuntimeError("retryable")
+
+        async def aclose(self) -> None:
+            return None
+
+    async def _no_sleep(_seconds: float) -> None:
+        return None
+
+    setattr(mgr, "_get_review_llm", _RetryingLLM)
+    monkeypatch.setattr(recent_module, "openai_retry_error_types", lambda: (RuntimeError,))
+    monkeypatch.setattr(recent_module.asyncio, "sleep", _no_sleep)
+
+    result = asyncio.run(mgr.review_history(
+        name,
+        snapshot=list(snapshot),
+        expected_generation=admission_generation,
+    ))
+
+    assert result == ('failed', None)
+    assert calls == 1
 
 
 # ─────────────── T10: review commit is one atomic RMW ───────────────
