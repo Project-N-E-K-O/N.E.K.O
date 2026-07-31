@@ -17,6 +17,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -103,5 +104,6 @@ async def run_with_character_prompt_locale(
     **kwargs,
 ):
     """Run one async operation with the latest durable character locale."""
-    with language_context(get_character_prompt_locale(name)):
+    selected = await asyncio.to_thread(get_character_prompt_locale, name)
+    with language_context(selected):
         return await operation(*args, **kwargs)
