@@ -9,6 +9,7 @@ from main_routers.workshop_router.content_gate import (
     PUBLISH_PURPOSE,
     ContentFolderBusy,
     claim_content_folder,
+    claim_partial_writer,
     claim_reference_pair,
 )
 from main_routers.workshop_router import publish
@@ -35,14 +36,14 @@ def test_exclusive_claim_rejects_reference_writer(tmp_path):
 
 def test_reference_writer_rejects_exclusive_claim(tmp_path):
     with claim_reference_pair(str(tmp_path)):
-        with pytest.raises(ContentFolderBusy, match='参考语音正在写入'):
+        with pytest.raises(ContentFolderBusy, match='局部文件正在写入'):
             with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
                 pass
 
 
-def test_reference_writers_remain_shared(tmp_path):
+def test_partial_writers_remain_shared(tmp_path):
     with claim_reference_pair(str(tmp_path)):
-        with claim_reference_pair(str(tmp_path)):
+        with claim_partial_writer(str(tmp_path), purpose='上传预览图'):
             pass
 
 

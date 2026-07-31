@@ -16,8 +16,8 @@
 """Non-blocking ownership for Workshop content folders.
 
 Steam consumes the whole folder from ``SetItemContent`` until the upload
-finishes. Reference-audio writes and folder cleanup must therefore be excluded
-for that entire span, not just while the preflight reads the manifest.
+finishes. Local file writes and folder cleanup must therefore be excluded for
+that entire span, not just while the preflight reads the manifest.
 
 Claims are bookkeeping, never wait queues. Both claim and release belong to
 the worker-thread unit that performs the blocking work so cancellation of its
@@ -39,7 +39,7 @@ CLEANUP_PURPOSE = '清理'
 
 _CLAIM_GUARD = threading.Lock()
 _EXCLUSIVE: dict[str, str] = {}
-_PAIR_WRITERS: dict[str, int] = {}
+_PARTIAL_WRITERS: dict[str, int] = {}
 
 
 def _claim_key(content_folder: str) -> str:
@@ -55,8 +55,8 @@ def claim_content_folder(content_folder: str, *, purpose: str) -> Iterator[None]
         holder = _EXCLUSIVE.get(key)
         if holder is not None:
             raise ContentFolderBusy(f'该内容目录正在{holder}，请等这次操作结束后再试')
-        if _PAIR_WRITERS.get(key):
-            raise ContentFolderBusy('参考语音正在写入，请稍后再试')
+        if _PARTIAL_WRITERS.get(key):
+            raise ContentFolderBusy('该内容目录有局部文件正在写入，请稍后再试')
         _EXCLUSIVE[key] = purpose
     try:
         yield
@@ -66,20 +66,27 @@ def claim_content_folder(content_folder: str, *, purpose: str) -> Iterator[None]
 
 
 @contextmanager
-def claim_reference_pair(content_folder: str) -> Iterator[None]:
-    """Take a shared pair-write claim, excluded by whole-folder operations."""
+def claim_partial_writer(
+    content_folder: str,
+    *,
+    purpose: str = '修改参考语音',
+) -> Iterator[None]:
+    """Take a shared local-write claim excluded by whole-folder operations."""
     key = _claim_key(content_folder)
     with _CLAIM_GUARD:
         holder = _EXCLUSIVE.get(key)
         if holder is not None:
-            raise ContentFolderBusy(f'该物品正在{holder}，等这次操作结束后再修改参考语音')
-        _PAIR_WRITERS[key] = _PAIR_WRITERS.get(key, 0) + 1
+            raise ContentFolderBusy(f'该物品正在{holder}，等这次操作结束后再{purpose}')
+        _PARTIAL_WRITERS[key] = _PARTIAL_WRITERS.get(key, 0) + 1
     try:
         yield
     finally:
         with _CLAIM_GUARD:
-            remaining = _PAIR_WRITERS.get(key, 0) - 1
+            remaining = _PARTIAL_WRITERS.get(key, 0) - 1
             if remaining > 0:
-                _PAIR_WRITERS[key] = remaining
+                _PARTIAL_WRITERS[key] = remaining
             else:
-                _PAIR_WRITERS.pop(key, None)
+                _PARTIAL_WRITERS.pop(key, None)
+
+
+claim_reference_pair = claim_partial_writer
