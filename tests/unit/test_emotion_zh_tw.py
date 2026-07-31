@@ -1307,9 +1307,11 @@ def test_chinese_inability_is_a_negation(label, confidence):
 
 
 @pytest.mark.parametrize("text", [
-    "no estoy feliz", "ni triste ni feliz", "tampoco estoy feliz", "sin estar feliz",
-    "sem estar feliz", "neither sad nor happy", "ninguno feliz", "nada feliz",
+    "no estoy feliz", "ni triste ni feliz", "tampoco estoy feliz",
+    "neither sad nor happy", "ninguno feliz", "nada feliz",
     "no estoy triste ni enojado", "nem triste nem feliz",
+    # `sin` / `sem` 曾经在这份清单里，后来整条撤出两张表 ——
+    # 见 test_a_preposition_is_not_a_negation
 ])
 def test_the_two_negation_tables_agree(text):
     """One table feeds the label parser, the other the heuristic — same words.
@@ -1397,10 +1399,42 @@ def test_a_fixed_phrase_containing_a_negation_is_not_a_negation(label, confidenc
 
 
 @pytest.mark.parametrize("confidence", CONFIDENCES)
-@pytest.mark.parametrize("label", ["sin estar feliz", "sem estar feliz"])
-def test_the_bare_preposition_still_negates(label, confidence):
-    assert _label(label, confidence) == "neutral"
-    assert _heur(label) is None
+@pytest.mark.parametrize("label", [
+    "sin miedo y feliz", "sem medo e feliz", "sin miedo feliz", "sin estar feliz",
+])
+def test_a_preposition_is_not_a_negation(label, confidence):
+    """`without` governs its own complement, and nothing here can find it.
+
+    `sin miedo y feliz` denies the fear, not the happiness, and the last one
+    genuinely does deny it -- telling them apart needs the complement, which this
+    module does not parse. Fixed-phrase exemptions cannot help either: the
+    complement is open-ended. So these two are out of the tables entirely, which
+    is also what main did. Losing the last case is the price; reading an
+    assertion as its own denial is not one we take.
+    """
+    assert _label(label, confidence) == "happy"
+    assert _heur(label) == "happy"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("nadando feliz", "happy"),
+    ("nadie feliz", "happy"),
+    ("nice happy", "happy"),
+    ("nada feliz", "neutral"),
+    ("ninguno feliz", "neutral"),
+    ("no feliz", "neutral"),
+    ("isn't happy", "neutral"),
+])
+def test_a_latin_negation_prefix_must_be_the_whole_first_word(label, expected, confidence):
+    """Compacting hides word boundaries, and the fuzzy cutoff does the rest.
+
+    `nadando` opens with a negation and the remainder scores close enough to the
+    emotion word at the confidence the endpoint passes. The rule is the same one
+    single CJK characters get, generalised: in a script that has word boundaries,
+    the negation has to *be* the first word rather than merely open it.
+    """
+    assert _label(label, confidence) == expected
 
 
 @pytest.mark.parametrize("text, expected", [

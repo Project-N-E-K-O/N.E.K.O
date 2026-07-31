@@ -490,10 +490,15 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
     # 管线（这张只给启发式读用户原文，那张只给 label parser 读模型标签）。只补一边
     # 的后果是同一句话两条路径给相反答案 —— `ni triste ni feliz` 曾经 label 侧
     # neutral、启发式侧 happy。
+    # ⚠️ 不收 `sin` / `sem`（＝without）：它们是**介词**，只否定自己的补语，
+    # `sin miedo y feliz`（无所畏惧而且开心）里被否定的是 `miedo` 不是 `feliz`。
+    # 要判对得做补语作用域分析，这不在本门的能力范围内 —— 加固定短语豁免也堵不住，
+    # 因为补语是开放的。宁可漏掉 `sin estar feliz`（＝主分支上的现状），
+    # 也不要把肯定句读成否定。
     'es': ('no ', 'nunca ', 'jamás ', 'jamas ',
-           'ni ', 'tampoco ', 'nada ', 'ninguno ', 'ningún ', 'ningun ', 'sin '),
+           'ni ', 'tampoco ', 'nada ', 'ninguno ', 'ningún ', 'ningun '),
     'pt': ('não ', 'nao ', 'nunca ', 'jamais ',
-           'nem ', 'tampouco ', 'nada ', 'nenhum ', 'sem '),
+           'nem ', 'tampouco ', 'nada ', 'nenhum '),
 }
 
 # 情态复合否定：整词才是否定，且**只有紧贴情绪词时**才是在否定它。
@@ -548,11 +553,8 @@ HEURISTIC_NEGATION_BLOCKLIST_BY_LANG = {
               '特別', '告別', '分別', '個別', '區別', '差別', '級別', '性別',
               '識別', '辨別', '送別', '離別', '道別', '差不多'),
     'ru': ('не только',),
-    # `sin duda / sem dúvida` ＝「毫无疑问」，和 `no doubt` 同族：里面的否定词是
-    # 固定搭配的一半，整个短语是**加强肯定**。
-    'es': ('no solo', 'sin duda', 'sin ninguna duda'),
-    'pt': ('não só', 'nao so', 'não apenas', 'nao apenas',
-           'sem dúvida', 'sem duvida', 'sem nenhuma dúvida', 'sem nenhuma duvida'),
+    'es': ('no solo',),
+    'pt': ('não só', 'nao so', 'não apenas', 'nao apenas'),
 }
 
 # 让步/转折连词：window 内出现这些词时，词后才算与命中关键词同小句的前文。
@@ -759,10 +761,11 @@ EMOTION_NEGATION_WORDS_BY_LANG = {
     # 西语此前是蹭英文的 `no` 才碰巧对，葡语一个都没有。
     # ⚠️ 这张表只喂 label parser，上面的 HEURISTIC_NEGATION_TOKENS_BY_LANG 只喂启发式。
     # 两边收词口径必须一致，否则同一句话两条管线给相反答案。
+    # `sin` / `sem` 同上：介词只否定补语，不收。
     'es': ('no', 'nunca', 'jamás', 'jamas', 'ni', 'tampoco',
-           'nada', 'ninguno', 'ningún', 'ningun', 'sin'),
+           'nada', 'ninguno', 'ningún', 'ningun'),
     'pt': ('não', 'nao', 'nunca', 'jamais', 'nem',
-           'nada', 'tampouco', 'nenhum', 'sem'),
+           'nada', 'tampouco', 'nenhum'),
     'ko': ('안', '아니', '못', '않', '아니다', '아닌', '아님'),
     'ru': ('не', 'нет', 'никогда'),
 }

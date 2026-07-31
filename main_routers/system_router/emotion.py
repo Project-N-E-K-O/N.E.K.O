@@ -288,14 +288,15 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
         # spaces. No input distinguishes them on today's tables -- consistency
         # here is intent, not something a test can hold in place.
         rest = sanitized_compact[len(negation):]
-        if len(negation) <= 2 and negation.isascii():
-            # Latin negations this short are syllables as often as words -- `ni`
-            # turned `nice happy` into neutral at the confidence the endpoint
-            # passes, because `cehappy` fuzzy-matches `happy`. Same rule the
-            # single CJK character gets: what follows has to be an alias outright.
-            if rest in _EMOTION_COMPACT_ALIAS_LOOKUP:
-                return True
-            continue
+        if tokens and not _UNBOUNDED_SCRIPT_RE.search(negation):
+            # A negation in a script that has word boundaries has to *be* the
+            # first word, not merely open it. Compacting hides that: `nice happy`
+            # starts with `ni` and `nadando feliz` with `nada`, and the remainder
+            # of each fuzzy-matches the emotion word once the cutoff drops to
+            # what the endpoint passes. Compared compacted so contractions still
+            # line up (`isn't` against `isnt`).
+            if re.sub(r"[\W_]+", "", tokens[0], flags=re.UNICODE) != negation:
+                continue
         if len(negation) == 1:
             # A single character is as likely to be the first half of a word as a
             # negation, so it only counts when what follows is an alias outright.
