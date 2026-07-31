@@ -1024,18 +1024,55 @@ async def release_storage_startup_barrier(
     await _request_memory_server_continue_startup(reason)
     try:
         initialized = await _ensure_main_server_runtime_initialized(reason=reason)
-    except Exception:
+    except BaseException:
+        # Once memory_server has accepted continue-startup, every failed exit from
+        # main initialization must put its admission guard back before the storage
+        # router restores a blocking root_state snapshot.  CancelledError is a
+        # BaseException, so an Exception-only handler leaves initialized memory
+        # writable against the rolled-back storage state.
         _enable_main_storage_limited_mode("runtime_initialization_failed")
-        try:
-            await _request_memory_server_block_startup(
+
+        # Re-blocking is compensating work, not part of the cancelled request.  A
+        # second cancellation (for example server shutdown following a client
+        # disconnect) must not interrupt it halfway through.  Keep the request in
+        # this handler until the HTTP call has really finished, then re-raise the
+        # original exception below.
+        block_task = asyncio.ensure_future(
+            _request_memory_server_block_startup(
                 f"{reason}:main_server_init_failed"
             )
+        )
+        try:
+            await asyncio.shield(block_task)
+        except asyncio.CancelledError:
+            while not block_task.done():
+                try:
+                    await asyncio.wait({block_task})
+                except asyncio.CancelledError:
+                    continue
         except Exception as revert_exc:
             logger.warning(
                 "main_server 初始化失败后恢复 memory_server limited-mode 失败: %s",
                 revert_exc,
                 exc_info=True,
             )
+            # ``shield`` already retrieved this exception; do not call result()
+            # below and log the same failure a second time.
+            block_task = None
+        else:
+            # ``shield`` returns the task result, so there is nothing left to
+            # retrieve on the ordinary path.
+            block_task = None
+
+        if block_task is not None and block_task.done() and not block_task.cancelled():
+            try:
+                block_task.result()
+            except Exception as revert_exc:
+                logger.warning(
+                    "main_server 初始化取消后恢复 memory_server limited-mode 失败: %s",
+                    revert_exc,
+                    exc_info=True,
+                )
         raise
     _disable_main_storage_limited_mode()
     _start_neko_servers_integration_workers()
