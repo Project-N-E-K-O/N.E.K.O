@@ -545,6 +545,92 @@ def test_scoped_prompt_locale_survives_restart_and_rejects_stale_write(
     assert locale_state.get_subject_prompt_locale("Neko", subject) == "zh-TW"
 
 
+def test_scoped_prompt_locale_batch_persists_once_per_phase(monkeypatch):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    subjects = [
+        MemorySubject.group_participant("qq", "7788", "1001"),
+        MemorySubject.group_participant("qq", "7788", "1002"),
+    ]
+    writes = []
+    locale_state._subject_locale_cache["BatchNeko"] = {}
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "atomic_write_json",
+        lambda path, payload, **kwargs: writes.append((path, payload, kwargs)),
+    )
+
+    orders = locale_state.reserve_subject_prompt_locale_orders(
+        "BatchNeko",
+        subjects,
+    )
+    assert len(orders) == 2
+    assert len(writes) == 1
+
+    assert locale_state.record_subject_prompt_locales(
+        "BatchNeko",
+        [
+            (subjects[0], "zh-TW", orders[0]),
+            (subjects[1], "en", orders[1]),
+        ],
+    ) == ["zh-TW", "en"]
+    assert len(writes) == 2
+    assert len(writes[-1][1]["subjects"]) == 2
+
+
+def test_prompt_locale_writes_honor_cloudsave_fence(monkeypatch):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_BOOTSTRAP_IMPORTING,
+        MaintenanceModeError,
+    )
+
+    name = "FencedNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    character_before = ("zh-CN", 7, 7)
+    subjects_before = {"sentinel": ("zh-CN", 8, 8)}
+    locale_state._locale_cache[name] = character_before
+    locale_state._subject_locale_cache[name] = dict(subjects_before)
+
+    def blocked(target):
+        raise MaintenanceModeError(
+            ROOT_MODE_BOOTSTRAP_IMPORTING,
+            operation="save",
+            target=target,
+        )
+
+    monkeypatch.setattr(locale_state, "_assert_prompt_locale_writable", blocked)
+    writes = (
+        lambda: locale_state.reserve_character_prompt_locale_order(name),
+        lambda: locale_state.record_character_prompt_locale(
+            name,
+            "zh-TW",
+            order=9,
+        ),
+        lambda: locale_state.reserve_subject_prompt_locale_order(name, subject),
+        lambda: locale_state.record_subject_prompt_locale(
+            name,
+            subject,
+            "zh-TW",
+            order=9,
+        ),
+    )
+
+    for write in writes:
+        with pytest.raises(MaintenanceModeError):
+            write()
+
+    assert locale_state._locale_cache[name] == character_before
+    assert locale_state._subject_locale_cache[name] == subjects_before
+
+
 @pytest.mark.asyncio
 async def test_scoped_history_persists_subject_locale(monkeypatch):
     import json
@@ -605,19 +691,23 @@ async def test_scoped_history_batch_persists_each_completed_subject_locale(
         def sanitize_speaker_label(label):
             return label
 
-    orders = iter([41, 42])
+    reserved = []
     recorded = []
     monkeypatch.setattr(runtime, "fact_store", FactStore())
     monkeypatch.setattr(
         locale_state,
-        "reserve_subject_prompt_locale_order",
-        lambda _name, _subject: next(orders),
+        "reserve_subject_prompt_locale_orders",
+        lambda name, subjects: (
+            reserved.append((name, [subject.key for subject in subjects]))
+            or [41, 42]
+        ),
     )
     monkeypatch.setattr(
         locale_state,
-        "record_subject_prompt_locale",
-        lambda name, subject, language, *, order: recorded.append(
+        "record_subject_prompt_locales",
+        lambda name, updates: recorded.extend(
             (name, subject.key, language, order)
+            for subject, language, order in updates
         ),
     )
     request = routes.ScopedHistoryRequest(
@@ -652,6 +742,13 @@ async def test_scoped_history_batch_persists_each_completed_subject_locale(
         "ok",
         "failed",
     ]
+    assert reserved == [(
+        "Neko",
+        [
+            "group_participant:qq:7788:1001",
+            "group_participant:qq:7788:1002",
+        ],
+    )]
     assert recorded == [
         ("Neko", "group_participant:qq:7788:1001", "zh-TW", 41),
     ]
@@ -791,8 +888,8 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
     )
     synthesis_text = SynthesisMixin._synthesis_locale_text(
         [{"id": "abcdef1234567890", "text": "怕貓", "importance": 5}],
-        ["愛狗"],
     )
+    assert synthesis_text == "怕貓"
 
     for raw_text in (dedup_text, refine_text, promotion_text, synthesis_text):
         assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"

@@ -70,6 +70,17 @@ def _subject_locale_path(name: str) -> str:
     )
 
 
+def _assert_prompt_locale_writable(target: str) -> None:
+    from utils.cloudsave_runtime import assert_cloudsave_writable
+    from utils.config_manager import get_config_manager
+
+    assert_cloudsave_writable(
+        get_config_manager(),
+        operation="save",
+        target=target,
+    )
+
+
 def _subject_locale_key(subject) -> str:
     from memory.scopes import coerce_subject
 
@@ -223,6 +234,7 @@ def _persist_subject_locale_state_unlocked(
 def reserve_character_prompt_locale_order(name: str) -> int:
     """Reserve and durably persist the next per-character causal order."""
     with _get_locale_lock(name):
+        _assert_prompt_locale_writable("prompt_locale.json")
         language, order, reserved_order = _load_locale_state_unlocked(name)
         high_water = max(order or 0, reserved_order or 0)
         selected_order = max(time.time_ns(), high_water + 1)
@@ -248,6 +260,7 @@ def record_character_prompt_locale(
     selected_order = order if isinstance(order, int) and not isinstance(order, bool) else None
 
     with _get_locale_lock(name):
+        _assert_prompt_locale_writable("prompt_locale.json")
         current_language, current_order, reserved_order = _load_locale_state_unlocked(name)
         if current_order is not None and (
             selected_order is None or selected_order < current_order
@@ -275,15 +288,29 @@ def get_character_prompt_locale(name: str) -> str | None:
 
 def reserve_subject_prompt_locale_order(name: str, subject) -> int:
     """Reserve the next durable causal order for one scoped memory owner."""
-    key = _subject_locale_key(subject)
+    return reserve_subject_prompt_locale_orders(name, [subject])[0]
+
+
+def reserve_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
+    """Reserve causal orders for multiple subjects with one sidecar write."""
+    keys = [_subject_locale_key(subject) for subject in subjects]
+    if not keys:
+        return []
     with _get_locale_lock(name):
+        _assert_prompt_locale_writable("scoped_prompt_locales.json")
         states = dict(_load_subject_locale_state_unlocked(name))
-        language, order, reserved_order = states.get(key, (None, None, None))
-        high_water = max(order or 0, reserved_order or 0)
-        selected_order = max(time.time_ns(), high_water + 1)
-        states[key] = (language, order, selected_order)
+        selected_orders = []
+        for key in keys:
+            language, order, reserved_order = states.get(
+                key,
+                (None, None, None),
+            )
+            high_water = max(order or 0, reserved_order or 0)
+            selected_order = max(time.time_ns(), high_water + 1)
+            states[key] = (language, order, selected_order)
+            selected_orders.append(selected_order)
         _persist_subject_locale_state_unlocked(name, states)
-        return selected_order
+        return selected_orders
 
 
 def record_subject_prompt_locale(
@@ -294,35 +321,55 @@ def record_subject_prompt_locale(
     order: int | None = None,
 ) -> str | None:
     """Persist the latest explicit locale for one group/member subject."""
-    key = _subject_locale_key(subject)
-    selected = None
-    if is_supported_language_code(language):
-        selected = normalize_language_code(str(language), format="full")
-    selected_order = (
-        order
-        if isinstance(order, int) and not isinstance(order, bool)
-        else None
-    )
+    return record_subject_prompt_locales(
+        name,
+        [(subject, language, order)],
+    )[0]
+
+
+def record_subject_prompt_locales(name: str, updates) -> list[str | None]:
+    """Record multiple scoped locales with one sidecar write."""
+    prepared = []
+    for subject, language, order in updates:
+        selected = None
+        if is_supported_language_code(language):
+            selected = normalize_language_code(str(language), format="full")
+        selected_order = (
+            order
+            if isinstance(order, int) and not isinstance(order, bool)
+            else None
+        )
+        prepared.append((_subject_locale_key(subject), selected, selected_order))
+    if not prepared:
+        return []
 
     with _get_locale_lock(name):
+        _assert_prompt_locale_writable("scoped_prompt_locales.json")
         states = dict(_load_subject_locale_state_unlocked(name))
-        current_language, current_order, reserved_order = states.get(
-            key,
-            (None, None, None),
-        )
-        if current_order is not None and (
-            selected_order is None or selected_order < current_order
-        ):
-            return current_language
-        next_reserved_order = reserved_order
-        if selected_order is not None:
-            next_reserved_order = max(
-                reserved_order or selected_order,
-                selected_order,
+        results = []
+        changed = False
+        for key, selected, selected_order in prepared:
+            current_language, current_order, reserved_order = states.get(
+                key,
+                (None, None, None),
             )
-        states[key] = (selected, selected_order, next_reserved_order)
-        _persist_subject_locale_state_unlocked(name, states)
-    return selected
+            if current_order is not None and (
+                selected_order is None or selected_order < current_order
+            ):
+                results.append(current_language)
+                continue
+            next_reserved_order = reserved_order
+            if selected_order is not None:
+                next_reserved_order = max(
+                    reserved_order or selected_order,
+                    selected_order,
+                )
+            states[key] = (selected, selected_order, next_reserved_order)
+            results.append(selected)
+            changed = True
+        if changed:
+            _persist_subject_locale_state_unlocked(name, states)
+        return results
 
 
 def get_subject_prompt_locale(name: str, subject) -> str | None:

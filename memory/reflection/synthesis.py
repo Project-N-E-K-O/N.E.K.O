@@ -56,14 +56,13 @@ from ._shared import (
 
 class SynthesisMixin:
     @staticmethod
-    def _synthesis_locale_text(
-        facts: list[dict],
-        related_texts: list[str],
-    ) -> str:
+    def _synthesis_locale_text(facts: list[dict]) -> str:
         """Return raw fact text without importance labels or watermarks."""
-        texts = [fact.get('text', '') for fact in facts]
-        texts.extend(related_texts)
-        return "\n".join(str(text) for text in texts if text)
+        return "\n".join(
+            str(fact.get('text', ''))
+            for fact in facts
+            if fact.get('text')
+        )
 
     async def synthesize_scoped_reflections(
         self,
@@ -273,17 +272,15 @@ class SynthesisMixin:
             master_name = name_mapping.get('human', '主人')
 
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
-        related_locale_texts: list[str] = []
         related_block = await self._build_related_context_block(
             lanlan_name,
             unabsorbed,
             subject=memory_subject,
-            locale_texts=related_locale_texts,
         )
         from utils.language_utils import detect_prompt_language, get_global_language_full
         reflection_prompt = get_reflection_prompt(
             detect_prompt_language(
-                self._synthesis_locale_text(unabsorbed, related_locale_texts),
+                self._synthesis_locale_text(unabsorbed),
                 ui_language=get_global_language_full(),
             )
         )
@@ -498,7 +495,6 @@ class SynthesisMixin:
         unabsorbed: list[dict],
         *,
         subject=None,
-        locale_texts: list[str] | None = None,
     ) -> str:
         """When embeddings are available, recall absorbed facts as RELATED_CONTEXT;
         unavailable / empty recall → return an empty string (the
@@ -589,12 +585,6 @@ class SynthesisMixin:
         if not related:
             return ""
 
-        if locale_texts is not None:
-            locale_texts.extend(
-                str(fact.get('text') or '')
-                for fact in related
-                if fact.get('text')
-            )
         related_text = "\n".join(
             f"- {f.get('text', '')} (importance: {f.get('importance', 5)})"
             for f in related
