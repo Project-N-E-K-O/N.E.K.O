@@ -109,9 +109,28 @@ function Get-PreviousManifest {
     if ([string]::IsNullOrWhiteSpace($PreviousReleaseTag)) {
         return $null
     }
-    Invoke-Checked gh 'release' 'download' $PreviousReleaseTag '--repo' 'Project-N-E-K-O/N.E.K.O' '--pattern' "*_$($Target.Key)_manifest.json" '--dir' $Destination
+    $repository = 'Project-N-E-K-O/N.E.K.O'
+    $assetNames = @(& gh release view $PreviousReleaseTag '--repo' $repository '--json' 'assets' '--jq' '.assets[].name')
+    if ($LASTEXITCODE -ne 0) {
+        throw "Unable to inspect previous release $PreviousReleaseTag."
+    }
+    $manifestNames = @($assetNames | Where-Object { $_ -like "*_$($Target.Key)_manifest.json" })
+    if ($manifestNames.Count -eq 0) {
+        Write-Warning "Previous release $PreviousReleaseTag has no $($Target.Key) Portable manifest; building a full package only."
+        return $null
+    }
+    if ($manifestNames.Count -ne 1) {
+        throw "Expected exactly one previous $($Target.Key) manifest in release $PreviousReleaseTag."
+    }
+    Invoke-Checked gh 'release' 'download' $PreviousReleaseTag '--repo' $repository '--pattern' $manifestNames[0] '--dir' $Destination
     if ($Target.Key -eq 'linux_x64') {
-        Invoke-Checked gh 'release' 'download' $PreviousReleaseTag '--repo' 'Project-N-E-K-O/N.E.K.O' '--pattern' '*_linux_x64_appimage_manifest.json' '--dir' $Destination
+        $appImageManifestNames = @($assetNames | Where-Object { $_ -like '*_linux_x64_appimage_manifest.json' })
+        if ($appImageManifestNames.Count -gt 1) {
+            throw "Expected at most one previous linux_x64_appimage manifest in release $PreviousReleaseTag."
+        }
+        if ($appImageManifestNames.Count -eq 1) {
+            Invoke-Checked gh 'release' 'download' $PreviousReleaseTag '--repo' $repository '--pattern' $appImageManifestNames[0] '--dir' $Destination
+        }
     }
     $manifest = @(Get-ChildItem -LiteralPath $Destination -Filter "*_$($Target.Key)_manifest.json" -File)
     if ($manifest.Count -ne 1) {

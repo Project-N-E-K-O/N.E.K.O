@@ -331,6 +331,19 @@ def test_local_release_build_clears_stale_electron_dist_output() -> None:
     )
 
 
+def test_local_release_build_falls_back_when_previous_manifest_is_absent() -> None:
+    local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+
+    release_probe = local_script.index("$assetNames = @(& gh release view")
+    missing_guard = local_script.index("if ($manifestNames.Count -eq 0)")
+    full_only = local_script.index("building a full package only")
+    manifest_download = local_script.index(
+        "Invoke-Checked gh 'release' 'download' $PreviousReleaseTag"
+    )
+    assert release_probe < missing_guard < full_only < manifest_download
+    assert "if ($appImageManifestNames.Count -eq 1)" in local_script
+
+
 def test_local_release_build_rejects_unsupported_architecture_and_handles_missing_linux_config() -> None:
     local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 
