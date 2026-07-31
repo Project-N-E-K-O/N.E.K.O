@@ -7963,6 +7963,9 @@ async def test_provider_final_lock_then_overflow_preserves_accepted_final() -> N
         )
     )
     await asyncio.sleep(0)
+    assert final_task.done() is False
+    assert overflow_task.done() is False
+    assert runtime._asr_final_lock.locked()
     completion_release.set()
     await asyncio.gather(final_task, overflow_task)
     await runtime._wait_asr_transcript_dispatch_idle()
