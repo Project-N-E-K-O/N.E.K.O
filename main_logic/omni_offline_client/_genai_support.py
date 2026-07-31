@@ -421,6 +421,11 @@ class _GenaiMixin:
             # collected 为空，但这轮确实不是普通文本轮。
             saw_tool_call_fragment = False
             had_text = False
+            # 本轮真的有非空文本 yield 给用户（≠ had_text：模型吐了 text
+            # part 但被 leak filter 整段抑制时，用户其实什么都没看到）。
+            # 零执行轮的"要不要再试一轮"只看这个——OpenAI 路径那边天然
+            # 是这个语义（它的 streamed_text_buffer 累的就是过滤后的文本）。
+            visible_text = False
             # 累积本轮已经 yield 给用户的 text，下面写 assistant 历史时
             # 用作 ``content`` —— 否则下一轮 LLM 看到 ``content=""`` 会
             # 不知道自己已经说过这部分话，可能重复或改口。
@@ -493,6 +498,8 @@ class _GenaiMixin:
                                     text, tool_leak_filter, provider=tool_leak_provider,
                                 )
                             had_text = True
+                            if text:
+                                visible_text = True
                             streamed_text_buffer += text
                             chunk_out = LLMStreamChunk(content=text)
                             if tool_leak_filter is not None:
@@ -578,6 +585,9 @@ class _GenaiMixin:
                     if tail:
                         if collected_tool_calls:
                             streamed_text_buffer += tail
+                        # tail 是真的流给用户的（全 drop 的那条路径不进
+                        # buffer，但用户照样看得见），零执行轮的判据要算上。
+                        visible_text = True
                         tail_chunk = LLMStreamChunk(content=tail)
                         setattr(tail_chunk, "_tool_leak_filtered", True)
                         yield tail_chunk
@@ -598,7 +608,12 @@ class _GenaiMixin:
                 # 流过文本就直接跳出循环去 forced-finalize——#2597 引入这条
                 # 分支的目的（不要早 return，要走到 forced-finalize + 封顶
                 # 日志）由 break 完整保留，被放大的只是重试本身。
-                if had_text:
+                #
+                # 判据是 visible_text 而不是 had_text：模型只吐了 tool-call
+                # 标记文本、被 leak filter 整段抑制时 had_text 也是真，可用户
+                # 一个字都没看到——那种轮次白白放弃重试，下一轮本来可能给出
+                # 合法调用（Codex P2）。
+                if visible_text:
                     zero_exec_break = True
                     break
                 continue

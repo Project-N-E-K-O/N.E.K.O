@@ -3651,6 +3651,114 @@ async def test_genai_zero_execution_round_without_text_still_retries(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_genai_zero_execution_round_retries_when_text_was_fully_filtered(
+    monkeypatch,
+):
+    """被 leak filter 整段抑制的那一轮，用户其实什么都没看到 → 仍可重试。
+
+    模型只吐了 tool-call 标记文本时，filter 认出泄漏并整段吞掉（feed 与
+    finalize 都返回空），可 `had_text` 照样为真。拿 had_text 当"已经流过
+    文本"的判据会白白放弃这一轮的重试，而下一轮本来可能给出合法调用
+    （Codex P2）。判据必须是**真的 yield 出去过非空文本**。
+
+    OpenAI 路径天然是这个语义（streamed_text_buffer 累的就是过滤后的
+    文本），这条测试钉住 genai 侧不再跑偏。"""  # noqa: DOCSTRING_CJK
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    handler_calls: list = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    leak = (
+        'recall_memory</name><parameter name="query">secret</parameter>'
+        '</function></seed:tool_call>'
+    )
+    client, calls = _bare_genai_client(
+        [
+            # 第 1 轮：文本全是泄漏标记（被 filter 吞光）+ 无名分片。
+            [
+                _GenaiPart(text=leak),
+                _GenaiPart(function_call=_GenaiFunctionCall("", id_="c_empty")),
+            ],
+            # 第 2 轮：模型给出合法调用——只有允许重试才够得着。
+            [_GenaiPart(function_call=_GenaiFunctionCall(
+                "recall_memory", {"query": "x"}, id_="c1",
+            ))],
+            [_GenaiPart(text="最终回答")],
+        ],
+        handler, cap=3,
+    )
+
+    streamed = ""
+    async for c in client._astream_genai_with_tools(
+        [{"role": "user", "content": "x"}],
+        _tool_leak_filter=ToolLeakFilter(tool_names={"recall_memory"}),
+        _tool_leak_provider="free",
+    ):
+        if getattr(c, "content", ""):
+            streamed += c.content
+
+    assert handler_calls == ["recall_memory"], (
+        "整段被过滤掉的那一轮被当成「已经流过文本」，白白放弃了重试"
+    )
+    assert "secret" not in streamed
+    assert "最终回答" in streamed
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
+async def test_genai_zero_execution_round_counts_the_leak_filter_tail_as_visible(
+    monkeypatch,
+):
+    """本轮唯一流出去的文本是 leak filter 收尾吐的 tail —— 那也是用户看见了。
+
+    与上一条互为对照：filter 认定是泄漏时整段吞掉（用户没看见，可以重试），
+    只是**扣住半截等下文**时收尾会把它吐出来（用户看见了，不能重试，否则
+    下一轮同一段文本再来一遍）。判据只看 feed 的返回、漏掉 tail 的实现在
+    这两条之间必有一条打红。"""  # noqa: DOCSTRING_CJK
+    from utils.llm_tool_leak_filter import ToolLeakFilter
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    handler_calls: list = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={})
+
+    client, calls = _bare_genai_client(
+        [[
+            # '<see' 是"可能是标记开头"的半截：feed 扣住不放，finalize 吐出。
+            _GenaiPart(text="<see"),
+            _GenaiPart(function_call=_GenaiFunctionCall("", id_="c_empty")),
+        ]],
+        handler, cap=3,
+        finalize_parts=[_GenaiPart(text="最终回答")],
+    )
+
+    streamed = ""
+    async for c in client._astream_genai_with_tools(
+        [{"role": "user", "content": "x"}],
+        _tool_leak_filter=ToolLeakFilter(tool_names={"recall_memory"}),
+        _tool_leak_provider="free",
+    ):
+        if getattr(c, "content", ""):
+            streamed += c.content
+
+    assert handler_calls == []
+    assert streamed.count("<see") == 1, (
+        f"收尾吐出的 tail 没算进「用户看见了」，同一段文本被重放: {streamed!r}"
+    )
+    assert len(calls) == 2, (
+        f"零执行轮之后只该有 forced-finalize 一次调用，实际 {len(calls)} 次"
+    )
+
+
+@pytest.mark.asyncio
 async def test_genai_cap_multi_runaway_still_warns(monkeypatch):
     """genai 版三分支封顶日志的第三路（与 OpenAI 版对偶）：cap>1 且执行过
     tool 的真 runaway 保持 WARNING——主程序（cap=3）的封顶信号不因 cap=1

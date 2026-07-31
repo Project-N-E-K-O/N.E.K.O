@@ -2353,12 +2353,174 @@ async def test_batch_extraction_raises_when_an_entry_cannot_be_placed(
 
 
 @pytest.mark.asyncio
+async def test_batch_entry_absorbs_bare_strings_and_the_object_own_text(tmp_path):
+    """两种「形状不规范但归属毫无歧义」的内容必须收下，不能丢。
+
+    - ``facts`` 里的**裸字符串**：模型偶尔直接给一句话而不是对象。它明确
+      承载内容，归属由所在段对象给定，promote 成 ``{'text': ...}`` 是无损的。
+    - 段对象**同时**带 ``facts`` 数组和自己的 ``text``：两种约定混用，但
+      两者都挂在这一个段号上。list 分支不能把元素自带的 text 吃掉——那条
+      内容会连带着桶一起被 pop 掉（CodeRabbit 抓的，正撞在本方法 docstring
+      立的不变式上）。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {
+                "segment": 1,
+                "text": "段对象自带的事实",
+                "importance": 8,
+                "facts": [
+                    "裸字符串事实",
+                    {"text": "规范事实", "importance": 6},
+                    # 假值不得渲染成文本。
+                    123,
+                    True,
+                ],
+            },
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["ok", "ok"]
+    assert {f["text"] for f in results[0]["created"]} == {
+        "裸字符串事实", "规范事实", "段对象自带的事实",
+    }
+    persisted = await fs.aload_facts("Neko")
+    assert all(f["subject_id"] == "qq:7788:1001" for f in persisted)
+    # 数字/布尔不承载内容 → 计 dropped，不影响 ok。
+    assert results[0]["dropped"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("junk", [
+    {"note": "这句话没写进 text"},
+    {"text": 123, "detail": "但这里有内容"},
+    ["嵌在数组里的内容"],
+])
+async def test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment(
+    tmp_path, junk,
+):
+    """看不懂形状、但还攥着文字的条目 → 本段 failed（保留重试）。
+
+    嵌套形状消除了「有内容却归属不明」，但消除不了「有内容却看不懂形状」。
+    把这类当成空壳静默丢掉、该段照报 ok，调用方就会 pop 掉那个桶——
+    成员维度的唯一副本，内容真的没了（Codex P1）。
+
+    认出来的事实仍照常落盘：重试会把它们重新抽一遍、SHA-256 去重兜住重复，
+    而万一重试一直失败，起码这些不会跟着丢。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {"segment": 1, "facts": [
+                {"text": "认得出的事实", "importance": 5},
+                junk,
+            ]},
+            {"segment": 2, "facts": [{"text": "邻段不受连累", "importance": 5}]},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["failed", "ok"], (
+        "带文字的看不懂条目被当成空壳丢了，该段却照报 ok"
+    )
+    assert [f["text"] for f in results[0]["created"]] == ["认得出的事实"]
+    assert results[0]["dropped"] == 0, "它不是空壳，不该记进 dropped"
+    persisted = {f["text"] for f in await fs.aload_facts("Neko")}
+    assert persisted == {"认得出的事实", "邻段不受连累"}
+
+
+@pytest.mark.asyncio
+async def test_batch_entry_stray_text_on_the_segment_object_fails_the_segment(
+    tmp_path,
+):
+    """文字挂在**段对象本身**而不是 facts 里时，同样不能当成本段的结论。
+
+    与上一条同一条不变式，只是位置不同：``{"segment": 1, "facts": [...],
+    "note": "…"}`` 里的 note 我们没读懂也没用上。只查 facts 数组、不查段
+    对象剩下的键，这条内容照样会连着桶一起消失。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {
+                "segment": 1,
+                "facts": [{"text": "认得出的事实", "importance": 5}],
+                "note": "这段旁挂的内容没人读",
+            },
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["failed", "ok"]
+    assert [f["text"] for f in results[0]["created"]] == ["认得出的事实"]
+
+    # 对照：段对象上只有评分之类的非文本旁挂键，不是内容，本段照常 ok。
+    async def _numeric_leftover(prompt, lanlan_name, **kwargs):
+        return [
+            {"segment": 1, "facts": [{"text": "认得出的事实", "importance": 5}],
+             "confidence": 0.9},
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _numeric_leftover
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+    assert [r["status"] for r in results] == ["ok", "ok"]
+
+
+def test_carries_unused_text_separates_empty_shells_from_wrapped_content():
+    """`dropped`（空壳）与 `suspect`（看不懂但有内容）的分界单元契约。"""  # noqa: DOCSTRING_CJK
+    f = FactStore._carries_unused_text
+    # 空壳：丢了不丢内容。
+    assert f({}) is False
+    assert f({"text": ""}) is False
+    assert f({"text": "   ", "importance": 5}) is False
+    assert f("") is False
+    assert f(123) is False
+    assert f(None) is False
+    # 裹着内容：绝不能静默丢。
+    assert f({"note": "Alice 养猫"}) is True
+    assert f(["Alice 养猫"]) is True
+    assert f({"a": {"b": "Alice 养猫"}}) is True
+
+
+@pytest.mark.asyncio
 async def test_batch_extraction_drops_only_content_free_junk(tmp_path):
-    """段对象里的垃圾条目丢弃并回报 dropped——但它**不承载内容**。
+    """段对象里的**空壳**条目丢弃并回报 dropped，本段照常 ok。
 
     嵌套输出下事实的归属来自它所在的段对象，不存在"有内容却归属不明"
-    的条目；能被丢的只有非 dict / text 为空这类空壳。这正是嵌套形状比
-    per-fact 段号强的地方：丢弃不再等于丢内容。"""  # noqa: DOCSTRING_CJK
+    的条目；能被静默丢的只有空壳（空文本 / 空串 / null / 只有评分没有
+    文本）。这正是嵌套形状比 per-fact 段号强的地方：丢弃不再等于丢内容。
+    裹着文字的看不懂形状走另一条路（该段 failed），见
+    ``test_batch_entry_with_unreadable_shape_holding_text_fails_the_segment``。"""  # noqa: DOCSTRING_CJK
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -2367,7 +2529,8 @@ async def test_batch_extraction_drops_only_content_free_junk(tmp_path):
         return [
             {"segment": 1, "facts": [
                 {"text": "   ", "importance": 5},
-                "不是对象",
+                "",
+                None,
                 {"importance": 5},
                 {"text": "有效条目", "importance": 5},
             ]},
@@ -2383,7 +2546,7 @@ async def test_batch_extraction_drops_only_content_free_junk(tmp_path):
         results = await fs.extract_facts_batch(segments, "Neko")
 
     assert [r["status"] for r in results] == ["ok", "ok"]
-    assert [r["dropped"] for r in results] == [3, 0]
+    assert [r["dropped"] for r in results] == [4, 0]
     assert [f["text"] for f in results[0]["created"]] == ["有效条目"]
     persisted = await fs.aload_facts("Neko")
     assert {f.get("text") for f in persisted} == {"有效条目"}

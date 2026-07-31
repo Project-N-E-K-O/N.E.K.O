@@ -904,51 +904,101 @@ class FactStore:
         return seg - 1
 
     @staticmethod
-    def _is_content_bearing_fact(item) -> bool:
-        """A dict with non-blank ``text`` — the only shape that carries content."""
-        return (
-            isinstance(item, dict)
-            and isinstance(item.get('text'), str)
-            and bool(item['text'].strip())
-        )
+    def _as_fact_entry(entry) -> dict | None:
+        """Normalize one ``facts[]`` element into a persistable fact, or None.
+
+        裸字符串 promote 成 ``{'text': ...}``：模型偶尔直接给一句话而不是
+        对象，它明确承载内容、归属又由所在段对象给定，收下来是无损的——
+        比"当垃圾丢掉"（丢内容）和"整段重试"（多花一次抽取）都好。限定
+        ``str``：数字/布尔之类的假值渲染成文本毫无意义。"""  # noqa: DOCSTRING_CJK
+        if isinstance(entry, dict):
+            text = entry.get('text')
+            if isinstance(text, str) and text.strip():
+                return entry
+            return None
+        if isinstance(entry, str) and entry.strip():
+            return {'text': entry}
+        return None
+
+    @classmethod
+    def _carries_unused_text(cls, entry) -> bool:
+        """True when a rejected element still holds non-blank text somewhere.
+
+        判据是"我们正要丢掉的这个东西里还攥着没被用上的文字"——
+        ``{"importance": 5}`` / ``{"text": ""}`` 是空壳（丢了不丢内容），
+        而 ``{"note": "Alice 养猫"}`` / ``["Alice 养猫"]`` 是我们看不懂的
+        形状里裹着内容，绝不能静默丢。"""  # noqa: DOCSTRING_CJK
+        if isinstance(entry, str):
+            return bool(entry.strip())
+        if isinstance(entry, dict):
+            return any(cls._carries_unused_text(v) for v in entry.values())
+        if isinstance(entry, (list, tuple, set)):
+            return any(cls._carries_unused_text(v) for v in entry)
+        return False
 
     @classmethod
     def _parse_batch_segment_entry(
         cls, item, segment_count: int,
-    ) -> tuple[int | None, list[dict], int]:
+    ) -> tuple[int | None, list[dict], int, int]:
         """Parse one top-level element of the batch payload.
 
-        Returns ``(0-based index | None, facts, dropped)``；``None`` 表示这个
-        元素**放不下去**——它可能承载着某一段的内容而我们无从判断是哪段，
-        调用方据此整批 raise（与 :meth:`extract_facts` 对畸形元素"整批可重试
-        失败"同一条不变式：persist 会静默跳过畸形项，调用方推进游标后该元素
-        承载的内容永久丢失）。
+        Returns ``(0-based index | None, facts, dropped, suspect)``。
 
-        ``dropped`` 只统计**不承载内容**的垃圾（非 dict / text 为空）：嵌套
-        形状下事实的归属来自它所在的段对象，不存在"有内容但归属不明"的条目，
-        这正是嵌套形状比 per-fact 段号强的地方。
+        ``index is None`` 表示这个元素**放不下去**——它可能承载着某一段的
+        内容而我们无从判断是哪段，调用方据此整批 raise（与
+        :meth:`extract_facts` 对畸形元素"整批可重试失败"同一条不变式：
+        persist 会静默跳过畸形项，调用方推进游标后该元素承载的内容永久丢失）。
 
-        容忍三种形状：
+        丢弃分两档，判据是"丢了会不会丢内容"：
+        - ``dropped``：空壳（``{}`` / ``{"text": ""}`` / ``{"importance": 5}``
+          / 空串），丢了不丢内容，本段照常 ``ok``；
+        - ``suspect``：我们**没能用上、但里面还有文字**的元素——本段判
+          ``failed`` 让调用方保留桶重试。嵌套形状消除了"有内容却归属不明"，
+          但消除不了"有内容却看不懂形状"，那一类必须 fail-closed。
+
+        容忍的形状：
         - 规范：``{"segment": n, "facts": [...]}``；
         - 段内无事实：``{"segment": n}``（模型显式点名该段且没给内容——
           这是合法的"本段无事实"结论，不是漏标）；
-        - 旧的扁平事实：``{"segment": n, "text": ...}``（模型惯性回退时
-          仍能落对段，不必整批重试）。
+        - 旧的扁平事实：``{"segment": n, "text": ...}``，**含与 facts 数组
+          同时出现的情形**——两种约定混用时归属并无歧义（都挂在这一个段
+          对象上），元素自带的 text 必须一起收下，不能被 list 分支吃掉；
+        - ``facts`` 里的裸字符串（见 :meth:`_as_fact_entry`）。
         ``facts`` 存在但不是数组 = 形状坏了且可能带内容 → 放不下去。"""  # noqa: DOCSTRING_CJK
         if not isinstance(item, dict):
-            return None, [], 0
+            return None, [], 0, 0
         index = cls._coerce_segment_index(item.get('segment'), segment_count)
         if index is None:
-            return None, [], 0
+            return None, [], 0, 0
         raw_facts = item.get('facts')
-        if isinstance(raw_facts, list):
-            kept = [f for f in raw_facts if cls._is_content_bearing_fact(f)]
-            return index, kept, len(raw_facts) - len(kept)
-        if raw_facts is not None:
-            return None, [], 0
-        if cls._is_content_bearing_fact(item):
-            return index, [item], 0
-        return index, [], 0
+        if raw_facts is not None and not isinstance(raw_facts, list):
+            return None, [], 0, 0
+
+        kept: list[dict] = []
+        dropped = 0
+        suspect = 0
+        for entry in (raw_facts or []):
+            fact = cls._as_fact_entry(entry)
+            if fact is not None:
+                kept.append(fact)
+            elif cls._carries_unused_text(entry):
+                suspect += 1
+            else:
+                dropped += 1
+        own_fact = cls._as_fact_entry(item)
+        if own_fact is not None:
+            kept.append(own_fact)
+        # 段对象上除了 segment/facts（以及被收下的 text）之外还挂着文字：
+        # 这个形状我们没读懂，别把它当成"本段的结论"。
+        leftovers = {
+            key: value for key, value in item.items()
+            if key not in ('segment', 'facts')
+        }
+        if own_fact is not None:
+            leftovers.pop('text', None)
+        if cls._carries_unused_text(leftovers):
+            suspect += 1
+        return index, kept, dropped, suspect
 
     @staticmethod
     def _speaker_provenance_of(segment: dict) -> dict | None:
@@ -992,9 +1042,12 @@ class FactStore:
         - 某段**没出现在输出里** → 该段 ``failed``（保留重试），绝不当成
           "本段无事实"：模型把八段内容全并进段 1 时，另外七个人的桶
           （成员维度唯一副本）会被调用方一次性弹光；
-        - 段对象里的垃圾条目（非 dict / text 为空）→ 丢弃并计入
-          ``dropped`` 回报给调用方。嵌套形状下这类条目**不承载内容**，
-          所以丢它不丢东西；
+        - 段对象里的空壳条目（``{}`` / ``{"text": ""}`` / 空串）→ 丢弃并
+          计入 ``dropped`` 回报给调用方，本段照常 ``ok``：它们**不承载
+          内容**，丢它不丢东西；
+        - 段对象里**看不懂形状、但还攥着文字**的条目 → 本段 ``failed``，
+          认出来的那些仍照常落盘（重试靠 SHA-256 去重兜住重复，而万一
+          重试一直失败，起码认出来的这些不会跟着丢）；
         - 某段 persist 失败 → 只该段 ``failed``，其余段不连累重来。
 
         整个输出为空数组是合法结论（"整批没有值得记的事实"），此时所有段
@@ -1026,9 +1079,10 @@ class FactStore:
         # None = 该段没出现在输出里（≠ 该段无事实，后者是空 list）。
         per_segment: list[list[dict] | None] = [None] * len(segments)
         dropped_per_segment = [0] * len(segments)
+        suspect_per_segment = [0] * len(segments)
         unplaceable = 0
         for item in extracted:
-            index, facts, dropped = self._parse_batch_segment_entry(
+            index, facts, dropped, suspect = self._parse_batch_segment_entry(
                 item, len(segments),
             )
             if index is None:
@@ -1038,6 +1092,7 @@ class FactStore:
                 per_segment[index] = []
             per_segment[index].extend(facts)
             dropped_per_segment[index] += dropped
+            suspect_per_segment[index] += suspect
         if unplaceable:
             raise FactExtractionFailed(
                 f"batch Stage-1 returned {unplaceable}/{len(extracted)} "
@@ -1060,6 +1115,7 @@ class FactStore:
             zip(segments, per_segment), start=1,
         ):
             dropped = dropped_per_segment[position - 1]
+            suspect = suspect_per_segment[position - 1]
             if segment_facts is None:
                 results.append(
                     {'status': 'failed', 'created': [], 'dropped': dropped}
@@ -1071,29 +1127,36 @@ class FactStore:
                     f"{dropped} 条无内容的垃圾条目（归属由段对象给定，"
                     f"丢弃不损失内容）"
                 )
-            if not segment_facts:
-                results.append(
-                    {'status': 'ok', 'created': [], 'dropped': dropped}
+            status = 'ok'
+            if suspect:
+                # 有看不懂但攥着文字的条目：本段报 failed 让调用方保留桶。
+                # 认出来的那些照常落盘——重试会把它们重新抽一遍，SHA-256
+                # 去重兜住重复，而万一重试一直失败，起码这些不会跟着丢。
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: 批抽取第 {position} 段有 "
+                    f"{suspect} 条形状看不懂但带文字的条目——按失败保留重试"
                 )
-                continue
-            try:
-                created = await self._apersist_new_facts(
-                    lanlan_name,
-                    segment_facts,
-                    subject=segment.get('subject'),
-                    speaker_provenance=self._speaker_provenance_of(segment),
-                )
-            except Exception as exc:
-                logger.error(
-                    f"[FactStore] {lanlan_name}: 批抽取第 "
-                    f"{position} 段持久化失败（其余段不受连累）: {exc}"
-                )
-                results.append(
-                    {'status': 'failed', 'created': [], 'dropped': dropped}
-                )
-                continue
+                status = 'failed'
+            created: list[dict] = []
+            if segment_facts:
+                try:
+                    created = await self._apersist_new_facts(
+                        lanlan_name,
+                        segment_facts,
+                        subject=segment.get('subject'),
+                        speaker_provenance=self._speaker_provenance_of(segment),
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"[FactStore] {lanlan_name}: 批抽取第 "
+                        f"{position} 段持久化失败（其余段不受连累）: {exc}"
+                    )
+                    results.append(
+                        {'status': 'failed', 'created': [], 'dropped': dropped}
+                    )
+                    continue
             results.append(
-                {'status': 'ok', 'created': created, 'dropped': dropped}
+                {'status': status, 'created': created, 'dropped': dropped}
             )
         return results
 
