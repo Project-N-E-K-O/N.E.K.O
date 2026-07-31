@@ -482,7 +482,7 @@ async def save_recent_file(request: Request):
             {"success": False, "error": "文件身份令牌格式不合法"},
             status_code=400,
         )
-    if snapshot_fingerprint is not None and snapshot_identity_token is None:
+    if snapshot_fingerprint is None or snapshot_identity_token is None:
         return JSONResponse(
             {"success": False, "error": "文件身份令牌缺失，请重新加载后再保存"},
             status_code=409,

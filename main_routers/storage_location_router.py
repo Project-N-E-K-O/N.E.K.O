@@ -285,17 +285,19 @@ def _restore_restart_schedule_state(
         else:
             delete_storage_migration(config_manager, anchor_root=anchor_root)
     except Exception:
-        try:
-            delete_storage_migration(config_manager, anchor_root=anchor_root)
-        except Exception:
-            pass
+        # 先前确有 checkpoint 时，save 失败后绝不能退化成 delete；原文件
+        # 很可能仍由 atomic write 保留，删除反而把一次回滚失败扩大成数据丢失。
+        logger.exception(
+            "failed to restore migration checkpoint during restart-schedule rollback"
+        )
 
     try:
         if isinstance(previous_root_state, dict):
             config_manager.save_root_state(previous_root_state)
     except Exception:
-        # Best effort: the route is already returning the original failure.
-        pass
+        logger.exception(
+            "failed to restore root_state during restart-schedule rollback"
+        )
 
 
 async def _run_locked_storage_job(job: Callable[[], Any]) -> Any:

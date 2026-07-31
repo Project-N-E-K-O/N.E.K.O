@@ -2232,3 +2232,21 @@ async def test_recent_file_route_rejects_same_bytes_from_a_new_identity(
     assert response.status_code == 409
     assert json.loads(response.body)["code"] == "RECENT_FILE_CONFLICT"
     assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_file_route_rejects_save_without_loaded_snapshot_tokens():
+    from main_routers import memory_router
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [],
+            }
+
+    response = await memory_router.save_recent_file(_Request())
+
+    assert response.status_code == 409
+    assert "重新加载" in json.loads(response.body)["error"]

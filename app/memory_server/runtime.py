@@ -279,9 +279,17 @@ async def reload_memory_components():
             # 才重新开放；成功改名后的旧名在这段窗口里不能被 /process 重生。
             from . import review
 
-            characters = await asyncio.to_thread(_config_manager.load_characters)
-            active_names = set((characters.get("猫娘") or {}).keys())
-            await review.reconcile_character_derived_task_admission(active_names)
+            try:
+                characters = await asyncio.to_thread(_config_manager.load_characters)
+                active_names = set((characters.get("猫娘") or {}).keys())
+                await review.reconcile_character_derived_task_admission(active_names)
+            except Exception as reconcile_exc:
+                # 组件引用已经完成原子替换；协调失败不能把真实成功的 reload
+                # 伪装成失败，调用方据此回滚会与当前已生效实例产生二次分叉。
+                logger.warning(
+                    "[MemoryServer] reload: 派生任务准入协调失败（组件替换已生效）: %s",
+                    reconcile_exc,
+                )
             
             logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
             return True

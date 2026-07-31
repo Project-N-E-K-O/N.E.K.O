@@ -3364,6 +3364,14 @@
             showSaveStatus(window.t ? window.t('memory.pleaseSelectFile') : '请先选择文件', false);
             return false;
         }
+        if (!currentMemoryFingerprint || !currentMemoryIdentityToken) {
+            const loadFailed = window.t ? window.t('memory.loadFailed') : '加载失败';
+            const refreshTip = window.t
+                ? window.t('memory.tip1')
+                : '请重新点击角色名加载后再保存';
+            showSaveStatus(loadFailed + '。' + refreshTip, false);
+            return false;
+        }
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';

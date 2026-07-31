@@ -450,7 +450,8 @@ async def test_reused_identity_replaces_stale_in_flight_backup(tmp_path):
             admission_generation=new_generation,
         )
         new_task = memory_server.compress_backup_tasks[name]
-        await _cleanup_task(old_task)
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(old_task, timeout=1)
 
     assert new_task is not old_task
     assert old_task.cancelled()
