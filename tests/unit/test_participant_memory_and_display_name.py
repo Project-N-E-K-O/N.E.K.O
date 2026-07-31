@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -1229,7 +1230,7 @@ class _ForgetFactStore(FactStore):
     async def aload_facts(self, name):
         return self._facts.setdefault(name, [])
 
-    async def asave_facts(self, name):
+    async def asave_facts(self, name, **kwargs):
         self.saves += 1
 
     def _facts_archive_path(self, name):
@@ -1276,6 +1277,74 @@ async def test_scoped_forget_erases_exactly_one_domain(tmp_path):
         stats = await store.aforget_subject("Neko", target.as_entry_fields())
     assert stats == {"facts": 0, "facts_archive": 0}
     assert store.saves == 1
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_deletes_archive_only_fact_from_fts(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    archive_path = tmp_path / "facts_archive.json"
+    archive_path.write_text(json.dumps([
+        {"id": "archived-only", "text": "secret", **target.as_entry_fields()},
+    ]), encoding="utf-8")
+    store = _ForgetFactStore([], archive_path)
+    delete_from_index = AsyncMock()
+    store._time_indexed = SimpleNamespace(
+        adelete_fact_from_index=delete_from_index,
+    )
+
+    with patch("memory.facts.assert_cloudsave_writable"):
+        stats = await store.aforget_subject("Neko", target)
+
+    assert stats == {"facts": 0, "facts_archive": 1}
+    delete_from_index.assert_awaited_once_with("Neko", "archived-only")
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_serializes_with_archive_sweep(tmp_path):
+    """A sweep already holding the fact-file lock must finish before forget
+    snapshots active/archive; the later forget then removes the moved copy."""
+    facts_path = tmp_path / "facts.json"
+    archive_path = tmp_path / "facts_archive.json"
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    target_fact = {
+        "id": "target", "text": "secret", "absorbed": True,
+        "created_at": "2000-01-01T00:00:00", **target.as_entry_fields(),
+    }
+    other_fact = {
+        "id": "other", "text": "keep", "absorbed": False,
+        "created_at": "2000-01-01T00:00:00", **other.as_entry_fields(),
+    }
+    store = FactStore(time_indexed_memory=None)
+    store._config_manager = MagicMock()
+    store._facts["Neko"] = [target_fact, other_fact]
+    store._facts_path = lambda _name: str(facts_path)
+    store._facts_archive_path = lambda _name: str(archive_path)
+    sweep_started = threading.Event()
+    release_sweep = threading.Event()
+    original_archive = store._archive_absorbed
+
+    def _paused_archive(name):
+        sweep_started.set()
+        assert release_sweep.wait(5)
+        return original_archive(name)
+
+    store._archive_absorbed = _paused_archive
+    with patch("memory.facts.assert_cloudsave_writable"):
+        save_task = asyncio.create_task(store.asave_facts("Neko"))
+        assert await asyncio.to_thread(sweep_started.wait, 5)
+        forget_task = asyncio.create_task(store.aforget_subject("Neko", target))
+        await asyncio.sleep(0)
+        assert not forget_task.done()
+        release_sweep.set()
+        await save_task
+        stats = await forget_task
+
+    assert stats == {"facts": 0, "facts_archive": 1}
+    assert [row["id"] for row in json.loads(
+        facts_path.read_text(encoding="utf-8")
+    )] == ["other"]
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
 
 
 @pytest.mark.asyncio

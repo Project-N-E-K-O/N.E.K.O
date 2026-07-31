@@ -29,6 +29,7 @@ import re
 import asyncio
 import secrets
 import threading
+from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -442,8 +443,11 @@ class FactStore:
                 changed = True
         return changed
 
-    def save_facts(self, name: str) -> None:
-        with self._get_lock(name):
+    def save_facts(self, name: str, *, _fact_lock_held: bool = False) -> None:
+        lock_context = (
+            nullcontext() if _fact_lock_held else self._get_lock(name)
+        )
+        with lock_context:
             try:
                 assert_cloudsave_writable(
                     self._config_manager,
@@ -602,10 +606,42 @@ class FactStore:
                     f"[FactStore] {name}: 归档冷却判定失败", exc_info=True,
                 )
 
-    async def asave_facts(self, name: str) -> None:
-        await asyncio.to_thread(self.save_facts, name)
+    async def asave_facts(
+        self, name: str, *, _fact_lock_held: bool = False,
+    ) -> None:
+        await asyncio.to_thread(
+            self.save_facts, name, _fact_lock_held=_fact_lock_held,
+        )
 
     async def aforget_subject(self, lanlan_name: str, subject) -> dict:
+        """Run scoped erasure as one transaction against archive sweeps."""
+        # Lock order is persist -> fact everywhere. Extraction already holds
+        # persist when save_facts takes the fact lock; reversing that order
+        # here would deadlock against an in-flight persistence task.
+        async with self._get_persist_alock(lanlan_name):
+            fact_lock = self._get_lock(lanlan_name)
+            acquire_task = asyncio.create_task(
+                asyncio.to_thread(fact_lock.acquire)
+            )
+            try:
+                await asyncio.shield(acquire_task)
+            except asyncio.CancelledError:
+                # to_thread keeps running after its awaiter is cancelled. Let
+                # it acquire, then release, so cancellation cannot strand the
+                # per-character lock forever.
+                await acquire_task
+                fact_lock.release()
+                raise
+            try:
+                return await self._aforget_subject_with_fact_lock(
+                    lanlan_name, subject, _persist_lock_held=True,
+                )
+            finally:
+                fact_lock.release()
+
+    async def _aforget_subject_with_fact_lock(
+        self, lanlan_name: str, subject, *, _persist_lock_held: bool = False,
+    ) -> dict:
         """Delete every fact belonging to one exact (subject, scope) domain.
 
         撤回入口（删好友/退群后清档）：活跃 facts、facts_archive、FTS 索引
@@ -622,7 +658,12 @@ class FactStore:
             raise ValueError("aforget_subject requires an explicit subject")
         removed_active = 0
         removed_archive = 0
-        async with self._get_persist_alock(lanlan_name):
+        removed_from_archive: list[dict] = []
+        persist_context = (
+            nullcontext()
+            if _persist_lock_held else self._get_persist_alock(lanlan_name)
+        )
+        async with persist_context:
             # Fence every scoped extraction that captured the previous
             # generation before this critical section.
             self._bump_subject_forget_generation(lanlan_name, memory_subject)
@@ -686,6 +727,13 @@ class FactStore:
                     raise RuntimeError(
                         "facts_archive is not a list during forget"
                     )
+                removed_from_archive = [
+                    f for f in archived
+                    if (
+                        isinstance(f, dict)
+                        and entry_matches_subject(f, memory_subject)
+                    )
+                ]
                 kept_archive = [
                     f for f in archived
                     if not (
@@ -693,7 +741,7 @@ class FactStore:
                         and entry_matches_subject(f, memory_subject)
                     )
                 ]
-                removed_archive = len(archived) - len(kept_archive)
+                removed_archive = len(removed_from_archive)
 
             # Archive first: if the later active write fails, facts.json still
             # contains enough subject-stamped rows for a retry. The reverse
@@ -717,26 +765,30 @@ class FactStore:
                     f for f in facts if id(f) not in removed_identities
                 ]
                 try:
-                    await self.asave_facts(lanlan_name)
+                    await self.asave_facts(
+                        lanlan_name, _fact_lock_held=True,
+                    )
                 except Exception:
                     # Keep the in-memory cache aligned with the unchanged
                     # active file so the retry can still find the subject.
                     facts[:] = previous_facts
                     raise
-                if self._time_indexed is not None:
-                    for fact in removed:
-                        fact_id = fact.get('id')
-                        if not fact_id:
-                            continue
-                        try:
-                            await self._time_indexed.adelete_fact_from_index(
-                                lanlan_name, fact_id,
-                            )
-                        except Exception as exc:
-                            logger.warning(
-                                f"[FactStore] {lanlan_name}: forget 清 FTS 索引"
-                                f"失败（残留 id 只影响空命中）: {exc}"
-                            )
+            if self._time_indexed is not None:
+                deleted_fact_ids: set = set()
+                for fact in removed + removed_from_archive:
+                    fact_id = fact.get('id')
+                    if not fact_id or fact_id in deleted_fact_ids:
+                        continue
+                    deleted_fact_ids.add(fact_id)
+                    try:
+                        await self._time_indexed.adelete_fact_from_index(
+                            lanlan_name, fact_id,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            f"[FactStore] {lanlan_name}: forget 清 FTS 索引"
+                            f"失败（残留 id 只影响空命中）: {exc}"
+                        )
         if removed_active or removed_archive:
             logger.info(
                 f"[FactStore] {lanlan_name}: forget "
