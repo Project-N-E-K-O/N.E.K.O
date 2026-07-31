@@ -1830,9 +1830,7 @@ async def test_the_release_repeats_the_terminal_paths_repetition_bookkeeping():
     client._repetition_threshold = 0.5
 
     for turn in range(3):
-        client._current_response_id = f"resp-{turn}"
-        client._is_responding = True
-        client._turn_epoch += 1
+        _begin_response(client, f"resp-{turn}")
         client._current_response_transcript = "完全相同的一句话"
         client._audio_delta_count = 1
         await client._on_arbiter_stuck_release(f"abandoned resp-{turn}", f"resp-{turn}")
@@ -2225,6 +2223,10 @@ async def test_a_barge_in_before_the_release_is_not_adopted_as_its_own_turn():
 
     client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
     _begin_response(client, "resp-1")
+    client._interrupted = True
+    client._image_sent_this_turn = True
+    client._current_response_transcript = "被放弃那一轮说的话"
+    client._audio_delta_count = 1
 
     # The user barges in. This is exactly what the speech_stopped branch does:
     # a new turn starts, and the tracked response id is left alone.
@@ -2243,6 +2245,21 @@ async def test_a_barge_in_before_the_release_is_not_adopted_as_its_own_turn():
     assert rotations == [], (
         "and rotating would throw away the speech id on_new_message just "
         "assigned to that turn"
+    )
+    # And not just the awaited hooks: the synchronous cleanup ahead of them
+    # has side effects on the live turn too.
+    assert client._interrupted is True, (
+        "clearing the interruption suppression is what lets the abandoned "
+        "response's id-less deltas through under the new turn's speech id"
+    )
+    assert client._image_sent_this_turn is True, (
+        "per-turn state belongs to whoever owns the turn now; the successor's "
+        "own terminal clears it"
+    )
+    assert client._recent_responses == [], (
+        "and the repetition check must not run either — its host callback "
+        "resets the shared focus scorer and emotion state, which would land "
+        "on the live turn"
     )
 
 

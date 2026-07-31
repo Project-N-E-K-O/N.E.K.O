@@ -1296,7 +1296,6 @@ class _TransportMixin:
             return
         if not self._is_responding and self._current_response_id is None:
             return
-        logger.info("Ending abandoned turn after arbiter release: %s", reason)
         # The epoch this response began in, not the one the callback happens to
         # find. Between them a barge-in can have advanced _turn_epoch at
         # speech_stopped — which does not clear _current_response_id, so the id
@@ -1307,6 +1306,27 @@ class _TransportMixin:
         def _still_ours() -> bool:
             return self._turn_epoch == released_epoch
 
+        if not _still_ours():
+            # A turn already started before this release even ran, so NOTHING
+            # here belongs to it — not the awaited hooks, and not the
+            # synchronous cleanup ahead of them either. Both have side effects
+            # on the live turn: `_clear_turn_response_state` resets
+            # `_interrupted`, which on a provider whose late deltas carry no id
+            # is the only thing keeping the abandoned response's audio out of
+            # the new turn; and `_check_repetition` can fire
+            # `on_repetition_detected`, whose host resets the shared focus
+            # scorer and emotion state rather than merely recording history.
+            #
+            # Leaving this turn's per-turn flags for the successor's own
+            # terminal to clear is the lesser harm, and the successor's
+            # `response.created` overwrites the identity fields regardless.
+            logger.info(
+                "a turn already started before this release ran (%s); leaving "
+                "the host alone",
+                reason,
+            )
+            return
+        logger.info("Ending abandoned turn after arbiter release: %s", reason)
         # Captured before the reset, which is what clears the buffer: a stalled
         # lifecycle is exactly the case where the terminal that would normally
         # flush it never arrives.
