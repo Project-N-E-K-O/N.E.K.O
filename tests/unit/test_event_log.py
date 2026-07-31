@@ -691,17 +691,61 @@ def test_advance_sentinel_does_not_interleave_with_record_and_save(tmp_path):
     assert log.read_sentinel("小天") == "evt-from-other-writer"
 
 
-def test_apply_and_advance_refuses_to_move_the_sentinel_backwards(tmp_path):
-    """A replay must never overwrite a sentinel that someone else moved.
+def test_apply_and_advance_detects_the_conflict_before_running_the_handler(tmp_path):
+    """A replay must not APPLY an event the sentinel has already passed.
 
-    event_id is a uuid4, so "is the new id newer" cannot be answered by
-    comparing ids; the replay carries the sentinel value it started from and
-    the write is a compare-and-set against it. Rolling backwards would return
-    the other writer's events to the tail, and any of them without a
-    registered handler would then pause replay on every future boot.
+    The compare-and-set is against the sentinel value this round started
+    from (event_id is a uuid4, so "which id is newer" cannot be answered by
+    comparing ids). It has to run BEFORE the handler, not after. Handlers
+    load the view and assign full-snapshot fields onto the target entry, so
+    running one first has already written the stale payload — and the newer
+    writer's event sits ahead of the sentinel, where no later boot replays
+    it back over the top. Detecting afterwards only reports damage that has
+    already been done.
+
+    Nothing can move the sentinel between the check and the apply either:
+    record_and_save, compact_if_needed and advance_sentinel all take the
+    per-character lock, which this method holds across both steps.
+
+    Refusing the sentinel write matters for a second reason: rolling it
+    backwards would return the other writer's events to the tail, and any
+    of them without a registered handler would pause replay on every
+    future boot.
     """
     from memory.event_log import SentinelConflictError
 
+    log = _fresh_log(str(tmp_path))
+    log.advance_sentinel("小天", "evt-live-writer")
+
+    # 更新的写者刚写好的值；陈旧事件的 payload 会把它打回 archived
+    view = {"status": "promoted"}
+    applied = {"n": 0}
+
+    def apply_fn() -> bool:
+        applied["n"] += 1
+        view["status"] = "archived"
+        return True
+
+    with pytest.raises(SentinelConflictError):
+        log.apply_and_advance(
+            "小天", "evt-replayed", apply_fn, expected_sentinel="evt-stale",
+        )
+
+    assert applied["n"] == 0, "冲突判定跑在 handler 之后了"
+    assert view == {"status": "promoted"}, \
+        "陈旧事件已经落进 view，把更新的写者刚写好的值盖掉了"
+    assert log.read_sentinel("小天") == "evt-live-writer", "哨兵被写回了旧位置"
+
+
+def test_apply_and_advance_without_advance_neither_checks_nor_writes(tmp_path):
+    """The frozen-sentinel mode used by the post-conflict rescan.
+
+    Once a round knows the sentinel is not its to move, it re-derives its
+    work from the journal and replays it with advance=False. That mode must
+    skip the compare-and-set too — the sentinel deliberately no longer
+    matches what this round started from, so still checking would raise on
+    every remaining event and the repairs would never land.
+    """
     log = _fresh_log(str(tmp_path))
     log.advance_sentinel("小天", "evt-live-writer")
 
@@ -711,13 +755,14 @@ def test_apply_and_advance_refuses_to_move_the_sentinel_backwards(tmp_path):
         applied["n"] += 1
         return True
 
-    with pytest.raises(SentinelConflictError):
-        log.apply_and_advance(
-            "小天", "evt-replayed", apply_fn, expected_sentinel="evt-stale",
-        )
+    changed = log.apply_and_advance(
+        "小天", "evt-replayed", apply_fn,
+        expected_sentinel="evt-stale", advance=False,
+    )
 
-    assert applied["n"] == 1, "冲突判定必须在 handler 之后（handler 是幂等的，白跑无害）"
-    assert log.read_sentinel("小天") == "evt-live-writer", "哨兵被写回了旧位置"
+    assert changed is True
+    assert applied["n"] == 1, "冻结模式下 handler 必须照跑，否则修复永远落不了盘"
+    assert log.read_sentinel("小天") == "evt-live-writer", "冻结模式动了哨兵"
 
 
 def test_apply_and_advance_reports_sentinel_write_failure_separately(tmp_path):
@@ -882,7 +927,116 @@ async def test_reconciler_runs_handlers_off_the_loop_under_the_lock(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_reconciler_freezes_instead_of_rewinding_a_moved_sentinel(tmp_path):
+async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp_path):
+    """Main regression for the conflict branch. Rules out both wrong answers.
+
+    Setup: a crash left two unapplied events (r1 and r2 get "repair"). The
+    reconciler reads that tail, and only then a live writer commits through
+    record_and_save — it writes r2="live" from its pre-replay snapshot and
+    claims the sentinel for its own event, which is the last line of the
+    journal. Everything the reconciler is still holding is now behind that
+    sentinel.
+
+    Neither obvious branch is acceptable:
+      - keep applying the list we hold: r2 is rolled back from "live" to
+        "repair", and the live event is ahead of the frozen sentinel, so no
+        later boot ever corrects it. Silent, permanent regression of state
+        the user just produced;
+      - stop the round: r1's repair is dropped, and it is behind the
+        sentinel too, so it is equally unreplayable. Silent, permanent loss
+        of a crash repair.
+
+    The round instead re-reads from its own last-applied position to the end
+    of the journal and replays that in journal order, so both survive: the
+    repair lands, and the live event replays on top of the stale one that
+    collides with it. Handler order is asserted because that IS the
+    mechanism — last write wins by journal position.
+    """
+    from memory.event_log import EVT_REFLECTION_STATE_CHANGED
+
+    log, rec = _fresh_reconciler(str(tmp_path))
+    view_path = os.path.join(str(tmp_path), "小天", "view.json")
+    os.makedirs(os.path.dirname(view_path), exist_ok=True)
+
+    def _write_view(data: dict) -> None:
+        with open(view_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    def _read_view() -> dict:
+        with open(view_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    _write_view({"r1": "old", "r2": "old"})
+
+    # 崩溃遗留的尾巴：两条都没应用进 view
+    log.append("小天", EVT_REFLECTION_STATE_CHANGED, {"rid": "r1", "to": "repair"})
+    log.append("小天", EVT_REFLECTION_STATE_CHANGED, {"rid": "r2", "to": "repair"})
+
+    applied_calls: list[tuple[str, str]] = []
+
+    def handler(name, payload):
+        # 与 make_reflection_evidence_handler 同形：读盘 → 改目标条目 → 写回
+        applied_calls.append((payload["rid"], payload["to"]))
+        data = _read_view()
+        if data.get(payload["rid"]) == payload["to"]:
+            return False
+        data[payload["rid"]] = payload["to"]
+        _write_view(data)
+        return True
+
+    rec.register(EVT_REFLECTION_STATE_CHANGED, handler)
+
+    live_event_id: dict[str, str] = {}
+    real_aread_since = log.aread_since
+    live_write_done = {"yes": False}
+
+    async def _tail_then_live_write(name, after_event_id):
+        tail = await real_aread_since(name, after_event_id)
+        if live_write_done["yes"]:
+            # 重扫时不再插第二次写：本用例要的是「一次 live 写 + 一次重扫」
+            return tail
+        live_write_done["yes"] = True
+        # 真 record_and_save：view 用的是重放之前那份快照（r1 还是 old），
+        # 收尾无条件把哨兵推到自己这条（日志最后一行）。
+        live_event_id["id"] = log.record_and_save(
+            name, EVT_REFLECTION_STATE_CHANGED, {"rid": "r2", "to": "live"},
+            sync_load_view=lambda n: {"r1": "old", "r2": "live"},
+            sync_mutate_view=lambda v: None,
+            sync_save_view=lambda n, v: _write_view(v),
+        )
+        return tail
+
+    from memory import event_log as event_log_module
+
+    with patch.object(log, "aread_since", _tail_then_live_write), \
+            patch.object(event_log_module.logger, "warning") as warn:
+        await rec.areconcile("小天")
+
+    # 归因：冲突是「待办陈旧、改为重扫」，不是「handler 失败」也不是「哨兵写
+    # 失败（view 已修好）」—— 后两句会让运维以为盘上是完全不同的状态。
+    messages = [str(c.args[0]) for c in warn.call_args_list]
+    assert len(messages) == 1, f"该只有一条告警: {messages}"
+    assert "重扫" in messages[0], f"归因错了: {messages[0]}"
+    assert "handler 失败" not in messages[0] and "哨兵写入失败" not in messages[0], \
+        f"冲突被记成了 handler / 哨兵 IO 失败: {messages[0]}"
+
+    final = _read_view()
+    assert final["r2"] == "live", (
+        "陈旧的 r2 事件盖掉了 live writer 刚写好的值 —— 它那条事件在哨兵前面，"
+        "不会再被重放回来纠正，是静默永久回退"
+    )
+    assert final["r1"] == "repair", (
+        "尾巴上的修复被丢掉了 —— 哨兵已经越过它，之后任何一次开机都不会再重放"
+    )
+    # 机制断言：重扫后按日志顺序重放，live 那条排在与它冲突的陈旧事件之后。
+    assert applied_calls == [
+        ("r1", "repair"), ("r2", "repair"), ("r2", "live"),
+    ], f"重放顺序不是日志顺序: {applied_calls}"
+    assert log.read_sentinel("小天") == live_event_id["id"], "哨兵被写回了旧位置"
+
+
+@pytest.mark.asyncio
+async def test_reconciler_never_rewinds_a_sentinel_onto_an_unhandled_event(tmp_path):
     """Regression: a rewound sentinel can wedge a character's replay forever.
 
     The reconciler reads its tail, then a live writer appends an event this
@@ -891,9 +1045,9 @@ async def test_reconciler_freezes_instead_of_rewinding_a_moved_sentinel(tmp_path
     every future boot would stop on "unregistered event type" before applying
     anything — the character never reconciles again.
 
-    Freezing, not aborting: the rest of the tail is still applied. Those are
-    crash repairs, and the sentinel is now ahead of them, so skipping them
-    would lose them for good.
+    The post-conflict rescan reaches that unhandled event too and pauses on
+    it, which is the normal forward-compat behaviour. What must not happen is
+    the sentinel moving back in front of it.
     """
     from memory.event_log import EVT_FACT_ADDED, EVT_FACT_ABSORBED
 
@@ -908,8 +1062,9 @@ async def test_reconciler_freezes_instead_of_rewinding_a_moved_sentinel(tmp_path
         # 读完尾巴之后、apply 之前插一个 live writer：追加一条本进程没注册
         # handler 的事件并把哨兵推过去（record_and_save 的收尾就是这两步）。
         tail = await real_aread_since(name, after_event_id)
-        live_event_id["id"] = log.append(name, EVT_FACT_ABSORBED, {"fact_id": "f9"})
-        log.advance_sentinel(name, live_event_id["id"])
+        if "id" not in live_event_id:
+            live_event_id["id"] = log.append(name, EVT_FACT_ABSORBED, {"fact_id": "f9"})
+            log.advance_sentinel(name, live_event_id["id"])
         return tail
 
     applied_calls: list[str] = []

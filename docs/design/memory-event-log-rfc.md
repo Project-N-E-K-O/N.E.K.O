@@ -172,12 +172,34 @@ policy. Operators should not assume deployed journals are automatically compacte
   migrated directly by dedicated code.
 - The sentinel write is an unconditional overwrite. Event ids are UUIDs, so no
   writer can tell from two ids which is newer; the only order that exists is the
-  position in the journal. `record_and_save` is safe by construction, since it
-  writes the id it just appended. Replay cannot make that assumption, so it
-  compares the on-disk sentinel against the value its round started from and
-  refuses to write when they differ — a rewound sentinel returns another writer's
-  events to the tail, and one without a registered handler wedges every later
-  boot. The rest of that round's tail is still applied, only the sentinel freezes.
+  position in the journal. `record_and_save` can never rewind it, since it writes
+  the id it just appended. Replay cannot make that assumption, so it compares the
+  on-disk sentinel against the value its round started from — before it runs the
+  handler, not after — and neither applies the event nor writes the sentinel when
+  they differ.
+- A replay round that loses that comparison does not stop, and does not keep
+  applying the list it was holding. Either would lose data. The list is now
+  *behind* another writer's sentinel, so applying it as-is pushes older payloads
+  over that writer's values, and the newer event sits ahead of the frozen sentinel
+  where no later boot replays it. Stopping instead abandons repairs that the same
+  sentinel write has already made unreplayable. So the round re-reads the journal
+  from its own last-applied position through to the end of the file and replays
+  that range in journal order: the queued repairs land, the other writer's events
+  land after them, and the newest payload for any given entry wins. The sentinel
+  stays frozen — rewinding it would return the other writer's events to the tail,
+  and one without a registered handler wedges every later boot — and needs no
+  final write, because that writer already parked it at the journal end. Replaying
+  an already-applied event is harmless for the same reason a missing sentinel
+  triggers a full replay: handlers carry full snapshots and are idempotent.
+- **Known limitation, not fixed here.** Advancing the sentinel to the journal end
+  asserts that every earlier event was applied, and `record_and_save` never checks
+  that. Whenever an unapplied tail is on disk — replay paused on an unregistered
+  event type or a raising handler — the next live write silently orphans it. This
+  is unrelated to reconciliation running concurrently, and startup ordering does
+  not help. Closing it requires the sentinel to stop being "an event id": either a
+  full journal scan on every write, or a position/applied-set with an on-disk
+  format migration. Until then, do not read "the sentinel only moves forward" as
+  "no event can be skipped".
 - Outbox recovery and event replay solve different failure windows: the outbox
   retries background operations; the journal repairs covered mutations after the
   operation has chosen a concrete state transition.

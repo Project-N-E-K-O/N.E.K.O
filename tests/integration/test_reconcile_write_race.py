@@ -186,6 +186,7 @@ async def test_replayed_repair_survives_live_writer_inside_critical_section(tmp_
     # 重放那条事件必须已经越过哨兵 —— 它不会再被重放，所以只要 A 的修复没落盘
     # 就是永久丢失，而不是"下次开机重试"。哨兵的具体位置由谁最后写决定：live
     # writer 在临界区里推到了自己那条（在 A 之后），重放侧发现哨兵已被推进就
-    # 冻结不回写，两种情况下 A 都在哨兵之前。
+    # 冻结不回写（改从自己的已应用位置重扫到日志末尾，按日志顺序补完 A 和 B
+    # 那两条），两种情况下 A 都在哨兵之前。
     remaining = [r.get("event_id") for r in ev.read_since(NAME, ev.read_sentinel(NAME))]
     assert event_id not in remaining, "A 的事件还在尾巴里，本用例的永久丢失前提不成立"
