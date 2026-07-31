@@ -2067,3 +2067,84 @@ async def test_recent_file_route_includes_pending_before_authoritative_save(
         "disk",
         "accepted-pending",
     ]
+    assert response["fingerprint"] == memory_router._recent_browser_fingerprint(
+        response["content"],
+    )
+
+
+@pytest.mark.unit
+def test_recent_browser_stale_save_preserves_new_pending_batch(tmp_path):
+    from main_routers import memory_router
+    from utils import recent_file
+    from utils.llm_client import HumanMessage
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir(parents=True)
+    recent_file.write_recent_payload(
+        recent_path,
+        [{"type": "human", "data": {"content": "disk"}}],
+    )
+    generation = recent_file.capture_recent_generation(recent_path)
+    loaded_text = memory_router._read_recent_browser_text(recent_path)
+    loaded_fingerprint = memory_router._recent_browser_fingerprint(loaded_text)
+
+    with recent_file.recent_file_access(recent_path) as resolved_path:
+        recent_file.set_recent_pending_unlocked(
+            resolved_path, [HumanMessage(content="arrived-after-read")],
+        )
+
+    saved, current_fingerprint = memory_router._write_recent_browser_payload(
+        recent_path,
+        [{"type": "human", "data": {"content": "stale-editor"}}],
+        expected_fingerprint=loaded_fingerprint,
+        expected_generation=generation,
+    )
+
+    assert saved is False
+    assert current_fingerprint != loaded_fingerprint
+    assert json.loads(recent_path.read_text(encoding="utf-8"))[0]["data"]["content"] == "disk"
+    with recent_file.recent_file_access(recent_path) as resolved_path:
+        pending = recent_file.get_recent_pending_unlocked(resolved_path)
+    assert [message.content for message in pending] == ["arrived-after-read"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_file_route_rejects_stale_browser_snapshot(tmp_path, monkeypatch):
+    from main_routers import memory_router
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir(parents=True)
+    recent_file.write_recent_payload(
+        recent_path,
+        [{"type": "human", "data": {"content": "disk"}}],
+    )
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [{"role": "human", "text": "stale-editor"}],
+                "fingerprint": loaded["fingerprint"],
+            }
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *a, **k: None)
+    loaded = await memory_router.get_recent_file("recent_Role.json")
+    with recent_file.recent_file_access(recent_path) as resolved_path:
+        recent_file.set_recent_pending_unlocked(
+            resolved_path, [HumanMessage(content="arrived-after-read")],
+        )
+
+    response = await memory_router.save_recent_file(_Request())
+
+    assert response.status_code == 409
+    assert json.loads(response.body)["code"] == "RECENT_FILE_CONFLICT"
+    with recent_file.recent_file_access(recent_path) as resolved_path:
+        pending = recent_file.get_recent_pending_unlocked(resolved_path)
+    assert [message.content for message in pending] == ["arrived-after-read"]

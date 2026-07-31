@@ -3,6 +3,7 @@
 
     const PARENT_ORIGIN = window.location.origin;
     let currentMemoryFile = null;
+    let currentMemoryFingerprint = null;
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
@@ -3279,6 +3280,7 @@
             && li.classList.contains('selected');
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
+        currentMemoryFingerprint = null;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         setMemoryDirty(false);
         dismissSaveStatus(true);
@@ -3310,6 +3312,9 @@
             if (requestId !== memoryFileRequestId) {
                 return;
             }
+            currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                ? data.fingerprint
+                : null;
             if (data.content) {
                 let arr = [];
                 try { arr = JSON.parse(data.content); } catch (e) { arr = []; }
@@ -3371,10 +3376,17 @@
             const resp = await fetch('/api/memory/recent_file/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: currentMemoryFile, chat: chatData })
+                body: JSON.stringify({
+                    filename: currentMemoryFile,
+                    chat: chatData,
+                    fingerprint: currentMemoryFingerprint
+                })
             });
             const data = await resp.json();
             if (data.success) {
+                currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                    ? data.fingerprint
+                    : null;
                 setMemoryDirty(false);
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
 

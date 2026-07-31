@@ -478,10 +478,14 @@ async def _complete_cloudsave_character_download(config_manager, name: str, resu
             try:
                 if backup_path:
                     rollback_attempted = True
-                    restore_cloudsave_operation_backup(
-                        config_manager, backup_path, recent_locks_held=True,
-                    )
-                    rollback_cloudsave_character_import_registry(result)
+                    try:
+                        restore_cloudsave_operation_backup(
+                            config_manager, backup_path, recent_locks_held=True,
+                        )
+                    finally:
+                        # 磁盘恢复失败也必须撤销导入期 recent identity；否则
+                        # finally 释放文件锁后会把半提交的 redirect/generation 暴露出去。
+                        rollback_cloudsave_character_import_registry(result)
                     initialize_character_data = get_initialize_character_data()
                     await initialize_character_data()
                     rollback_notify_ok = await notify_memory_server_reload(

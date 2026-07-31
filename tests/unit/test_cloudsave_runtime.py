@@ -1015,8 +1015,12 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
         shutil.rmtree(cm.memory_dir)
 
     restored_recent = Path(cm.memory_dir) / "小满" / "recent.json"
+    from utils.llm_client import HumanMessage
+
     with recent_file.recent_file_lock(restored_recent):
-        recent_file.set_recent_pending_unlocked(restored_recent, ["stale-before-cloud-import"])
+        recent_file.set_recent_pending_unlocked(
+            restored_recent, [HumanMessage(content="stale-before-cloud-import")],
+        )
 
     import_result = import_local_cloudsave_snapshot(cm)
 

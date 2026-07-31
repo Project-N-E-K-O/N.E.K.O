@@ -728,9 +728,20 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                 }, status_code=500)
 
             for transaction in recent_delete_transactions:
-                await asyncio.to_thread(
-                    finalize_character_recent_delete, transaction,
-                )
+                try:
+                    await asyncio.to_thread(
+                        finalize_character_recent_delete, transaction,
+                    )
+                except Exception as exc:
+                    logger.error(
+                        f"取消订阅同步清理: recent 删除事务提交失败: {exc}",
+                        exc_info=True,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": "<recent-transaction>",
+                        "stage": "finalize_recent_delete",
+                        "error": str(exc),
+                    })
 
             # 通知 memory_server 重新加载（一次即可）
             try:

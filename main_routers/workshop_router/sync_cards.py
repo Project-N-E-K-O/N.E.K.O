@@ -732,6 +732,8 @@ async def sync_workshop_character_cards(
         # “此订阅里没有角色卡”。用专属 code 兜住，区别于逐角色的部分错误。
         logger.error(f"sync_workshop_character_cards: 同步过程出错: {e}", exc_info=True)
         error_count += 1
+        if publish_cancelled:
+            raise asyncio.CancelledError
         return _sync_result(code="WORKSHOP_SYNC_FAILED")
 
     if publish_cancelled:

@@ -288,11 +288,20 @@ async def test_stale_deadletter_callback_does_not_trim_new_identity(tmp_path):
         "compress_backup_fail_fp": build_review_fingerprint(snapshot),
         "compress_backup_generation": list(admission_generation),
     }
-    recent_file.activate_recent_paths([recent_path])
+    real_amutate = memory_server.gates._amutate_maint_state
+
+    async def _switch_identity_before_locked_mutation(lanlan_name, mutator):
+        recent_file.activate_recent_paths([recent_path])
+        return await real_amutate(lanlan_name, mutator)
 
     fake_mgr = MagicMock()
     fake_mgr.enforce_hard_cap = AsyncMock()
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(
+             memory_server.gates,
+             "_amutate_maint_state",
+             side_effect=_switch_identity_before_locked_mutation,
+         ), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(
             name,
@@ -339,7 +348,7 @@ async def test_stale_failure_cannot_overwrite_new_generation_backoff(tmp_path):
         old_record = asyncio.create_task(memory_server._record_compress_backup_failure(
             name, _history(4), old_generation,
         ))
-        await old_reached_write.wait()
+        await asyncio.wait_for(old_reached_write.wait(), timeout=3)
         recent_file.activate_recent_paths([recent_path])
         new_generation = recent_file.capture_recent_generation(recent_path)
         assert await memory_server._record_compress_backup_failure(
@@ -386,7 +395,7 @@ async def test_reused_identity_replaces_stale_in_flight_backup(tmp_path):
             admission_generation=new_generation,
         )
         new_task = memory_server.compress_backup_tasks[name]
-        await asyncio.sleep(0)
+        await _cleanup_task(old_task)
 
     assert new_task is not old_task
     assert old_task.cancelled()

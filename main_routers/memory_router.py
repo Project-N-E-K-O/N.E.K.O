@@ -29,6 +29,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 import asyncio
 import base64
 import binascii
+import hashlib
 import os
 import re
 import json
@@ -50,7 +51,8 @@ from utils.recent_file import (
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
     recent_file_access,
-    write_recent_payload,
+    set_recent_pending_unlocked,
+    write_recent_payload_unlocked,
 )
 from fastapi.responses import JSONResponse
 from memory.external_markdown_import import (
@@ -319,23 +321,57 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
 logger = get_module_logger(__name__, "Main")
 
 
+def _recent_browser_fingerprint(content: str) -> str:
+    """Return the optimistic-concurrency token for one browser snapshot."""
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _read_recent_browser_text_unlocked(path: Path) -> str:
+    """Build one editable disk-plus-pending snapshot while its lock is held."""
+    content = read_recent_text_unlocked(path)
+    pending = get_recent_pending_unlocked(path)
+    if not pending:
+        return content
+    payload = json.loads(content)
+    if not isinstance(payload, list):
+        raise ValueError(f"recent history is not a list: {path}")
+    if all(isinstance(message, dict) for message in pending):
+        pending_payload = list(pending)
+    else:
+        from utils.llm_client import messages_to_dict
+
+        pending_payload = messages_to_dict(pending)
+    return json.dumps(payload + pending_payload, ensure_ascii=False, indent=2)
+
+
 def _read_recent_browser_text(path: Path) -> str:
     """Read one editable disk-plus-pending snapshot under the recent lock."""
     with recent_file_access(path) as resolved_path:
-        content = read_recent_text_unlocked(resolved_path)
-        pending = get_recent_pending_unlocked(resolved_path)
-        if not pending:
-            return content
-        payload = json.loads(content)
-        if not isinstance(payload, list):
-            raise ValueError(f"recent history is not a list: {resolved_path}")
-        if all(isinstance(message, dict) for message in pending):
-            pending_payload = list(pending)
-        else:
-            from utils.llm_client import messages_to_dict
+        return _read_recent_browser_text_unlocked(resolved_path)
 
-            pending_payload = messages_to_dict(pending)
-        return json.dumps(payload + pending_payload, ensure_ascii=False, indent=2)
+
+def _write_recent_browser_payload(
+    path: Path,
+    payload: list[dict],
+    *,
+    expected_fingerprint: str | None,
+    expected_generation: tuple[str, int],
+) -> tuple[bool, str]:
+    """Replace a browser snapshot unless disk or pending state changed since read."""
+    with recent_file_access(
+        path, expected_generation=expected_generation,
+    ) as resolved_path:
+        current_text = _read_recent_browser_text_unlocked(resolved_path)
+        current_fingerprint = _recent_browser_fingerprint(current_text)
+        if (
+            expected_fingerprint is not None
+            and expected_fingerprint != current_fingerprint
+        ):
+            return False, current_fingerprint
+        write_recent_payload_unlocked(resolved_path, payload)
+        set_recent_pending_unlocked(resolved_path, [])
+        saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
+        return True, _recent_browser_fingerprint(saved_text)
 
 
 @router.get('/recent_files')
@@ -383,7 +419,10 @@ async def get_recent_file(filename: str):
             {"success": False, "error": "文件不存在"},
             status_code=path_error_status_code(PATH_ERROR_NOT_FOUND),
         )
-    return {"content": content}
+    return {
+        "content": content,
+        "fingerprint": _recent_browser_fingerprint(content),
+    }
 
 
 @router.post('/recent_file/save')
@@ -391,6 +430,7 @@ async def save_recent_file(request: Request):
     data = await request.json()
     filename = data.get('filename')
     chat = data.get('chat')
+    snapshot_fingerprint = data.get('fingerprint')
     
     # Validate filename
     is_valid, error_msg = validate_recent_filename(filename)
@@ -403,6 +443,11 @@ async def save_recent_file(request: Request):
     if not is_valid:
         logger.warning(f"Invalid chat payload rejected: {error_msg}")
         return JSONResponse({"success": False, "error": error_msg}, status_code=400)
+    if snapshot_fingerprint is not None and not isinstance(snapshot_fingerprint, str):
+        return JSONResponse(
+            {"success": False, "error": "文件快照指纹格式不合法"},
+            status_code=400,
+        )
     
     from utils.config_manager import get_config_manager
     cm = get_config_manager()
@@ -439,12 +484,23 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        await asyncio.to_thread(
-            write_recent_payload,
+        saved, saved_fingerprint = await asyncio.to_thread(
+            _write_recent_browser_payload,
             resolved_path,
             arr,
+            expected_fingerprint=snapshot_fingerprint,
             expected_generation=admission_generation,
         )
+        if not saved:
+            return JSONResponse(
+                {
+                    "success": False,
+                    "code": "RECENT_FILE_CONFLICT",
+                    "error": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
+                    "fingerprint": saved_fingerprint,
+                },
+                status_code=409,
+            )
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -462,7 +518,12 @@ async def save_recent_file(request: Request):
                 logger.warning(f"Failed to cancel correction task: {e}")
         
         # 返回成功并提示需要刷新上下文
-        return {"success": True, "need_refresh": True, "catgirl_name": catgirl_name}
+        return {
+            "success": True,
+            "need_refresh": True,
+            "catgirl_name": catgirl_name,
+            "fingerprint": saved_fingerprint,
+        }
     except MaintenanceModeError:
         raise
     except Exception as e:
