@@ -262,14 +262,17 @@ class QQReplyPipelineRunner:
         skip_buffer = request and getattr(request, 'source_kind', '') in ('buffer_delayed', 'rapid_fire_flush', 'proactive_speech')
         if not skip_buffer and self.plugin.reply_buffer_service and request and delivery_plan and delivery_plan.blocks:
             # 从 LLM 原始输出提取 <wait> 标签（在 _parse_blocks 之前已保存）
-            raw = (outcome.raw_reply_text if outcome else "") or ""
-            structural_pre_tool = str(
-                getattr(outcome, "pre_tool_text", "") or ""
-            )
-            if structural_pre_tool and raw.startswith(structural_pre_tool):
-                # pre-tool 内的 literal <wait> 示例是普通助手文本；只有真实
-                # tool 边界之后的最终段可以携带 buffer 控制指令。
-                raw = raw[len(structural_pre_tool):]
+            raw = getattr(outcome, "wait_directive_text", None)
+            if raw is None:
+                raw = (outcome.raw_reply_text if outcome else "") or ""
+                structural_pre_tool = str(
+                    getattr(outcome, "pre_tool_text", "") or ""
+                )
+                if structural_pre_tool and raw.startswith(structural_pre_tool):
+                    raw = raw[len(structural_pre_tool):]
+            raw = str(raw or "")
+            # postprocess 直接携带 sanitizer 后、真实 tool 边界之后的最终段；
+            # 因此 hidden/literal pre-tool 内的 <wait> 都不能成为 buffer 指令。
             clean, wait_sec = QQReplyBufferService.extract_wait_seconds(raw)
             # 默认等待加随机抖动（±40%），避免每次都一样
             if wait_sec == QQReplyBufferService.DEFAULT_WAIT_SECONDS:

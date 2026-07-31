@@ -265,6 +265,7 @@ class QQReplyOutcome:
     used_fallback: bool = False
     raw_reply_text: str | None = None
     pre_tool_text: str = ""
+    wait_directive_text: str | None = None
     postprocess_reason: str = ""
     blocks: list[QQMessageBlock] = field(default_factory=list)
     relay_plan: QQRelayPlan | None = None

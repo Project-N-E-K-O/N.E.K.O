@@ -17,6 +17,7 @@ from plugin.plugins.qq_auto_reply.reply_pipeline import QQReplyPipelineRunner
 from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
     QQReplyPostprocessNode,
 )
+from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
 
 
 def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook(monkeypatch):
@@ -278,3 +279,57 @@ async def test_dynamic_xml_repairs_a_suffix_missing_its_opening_msg():
 
     node._repair_xml.assert_awaited_once_with(broken)
     assert [block.text for block in outcome.blocks] == ["answer"]
+
+
+@pytest.mark.asyncio
+async def test_buffer_wait_scans_the_sanitized_final_segment(monkeypatch):
+    """Hidden pre-tool wait examples must not delay the visible final answer."""
+    monkeypatch.setattr("random.uniform", lambda *_args: 1.0)
+    hidden_prefix = (
+        "<thinking_reasoning>Example <wait>10</wait>"
+        "</thinking_reasoning>"
+    )
+    final_xml = "<msg><text>answer</text></msg>"
+    postprocess_plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _sanitize_generated_reply=(
+            QQAutoReplyPromptingMixin._sanitize_generated_reply
+        ),
+        _emit_log=MagicMock(),
+    )
+    node = QQReplyPostprocessNode(postprocess_plugin)
+    outcome = await node.finalize(
+        SimpleNamespace(ephemeral_session=False),
+        QQModelResult(
+            reply_text=hidden_prefix + final_xml,
+            pre_tool_text="",
+            source="session",
+        ),
+    )
+    assert outcome.wait_directive_text == final_xml
+
+    buffer_service = SimpleNamespace(schedule_reply=AsyncMock())
+    runner = QQReplyPipelineRunner(SimpleNamespace(
+        reply_buffer_service=buffer_service,
+        _build_session_key=lambda **_kwargs: "group:7788",
+        _emit_log=MagicMock(),
+    ))
+    plan = SimpleNamespace(
+        blocks=outcome.blocks,
+        target_type="group",
+        target_id="7788",
+    )
+    request = SimpleNamespace(
+        source_kind="incoming",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+        forward_sub_count=0,
+        persist_memory=True,
+    )
+
+    await runner._run_delivery(plan, request, outcome)
+
+    scheduled = buffer_service.schedule_reply.await_args.kwargs
+    assert scheduled["wait_seconds"] == QQReplyBufferService.DEFAULT_WAIT_SECONDS
+    assert scheduled["raw_text"] == final_xml

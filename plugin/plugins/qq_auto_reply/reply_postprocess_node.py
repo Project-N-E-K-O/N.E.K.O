@@ -259,6 +259,11 @@ class QQReplyPostprocessNode:
             if known_pre_tool and reply_text.startswith(known_pre_tool)
             else ""
         )
+        wait_directive_text = (
+            reply_text[len(structural_pre_tool):]
+            if structural_pre_tool
+            else reply_text
+        )
         if raw_reply_text and not reply_text:
             self.plugin._emit_log("INFO", f"[Sanitize] {len(raw_reply_text)}字被清除: {raw_reply_text[:100]}")
 
@@ -318,6 +323,7 @@ class QQReplyPostprocessNode:
                 reply_text=reply_text,
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
+                wait_directive_text=wait_directive_text,
                 postprocess_reason="reply_xml" if strategy_mode == "neko_dynamic" else "reply",
                 blocks=blocks,
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
@@ -328,6 +334,7 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
+                wait_directive_text=wait_directive_text,
                 postprocess_reason="empty",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
@@ -339,6 +346,7 @@ class QQReplyPostprocessNode:
                 reply_text=None,
                 raw_reply_text=raw_reply_text,
                 pre_tool_text=structural_pre_tool,
+                wait_directive_text=wait_directive_text,
                 postprocess_reason="llm_skip",
                 used_fallback=bool(getattr(model_result, "used_fallback", False)),
             )
@@ -350,6 +358,7 @@ class QQReplyPostprocessNode:
             used_default_message=True,
             raw_reply_text=raw_reply_text,
             pre_tool_text=structural_pre_tool,
+            wait_directive_text=wait_directive_text,
             postprocess_reason="default",
             used_fallback=bool(getattr(model_result, "used_fallback", False)),
         )
