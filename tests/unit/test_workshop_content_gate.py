@@ -683,6 +683,35 @@ async def test_uploading_during_a_publish_answers_409(export_folder):
     assert list(export_folder.iterdir()) == [], '被拒绝的上传不许落盘'
 
 
+async def test_uploading_a_preview_image_during_a_publish_answers_409(
+    export_folder,
+):
+    from main_routers.workshop_router import preview_cards
+
+    with claim_content_folder(str(export_folder), purpose=PUBLISH_PURPOSE):
+        response = await preview_cards.upload_preview_image(_FormRequest({
+            'file': _StubUploadFile(
+                'cover.png', b'png-bytes', content_type='image/png'
+            ),
+            'content_folder': str(export_folder),
+        }))
+
+    assert response.status_code == 409, json.loads(response.body)
+    assert list(export_folder.iterdir()) == [], '被拒绝的预览图不许落盘'
+
+
+def test_a_cleaned_up_folder_is_not_recreated_by_the_preview_write(tmp_path):
+    from main_routers.workshop_router import preview_cards
+
+    folder = tmp_path / 'gone'
+    with pytest.raises(preview_cards._PreviewContentFolderMissing):
+        preview_cards._write_claimed_preview_image(
+            str(folder), str(folder / 'preview.png'), b'png-bytes'
+        )
+
+    assert not folder.exists(), '内容目录已被清理时不许把它重新建出来'
+
+
 async def test_removing_during_a_publish_answers_409(export_folder):
     from main_routers.workshop_router import voice_refs
 
@@ -1050,28 +1079,65 @@ def _known_to_thread_names(
     parameters.update(
         arg.arg for arg in (func.args.vararg, func.args.kwarg) if arg is not None
     )
-    names = set(module_aliases or ()) - parameters
-    for node in sorted(
-        _walk_own_scope(func), key=lambda item: getattr(item, 'lineno', -1)
-    ):
-        if getattr(node, 'lineno', -1) >= before_line:
-            continue
-        if isinstance(node, ast.ImportFrom) and node.module == 'asyncio':
-            for alias in node.names:
-                if alias.name == 'to_thread':
-                    names.add(alias.asname or alias.name)
-        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-            value = node.value
-            is_alias = isinstance(value, ast.Name) and value.id in names
-            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-            for target in targets:
-                if not isinstance(target, ast.Name):
-                    continue
-                if is_alias:
-                    names.add(target.id)
+    initial = set(module_aliases or ()) - parameters
+
+    def branch_containing(branches):
+        return next((
+            branch
+            for branch in branches
+            if any(
+                statement.lineno <= before_line <= statement.end_lineno
+                for statement in branch
+            )
+        ), None)
+
+    def after(statements, names):
+        names = set(names)
+        for node in statements:
+            if node.lineno >= before_line:
+                continue
+            if isinstance(node, ast.ImportFrom) and node.module == 'asyncio':
+                for alias in node.names:
+                    if alias.name == 'to_thread':
+                        names.add(alias.asname or alias.name)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                is_alias = isinstance(value, ast.Name) and value.id in names
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                for target in targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if is_alias:
+                        names.add(target.id)
+                    else:
+                        names.discard(target.id)
+            elif isinstance(node, ast.If):
+                containing = branch_containing([node.body, node.orelse])
+                if node.lineno < before_line <= node.end_lineno and containing:
+                    names = after(containing, names)
                 else:
-                    names.discard(target.id)
-    return names
+                    names = after(node.body, names) & after(node.orelse, names)
+            elif isinstance(node, ast.Try):
+                branches = (
+                    [node.body, node.orelse, node.finalbody]
+                    + [handler.body for handler in node.handlers]
+                )
+                containing = branch_containing(branches)
+                if node.lineno < before_line <= node.end_lineno and containing:
+                    names = after(containing, names)
+                    continue
+                body_names = after(node.body, names)
+                paths = [after(node.orelse, body_names)]
+                paths.extend(after(handler.body, names) for handler in node.handlers)
+                merged = paths[0]
+                for path in paths[1:]:
+                    merged &= path
+                names = after(node.finalbody, merged)
+        return names
+
+    return after(func.body, initial)
 
 
 def _is_worker_offload_call(
@@ -2044,6 +2110,15 @@ def _scope_claiming_names_called_on_loop(
                 and class_name
             ):
                 scope = (module, class_name)
+            elif (
+                isinstance(node.value, ast.Call)
+                and isinstance(node.value.func, ast.Name)
+                and node.value.func.id == 'super'
+                and not node.value.args
+                and not node.value.keywords
+                and class_name
+            ):
+                scope = (module, class_name)
             elif stored_class:
                 scope = stored_class
             elif (
@@ -2374,6 +2449,12 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    loop.run_in_executor(None, _claiming_worker)\n'
         'async def shadowed_offload(offload):\n'
         '    await offload(_claiming_worker)\n'
+        'async def conditional_to_thread_alias():\n'
+        '    if flag:\n'
+        '        dispatch = dispatcher\n'
+        '    else:\n'
+        '        dispatch = offload\n'
+        '    await dispatch(_claiming_worker)\n'
         'async def local_alias_offloaded():\n'
         '    callback = _claiming_worker\n'
         '    await asyncio.to_thread(callback)\n'
@@ -2394,6 +2475,8 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'class DerivedService(BaseService):\n'
         '    async def inherited_handler(self):\n'
         '        self.inherited_worker()\n'
+        '    async def inherited_super_handler(self):\n'
+        '        super().inherited_worker()\n'
         '\n'
         'class PropertyService:\n'
         '    @property\n'
@@ -2564,6 +2647,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('shadowed_offload'), (
         '同名参数会遮蔽 module-level to_thread alias'
     )
+    assert module_offenders('conditional_to_thread_alias'), (
+        'local to_thread alias 只有所有分支一致时才能算已证明 offload'
+    )
     assert module_offenders('local_alias_offloaded') == []
     assert module_offenders('local_alias_direct'), (
         'local callable alias 直调仍必须继承 claim owner 身份'
@@ -2576,6 +2662,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         functions['inherited_handler'],
         'synthetic', 'DerivedService', claiming, generators, aliases,
     ), '继承来的 claim-owning method 也必须在 derived async handler 中被发现'
+    assert _scope_claiming_names_called_on_loop(
+        functions['inherited_super_handler'],
+        'synthetic', 'DerivedService', claiming, generators, aliases,
+    ), 'super() 直调继承的 claim-owning method 也必须被发现'
     assert _scope_claiming_names_called_on_loop(
         functions['property_handler'],
         'synthetic', 'PropertyService', claiming, generators, aliases,
@@ -3036,6 +3126,10 @@ _PACKAGE_OPERATION_FOLDER_ARGS = {
 _PACKAGE_OPERATION_FOLDER_KEYWORDS = {
     '_publish_workshop_item': 'content_folder',
     '_cleanup_workshop_voice_reference': 'content_folder',
+    'rmtree': 'path',
+    'copy2': 'dst',
+    'copyfile': 'dst',
+    'copytree': 'dst',
 }
 
 # 这些名字过于通用，不能全模块扫描；但在指定 worker 单元里，它们正是内容目录的
@@ -3059,6 +3153,7 @@ _UNIT_OPERATIONS = {
     },
     ('voice_refs', '_remove_voice_reference'): {'_cleanup_workshop_voice_reference': 1},
     ('publish', '_delete_content_folder'): {'rmtree': 1},
+    ('preview_cards', '_write_claimed_preview_image'): {'atomic_write_bytes': 1},
 }
 
 _UNIT_CLAIMS = {
@@ -3066,11 +3161,7 @@ _UNIT_CLAIMS = {
     ('voice_refs', '_replace_voice_reference'): 'claim_reference_pair',
     ('voice_refs', '_remove_voice_reference'): 'claim_reference_pair',
     ('publish', '_delete_content_folder'): 'claim_content_folder',
-}
-
-# 通用写 API 只在具体 worker 里入账，避免把无关 metadata 写入当成目录竞态。
-_SCOPED_OPERATIONS = {
-    ('preview_cards', '_write_claimed_preview_image'): {'atomic_write_bytes'},
+    ('preview_cards', '_write_claimed_preview_image'): 'claim_partial_writer',
 }
 
 # 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
@@ -3114,8 +3205,6 @@ def _operation_name(node) -> str | None:
 def _known_operation_names() -> set[str]:
     names = set(_PACKAGE_WIDE_OPERATIONS) | set(_MUST_BE_CLAIMED)
     for inventory in _UNIT_OPERATIONS.values():
-        names.update(inventory)
-    for inventory in _SCOPED_OPERATIONS.values():
         names.update(inventory)
     return names
 
@@ -3323,11 +3412,7 @@ def _operation_nodes(
     _, unit_inventory = _inventory_for_function(
         _UNIT_OPERATIONS, short, func.name
     )
-    _, scoped_operations = _inventory_for_function(
-        _SCOPED_OPERATIONS, short, func.name
-    )
     required |= set(unit_inventory or {})
-    required |= set(scoped_operations or ())
     seed_aliases = dict(aliases or {})
     parents = _parent_map(func)
     found = []
@@ -3482,7 +3567,15 @@ def _stays_within_claimed_tree(
     if not folders:
         return False
     return not any(
-        isinstance(node, ast.Attribute) and node.attr in {'parent', 'parents'}
+        (
+            isinstance(node, ast.Attribute)
+            and node.attr in {'parent', 'parents'}
+        )
+        or (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and '..' in node.value.replace('\\', '/').split('/')
+        )
         for folder in folders
         for node in ast.walk(folder)
     )
@@ -3580,6 +3673,17 @@ def _unclaimed_folder_operations(
                 body_state = claim_state_after(statement.body, state)
                 else_state = claim_state_after(statement.orelse, state)
                 state = merge_claim_states(body_state, else_state)
+            elif isinstance(statement, ast.Try):
+                body_state = claim_state_after(statement.body, state)
+                paths = [claim_state_after(statement.orelse, body_state)]
+                paths.extend(
+                    claim_state_after(handler.body, state)
+                    for handler in statement.handlers
+                )
+                merged = paths[0]
+                for path in paths[1:]:
+                    merged = merge_claim_states(merged, path)
+                state = claim_state_after(statement.finalbody, merged)
             elif isinstance(statement, ast.With):
                 claim_states_by_with[id(statement)] = dict(state)
                 state = claim_state_after(statement.body, state)
@@ -3679,7 +3783,8 @@ def _unclaimed_folder_operations(
                 for condition in comprehension.ifs:
                     deferred_nodes.update(id(child) for child in ast.walk(condition))
 
-    for operation, _ in _operation_nodes(func, short):
+    operations = _operation_nodes(func, short, aliases)
+    for operation, _ in operations:
         current = operation
         while id(current) in parents:
             parent = parents[id(current)]
@@ -3699,7 +3804,6 @@ def _unclaimed_folder_operations(
                 break
 
     offenders = []
-    operations = _operation_nodes(func, short, aliases)
     for child, name in operations:
         if id(child) in deferred_nodes:
             offenders.append((short, func.name, child.lineno, name, '交给别处延后跑'))
@@ -3920,14 +4024,26 @@ def test_the_claim_guard_resolves_operation_aliases():
         ')\n'
         'def partial_alias():\n'
         '    publish_later()\n'
+        'def returned_partial_alias():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        return publish_later\n'
+        'def yielded_partial_alias():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        yield publish_later\n'
     )
     partial_aliases = _operation_aliases(partial_tree.body)
-    partial_func = next(
-        node for node in partial_tree.body if isinstance(node, ast.FunctionDef)
-    )
+    partial_functions = {
+        node.name: node
+        for node in partial_tree.body
+        if isinstance(node, ast.FunctionDef)
+    }
     assert _unclaimed_folder_operations(
-        partial_func, 'publish', partial_aliases
+        partial_functions['partial_alias'], 'publish', partial_aliases
     ), 'module-level partial 也必须继承 protected operation 身份'
+    for name in ('returned_partial_alias', 'yielded_partial_alias'):
+        assert _unclaimed_folder_operations(
+            partial_functions[name], 'publish', partial_aliases
+        ), f'{name} 中逃逸 claim 的 module-level partial alias 必须被报出来'
     reassigned = ast.parse(
         'def publish():\n'
         '    callback = _publish_workshop_item\n'
@@ -3970,6 +4086,22 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "        Path(content_folder, 'x').replace(\n"
         "            Path(other_content_folder, 'x')\n"
         '        )\n'
+        '\n'
+        'def parent_traversal(content_folder):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        "        shutil.rmtree(Path(content_folder, '..', 'sibling'))\n"
+        '\n'
+        'def keyword_rmtree(content_folder):\n'
+        '    shutil.rmtree(path=content_folder)\n'
+        '\n'
+        'def keyword_copy2(content_folder):\n'
+        '    shutil.copy2(src=source, dst=content_folder)\n'
+        '\n'
+        'def keyword_copyfile(content_folder):\n'
+        '    shutil.copyfile(src=source, dst=content_folder)\n'
+        '\n'
+        'def keyword_copytree(content_folder):\n'
+        '    shutil.copytree(src=source, dst=content_folder)\n'
     )
     functions = {node.name: node for node in tree.body}
 
@@ -3980,6 +4112,15 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['move_between_folders'], 'new_router'
     ), 'Path rename/replace 的 source 和 destination 都必须被 claim 覆盖'
+    assert _unclaimed_folder_operations(
+        functions['parent_traversal'], 'new_router'
+    ), 'literal .. 逃出 claimed tree 时不能被当成受保护路径'
+    for name in (
+        'keyword_rmtree', 'keyword_copy2', 'keyword_copyfile', 'keyword_copytree'
+    ):
+        assert _unclaimed_folder_operations(functions[name], 'new_router'), (
+            f'{name} 的 keyword target 也必须被 repository-wide guard 发现'
+        )
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
@@ -3987,7 +4128,7 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         'def _write_claimed_preview_image():\n'
         '    claim = (\n'
         "        claim_partial_writer(folder, purpose='preview')\n"
-        "        if flag else claim_reference_pair(folder)\n"
+        "        if flag else claim_partial_writer(folder, purpose='fallback')\n"
         '    )\n'
         '    with claim:\n'
         '        atomic_write_bytes(path, data)\n'
@@ -4047,6 +4188,16 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with factory(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    try_reassigned_context = ast.parse(
+        'def publish():\n'
+        "    claim = claim_content_folder(folder, purpose='publish')\n"
+        '    try:\n'
+        '        claim = nullcontext()\n'
+        '    except Exception:\n'
+        '        pass\n'
+        '    with claim:\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     loop_reassigned_factory = ast.parse(
         'def publish(items):\n'
         '    factory = claim_content_folder\n'
@@ -4077,6 +4228,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(try_reassigned_factory, 'publish'), (
         'claim factory alias 必须在 try 的全部可达路径上一致'
+    )
+    assert _unclaimed_folder_operations(try_reassigned_context, 'publish'), (
+        'stored claim context 必须在 try 的全部可达路径上一致'
     )
     assert _unclaimed_folder_operations(loop_reassigned_factory, 'publish'), (
         'claim factory alias 必须合并 zero/nonzero loop 路径'
