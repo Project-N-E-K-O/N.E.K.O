@@ -2431,6 +2431,13 @@
                 metrics
                 && metrics.coordinateSpace === 'screen-dip'
                 && metrics.renderBounds
+                && (
+                    metrics.renderBoundsCoordinateSpace === 'screen-dip'
+                    || (
+                        metrics.niriPetPhysicalCrop === true
+                        && metrics.originSource === 'niri-pet-physical-crop-virtual-bounds'
+                    )
+                )
             ) {
                 return metrics.renderBounds;
             }

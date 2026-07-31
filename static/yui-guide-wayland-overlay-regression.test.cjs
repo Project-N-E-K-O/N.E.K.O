@@ -171,10 +171,10 @@ I.setYuiGuidePcOverlaySkipControl(true, '跳过');`, context);
   );
 });
 
-test('screen conversion prefers an explicitly declared render coordinate space', () => {
+test('screen conversion rejects workspace-view render bounds without screen provenance', () => {
   assert.match(
     interpageSource,
-    /metrics\.coordinateSpace === 'screen-dip'[\s\S]*return metrics\.renderBounds;/,
+    /metrics\.renderBoundsCoordinateSpace === 'screen-dip'[\s\S]*metrics\.originSource === 'niri-pet-physical-crop-virtual-bounds'[\s\S]*return metrics\.renderBounds;/,
   );
   assert.match(
     interpageSource,
@@ -182,11 +182,53 @@ test('screen conversion prefers an explicitly declared render coordinate space',
   );
   assert.match(
     overlaySource,
-    /metrics\.coordinateSpace === 'screen-dip'[\s\S]*metrics\.renderBounds/,
+    /metrics\.renderBoundsCoordinateSpace === 'screen-dip'[\s\S]*metrics\.originSource === 'niri-pet-physical-crop-virtual-bounds'[\s\S]*metrics\.renderBounds/,
   );
   assert.match(
     directorSource,
-    /getGuideScreenCoordinateBounds\(metrics\)[\s\S]*metrics\.coordinateSpace === 'screen-dip'[\s\S]*return metrics\.renderBounds;/,
+    /getGuideScreenCoordinateBounds\(metrics\)[\s\S]*metrics\.renderBoundsCoordinateSpace === 'screen-dip'[\s\S]*metrics\.originSource === 'niri-pet-physical-crop-virtual-bounds'[\s\S]*return metrics\.renderBounds;/,
+  );
+
+  const functionSource = extractFunction(
+    interpageSource,
+    'getYuiGuideScreenCoordinateBounds',
+    'normalizeYuiGuideNiriPetPhysicalCropBounds',
+  );
+  const context = vm.createContext({});
+  vm.runInNewContext(
+    `${functionSource}
+workspaceResult = getYuiGuideScreenCoordinateBounds({
+  coordinateSpace: 'screen-dip',
+  bounds: { x: 100, y: 50, width: 800, height: 600 },
+  renderBounds: { x: -320, y: 20, width: 800, height: 600 },
+  renderBoundsCoordinateSpace: 'workspace-view-dip'
+});
+screenResult = getYuiGuideScreenCoordinateBounds({
+  coordinateSpace: 'screen-dip',
+  bounds: { x: 100, y: 50, width: 800, height: 600 },
+  renderBounds: { x: 140, y: 70, width: 800, height: 600 },
+  renderBoundsCoordinateSpace: 'screen-dip'
+});
+legacyCropResult = getYuiGuideScreenCoordinateBounds({
+  coordinateSpace: 'screen-dip',
+  bounds: { x: 100, y: 50, width: 800, height: 600 },
+  renderBounds: { x: 1, y: 1, width: 1200, height: 800 },
+  niriPetPhysicalCrop: true,
+  originSource: 'niri-pet-physical-crop-virtual-bounds'
+});`,
+    context,
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.workspaceResult)),
+    { x: 100, y: 50, width: 800, height: 600 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.screenResult)),
+    { x: 140, y: 70, width: 800, height: 600 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.legacyCropResult)),
+    { x: 1, y: 1, width: 1200, height: 800 },
   );
 });
 

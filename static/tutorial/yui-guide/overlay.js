@@ -305,6 +305,13 @@
             metrics
             && metrics.coordinateSpace === 'screen-dip'
             && metrics.renderBounds
+            && (
+                metrics.renderBoundsCoordinateSpace === 'screen-dip'
+                || (
+                    metrics.niriPetPhysicalCrop === true
+                    && metrics.originSource === 'niri-pet-physical-crop-virtual-bounds'
+                )
+            )
                 ? metrics.renderBounds
                 : metrics && (metrics.bounds || metrics.contentBounds) || { x: 0, y: 0 }
         );
