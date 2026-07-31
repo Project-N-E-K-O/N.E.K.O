@@ -445,6 +445,17 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         kept = sum(1 for origin in compact_origin[:match_start] if origin > cut)
         return prefix[len(prefix) - min(len(prefix), kept):]
 
+    def _suffix_is_contiguous(position):
+        """Whether nothing was dropped between the alias and the marker.
+
+        compact_text has the punctuation removed, so a marker one clause later
+        looks adjacent: `我很開心，不下去了` would read as denying the happiness
+        that the first clause asserts.
+        """
+        if position <= 0 or position >= len(compact_origin):
+            return True
+        return compact_origin[position] == compact_origin[position - 1] + 1
+
     def _is_negated_compact_match(match_start):
         # The blocklist goes first, before anything measures this window: `別` is
         # a negation on its own but only a syllable inside `個別` / `區別`, and the
@@ -503,8 +514,9 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
                     # mix scripts -- `sadじゃないけどhappy` denies the ASCII alias
                     # with a Japanese suffix -- and without this the denied half
                     # stayed in the running and won the ranking.
-                    if any(
-                        _suffix_negates_at(compact_text, compact_start + len(alias), marker)
+                    marker_at = compact_start + len(alias)
+                    if _suffix_is_contiguous(marker_at) and any(
+                        _suffix_negates_at(compact_text, marker_at, marker)
                         for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
                     ):
                         continue
@@ -519,9 +531,12 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             match_start = compact_text.find(compact_alias, search_start)
             if match_start < 0:
                 break
-            if not _is_negated_compact_match(match_start) and not any(
-                _suffix_negates_at(compact_text, match_start + len(compact_alias), marker)
-                for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+            marker_at = match_start + len(compact_alias)
+            if not _is_negated_compact_match(match_start) and not (
+                _suffix_is_contiguous(marker_at) and any(
+                    _suffix_negates_at(compact_text, marker_at, marker)
+                    for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
+                )
             ):
                 matches.append((match_start, -len(compact_alias), canonical))
             search_start = match_start + len(compact_alias)
@@ -617,12 +632,21 @@ _HEURISTIC_WORD_NEGATIONS = tuple(
     token for token in _HEURISTIC_NEGATION_TOKENS
     if token.strip() and not _UNBOUNDED_SCRIPT_RE.search(token)
 )
-_HEURISTIC_ASCII_NEGATION_RE = re.compile(
-    r"\b(?:%s)\b" % "|".join(
-        re.escape(token.strip())
-        for token in sorted(_HEURISTIC_WORD_NEGATIONS, key=len, reverse=True)
-    )
-)
+def _word_boundary_regex(tokens):
+    """Any of `tokens`, each having to start and end a word.
+
+    An empty set compiles to a pattern that never matches, rather than to the
+    zero-width `\\b(?:)\\b`, which matches at every word boundary and would read
+    every sentence as negated.
+    """
+    if not tokens:
+        return re.compile(r"(?!)")
+    return re.compile(r"\b(?:%s)\b" % "|".join(
+        re.escape(token.strip()) for token in sorted(tokens, key=len, reverse=True)
+    ))
+
+
+_HEURISTIC_ASCII_NEGATION_RE = _word_boundary_regex(_HEURISTIC_WORD_NEGATIONS)
 _HEURISTIC_CJK_NEGATION_TOKENS = tuple(
     token for token in _HEURISTIC_NEGATION_TOKENS
     if _UNBOUNDED_SCRIPT_RE.search(token)

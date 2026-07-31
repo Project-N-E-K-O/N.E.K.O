@@ -1635,6 +1635,11 @@ def _session_or_default_language(ui_language: Optional[str], default: str) -> st
 
     Traditional Chinese keeps its full code because the templates are keyed by
     it; everything else is reduced to the short code the templates use.
+
+    `default` applies only when there is no session language at all. An
+    unrecognized one is not an error here: ``normalize_language_code`` answers
+    'en' for anything it does not know, and English is a better guess than the
+    caller's Chinese default for a locale string nobody recognizes.
     """
     if not ui_language:
         return default

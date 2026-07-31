@@ -45,6 +45,11 @@ def _chinese_tables():
 FLAT_TABLES = _chinese_tables()
 
 
+# 这些表的词条**不含任何繁简有别的字**，两侧逐字相同是正确结果而不是漏转换。
+# 例：`不了解` / `不了了之` 六个字在两种写法里完全一样。
+ORTHOGRAPHY_NEUTRAL_TABLES = {"EMOTION_NEGATION_SUFFIX_EXCEPTIONS_BY_LANG"}
+
+
 def _entries(block):
     """Every string in a language block, whether it is a tuple or a dict."""
     if isinstance(block, dict):
@@ -85,6 +90,8 @@ def test_traditional_block_pairs_with_the_simplified_one(name):
 @pytest.mark.parametrize("name", FLAT_TABLES)
 def test_traditional_block_is_not_a_copy_of_the_simplified_one(name):
     """Guards against a block added to satisfy the gate without being converted."""
+    if name in ORTHOGRAPHY_NEUTRAL_TABLES:
+        pytest.skip(f"{name} 的词条不含繁简有别的字，两侧相同是正确的")
     table = getattr(P, name)
     zh, tw = _entries(table["zh"]), _entries(table["zh-TW"])
     assert zh != tw, f"{name} 的 zh-TW 与 zh 逐字相同，等于没加"
@@ -294,7 +301,9 @@ def test_negation_flattening_preserves_the_previous_vocabulary():
     # The Korean set is what the move had to preserve; the Chinese postposed
     # forms are a later, deliberate addition on top of it.
     korean = set(P.EMOTION_NEGATION_SUFFIXES_BY_LANG["ko"])
-    assert len(korean) == 23
+    # 按内容断言而不是按条数：这里要守的是「搬家没丢词」，多收一条合法韩语否定
+    # 不该让它变红。
+    assert {"지 않", "지않", "않", "않아", "않다", "아니다", "아닌"} <= korean
     assert korean <= set(P.get_emotion_negation_suffixes_flat())
 
 
@@ -1549,7 +1558,7 @@ def test_every_latin_modal_negation_is_boundary_checked():
 @pytest.mark.parametrize("text", [
     "這是一個困難過程", "經歷困難過後終於完成", "这是一个困难过程", "艱難過程",
     "他身上有一種學生氣質", "這個房間有一股陌生氣息", "昨天那條街發生氣爆事故",
-    "這款飲料會產生氣泡", "他身上有一种学生气质", "衛生氣味", "先生氣色不好", "人生氣息",
+    "這款飲料會產生氣泡", "他身上有一种学生气质", "衛生氣味", "他天生氣質好",
 ])
 def test_a_keyword_formed_across_a_compound_boundary_is_not_one(text):
     """Neither half is an emotion word; the keyword only exists in the seam.
@@ -1652,3 +1661,82 @@ def test_undetectable_text_falls_back_to_the_session_language(text, ui, expected
     is no session at all.
     """
     assert detect_prompt_language(text, ui_language=ui) == expected
+
+
+@pytest.mark.parametrize("text", [
+    "他一生氣就摔東西", "他一生气就不说话", "他先生氣再說話", "那人生氣了", "那醫生氣壞了",
+])
+def test_the_seam_filter_yields_to_a_single_character_reading(text):
+    """Four of the left-hand words had the mirror problem and were taken out.
+
+    In each of these the first character is its own word -- an adverb, a
+    demonstrative -- and the emotion word starts at the second. Removing the
+    two-character word takes the anger with it. The cost is that the neutral
+    readings of those same four (a gentleman's complexion, the breath of life)
+    score as anger again; a false positive on neutral text beats losing real
+    anger, which is the same trade the rest of this file makes.
+    """
+    assert _heur(text) == "angry"
+
+
+def test_the_orthography_neutral_table_is_declared_not_forgotten():
+    """The skip above must name a table that exists and really is neutral."""
+    for name in ORTHOGRAPHY_NEUTRAL_TABLES:
+        table = getattr(P, name)
+        assert table["zh"] == table["zh-TW"], f"{name} 两侧不同，不该在豁免名单里"
+        assert not any(
+            ch in TRADITIONAL_ONLY or ch in SIMPLIFIED_ONLY
+            for entry in _entries(table["zh"]) for ch in entry
+        ), f"{name} 的词条含繁简有别的字，应该分开写而不是豁免"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("我很開心，不下去了", "happy"),
+    ("我很開心，不了解的問題終於弄懂了", "happy"),
+    ("我很開心不了解你為什麼生氣", "happy"),
+    ("開心不下去", "neutral"),
+    ("開心不起來", "neutral"),
+    ("我笑不起來，其實真的開心不起來", "neutral"),
+])
+def test_a_postposed_marker_has_to_be_contiguous_in_the_original(label, expected, confidence):
+    """Punctuation is gone from the compact string, so a later clause looks glued on.
+
+    The marker has to sit against the alias in the text as written, not merely in
+    the compacted form. The last two show the check does not cost the real cases,
+    including one where the denial is in a later clause and still applies.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("word", ["切ない", "情けない", "もったいない", "危ない", "少ない"])
+def test_the_wide_japanese_ending_has_no_alias_to_collide_with(word):
+    """The table comment flags the risk; this makes it fail instead of drift.
+
+    The plain negative ending is two kana that also close a handful of ordinary
+    adjectives. None of them is an alias today, so nothing collides -- but adding
+    one later would silently negate it with its own ending.
+    """
+    from main_routers.system_router.emotion import _EMOTION_COMPACT_ALIAS_LOOKUP
+
+    assert word not in _EMOTION_COMPACT_ALIAS_LOOKUP, (
+        f"{word} 进了别名表，它自带的 `ない` 会把它自己灭掉；"
+        f"要么别收，要么给它加 EMOTION_NEGATION_SUFFIX_EXCEPTIONS 条目"
+    )
+    for alias in _EMOTION_COMPACT_ALIAS_LOOKUP:
+        assert not word.endswith(alias), f"{word} 以别名 {alias} 结尾，同样会互相干扰"
+
+
+def test_an_empty_token_set_never_matches():
+    """The alternation is built from a table, and a table can end up empty.
+
+    `\b(?:)\b` matches at every word boundary, so an empty Latin block would
+    have read every sentence as negated -- silently, and only in the languages
+    whose block was emptied.
+    """
+    from main_routers.system_router.emotion import _word_boundary_regex
+
+    assert not _word_boundary_regex(()).search("I am happy")
+    assert not _word_boundary_regex(()).search("")
+    assert _word_boundary_regex(("not",)).search("I am not happy")
+    assert not _word_boundary_regex(("not",)).search("I am nothing")
