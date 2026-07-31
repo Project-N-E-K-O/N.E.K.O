@@ -75,6 +75,7 @@ class VoiceLifecycleEvent(Enum):
     # 兼容旧调用方；新代码应使用 TURN_SEALED，明确区分语义端点和 provider final。
     TURN_ENDPOINTED = "turn_endpointed"
     PROVIDER_FINAL = "provider_final"
+    PREWARM_EXPIRED = "prewarm_expired"
     WARM_EXPIRED = "warm_expired"
     RECOVERED = "recovered"
     GAME_TAKEOVER = "game_takeover"
@@ -130,6 +131,7 @@ _TRANSITIONS: dict[
     (VoiceLifecycleState.DRAINING, VoiceLifecycleEvent.PROVIDER_FINAL): VoiceLifecycleState.WARM_IDLE,
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.SOFT_WAKE): VoiceLifecycleState.PREWARMING,
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.SPEECH_CONFIRMED): VoiceLifecycleState.ACTIVE,
+    (VoiceLifecycleState.PREWARMING, VoiceLifecycleEvent.PREWARM_EXPIRED): VoiceLifecycleState.LOCAL_LISTEN,
     (VoiceLifecycleState.WARM_IDLE, VoiceLifecycleEvent.WARM_EXPIRED): VoiceLifecycleState.DEEP_SLEEP,
     (VoiceLifecycleState.LOCAL_LISTEN, VoiceLifecycleEvent.WARM_EXPIRED): VoiceLifecycleState.DEEP_SLEEP,
     (VoiceLifecycleState.DEEP_SLEEP, VoiceLifecycleEvent.SOFT_WAKE): VoiceLifecycleState.PREWARMING,
@@ -367,6 +369,11 @@ class VoiceInputLifecycleController:
             self._completed_turn_id = self._turn_id
             self._pre_roll_sent_for_turn = False
             self._pre_roll.clear()
+        elif event is VoiceLifecycleEvent.PREWARM_EXPIRED:
+            self._pre_roll_sent_for_turn = False
+            self._pre_roll.clear()
+            self._pending_connect.clear()
+            self._active_start_audio = b""
         elif event is VoiceLifecycleEvent.GAME_TAKEOVER:
             self._turn_id = self._allocate_turn_id()
             self._completed_turn_id = self._turn_id

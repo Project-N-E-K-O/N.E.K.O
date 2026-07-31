@@ -775,7 +775,10 @@ class IndependentAsrRuntime:
         ):
             return
         if event.kind != "continuous":
-            self._schedule_transport_warm_expiry(epoch)
+            self._schedule_transport_warm_expiry(
+                epoch,
+                expected_state=VoiceLifecycleState.PREWARMING,
+            )
             return
         session_ref = self._asr_session
         if session_ref is None or not getattr(session_ref, "is_ready", True):
@@ -854,7 +857,10 @@ class IndependentAsrRuntime:
             or lifecycle.snapshot.state is not VoiceLifecycleState.PREWARMING
         ):
             return
-        self._schedule_transport_warm_expiry(epoch)
+        self._schedule_transport_warm_expiry(
+            epoch,
+            expected_state=VoiceLifecycleState.PREWARMING,
+        )
 
     async def _ensure_continuous_provider_wake(
         self,
@@ -1575,7 +1581,10 @@ class IndependentAsrRuntime:
             self._asr_detector = detector_ref
             self._asr_session_factory = create_candidate
             self._asr_transport_selection = selection
-            self._schedule_transport_warm_expiry(epoch)
+            self._schedule_transport_warm_expiry(
+                epoch,
+                expected_state=VoiceLifecycleState.LOCAL_LISTEN,
+            )
             start_identity = self._capture_runtime_identity()
             delivered = await self._send_asr_lifecycle_state(
                 VoiceLifecycleState.LOCAL_LISTEN,
@@ -2310,28 +2319,91 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
 
-    def _schedule_transport_warm_expiry(self, epoch: int) -> None:
+    def _schedule_transport_warm_expiry(
+        self,
+        epoch: int,
+        *,
+        expected_state: VoiceLifecycleState,
+    ) -> None:
         task = self._asr_warm_expiry_task
         if task is not None:
             task.cancel()
         lifecycle = self._asr_lifecycle
         if lifecycle is None or not self._voice_input_resource_optimization_enabled:
             return
-        ttl_ms = lifecycle.provider_policy.warm_transport_ms
+        if expected_state is VoiceLifecycleState.WARM_IDLE:
+            ttl_ms = lifecycle.provider_policy.warm_transport_ms
+        elif expected_state in {
+            VoiceLifecycleState.LOCAL_LISTEN,
+            VoiceLifecycleState.PREWARMING,
+        }:
+            ttl_ms = lifecycle.config.default_warm_transport_ms
+        else:
+            raise ValueError(
+                "transport expiry requires local-listen, prewarming, or warm-idle"
+            )
+        session_ref = self._asr_session
+        detector_ref = self._asr_detector
+        transport_generation = lifecycle.snapshot.transport_generation
+
+        def timer_is_current() -> bool:
+            return bool(
+                epoch == self._asr_session_epoch
+                and self._asr_lifecycle is lifecycle
+                and self._asr_session is session_ref
+                and self._asr_detector is detector_ref
+                and lifecycle.snapshot.transport_generation
+                == transport_generation
+            )
 
         async def expire() -> None:
             try:
                 await asyncio.sleep(ttl_ms / 1_000)
-                if epoch != self._asr_session_epoch:
+                if (
+                    not timer_is_current()
+                    or lifecycle.snapshot.state is not expected_state
+                ):
                     return
-                current = self._asr_lifecycle
-                if current is not None and current.snapshot.state in {
-                    VoiceLifecycleState.LOCAL_LISTEN,
-                    VoiceLifecycleState.WARM_IDLE,
-                }:
-                    await self._close_transport_only()
+                if expected_state is VoiceLifecycleState.PREWARMING:
+                    lease, self._asr_smart_turn_lease = (
+                        self._asr_smart_turn_lease,
+                        None,
+                    )
+                    if lease is not None:
+                        await lease.release()
+                    if not timer_is_current():
+                        return
+                    if detector_ref is not None:
+                        await detector_ref.reset()
+                    if (
+                        not timer_is_current()
+                        or lifecycle.snapshot.state
+                        is not VoiceLifecycleState.PREWARMING
+                    ):
+                        return
+                    lifecycle.transition(VoiceLifecycleEvent.PREWARM_EXPIRED)
+                    self._asr_pending_speech_confirmed = False
+                    self._asr_pending_detector_candidate = None
+                    identity = self._capture_runtime_identity()
+                    delivered = await self._send_asr_lifecycle_state(
+                        VoiceLifecycleState.LOCAL_LISTEN,
+                        provider=identity.provider or "unknown",
+                        session_epoch=identity.session_epoch,
+                        expected_identity=identity,
+                    )
+                    if (
+                        not delivered
+                        or not timer_is_current()
+                        or lifecycle.snapshot.state
+                        is not VoiceLifecycleState.LOCAL_LISTEN
+                    ):
+                        return
+                await self._close_transport_only()
             except asyncio.CancelledError:
                 return
+            finally:
+                if self._asr_warm_expiry_task is asyncio.current_task():
+                    self._asr_warm_expiry_task = None
 
         warm_task = asyncio.create_task(
             expire(),
@@ -2982,7 +3054,10 @@ class IndependentAsrRuntime:
                     if successor_present and not has_pending_turn:
                         lifecycle_ref.preserve_unconfirmed_pending_audio()
                     if not has_pending_turn:
-                        self._schedule_transport_warm_expiry(epoch)
+                        self._schedule_transport_warm_expiry(
+                            epoch,
+                            expected_state=VoiceLifecycleState.WARM_IDLE,
+                        )
                     final_identity = self._capture_runtime_identity(
                         ingress_token=sealed_token.turn.ingress,
                         turn_token=sealed_token.turn,

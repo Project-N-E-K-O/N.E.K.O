@@ -1,7 +1,9 @@
+import ast
 import asyncio
 import inspect
 import json
 import logging
+import textwrap
 import threading
 import time
 from dataclasses import replace
@@ -12,12 +14,17 @@ import pytest
 
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
-from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
+from main_logic.asr_client.runtime import (
+    AsrStartResult,
+    AsrStartStatus,
+    IndependentAsrRuntime,
+)
 from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
 from main_logic.voice_input import VoiceInputDispatchResult
 from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
     AudioDisposition,
+    VoiceLifecycleConfig,
     VoiceLifecycleEvent,
     VoiceLifecycleState,
     VoiceTurnToken,
@@ -34,6 +41,7 @@ from main_logic.voice_turn.contracts import (
     AsrSubmitResult,
     AsrSubmitStatus,
     SpeechActivityEvent,
+    VoiceIngressToken,
     VoicePartialEvent,
     VoiceTranscriptEvent,
 )
@@ -2908,18 +2916,19 @@ async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
     asr = type("Asr", (), {"close": AsyncMock()})()
     runtime._asr_session = asr
     runtime._asr_route_mode = "independent"
-    policy = replace(
-        resolve_provider_policy("qwen", "manual"),
-        warm_transport_ms=10,
-    )
+    policy = replace(resolve_provider_policy("qwen", "manual"), warm_transport_ms=1_000)
     runtime._asr_lifecycle = VoiceInputLifecycleController(
         provider_policy=policy,
+        config=VoiceLifecycleConfig(default_warm_transport_ms=0),
         shadow_mode=False,
     )
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
 
-    runtime._schedule_transport_warm_expiry(runtime._asr_session_epoch)
-    # 同上：10ms TTL 落在 Windows 定时器分辨率的量级里，固定 sleep 赌不起；
+    runtime._schedule_transport_warm_expiry(
+        runtime._asr_session_epoch,
+        expected_state=VoiceLifecycleState.LOCAL_LISTEN,
+    )
+    # default_warm_transport_ms=0 会立刻到期，固定 sleep 赌不起；
     # 到期任务本身就是「已过期并关闭」的同步点。
     expiry = runtime._asr_warm_expiry_task
     assert expiry is not None
@@ -2928,6 +2937,202 @@ async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
     assert runtime._asr_session is None
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DEEP_SLEEP
     asr.close.assert_awaited_once_with()
+
+
+async def test_prewarming_uses_idle_transport_ttl() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {"close": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    policy = replace(resolve_provider_policy("openai", "provider"), warm_transport_ms=1_000)
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        config=VoiceLifecycleConfig(default_warm_transport_ms=0),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle = lifecycle
+
+    runtime._schedule_transport_warm_expiry(
+        runtime._asr_session_epoch,
+        expected_state=VoiceLifecycleState.PREWARMING,
+    )
+    expiry = runtime._asr_warm_expiry_task
+    assert expiry is not None
+    await asyncio.wait_for(expiry, 1)
+
+    assert runtime._asr_session is None
+    assert lifecycle.snapshot.state is VoiceLifecycleState.DEEP_SLEEP
+    asr.close.assert_awaited_once_with()
+
+
+async def test_warm_idle_uses_provider_transport_ttl() -> None:
+    runtime = _Runtime()
+    asr = type("Asr", (), {"close": AsyncMock()})()
+    runtime._asr_session = asr
+    runtime._asr_route_mode = "independent"
+    policy = replace(resolve_provider_policy("openai", "provider"), warm_transport_ms=0)
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        config=VoiceLifecycleConfig(default_warm_transport_ms=1_000),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
+    lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+    runtime._asr_lifecycle = lifecycle
+
+    runtime._schedule_transport_warm_expiry(
+        runtime._asr_session_epoch,
+        expected_state=VoiceLifecycleState.WARM_IDLE,
+    )
+    expiry = runtime._asr_warm_expiry_task
+    assert expiry is not None
+    await asyncio.wait_for(expiry, 1)
+
+    assert runtime._asr_session is None
+    assert lifecycle.snapshot.state is VoiceLifecycleState.DEEP_SLEEP
+    asr.close.assert_awaited_once_with()
+
+
+@pytest.mark.parametrize(
+    "replacement",
+    ["epoch", "lifecycle", "session", "transport", "state"],
+)
+async def test_stale_transport_expiry_never_closes_successor(
+    replacement: str,
+) -> None:
+    runtime = _Runtime()
+    original_session = type("Asr", (), {"close": AsyncMock()})()
+    runtime._asr_session = original_session
+    runtime._asr_route_mode = "independent"
+    policy = replace(resolve_provider_policy("openai", "provider"), warm_transport_ms=0)
+    original_lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        shadow_mode=False,
+    )
+    original_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    original_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    original_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+    original_lifecycle.transition(VoiceLifecycleEvent.TURN_SEALED)
+    original_lifecycle.transition(VoiceLifecycleEvent.PROVIDER_FINAL)
+    runtime._asr_lifecycle = original_lifecycle
+    runtime._schedule_transport_warm_expiry(
+        runtime._asr_session_epoch,
+        expected_state=VoiceLifecycleState.WARM_IDLE,
+    )
+
+    successor_session = type("Asr", (), {"close": AsyncMock()})()
+    if replacement == "epoch":
+        runtime._asr_session_epoch += 1
+    elif replacement == "lifecycle":
+        successor_lifecycle = VoiceInputLifecycleController(
+            provider_policy=policy,
+            shadow_mode=False,
+        )
+        successor_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+        runtime._asr_lifecycle = successor_lifecycle
+    elif replacement == "session":
+        runtime._asr_session = successor_session
+    elif replacement == "transport":
+        original_lifecycle.invalidate_transport()
+    else:
+        original_lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+        original_lifecycle.transition(VoiceLifecycleEvent.SPEECH_CONFIRMED)
+
+    expected_current_session = (
+        successor_session if replacement == "session" else original_session
+    )
+    assert runtime._asr_session is expected_current_session
+    expiry = runtime._asr_warm_expiry_task
+    assert expiry is not None
+    await asyncio.wait_for(expiry, 1)
+
+    original_session.close.assert_not_awaited()
+    expected_current_session.close.assert_not_awaited()
+
+
+async def test_prewarm_expiry_rechecks_identity_after_detector_reset() -> None:
+    runtime = _Runtime()
+    original_session = type("Asr", (), {"close": AsyncMock()})()
+    runtime._asr_session = original_session
+    runtime._asr_route_mode = "independent"
+    policy = replace(resolve_provider_policy("openai", "provider"), warm_transport_ms=1_000)
+    lifecycle = VoiceInputLifecycleController(
+        provider_policy=policy,
+        config=VoiceLifecycleConfig(default_warm_transport_ms=0),
+        shadow_mode=False,
+    )
+    lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
+    lifecycle.transition(VoiceLifecycleEvent.SOFT_WAKE)
+    runtime._asr_lifecycle = lifecycle
+    reset_started = asyncio.Event()
+    reset_release = asyncio.Event()
+    detector = _ReadyDetector()
+
+    async def reset() -> None:
+        reset_started.set()
+        await reset_release.wait()
+
+    detector.reset.side_effect = reset
+    runtime._asr_detector = detector
+    runtime._schedule_transport_warm_expiry(
+        runtime._asr_session_epoch,
+        expected_state=VoiceLifecycleState.PREWARMING,
+    )
+    await asyncio.wait_for(reset_started.wait(), 1)
+
+    successor_session = type("Asr", (), {"close": AsyncMock()})()
+    runtime._asr_session = successor_session
+    reset_release.set()
+    expiry = runtime._asr_warm_expiry_task
+    assert expiry is not None
+    await asyncio.wait_for(expiry, 1)
+
+    assert lifecycle.snapshot.state is VoiceLifecycleState.PREWARMING
+    original_session.close.assert_not_awaited()
+    successor_session.close.assert_not_awaited()
+
+
+async def test_submit_without_lifecycle_returns_typed_unavailable() -> None:
+    runtime = _Runtime()
+    result = await runtime._asr_runtime.submit(
+        ProcessedVoiceFrame(b"\x01\x00" * 160, 16_000, 0.0, False),
+        ingress_token=VoiceIngressToken(0, "socket", 0, 0, 0),
+    )
+
+    assert result == AsrSubmitResult(AsrSubmitStatus.UNAVAILABLE)
+    assert not isinstance(result, bool)
+
+
+async def test_submit_has_only_typed_top_level_return_paths() -> None:
+    source = textwrap.dedent(inspect.getsource(IndependentAsrRuntime.submit))
+    function = ast.parse(source).body[0]
+    assert isinstance(function, ast.AsyncFunctionDef)
+    returns: list[ast.Return] = []
+
+    def collect(node: ast.AST) -> None:
+        for child in ast.iter_child_nodes(node):
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+                continue
+            if isinstance(child, ast.Return):
+                returns.append(child)
+            else:
+                collect(child)
+
+    for statement in function.body:
+        collect(statement)
+
+    assert returns
+    assert all(
+        isinstance(return_node.value, ast.Call)
+        and isinstance(return_node.value.func, ast.Name)
+        and return_node.value.func.id == "AsrSubmitResult"
+        for return_node in returns
+    )
 
 
 async def test_deep_sleep_speech_reconnects_and_flushes_pending_audio() -> None:
