@@ -21,6 +21,7 @@ All configured paths come uniformly from config_manager
 Dependency hierarchy: utils layer -> config layer (one-way; no dependency on the main layer)
 """
 
+import asyncio
 import os
 import pathlib
 from typing import Optional, List, Dict, Any
@@ -38,6 +39,12 @@ from utils.config_manager import (
     persist_user_workshop_folder,
     get_workshop_path
 )
+
+
+async def get_workshop_path_async() -> str:
+    """Resolve the configured workshop root without blocking the event loop."""
+    return await asyncio.to_thread(get_workshop_path)
+
 
 def ensure_workshop_folder_exists(
     folder_path: Optional[str] = None,
@@ -178,6 +185,13 @@ def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -
     # 确保路径存在
     ensure_workshop_folder_exists(workshop_path)
     return workshop_path
+
+
+async def get_workshop_root_async(
+    subscribed_items: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Resolve and persist the workshop root without blocking the event loop."""
+    return await asyncio.to_thread(get_workshop_root, subscribed_items)
 
 
 def get_default_workshop_folder() -> Optional[str]:

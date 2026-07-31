@@ -122,6 +122,52 @@ def test_the_module_qualified_form_is_flagged_through_one_hop():
     assert "save_storage_policy" in out[0][2]
 
 
+def test_an_imported_writer_alias_is_flagged():
+    out = _violations("""
+    from utils.file_utils import atomic_write_json as write_json
+
+    async def handler(payload):
+        write_json(path, payload)
+    """)
+    assert len(out) == 1
+    assert "atomic_write_json" in out[0][2]
+
+
+def test_a_file_utils_module_alias_is_flagged():
+    out = _violations("""
+    from utils import file_utils as fu
+
+    async def handler(payload):
+        fu.atomic_write_text(path, payload)
+    """)
+    assert len(out) == 1
+    assert "atomic_write_text" in out[0][2]
+
+
+def test_an_imported_alias_is_flagged_through_one_hop():
+    out = _violations("""
+    from utils.file_utils import atomic_write_json as write_json
+
+    def save_storage_policy(payload):
+        write_json(path, payload)
+
+    async def handler(payload):
+        save_storage_policy(payload)
+    """)
+    assert len(out) == 1
+    assert "save_storage_policy" in out[0][2]
+
+
+def test_an_unrelated_import_alias_is_not_flagged():
+    out = _violations("""
+    from elsewhere import atomic_write_json as write_json
+
+    async def handler(payload):
+        write_json(path, payload)
+    """)
+    assert out == []
+
+
 def test_an_unrelated_receiver_with_the_same_attr_is_not_flagged():
     # 反证：认的是 (file_utils, atomic_write_*) 这一对，不是光看方法名。
     out = _violations("""
@@ -139,6 +185,23 @@ def test_the_offloaded_form_is_not_flagged():
     async def handler(policy):
         await asyncio.to_thread(save_storage_policy, policy)
     ''')
+    assert out == []
+
+
+def test_workshop_path_config_read_is_flagged_on_the_event_loop():
+    out = _violations("""
+    async def handler():
+        return get_workshop_path()
+    """)
+    assert len(out) == 1
+    assert "get_workshop_path" in out[0][2]
+
+
+def test_workshop_path_async_twin_is_allowed():
+    out = _violations("""
+    async def handler():
+        return await get_workshop_path_async()
+    """)
     assert out == []
 
 

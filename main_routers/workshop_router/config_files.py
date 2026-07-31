@@ -23,11 +23,13 @@ from ._shared import logger, router
 from ..shared_state import get_config_manager
 
 import os
+import errno
+import stat
 import asyncio
 from urllib.parse import unquote
 from fastapi.responses import JSONResponse
 from utils.workshop_utils import (
-    get_workshop_path,
+    get_workshop_path_async,
 )
 
 
@@ -92,7 +94,12 @@ async def save_workshop_config_api(config_data: dict):
             # 一并拦掉它，等于用户只能设置和替换、再也无法通过接口清除，只能手改
             # JSON。全空白（"   "）仍然拒 —— 那不是清除，是个会被当成真路径的值。
             if value == "":
-                continue
+                if key == 'user_mod_folder':
+                    continue
+                return {
+                    "success": False,
+                    "error": "default_workshop_folder 不能为空",
+                }
             if not value.strip():
                 return {
                     "success": False,
@@ -132,12 +139,34 @@ async def save_workshop_config_api(config_data: dict):
                 if not isinstance(probe, str) or probe == '':
                     continue
                 try:
-                    os.stat(probe)
+                    probe_stat = os.stat(probe)
                 except ValueError as exc:
                     raise ValueError(f"{probe_key} 不是合法路径: {exc}") from exc
-                except OSError:
-                    # 不存在 / 无权限不是格式问题，交给后面的 ensure 去处理。
-                    pass
+                except OSError as exc:
+                    # 只放行「语法成立、但此刻不存在/不可访问」的形状。此前把所有
+                    # OSError 都吞掉，ENAMETOOLONG / EINVAL 也会被写进配置；之后每个
+                    # workshop 调用都对着毒路径失败，直到用户再保存一次。
+                    allowed_errnos = {errno.ENOENT, errno.EACCES, errno.EPERM}
+                    allowed_winerrors = {
+                        2,    # ERROR_FILE_NOT_FOUND
+                        3,    # ERROR_PATH_NOT_FOUND
+                        5,    # ERROR_ACCESS_DENIED
+                        21,   # ERROR_NOT_READY (removable drive)
+                        53,   # ERROR_BAD_NETPATH
+                        64,   # ERROR_NETNAME_DELETED
+                        67,   # ERROR_BAD_NET_NAME
+                        121,  # ERROR_SEM_TIMEOUT
+                    }
+                    if (
+                        getattr(exc, 'errno', None) not in allowed_errnos
+                        and getattr(exc, 'winerror', None) not in allowed_winerrors
+                    ):
+                        raise ValueError(
+                            f"{probe_key} 不是合法路径: {exc}"
+                        ) from exc
+                else:
+                    if not stat.S_ISDIR(probe_stat.st_mode):
+                        raise ValueError(f"{probe_key} 必须指向目录")
 
             with get_config_manager().workshop_config_lock():
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
@@ -204,7 +233,9 @@ async def read_workshop_file(path: str):
         
         # 解码URL编码的路径
         decoded_path = unquote(path)
-        decoded_path = _assert_under_base(decoded_path, get_workshop_path())
+        decoded_path = _assert_under_base(
+            decoded_path, await get_workshop_path_async()
+        )
         logger.info(f"解码后的路径: {decoded_path}")
         
         # 检查文件是否存在
@@ -248,7 +279,9 @@ async def list_chara_files(directory: str):
         logger.info(f"列出创意工坊目录下的角色卡文件请求，目录: {directory}")
         
         # 解码URL编码的路径
-        decoded_dir = _assert_under_base(unquote(directory), get_workshop_path())
+        decoded_dir = _assert_under_base(
+            unquote(directory), await get_workshop_path_async()
+        )
         logger.info(f"解码后的目录路径: {decoded_dir}")
         
         # 检查目录是否存在
@@ -281,7 +314,9 @@ async def list_audio_files(directory: str):
         logger.info(f"列出创意工坊目录下的音频文件请求，目录: {directory}")
         
         # 解码URL编码的路径并验证是否在workshop目录下
-        decoded_dir = _assert_under_base(unquote(directory), get_workshop_path())
+        decoded_dir = _assert_under_base(
+            unquote(directory), await get_workshop_path_async()
+        )
         logger.info(f"解码后的目录路径: {decoded_dir}")
         
         # 检查目录是否存在

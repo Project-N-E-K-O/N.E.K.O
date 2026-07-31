@@ -634,6 +634,33 @@ async def test_arecord_output_stamps_time_at_the_call_site(tmp_path, monkeypatch
     assert window[0]["is_proactive"] is True
 
 
+@pytest.mark.asyncio
+async def test_apreload_reads_without_holding_the_data_lock(tmp_path, monkeypatch):
+    """A slow first read must not make loop-side scorers wait on a worker lock."""
+    store = _build_store(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_read(_name):
+        started.set()
+        assert release.wait(timeout=5)
+        return []
+
+    monkeypatch.setattr(store, "_read_window_from_disk", _slow_read)
+    preload = asyncio.create_task(store.apreload("妮可"))
+    assert await asyncio.to_thread(started.wait, 5)
+
+    lock = store._get_lock("妮可")
+    acquired = lock.acquire(blocking=False)
+    if acquired:
+        lock.release()
+    release.set()
+    await preload
+
+    assert acquired, "the worker held the data lock while performing disk I/O"
+    assert store._cache["妮可"] == []
+
+
 def test_the_per_turn_callers_use_the_async_twin():
     """The two per-turn call sites must not fall back to the sync writer.
 

@@ -20,6 +20,7 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 
 from ._shared import logger, router
 from .config_files import _assert_under_base
+from .content_gate import ContentFolderBusy, claim_reference_pair
 from .ugc import _find_subscribed_item_by_id
 from .voice_manifest import (
     WORKSHOP_REFERENCE_AUDIO_CONTENT_TYPES,
@@ -46,60 +47,8 @@ from fastapi import Request
 from fastapi.responses import FileResponse, JSONResponse
 from utils.file_utils import atomic_write_json
 from utils.workshop_utils import (
-    get_workshop_path,
+    get_workshop_path_async,
 )
-
-
-def _replace_voice_reference(
-    content_folder: str,
-    audio_path: str,
-    audio_bytes: bytes,
-    manifest_path: str,
-    manifest: dict,
-) -> None:
-    """Swap in a new reference-audio/manifest pair as one blocking unit.
-
-    Kept synchronous on purpose so the caller can hand the whole swap to a
-    single worker thread: the steps have no await between them, so a cancelled
-    request can never observe a half-replaced pair. The per-folder lock covers
-    the other direction — two workers racing the same folder.
-
-    The manifest write is the single commit point. The new audio goes to its
-    own filename, so nothing that the current manifest points at is ever
-    overwritten or deleted before that commit: any failure up to it leaves the
-    previous pair byte-for-byte intact, and any state after it is the complete
-    new pair. There is no window in which the two halves come from different
-    uploads, so there is nothing to roll back.
-    """
-    with voice_reference_lock(content_folder):
-        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 到它**自己的**文件名。
-        #    这个名字不会是当前 manifest 指着的那个（handler 每次生成新 token），
-        #    所以这一步不覆盖、不删除任何在用的东西。
-        fd, temp_audio = tempfile.mkstemp(dir=content_folder, suffix='.tmp')
-        try:
-            with os.fdopen(fd, 'wb') as f:
-                f.write(audio_bytes)
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(temp_audio, audio_path)
-
-            # 2) 唯一的提交点。atomic_write_json 是 tmp + os.replace，要么整份旧
-            #    manifest，要么整份新 manifest —— 这一步之前失败，盘上还是完完整整的
-            #    旧一对。
-            atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
-        except BaseException:
-            with suppress(OSError):
-                os.remove(temp_audio)
-            # 没提交成功就把刚落下的新音频也清掉：它没人引用，但 publish 是把整个
-            # 内容目录交给 SetItemContent 的，留着会让一次「报了失败」的上传照样被
-            # 发布出去。删不掉也只是个孤儿，下次成功替换时会被扫走。
-            with suppress(OSError):
-                os.remove(audio_path)
-            raise
-
-        # 3) 提交之后再扫掉所有没人引用的参考音频（上一次的、以及之前失败留下的
-        #    孤儿）。删失败只是占点磁盘，不影响这对引用可用，所以吞掉。
-        _sweep_unreferenced_audio(content_folder, keep=audio_path)
 
 
 def _current_reference_audio_path(content_folder: str) -> str | None:
@@ -161,7 +110,7 @@ def _replace_voice_reference(
     new pair. There is no window in which the two halves come from different
     uploads, so there is nothing to roll back.
     """
-    with voice_reference_lock(content_folder):
+    with claim_reference_pair(content_folder), voice_reference_lock(content_folder):
         # 进来时这个目录里「属于我们」的音频，就是当前 manifest 指着的那一个 ——
         # 这是**可证明**的所有权。按名字形状猜（voice_sample*、甚至
         # voice_sample_<12 位 hex>）都还是概率论：内容目录是用户自己的目录，他放一个
@@ -210,8 +159,8 @@ def _replace_voice_reference(
 
 
 def _remove_voice_reference(content_folder: str) -> None:
-    """Drop the reference pair under the same per-folder lock as the swap."""
-    with voice_reference_lock(content_folder):
+    """Drop the reference pair while no whole-folder consumer owns the item."""
+    with claim_reference_pair(content_folder), voice_reference_lock(content_folder):
         _cleanup_workshop_voice_reference(content_folder)
 
 
@@ -222,7 +171,9 @@ async def upload_reference_audio(request: Request):
         form = await request.form()
         file = form.get('file')
         content_folder = unquote(str(form.get('content_folder', '') or '').strip())
-        workshop_export_dir = os.path.join(get_workshop_path(), 'WorkshopExport')
+        workshop_export_dir = os.path.join(
+            await get_workshop_path_async(), 'WorkshopExport'
+        )
 
         if not file:
             return JSONResponse({
@@ -314,6 +265,11 @@ async def upload_reference_audio(request: Request):
             "manifest": manifest,
             "message": "参考语音已写入工坊内容目录",
         })
+    except ContentFolderBusy as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=409)
     except Exception as e:
         logger.error(f"上传参考语音失败: {e}")
         return JSONResponse({
@@ -328,7 +284,9 @@ async def remove_reference_audio(request: Request):
     try:
         data = await request.json()
         content_folder = unquote(str(data.get('content_folder', '') or '').strip())
-        workshop_export_dir = os.path.join(get_workshop_path(), 'WorkshopExport')
+        workshop_export_dir = os.path.join(
+            await get_workshop_path_async(), 'WorkshopExport'
+        )
         if not content_folder:
             return JSONResponse({
                 "success": False,
@@ -353,6 +311,11 @@ async def remove_reference_audio(request: Request):
             "success": True,
             "message": "参考语音已清理",
         })
+    except ContentFolderBusy as e:
+        return JSONResponse({
+            "success": False,
+            "error": str(e),
+        }, status_code=409)
     except Exception as e:
         logger.error(f"删除参考语音失败: {e}")
         return JSONResponse({

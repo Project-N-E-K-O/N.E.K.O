@@ -27,9 +27,11 @@ three steps still run to completion.
 from __future__ import annotations
 
 import asyncio
+import ast
 import json
 import os
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -42,6 +44,20 @@ from main_routers.workshop_router.voice_manifest import (
 from main_routers.workshop_router.voice_refs import _replace_voice_reference
 
 pytestmark = pytest.mark.unit
+
+
+def test_voice_refs_has_exactly_one_swap_implementation():
+    """A duplicate definition silently shadows the implementation under review."""
+    from main_routers.workshop_router import voice_refs
+
+    tree = ast.parse(Path(voice_refs.__file__).read_text(encoding="utf-8"))
+    definitions = [
+        node
+        for node in tree.body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        and node.name == "_replace_voice_reference"
+    ]
+    assert len(definitions) == 1
 
 
 def _seed_existing_reference(folder, audio_name: str = "voice_sample.mp3") -> None:

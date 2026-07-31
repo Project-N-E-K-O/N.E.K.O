@@ -35,6 +35,19 @@ from utils.seven_day_tutorial_state import (
     replace_seven_day_tutorial_state,
 )
 
+_SEVEN_DAY_SUBMIT_LOCK = asyncio.Lock()
+_AUTOSTART_SUBMIT_LOCK = asyncio.Lock()
+
+
+async def _run_serialized_in_worker(lock: asyncio.Lock, func, /, *args, **kwargs):
+    """Queue one state-family operation before it consumes an executor worker."""
+    # The sync helpers also serialize on a threading.RLock. Submitting every
+    # concurrent request first would make all waiters occupy default-executor
+    # slots while only one can progress. asyncio.Lock suspends waiters without
+    # blocking the event loop; the worker is allocated only to the active call.
+    async with lock:
+        return await asyncio.to_thread(func, *args, **kwargs)
+
 
 @router.get("/seven-day-tutorial/state")
 async def get_seven_day_tutorial_state():
@@ -47,7 +60,8 @@ async def get_seven_day_tutorial_state():
     #    worker，而 file_utils 的「事件循环上绝不退避」保护是**按线程**判断的：worker
     #    里撞上 Windows busy 会重新启用那 155ms 退避，且是持着 RLock 睡的。只要循环
     #    线程还会去抢这把锁，退避就会经由锁重新传回循环。两边都挪走，这条路径才真的断。
-    return await asyncio.to_thread(
+    return await _run_serialized_in_worker(
+        _SEVEN_DAY_SUBMIT_LOCK,
         get_seven_day_tutorial_state_response,
         config_manager=get_config_manager(),
     )
@@ -64,7 +78,8 @@ async def put_seven_day_tutorial_state(request: Request):
         # 整个「读 revision — 比对 — 落盘」都在 helper 内部的 _STATE_LOCK（threading.RLock）
         # 里完成，临界区不跨 await，所以把整次调用挪进线程不会引入竞态；并发请求由那把
         # RLock 在工作线程上排队，事件循环不再被 atomic_write_json 的 fsync 堵住。
-        store = await asyncio.to_thread(
+        store = await _run_serialized_in_worker(
+            _SEVEN_DAY_SUBMIT_LOCK,
             replace_seven_day_tutorial_state,
             payload.get("state"),
             expected_revision=payload.get("expectedRevision"),
@@ -88,7 +103,8 @@ async def get_autostart_prompt_state():
     # 会落一次 save_autostart_prompt_state（utils/prompt_state/autostart.py:236），
     # 而且它在循环线程上持 _AUTOSTART_STATE_LOCK —— 下面三个 POST 已挪进 worker，
     # 这一条不挪，退避就会经由这把锁把 155ms 传回事件循环。
-    return await asyncio.to_thread(
+    return await _run_serialized_in_worker(
+        _AUTOSTART_SUBMIT_LOCK,
         get_autostart_prompt_state_response,
         config_manager=get_config_manager(),
     )
@@ -105,7 +121,8 @@ async def post_autostart_prompt_heartbeat(request: Request):
     # 同上：读状态、算 eligibility、落盘全在 _AUTOSTART_STATE_LOCK（threading.RLock）
     # 内部完成，临界区不跨 await。这个端点是前端轮询的，每次可能触发一次 atomic_write_json，
     # 必须挪出事件循环。
-    return await asyncio.to_thread(
+    return await _run_serialized_in_worker(
+        _AUTOSTART_SUBMIT_LOCK,
         process_autostart_prompt_heartbeat,
         payload,
         config_manager=get_config_manager(),
@@ -123,7 +140,8 @@ async def post_autostart_prompt_shown(request: Request):
 
     try:
         # 同上：读—改—写整段在 _AUTOSTART_STATE_LOCK 内，挪进线程安全。
-        return await asyncio.to_thread(
+        return await _run_serialized_in_worker(
+            _AUTOSTART_SUBMIT_LOCK,
             record_autostart_prompt_shown,
             payload,
             config_manager=get_config_manager(),
@@ -143,7 +161,8 @@ async def post_autostart_prompt_decision(request: Request):
 
     try:
         # 同上：读—改—写整段在 _AUTOSTART_STATE_LOCK 内，挪进线程安全。
-        return await asyncio.to_thread(
+        return await _run_serialized_in_worker(
+            _AUTOSTART_SUBMIT_LOCK,
             record_autostart_prompt_decision,
             payload,
             config_manager=get_config_manager(),

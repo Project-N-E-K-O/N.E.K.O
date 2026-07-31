@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import json
 import os
 
@@ -822,6 +823,96 @@ async def test_an_empty_string_clears_the_override(monkeypatch):
 
     blank = await config_files.save_workshop_config_api({"user_mod_folder": "  "})
     assert blank["success"] is False, "全空白不该被当成清除"
+
+
+@pytest.mark.asyncio
+async def test_an_empty_default_folder_is_rejected(monkeypatch):
+    """Only the user override has empty-string clearing semantics."""
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(
+        workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg)
+    )
+    monkeypatch.setattr(
+        workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True
+    )
+
+    result = await config_files.save_workshop_config_api(
+        {"default_workshop_folder": ""}
+    )
+
+    assert result["success"] is False
+    assert "default_workshop_folder" in result["error"]
+    assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_path_format_oserrors_are_rejected_before_saving(monkeypatch):
+    """Format and length failures are not equivalent to a missing directory."""
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(
+        workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg)
+    )
+    monkeypatch.setattr(
+        workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True
+    )
+
+    too_long = OSError("path too long")
+    too_long.errno = errno.ENAMETOOLONG
+
+    def _raise_too_long(_path):
+        raise too_long
+
+    monkeypatch.setattr(config_files.os, "stat", _raise_too_long)
+
+    result = await config_files.save_workshop_config_api(
+        {"user_mod_folder": os.path.join(os.sep, "too-long")}
+    )
+
+    assert result["success"] is False
+    assert "合法路径" in result["error"]
+    assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_an_existing_file_is_rejected_as_a_workshop_folder(
+    monkeypatch, tmp_path,
+):
+    """A path that already names a file can never become a workshop directory."""
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    path = tmp_path / "not-a-directory"
+    path.write_text("x", encoding="utf-8")
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(
+        workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg)
+    )
+    monkeypatch.setattr(
+        workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True
+    )
+
+    result = await config_files.save_workshop_config_api(
+        {"user_mod_folder": str(path)}
+    )
+
+    assert result["success"] is False
+    assert "目录" in result["error"]
+    assert saved == []
 
 
 def test_the_cache_lock_is_created_exactly_once_under_concurrency(tmp_path):

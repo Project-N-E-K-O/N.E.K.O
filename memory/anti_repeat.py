@@ -363,9 +363,8 @@ class AntiRepeatCorpus:
 
     # ── load / save (锁由调用方持有) ───────────────────────
 
-    def _load_unlocked(self, name: str) -> List[Dict[str, Any]]:
-        if name in self._cache:
-            return self._cache[name]
+    def _read_window_from_disk(self, name: str) -> List[Dict[str, Any]]:
+        """Read and normalize one corpus window without taking the data lock."""
         window: List[Dict[str, Any]] = []
         path = self._file_path(name)
         if os.path.exists(path):
@@ -391,10 +390,34 @@ class AntiRepeatCorpus:
         if len(window) > ANTI_REPEAT_BG_WINDOW:
             window.sort(key=lambda e: float(e.get("ts", 0)))
             window = window[-ANTI_REPEAT_BG_WINDOW:]
+        return window
+
+    def _load_unlocked(self, name: str) -> List[Dict[str, Any]]:
+        if name in self._cache:
+            return self._cache[name]
+        window = self._read_window_from_disk(name)
         self._cache[name] = window
         return window
 
     # ── public API ─────────────────────────────────────────
+
+    async def apreload(self, name: str) -> None:
+        """Populate the first disk-backed window before synchronous loop use.
+
+        Scoring and staging stay synchronous because they sit on commit/order
+        boundaries where adding an await would reopen cancellation races. Their
+        first cache miss must therefore be paid earlier. Disk I/O happens
+        without the data lock; after it completes, installation is a tiny
+        in-memory critical section. ``setdefault`` preserves a window another
+        caller may have populated while this read was in flight.
+        """
+        name = _resolve_name(name)
+        with self._get_lock(name):
+            if name in self._cache:
+                return
+        window = await asyncio.to_thread(self._read_window_from_disk, name)
+        with self._get_lock(name):
+            self._cache.setdefault(name, window)
 
     def record_output(
         self,
@@ -519,12 +542,9 @@ class AntiRepeatCorpus:
         committed assistant reply, so on the realtime session's loop that
         physical flush lands between audio chunks.
 
-        The whole call is handed to a worker thread rather than only the
-        write: the read-modify-write runs under ``_get_lock(name)``, and a
-        ``threading.Lock`` serializes the loop thread against workers just as
-        well as it serializes workers against each other. Splitting the
-        critical section across the thread boundary would be the only way to
-        break that.
+        Callers that run this on an event loop must preload the first disk read
+        with ``apreload``. The in-memory update remains on the caller so the
+        next turn sees it immediately; only persistence is off-loaded.
         """
         # 内存更新留在调用线程上，只有落盘去 worker。整次记录都丢进 worker 的话，
         # 在那个 job 排队 / 算 ngram 的这段时间里，事件循环上的 score_draft /

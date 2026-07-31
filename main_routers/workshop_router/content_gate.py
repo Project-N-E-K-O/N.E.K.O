@@ -1,0 +1,85 @@
+# -*- coding: utf-8 -*-
+# Copyright 2025-2026 Project N.E.K.O. Team
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Non-blocking ownership for Workshop content folders.
+
+Steam consumes the whole folder from ``SetItemContent`` until the upload
+finishes. Reference-audio writes and folder cleanup must therefore be excluded
+for that entire span, not just while the preflight reads the manifest.
+
+Claims are bookkeeping, never wait queues. Both claim and release belong to
+the worker-thread unit that performs the blocking work so cancellation of its
+awaiting coroutine cannot release a folder while that worker is still using it.
+"""
+
+import os
+import threading
+from contextlib import contextmanager
+from typing import Iterator
+
+
+class ContentFolderBusy(RuntimeError):
+    """The requested content folder is already owned by another operation."""
+
+
+PUBLISH_PURPOSE = '发布'
+CLEANUP_PURPOSE = '清理'
+
+_CLAIM_GUARD = threading.Lock()
+_EXCLUSIVE: dict[str, str] = {}
+_PAIR_WRITERS: dict[str, int] = {}
+
+
+def _claim_key(content_folder: str) -> str:
+    """Collapse aliases, symlinks and Windows junctions to one ownership key."""
+    return os.path.normcase(os.path.realpath(content_folder))
+
+
+@contextmanager
+def claim_content_folder(content_folder: str, *, purpose: str) -> Iterator[None]:
+    """Take a non-blocking exclusive claim for publish or folder deletion."""
+    key = _claim_key(content_folder)
+    with _CLAIM_GUARD:
+        holder = _EXCLUSIVE.get(key)
+        if holder is not None:
+            raise ContentFolderBusy(f'该内容目录正在{holder}，请等这次操作结束后再试')
+        if _PAIR_WRITERS.get(key):
+            raise ContentFolderBusy('参考语音正在写入，请稍后再试')
+        _EXCLUSIVE[key] = purpose
+    try:
+        yield
+    finally:
+        with _CLAIM_GUARD:
+            _EXCLUSIVE.pop(key, None)
+
+
+@contextmanager
+def claim_reference_pair(content_folder: str) -> Iterator[None]:
+    """Take a shared pair-write claim, excluded by whole-folder operations."""
+    key = _claim_key(content_folder)
+    with _CLAIM_GUARD:
+        holder = _EXCLUSIVE.get(key)
+        if holder is not None:
+            raise ContentFolderBusy(f'该物品正在{holder}，等这次操作结束后再修改参考语音')
+        _PAIR_WRITERS[key] = _PAIR_WRITERS.get(key, 0) + 1
+    try:
+        yield
+    finally:
+        with _CLAIM_GUARD:
+            remaining = _PAIR_WRITERS.get(key, 0) - 1
+            if remaining > 0:
+                _PAIR_WRITERS[key] = remaining
+            else:
+                _PAIR_WRITERS.pop(key, None)

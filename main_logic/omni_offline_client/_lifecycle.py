@@ -183,6 +183,16 @@ class _LifecycleMixin:
         if not instruction or not instruction.strip():
             return False
 
+        # A regular visible response stages anti-repeat memory immediately
+        # before terminal callbacks. That commit boundary cannot gain an await,
+        # so perform the first disk-backed load before generation starts.
+        if completion_mode == "response" and persist_response:
+            try:
+                from memory.anti_repeat import get_anti_repeat_corpus
+                await get_anti_repeat_corpus().apreload(self.lanlan_name)
+            except Exception as exc:  # pragma: no cover - best-effort cache
+                logger.debug("[AntiRepeat] response preload skipped: %s", exc)
+
         # 临时注入：instruction 已由调用方用 ======== 格式封装，作为 HumanMessage 发送，
         # 不持久化到 _conversation_history，避免污染长期上下文。
         # Proactive media is passed EXPLICITLY via ``images`` (per-callback,

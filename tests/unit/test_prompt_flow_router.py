@@ -1,3 +1,4 @@
+import asyncio
 import importlib
 from pathlib import Path
 
@@ -32,6 +33,45 @@ class DummyConfig:
 
     def get_config_path(self, filename):
         return self.config_dir / filename
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_serialization_happens_before_an_executor_worker_is_allocated(
+    monkeypatch,
+):
+    """Concurrent state calls must not consume workers while waiting on one RLock."""
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    active = 0
+    max_active = 0
+    submissions = 0
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        nonlocal active, max_active, submissions
+        submissions += 1
+        active += 1
+        max_active = max(max_active, active)
+        entered.set()
+        await release.wait()
+        active -= 1
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(system_router_module.asyncio, "to_thread", _fake_to_thread)
+    lock = asyncio.Lock()
+    first = asyncio.create_task(
+        system_router_module._run_serialized_in_worker(lock, lambda: "first")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+    second = asyncio.create_task(
+        system_router_module._run_serialized_in_worker(lock, lambda: "second")
+    )
+    await asyncio.sleep(0)
+
+    assert submissions == 1, "the waiter reached the executor before its turn"
+    release.set()
+    assert await asyncio.gather(first, second) == ["first", "second"]
+    assert max_active == 1
 
 
 @pytest.fixture

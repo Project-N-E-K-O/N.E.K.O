@@ -260,6 +260,14 @@ class ProactiveMixin:
             if self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted during auto-start", self.lanlan_name)
                 return False
+        # ``finish_proactive_delivery`` must stage the committed text before
+        # terminal signals and cannot insert an await there. Pay the first
+        # corpus read here, before the proactive turn is claimed or visible.
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            await get_anti_repeat_corpus().apreload(self.lanlan_name)
+        except Exception as exc:  # pragma: no cover - best-effort cache
+            logger.debug("[AntiRepeat] proactive preload skipped: %s", exc)
         async with self.lock:
             # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
             # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。

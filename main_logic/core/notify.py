@@ -203,7 +203,9 @@ class NotifyMixin:
         try:
             from memory.anti_repeat import get_anti_repeat_corpus
             from config.prompts.prompts_directives import render_recent_topics_block
-            topics = get_anti_repeat_corpus().top_recent_topics(_directives_key)
+            anti_repeat_corpus = get_anti_repeat_corpus()
+            await anti_repeat_corpus.apreload(_directives_key)
+            topics = anti_repeat_corpus.top_recent_topics(_directives_key)
             prompt += render_recent_topics_block(topics, _lang)
         except Exception as _exc:  # pragma: no cover - defensive
             logger.debug(
