@@ -972,8 +972,42 @@ def _known_event_loop_names(func, before_line: int) -> set[str]:
     return after(func.body, set())
 
 
-def _is_worker_offload_call(call: ast.Call, func) -> bool:
+def _known_to_thread_names(
+    func, before_line: int, module_aliases: set[str] | None = None
+) -> set[str]:
+    """Verified bare-name aliases of ``asyncio.to_thread`` at one call site."""
+    names = set(module_aliases or ())
+    for node in sorted(
+        _walk_own_scope(func), key=lambda item: getattr(item, 'lineno', -1)
+    ):
+        if getattr(node, 'lineno', -1) >= before_line:
+            continue
+        if isinstance(node, ast.ImportFrom) and node.module == 'asyncio':
+            for alias in node.names:
+                if alias.name == 'to_thread':
+                    names.add(alias.asname or alias.name)
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            is_alias = isinstance(value, ast.Name) and value.id in names
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if is_alias:
+                    names.add(target.id)
+                else:
+                    names.discard(target.id)
+    return names
+
+
+def _is_worker_offload_call(
+    call: ast.Call, func, to_thread_aliases: set[str] | None = None
+) -> bool:
     target = call.func
+    if isinstance(target, ast.Name):
+        return target.id in _known_to_thread_names(
+            func, call.lineno, to_thread_aliases
+        )
     if not isinstance(target, ast.Attribute):
         return False
     if (
@@ -1010,11 +1044,18 @@ def _is_invoked_inside(node, root, parents: dict[int, ast.AST]) -> bool:
     return invoked and current is root
 
 
-def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
+def _is_deferred_reference(
+    node,
+    parents: dict[int, ast.AST],
+    stop,
+    to_thread_aliases: set[str] | None = None,
+) -> bool:
     current = node
     while id(current) in parents:
         current = parents[id(current)]
-        if isinstance(current, ast.Call) and _is_worker_offload_call(current, stop):
+        if isinstance(current, ast.Call) and _is_worker_offload_call(
+            current, stop, to_thread_aliases
+        ):
             callable_arg = _worker_callable(current)
             if callable_arg is node:
                 return True
@@ -1306,7 +1347,9 @@ def _function_claims_via_nested_helpers(func, memo=None, visiting=None) -> bool:
     return result
 
 
-def _claiming_helpers_called_on_loop(func) -> list:
+def _claiming_helpers_called_on_loop(
+    func, to_thread_aliases: set[str] | None = None
+) -> list:
     """Nested claim helpers are legal only when every use is offloaded."""
     helpers = [
         node
@@ -1325,7 +1368,9 @@ def _claiming_helpers_called_on_loop(func) -> list:
     claiming, generators = _claiming_worker_inventory(
         helpers, seed_claiming=nested_claiming
     )
-    return _claiming_names_called_on_loop(func, claiming, generators)
+    return _claiming_names_called_on_loop(
+        func, claiming, generators, to_thread_aliases
+    )
 
 
 def _reference_name(node) -> str | None:
@@ -1340,6 +1385,7 @@ def _claiming_names_called_on_loop(
     func,
     claiming_names: set[str],
     generator_names: set[str] | None = None,
+    to_thread_aliases: set[str] | None = None,
 ) -> list:
     """References to claim-owning sync workers must be worker callables."""
     if not claiming_names:
@@ -1352,7 +1398,9 @@ def _claiming_names_called_on_loop(
         name = _reference_name(node)
         if name not in claiming_names:
             continue
-        if name in generator_names or not _is_deferred_reference(node, parents, func):
+        if name in generator_names or not _is_deferred_reference(
+            node, parents, func, to_thread_aliases
+        ):
             offenders.append((name, node.lineno))
     return offenders
 
@@ -1413,9 +1461,16 @@ def _module_level_claiming_workers(trees):
 
     module_aliases = {module: {} for module in module_names}
     imported_classes = {module: {} for module in module_names}
+    to_thread_aliases = {module: set() for module in module_names}
     for module, tree in trees:
         for node in tree.body:
             if isinstance(node, ast.ImportFrom):
+                if node.level == 0 and node.module == 'asyncio':
+                    to_thread_aliases[module].update(
+                        alias.asname or alias.name
+                        for alias in node.names
+                        if alias.name == 'to_thread'
+                    )
                 direct_source = _resolve_imported_module(
                     module, node, module_names
                 )
@@ -1588,14 +1643,23 @@ def _module_level_claiming_workers(trees):
                     generators[class_scope] = next_class_generators
                     changed = True
         if not changed:
-            return claiming, generators, module_aliases
+            import_facts = {
+                module: {
+                    'classes': imported_classes[module],
+                    'to_thread': to_thread_aliases[module],
+                }
+                for module in module_names
+            }
+            return claiming, generators, module_aliases, import_facts
 
 
 def _local_instance_class(
     name: str,
     line: int,
-    local_instances: dict[str, list[tuple[int, str | None]]],
-) -> str | None:
+    local_instances: dict[
+        str, list[tuple[int, tuple[str, str] | None]]
+    ],
+) -> tuple[str, str] | None:
     return next((
         class_name
         for assigned_line, class_name in reversed(local_instances.get(name, []))
@@ -1617,7 +1681,10 @@ def _class_protocol_claim(
     module: str,
     claiming_by_scope,
     parents: dict[int, ast.AST],
-    local_instances: dict[str, list[tuple[int, str | None]]],
+    local_instances: dict[
+        str, list[tuple[int, tuple[str, str] | None]]
+    ],
+    class_aliases: dict[str, tuple[str, str]],
 ) -> tuple[tuple[str, str], str] | None:
     """Resolve implicit constructor/context protocol calls for a class name."""
     if not isinstance(node, ast.Name):
@@ -1631,7 +1698,7 @@ def _class_protocol_claim(
         and isinstance(parent, ast.withitem)
         and parent.context_expr is node
     ):
-        scope = (module, stored_class)
+        scope = stored_class
         methods = claiming_by_scope.get(scope, set())
         for method in ('__enter__', '__exit__', '__aenter__', '__aexit__'):
             if method in methods:
@@ -1639,7 +1706,7 @@ def _class_protocol_claim(
         return None
     if not isinstance(parent, ast.Call) or parent.func is not node:
         return None
-    scope = (module, node.id)
+    scope = class_aliases.get(node.id, (module, node.id))
     methods = claiming_by_scope.get(scope, set())
     if '__init__' in methods:
         return scope, '__init__'
@@ -1663,12 +1730,16 @@ def _scope_claiming_names_called_on_loop(
     claiming_by_scope,
     generators_by_scope,
     module_aliases,
+    import_facts=None,
 ) -> list:
     """Resolve module names and ``self`` methods without cross-scope collisions."""
     parents = _parent_map(func)
     local_names = {}
     local_instances = {}
     local_module_aliases = dict(module_aliases.get(module, {}))
+    module_imports = (import_facts or {}).get(module, {})
+    local_class_aliases = dict(module_imports.get('classes', {}))
+    to_thread_aliases = set(module_imports.get('to_thread', set()))
     module_names = {scope[0] for scope in claiming_by_scope}
     own_scope = list(_walk_own_scope(func))
     class_names = {
@@ -1680,10 +1751,13 @@ def _scope_claiming_names_called_on_loop(
             targets = child.targets if isinstance(child, ast.Assign) else [child.target]
             value = child.value
             stored_class = (
-                value.func.id
+                local_class_aliases.get(value.func.id, (module, value.func.id))
                 if isinstance(value, ast.Call)
                 and isinstance(value.func, ast.Name)
-                and value.func.id in class_names
+                and (
+                    value.func.id in class_names
+                    or value.func.id in local_class_aliases
+                )
                 else None
             )
             for target in targets:
@@ -1701,10 +1775,20 @@ def _scope_claiming_names_called_on_loop(
                 if source_module:
                     source_scope = (source_module, None)
                     for alias in child.names:
+                        local_name = alias.asname or alias.name
+                        class_scope = (source_module, alias.name)
+                        if class_scope in claiming_by_scope:
+                            local_class_aliases[local_name] = class_scope
                         if alias.name in claiming_by_scope.get(source_scope, set()):
-                            local_names[alias.asname or alias.name] = (
+                            local_names[local_name] = (
                                 source_scope, alias.name
                             )
+            if child.level == 0 and child.module == 'asyncio':
+                to_thread_aliases.update(
+                    alias.asname or alias.name
+                    for alias in child.names
+                    if alias.name == 'to_thread'
+                )
             else:
                 for alias in child.names:
                     source_module = _resolve_imported_module(
@@ -1751,7 +1835,12 @@ def _scope_claiming_names_called_on_loop(
                 continue
             name = node.id
             protocol_claim = _class_protocol_claim(
-                node, module, claiming_by_scope, parents, local_instances
+                node,
+                module,
+                claiming_by_scope,
+                parents,
+                local_instances,
+                local_class_aliases,
             )
             if protocol_claim:
                 scope, resolved_name = protocol_claim
@@ -1779,7 +1868,7 @@ def _scope_claiming_names_called_on_loop(
             ):
                 scope = (module, class_name)
             elif stored_class:
-                scope = (module, stored_class)
+                scope = stored_class
             elif (
                 isinstance(node.value, ast.Name)
                 and (module, node.value.id) in claiming_by_scope
@@ -1800,7 +1889,9 @@ def _scope_claiming_names_called_on_loop(
             continue
         if (
             resolved_name in generators_by_scope.get(scope, set())
-            or not _is_deferred_reference(node, parents, func)
+            or not _is_deferred_reference(
+                node, parents, func, to_thread_aliases
+            )
         ):
             offenders.append((
                 f'{scope[0]}.{scope[1] or "<module>"}.{resolved_name}', node.lineno
@@ -1889,6 +1980,7 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
 
 def test_the_event_loop_guard_checks_module_level_claim_owners():
     tree = ast.parse(
+        'from asyncio import to_thread as offload\n'
         'def _claiming_worker():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        pass\n'
@@ -1938,6 +2030,13 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'async def offloaded():\n'
         '    await asyncio.to_thread(_claiming_wrapper)\n'
+        '\n'
+        'async def imported_to_thread():\n'
+        '    await offload(_claiming_wrapper)\n'
+        '\n'
+        'async def local_imported_to_thread():\n'
+        '    from asyncio import to_thread as local_offload\n'
+        '    await local_offload(_claiming_wrapper)\n'
         '\n'
         'async def direct():\n'
         '    _claiming_wrapper()\n'
@@ -2133,14 +2232,24 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         for node in ast.walk(tree)
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
-    claiming, generators, aliases = _module_level_claiming_workers([('synthetic', tree)])
+    claiming, generators, aliases, import_facts = _module_level_claiming_workers([
+        ('synthetic', tree)
+    ])
 
     def module_offenders(name):
         return _scope_claiming_names_called_on_loop(
-            functions[name], 'synthetic', None, claiming, generators, aliases
+            functions[name],
+            'synthetic',
+            None,
+            claiming,
+            generators,
+            aliases,
+            import_facts,
         )
 
     assert module_offenders('offloaded') == []
+    assert module_offenders('imported_to_thread') == []
+    assert module_offenders('local_imported_to_thread') == []
     assert module_offenders('direct'), (
         '模块级 claim owner 的同步 wrapper 被协程直调时也必须报出来'
     )
@@ -2167,10 +2276,22 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'nested def 参数和返回注解都在定义 helper 时求值，必须报出来'
     )
     assert _scope_claiming_names_called_on_loop(
-        functions['handler'], 'synthetic', 'Service', claiming, generators, aliases
+        functions['handler'],
+        'synthetic',
+        'Service',
+        claiming,
+        generators,
+        aliases,
+        import_facts,
     ), 'class method claim owner 的同步 wrapper 被 async method 直调时必须报出来'
     assert _scope_claiming_names_called_on_loop(
-        functions['safe_handler'], 'synthetic', 'Other', claiming, generators, aliases
+        functions['safe_handler'],
+        'synthetic',
+        'Other',
+        claiming,
+        generators,
+        aliases,
+        import_facts,
     ) == [], '另一个 class 的同名安全方法不能被误报'
     assert module_offenders('generator_constructor_offloaded'), (
         'offload generator function 只会构造 generator，不会在 worker 执行 claim body'
@@ -2295,7 +2416,7 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def safe_same_name():\n'
         '    owner()\n'
     )
-    imported_claiming, imported_generators, imported_aliases = (
+    imported_claiming, imported_generators, imported_aliases, imported_facts = (
         _module_level_claiming_workers([
         ('source', source),
         ('consumer', consumer),
@@ -2316,6 +2437,7 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_claiming,
         imported_generators,
         imported_aliases,
+        imported_facts,
     ), '新模块里的 owner 经直接 import 后仍必须被发现'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['imported_offloaded'],
@@ -2324,6 +2446,7 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_claiming,
         imported_generators,
         imported_aliases,
+        imported_facts,
     ) == []
     assert _scope_claiming_names_called_on_loop(
         imported_functions['qualified_direct'],
@@ -2332,6 +2455,7 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_claiming,
         imported_generators,
         imported_aliases,
+        imported_facts,
     ), 'module alias 上的 owner 直调必须被发现'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['qualified_offloaded'],
@@ -2340,26 +2464,32 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_claiming,
         imported_generators,
         imported_aliases,
+        imported_facts,
     ) == []
     assert _scope_claiming_names_called_on_loop(
         imported_functions['assigned_direct'],
         'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
     ), '模块级 assignment alias 必须继承 claim owner 身份'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['assigned_offloaded'],
         'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
     ) == []
     assert _scope_claiming_names_called_on_loop(
         imported_functions['local_import_direct'],
         'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
     ), 'handler 内 import 的 claim owner 直调也必须被发现'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['local_import_offloaded'],
         'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
     ) == []
     assert _scope_claiming_names_called_on_loop(
         imported_functions['local_module_direct'],
         'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
     ), 'handler 内 module alias 的 owner 直调也必须被发现'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['safe_same_name'],
@@ -2368,6 +2498,7 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_claiming,
         imported_generators,
         imported_aliases,
+        imported_facts,
     ) == [], '另一个模块的同名安全函数不能被误报'
 
 
@@ -2414,8 +2545,14 @@ def test_nested_router_imports_preserve_claim_ownership():
         'class ImportedService(Base):\n'
         '    async def imported_base_handler(self):\n'
         '        self.worker()\n'
+        'async def imported_instance_handler():\n'
+        '    service = Base()\n'
+        '    service.worker()\n'
+        'async def imported_instance_offloaded():\n'
+        '    service = Base()\n'
+        '    await asyncio.to_thread(service.worker)\n'
     )
-    claiming, generators, aliases = _module_level_claiming_workers([
+    claiming, generators, aliases, import_facts = _module_level_claiming_workers([
         ('workers.publish', source),
         ('workers.consumer', consumer),
         ('consumer', local_consumer),
@@ -2427,13 +2564,13 @@ def test_nested_router_imports_preserve_claim_ownership():
     )
 
     assert _scope_claiming_names_called_on_loop(
-        handler, 'workers.consumer', None, claiming, generators, aliases
+        handler, 'workers.consumer', None, claiming, generators, aliases, import_facts
     ), '递归发现的 subpackage module import 也必须保留 claim ownership'
     local_handler = next(
         node for node in local_consumer.body if isinstance(node, ast.AsyncFunctionDef)
     )
     assert _scope_claiming_names_called_on_loop(
-        local_handler, 'consumer', None, claiming, generators, aliases
+        local_handler, 'consumer', None, claiming, generators, aliases, import_facts
     ), 'handler-local relative import 必须保留完整 dotted module path'
     imported_handler = next(
         node for node in ast.walk(derived)
@@ -2441,8 +2578,21 @@ def test_nested_router_imports_preserve_claim_ownership():
     )
     assert _scope_claiming_names_called_on_loop(
         imported_handler,
-        'derived', 'ImportedService', claiming, generators, aliases,
+        'derived', 'ImportedService', claiming, generators, aliases, import_facts,
     ), 'imported base class 的 claim-owning method 必须传播到 derived scope'
+    derived_functions = {
+        node.name: node
+        for node in derived.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    }
+    assert _scope_claiming_names_called_on_loop(
+        derived_functions['imported_instance_handler'],
+        'derived', None, claiming, generators, aliases, import_facts,
+    ), 'imported class instance 的 claim-owning method 必须解析到源 class scope'
+    assert _scope_claiming_names_called_on_loop(
+        derived_functions['imported_instance_offloaded'],
+        'derived', None, claiming, generators, aliases, import_facts,
+    ) == []
 
 
 def test_workshop_router_discovery_is_recursive(tmp_path):
@@ -2464,7 +2614,7 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
     worker still writing into it.
     """
     trees = _workshop_router_trees()
-    claiming_workers, generator_workers, module_aliases = (
+    claiming_workers, generator_workers, module_aliases, import_facts = (
         _module_level_claiming_workers(trees)
     )
 
@@ -2488,7 +2638,9 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
             # 嵌套的 async def 会被这层 walk 单独取到，各查各的作用域。
             for call in _claim_calls_in_own_scope(node):
                 offenders.append(f'{short}.{node.name}:{call.lineno}')
-            for helper, line in _claiming_helpers_called_on_loop(node):
+            for helper, line in _claiming_helpers_called_on_loop(
+                node, import_facts[short]['to_thread']
+            ):
                 offenders.append(f'{short}.{node.name}:{line} -> {helper}（在事件循环直调）')
             for worker, line in _scope_claiming_names_called_on_loop(
                 node,
@@ -2497,6 +2649,7 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
                 claiming_workers,
                 generator_workers,
                 module_aliases,
+                import_facts,
             ):
                 offenders.append(f'{short}.{node.name}:{line} -> {worker}（模块 worker 未 offload）')
 
@@ -2521,6 +2674,14 @@ _MUST_BE_CLAIMED = {
 _PACKAGE_WIDE_OPERATIONS = {
     '_publish_workshop_item',
     '_cleanup_workshop_voice_reference',
+}
+
+# Common pathlib mutation methods are too generic to scan by tail name alone.
+# They become package-wide operations only when their receiver flows from an
+# explicit content-folder value.
+_CONTENT_PATH_MUTATION_METHODS = {
+    'mkdir', 'rename', 'replace', 'rmdir', 'touch', 'unlink',
+    'write_bytes', 'write_text',
 }
 
 _PACKAGE_OPERATION_CLAIMS = {
@@ -2659,6 +2820,86 @@ def _operation_aliases(nodes, seed=None) -> dict[str, str]:
     return aliases
 
 
+def _looks_like_content_folder(name: str) -> bool:
+    return name == 'folder' or name == 'content_folder' or name.endswith(
+        '_content_folder'
+    )
+
+
+def _content_path_names(func, before_line: int) -> set[str]:
+    """Names that may hold a path derived from a content-folder argument."""
+    names = {
+        arg.arg
+        for arg in (
+            list(func.args.posonlyargs)
+            + list(func.args.args)
+            + list(func.args.kwonlyargs)
+        )
+        if _looks_like_content_folder(arg.arg)
+    }
+
+    def after(statements, state):
+        state = set(state)
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                derived = any(
+                    isinstance(node, ast.Name)
+                    and isinstance(node.ctx, ast.Load)
+                    and node.id in state
+                    for node in ast.walk(statement.value)
+                )
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if derived:
+                        state.add(target.id)
+                    else:
+                        state.discard(target.id)
+            elif isinstance(statement, ast.If):
+                # A write is relevant if either reachable path can still point
+                # into the content folder.
+                state = after(statement.body, state) | after(statement.orelse, state)
+            elif isinstance(statement, (ast.With, ast.For, ast.AsyncFor)):
+                state |= after(statement.body, state)
+            elif isinstance(statement, ast.Try):
+                paths = [after(statement.body, state)]
+                paths.extend(after(handler.body, state) for handler in statement.handlers)
+                if statement.orelse:
+                    paths.append(after(statement.orelse, paths[0]))
+                state = set().union(*paths)
+                state = after(statement.finalbody, state)
+        return state
+
+    return after(func.body, names)
+
+
+def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
+    found = []
+    for node in _walk_own_scope(func):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Attribute)
+            or node.func.attr not in _CONTENT_PATH_MUTATION_METHODS
+        ):
+            continue
+        path_names = _content_path_names(func, node.lineno)
+        if any(
+            isinstance(child, ast.Name)
+            and isinstance(child.ctx, ast.Load)
+            and child.id in path_names
+            for child in ast.walk(node.func.value)
+        ):
+            found.append((node.func, node.func.attr))
+    return found
+
+
 def _inventory_for_function(mapping, short: str, name: str):
     exact = mapping.get((short, name))
     if exact is not None:
@@ -2688,6 +2929,7 @@ def _operation_nodes(
         canonical = aliases.get(name, name)
         if canonical in required:
             found.append((node, canonical))
+    found.extend(_content_path_mutation_nodes(func))
     return found
 
 
@@ -3132,6 +3374,30 @@ def test_the_claim_guard_resolves_operation_aliases():
     assert _unclaimed_folder_operations(
         partial_func, 'publish', partial_aliases
     ), 'module-level partial 也必须继承 protected operation 身份'
+
+
+def test_the_claim_guard_discovers_content_path_mutations():
+    tree = ast.parse(
+        'def direct(content_folder):\n'
+        "    Path(content_folder, 'preview.png').write_bytes(data)\n"
+        '\n'
+        'def assigned(content_folder):\n'
+        "    preview = Path(content_folder) / 'preview.png'\n"
+        '    preview.write_text(text)\n'
+        '\n'
+        'def claimed(content_folder):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        "        Path(content_folder, 'preview.png').write_bytes(data)\n"
+        '\n'
+        'def unrelated(metadata_path):\n'
+        '    metadata_path.write_bytes(data)\n'
+    )
+    functions = {node.name: node for node in tree.body}
+
+    assert _unclaimed_folder_operations(functions['direct'], 'new_router')
+    assert _unclaimed_folder_operations(functions['assigned'], 'new_router')
+    assert _unclaimed_folder_operations(functions['claimed'], 'new_router') == []
+    assert _unclaimed_folder_operations(functions['unrelated'], 'new_router') == []
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
