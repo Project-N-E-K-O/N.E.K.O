@@ -1,3 +1,4 @@
+import re
 from pathlib import Path
 
 import yaml
@@ -120,7 +121,10 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     assert full_nightly["env"]["REQUESTED_SKIP_SIGNING"] == "${{ inputs.skip_signing }}"
     assert 'SIGNING_NOTE="unsigned"' in full_nightly["run"]
     assert "N.E.K.O_*_win.zip" in full_nightly["run"]
-    assert "N.E.K.O.exe" not in full_nightly["run"]
+    organize_release = nightly_steps["Organize release files"]
+    assert '-name "*.zip"' in organize_release["run"]
+    assert '-name "*.exe"' not in organize_release["run"]
+    assert "N.E.K.O.exe" not in organize_release["run"]
 
 
 def test_workflow_values_are_passed_to_shell_through_environment_variables() -> None:
@@ -222,9 +226,20 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     assert "--max-time', '1800'" in script
     assert "Invoke-UpdateMirrorSync" in script
     assert "-TimeoutSec 30" in script
-    assert "ValidateSet('stable', 'nightly')" not in script
+    assert not re.search(
+        r"\[ValidateSet\(\s*['\"]stable['\"]\s*,\s*['\"]nightly['\"]\s*\)\]",
+        script,
+    )
     assert "/stable/sync" in script
     assert "NEKO_UPDATE_ADMIN_TOKEN" in script
+
+    staged_hashes = script.index("$assetHashes[$asset.Name] = Get-Sha256")
+    object_check = script.index("if (Test-OssObjectExists -ObjectUrl $objectUrl)")
+    upload = script.index("Invoke-Checked -FilePath ossutil -Arguments @('cp', $asset.FullName")
+    cdn_download = script.index("Invoke-Checked -FilePath curl.exe -Arguments @(")
+    cdn_hash = script.index("if ((Get-Sha256 -Path $downloadedAsset)")
+    sync = script.rindex("Invoke-UpdateMirrorSync -Endpoint $endpoint")
+    assert staged_hashes < object_check < upload < cdn_download < cdn_hash < sync
 
 
 def test_portable_manifest_signing_is_required_for_nightly_and_local_stable_builds() -> None:

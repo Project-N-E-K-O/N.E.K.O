@@ -1033,7 +1033,7 @@ jobs:
 
           # Collect Electron desktop artifacts
           find artifacts/desktop-* -type f \( \
-            -name "*.exe" -o -name "*.dmg" -o -name "*.zip" \
+            -name "*.dmg" -o -name "*.zip" \
             -o -name "*.AppImage" -o -name "*.deb" -o -name "*.tar.gz" \
             -o -name "latest*.yml" -o -name "*_manifest.json" -o -name "*_delta.bin" \
           \) -exec cp {} release/ \; 2>/dev/null || true

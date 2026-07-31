@@ -77,8 +77,9 @@ function Invoke-UpdateMirrorSync {
         }
         catch {
             $statusCode = $null
-            if ($_.Exception.Response) {
-                $statusCode = [int]$_.Exception.Response.StatusCode
+            $responseProperty = $_.Exception.PSObject.Properties['Response']
+            if ($null -ne $responseProperty -and $null -ne $responseProperty.Value) {
+                $statusCode = [int]$responseProperty.Value.StatusCode
             }
             $retryable = $null -eq $statusCode -or $statusCode -eq 408 -or $statusCode -eq 429 -or $statusCode -ge 500
             if (-not $retryable -or $attempt -eq 3) {
