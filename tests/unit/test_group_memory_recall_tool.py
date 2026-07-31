@@ -1528,6 +1528,33 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     await on_text_delta("一下", False)
     assert created["reply_chunks"] == ["我查", "一下"]
 
+    # reroll 耗尽后的可读截断正文不会再走 on_text_delta；terminal discard
+    # callback 必须以它替换被判废的流式分片，而不是把整轮清成空回复。
+    await on_response_discarded(
+        "length>300",
+        3,
+        3,
+        False,
+        json.dumps({
+            "code": "RESPONSE_LENGTH_TRUNCATED",
+            "text": "保留到最后一个完整句子。",
+        }),
+    )
+    assert created["reply_chunks"] == ["保留到最后一个完整句子。"]
+
+    await on_text_delta("故障前半句", True)
+    await on_response_discarded(
+        "text_gen_error",
+        1,
+        1,
+        False,
+        json.dumps({
+            "code": "TEXT_GEN_ERROR_AFTER_PARTIAL",
+            "text": "不可当作恢复正文",
+        }),
+    )
+    assert created["reply_chunks"] == []
+
     # 线路一致的下一轮：原样复用，不再重建。
     discard.reset_mock()
     reused = await service.ensure_generation_session(context, "group:7788")

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 from typing import Any, Optional
 
@@ -143,6 +144,21 @@ class QQSessionBootstrapService:
                 # core 已判定当前 attempt 不可投递；只丢弃这一 attempt 已流出
                 # 的分片。后续重试仍经 on_text_delta 写入，合法 pre-tool 不受影响。
                 reply_chunks.clear()
+                if will_retry or not message:
+                    return
+                try:
+                    payload = json.loads(message)
+                except (TypeError, ValueError):
+                    return
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("code") == "RESPONSE_LENGTH_TRUNCATED"
+                ):
+                    recovered = payload.get("text")
+                    if isinstance(recovered, str) and recovered.strip():
+                        # 终态截断正文不会再经 on_text_delta 重发；callback
+                        # 就是它唯一的交付通道，因此用恢复文本替换废弃分片。
+                        reply_chunks.append(recovered)
 
             user_session = OmniOfflineClient(
                 base_url=base_url,
