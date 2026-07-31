@@ -392,8 +392,8 @@ class PersistenceMixin:
         在角色锁内读主文件全量、过滤后直写。surfaced.json 里引用被删
         reflection 的行一并清（surfaced 条目自带 text，会进 feedback
         prompt）。归档分片不清：分片不进任何渲染/召回读路径，属事件留底；
-        但会严格扫描其 subject 元数据以找回 archive-only reflection ID，
-        防止 surfaced 副本漏删。
+        但会严格扫描分片及迁移失败时保留的 legacy flat fallback，以找回
+        archive-only reflection ID，防止 surfaced 副本漏删。
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import coerce_subject, entry_matches_subject
         memory_subject = coerce_subject(subject)
@@ -474,6 +474,35 @@ class PersistenceMixin:
                             and entry_matches_subject(
                                 archived, memory_subject,
                             )
+                        ):
+                            removed_ids.add(reflection_id)
+
+            unresolved_surfaced_ids = surfaced_ids - removed_ids
+            legacy_archive_getter = getattr(
+                self, '_reflections_legacy_archive_path', None,
+            )
+            if unresolved_surfaced_ids and callable(legacy_archive_getter):
+                legacy_archive_path = legacy_archive_getter(name)
+                if await asyncio.to_thread(os.path.exists, legacy_archive_path):
+                    try:
+                        legacy_rows = await read_json_async(legacy_archive_path)
+                    except (json.JSONDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            "legacy reflection archive unreadable during "
+                            f"forget: {exc}"
+                        ) from exc
+                    if not isinstance(legacy_rows, list):
+                        raise RuntimeError(
+                            "legacy reflection archive is not a list during "
+                            "forget"
+                        )
+                    for archived in legacy_rows:
+                        if not isinstance(archived, dict):
+                            continue
+                        reflection_id = archived.get('id')
+                        if (
+                            reflection_id in unresolved_surfaced_ids
+                            and entry_matches_subject(archived, memory_subject)
                         ):
                             removed_ids.add(reflection_id)
 

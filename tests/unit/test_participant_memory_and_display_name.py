@@ -2011,6 +2011,97 @@ async def test_scoped_forget_purges_surfaced_archive_only_reflection(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_purges_surfaced_legacy_archive_reflection(tmp_path):
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    reflections_path = tmp_path / "reflections.json"
+    reflections_path.write_text("[]", encoding="utf-8")
+    surfaced_path = tmp_path / "surfaced.json"
+    surfaced_path.write_text(json.dumps([
+        {"reflection_id": "legacy-target", "text": "secret", "feedback": None},
+        {"reflection_id": "other", "text": "keep", "feedback": None},
+    ]), encoding="utf-8")
+    legacy_archive_path = tmp_path / "reflections_archive.json"
+    legacy_archive_path.write_text(json.dumps([
+        {"id": "legacy-target", "text": "secret", **target.as_entry_fields()},
+    ]), encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = PersistenceMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _reflections_path(self, name):
+            return str(reflections_path)
+
+        def _surfaced_path(self, name):
+            return str(surfaced_path)
+
+        def _reflections_legacy_archive_path(self, name):
+            return str(legacy_archive_path)
+
+        async def asave_surfaced(self, name, surfaced):
+            surfaced_path.write_text(json.dumps(surfaced), encoding="utf-8")
+
+    with patch("memory.reflection.persistence.assert_cloudsave_writable"):
+        stats = await _Harness().aforget_subject("Neko", target)
+
+    assert stats == {"reflections": 0, "surfaced": 1}
+    surfaced = json.loads(surfaced_path.read_text(encoding="utf-8"))
+    assert [row["reflection_id"] for row in surfaced] == ["other"]
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_aborts_on_unreadable_legacy_archive(tmp_path):
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    reflections_path = tmp_path / "reflections.json"
+    reflections_path.write_text("[]", encoding="utf-8")
+    surfaced_path = tmp_path / "surfaced.json"
+    surfaced_path.write_text(json.dumps([
+        {"reflection_id": "unresolved", "text": "secret", "feedback": None},
+    ]), encoding="utf-8")
+    legacy_archive_path = tmp_path / "reflections_archive.json"
+    legacy_archive_path.write_text("{broken", encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = PersistenceMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _reflections_path(self, name):
+            return str(reflections_path)
+
+        def _surfaced_path(self, name):
+            return str(surfaced_path)
+
+        def _reflections_legacy_archive_path(self, name):
+            return str(legacy_archive_path)
+
+        async def asave_surfaced(self, name, surfaced):
+            raise AssertionError("must fail before surfaced save")
+
+    with pytest.raises(RuntimeError, match="legacy reflection archive unreadable"):
+        await _Harness().aforget_subject("Neko", target)
+
+    assert json.loads(surfaced_path.read_text(encoding="utf-8"))[0][
+        "reflection_id"
+    ] == "unresolved"
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_aborts_on_unreadable_surfaced_state(tmp_path):
     from memory.reflection.persistence import PersistenceMixin
 
