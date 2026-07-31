@@ -48,6 +48,7 @@ from utils.cloudsave_runtime import (
     build_cloudsave_character_detail,
     build_cloudsave_summary,
     export_cloudsave_character_unit,
+    finalize_cloudsave_character_import,
     import_cloudsave_character_unit,
     is_cloudsave_provider_available,
     restore_cloudsave_operation_backup,
@@ -536,6 +537,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
             name,
             overwrite=overwrite,
             backup_before_overwrite=backup_before_overwrite,
+            retain_recent_locks=True,
         )
     except MaintenanceModeError as exc:
         return _maintenance_mode_error_response(exc, character_name=name)
@@ -557,42 +559,47 @@ async def post_cloudsave_character_download(name: str, request: Request):
 
     backup_path = str(result.get("backup_path") or "")
     try:
-        reload_ok, reload_error = await _reload_after_character_download(name)
-        if not reload_ok:
-            raise RuntimeError(reload_error or "reload failed")
-    except Exception as exc:
-        rollback_attempted = False
-        rollback_error = ""
-        rollback_notify_ok = False
         try:
-            if backup_path:
-                rollback_attempted = True
-                restore_cloudsave_operation_backup(config_manager, backup_path)
-                initialize_character_data = get_initialize_character_data()
-                await initialize_character_data()
-                rollback_notify_ok = await notify_memory_server_reload(reason=f"云存档下载回滚: {name}")
-                if not rollback_notify_ok:
-                    rollback_error = "notify_memory_server_reload returned False"
-        except Exception as rollback_exc:
-            rollback_error = str(rollback_exc)
-        return _cloudsave_error_response(
-            "LOCAL_RELOAD_FAILED_ROLLED_BACK",
-            f"The download was applied, but local reload failed: {exc}",
-            status_code=500,
-            character_name=name,
-            message_params={"message": str(exc)},
-            extra={
-                "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
-                "rollback_error": rollback_error,
-            },
-        )
+            reload_ok, reload_error = await _reload_after_character_download(name)
+            if not reload_ok:
+                raise RuntimeError(reload_error or "reload failed")
+        except Exception as exc:
+            rollback_attempted = False
+            rollback_error = ""
+            rollback_notify_ok = False
+            try:
+                if backup_path:
+                    rollback_attempted = True
+                    restore_cloudsave_operation_backup(
+                        config_manager, backup_path, recent_locks_held=True,
+                    )
+                    initialize_character_data = get_initialize_character_data()
+                    await initialize_character_data()
+                    rollback_notify_ok = await notify_memory_server_reload(reason=f"云存档下载回滚: {name}")
+                    if not rollback_notify_ok:
+                        rollback_error = "notify_memory_server_reload returned False"
+            except Exception as rollback_exc:
+                rollback_error = str(rollback_exc)
+            return _cloudsave_error_response(
+                "LOCAL_RELOAD_FAILED_ROLLED_BACK",
+                f"The download was applied, but local reload failed: {exc}",
+                status_code=500,
+                character_name=name,
+                message_params={"message": str(exc)},
+                extra={
+                    "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
+                    "rollback_error": rollback_error,
+                },
+            )
 
-    refreshed_detail = build_cloudsave_character_detail(config_manager, name) or result.get("detail")
-    return {
-        "success": True,
-        "character_name": name,
-        "detail": await _enrich_cloudsave_payload_with_workshop_status(refreshed_detail),
-        "backup_path": backup_path,
-        "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
-        "steam_autocloud": _build_steam_autocloud_payload(config_manager),
-    }
+        refreshed_detail = build_cloudsave_character_detail(config_manager, name) or result.get("detail")
+        return {
+            "success": True,
+            "character_name": name,
+            "detail": await _enrich_cloudsave_payload_with_workshop_status(refreshed_detail),
+            "backup_path": backup_path,
+            "sync_backend": STEAM_AUTO_CLOUD_SYNC_BACKEND,
+            "steam_autocloud": _build_steam_autocloud_payload(config_manager),
+        }
+    finally:
+        finalize_cloudsave_character_import(result)

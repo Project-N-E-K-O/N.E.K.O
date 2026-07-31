@@ -236,6 +236,7 @@ from .operations import (  # noqa: F401
     _write_operation_backup_metadata,
     export_cloudsave_character_unit,
     export_local_cloudsave_snapshot,
+    finalize_cloudsave_character_import,
     import_cloudsave_character_unit,
     import_local_cloudsave_snapshot,
     restore_cloudsave_operation_backup,

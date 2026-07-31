@@ -2605,6 +2605,113 @@ def test_cloud_exports_include_pending_recent_without_mutating_local_state(tmp_p
 
 
 @pytest.mark.unit
+def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        finalize_cloudsave_character_import,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+
+    result = import_cloudsave_character_unit(
+        target_cm, character_name, overwrite=True, retain_recent_locks=True,
+    )
+    writer_entered = threading.Event()
+
+    def _waiting_writer():
+        with recent_file.recent_file_access(target_recent):
+            writer_entered.set()
+
+    writer = threading.Thread(target=_waiting_writer)
+    writer.start()
+    time.sleep(0.05)
+    assert not writer_entered.is_set()
+
+    restore_cloudsave_operation_backup(
+        target_cm, result["backup_path"], recent_locks_held=True,
+    )
+    assert not writer_entered.is_set()
+    finalize_cloudsave_character_import(result)
+    writer.join(3)
+
+    assert not writer.is_alive()
+    assert writer_entered.is_set()
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+
+
+@pytest.mark.unit
+def test_legacy_operation_backup_restore_locks_recent_and_clears_pending(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+    from utils.llm_client import HumanMessage
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+
+    metadata_path = Path(result["backup_path"]) / "_operation.json"
+    metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    metadata["schema_version"] = 1
+    metadata.pop("recent_state", None)
+    atomic_write_json(metadata_path, metadata, ensure_ascii=False, indent=2)
+    with recent_file.recent_file_locks([target_recent]):
+        recent_file.set_recent_pending_unlocked(
+            target_recent, [HumanMessage(content="stale-pending")],
+        )
+
+    restore_cloudsave_operation_backup(target_cm, result["backup_path"])
+
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+    with recent_file.recent_file_locks([target_recent]):
+        assert recent_file.get_recent_pending_unlocked(target_recent) == []
+
+
+@pytest.mark.unit
+def test_cloud_export_rejects_redirected_recent_snapshot(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import CloudsaveOperationError, export_cloudsave_character_unit
+
+    cm = _make_config_manager(tmp_path)
+    _write_runtime_state(cm, character_name="Old")
+    old_recent = Path(cm.memory_dir) / "Old" / "recent.json"
+    new_recent = Path(cm.memory_dir) / "New" / "recent.json"
+    new_recent.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_json(
+        new_recent,
+        [{"role": "user", "content": "new-only"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    recent_file.redirect_recent_paths([old_recent], new_recent)
+
+    with pytest.raises(CloudsaveOperationError) as exc_info:
+        export_cloudsave_character_unit(cm, "Old")
+
+    assert exc_info.value.code == "LOCAL_CHARACTER_CHANGED"
+    assert not (cm.cloudsave_dir / "characters" / "Old" / "profile.json").exists()
+
+
+@pytest.mark.unit
 def test_standard_data_candidates_on_unix_platforms(tmp_path):
     from utils.config_manager import ConfigManager
 

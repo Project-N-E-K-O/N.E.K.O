@@ -22,15 +22,19 @@ from typing import Any
 
 from utils.recent_file import (
     acquire_recent_file_locks,
+    clear_recent_deletions,
     clear_recent_redirects,
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
+    mark_recent_deleted,
     recent_file_lock,
     redirect_recent_paths,
     release_recent_file_locks,
     restore_recent_redirects,
+    restore_recent_deletions,
     set_recent_pending_unlocked,
     snapshot_recent_redirects,
+    snapshot_recent_deletions,
     write_recent_payload_unlocked,
 )
 
@@ -320,10 +324,12 @@ def rename_character_memory_storage(
     )
     recent_paths = transaction["recent_paths"]
     redirect_snapshot = snapshot_recent_redirects(recent_paths)
+    deletion_snapshot = snapshot_recent_deletions(recent_paths)
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
         clear_recent_redirects([target_recent])
+        clear_recent_deletions([target_recent])
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_paths
@@ -369,6 +375,7 @@ def rename_character_memory_storage(
         transaction.update({
             "pending_snapshot": pending_snapshot,
             "redirect_snapshot": redirect_snapshot,
+            "deletion_snapshot": deletion_snapshot,
         })
         if not keep_recent_locks:
             release_character_recent_transaction(transaction)
@@ -376,6 +383,7 @@ def rename_character_memory_storage(
     except BaseException:
         clear_recent_redirects(recent_paths)
         restore_recent_redirects(redirect_snapshot)
+        restore_recent_deletions(recent_paths, deletion_snapshot)
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
         if not keep_recent_locks:
@@ -399,6 +407,9 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
     try:
         clear_recent_redirects(recent_paths)
         restore_recent_redirects(transaction.get("redirect_snapshot") or {})
+        restore_recent_deletions(
+            recent_paths, transaction.get("deletion_snapshot") or set(),
+        )
         for path, messages in snapshot.items():
             set_recent_pending_unlocked(path, messages)
     finally:
@@ -408,7 +419,9 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
 
 def clear_character_recent_redirects(config_manager, character_name: str) -> None:
     """Detach obsolete path redirects before a newly created name starts writing."""
-    clear_recent_redirects(list_character_recent_paths(config_manager, character_name))
+    recent_paths = list_character_recent_paths(config_manager, character_name)
+    clear_recent_redirects(recent_paths)
+    clear_recent_deletions(recent_paths)
 
 
 def delete_character_memory_storage(
@@ -424,6 +437,7 @@ def delete_character_memory_storage(
     )
     recent_candidates = transaction["recent_paths"]
     redirect_snapshot = clear_recent_redirects(recent_candidates)
+    deletion_snapshot = snapshot_recent_deletions(recent_candidates)
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         pending_snapshot = {
@@ -440,9 +454,11 @@ def delete_character_memory_storage(
 
         for recent_path in recent_candidates:
             set_recent_pending_unlocked(recent_path, [])
+        mark_recent_deleted(recent_candidates)
         transaction.update({
             "pending_snapshot": pending_snapshot,
             "redirect_snapshot": redirect_snapshot,
+            "deletion_snapshot": deletion_snapshot,
         })
         if not keep_recent_locks:
             release_character_recent_transaction(transaction)
@@ -451,6 +467,7 @@ def delete_character_memory_storage(
         return removed_paths
     except BaseException:
         restore_recent_redirects(redirect_snapshot)
+        restore_recent_deletions(recent_candidates, deletion_snapshot)
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
         if not keep_recent_locks:
@@ -473,6 +490,9 @@ def rollback_character_recent_delete(result: dict[str, Any]) -> None:
     try:
         clear_recent_redirects(recent_paths)
         restore_recent_redirects(result.get("redirect_snapshot") or {})
+        restore_recent_deletions(
+            recent_paths, result.get("deletion_snapshot") or set(),
+        )
         for path, messages in (result.get("pending_snapshot") or {}).items():
             set_recent_pending_unlocked(path, messages)
     finally:

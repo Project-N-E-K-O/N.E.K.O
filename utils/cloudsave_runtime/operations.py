@@ -21,6 +21,7 @@ Split out of the former monolithic ``utils/cloudsave_runtime.py``.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from contextlib import nullcontext
 from copy import deepcopy
@@ -29,13 +30,19 @@ from typing import Any
 
 from utils.file_utils import atomic_write_json
 from utils.recent_file import (
+    acquire_recent_file_locks,
+    clear_recent_deletions,
     clear_recent_redirects,
     get_recent_pending_unlocked,
+    mark_recent_deleted,
     read_recent_text_unlocked,
     recent_file_access,
     recent_file_locks,
+    release_recent_file_locks,
+    restore_recent_deletions,
     restore_recent_redirects,
     set_recent_pending_unlocked,
+    snapshot_recent_deletions,
 )
 
 # Late-bound package reference: tests monkeypatch attributes such as
@@ -127,6 +134,12 @@ def _stage_recent_memory_file(
 ) -> Path | None:
     """Stage one locked recent snapshot, including accepted pending turns."""
     with recent_file_access(source_path) as resolved_path:
+        requested_path = os.path.normcase(os.path.abspath(os.fspath(source_path)))
+        if resolved_path != requested_path:
+            raise CloudsaveOperationError(
+                "LOCAL_CHARACTER_CHANGED",
+                f"character changed while staging recent history: {source_path}",
+            )
         pending = get_recent_pending_unlocked(resolved_path)
         resolved_source = Path(resolved_path)
         if not resolved_source.is_file():
@@ -354,6 +367,7 @@ def import_cloudsave_character_unit(
     *,
     overwrite: bool = False,
     backup_before_overwrite: bool = True,
+    retain_recent_locks: bool = False,
 ) -> dict[str, Any]:
     if is_cloudsave_disabled():
         _raise_cloudsave_disabled("single_character_download", character_name=character_name)
@@ -443,8 +457,15 @@ def import_cloudsave_character_unit(
         if backup_before_overwrite or not local_exists:
             backup_targets.add(target_memory_dir)
         recent_target = target_memory_dir / "recent.json"
-        with recent_file_locks([recent_target]):
+        held_locks = acquire_recent_file_locks([recent_target])
+        recent_transaction = {
+            "held_locks": held_locks,
+            "recent_paths": [recent_target],
+        }
+        try:
             redirect_snapshot = clear_recent_redirects([recent_target])
+            deletion_snapshot = snapshot_recent_deletions([recent_target])
+            clear_recent_deletions([recent_target])
             pending_snapshot = {
                 recent_target: get_recent_pending_unlocked(recent_target),
             }
@@ -463,6 +484,7 @@ def import_cloudsave_character_unit(
                     backup_records=backup_records,
                     recent_pending=pending_snapshot,
                     recent_redirects=redirect_snapshot,
+                    recent_deleted=deletion_snapshot,
                 )
 
                 for target_path, staged_path in runtime_targets.items():
@@ -472,7 +494,7 @@ def import_cloudsave_character_unit(
                     if target_path.exists():
                         target_path.unlink()
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
-            except Exception:
+            except BaseException:
                 try:
                     _restore_backup_records(backup_records)
                 finally:
@@ -480,16 +502,41 @@ def import_cloudsave_character_unit(
                         recent_target, pending_snapshot[recent_target],
                     )
                     restore_recent_redirects(redirect_snapshot)
+                    restore_recent_deletions([recent_target], deletion_snapshot)
                 raise
             set_recent_pending_unlocked(recent_target, [])
+            recent_transaction.update({
+                "pending_snapshot": pending_snapshot,
+                "redirect_snapshot": redirect_snapshot,
+                "deletion_snapshot": deletion_snapshot,
+            })
+        except BaseException:
+            release_recent_file_locks(held_locks)
+            recent_transaction["held_locks"] = []
+            raise
+        if not retain_recent_locks:
+            release_recent_file_locks(held_locks)
+            recent_transaction["held_locks"] = []
 
         detail = build_cloudsave_character_detail(config_manager, character_name)
-        return {
+        result = {
             "character_name": character_name,
             "applied_at_utc": apply_time,
             "detail": detail,
             "backup_path": str(backup_root),
         }
+        if retain_recent_locks:
+            result["_recent_import_transaction"] = recent_transaction
+        return result
+
+
+def finalize_cloudsave_character_import(result: dict[str, Any]) -> None:
+    """Release recent locks retained across the caller's reload transaction."""
+    transaction = result.pop("_recent_import_transaction", None) or {}
+    held_locks = transaction.get("held_locks") or []
+    if held_locks:
+        transaction["held_locks"] = []
+        release_recent_file_locks(held_locks)
 
 
 def _collect_memory_stage_entries(
@@ -623,6 +670,7 @@ def _write_operation_backup_metadata(
     backup_records: list[dict[str, Any]],
     recent_pending: dict[Path, list[Any]] | None = None,
     recent_redirects: dict[str, str] | None = None,
+    recent_deleted: set[str] | None = None,
 ) -> Path:
     payload = {
         "schema_version": 2 if recent_pending is not None else 1,
@@ -659,13 +707,41 @@ def _write_operation_backup_metadata(
                 }
                 for source, target in (recent_redirects or {}).items()
             ],
+            "deleted": [
+                str(
+                    _managed_target_relative_path(config_manager, Path(path))
+                ).replace("\\", "/")
+                for path in (recent_deleted or set())
+            ],
         }
     metadata_path = backup_root / "_operation.json"
     atomic_write_json(metadata_path, payload, ensure_ascii=False, indent=2)
     return metadata_path
 
 
-def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) -> None:
+def _recent_paths_from_backup_records(config_manager, backup_records) -> set[Path]:
+    memory_root = Path(config_manager.memory_dir).resolve(strict=False)
+    recent_paths: set[Path] = set()
+    for record in backup_records:
+        target_path = Path(record["target"])
+        if target_path.name == "recent.json":
+            recent_paths.add(target_path)
+        if not record.get("is_dir"):
+            continue
+        try:
+            target_path.resolve(strict=False).relative_to(memory_root)
+        except ValueError:
+            continue
+        recent_paths.add(target_path / "recent.json")
+    return recent_paths
+
+
+def restore_cloudsave_operation_backup(
+    config_manager,
+    backup_root: str | Path,
+    *,
+    recent_locks_held: bool = False,
+) -> None:
     backup_root_path = Path(backup_root)
     metadata = _load_json_if_exists(backup_root_path / "_operation.json")
     if not isinstance(metadata, dict):
@@ -687,9 +763,32 @@ def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) 
                 "is_dir": bool(target.get("is_dir", False)),
             }
         )
+    backup_recent_paths = _recent_paths_from_backup_records(config_manager, backup_records)
     recent_state = metadata.get("recent_state")
     if not isinstance(recent_state, dict):
-        _restore_backup_records(backup_records)
+        lock_scope = nullcontext() if recent_locks_held else recent_file_locks(
+            list(backup_recent_paths)
+        )
+        with lock_scope:
+            current_redirects = clear_recent_redirects(list(backup_recent_paths))
+            current_pending = {
+                path: get_recent_pending_unlocked(path)
+                for path in backup_recent_paths
+            }
+            current_deleted = snapshot_recent_deletions(list(backup_recent_paths))
+            try:
+                _restore_backup_records(backup_records)
+                for path in backup_recent_paths:
+                    set_recent_pending_unlocked(path, [])
+                clear_recent_deletions(list(backup_recent_paths))
+            except Exception:
+                for path, messages in current_pending.items():
+                    set_recent_pending_unlocked(path, messages)
+                restore_recent_redirects(current_redirects)
+                restore_recent_deletions(
+                    list(backup_recent_paths), current_deleted,
+                )
+                raise
         return
 
     from utils.llm_client import messages_from_dict
@@ -718,23 +817,34 @@ def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) 
         target_path = _resolve_managed_target_path(config_manager, target_relative_path)
         redirect_snapshot[str(source_path)] = str(target_path)
 
-    recent_paths = set(pending_snapshot)
-    recent_paths.update(Path(path) for path in redirect_snapshot)
-    recent_paths.update(Path(path) for path in redirect_snapshot.values())
-    with recent_file_locks(list(recent_paths)):
-        current_redirects = clear_recent_redirects(list(recent_paths))
+    deleted_snapshot = {
+        str(_resolve_managed_target_path(config_manager, str(relative_path)))
+        for relative_path in recent_state.get("deleted") or []
+        if str(relative_path or "")
+    }
+
+    recent_paths = backup_recent_paths | set(pending_snapshot)
+    redirect_paths = set(recent_paths)
+    redirect_paths.update(Path(path) for path in redirect_snapshot)
+    redirect_paths.update(Path(path) for path in redirect_snapshot.values())
+    lock_scope = nullcontext() if recent_locks_held else recent_file_locks(list(recent_paths))
+    with lock_scope:
+        current_redirects = clear_recent_redirects(list(redirect_paths))
         current_pending = {
             path: get_recent_pending_unlocked(path)
             for path in recent_paths
         }
+        current_deleted = snapshot_recent_deletions(list(recent_paths))
         try:
             _restore_backup_records(backup_records)
             for path in recent_paths:
                 set_recent_pending_unlocked(path, pending_snapshot.get(path, []))
+            restore_recent_deletions(list(recent_paths), deleted_snapshot)
             restore_recent_redirects(redirect_snapshot)
         except Exception:
             for path, messages in current_pending.items():
                 set_recent_pending_unlocked(path, messages)
+            restore_recent_deletions(list(recent_paths), current_deleted)
             restore_recent_redirects(current_redirects)
             raise
 
@@ -1247,6 +1357,12 @@ def import_local_cloudsave_snapshot(
         recent_targets.update(directory / "recent.json" for directory in delete_dir_targets)
         with recent_file_locks(list(recent_targets)):
             redirect_snapshot = clear_recent_redirects(list(recent_targets))
+            deletion_snapshot = snapshot_recent_deletions(list(recent_targets))
+            imported_recent_paths = {
+                Path(config_manager.memory_dir) / character_name / "recent.json"
+                for character_name in imported_character_names
+            }
+            clear_recent_deletions(list(imported_recent_paths))
             pending_snapshot = {
                 recent_path: get_recent_pending_unlocked(recent_path)
                 for recent_path in recent_targets
@@ -1293,6 +1409,9 @@ def import_local_cloudsave_snapshot(
 
                 for recent_path in recent_targets:
                     set_recent_pending_unlocked(recent_path, [])
+                mark_recent_deleted([
+                    directory / "recent.json" for directory in delete_dir_targets
+                ])
 
                 return {
                     "manifest_fingerprint": computed_fingerprint,
@@ -1323,4 +1442,7 @@ def import_local_cloudsave_snapshot(
                     for recent_path, messages in pending_snapshot.items():
                         set_recent_pending_unlocked(recent_path, messages)
                     restore_recent_redirects(redirect_snapshot)
+                    restore_recent_deletions(
+                        list(recent_targets), deletion_snapshot,
+                    )
                 raise

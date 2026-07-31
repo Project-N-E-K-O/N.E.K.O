@@ -38,7 +38,9 @@ from typing import Any, Iterator
 from utils.file_utils import atomic_write_json
 
 __all__ = [
+    "RecentFileDeletedError",
     "acquire_recent_file_locks",
+    "clear_recent_deletions",
     "clear_recent_redirects",
     "get_recent_pending",
     "get_recent_pending_unlocked",
@@ -48,14 +50,21 @@ __all__ = [
     "read_recent_text",
     "read_recent_text_unlocked",
     "release_recent_file_locks",
+    "restore_recent_deletions",
     "set_recent_pending_unlocked",
     "snapshot_recent_redirects",
+    "snapshot_recent_deletions",
+    "mark_recent_deleted",
     "merge_recent_pending_snapshot",
     "redirect_recent_paths",
     "restore_recent_redirects",
     "write_recent_payload",
     "write_recent_payload_unlocked",
 ]
+
+
+class RecentFileDeletedError(RuntimeError):
+    """Raised when a stale writer targets a character deleted in this process."""
 
 
 # ── per-path lock registry ────────────────────────────────────────────────
@@ -86,6 +95,7 @@ _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
 _PENDING_GUARD = threading.Lock()
 _REDIRECTS: dict[str, str] = {}
+_DELETED: set[str] = set()
 
 
 def _lock_key(path: Any) -> str:
@@ -128,9 +138,13 @@ def recent_file_access(path: Any) -> Iterator[str]:
             latest_key = _resolve_key_unlocked(original_key)
             latest_lock = _LOCKS.get(latest_key)
             stable = latest_key == resolved_key and latest_lock is lock
+            deleted = latest_key in _DELETED
         if not stable:
             lock.release()
             continue
+        if deleted:
+            lock.release()
+            raise RecentFileDeletedError(f"recent path belongs to a deleted character: {latest_key}")
         try:
             yield resolved_key
         finally:
@@ -168,6 +182,33 @@ def release_recent_file_locks(locks: list[threading.Lock]) -> None:
     """Release locks returned by ``acquire_recent_file_locks``."""
     for lock in reversed(locks):
         lock.release()
+
+
+def snapshot_recent_deletions(paths: list[Any]) -> set[str]:
+    """Snapshot deletion markers for transaction rollback."""
+    keys = {_lock_key(path) for path in paths}
+    with _LOCKS_GUARD:
+        return keys & _DELETED
+
+
+def mark_recent_deleted(paths: list[Any]) -> None:
+    """Reject stale writers after an authoritative character deletion."""
+    with _LOCKS_GUARD:
+        _DELETED.update(_lock_key(path) for path in paths)
+
+
+def clear_recent_deletions(paths: list[Any]) -> None:
+    """Allow writes when a character name is authoritatively reused."""
+    with _LOCKS_GUARD:
+        _DELETED.difference_update(_lock_key(path) for path in paths)
+
+
+def restore_recent_deletions(paths: list[Any], snapshot: set[str]) -> None:
+    """Restore deletion markers after a failed transaction."""
+    keys = {_lock_key(path) for path in paths}
+    with _LOCKS_GUARD:
+        _DELETED.difference_update(keys)
+        _DELETED.update(snapshot)
 
 
 def get_recent_pending_unlocked(path: Any) -> list[Any]:

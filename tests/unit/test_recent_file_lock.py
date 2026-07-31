@@ -46,10 +46,12 @@ def _reset_recent_file_locks():
     recent_file._LOCKS.clear()
     recent_file._PENDING.clear()
     recent_file._REDIRECTS.clear()
+    recent_file._DELETED.clear()
     yield
     recent_file._LOCKS.clear()
     recent_file._PENDING.clear()
     recent_file._REDIRECTS.clear()
+    recent_file._DELETED.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -245,6 +247,42 @@ def test_concurrent_readers_and_writers_lose_nothing(tmp_path, monkeypatch):
     disk = _read_disk(path)
     assert len(disk) == 7, f"seed + 6 批全部必须在盘上，实际 {len(disk)}"
     assert mgr._pending_batches(name) == [], "任何一次写失败都会在 pending 里留痕"
+
+
+def test_waiting_writer_is_rejected_after_character_delete(tmp_path):
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="old")])
+    lock = recent_file.recent_file_lock(path)
+    lock.acquire()
+    errors = []
+
+    def _waiting_writer():
+        try:
+            asyncio.run(mgr.update_history(
+                [HumanMessage(content="stale-writer")], name, compress=False,
+            ))
+        except BaseException as exc:  # noqa: BLE001 - 跨线程带回所有失败
+            errors.append(exc)
+
+    writer = threading.Thread(target=_waiting_writer)
+    writer.start()
+    time.sleep(0.05)
+    Path(path).unlink()
+    recent_file.mark_recent_deleted([path])
+    lock.release()
+    writer.join(3)
+
+    assert not writer.is_alive()
+    assert errors == []
+    assert not Path(path).exists()
+    with recent_file.recent_file_lock(path):
+        assert recent_file.get_recent_pending_unlocked(path) == []
+
+    recent_file.clear_recent_deletions([path])
+    asyncio.run(mgr.update_history(
+        [HumanMessage(content="new-character")], name, compress=False,
+    ))
+    assert [message.content for message in _read_disk(path)] == ["new-character"]
 
 
 # ─────────────── T3: failed persist keeps the batch and flushes it later ───────────────
