@@ -94,14 +94,17 @@ class QQSessionBootstrapService:
                 )
             except Exception:
                 current_route = None
+        context_is_group = getattr(context, "is_group", None)
+        context_private_memory_mode = getattr(context, "private_memory_mode", None)
+        context_permission_level = getattr(context, "permission_level", None)
         private_contract_changed = bool(
             existing_session
-            and not context.is_group
+            and context_is_group is False
             and (
                 existing_session.get("private_memory_mode")
-                != getattr(context, "private_memory_mode", None)
+                != context_private_memory_mode
                 or existing_session.get("permission_level")
-                != context.permission_level
+                != context_permission_level
             )
         )
         if existing_session and not generation_session_is_reusable(
@@ -109,11 +112,9 @@ class QQSessionBootstrapService:
             login_self_id=context.login_self_id,
             her_name=getattr(context, "her_name", None),
             conversation_route=current_route,
-            is_group=context.is_group,
-            private_memory_mode=getattr(
-                context, "private_memory_mode", None,
-            ),
-            permission_level=context.permission_level,
+            is_group=context_is_group,
+            private_memory_mode=context_private_memory_mode,
+            permission_level=context_permission_level,
         ):
             # her_name 失配=活跃角色切换：旧会话的 scoped 缓冲仍属旧角色，
             # discard 内的集中抢救会以旧 her_name 结算——新角色的对话绝不
