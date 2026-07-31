@@ -27,7 +27,11 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json
-from utils.recent_file import recent_file_locks, set_recent_pending_unlocked
+from utils.recent_file import (
+    clear_recent_redirects,
+    recent_file_locks,
+    set_recent_pending_unlocked,
+)
 
 # Late-bound package reference: tests monkeypatch attributes such as
 # ``utils.cloudsave_runtime._atomic_copy_file`` and ``_apply_runtime_file``
@@ -1112,6 +1116,7 @@ def import_local_cloudsave_snapshot(
             for character_name in imported_character_names
         )
         recent_targets.update(directory / "recent.json" for directory in delete_dir_targets)
+        clear_recent_redirects(list(recent_targets))
         with recent_file_locks(list(recent_targets)):
             try:
                 for target_path, staged_path in runtime_targets.items():

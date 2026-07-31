@@ -45,9 +45,11 @@ def _reset_recent_file_locks():
     """
     recent_file._LOCKS.clear()
     recent_file._PENDING.clear()
+    recent_file._REDIRECTS.clear()
     yield
     recent_file._LOCKS.clear()
     recent_file._PENDING.clear()
+    recent_file._REDIRECTS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -512,7 +514,7 @@ def test_character_rename_moves_pending_to_new_recent_path(tmp_path):
 
     rename_character_memory_storage(_RenameConfig(), "Old", "New")
     new_path = tmp_path / "New" / "recent.json"
-    assert recent_file.get_recent_pending(old_path) == []
+    assert [m.content for m in recent_file.get_recent_pending(old_path)] == ["New说：pending"]
     assert [m.content for m in recent_file.get_recent_pending(new_path)] == ["New说：pending"]
 
     mgr, name, _ = _make_manager(tmp_path, "New", path=str(new_path))
@@ -536,7 +538,8 @@ def test_character_rename_pending_snapshot_restores_on_rollback(tmp_path):
         project_memory_dir = tmp_path
 
     result = rename_character_memory_storage(_RenameConfig(), "Old", "New")
-    recent_file.restore_recent_pending_snapshot(result["_recent_pending_snapshot"])
+    from utils.character_memory import rollback_character_recent_rename
+    rollback_character_recent_rename(result)
 
     new_path = tmp_path / "New" / "recent.json"
     assert [m.content for m in recent_file.get_recent_pending(old_path)] == ["Old说：pending"]
@@ -572,11 +575,56 @@ def test_character_rename_holds_recent_locks_across_physical_move(tmp_path, monk
     )
     worker.start()
     assert entered.wait(3)
-    lock = recent_file.recent_file_lock(old_path)
-    assert lock.acquire(timeout=0.05) is False
+    writer_errors: list[Exception] = []
+
+    def _stale_writer():
+        try:
+            recent_file.write_recent_payload(old_path, [{"writer": "stale-old-path"}])
+        except Exception as exc:  # noqa: BLE001 - surfaced in the main test thread
+            writer_errors.append(exc)
+
+    writer = threading.Thread(target=_stale_writer)
+    writer.start()
+    time.sleep(0.05)
+    assert writer.is_alive(), "旧路径写者必须先被改名事务锁挡住"
     release.set()
     worker.join(3)
+    writer.join(3)
     assert not worker.is_alive()
+    assert not writer.is_alive()
+    assert writer_errors == []
+    assert not old_path.exists()
+    with open(tmp_path / "New" / "recent.json", encoding="utf-8") as handle:
+        assert json.load(handle) == [{"writer": "stale-old-path"}]
+
+
+def test_delete_rollback_merges_pending_queued_after_delete(tmp_path):
+    """Delete rollback restores old pending without overwriting a later batch."""
+    from utils.character_memory import delete_character_memory_storage
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    _write_disk(str(recent_path), [HumanMessage(content="disk")])
+    with recent_file.recent_file_lock(recent_path):
+        recent_file.set_recent_pending_unlocked(
+            recent_path, [HumanMessage(content="before-delete")],
+        )
+
+    class _DeleteConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    _, snapshot = delete_character_memory_storage(
+        _DeleteConfig(), "Role", capture_pending=True,
+    )
+    with recent_file.recent_file_lock(recent_path):
+        recent_file.set_recent_pending_unlocked(
+            recent_path, [HumanMessage(content="during-delete")],
+        )
+    recent_file.merge_recent_pending_snapshot(snapshot)
+    assert [m.content for m in recent_file.get_recent_pending(recent_path)] == [
+        "before-delete", "during-delete",
+    ]
 
 
 # ─────────────── T9: review persist failure must report exactly ('failed', None) ───────────────

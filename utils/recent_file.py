@@ -38,16 +38,19 @@ from typing import Any, Iterator
 from utils.file_utils import atomic_write_json
 
 __all__ = [
-    "clear_recent_pending",
+    "acquire_recent_file_locks",
+    "clear_recent_redirects",
     "get_recent_pending",
     "get_recent_pending_unlocked",
-    "move_recent_pending",
     "recent_file_lock",
+    "recent_file_access",
     "recent_file_locks",
     "read_recent_text",
     "read_recent_text_unlocked",
+    "release_recent_file_locks",
     "set_recent_pending_unlocked",
-    "restore_recent_pending_snapshot",
+    "merge_recent_pending_snapshot",
+    "redirect_recent_paths",
     "write_recent_payload",
     "write_recent_payload_unlocked",
 ]
@@ -80,6 +83,7 @@ _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
 _PENDING: dict[str, list[Any]] = {}
 _PENDING_GUARD = threading.Lock()
+_REDIRECTS: dict[str, str] = {}
 
 
 def _lock_key(path: Any) -> str:
@@ -87,14 +91,18 @@ def _lock_key(path: Any) -> str:
     return os.path.normcase(os.path.abspath(os.fspath(path)))
 
 
+def _resolve_key_unlocked(key: str) -> str:
+    seen: set[str] = set()
+    while key in _REDIRECTS and key not in seen:
+        seen.add(key)
+        key = _REDIRECTS[key]
+    return key
+
+
 def recent_file_lock(path: Any) -> threading.Lock:
     """Return the process-wide lock guarding one recent.json path."""
-    key = _lock_key(path)
-    lock = _LOCKS.get(key)
-    if lock is not None:
-        return lock
-    # 双检：happy path 不进 guard；只有第一次见到这个路径才付一次锁开销。
     with _LOCKS_GUARD:
+        key = _resolve_key_unlocked(_lock_key(path))
         lock = _LOCKS.get(key)
         if lock is None:
             lock = threading.Lock()
@@ -103,17 +111,61 @@ def recent_file_lock(path: Any) -> threading.Lock:
 
 
 @contextmanager
-def recent_file_locks(paths: list[Any]) -> Iterator[None]:
-    """Hold several recent-file locks in stable key order."""
-    keyed_paths = {_lock_key(path): path for path in paths}
-    locks = [recent_file_lock(keyed_paths[key]) for key in sorted(keyed_paths)]
-    for lock in locks:
+def recent_file_access(path: Any) -> Iterator[str]:
+    """Lock a path and retry if a completed rename redirected it while waiting."""
+    original_key = _lock_key(path)
+    while True:
+        with _LOCKS_GUARD:
+            resolved_key = _resolve_key_unlocked(original_key)
+            lock = _LOCKS.get(resolved_key)
+            if lock is None:
+                lock = threading.Lock()
+                _LOCKS[resolved_key] = lock
         lock.acquire()
+        with _LOCKS_GUARD:
+            latest_key = _resolve_key_unlocked(original_key)
+            latest_lock = _LOCKS.get(latest_key)
+            stable = latest_key == resolved_key and latest_lock is lock
+        if not stable:
+            lock.release()
+            continue
+        try:
+            yield resolved_key
+        finally:
+            lock.release()
+        return
+
+
+@contextmanager
+def recent_file_locks(paths: list[Any]) -> Iterator[None]:
+    """Hold several physical recent-file locks in stable key order."""
+    locks = acquire_recent_file_locks(paths)
     try:
         yield
     finally:
-        for lock in reversed(locks):
-            lock.release()
+        release_recent_file_locks(locks)
+
+
+def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
+    """Acquire physical path locks for a transaction spanning multiple calls."""
+    keyed_paths = {_lock_key(path): path for path in paths}
+    with _LOCKS_GUARD:
+        locks = []
+        for key in sorted(keyed_paths):
+            lock = _LOCKS.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                _LOCKS[key] = lock
+            locks.append(lock)
+    for lock in locks:
+        lock.acquire()
+    return locks
+
+
+def release_recent_file_locks(locks: list[threading.Lock]) -> None:
+    """Release locks returned by ``acquire_recent_file_locks``."""
+    for lock in reversed(locks):
+        lock.release()
 
 
 def get_recent_pending_unlocked(path: Any) -> list[Any]:
@@ -124,8 +176,8 @@ def get_recent_pending_unlocked(path: Any) -> list[Any]:
 
 def get_recent_pending(path: Any) -> list[Any]:
     """Return a copy of the unpersisted batch under the path lock."""
-    with recent_file_lock(path):
-        return get_recent_pending_unlocked(path)
+    with recent_file_access(path) as resolved_path:
+        return get_recent_pending_unlocked(resolved_path)
 
 
 def set_recent_pending_unlocked(path: Any, messages: list[Any]) -> None:
@@ -138,33 +190,35 @@ def set_recent_pending_unlocked(path: Any, messages: list[Any]) -> None:
             _PENDING.pop(key, None)
 
 
-def clear_recent_pending(path: Any) -> None:
-    """Discard unpersisted messages after an authoritative delete."""
-    with recent_file_lock(path):
-        set_recent_pending_unlocked(path, [])
-
-
-def restore_recent_pending_snapshot(snapshot: dict[Any, list[Any]]) -> None:
-    """Restore exact per-path pending state after a larger transaction rolls back."""
+def merge_recent_pending_snapshot(snapshot: dict[Any, list[Any]]) -> None:
+    """Restore pre-transaction messages without dropping batches queued later."""
     with recent_file_locks(list(snapshot)):
         for path, messages in snapshot.items():
-            set_recent_pending_unlocked(path, messages)
+            current = get_recent_pending_unlocked(path)
+            set_recent_pending_unlocked(path, list(messages) + current)
 
 
-def move_recent_pending(source_path: Any, target_path: Any) -> None:
-    """Move unpersisted messages when a character recent file is renamed."""
-    source_key = _lock_key(source_path)
+def redirect_recent_paths(source_paths: list[Any], target_path: Any) -> None:
+    """Redirect stale source-path users after a committed character rename."""
     target_key = _lock_key(target_path)
-    if source_key == target_key:
-        return
-    ordered = sorted(
-        ((source_key, recent_file_lock(source_path)), (target_key, recent_file_lock(target_path))),
-        key=lambda item: item[0],
-    )
-    with ordered[0][1], ordered[1][1], _PENDING_GUARD:
-        source_pending = _PENDING.pop(source_key, None)
-        if source_pending:
-            _PENDING[target_key] = list(_PENDING.get(target_key, ())) + source_pending
+    with _LOCKS_GUARD:
+        target_key = _resolve_key_unlocked(target_key)
+        for source_path in source_paths:
+            source_key = _lock_key(source_path)
+            if source_key != target_key:
+                _REDIRECTS[source_key] = target_key
+
+
+def clear_recent_redirects(paths: list[Any]) -> None:
+    """Forget redirects when an authoritative restore/delete reuses old paths."""
+    keys = {_lock_key(path) for path in paths}
+    with _LOCKS_GUARD:
+        remove_keys = {
+            key for key in _REDIRECTS
+            if key in keys or _resolve_key_unlocked(key) in keys
+        }
+        for key in remove_keys:
+            _REDIRECTS.pop(key, None)
 
 
 def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:
@@ -175,8 +229,8 @@ def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:
 
 def read_recent_text(path: Any, *, encoding: str = "utf-8") -> str:
     """Read the raw file text under the file lock."""
-    with recent_file_lock(path):
-        return read_recent_text_unlocked(path, encoding=encoding)
+    with recent_file_access(path) as resolved_path:
+        return read_recent_text_unlocked(resolved_path, encoding=encoding)
 
 
 def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
@@ -195,6 +249,6 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
 
 def write_recent_payload(path: Any, payload: Any) -> None:
     """Authoritatively replace the file and invalidate older pending messages."""
-    with recent_file_lock(path):
-        write_recent_payload_unlocked(path, payload)
-        set_recent_pending_unlocked(path, [])
+    with recent_file_access(path) as resolved_path:
+        write_recent_payload_unlocked(resolved_path, payload)
+        set_recent_pending_unlocked(resolved_path, [])

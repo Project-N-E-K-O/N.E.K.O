@@ -53,8 +53,10 @@ from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
     delete_character_memory_storage,
+    finalize_character_recent_rename,
     list_character_memory_paths,
     rename_character_memory_storage,
+    rollback_character_recent_rename,
 )
 from utils.config_manager import (
     flatten_reserved,
@@ -62,7 +64,7 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.recent_file import restore_recent_pending_snapshot, write_recent_payload
+from utils.recent_file import merge_recent_pending_snapshot, write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -411,6 +413,7 @@ async def _rollback_character_operation(
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
     recent_pending_snapshot: dict | None = None,
+    recent_rename_result: dict | None = None,
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
@@ -429,10 +432,17 @@ async def _rollback_character_operation(
     except Exception as exc:
         rollback_errors.append(f"characters restore failed: {exc}")
 
-    if recent_pending_snapshot is not None:
+    if recent_rename_result is not None:
         try:
             await asyncio.to_thread(
-                restore_recent_pending_snapshot, recent_pending_snapshot,
+                rollback_character_recent_rename, recent_rename_result,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"recent rename rollback failed: {exc}")
+    elif recent_pending_snapshot is not None:
+        try:
+            await asyncio.to_thread(
+                merge_recent_pending_snapshot, recent_pending_snapshot,
             )
         except Exception as exc:
             rollback_errors.append(f"recent pending restore failed: {exc}")
@@ -608,7 +618,7 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets.append(old_meta)
     memory_targets.append(new_meta)
     memory_server_reloaded = False
-    recent_pending_snapshot = None
+    memory_rename_result = None
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
         memory_snapshot_records = await asyncio.to_thread(
@@ -618,9 +628,12 @@ async def rename_catgirl(old_name: str, request: Request):
             # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
             # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
             memory_rename_result = await asyncio.to_thread(
-                rename_character_memory_storage, _config_manager, old_name, new_name,
+                rename_character_memory_storage,
+                _config_manager,
+                old_name,
+                new_name,
+                keep_recent_locks=True,
             )
-            recent_pending_snapshot = memory_rename_result.get("_recent_pending_snapshot")
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -663,7 +676,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     _config_manager,
                     characters_snapshot=characters_snapshot,
                     memory_snapshot_records=memory_snapshot_records,
-                    recent_pending_snapshot=recent_pending_snapshot,
+                    recent_rename_result=memory_rename_result,
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -682,12 +695,16 @@ async def rename_catgirl(old_name: str, request: Request):
                     status_code=500,
                 )
 
+            await asyncio.to_thread(
+                finalize_character_recent_rename, memory_rename_result,
+            )
+
         except MaintenanceModeError as exc:
             rollback_error = await _rollback_character_operation(
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
-                recent_pending_snapshot=recent_pending_snapshot,
+                recent_rename_result=memory_rename_result,
                 reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
             )
             if rollback_error:
@@ -698,7 +715,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
-                recent_pending_snapshot=recent_pending_snapshot,
+                recent_rename_result=memory_rename_result,
                 reason=f"角色重命名回滚: {old_name} -> {new_name}",
             )
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
@@ -1310,13 +1327,17 @@ async def _delete_catgirl_by_name(name: str):
             _snapshot_existing_paths, memory_targets, Path(temp_dir)
         )
         tombstone_snapshot = None
+        recent_pending_snapshot = None
         memory_server_reloaded = False
         try:
             if not is_cloudsave_disabled():
                 tombstone_snapshot = copy.deepcopy(_config_manager.load_character_tombstones_state())
 
-            removed_memory_paths = await asyncio.to_thread(
-                delete_character_memory_storage, _config_manager, name
+            removed_memory_paths, recent_pending_snapshot = await asyncio.to_thread(
+                delete_character_memory_storage,
+                _config_manager,
+                name,
+                capture_pending=True,
             )
             for entry_path in removed_memory_paths:
                 logger.info(f"已删除: {entry_path}")
@@ -1355,6 +1376,7 @@ async def _delete_catgirl_by_name(name: str):
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
                 tombstone_snapshot=tombstone_snapshot,
+                recent_pending_snapshot=recent_pending_snapshot,
                 reason=f"维护模式：删除角色回滚 {name}",
             )
             if rollback_error:
@@ -1366,6 +1388,7 @@ async def _delete_catgirl_by_name(name: str):
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
                 tombstone_snapshot=tombstone_snapshot,
+                recent_pending_snapshot=recent_pending_snapshot,
                 reason=f"删除角色回滚: {name}",
             )
             logger.exception("删除角色失败，已尝试回滚: %s", name)

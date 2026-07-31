@@ -21,11 +21,14 @@ from pathlib import Path
 from typing import Any
 
 from utils.recent_file import (
-    clear_recent_pending,
+    acquire_recent_file_locks,
+    clear_recent_redirects,
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
     recent_file_lock,
     recent_file_locks,
+    redirect_recent_paths,
+    release_recent_file_locks,
     set_recent_pending_unlocked,
     write_recent_payload_unlocked,
 )
@@ -264,20 +267,27 @@ def rewrite_recent_file_character_name(recent_path: Path, old_name: str, new_nam
         return _rewrite_recent_file_character_name_unlocked(recent_path, old_name, new_name)
 
 
-def rename_character_memory_storage(config_manager, old_name: str, new_name: str) -> dict[str, Any]:
+def list_character_recent_paths(config_manager, character_name: str) -> list[Path]:
+    return list(dict.fromkeys(
+        candidate
+        for base_dir in iter_character_memory_roots(config_manager)
+        for candidate in (
+            base_dir / character_name / "recent.json",
+            base_dir / f"recent_{character_name}.json",
+        )
+    ))
+
+
+def rename_character_memory_storage(
+    config_manager, old_name: str, new_name: str, *, keep_recent_locks: bool = False,
+) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
-    pending_sources = [
-        base_dir / old_name / "recent.json"
-        for base_dir in roots
-    ]
-    pending_sources.extend(
-        base_dir / f"recent_{old_name}.json"
-        for base_dir in roots
-    )
+    pending_sources = list_character_recent_paths(config_manager, old_name)
     target_recent = runtime_target_dir / "recent.json"
     recent_paths = list(dict.fromkeys([*pending_sources, target_recent]))
-    with recent_file_locks(recent_paths):
+    held_locks = acquire_recent_file_locks(recent_paths)
+    try:
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_paths
@@ -312,33 +322,74 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
                 for message in source_pending
             )
         set_recent_pending_unlocked(target_recent, target_pending)
+        redirect_recent_paths(pending_sources, target_recent)
 
-    return {
-        "changed": changed,
-        "runtime_dir": runtime_target_dir,
-        "exists_after": runtime_target_dir.exists(),
-        "_recent_pending_snapshot": pending_snapshot,
-    }
+        result = {
+            "changed": changed,
+            "runtime_dir": runtime_target_dir,
+            "exists_after": runtime_target_dir.exists(),
+            "_recent_rename_transaction": {
+                "pending_snapshot": pending_snapshot,
+                "recent_paths": recent_paths,
+                "redirect_sources": pending_sources,
+                "held_locks": held_locks if keep_recent_locks else [],
+            },
+        }
+        if not keep_recent_locks:
+            release_recent_file_locks(held_locks)
+        return result
+    except BaseException:
+        release_recent_file_locks(held_locks)
+        raise
 
 
-def delete_character_memory_storage(config_manager, character_name: str) -> list[Path]:
-    recent_candidates = [
-        candidate
-        for base_dir in iter_character_memory_roots(config_manager)
-        for candidate in (
-            base_dir / character_name / "recent.json",
-            base_dir / f"recent_{character_name}.json",
-        )
-    ]
-    removed_paths: list[Path] = []
-    for entry_path in list_character_memory_paths(config_manager, character_name):
-        if entry_path.is_dir():
-            shutil.rmtree(entry_path)
-        else:
-            entry_path.unlink()
-        removed_paths.append(entry_path)
+def finalize_character_recent_rename(result: dict[str, Any]) -> None:
+    """Release recent locks after the surrounding rename transaction commits."""
+    transaction = result.get("_recent_rename_transaction") or {}
+    held_locks = transaction.get("held_locks") or []
+    if held_locks:
+        transaction["held_locks"] = []
+        release_recent_file_locks(held_locks)
 
-    for recent_path in recent_candidates:
-        clear_recent_pending(recent_path)
 
+def rollback_character_recent_rename(result: dict[str, Any]) -> None:
+    """Restore pending state and redirects after the surrounding rename rolls back."""
+    transaction = result.get("_recent_rename_transaction") or {}
+    snapshot = transaction.get("pending_snapshot") or {}
+    recent_paths = transaction.get("recent_paths") or list(snapshot)
+    held_locks = transaction.get("held_locks") or []
+    if not held_locks:
+        held_locks = acquire_recent_file_locks(recent_paths)
+    try:
+        clear_recent_redirects(transaction.get("redirect_sources") or [])
+        for path, messages in snapshot.items():
+            set_recent_pending_unlocked(path, messages)
+    finally:
+        transaction["held_locks"] = []
+        release_recent_file_locks(held_locks)
+
+
+def delete_character_memory_storage(
+    config_manager, character_name: str, *, capture_pending: bool = False,
+) -> list[Path] | tuple[list[Path], dict[Path, list[Any]]]:
+    recent_candidates = list_character_recent_paths(config_manager, character_name)
+    clear_recent_redirects(recent_candidates)
+    with recent_file_locks(recent_candidates):
+        pending_snapshot = {
+            path: deepcopy(get_recent_pending_unlocked(path))
+            for path in recent_candidates
+        }
+        removed_paths: list[Path] = []
+        for entry_path in list_character_memory_paths(config_manager, character_name):
+            if entry_path.is_dir():
+                shutil.rmtree(entry_path)
+            else:
+                entry_path.unlink()
+            removed_paths.append(entry_path)
+
+        for recent_path in recent_candidates:
+            set_recent_pending_unlocked(recent_path, [])
+
+    if capture_pending:
+        return removed_paths, pending_snapshot
     return removed_paths

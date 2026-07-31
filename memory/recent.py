@@ -262,7 +262,7 @@ class CompressedRecentHistoryManager:
         """Return messages that could not be persisted to this character's file."""
         return recent_file.get_recent_pending(self._ensure_path_for_character(lanlan_name))
 
-    def _set_pending_batches(self, lanlan_name: str, messages: list) -> None:
+    def _set_pending_batches(self, lanlan_name: str, messages: list, file_path=None) -> None:
         """Record (or clear) unpersisted messages while the file lock is held."""
         cap = max(2 * self.compress_threshold, RECENT_PENDING_MAX_ITEMS)
         if len(messages) > cap:
@@ -272,7 +272,7 @@ class CompressedRecentHistoryManager:
             )
             messages = messages[-cap:]
         recent_file.set_recent_pending_unlocked(
-            self._ensure_path_for_character(lanlan_name), messages,
+            file_path or self._ensure_path_for_character(lanlan_name), messages,
         )
 
     def _get_default_path(self, lanlan_name: str) -> str:
@@ -344,7 +344,7 @@ class CompressedRecentHistoryManager:
 
     def _read_history_locked(self, file_path, lanlan_name) -> list:
         """Read one character's history under the file lock. Run me in a worker thread."""
-        with recent_file.recent_file_lock(file_path):
+        with recent_file.recent_file_access(file_path) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             if status == RECENT_READ_UNREADABLE:
                 # 读失败绝不能被当成「历史是空的」——一旦写进 user_histories，下一次
@@ -357,7 +357,7 @@ class CompressedRecentHistoryManager:
         self, file_path, lanlan_name, expected_history, new_history,
     ) -> str:
         """Persist a precomputed trim only if the locked disk snapshot is unchanged."""
-        with recent_file.recent_file_lock(file_path):
+        with recent_file.recent_file_access(file_path) as file_path:
             status, current = self._load_history_unlocked(file_path, lanlan_name)
             if status == RECENT_READ_UNREADABLE:
                 return 'failed'
@@ -380,7 +380,7 @@ class CompressedRecentHistoryManager:
         self, file_path, lanlan_name, snapshot, memo,
     ) -> tuple[str, int, int]:
         """Re-read, locate, merge and persist a backup memo in one critical section."""
-        with recent_file.recent_file_lock(file_path):
+        with recent_file.recent_file_access(file_path) as file_path:
             read_status, current = self._load_history_unlocked(file_path, lanlan_name)
             if read_status == RECENT_READ_UNREADABLE:
                 return ('failed', 0, 0)
@@ -459,14 +459,16 @@ class CompressedRecentHistoryManager:
         that the next call re-attaches them instead of letting the on-disk copy
         silently win.
         """
-        with recent_file.recent_file_lock(file_path):
+        with recent_file.recent_file_access(file_path) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
                 # 读不到盘上内容 ≠ 盘上是空的。这里一写就是拿这批新消息覆盖掉
                 # 整段读不出来的历史（重构前的 `except Exception: return []`
                 # 正是这么丢的）。所以本轮完全不写盘。
-                self._set_pending_batches(lanlan_name, list(pending) + list(new_messages))
+                self._set_pending_batches(
+                    lanlan_name, list(pending) + list(new_messages), file_path,
+                )
                 logger.warning(
                     f"[RecentHistory] {lanlan_name} 历史文件读取失败，本轮不落盘，"
                     f"{len(new_messages)} 条新消息暂存内存等下次补写"
@@ -483,11 +485,13 @@ class CompressedRecentHistoryManager:
                 # _replace_with_busy_retry 是最后一条语句），所以把整批挂回
                 # pending 不会造成二次落地，不需要任何去重启发式。
                 self.user_histories[lanlan_name] = merged
-                self._set_pending_batches(lanlan_name, list(pending) + list(new_messages))
+                self._set_pending_batches(
+                    lanlan_name, list(pending) + list(new_messages), file_path,
+                )
                 logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
                 return (merged, False)
 
-            self._set_pending_batches(lanlan_name, [])
+            self._set_pending_batches(lanlan_name, [], file_path)
             self.user_histories[lanlan_name] = merged
             return (merged, True)
 
@@ -499,7 +503,7 @@ class CompressedRecentHistoryManager:
         view taken *before* the LLM call, so every batch persisted during that
         window was overwritten wholesale.
         """
-        with recent_file.recent_file_lock(file_path):
+        with recent_file.recent_file_access(file_path) as file_path:
             status, current = self._load_history_unlocked(file_path, lanlan_name)
             if status == RECENT_READ_UNREADABLE:
                 logger.warning(f"[RecentHistory] {lanlan_name} 压缩结果合并时读盘失败，放弃本轮合并")
@@ -1161,7 +1165,7 @@ class CompressedRecentHistoryManager:
         Persist failures are NOT swallowed — they propagate so that the caller's
         ``except Exception`` maps them to ``('failed', None)`` exactly as before.
         """
-        with recent_file.recent_file_lock(file_path):
+        with recent_file.recent_file_access(file_path) as file_path:
             read_status, current = self._load_history_unlocked(file_path, lanlan_name)
             if read_status == RECENT_READ_UNREADABLE:
                 # 读不到就定位不了 cutoff。这里绝不能报 'white'：_mutate_review_white
