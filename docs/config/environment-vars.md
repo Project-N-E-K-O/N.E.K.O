@@ -79,7 +79,7 @@ a connection in that state can produce overlapping responses.
 The symptom worth setting it for is repeated disconnect-and-rebuild during
 voice conversation, with backend logs carrying:
 
-```
+```text
 response arbiter failing closed: <reason> (current=... owner=... queue_depth=...)
 ```
 
@@ -93,7 +93,7 @@ Keeping the connection is only defensible when the transport is still usable
 **and** the arbiter can still tell whose events are whose. When either half
 fails it tears down anyway and logs why:
 
-```
+```text
 response arbiter cannot keep the connection (<blocker>); failing closed despite the escape hatch
 ```
 
@@ -111,6 +111,23 @@ The blockers are:
 If every escalation in your logs carries one of these, the variable is working
 as designed and the disconnects have a different cause — attach those lines to
 the report rather than assuming the switch had no effect.
+
+### A third line: kept, but nothing was released
+
+Some escalations are raised over a response the arbiter never owned — a
+server-initiated one it can only cancel blindly. There is no turn to give up
+there, so the transport survives but the lane stays held by that response:
+
+```text
+response arbiter kept the transport but had no lifecycle to release: <reason> (lane held by server response ids: ..., queue_depth=N); the lane reopens when their terminal events arrive, or after 60s if none do
+```
+
+This is a delay, not a wedge, and in the common case a short one — the lane
+reopens the moment that response's terminal arrives. The full 60s only elapses
+when the terminal is lost outright. The ids are not retired early on purpose:
+the arbiter has no per-response activity signal, so it cannot tell a lost
+terminal from a response that is simply still speaking, and dispatching over a
+live one costs a silently dropped turn.
 
 ## Storage and local vectors
 
