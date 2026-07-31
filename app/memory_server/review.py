@@ -55,6 +55,41 @@ correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
 
 
+async def cancel_character_derived_tasks(lanlan_name: str) -> int:
+    """Cancel and drain review/compression tasks derived from one character identity."""
+    cancel_event = correction_cancel_flags.get(lanlan_name)
+    if cancel_event is not None:
+        cancel_event.set()
+
+    candidates = []
+    for registry in (correction_tasks, compress_backup_tasks):
+        task = registry.get(lanlan_name)
+        if task is not None and not task.done() and task not in candidates:
+            candidates.append(task)
+            task.cancel()
+
+    for task in candidates:
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+        except Exception as exc:
+            logger.warning(
+                "取消角色 %s 的派生记忆任务时出现异常: %s",
+                lanlan_name,
+                exc,
+            )
+
+    for registry in (correction_tasks, compress_backup_tasks):
+        task = registry.get(lanlan_name)
+        if task is None or task.done():
+            registry.pop(lanlan_name, None)
+    if correction_cancel_flags.get(lanlan_name) is cancel_event:
+        correction_cancel_flags.pop(lanlan_name, None)
+    compress_backup_task_generations.pop(lanlan_name, None)
+    return len(candidates)
+
+
 def _clear_review_output_exhaustion_state(state: dict) -> bool:
     """Zero the output-exhaustion breaker in place; returns whether anything changed.
 

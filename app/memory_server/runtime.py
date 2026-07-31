@@ -293,11 +293,25 @@ async def release_character_resources(lanlan_name: str):
             status_code=exc.status_code,
         )
 
+    # 改名/删除前先排空基于旧角色名快照生成的 review / backup-compress。
+    # 仅 reload manager 不会清这些按名字注册的 task；让它们在改名后继续提交，
+    # 会沿 recent redirect 把旧名字生成的 memo/correction 写进新角色。
+    from . import review
+
+    cancelled_tasks = await review.cancel_character_derived_tasks(lanlan_name)
     async with _reload_lock:
         try:
             time_manager.dispose_engine(lanlan_name)
-            logger.info("[MemoryServer] 已主动释放角色 %s 的 SQLite 引擎", lanlan_name)
-            return {"status": "success", "character_name": lanlan_name}
+            logger.info(
+                "[MemoryServer] 已主动释放角色 %s 的 SQLite 引擎并排空 %d 个派生任务",
+                lanlan_name,
+                cancelled_tasks,
+            )
+            return {
+                "status": "success",
+                "character_name": lanlan_name,
+                "cancelled_derived_tasks": cancelled_tasks,
+            }
         except Exception as exc:
             logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
             return JSONResponse(

@@ -34,6 +34,35 @@ async def _cleanup_task(task):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_release_character_drains_old_identity_review_and_backup_tasks():
+    from app import memory_server
+
+    name = "即将改名角色"
+    cancel_event = asyncio.Event()
+    review_task = asyncio.create_task(asyncio.sleep(30))
+    backup_task = asyncio.create_task(asyncio.sleep(30))
+    memory_server.review.correction_cancel_flags[name] = cancel_event
+    memory_server.review.correction_tasks[name] = review_task
+    memory_server.review.compress_backup_tasks[name] = backup_task
+    memory_server.review.compress_backup_task_generations[name] = ("old", 0)
+    fake_time_manager = MagicMock()
+
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
+        result = await memory_server.runtime.release_character_resources(name)
+
+    assert result["status"] == "success"
+    assert result["cancelled_derived_tasks"] == 2
+    assert cancel_event.is_set()
+    assert review_task.cancelled()
+    assert backup_task.cancelled()
+    assert name not in memory_server.review.correction_tasks
+    assert name not in memory_server.review.compress_backup_tasks
+    assert name not in memory_server.review.compress_backup_task_generations
+    fake_time_manager.dispose_engine.assert_called_once_with(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_on_compress_done_failure_spawns_backup():
     from app import memory_server
     name = "测试角色C"
