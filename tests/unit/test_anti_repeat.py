@@ -16,7 +16,10 @@ scorer + soft-hint prompt 注入。
 """  # noqa: DOCSTRING_CJK
 from __future__ import annotations
 
+import asyncio
+import json
 import os
+import threading
 from unittest.mock import MagicMock
 
 import pytest
@@ -561,3 +564,409 @@ def test_recent_topics_block_falls_back_to_en():
     """未支持的 lang 走 en 回退；返回不空字符串即可。"""
     out = render_recent_topics_block(["foo"], "und")
     assert "foo" in out
+
+
+# ── 8. arecord_output：落盘必须离开事件循环 ──────────────────
+
+
+@pytest.mark.asyncio
+async def test_arecord_output_persists_off_the_event_loop(tmp_path, monkeypatch):
+    """The corpus write must not run on the caller's event loop thread.
+
+    record_output ends in atomic_write_json, whose tail is an unbounded
+    os.fsync. This corpus is written on EVERY committed assistant reply, so
+    on the realtime session's loop that physical flush lands between audio
+    chunks. Asserting on the writing thread pins the property itself, not
+    the mere presence of an asyncio.to_thread call.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    loop_thread = threading.get_ident()
+    write_threads: list[int] = []
+    real_write = anti_repeat_module.atomic_write_json
+
+    def _spy(*args, **kwargs):
+        write_threads.append(threading.get_ident())
+        return real_write(*args, **kwargs)
+
+    monkeypatch.setattr(anti_repeat_module, "atomic_write_json", _spy)
+
+    await store.arecord_output("妮可", LONG_TIGER, is_proactive=False)
+
+    assert write_threads, "arecord_output 必须真的落盘"
+    assert loop_thread not in write_threads, (
+        "落盘跑在了事件循环线程上——fsync 会掐住音频"
+    )
+    assert store._load_unlocked("妮可"), "内容必须真的进了 corpus"
+
+
+@pytest.mark.asyncio
+async def test_arecord_output_stamps_time_at_the_call_site(tmp_path, monkeypatch):
+    """The timestamp is read when the coroutine is called, not whenever the
+    worker thread happens to get scheduled.
+
+    Two back-to-back records can reach the pool in either order, and the
+    window is trimmed by ts — so the clock has to be read on the caller's
+    side. Asserting on the *thread* that reads it is what distinguishes the
+    two designs; asserting on the value alone cannot.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    loop_thread = threading.get_ident()
+    clock_threads: list[int] = []
+
+    def _clock() -> float:
+        clock_threads.append(threading.get_ident())
+        return 1234.5
+
+    monkeypatch.setattr(anti_repeat_module, "_now", _clock)
+
+    await store.arecord_output("妮可", LONG_TIGER, is_proactive=True)
+
+    assert clock_threads, "时间戳必须真的取过"
+    assert clock_threads[0] == loop_thread, (
+        "时间戳在 worker 线程里取的——两次投递的先后顺序就不再可信"
+    )
+    window = store._load_unlocked("妮可")
+    assert [entry["ts"] for entry in window] == [1234.5]
+    assert window[0]["is_proactive"] is True
+
+
+@pytest.mark.asyncio
+async def test_apreload_reads_without_holding_the_data_lock(tmp_path, monkeypatch):
+    """A slow first read must not make loop-side scorers wait on a worker lock."""
+    store = _build_store(tmp_path)
+    started = threading.Event()
+    release = threading.Event()
+
+    def _slow_read(_name):
+        started.set()
+        assert release.wait(timeout=5)
+        return []
+
+    monkeypatch.setattr(store, "_read_window_from_disk", _slow_read)
+    preload = asyncio.create_task(store.apreload("妮可"))
+    assert await asyncio.to_thread(started.wait, 5)
+
+    lock = store._get_lock("妮可")
+    acquired = lock.acquire(blocking=False)
+    if acquired:
+        lock.release()
+    release.set()
+    assert await preload is None
+
+    assert acquired, "the worker held the data lock while performing disk I/O"
+    assert store._cache["妮可"] == []
+
+
+@pytest.mark.asyncio
+async def test_apreload_caches_empty_window_after_disk_lookup_failure(
+    tmp_path, monkeypatch
+):
+    """A failed warmup must not make the event loop retry the same disk read."""
+    store = _build_store(tmp_path)
+    calls = 0
+
+    def _failed_read(_name):
+        nonlocal calls
+        calls += 1
+        raise OSError("memory root unavailable")
+
+    monkeypatch.setattr(store, "_read_window_from_disk", _failed_read)
+
+    await store.apreload("妮可")
+    staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+
+    assert store._cache["妮可"]
+    assert staged is not None
+    assert calls == 1, "stage_output retried disk I/O synchronously after warmup failed"
+
+
+def test_the_per_turn_callers_use_the_async_twin():
+    """The two per-turn call sites must not fall back to the sync writer.
+
+    Both run inside a coroutine on the realtime session's loop; a plain
+    record_output there puts an unbounded fsync on that loop. The guard in
+    scripts/check_async_blocking.py cannot see this pair (its documented
+    depth-1 limit stops one hop short), so it is pinned here instead.
+    """
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    for rel in _PER_TURN_CALL_SITES:
+        source = (repo_root / rel).read_text(encoding="utf-8")
+        assert "stage_output(" in source and "flush_staged_detached(" in source, (
+            f"{rel} 必须走两段式：内存更新在收尾信号之前，落盘摘出去"
+        )
+        assert ".record_output(" not in source, (
+            f"{rel} 回退到了同步 record_output —— 那会把 fsync 压在会话循环上"
+        )
+
+
+_PER_TURN_CALL_SITES = (
+    "main_logic/omni_offline_client/_lifecycle.py",
+    "main_logic/core/proactive.py",
+)
+
+
+def test_the_per_turn_callers_never_await_the_flush():
+    """Nothing cancellable may sit between "delivered" and "report delivered".
+
+    Both call sites flush after the turn's terminal signals are already out,
+    and both then return the value their caller uses as the record that the
+    turn committed. An ``await`` in that stretch reintroduces a cancellation
+    point past the point of no return: ``CancelledError`` is a
+    ``BaseException``, so it skips the surrounding ``except Exception`` and the
+    ``return``, and the caller books an already-visible turn as undelivered.
+    """
+    import ast
+    import pathlib
+
+    repo_root = pathlib.Path(__file__).resolve().parents[2]
+    offenders = []
+    for rel in _PER_TURN_CALL_SITES:
+        tree = ast.parse((repo_root / rel).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Await):
+                continue
+            call = node.value
+            if not isinstance(call, ast.Call):
+                continue
+            func = call.func
+            name = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if name in {"aflush_staged", "arecord_output"}:
+                offenders.append(f"{rel}:{node.lineno} await {name}(...)")
+
+    assert not offenders, (
+        "这些 per-turn 调用点又把落盘 await 回了提交路径上：\n  "
+        + "\n  ".join(offenders)
+        + "\n用 flush_staged_detached() —— 到这一步这轮对用户已经发生完了，"
+        "取消不该把「已投递」倒回成「没投递」"
+    )
+
+
+def test_the_data_lock_is_never_held_across_the_disk_write(tmp_path):
+    """Scoring runs on the event loop and takes the same per-name lock.
+
+    ``arecord_output`` hands the whole record to a worker; if that worker held
+    the data lock across ``atomic_write_json`` (tail: an unbounded fsync), a
+    concurrent ``score_draft`` on the loop would block on the worker — exactly
+    the stall the off-loading exists to remove. So the write must happen with
+    the data lock released.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    store.record_output("妮可", LONG_TIGER, now=1.0)  # 建好锁与缓存
+    held_during_write: list[bool] = []
+    real_write = anti_repeat_module.atomic_write_json
+
+    def _spy(*args, **kwargs):
+        lock = store._get_lock("妮可")
+        acquired = lock.acquire(blocking=False)
+        held_during_write.append(not acquired)
+        if acquired:
+            lock.release()
+        return real_write(*args, **kwargs)
+
+    monkeypatch = pytest.MonkeyPatch()
+    try:
+        monkeypatch.setattr(anti_repeat_module, "atomic_write_json", _spy)
+        store.record_output("妮可", LONG_FRUIT, now=2.0)
+    finally:
+        monkeypatch.undo()
+
+    assert held_during_write == [False], (
+        "落盘时数据锁还握着——事件循环上的 score_draft 会卡在这次 fsync 上"
+    )
+
+
+def test_a_stale_snapshot_never_overwrites_a_newer_one(tmp_path):
+    """Workers can reach the disk out of order; the older window must lose.
+
+    Writes no longer happen under the data lock, so two records can be staged
+    in caller order yet reach ``atomic_write_json`` in the opposite order. The
+    staged sequence number, not the winner of the write lock, decides.
+    """
+    store = _build_store(tmp_path)
+    store.record_output("妮可", LONG_TIGER, now=1.0)
+    store.record_output("妮可", LONG_FRUIT, now=2.0)
+
+    fresh = json.loads(
+        (tmp_path / "妮可" / "anti_repeat_corpus.json").read_text(encoding="utf-8")
+    )
+    newest_seq = store._staged_seq["妮可"]
+
+    # 一次「迟到的」旧快照：seq 比已落盘的小，必须被丢掉。
+    store._flush_snapshot("妮可", {"version": 1, "window": []}, newest_seq - 1)
+
+    after = json.loads(
+        (tmp_path / "妮可" / "anti_repeat_corpus.json").read_text(encoding="utf-8")
+    )
+    assert after == fresh, "陈旧快照把新窗口盖回去了"
+    assert len(after["window"]) == 2
+
+
+def test_entries_stay_ordered_by_timestamp(tmp_path):
+    """Out-of-order arrivals must not make an older reply look like the newest.
+
+    Scoring takes the trailing slice of the window as "the most recent
+    entries", so ordering has to hold even when workers land out of order.
+    """
+    store = _build_store(tmp_path)
+    store.record_output("妮可", LONG_FRUIT, now=200.0)
+    store.record_output("妮可", LONG_TIGER, now=100.0)  # 迟到的更早那条
+
+    window = store._load_unlocked("妮可")
+    assert [entry["ts"] for entry in window] == [100.0, 200.0]
+
+
+class _GatedAsyncio:
+    """Stands in for ``anti_repeat.asyncio``: parks at the to_thread boundary."""
+
+    def __init__(self, reached: "asyncio.Event", release: "asyncio.Event") -> None:
+        self._reached = reached
+        self._release = release
+
+    def __getattr__(self, name):
+        return getattr(asyncio, name)
+
+    async def to_thread(self, fn, *args, **kwargs):
+        self._reached.set()
+        await self._release.wait()
+        return await asyncio.to_thread(fn, *args, **kwargs)
+
+
+@pytest.mark.asyncio
+async def test_the_corpus_is_updated_before_arecord_output_yields(tmp_path, monkeypatch):
+    """Scoring must never miss the reply that was just committed.
+
+    Only the disk write is off-loaded; the in-memory update runs on the
+    caller's thread, before the coroutine yields at all. Deferring the whole
+    record to a worker leaves a window in which the loop runs the next turn's
+    score_draft / top_recent_topics against a corpus that is still missing
+    this reply — and repeats it.
+
+    Observed exactly at the to_thread boundary: that is the first instant the
+    loop can run anything else, and it is where the two designs differ.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    reached = asyncio.Event()
+    release = asyncio.Event()
+    monkeypatch.setattr(
+        anti_repeat_module, "asyncio", _GatedAsyncio(reached, release),
+    )
+
+    task = asyncio.create_task(store.arecord_output("妮可", LONG_TIGER, now=1.0))
+    await asyncio.wait_for(reached.wait(), timeout=5)
+
+    # 协程刚让出，落盘还没开始 —— 但 corpus 必须已经含有这条。
+    total, _terms = store.score_draft("妮可", LONG_TIGER, now=1.0)
+    assert total > 0, "协程让出时 corpus 还没更新，下一轮打分会漏掉刚说过的这句"
+
+    release.set()
+    await asyncio.wait_for(task, timeout=5)
+
+
+# ── 9. flush_staged_detached：提交路径上不许有取消点 ──────────
+
+
+@pytest.mark.asyncio
+async def test_detached_flush_still_reaches_disk(tmp_path):
+    """Detaching must not turn the write into a no-op."""
+    store = _build_store(tmp_path)
+    staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+    assert staged is not None
+
+    store.flush_staged_detached(staged)
+    for _ in range(200):
+        await asyncio.sleep(0.01)
+        if not store._detached_flushes:
+            break
+    assert not store._detached_flushes, "摘下来的落盘 task 没跑完"
+
+    reloaded = _build_store(tmp_path)
+    total, _terms = reloaded.score_draft("妮可", LONG_TIGER, now=1.0)
+    assert total > 0, "落盘没到盘上，重启后这条就丢了"
+
+
+@pytest.mark.asyncio
+async def test_cancelling_the_caller_cannot_rewind_a_delivered_turn(tmp_path):
+    """The caller must reach its `return` even when cancelled at the flush.
+
+    This is the whole reason the flush is detached. The turn's terminal
+    signals are already out by this point, so the delivery has happened; if
+    cancellation could still unwind past the return, the caller would book it
+    as undelivered and the same proactive line could be sent again.
+    """
+    from memory import anti_repeat as anti_repeat_module
+
+    store = _build_store(tmp_path)
+    terminal_signals = asyncio.Event()
+    reached_return = asyncio.Event()
+
+    # 把落盘卡死在 to_thread 上。这样「落盘是不是取消点」就是确定性的差异，不用赌
+    # 一次 to_thread 往返能不能在某个 sleep(0) 里跑完。
+    reached_disk = asyncio.Event()
+    release_disk = asyncio.Event()
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        anti_repeat_module, "asyncio", _GatedAsyncio(reached_disk, release_disk),
+    )
+    try:
+        async def _deliver() -> bool:
+            staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+            await terminal_signals.wait()   # 模拟 TTS 收尾 + 两处 turn end
+            store.flush_staged_detached(staged)
+            reached_return.set()
+            return True
+
+        task = asyncio.create_task(_deliver())
+        await asyncio.sleep(0)
+        terminal_signals.set()
+        await asyncio.sleep(0)
+
+        # 收尾信号一发完，协程就该已经跑到 return 了：落盘摘出去之后，这段里再没有
+        # 挂起点。谁要是把 aflush_staged await 回来，协程此刻还挂在落盘上。
+        assert reached_return.is_set(), (
+            "收尾信号之后仍有挂起点 —— 落盘被 await 回了提交路径上"
+        )
+
+        # 取消请求这时才到。已经没有挂起点可以让它落进去，凭据必须照常返回。
+        task.cancel()
+        assert await task is True
+    finally:
+        release_disk.set()
+        for _ in range(200):
+            await asyncio.sleep(0.01)
+            if not store._detached_flushes:
+                break
+        monkeypatch.undo()
+
+    assert not store._detached_flushes, "摘出去的落盘 task 没跑完就泄漏了"
+
+
+def test_detached_flush_without_a_running_loop_is_a_no_op(tmp_path):
+    """No loop to attach to must degrade quietly, never fsync inline."""
+    # 同步调用方 / 循环已关停时，回退成「就地同步落盘」会把这轮改动移走的 fsync
+    # 又搬回来。best-effort 的东西宁可丢。
+    store = _build_store(tmp_path)
+    staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+
+    store.flush_staged_detached(staged)
+
+    assert not store._detached_flushes
+    assert not os.path.exists(store._file_path("妮可")), (
+        "没有事件循环时不该就地落盘"
+    )
+
+
+def test_detached_flush_ignores_a_none_handle(tmp_path):
+    """stage_output returns None for skipped text; that must stay harmless."""
+    store = _build_store(tmp_path)
+    store.flush_staged_detached(None)
+    assert not store._detached_flushes

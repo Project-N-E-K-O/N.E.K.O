@@ -286,7 +286,7 @@ def test_home_page_opens_plugin_dashboard_through_backend_redirect_for_handoff()
 def test_standalone_agent_hud_show_hide_keeps_origin_position():
     hud_source = Path("static/common-ui-hud.js").read_text(encoding="utf-8")
     show_match = re.search(
-        r"window\.AgentHUD\.showAgentTaskHUD = function \(\) \{(?P<body>[\s\S]*?)\n\};",
+        r"window\.AgentHUD\.showAgentTaskHUD = function \([^)]*\) \{(?P<body>[\s\S]*?)\n\};",
         hud_source,
     )
     hide_match = re.search(

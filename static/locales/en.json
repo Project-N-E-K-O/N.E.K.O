@@ -2743,6 +2743,7 @@
             "proactiveMiniGameInviteChat": "Mini-game Invites",
             "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
             "agentMaster": "NekoClaw Master Switch",
+            "showTaskHud": "Show floating window",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
             "pluginConfigPage": "Config",

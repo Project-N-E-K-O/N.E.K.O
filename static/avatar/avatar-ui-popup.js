@@ -2094,8 +2094,12 @@ function createCheckIndicator(manager, prefix) {
  * 创建Agent开关项
  */
 function createToggleItem(manager, prefix, toggle, popup) {
+    const usesSliderControl = toggle.controlStyle === 'slider';
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    if (usesSliderControl) {
+        toggleItem.classList.add(`${prefix}-toggle-item-slider`);
+    }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     markAvatarPopupActionElement(toggleItem, 'toggle');
     toggleItem.setAttribute('role', 'switch');
@@ -2123,12 +2127,18 @@ function createToggleItem(manager, prefix, toggle, popup) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
+    if (usesSliderControl) {
+        indicator.classList.add(`${prefix}-toggle-slider`);
+    }
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = `${prefix}-toggle-checkmark`;
-    checkmark.innerHTML = '✓';
+    if (usesSliderControl) {
+        checkmark.classList.add(`${prefix}-toggle-thumb`);
+    }
+    checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
@@ -2148,10 +2158,23 @@ function createToggleItem(manager, prefix, toggle, popup) {
         toggleItem._updateLabelText = updateLabelText;
     }
 
+    const updateIndicatorStyle = (checked) => {
+        if (!usesSliderControl) return;
+        const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+        indicator.style.backgroundColor = checked
+            ? activeColor
+            : 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))';
+        indicator.style.borderColor = checked
+            ? activeColor
+            : 'var(--neko-popup-indicator-border, #ccc)';
+        checkmark.style.opacity = '1';
+    };
+
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        updateIndicatorStyle(isChecked);
     };
 
     const updateDisabledStyle = () => {
@@ -2181,8 +2204,13 @@ function createToggleItem(manager, prefix, toggle, popup) {
     disabledObserver.observe(checkbox, { attributes: true, attributeFilter: ['disabled', 'title'] });
 
     toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    if (usesSliderControl) {
+        toggleItem.appendChild(label);
+        toggleItem.appendChild(indicator);
+    } else {
+        toggleItem.appendChild(indicator);
+        toggleItem.appendChild(label);
+    }
     checkbox._updateStyle = () => {
         updateStyle();
         updateDisabledStyle();

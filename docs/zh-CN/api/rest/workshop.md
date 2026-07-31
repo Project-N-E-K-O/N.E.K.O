@@ -77,6 +77,10 @@ macOS arm64 上当前 Steamworks 绑定存在 callback 崩溃风险，因此原�
 
 这些接口只打包参考材料，不会自行克隆或注册本地 TTS 声音。
 
+::: info 内容目录互斥
+发布会在上传结束前把整个内容目录交给 Steam。一个目录正在发布时，`upload-reference-audio`、`remove-reference-audio` 和 `cleanup-temp-folder` 直接返回 `409`，不会改动 Steam 正在读取的内容；反过来也一样，参考声音还在写入时，`publish` 返回 `409`。
+:::
+
 ## 经实现核对的路由清单
 
 ```text

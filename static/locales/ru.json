@@ -2743,6 +2743,7 @@
             "proactiveMiniGameInviteChat": "Приглашения в мини-игры",
             "proactiveMiniGameInviteChatTooltip": "Приглашать тебя в мини-игру, когда складываются подходящие условия",
             "agentMaster": "Главный переключатель Лапки Неко",
+            "showTaskHud": "Показать плавающее окно",
             "keyboardControl": "Управление клавиатурой/мышью",
             "userPlugin": "Пользовательский плагин",
             "pluginConfigPage": "Настройки",

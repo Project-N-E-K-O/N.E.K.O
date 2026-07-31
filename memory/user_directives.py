@@ -229,13 +229,34 @@ class UserDirectivesManager:
         return directives
 
     def _save_unlocked(self, name: str) -> None:
+        # 这次落盘是同步的，跑在事件循环线程上，而且是**有意保留**的：
+        #
+        # 调用链是 `async def _process_stream_data_internal`
+        #   → _publish_user_utterance_to_plugin_bus（同步）
+        #   → dispatch_user_utterance（同步 fan-out）
+        #   → _on_user_utterance → record_from_text → 这里。
+        # `dispatch_user_utterance` 的契约就是同步 fan-out，链上还挂着第三方插件的
+        # handler（plugin.core.state / quota.dropper）。把这一段改成 async 等于把所有
+        # 插件 handler 一起挪到工作线程 —— 那是事件总线的架构取舍，不该由一条落盘
+        # 顺带决定。
+        #
+        # 代价可接受：只有 directive 正则真命中时才写（用户说"别提 X"这种），
+        # 一次会话个位数，payload 是几百字节的 JSON。
+        #
+        # 若要改，正确形状是 memory/anti_repeat.py 那对 stage/aflush 拆分：内存更新
+        # 留在调用线程（否则同轮的读会看到旧 cache），只把 fsync 挪走，并在 turn
+        # 生命周期里补一个 flush 点。
+        #
+        # noqa 现在其实没有对应的告警可压 —— scripts/check_async_blocking.py 只做
+        # depth-1，看不到深度 6 的这里。留着是为了可 grep，以及守卫哪天加深时不用
+        # 重新考古。
         path = self._file_path(name)
         payload = {
             "version": _SCHEMA_VERSION,
             "directives": self._cache.get(name, []),
         }
         try:
-            atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+            atomic_write_json(path, payload, indent=2, ensure_ascii=False)  # noqa: ASYNC_BLOCK — 同步 fan-out 契约，见上
         except Exception as exc:
             logger.warning("[UserDirectives] save failed for %s: %s", name, exc)
 

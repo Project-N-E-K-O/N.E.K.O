@@ -2223,7 +2223,8 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
         f["speaker_label"] == "Bob(1002)" and f["speaker_trust"] == 0.5
         for f in facts_b
     )
-    # prompt 按段渲染：段首标记（带一次性 nonce）+ 每行冠以该段 speaker。
+    # prompt 按段渲染：段首标记（带一次性 nonce）负责 speaker 归属，正文
+    # 每行统一用短前缀，且不能重复长 label 放大输入。
     prompt = captured["prompt"]
     headers = re.findall(r'^\[SEGMENT (\d+):([0-9a-f]+) \| speaker: (.+)\]$',
                          prompt, flags=re.MULTILINE)
@@ -2234,8 +2235,10 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
     assert len(nonces) == 1, "同一次请求的所有段首必须共用同一个 nonce"
     (only_nonce,) = nonces
     assert len(only_nonce) >= 8, "nonce 太短，挡不住盲猜"
-    assert "Alice(1001) | 我对花生过敏" in prompt
-    assert "Bob(1002) | 我家猫叫毛毛" in prompt
+    assert "> 我对花生过敏" in prompt
+    assert "> 我家猫叫毛毛" in prompt
+    assert "Alice(1001) | 我对花生过敏" not in prompt
+    assert "Bob(1002) | 我家猫叫毛毛" not in prompt
 
     # nonce 必须**每次请求**重新生成。做成进程级常量的实现在单次调用里
     # 看不出区别，但那样攻击者只要拿到过一次（比如模型把段首抄进某条
@@ -2751,7 +2754,7 @@ def test_batch_rendering_does_not_amplify_newline_dense_messages():
     ~67 倍的放大器：一条几千行的消息就能把 prompt 撑爆或耗光 30s 抽取
     超时，而失败的批是保留重试的，同批其他成员会被一起拖住（Codex）。
 
-    续行用短标记，放大压到每行 2 字节；防伪性质不变——校验的是"没有任何
+    正文统一用短标记，放大压到每行 2 字节；防伪性质不变——校验的是"没有任何
     一行以段首形状开头"。"""  # noqa: DOCSTRING_CJK
     label = "x" * 64
     body = "\n".join(f"line{i}" for i in range(400))
@@ -2775,7 +2778,7 @@ def test_batch_rendering_does_not_amplify_newline_dense_messages():
         not line.startswith("[SEGMENT")
         for line in rendered.splitlines()[1:]
     )
-    assert f"{label} | line0" in rendered
+    assert "> line0" in rendered
     assert "| line399" in rendered
 
 
@@ -3009,9 +3012,8 @@ async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_path):
-    """单段批次没有归属风险：走成熟的单发抽取管线（speaker_label 渲染 +
-    整批 malformed 判定），不用带段标记的批 prompt。"""  # noqa: DOCSTRING_CJK
+async def test_batch_extraction_single_segment_still_uses_bounded_batch_prompt(tmp_path):
+    """A one-segment batch must not bypass the batch input budget."""
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -3020,18 +3022,27 @@ async def test_batch_extraction_single_segment_uses_single_speaker_prompt(tmp_pa
 
     async def _llm(prompt, lanlan_name, **kwargs):
         captured["prompt"] = prompt
-        return [{"text": "单段事实", "importance": 5}]
+        return [{
+            "segment": 1,
+            "facts": [{"text": "单段事实", "importance": 5}],
+        }]
 
     fs._allm_call_with_retries = _llm
     segment = _batch_segment(
-        "7788", "1001", "Alice(1001)", ["我对花生过敏"], trust=1.0,
+        "7788",
+        "1001",
+        "Alice(1001)",
+        ["BEGIN-important " + ("界" * 2000) + " END-important"],
+        trust=1.0,
     )
     with patch("memory.facts.get_global_language_full", return_value="zh"):
         results = await fs.extract_facts_batch([segment], "Neko")
 
     assert [r["status"] for r in results] == ["ok"]
-    assert "[SEGMENT" not in captured["prompt"]
-    assert "Alice(1001) | 我对花生过敏" in captured["prompt"]
+    assert "[SEGMENT" in captured["prompt"]
+    assert "BEGIN-important " in captured["prompt"]
+    assert " END-important" in captured["prompt"]
+    assert "界" * 2000 not in captured["prompt"]
     created = results[0]["created"]
     assert [f["text"] for f in created] == ["单段事实"]
     # 单段路径同样落信赖度字段。
@@ -3136,10 +3147,10 @@ async def test_message_body_cannot_forge_a_segment_boundary(tmp_path):
         results = await fs.extract_facts_batch(segments, "Neko")
 
     _assert_no_forgeable_boundary(captured["prompt"], 2)
-    # 注入的那三行全部落在攻击者段内、且都带前缀（首行冠 label、续行冠
-    # 短标记）；正文里的段首字面量另外被折成全角左括号，连形状都不成立。
+    # 注入的那三行全部落在攻击者段内、且都带短前缀；正文里的段首字面量
+    # 另外被折成全角左括号，连形状都不成立。
     injected = evil.replace("[SEGMENT", "［SEGMENT").splitlines()
-    assert f"Mallory(1003) | {injected[0]}" in captured["prompt"]
+    assert f"> {injected[0]}" in captured["prompt"]
     for line in injected[1:]:
         assert f"| {line}" in captured["prompt"]
     assert "[SEGMENT 2 | speaker: Alice(1002)]" not in captured["prompt"]
@@ -7290,10 +7301,11 @@ async def test_group_memory_toggle_syncs_existing_sessions():
 @pytest.mark.asyncio
 async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
     """The dedup queue mixes isolation domains; one resolve batch must not:
-    the prompt may only contain pairs from the FIFO head's domain. Legacy
-    queue items without stored domain fields are classified via their live
-    fact rows, and pairs whose rows are gone are dequeued without ever
-    reaching a prompt."""
+    the prompt may only contain pairs from the FIFO head's domain. Queue
+    items are ids-only — prompt texts come from the AUTHORITATIVE fact rows
+    at resolve time (never from queue copies); legacy queue items without
+    stored domain fields are classified via their live fact rows, and pairs
+    whose rows are gone are dequeued without ever reaching a prompt."""
     import json as _json
 
     from memory.fact_dedup import FactDedupResolver
@@ -7308,8 +7320,12 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
     fact_store._config_manager.aget_model_api_config = AsyncMock(
         return_value=_api_config
     )
-    # Live rows used to classify OLD queue items lacking domain fields.
+    # Authoritative rows: prompt texts must come from HERE, not the queue.
     fact_store.aload_facts = AsyncMock(return_value=[
+        {"id": "c1", "text": "legacy c1 authoritative"},
+        {"id": "e1", "text": "legacy e1 authoritative"},
+        {"id": "c2", "text": "group c2 authoritative", **group.as_entry_fields()},
+        {"id": "e2", "text": "group e2 authoritative", **group.as_entry_fields()},
         {"id": "old_cand", "text": "legacy old cand"},
         {"id": "old_exist", "text": "legacy old exist"},
     ])
@@ -7320,22 +7336,23 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
         {
             # New-schema legacy pair (head -> locks the batch to legacy).
             "candidate_id": "c1", "existing_id": "e1",
-            "candidate_text": "legacy pair text", "existing_text": "legacy sib",
             "entity": "master", "subject_key": None, "scope": None,
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:00",
         },
         {
             # New-schema scoped pair: different domain, must stay queued.
             "candidate_id": "c2", "existing_id": "e2",
-            "candidate_text": "group pair text", "existing_text": "group sib",
             "entity": "group_chat",
             "subject_key": group.key, "scope": group.scope,
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:01",
         },
         {
-            # Old-schema pair (no domain fields): classified legacy via rows.
+            # Old-schema pair (no domain fields, plaintext copies): classified
+            # legacy via rows; the plaintext must be scrubbed from disk and
+            # must NOT be what the prompt renders.
             "candidate_id": "old_cand", "existing_id": "old_exist",
-            "candidate_text": "old schema text", "existing_text": "old sib",
+            "candidate_text": "old schema stale copy",
+            "existing_text": "old sib stale copy",
             "entity": "master",
             "cosine": 0.9, "queued_at": "2026-07-26T10:00:02",
         },
@@ -7375,14 +7392,22 @@ async def test_fact_dedup_resolve_locks_batch_to_one_domain(tmp_path):
         await resolver._aresolve_locked(name)
 
     prompt = captured["prompt"]
-    assert "legacy pair text" in prompt
-    assert "old schema text" in prompt
-    assert "group pair text" not in prompt
+    # Head domain (legacy) pairs render from the authoritative rows.
+    assert "legacy c1 authoritative" in prompt
+    assert "legacy old cand" in prompt
+    # The stale queue-copy wording never reaches a prompt.
+    assert "old schema stale copy" not in prompt
+    # Scoped domain stays out of the legacy batch entirely.
+    assert "group c2 authoritative" not in prompt
     assert "ghost text" not in prompt
     remaining = _json.loads(pending_path.read_text(encoding="utf-8"))
     remaining_ids = {item["candidate_id"] for item in remaining}
     assert "c2" in remaining_ids
     assert "ghost_c" not in remaining_ids
+    # ids-only 迁移：resolve 首轮就把旧 schema 的明文字段 scrub 掉。
+    raw = pending_path.read_text(encoding="utf-8")
+    assert "candidate_text" not in raw
+    assert "stale copy" not in raw
 
 
 @pytest.mark.asyncio
