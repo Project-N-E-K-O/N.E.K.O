@@ -428,6 +428,8 @@ class QQReplyGenerationService:
                 try:
                     clear_slot(None)
                 except Exception:
+                    # 这里只能 best-effort：原始挂载异常必须保持为本轮降级，
+                    # 单个槽位拒绝复位也不能阻止另一槽位继续清理。
                     pass
             return False
 
