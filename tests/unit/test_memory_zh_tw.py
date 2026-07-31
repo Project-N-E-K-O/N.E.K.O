@@ -1294,6 +1294,34 @@ async def test_post_turn_locale_persistence_runs_off_event_loop(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_post_turn_without_language_restores_durable_locale(monkeypatch, tmp_path):
+    from app.memory_server import gates, locale_state, post_turn
+    from utils.language_utils import get_global_language_full, language_context
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-TW")
+
+    observed = []
+
+    class StopAfterLocale(Exception):
+        pass
+
+    async def stop_after_locale():
+        observed.append(get_global_language_full())
+        raise StopAfterLocale
+
+    monkeypatch.setattr(post_turn, "_extract_user_messages", lambda _messages: [])
+    monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", stop_after_locale)
+
+    with language_context("en"), pytest.raises(StopAfterLocale):
+        await post_turn._run_post_turn_signals([], "Neko", language=None)
+
+    assert observed == ["zh-TW"]
+
+
 def test_legacy_settings_fallback_uses_traditional_labels():
     from app.memory_server import routes
 

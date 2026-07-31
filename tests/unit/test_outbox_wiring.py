@@ -92,8 +92,7 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
     # _activate_request_language 在请求没带 language 时会回落到
     # get_global_language_full()。那个回落值用于处理本次请求没问题，但一旦被持久化
     # 进 outbox.ndjson，重启 replay 就会一直复用这个「猜测」——即使探测本身后来修好
-    # 也不会自愈。省掉这个键才能让 replay 按当时的进程语言重新解析（即 outbox
-    # 引入之前的行为）。
+    # 也不会自愈。省掉这个键后 replay 会读取角色最新持久化的显式会话语言。
     ob, _ = _install_fresh_memory_state(str(tmp_path))
     from app import memory_server
     from memory.outbox import OP_POST_TURN_SIGNALS
@@ -120,8 +119,8 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_replay_without_recorded_language_falls_back_to_process_locale():
-    """Legacy entries without a language key replay against the current process locale."""
+async def test_replay_without_recorded_language_defers_locale_resolution():
+    """Legacy entries leave locale selection to the post-turn operation wrapper."""
     # 这是升级用户唯一会走的路径：#1542 之前入队的条目都没有这个键。
     from app import memory_server
     from utils.llm_client import messages_to_dict

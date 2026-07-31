@@ -44,10 +44,24 @@ def _with_language_context(func):
 
     @wraps(func)
     async def wrapped(*args, language: str | None = None, **kwargs):
-        from utils.language_utils import language_context
+        from utils.language_utils import is_supported_language_code, language_context
 
-        with language_context(language):
-            return await func(*args, language=language, **kwargs)
+        if is_supported_language_code(language):
+            with language_context(language):
+                return await func(*args, language=language, **kwargs)
+
+        # Missing language is valid for legacy outbox entries and callers that
+        # did not declare a UI locale. Keep the payload value missing so the
+        # signal state does not persist a guess, while prompt-producing work
+        # restores the character's latest explicit session locale.
+        lanlan_name = args[1]
+        return await locale_state.run_with_character_prompt_locale(
+            lanlan_name,
+            func,
+            *args,
+            language=language,
+            **kwargs,
+        )
 
     return wrapped
 
