@@ -131,6 +131,7 @@ class QQSessionBootstrapService:
             model = conversation_config.get("model", "")
 
             reply_chunks: list[str] = []
+            reply_attempt_state = {"discard_epoch": 0}
 
             async def on_text_delta(text: str, is_first: bool):
                 reply_chunks.append(text)
@@ -145,6 +146,7 @@ class QQSessionBootstrapService:
                 # core 已判定当前 attempt 不可投递；只丢弃这一 attempt 已流出
                 # 的分片。后续重试仍经 on_text_delta 写入，合法 pre-tool 不受影响。
                 reply_chunks.clear()
+                reply_attempt_state["discard_epoch"] += 1
                 if will_retry or not message:
                     return
                 try:
@@ -186,6 +188,7 @@ class QQSessionBootstrapService:
             created = {
                 "session": user_session,
                 "reply_chunks": reply_chunks,
+                "reply_attempt_state": reply_attempt_state,
                 "her_name": context.her_name,
                 # 创建时刻的会话线路指纹：复用判据拿它与当前配置比对（绝不
                 # 读 client 现值——图片轮会把 client 合法地切到 vision 模型，

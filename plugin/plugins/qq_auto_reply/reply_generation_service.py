@@ -259,13 +259,19 @@ class QQReplyGenerationService:
             # 根本没进历史——此时入 participant bucket 会造出会话里不存在的
             # 成员记忆。
             user_data["human_row_accepted"] = False
-            tool_round_started = False
+            reply_attempt_state = user_data.setdefault(
+                "reply_attempt_state", {"discard_epoch": 0},
+            )
+            tool_round_epoch: int | None = None
             raw_pre_tool_text = ""
 
             async def _capture_tool_round_start() -> None:
-                nonlocal tool_round_started, raw_pre_tool_text
-                if not tool_round_started:
-                    tool_round_started = True
+                nonlocal tool_round_epoch, raw_pre_tool_text
+                current_epoch = int(
+                    reply_attempt_state.get("discard_epoch", 0) or 0
+                )
+                if tool_round_epoch != current_epoch:
+                    tool_round_epoch = current_epoch
                     raw_pre_tool_text = "".join(reply_chunks)
 
             restore_session_prompt = self._apply_turn_memory_context(
@@ -382,7 +388,13 @@ class QQReplyGenerationService:
                         create_missing_ai_row=generation_completed,
                         outbound_text="".join(reply_chunks),
                         raw_pre_tool_text=(
-                            raw_pre_tool_text if tool_round_started else None
+                            raw_pre_tool_text
+                            if tool_round_epoch == int(
+                                reply_attempt_state.get(
+                                    "discard_epoch", 0,
+                                ) or 0
+                            )
+                            else None
                         ),
                     )
                     user_data["current_pre_tool_text"] = current_pre_tool_text

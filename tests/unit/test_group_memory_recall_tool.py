@@ -1239,6 +1239,51 @@ async def test_delayed_thinking_residual_completes_the_tool_boundary():
 
 
 @pytest.mark.asyncio
+async def test_discarded_attempt_resets_the_structural_tool_boundary():
+    """A winning non-tool retry must not inherit the rejected tool boundary."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+    winning = "literal <msg> example remains text"
+    attempt_state = {"discard_epoch": 0}
+
+    async def _script(client, message):
+        # Rejected attempt entered a tool round after emitting this prefix.
+        client.reply_chunks_ref.append(winning)
+        await client.on_tool_round_start()
+        # on_response_discarded owns both operations; the successful reroll
+        # happens to start with the same text but never enters a tool round.
+        client.reply_chunks_ref.clear()
+        attempt_state["discard_epoch"] += 1
+        client.reply_chunks_ref.append(winning)
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content=winning)
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list[str] = []
+    client.reply_chunks_ref = reply_chunks
+    user_data = {
+        "lock": asyncio.Lock(),
+        "reply_attempt_state": attempt_state,
+    }
+
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data=user_data,
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+
+    assert result == winning
+    assert client._conversation_history[-1].content == winning
+    assert user_data["current_pre_tool_text"] == ""
+
+
+@pytest.mark.asyncio
 async def test_pre_tool_text_remains_when_no_tool_call_executes():
     """A nameless tool fragment must not make QQ discard prior model text."""
     plugin = _tool_plugin()
@@ -1747,6 +1792,7 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     on_response_discarded = built[-1].kwargs["on_response_discarded"]
     await on_text_delta("旧 attempt", True)
     await on_response_discarded("retry", 1, 3, True, None)
+    assert created["reply_attempt_state"]["discard_epoch"] == 1
     await on_text_delta("我查", True)
     await on_text_delta("一下", False)
     assert created["reply_chunks"] == ["我查", "一下"]
