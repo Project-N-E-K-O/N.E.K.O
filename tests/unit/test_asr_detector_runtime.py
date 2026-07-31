@@ -850,7 +850,7 @@ async def test_smart_turn_activity_updates_throttle_shadow_metrics() -> None:
     adapter = detector._semantic_adapter
     assert adapter is not None
     await adapter.wait_idle()
-    await detector.submit_audio(
+    second_result = await detector.submit_audio(
         b"\x02\x00" * 160,
         ingress_token=_ingress_token(),
         sample_rate_hz=16_000,
@@ -860,6 +860,7 @@ async def test_smart_turn_activity_updates_throttle_shadow_metrics() -> None:
     await adapter.wait_idle()
 
     assert result.status is DetectorSubmitStatus.ACCEPTED
+    assert second_result.status is DetectorSubmitStatus.ACCEPTED
     assert detector.throttle_shadow_metrics.rnnoise_trigger_count == 2
     assert detector.throttle_shadow_metrics.silero_trigger_count == 1
     assert detector.throttle_shadow_metrics.rnnoise_silero_disagreement_count == 1
