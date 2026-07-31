@@ -855,10 +855,10 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
     folder would quietly go free the moment a client disconnected -- with the
     worker still writing into it.
     """
-    from main_routers.workshop_router import voice_manifest, voice_refs
+    from main_routers.workshop_router import preview_cards, voice_manifest, voice_refs
 
     offenders = []
-    for module in (publish, voice_refs, voice_manifest, content_gate):
+    for module in (publish, voice_refs, preview_cards, voice_manifest, content_gate):
         tree = ast.parse(inspect.getsource(module))
         short = module.__name__.rsplit('.', 1)[-1]
         for node in ast.walk(tree):
@@ -900,6 +900,12 @@ _UNIT_OPERATIONS = {
     ('publish', '_delete_content_folder'): {'rmtree'},
 }
 
+# 已知欠账也用函数专属名字入账。`open`/`write` 不能全模块扫描，但在这个路由里正是
+# 那次未校验路径、未占用、还直接跑在事件循环上的 preview 写入。
+_SCOPED_OPERATIONS = {
+    ('preview_cards', 'upload_preview_image'): {'open', 'write'},
+}
+
 # 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
 # 什么都不证明 —— `with claim: executor.submit(_publish_workshop_item, ...)` 的
 # 上传会在占用放开之后才真正发生，正是这条守卫要防的那个竞态，而按词法包含判定
@@ -921,6 +927,8 @@ _ALLOWED_UNCLAIMED = {('publish', 'prepare_workshop_upload')}
 _KNOWN_GAPS = {
     # 两条 preview 归一化分支各有一次同形状的 copy2；第三次会成为新 offender。
     ('publish', 'publish_to_workshop', 'copy2'): 2,
+    ('preview_cards', 'upload_preview_image', 'open'): 1,
+    ('preview_cards', 'upload_preview_image', 'write'): 1,
 }
 
 
@@ -933,7 +941,9 @@ def _operation_name(node) -> str | None:
 
 
 def _operation_nodes(func, short: str) -> list[tuple[ast.AST, str]]:
-    required = _MUST_BE_CLAIMED | _UNIT_OPERATIONS.get((short, func.name), set())
+    required = set(_MUST_BE_CLAIMED) if short in {'publish', 'voice_refs'} else set()
+    required |= _UNIT_OPERATIONS.get((short, func.name), set())
+    required |= _SCOPED_OPERATIONS.get((short, func.name), set())
     found = []
     for node in _walk_own_scope(func):
         name = _operation_name(node)
@@ -1032,13 +1042,13 @@ def test_the_claim_guard_sees_through_deferred_work():
     )
     functions = {node.name: node for node in tree.body}
 
-    assert _unclaimed_folder_operations(functions['deferred'], 'x'), (
+    assert _unclaimed_folder_operations(functions['deferred'], 'publish'), (
         '推迟执行的上传必须被报出来——占用早就放开了'
     )
-    assert _unclaimed_folder_operations(functions['deferred_lambda'], 'x'), (
+    assert _unclaimed_folder_operations(functions['deferred_lambda'], 'publish'), (
         '藏在 deferred lambda 里的上传也必须被报出来'
     )
-    assert _unclaimed_folder_operations(functions['direct'], 'x') == [], (
+    assert _unclaimed_folder_operations(functions['direct'], 'publish') == [], (
         '直接在占用里同步跑完是合法的，守卫不该报它'
     )
 
@@ -1077,10 +1087,10 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
     preview-image gap is written down as machine-checked debt rather than a
     sentence in a PR description that nobody will read again.
     """
-    from main_routers.workshop_router import voice_refs
+    from main_routers.workshop_router import preview_cards, voice_refs
 
     offenders = []
-    for module in (publish, voice_refs):
+    for module in (publish, voice_refs, preview_cards):
         short = module.__name__.rsplit('.', 1)[-1]
         tree = ast.parse(inspect.getsource(module))
         for node in ast.walk(tree):
@@ -1104,9 +1114,13 @@ def test_the_known_gaps_are_still_gaps():
     the preview copy inside the claim, this entry would keep excusing whatever
     lands in that function next.
     """
-    from main_routers.workshop_router import voice_refs
+    from main_routers.workshop_router import preview_cards, voice_refs
 
-    modules = {'publish': publish, 'voice_refs': voice_refs}
+    modules = {
+        'publish': publish,
+        'voice_refs': voice_refs,
+        'preview_cards': preview_cards,
+    }
     for (short, name, operation), expected in sorted(_KNOWN_GAPS.items()):
         tree = ast.parse(inspect.getsource(modules[short]))
         target = next(
