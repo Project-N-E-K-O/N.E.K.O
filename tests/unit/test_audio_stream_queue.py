@@ -834,7 +834,6 @@ def test_hot_swap_never_rebinds_lease_mute_or_game_identity(
         mgr._voice_lease_focus_suppressed = True
     else:
         mgr._voice_lease_owner = "game"
-        mgr._voice_input_consumer_bindings["game"] = object()
 
     assert (
         mgr._rebind_hot_swap_ingress_token(
@@ -1425,27 +1424,63 @@ async def test_rejected_final_after_runtime_moved_on_sends_no_clear():
     assert expected_clear  # payload helper stays usable for the positive twin
 
 
-async def test_bound_game_consumer_empty_final_sends_preview_clear():
-    # A preview created before a game takeover would otherwise survive an
-    # empty final silently consumed by the binding branch.
+async def test_game_takeover_clears_core_preview_and_empty_final_stays_terminal(
+    monkeypatch,
+):
     mgr = _make_transcript_dispatch_manager()
-    on_final = AsyncMock()
-    mgr._voice_lease_owner = "none"
-    mgr.bind_voice_input_consumer("game", on_final)
-    mgr._voice_lease_owner = "game"
-    event = _transcript_event(mgr, "  ")
+    mgr._set_microphone_route("independent")
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
+    core_turn = VoiceTurnToken(ingress=mgr._capture_ingress_token(), turn_id=7)
+    assert await mgr._prepare_voice_input_turn(core_turn) is True
+    await mgr._dispatch_voice_input_partial(
+        VoicePartialEvent(turn_token=core_turn, text="go"),
+    )
+    mgr.websocket.send_json.reset_mock()
 
-    await mgr._dispatch_core_asr_transcript(event)
+    await mgr._apply_voice_lease_state(
+        owner="game",
+        hard_muted=False,
+        focus_suppressed=False,
+        reason="game_takeover",
+        force_abort=True,
+    )
 
     mgr.websocket.send_json.assert_awaited_once_with(_preview_clear_payload(mgr))
-    on_final.assert_not_awaited()
+    route_transcript.assert_not_awaited()
 
-    # Negative validation: a non-empty game final reaches the consumer and
-    # sends nothing on the core websocket.
     mgr.websocket.send_json.reset_mock()
-    non_empty = _transcript_event(mgr, "go left", turn_id=9)
-    await mgr._dispatch_core_asr_transcript(non_empty)
-    on_final.assert_awaited_once_with(non_empty)
+    empty = _transcript_event(mgr, "  ", turn_id=9)
+    assert await mgr._prepare_voice_input_turn(empty.turn_token) is True
+    await mgr._dispatch_voice_input_final(empty)
+    await mgr._voice_input_registry.wait_idle()
+    route_transcript.assert_not_awaited()
+    mgr.websocket.send_json.assert_not_awaited()
+
+    non_empty = _transcript_event(mgr, "go left", turn_id=10)
+    assert await mgr._prepare_voice_input_turn(non_empty.turn_token) is True
+    await mgr._dispatch_voice_input_final(non_empty)
+    route_transcript.assert_awaited_once_with(
+        "Test",
+        "go left",
+        request_id=(
+            f"asr-{non_empty.turn_token.ingress.session_epoch}-"
+            f"{non_empty.turn_token.turn_id}"
+        ),
+        game_type="game",
+        session_id="session-a",
+    )
     mgr.websocket.send_json.assert_not_awaited()
 
 
@@ -1492,10 +1527,16 @@ async def _prepare_preview_turn(mgr: LLMSessionManager, turn_id: int) -> str:
 
 
 async def _send_preview_partial(mgr: LLMSessionManager, text: str) -> dict:
+    turn_token = getattr(mgr, "_core_asr_preview_turn_token", None)
+    if turn_token is None:
+        turn_token = VoiceTurnToken(
+            ingress=mgr._capture_ingress_token(),
+            turn_id=0,
+        )
     await mgr._send_core_asr_preview(
         VoicePartialEvent(
+            turn_token=turn_token,
             text=text,
-            session_epoch=mgr._capture_ingress_token().session_epoch,
         )
     )
     return mgr.websocket.send_json.await_args.args[0]
@@ -2077,7 +2118,7 @@ async def test_startup_failure_revokes_the_lease_except_for_the_game_owner(
     # Codex P2. A startup failure (provider connect, credentials, config) pins
     # the route blocked but can never emit a BLOCKED lifecycle event, so the
     # backstop is the only server-side stop. The galgame route holds the lease
-    # through its own consumer binding and must not be collaterally revoked.
+    # through its built-in Registry consumer and must not be collaterally revoked.
     mgr = _make_routable_audio_manager(True)
     _authorize_core_lease(mgr)
     mgr._begin_voice_input_connection("socket-a")
@@ -2445,6 +2486,52 @@ def test_start_session_snapshots_the_handshake_and_hands_it_down():
     )
 
 
+def test_start_session_snapshots_resource_optimization_handshake_before_await():
+    import ast
+
+    source = (
+        Path(__file__).resolve().parents[2] / "main_logic" / "core" / "lifecycle.py"
+    ).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    start_session = functions["start_session"]
+    snapshot_name = "session_resource_optimization_handshake_override"
+    snapshot_lines = [
+        node.lineno
+        for node in ast.walk(start_session)
+        if isinstance(node, ast.Name)
+        and node.id == snapshot_name
+        and isinstance(node.ctx, ast.Store)
+    ]
+    await_lines = [
+        node.lineno for node in ast.walk(start_session) if isinstance(node, ast.Await)
+    ]
+
+    assert snapshot_lines
+    assert await_lines
+    assert max(snapshot_lines) < min(await_lines)
+
+    def passes_override(fn, keyword_value):
+        return any(
+            kw.arg == "resource_optimization_override"
+            and isinstance(kw.value, ast.Name)
+            and kw.value.id == keyword_value
+            for node in ast.walk(fn)
+            if isinstance(node, ast.Call)
+            for kw in node.keywords
+        )
+
+    assert passes_override(start_session, snapshot_name)
+    assert passes_override(
+        functions["_start_session_activate"],
+        "resource_optimization_override",
+    )
+
+
 async def test_start_without_a_snapshot_still_reads_the_shared_handshake():
     # Non-vacuity, and the contract for the internal re-entry paths (hot swap,
     # device change): with no snapshot supplied the shared field still decides.
@@ -2716,7 +2803,7 @@ async def test_unreadable_settings_do_not_kill_the_mic_when_asr_is_disabled():
 
 async def test_absent_settings_still_default_without_failing_closed():
     # The other half of the strict read: an ABSENT file is not a failure. A
-    # first run has no settings yet and must keep defaulting normally rather
+    # first run has no settings yet and must use the enabled default rather
     # than blocking the route.
     mgr = _make_routable_audio_manager(True)
     mgr._begin_voice_input_connection("socket-a")
@@ -2725,6 +2812,15 @@ async def test_absent_settings_still_default_without_failing_closed():
     mgr.user_language = None
     mgr.send_status = AsyncMock()
     mgr._asr_runtime.abort = AsyncMock()
+
+    async def _ready_start(**_kwargs):
+        return AsrStartResult(
+            AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=mgr._capture_ingress_token().session_epoch,
+        )
+
+    mgr._asr_runtime.start = AsyncMock(side_effect=_ready_start)
 
     async def _empty(**_kwargs):
         return {}
@@ -2736,7 +2832,7 @@ async def test_absent_settings_still_default_without_failing_closed():
     ):
         await LLMSessionManager._start_independent_asr_if_enabled(mgr, "audio")
 
-    assert mgr._asr_route_mode == "native"
+    assert mgr._asr_route_mode == "independent"
 
 
 async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
@@ -2760,7 +2856,7 @@ async def test_fail_closed_chokepoint_honours_the_callers_own_predicate():
 
 
 async def test_fail_closed_chokepoint_exempts_the_game_owner():
-    # The galgame gate owns the mic through its own consumer binding and tears
+    # The galgame gate owns the mic through its built-in consumer route and tears
     # down via GAME_ROUTE_ENDED, so it must be neither notified nor revoked.
     mgr, recorder = _blocked_route_manager_with_recorder()
     mgr._voice_lease_owner = "game"
@@ -3030,7 +3126,7 @@ async def test_audio_start_ack_is_not_duplicated_for_a_single_window():
 
 async def test_audio_start_ack_does_not_reach_the_game_microphone():
     # Same exemption the text path carries: the galgame gate owns the mic
-    # through its own consumer binding, and a session_started handler that
+    # through its built-in consumer route, and a session_started handler that
     # calls stopRecording would release a lease this ack never meant to touch.
     recorder, chat = _fake_socket_pair()
     mgr = _make_routable_audio_manager(True)

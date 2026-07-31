@@ -12,6 +12,10 @@ class QQMemoryQueryResult:
     hit_count: int = 0
     elapsed_ms: float = 0.0
     raw_results: list[dict[str, Any]] = field(default_factory=list)
+    # text 里实际渲染出的条目数（预算截断后）：hit_count 是检索命中数，
+    # 两者在预算丢弃尾部条目时会不同。消费方给模型报条数必须用它——
+    # 记忆原文可含 "N. " 开头的行，从 text 反解会数错。
+    rendered_count: int = 0
 
 
 class QQMemoryBridge:
@@ -109,9 +113,14 @@ class QQMemoryBridge:
         timeout: float = 5.0,
         limit: int = 5,
         subjects: list[dict[str, str]] | None = None,
+        time_spec: str = "",
     ) -> QQMemoryQueryResult:
+        # ``time_spec`` mirrors the endpoint's optional ``time`` field: alone
+        # it recalls by event-time proximity; combined with a query it runs
+        # the joint semantic + time search. Empty keeps the legacy shape.
         normalized_query = str(query or "").strip()
-        if not normalized_query:
+        normalized_time = str(time_spec or "").strip()
+        if not normalized_query and not normalized_time:
             return QQMemoryQueryResult()
         # ``None`` means the legacy private caller omitted an authorization
         # boundary. An explicit empty list means the caller has no authorized
@@ -119,6 +128,8 @@ class QQMemoryBridge:
         if subjects == []:
             return QQMemoryQueryResult()
         request_payload: dict[str, Any] = {"query": normalized_query}
+        if normalized_time:
+            request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
         client = self._client()
@@ -137,8 +148,10 @@ class QQMemoryBridge:
         # 切不开的超长 chunk 是二次退化，同步跑在事件循环上会连带卡住这
         # 个进程里其它群的回复。渲染函数本身保持同步（本体侧同构、测试
         # 直调），offload 放在唯一的 async 调用点。
+        kept_count_out: list[int] = []
         rendered = await asyncio.to_thread(
             self.render_relevant_memory, memory_items[:limit],
+            kept_count_out=kept_count_out,
         )
         elapsed_ms = response_payload.get("elapsed_ms", 0.0) if isinstance(response_payload, dict) else 0.0
         try:
@@ -150,9 +163,15 @@ class QQMemoryBridge:
             hit_count=len(memory_items),
             elapsed_ms=normalized_elapsed,
             raw_results=memory_items,
+            rendered_count=kept_count_out[0] if kept_count_out else 0,
         )
 
-    def render_relevant_memory(self, results: list[dict[str, Any]]) -> str:
+    def render_relevant_memory(
+        self,
+        results: list[dict[str, Any]],
+        *,
+        kept_count_out: list[int] | None = None,
+    ) -> str:
         # tier / entity 是内部枚举（scoped 条目的 entity 恒等于 subject.kind），
         # 裸拼会让 `[fact/group_chat]` 出现在中文 prompt 里。与本体侧
         # main_logic/core/tool_calling.py 的召回渲染同一张标签表。
@@ -199,6 +218,10 @@ class QQMemoryBridge:
         kept, dropped = take_lines_within_token_budget(
             lines, RECALL_RENDER_TOTAL_MAX_TOKENS,
         )
+        if kept_count_out is not None:
+            # out-param 而非改返回签名（与 reply_context_node 的
+            # used_member_subject_out 同模式）：既有直调方不受影响。
+            kept_count_out.append(len(kept))
         logger = getattr(self.plugin, "logger", None)
         if dropped and logger is not None:
             # 诊断行不该成为渲染的硬依赖：这个函数此前对 plugin 对象零依赖，
@@ -242,6 +265,41 @@ class QQMemoryBridge:
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
             json=payload,
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        return response.json()
+
+    async def post_scoped_memory_history_batch(
+        self,
+        her_name: str,
+        segments: list[dict[str, Any]],
+        *,
+        timeout: float = 30.0,
+    ) -> dict[str, Any]:
+        """The batched multi-speaker shape of /scoped_history.
+
+        ``segments``: ``[{'messages': [...], 'subject': {...},
+        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
+        发言人。服务端一次抽取后按段分派，响应体按请求顺序逐段报
+        ok/failed，调用方只 pop 成功段的 bucket。"""
+        payload_segments: list[dict[str, Any]] = []
+        for segment in segments:
+            wire: dict[str, Any] = {
+                "input_history": json.dumps(
+                    segment.get("messages") or [], ensure_ascii=False,
+                ),
+                "subject": segment.get("subject"),
+                "speaker_label": segment.get("speaker_label"),
+            }
+            trust = segment.get("speaker_trust")
+            if trust is not None:
+                wire["speaker_trust"] = trust
+            payload_segments.append(wire)
+        client = self._client()
+        response = await client.post(
+            f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
+            json={"segments": payload_segments},
             timeout=timeout,
         )
         response.raise_for_status()

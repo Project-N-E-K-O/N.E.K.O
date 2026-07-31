@@ -231,6 +231,40 @@ function injectPopupStyles(prefix) {
         .${prefix}-toggle-indicator[aria-checked="true"] .${prefix}-toggle-checkmark {
             opacity: 1;
         }
+        .${prefix}-toggle-item.${prefix}-toggle-item-slider {
+            gap: 12px;
+        }
+        .${prefix}-toggle-item-slider .${prefix}-toggle-label {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .${prefix}-toggle-indicator.${prefix}-toggle-slider {
+            box-sizing: border-box;
+            width: 36px;
+            min-width: 36px;
+            height: 20px;
+            border-width: 1px;
+            border-radius: 999px;
+            background-color: var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05));
+            overflow: visible;
+            transition: background-color 0.2s ease, border-color 0.2s ease;
+        }
+        .${prefix}-toggle-slider .${prefix}-toggle-thumb {
+            position: absolute;
+            top: 1px;
+            left: 1px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
+            opacity: 1;
+            transform: translateX(0);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .${prefix}-toggle-slider[aria-checked="true"] .${prefix}-toggle-thumb {
+            transform: translateX(16px);
+        }
         .${prefix}-toggle-label {
             cursor: pointer;
             user-select: none;
@@ -382,48 +416,6 @@ function finalizePopupClosedState(popup) {
     popup._hideTimeoutId = null;
 }
 
-function createTaskHudSettingsSidePanel(manager, prefix) {
-    const panel = manager._createSidePanelContainer();
-    panel.setAttribute('data-neko-sidepanel-type', 'task-hud-settings');
-    Object.assign(panel.style, {
-        width: '224px', minWidth: '224px', padding: '4px', display: 'flex',
-        flexDirection: 'column', alignItems: 'stretch', gap: '0'
-    });
-
-    const taskHudItem = manager._createSettingsToggleItem({
-        id: 'agent-taskhud',
-        label: window.t ? window.t('settings.toggles.showTaskHud') : '显示猫爪任务HUD',
-        labelKey: 'settings.toggles.showTaskHud',
-        alwaysTinted: true
-    });
-    const taskHudCheckbox = taskHudItem.querySelector(`#${prefix}-agent-taskhud`);
-    if (taskHudCheckbox) {
-        try {
-            taskHudCheckbox.checked = localStorage.getItem('neko-agent-taskhud-visible') !== 'false';
-        } catch (_) {
-            taskHudCheckbox.checked = true;
-        }
-        taskHudCheckbox.addEventListener('change', (event) => {
-            try {
-                localStorage.setItem('neko-agent-taskhud-visible', taskHudCheckbox.checked ? 'true' : 'false');
-            } catch (_) {}
-            if (typeof window.checkAndToggleTaskHUD === 'function') {
-                window.checkAndToggleTaskHUD(event);
-            } else if (!taskHudCheckbox.checked && window.AgentHUD && typeof window.AgentHUD.hideAgentTaskHUD === 'function') {
-                window.AgentHUD.hideAgentTaskHUD();
-            }
-        });
-    }
-    if (typeof taskHudItem._nekoUpdateSettingsToggleStyle === 'function') {
-        taskHudItem._nekoUpdateSettingsToggleStyle();
-    }
-    panel.appendChild(taskHudItem);
-
-    panel._taskHudToggleItem = taskHudItem;
-    document.body.appendChild(panel);
-    return panel;
-}
-
 /**
  * 创建设置弹窗内容（通用）
  */
@@ -452,28 +444,12 @@ function createSettingsPopupContent(manager, prefix, popup) {
     animSidePanel._popupElement = popup;
     manager._attachSidePanelHover(animSettingsBtn, animSidePanel);
 
-    const advancedSettingsBtn = manager._createSettingsMenuButton({
-        label: window.t ? window.t('settings.menu.advancedSettings') : '高级设置',
-        labelKey: 'settings.menu.advancedSettings'
-    });
-    advancedSettingsBtn.id = `${prefix}-advanced-settings-entry`;
-    popup.appendChild(advancedSettingsBtn);
-    const taskHudSidePanel = createTaskHudSettingsSidePanel(manager, prefix);
-    taskHudSidePanel._anchorElement = advancedSettingsBtn;
-    taskHudSidePanel._popupElement = popup;
-    manager._attachSidePanelHover(advancedSettingsBtn, taskHudSidePanel);
-    advancedSettingsBtn.addEventListener('click', function (event) {
-        event.preventDefault();
-        event.stopPropagation();
-        if (typeof taskHudSidePanel._expand === 'function') taskHudSidePanel._expand();
-    });
-
     // 3. 角色设置按钮已移至分隔线下方（在 _createSettingsMenuItems 中创建）
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -1756,7 +1732,6 @@ function attachSidePanelHover(manager, prefix, anchorEl, sidePanel) {
             'agent-openclaw-actions',
             'chat-settings',
             'animation-settings',
-            'task-hud-settings',
             'interval-proactive-chat',
             'interval-proactive-vision',
             'character-settings'
@@ -2119,8 +2094,12 @@ function createCheckIndicator(manager, prefix) {
  * 创建Agent开关项
  */
 function createToggleItem(manager, prefix, toggle, popup) {
+    const usesSliderControl = toggle.controlStyle === 'slider';
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
+    if (usesSliderControl) {
+        toggleItem.classList.add(`${prefix}-toggle-item-slider`);
+    }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     markAvatarPopupActionElement(toggleItem, 'toggle');
     toggleItem.setAttribute('role', 'switch');
@@ -2148,12 +2127,18 @@ function createToggleItem(manager, prefix, toggle, popup) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
+    if (usesSliderControl) {
+        indicator.classList.add(`${prefix}-toggle-slider`);
+    }
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = `${prefix}-toggle-checkmark`;
-    checkmark.innerHTML = '✓';
+    if (usesSliderControl) {
+        checkmark.classList.add(`${prefix}-toggle-thumb`);
+    }
+    checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
     const label = document.createElement('label');
@@ -2173,10 +2158,23 @@ function createToggleItem(manager, prefix, toggle, popup) {
         toggleItem._updateLabelText = updateLabelText;
     }
 
+    const updateIndicatorStyle = (checked) => {
+        if (!usesSliderControl) return;
+        const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+        indicator.style.backgroundColor = checked
+            ? activeColor
+            : 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))';
+        indicator.style.borderColor = checked
+            ? activeColor
+            : 'var(--neko-popup-indicator-border, #ccc)';
+        checkmark.style.opacity = '1';
+    };
+
     const updateStyle = () => {
         const isChecked = checkbox.checked;
         toggleItem.setAttribute('aria-checked', isChecked ? 'true' : 'false');
         indicator.setAttribute('aria-checked', isChecked ? 'true' : 'false');
+        updateIndicatorStyle(isChecked);
     };
 
     const updateDisabledStyle = () => {
@@ -2206,8 +2204,13 @@ function createToggleItem(manager, prefix, toggle, popup) {
     disabledObserver.observe(checkbox, { attributes: true, attributeFilter: ['disabled', 'title'] });
 
     toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    if (usesSliderControl) {
+        toggleItem.appendChild(label);
+        toggleItem.appendChild(indicator);
+    } else {
+        toggleItem.appendChild(indicator);
+        toggleItem.appendChild(label);
+    }
     checkbox._updateStyle = () => {
         updateStyle();
         updateDisabledStyle();
@@ -2248,11 +2251,15 @@ function createToggleItem(manager, prefix, toggle, popup) {
  * 创建设置开关项
  */
 function createSettingsToggleItem(manager, prefix, toggle) {
+    const usesSliderControl = toggle.controlStyle === 'slider';
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
     markAvatarPopupActionElement(toggleItem, 'settings-toggle');
     if (toggle.alwaysTinted) {
         toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
+    if (usesSliderControl) {
+        toggleItem.classList.add(`${prefix}-toggle-item-slider`);
     }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
@@ -2311,16 +2318,33 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
+    if (usesSliderControl) {
+        indicator.classList.add(`${prefix}-toggle-slider`);
+    }
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = `${prefix}-toggle-checkmark`;
+    if (usesSliderControl) {
+        checkmark.classList.add(`${prefix}-toggle-thumb`);
+    }
     checkmark.setAttribute('aria-hidden', 'true');
-    checkmark.innerHTML = '✓';
+    checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
     const updateIndicatorStyle = (checked) => {
+        if (usesSliderControl) {
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = checked
+                ? activeColor
+                : 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))';
+            indicator.style.borderColor = checked
+                ? activeColor
+                : 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '1';
+            return;
+        }
         if (checked) {
             const activeColor = 'var(--neko-popup-accent, #44b7fe)';
             indicator.style.backgroundColor = activeColor;
@@ -2334,6 +2358,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     const label = document.createElement('label');
+    label.className = `${prefix}-toggle-label`;
     label.innerText = toggle.label;
     if (toggle.labelKey) {
         label.setAttribute('data-i18n', toggle.labelKey);
@@ -2383,8 +2408,13 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     updateStyle();
 
     toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    if (usesSliderControl) {
+        toggleItem.appendChild(label);
+        toggleItem.appendChild(indicator);
+    } else {
+        toggleItem.appendChild(indicator);
+        toggleItem.appendChild(label);
+    }
 
     toggleItem.addEventListener('mouseenter', () => {
         updateStyle();

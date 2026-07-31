@@ -31,7 +31,7 @@ from main_logic.voice_turn.audio_input import ProcessedVoiceFrame
 from ._infra import logger, _READY_TIMEOUT_SECONDS
 from .audio import AsrAudioDispatcher
 from ._registry_meta import AsrProviderAvailability
-from .detector import (
+from .endpointing.detector import (
     AsrDetectorDispatcher,
     CoreDetectorEventEnvelope,
     DetectorActivityEvent,
@@ -39,7 +39,7 @@ from .detector import (
     DetectorSubmitStatus,
     DetectorTurnEvent,
 )
-from .detector_runtime import DetectorRuntime, SmartTurnLease
+from .endpointing.detector_runtime import DetectorRuntime, SmartTurnLease
 from .lifecycle import (
     AudioDisposition,
     FinalKey,
@@ -334,6 +334,7 @@ class IndependentAsrRuntime:
         self._asr_audio_sequence = 0
         self._asr_audio_generation = 0
         self._asr_current_ingress_token: VoiceIngressToken | None = None
+        self._asr_partial_turn_token: VoiceTurnToken | None = None
         self._asr_accepted_final_keys: OrderedDict[FinalKey, None] = OrderedDict()
         self._asr_reserved_final_key: FinalKey | None = None
         self._asr_transcript_dispatcher = TranscriptDispatcher(
@@ -378,6 +379,8 @@ class IndependentAsrRuntime:
             self._asr_pending_detector_candidate = None
         if not hasattr(self, "_asr_overlap_onset_token"):
             self._asr_overlap_onset_token = None
+        if not hasattr(self, "_asr_partial_turn_token"):
+            self._asr_partial_turn_token = None
         if not hasattr(self, "_asr_overlap_completed_token"):
             self._asr_overlap_completed_token = None
             self._asr_overlap_completed_turns = 0
@@ -1182,6 +1185,9 @@ class IndependentAsrRuntime:
                     raise RuntimeError("ASR_DETECTOR_CONTROL_BACKPRESSURE")
 
             detector_ref = DetectorRuntime(
+                resource_optimization_enabled=(
+                    self._voice_input_resource_optimization_enabled
+                ),
                 provider_policy=policy,
                 on_endpointing_failure=(
                     on_detector_endpointing_failure
@@ -1274,6 +1280,7 @@ class IndependentAsrRuntime:
         self._asr_overlap_completed_turns = 0
         self._asr_audio_sequence = 0
         self._asr_current_ingress_token = None
+        self._asr_partial_turn_token = None
         self._asr_accepted_final_keys.clear()
         self._asr_reserved_final_key = None
         self._asr_sealed_turn_token = None
@@ -2180,6 +2187,11 @@ class IndependentAsrRuntime:
                     self.display_name,
                 )
         if accepted and self._runtime_identity_matches(identity):
+            # The provider callback carries text only. Pin the source identity
+            # at the ordered prepare boundary; partial delivery later validates
+            # this exact token instead of relabeling text with whatever turn
+            # happens to be current at callback time.
+            self._asr_partial_turn_token = turn_token
             return
         transcript_dispatcher.release(final_key)
         if not self._runtime_identity_matches(identity):
@@ -2190,6 +2202,8 @@ class IndependentAsrRuntime:
         ):
             self._asr_reserved_final_key = None
             self._asr_turn_prepared = False
+            if self._asr_partial_turn_token == turn_token:
+                self._asr_partial_turn_token = None
 
     async def _handle_independent_asr_endpoint(self, epoch: int) -> None:
         """Seal the current turn immediately at its semantic endpoint."""
@@ -2392,9 +2406,19 @@ class IndependentAsrRuntime:
         if not clean or epoch != self._asr_session_epoch:
             return
         lifecycle = self._asr_lifecycle
+        turn_token = self._asr_partial_turn_token
         if (
-            lifecycle is not None
-            and not self._asr_first_partial_recorded
+            lifecycle is None
+            or turn_token is None
+            or not self._asr_turn_prepared
+            or lifecycle.snapshot.state is not VoiceLifecycleState.ACTIVE
+            or not self._ingress_token_matches(turn_token.ingress)
+            or lifecycle.snapshot.turn_id != turn_token.turn_id
+            or self._asr_audio_dispatcher.active_turn != turn_token
+        ):
+            return
+        if (
+            not self._asr_first_partial_recorded
             and self._asr_turn_audio_started_at is not None
         ):
             lifecycle.metrics.first_partial_latency_ms = int(
@@ -2403,7 +2427,7 @@ class IndependentAsrRuntime:
             self._asr_first_partial_recorded = True
         try:
             await self._callbacks.on_partial(
-                VoicePartialEvent(text=clean, session_epoch=epoch)
+                VoicePartialEvent(turn_token=turn_token, text=clean)
             )
         except Exception:
             logger.debug(
@@ -2471,6 +2495,8 @@ class IndependentAsrRuntime:
                 self._asr_turn_prepared = False
                 self._asr_received_audio = False
                 self._asr_sealed_turn_token = None
+                if self._asr_partial_turn_token == sealed_token.turn:
+                    self._asr_partial_turn_token = None
                 self._asr_turn_endpointed_at = None
                 self._asr_reserved_final_key = None
                 watchdog = self._asr_final_watchdog_task

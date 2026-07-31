@@ -277,9 +277,10 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   const shouldAlignBlock = getBalancedBlockFrom(appInterpageSource, shouldAlignStart);
   const sourceRectBlock = getBalancedBlockFrom(appInterpageSource, sourceRectStart);
   const spotlightUpdateBlock = getBalancedBlockFrom(appInterpageSource, spotlightUpdateStart);
-  // 修改原因：胶囊目标只在桌面宿主明确声明 Wayland work-area carrier 时平移；
-  // 平移后仍保留完整宽度，与 macOS 视觉契约一致。
+  // 修改原因：Niri 的 registry capsuleBody 已处于正确布局坐标，不能再用文字锚点
+  // 二次平移；标准 Wayland 保留 #2533 的原行为，避免平台修复向外扩散。
   assert.match(shouldAlignBlock, /metrics\.waylandWorkAreaCarrier === true/);
+  assert.match(shouldAlignBlock, /metrics\.niriWaylandRuntime !== true/);
   assert.match(sourceRectBlock, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
   assert.match(sourceRectBlock, /width:\s*rect\.width/);
   assert.doesNotMatch(sourceRectBlock, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);

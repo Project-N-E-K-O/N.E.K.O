@@ -55,6 +55,27 @@ class _ToolingMixin:
         """Plug in (or replace) the callback that executes tool calls."""
         self.on_tool_call = handler
 
+    def set_tool_round_start_callback(self, handler) -> None:
+        """Plug in (or clear with ``None``) the tool-round-start callback.
+
+        Fires once per LLM iteration that enters a tool round, before any
+        handler runs — including rounds where every collected call is
+        dropped (nameless fragments) and no handler ever runs. See the
+        ``on_tool_round_start`` note in ``_client``."""
+        self.on_tool_round_start = handler
+
+    async def _notify_tool_round_start(self) -> None:
+        """Best-effort fire of ``on_tool_round_start``; a callback failure
+        must never disturb the stream. getattr default guards ``__new__``
+        test stubs that bypass ``__init__``."""
+        cb = getattr(self, "on_tool_round_start", None)
+        if cb is None:
+            return
+        try:
+            await cb()
+        except Exception as e:
+            logger.debug("on_tool_round_start callback failed (ignored): %s", e)
+
     def has_tools(self) -> bool:
         return bool(self._tool_definitions) and self.on_tool_call is not None
 
@@ -72,12 +93,18 @@ class _ToolingMixin:
         calls,
         assistant_text: str = "",
         assistant_reasoning: str = "",
-    ) -> None:
+    ) -> int:
         """Run each tool call through ``on_tool_call`` and mutate
         ``messages`` in place: append one assistant turn announcing all
         tool calls, then one tool-role message per call carrying the
         result JSON. Both shapes follow the OpenAI Chat Completions spec
         so the next astream invocation sees a valid history.
+
+        Returns the number of calls actually executed — 0 when every slot
+        was a nameless fragment and nothing was appended. The caller uses
+        that to decide whether the round-persisted sentinel may be emitted
+        (its contract is "the pre-tool text IS in history now") and to
+        grade the iteration-cap log.
 
         ``assistant_text`` is written into the assistant turn's ``content``.
         The OpenAI Chat Completions protocol allows a turn to carry both
@@ -103,7 +130,7 @@ class _ToolingMixin:
         # 整条会话连带挂掉。
         calls = [c for c in calls if (getattr(c, "name", "") or "").strip()]
         if not calls:
-            return
+            return 0
         assistant_turn = {
             "role": "assistant",
             "content": assistant_text or "",
@@ -158,6 +185,7 @@ class _ToolingMixin:
                 "name": tool_call.name,
                 "content": result.output_as_json_string(),
             })
+        return len(calls)
 
     async def _notify_reasoning_active(self) -> None:
         """Tell the host that the model is emitting reasoning / thinking chunks, so
@@ -359,6 +387,12 @@ class _ToolingMixin:
             overrides.pop("tool_choice", None)
             overrides.pop("tools", None)
 
+        # 跨迭代累计真正执行过的 tool call 数：0 与非 0 在封顶日志里是两种
+        # 性质（"进了 tool 分支但全是无名分片" vs 正常耗尽预算）。
+        executed_tool_calls = 0
+        # 是否因"零执行轮且已经流过文本"提前跳出循环（与 genai 路径对偶）：
+        # 封顶日志据此别谎称迭代被耗尽。
+        zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
@@ -453,12 +487,17 @@ class _ToolingMixin:
                         setattr(tail_chunk, "_tool_leak_filtered", True)
                         yield tail_chunk
                     tool_leak_filter.reset()
+                # 本轮已确认是 tool 轮：先给缓冲型调用方（QQ 插件）一个丢弃
+                # pre-tool 文本的锚点。必须在执行器之前、且不依赖 handler 被
+                # 真正调用——无名分片会让下面的 calls 过滤后为空、handler 一次
+                # 都不跑，只挂在 handler 入口的清理在那条路径上永不发生。
+                await self._notify_tool_round_start()
                 # ChatOpenAI is the right import even though we're outside
                 # ChatOpenAI — `collect_tool_calls` is a staticmethod.
                 from utils.llm_client import ChatOpenAI as _ChatOpenAI
                 from utils.llm_client import LLMStreamChunk as _LLMStreamChunk
                 calls = _ChatOpenAI.collect_tool_calls(deltas_per_chunk)
-                await self._execute_and_append_openai_tool_calls(
+                executed_this_round = await self._execute_and_append_openai_tool_calls(
                     messages, calls,
                     # Strip any leaked <think> CoT before it lands in history:
                     # the streaming guard (ThinkingStreamStripper) only protects
@@ -469,17 +508,70 @@ class _ToolingMixin:
                     assistant_text=strip_thinking_segments(streamed_text_buffer),
                     assistant_reasoning=streamed_reasoning_buffer,
                 )
-                # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
-                # 已经写进 history（assistant turn）。stream_text 据此清空
-                # final-segment buffer，避免之后 append 的 final AIMessage
-                # 把同一段 pre-tool 文本第二次写进 history。
-                yield _LLMStreamChunk(content="", tool_round_persisted=True)
+                executed_tool_calls += executed_this_round
+                if executed_this_round:
+                    # 通知上游 ``stream_text``：本轮的 pre-tool text + tool_calls
+                    # 已经写进 history（assistant turn）。stream_text 据此清空
+                    # final-segment buffer，避免之后 append 的 final AIMessage
+                    # 把同一段 pre-tool 文本第二次写进 history。
+                    #
+                    # 零执行轮（全是无名分片，什么都没写进 history）不发：
+                    # sentinel 的契约是"pre-tool 文本已持久化"，此时为假——
+                    # 发了会让这段文本既不在 tool_calls 行、又被 final
+                    # AIMessage 跳过，从历史里彻底消失。
+                    yield _LLMStreamChunk(content="", tool_round_persisted=True)
+                elif (
+                    streamed_text_buffer
+                    and getattr(self, "on_tool_round_start", None) is None
+                ):
+                    # 零执行轮：messages 一个字都没变，重来一轮不会有新信息，
+                    # 只会让模型把同样的 pre-tool 文本再流一遍给用户。已经流
+                    # 过文本就跳出循环去 forced-finalize（forced-finalize 与
+                    # 封顶日志都保留，被砍掉的只是没有意义的重试）；什么都
+                    # 没流出去的零执行轮仍允许再试一轮——重试没有用户可见
+                    # 代价，而 provider 抖动确实可能下一轮就正常。
+                    #
+                    # 装了 round-start 回调的调用方是缓冲型的（回调体就是
+                    # 丢弃 pre-tool 文本），本轮那截文本根本没送到用户手里，
+                    # "重放"无从谈起——那种情况仍然重试，别白丢一次本可恢复
+                    # 的工具调用。与 genai 路径对偶。
+                    zero_exec_break = True
+                    break
                 continue
             return
-        logger.warning(
-            "OmniOfflineClient: tool iteration cap %d reached; forcing final answer without tools",
-            self.max_tool_iterations,
-        )
+        if executed_tool_calls == 0:
+            # 进过 tool 分支却一次都没执行成（provider 流出的 tool_call 分片
+            # 始终没带 name，collect_tool_calls 全部丢弃）：这是最值得排查的
+            # 形态，不能伪装成普通封顶日志。
+            logger.warning(
+                "OmniOfflineClient: %s with 0 executed tool calls (provider "
+                "streamed nameless tool_call fragments); forcing final answer "
+                "without tools",
+                "zero-execution round after streaming text" if zero_exec_break
+                else f"tool iteration cap {self.max_tool_iterations} reached",
+            )
+        elif zero_exec_break:
+            # 前面几轮真的执行过 tool，最后一轮零执行且已流过文本：循环没被
+            # 耗尽，别打成 runaway 封顶（与 genai 路径对偶）。
+            logger.warning(
+                "OmniOfflineClient: zero-execution round after streaming text "
+                "(provider streamed nameless tool_call fragments) with %d "
+                "executed tool calls so far; forcing final answer without tools",
+                executed_tool_calls,
+            )
+        elif self.max_tool_iterations == 1:
+            # cap=1 是调用方的设计内单轮预算（QQ 插件：一轮一召回）：一次
+            # 成功的 tool 轮必然耗尽循环，这不是 runaway，降为 INFO——否则
+            # 每次正常召回都打 WARNING，真正的封顶信号被淹没。
+            logger.info(
+                "OmniOfflineClient: single tool round budget spent; "
+                "forcing final answer without tools",
+            )
+        else:
+            logger.warning(
+                "OmniOfflineClient: tool iteration cap %d reached; forcing final answer without tools",
+                self.max_tool_iterations,
+            )
         # Forced-finalize：工具轮次封顶后，去掉 tools 再调一次，逼模型基于已
         # 积累的 tool 结果给出最终文本。否则弱模型在 finish_reason=tool_calls
         # 上死循环到封顶后整轮静默，上游只能报"未产生文本回复"，用户那边就

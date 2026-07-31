@@ -18,6 +18,14 @@ const managerSource = fs.readFileSync(
   path.join(repoRoot, 'static/tutorial/core/universal-manager.js'),
   'utf8',
 );
+const overlaySource = fs.readFileSync(
+  path.join(repoRoot, 'static/tutorial/yui-guide/overlay.js'),
+  'utf8',
+);
+const directorSource = fs.readFileSync(
+  path.join(repoRoot, 'static/tutorial/yui-guide/director/director-core.js'),
+  'utf8',
+);
 
 function extractFunction(source, name, nextName) {
   const start = source.indexOf(`    function ${name}(`);
@@ -55,7 +63,7 @@ result = getYuiGuideChatSpotlightSourceRect(
   );
 });
 
-test('Wayland work-area capsule alignment matches macOS width while correcting the left origin', () => {
+test('Niri capsule target keeps its body rect while standard Wayland preserves text alignment', () => {
   const functionSource = extractFunction(
     targetSource,
     'getYuiGuideChatSpotlightSourceRect',
@@ -75,29 +83,42 @@ test('Wayland work-area capsule alignment matches macOS width while correcting t
   vm.runInNewContext(
     `${shouldAlignSource}
 ${functionSource}
+niriShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText(
+  'capsule-input',
+  '',
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: true }
+);
+waylandShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText(
+  'capsule-input',
+  '',
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: false }
+);
+plainCapsuleShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText('input', 'plain-capsule', null);
+niriResult = getYuiGuideChatSpotlightSourceRect(
+  'capsule-input',
+  '',
+  { left: 100, top: 10, width: 400, height: 60 },
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: true }
+);
 waylandResult = getYuiGuideChatSpotlightSourceRect(
   'capsule-input',
   '',
   { left: 100, top: 10, width: 400, height: 60 },
-  { waylandWorkAreaCarrier: true }
-);
-x11Result = getYuiGuideChatSpotlightSourceRect(
-  'capsule-input',
-  '',
-  { left: 100, top: 10, width: 400, height: 60 },
-  { waylandWorkAreaCarrier: false }
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: false }
 );`,
     context,
+  );
+  assert.equal(context.niriShouldAlign, false);
+  assert.equal(context.waylandShouldAlign, true);
+  assert.equal(context.plainCapsuleShouldAlign, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.niriResult.rect)),
+    { left: 100, top: 10, width: 400, height: 60 },
   );
   assert.deepEqual(
     JSON.parse(JSON.stringify(context.waylandResult.rect)),
     { left: 130, top: 10, width: 400, height: 60 },
   );
-  assert.deepEqual(
-    JSON.parse(JSON.stringify(context.x11Result.rect)),
-    { left: 100, top: 10, width: 400, height: 60 },
-  );
-  assert.equal(context.waylandResult.rect.width, context.x11Result.rect.width);
 });
 
 test('PC overlay skip mirrors localized state and relays only through the active lifecycle', () => {
@@ -150,13 +171,173 @@ I.setYuiGuidePcOverlaySkipControl(true, '跳过');`, context);
   );
 });
 
-test('screen conversion prefers an explicitly declared render coordinate space', () => {
+test('screen conversion rejects workspace-view render bounds without screen provenance', () => {
   assert.match(
     interpageSource,
-    /metrics\.coordinateSpace === 'screen-dip'[\s\S]*return metrics\.renderBounds;/,
+    /metrics\.renderBoundsCoordinateSpace === 'screen-dip'[\s\S]*metrics\.originSource === 'niri-pet-physical-crop-virtual-bounds'[\s\S]*return metrics\.renderBounds;/,
   );
   assert.match(
     interpageSource,
     /return metrics && \(metrics\.bounds \|\| metrics\.contentBounds\) \|\| \{ x: 0, y: 0 \};/,
   );
+  assert.match(
+    overlaySource,
+    /metrics\.renderBoundsCoordinateSpace === 'screen-dip'[\s\S]*metrics\.originSource === 'niri-pet-physical-crop-virtual-bounds'[\s\S]*metrics\.renderBounds/,
+  );
+  assert.match(
+    directorSource,
+    /getGuideScreenCoordinateBounds\(metrics\)[\s\S]*metrics\.renderBoundsCoordinateSpace === 'screen-dip'[\s\S]*metrics\.originSource === 'niri-pet-physical-crop-virtual-bounds'[\s\S]*return metrics\.renderBounds;/,
+  );
+
+  const functionSource = extractFunction(
+    interpageSource,
+    'getYuiGuideScreenCoordinateBounds',
+    'normalizeYuiGuideNiriPetPhysicalCropBounds',
+  );
+  const context = vm.createContext({});
+  vm.runInNewContext(
+    `${functionSource}
+workspaceResult = getYuiGuideScreenCoordinateBounds({
+  coordinateSpace: 'screen-dip',
+  bounds: { x: 100, y: 50, width: 800, height: 600 },
+  renderBounds: { x: -320, y: 20, width: 800, height: 600 },
+  renderBoundsCoordinateSpace: 'workspace-view-dip'
+});
+screenResult = getYuiGuideScreenCoordinateBounds({
+  coordinateSpace: 'screen-dip',
+  bounds: { x: 100, y: 50, width: 800, height: 600 },
+  renderBounds: { x: 140, y: 70, width: 800, height: 600 },
+  renderBoundsCoordinateSpace: 'screen-dip'
+});
+legacyCropResult = getYuiGuideScreenCoordinateBounds({
+  coordinateSpace: 'screen-dip',
+  bounds: { x: 100, y: 50, width: 800, height: 600 },
+  renderBounds: { x: 1, y: 1, width: 1200, height: 800 },
+  niriPetPhysicalCrop: true,
+  originSource: 'niri-pet-physical-crop-virtual-bounds'
+});`,
+    context,
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.workspaceResult)),
+    { x: 100, y: 50, width: 800, height: 600 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.screenResult)),
+    { x: 140, y: 70, width: 800, height: 600 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.legacyCropResult)),
+    { x: 1, y: 1, width: 1200, height: 800 },
+  );
+});
+
+test('physical-crop DOM coordinates still receive the layout offset when metrics are virtualized', () => {
+  const pointSource = extractFunction(
+    interpageSource,
+    'toYuiGuideNiriPetPhysicalCropVirtualPointWithState',
+    'toYuiGuideNiriPetPhysicalCropVirtualRectWithState',
+  );
+  const rectSource = extractFunction(
+    interpageSource,
+    'toYuiGuideNiriPetPhysicalCropVirtualRectWithState',
+    'shouldApplyYuiGuideVisualViewportOffset',
+  );
+  const screenPointStart = interpageSource.indexOf(
+    '    function toYuiGuideScreenVirtualPoint(',
+  );
+  const screenPointEnd = interpageSource.indexOf(
+    '    I.toYuiGuideScreenPoint =',
+    screenPointStart,
+  );
+  assert.notEqual(screenPointStart, -1);
+  assert.notEqual(screenPointEnd, -1);
+  const screenPointSource = interpageSource.slice(screenPointStart, screenPointEnd);
+  const context = {
+    toYuiGuideNiriPetPhysicalCropVirtualPoint: () => null,
+    toYuiGuideNiriPetPhysicalCropVirtualRect: () => null,
+  };
+  vm.runInNewContext(
+    `${pointSource}
+${rectSource}
+${screenPointSource}
+pointResult = toYuiGuideNiriPetPhysicalCropVirtualPointWithState(
+  55,
+  55,
+  { offsetX: 863, offsetY: 323, metricsVirtualized: true }
+);
+rectResult = toYuiGuideNiriPetPhysicalCropVirtualRectWithState(
+  { left: 55, top: 55, width: 98, height: 62 },
+  { offsetX: 863, offsetY: 323, metricsVirtualized: true }
+);
+screenResult = toYuiGuideScreenVirtualPoint(
+  pointResult.x,
+  pointResult.y,
+  {
+    virtualBounds: { x: 1, y: 1, width: 1706, height: 1066 },
+    cropBounds: { x: 864, y: 324, width: 192, height: 432 }
+  }
+);`,
+    context,
+  );
+
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.pointResult)),
+    { x: 918, y: 378 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.rectResult)),
+    { left: 918, top: 378, width: 98, height: 62 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.screenResult)),
+    { x: 919, y: 379 },
+  );
+});
+
+test('all three tutorial coordinate paths use the DOM layout generation symmetrically', () => {
+  const appPointBlock = extractFunction(
+    interpageSource,
+    'toYuiGuideNiriPetPhysicalCropVirtualPointWithState',
+    'toYuiGuideNiriPetPhysicalCropVirtualRectWithState',
+  );
+  const appRectBlock = extractFunction(
+    interpageSource,
+    'toYuiGuideNiriPetPhysicalCropVirtualRectWithState',
+    'shouldApplyYuiGuideVisualViewportOffset',
+  );
+  const overlayPointStart = overlaySource.indexOf(
+    '        const toNiriPetPhysicalCropVirtualPointWithState =',
+  );
+  const overlayPointEnd = overlaySource.indexOf(
+    '        const shouldApplyVisualViewportOffset =',
+    overlayPointStart,
+  );
+  const directorPointStart = directorSource.indexOf(
+    '        toNiriPetPhysicalCropVirtualPointWithState(',
+  );
+  const directorPointEnd = directorSource.indexOf(
+    '        getGuideWindowMetricsSync()',
+    directorPointStart,
+  );
+  assert.notEqual(overlayPointStart, -1);
+  assert.notEqual(overlayPointEnd, -1);
+  assert.notEqual(directorPointStart, -1);
+  assert.notEqual(directorPointEnd, -1);
+  const overlayPointBlock = overlaySource.slice(overlayPointStart, overlayPointEnd);
+  const directorPointBlock = directorSource.slice(directorPointStart, directorPointEnd);
+
+  for (const block of [appPointBlock, appRectBlock, overlayPointBlock, directorPointBlock]) {
+    assert.doesNotMatch(
+      block,
+      /cropState\s*&&\s*cropState\.metricsVirtualized/,
+      'virtualized window bounds must not skip crop-local DOM conversion',
+    );
+  }
+  for (const source of [interpageSource, overlaySource, directorSource]) {
+    assert.match(source, /niriPetPhysicalCropLayoutOffsetX/);
+    assert.match(source, /niriPetPhysicalCropLayoutOffsetY/);
+    assert.match(source, /toLayoutVirtualPoint/);
+    assert.match(source, /getLayoutState/);
+  }
 });

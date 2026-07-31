@@ -14,6 +14,7 @@ from main_logic.topic.pipeline import (
     _record_weight,
 )
 from main_logic.topic.signals import TopicSignalStore
+from tests.atomic_read import read_text_tolerating_replace, read_text_when_readable
 from tests.fake_clock import patch_module_clock
 
 
@@ -716,11 +717,28 @@ async def test_topic_pool_preserves_post_candidate_signals_after_delivery():
         min_user_turns_for_topic=1,
     )
     pool.note_user_message("妮可", "旧话题：我最近一直在纠结买车是不是代表生活进入新阶段")
+    # 候选的 signal cutoff 就是这条 turn 的时间戳，新 turn 只有严格晚于它才该被保留。
+    # Windows 上 time.time() 粒度可达 15ms，固定 sleep 要么不够（新 turn 撞上 cutoff
+    # 被一起清掉）要么白等，所以直接等挂钟走过 cutoff 再记这条新 turn。
+    cutoff = pool._signal_store.last_turn_at("妮可")
 
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    while time.time() <= cutoff:
+        await asyncio.sleep(0.005)
     pool.note_user_message("妮可", "新话题：我后来又开始纠结换工作和现实压力怎么平衡")
-    await asyncio.sleep(0.18)
+
+    # 投递后的 signal 清理挂在 to_thread flush 之后，固定 sleep 只是在赌它做完了；
+    # 轮询这条链的终点，超时后照旧交给下面的断言报错。
+    # 内存里的 signal 被摘掉只是链条的中段——_discard_delivered_signals_async 先同步
+    # 摘除、之后才 await flush，所以还要等 trigger task 本身收尾，否则用例会在它仍在
+    # 飞的时候返回，落到 pytest teardown 去取消它。
+    deadline = time.monotonic() + 5.0
+    while (
+        not delivered
+        or "旧话题" in pool._signal_store.format_global_signals("妮可", lang="zh-CN")
+        or pool._trigger_tasks.get("妮可")
+    ) and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
 
     signals = pool._signal_store.format_global_signals("妮可", lang="zh-CN")
     assert delivered == ["旧话题"]
@@ -801,7 +819,11 @@ async def test_topic_pool_release_predicate_ignores_new_turns_during_delivery():
     )
     pool.note_user_message("妮可", "一个已经成熟、准备排队投递的话题", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    # 两次 release 检查都在 trigger 内部完成，固定 sleep 在 Windows 上可能等于零等待；
+    # 等这两条真的出现再断言（retry delay 60s，不会冒出第三条）。
+    deadline = time.monotonic() + 5.0
+    while len(release_checks) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
 
     assert release_checks == [True, True]
 
@@ -983,18 +1005,17 @@ async def test_topic_pool_restored_signals_respect_persisted_used_history(tmp_pa
     pool.note_user_message("妮可", "先投递一次，建立今天已经用过 deep topic 的节流历史", lang="zh-CN")
     await pool.process_now("妮可", lang="zh-CN")
     used_path = path.with_name("topic_signals.used_topics.json")
-    # The trigger writes this file from a worker thread (to_thread), so a
-    # fixed sleep is a race: a loaded CI runner needs more than 20ms just to
-    # hand the write off. Wait for the artifact itself.
-    deadline = time.monotonic() + 5.0
-    while not used_path.exists() and time.monotonic() < deadline:
-        await asyncio.sleep(0.01)
-    assert used_path.exists(), "used-topics file was never persisted"
+    # The trigger writes this file from a worker thread (to_thread), so a fixed
+    # sleep is a race: a loaded CI runner needs more than 20ms just to hand the
+    # write off. Polling `exists()` is not enough either — on Windows it flips
+    # True while os.replace is still in flight and the read right behind it
+    # loses with PermissionError (CI run 30549810820). Wait for readable, and
+    # read once: the two assertions below must see the same snapshot anyway.
+    used_text = await read_text_when_readable(used_path)
 
     assert delivered == ["买车"]
-    used_payload = json.loads(used_path.read_text(encoding="utf-8"))
+    used_payload = json.loads(used_text)
     assert used_payload["characters"]["妮可"][0]["used_at"] > 0
-    used_text = used_path.read_text(encoding="utf-8")
     assert used_payload["characters"]["妮可"][0]["interest_hash"]
     assert used_payload["characters"]["妮可"][0]["keyword_hashes"] == []
     assert "买车" not in used_text
@@ -1067,8 +1088,22 @@ async def test_topic_pool_clears_durable_signals_after_successful_delivery(tmp_p
     pool.note_user_message("妮可", "这段候选证据投递完成后不该继续留在磁盘", lang="zh-CN")
     await pool.process_now("妮可")
     await asyncio.wait_for(delivered.wait(), timeout=1.0)
-    for _ in range(20):
-        if not pool._trigger_tasks.get("妮可"):
+
+    def _persisted_turns() -> list:
+        if not path.exists():
+            return []
+        # 这个轮询和还在跑的 trigger 任务并发：它们经 to_thread 落盘同一个文件，
+        # Windows 上 os.replace 和这里的 open() 互斥，谁输谁吃 PermissionError。
+        payload = json.loads(read_text_tolerating_replace(path))
+        return payload.get("characters", {}).get("妮可", [])
+
+    # 原来是 `for _ in range(20): await asyncio.sleep(0.01)`——计次而没有挂钟
+    # deadline。Windows 上忙循环里的 sleep(0.01) 会立刻返回，20 次迭代能在不到 1ms
+    # 内跑完，这个"等 200ms"实际等于没等（CI run 30479947756 就是这么红的）。
+    # 而且 _trigger_tasks 空掉离"盘上真的清了"还隔着一次落盘，只能盯真实产物。
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        if not pool._trigger_tasks.get("妮可") and not _persisted_turns():
             break
         await asyncio.sleep(0.01)
 
@@ -2062,21 +2097,56 @@ async def test_topic_pool_does_not_trigger_second_topic_immediately_after_first(
         enable_online_enrichment=False,
         topic_trigger=fake_trigger,
         trigger_delay_seconds=0.01,
-        min_trigger_gap_seconds=0.2,
+        # 0.2s 的间隔只比一个 Windows 定时器 tick（约 15.6ms，且 sleep 会超发 20%+）
+        # 大一个量级；抬到 1.0s 既让「窗口还没过」有余量，也给下面那条改期延迟的
+        # 断言留出「从首投到第二次 gap 检查之间过去了多久」的不可控开销。
+        min_trigger_gap_seconds=1.0,
         min_user_turns_for_topic=1,
     )
 
     pool.note_user_message("妮可", "第一轮认真聊一个深话题，里面有足够多的具体背景、现实纠结、近期计划和反复提到的细节", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.03)
+    # 首投在后台 trigger task 里落地，固定 sleep 是抛硬币；等它真的投出来。
+    # 光等 delivered 不够：fake_trigger 在 _run_trigger_when_available 走到
+    # to_thread 落盘、清掉当前 pending material 之前就已经 append 了，此时第二次
+    # process_now 会撞上「已有 pending material」的提前返回，第二个话题根本不会被
+    # 分析，下面等 deferred_delays 就只能超时。所以要等 trigger task 自己收尾。
+    deadline = time.monotonic() + 5.0
+    while (
+        not delivered or pool._trigger_tasks.get("妮可")
+    ) and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
     assert delivered == ["凯迪拉克预算压力"]
+
+    # 「第二个话题被 min gap 挡住」这条负向断言不能靠 sleep 猜窗口：sleep 超发就会
+    # 越过窗口变假红，改短又会让 trigger 根本没机会跑、断言恒真。这里盯住
+    # 「trigger 跑了一遍并主动改期」这个确定性事件，再断言它没有投递。
+    deferred_delays = []
+    original_reschedule = pool._reschedule_trigger_after_delay
+
+    def spy_reschedule(name, material, lang, delay):
+        deferred_delays.append(delay)
+        original_reschedule(name, material, lang, delay)
+
+    pool._reschedule_trigger_after_delay = spy_reschedule
 
     pool.note_user_message("妮可", "第二轮又聊出另一个深话题，依然有明确场景、具体选择、近期困扰和可以继续展开的细节", lang="zh-CN")
     await pool.process_now("妮可")
-    await asyncio.sleep(0.05)
+    deadline = time.monotonic() + 5.0
+    while not deferred_delays and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    assert deferred_delays, "第二个话题的 trigger 没有被 min trigger gap 改期"
+    # 改期这件事本身还不够：min gap 被误缩短时 trigger 照样会改期一小段，断言就成了
+    # 恒真。但也不能拿延迟去跟整个 gap 比——延迟是「gap 减去已经过去的时间」，而从
+    # 首投到第二次 gap 检查之间过去多久不受控（中间夹着轮询、又一次 process_now、
+    # to_thread 交接）。取一个既远大于「gap 被误缩十倍」后的上限（0.1s）、又给挂钟
+    # 留出 0.85s 余量的门槛。
+    assert deferred_delays[0] > 0.15, f"min trigger gap 没有生效: {deferred_delays}"
     assert delivered == ["凯迪拉克预算压力"]
 
-    await asyncio.sleep(0.2)
+    deadline = time.monotonic() + 5.0
+    while len(delivered) < 2 and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
     assert delivered == ["凯迪拉克预算压力", "海边旅行计划"]
 
 
@@ -2362,3 +2432,56 @@ async def test_deepen_material_idempotent_and_respects_disable(monkeypatch):
     assert derive_calls == [1]
     assert len(enrich_calls) == 2
     assert m2["deep_search_done"] is True
+
+
+# ── used-topic persistence failure visibility (issue #2528) ──────────────
+#
+# `_persist_used_topics` deliberately neither retries nor re-raises: losing
+# one restart's worth of used-topic history only risks re-offering the same
+# topic once, whereas raising would kill topic delivery outright on a
+# read-only disk. But it logged at DEBUG, i.e. invisible at the production
+# default of INFO, so a permanently unwritable state dir could not be
+# diagnosed at all.
+
+
+def test_used_topics_persist_failure_is_visible(tmp_path):
+    import logging
+    from unittest.mock import patch
+
+    class _Sink(logging.Handler):
+        def __init__(self):
+            super().__init__(level=logging.DEBUG)
+            self.records = []
+
+        def emit(self, record):
+            self.records.append(record)
+
+    pool = TopicHookPool(
+        auto_schedule=False,
+        min_user_turns_for_topic=1,
+        signal_store_path=tmp_path / "state" / "topic_signals.json",
+    )
+    assert pool._used_topics_path is not None
+    with pool._used_topics_lock:
+        pool._used_topics["妮可"].append({
+            "used_at": time.time(), "hook_id_hash": "h", "interest_hash": "i",
+        })
+
+    log = logging.getLogger("N.E.K.O.Main.topic.pipeline")
+    sink = _Sink()
+    prior = log.level
+    log.addHandler(sink)
+    log.setLevel(logging.DEBUG)
+    try:
+        with patch("main_logic.topic.pipeline.atomic_write_json",
+                   side_effect=OSError("simulated read-only state dir")):
+            pool._persist_used_topics()  # 必须不抛
+    finally:
+        log.removeHandler(sink)
+        log.setLevel(prior)
+
+    # 断言必须卡在 WARNING 上：收 DEBUG 的话 logger.debug 的回归也会绿。
+    warnings = [
+        r.getMessage() for r in sink.records if r.levelno >= logging.WARNING
+    ]
+    assert any("used-history" in m for m in warnings), warnings

@@ -1634,9 +1634,12 @@
         const taskhudCheckbox = changedCheckbox || getEl(['live2d-agent-taskhud', 'vrm-agent-taskhud', 'mmd-agent-taskhud', 'pngtuber-agent-taskhud']);
         let taskhudOn = true;
         try { taskhudOn = localStorage.getItem('neko-agent-taskhud-visible') !== 'false'; } catch (_) {}
-        if (taskhudCheckbox) {
-            taskhudOn = taskhudCheckbox.checked;
+        if (changedCheckbox) {
+            taskhudOn = changedCheckbox.checked;
             try { localStorage.setItem('neko-agent-taskhud-visible', taskhudOn ? 'true' : 'false'); } catch (_) {}
+        } else if (taskhudCheckbox && taskhudCheckbox.checked !== taskhudOn) {
+            taskhudCheckbox.checked = taskhudOn;
+            if (typeof taskhudCheckbox._updateStyle === 'function') taskhudCheckbox._updateStyle();
         }
         if (!taskhudOn) {
             window.stopAgentTaskPolling();

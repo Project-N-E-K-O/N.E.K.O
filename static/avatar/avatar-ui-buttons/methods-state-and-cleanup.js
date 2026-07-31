@@ -1,5 +1,109 @@
 Object.assign(AvatarButtonMixin.methods, {
     stateAndCleanup(ManagerPrototype, prefix, options) {
+        const getVoiceSessionQuickControlsRail = (btnWrapper) => {
+            if (btnWrapper._nekoVoiceSessionQuickControlsRail) {
+                return btnWrapper._nekoVoiceSessionQuickControlsRail;
+            }
+            const rail = document.createElement('div');
+            rail.className = `${prefix}-voice-session-quick-controls`;
+            rail.dataset.nekoVoiceSessionQuickControls = 'true';
+            Object.assign(rail.style, {
+                position: 'absolute',
+                left: '-24px',
+                top: '0',
+                width: '22px',
+                height: '48px',
+                display: 'flex',
+                flexDirection: 'column',
+                alignItems: 'center',
+                justifyContent: 'center',
+                gap: '4px',
+                pointerEvents: 'none',
+                zIndex: '1'
+            });
+            btnWrapper.appendChild(rail);
+            btnWrapper._nekoVoiceSessionQuickControlsRail = rail;
+            return rail;
+        };
+
+        const createVoiceSessionQuickControlSlot = (button) => {
+            const slot = document.createElement('div');
+            slot.className = `${prefix}-voice-session-quick-control-slot`;
+            slot.dataset.nekoVoiceSessionQuickControlSlot = 'true';
+            Object.assign(slot.style, {
+                width: '22px',
+                height: '0',
+                minHeight: '0',
+                flex: '0 0 0px',
+                display: 'none',
+                alignItems: 'center',
+                justifyContent: 'center',
+                overflow: 'hidden',
+                borderRadius: '11px',
+                pointerEvents: 'none'
+            });
+            slot.appendChild(button);
+            button._nekoVoiceSessionQuickControlSlot = slot;
+            return slot;
+        };
+
+        const setVoiceSessionQuickButtonVisible = (button, visible, delay = 0) => {
+            const slot = button._nekoVoiceSessionQuickControlSlot;
+            if (!slot) {
+                button.style.display = visible ? 'flex' : 'none';
+                return;
+            }
+
+            const wasVisible = slot.style.display !== 'none';
+            if (!visible) {
+                slot._nekoQuickControlVisibilityGeneration =
+                    (slot._nekoQuickControlVisibilityGeneration || 0) + 1;
+                if (typeof slot.getAnimations === 'function') {
+                    slot.getAnimations().forEach((animation) => animation.cancel());
+                }
+                slot.style.display = 'none';
+                slot.style.height = '0';
+                slot.style.flexBasis = '0px';
+                slot.style.overflow = 'hidden';
+                button.style.display = 'none';
+                return;
+            }
+
+            slot.style.display = 'flex';
+            slot.style.height = '22px';
+            slot.style.flexBasis = '22px';
+            button.style.display = 'flex';
+            if (wasVisible) return;
+
+            const visibilityGeneration =
+                (slot._nekoQuickControlVisibilityGeneration || 0) + 1;
+            slot._nekoQuickControlVisibilityGeneration = visibilityGeneration;
+            slot.style.overflow = 'hidden';
+
+            const reduceMotion = typeof window.matchMedia === 'function'
+                && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+            if (reduceMotion || typeof slot.animate !== 'function') {
+                slot.style.overflow = 'visible';
+                return;
+            }
+
+            const animation = slot.animate([
+                { height: '0px', flexBasis: '0px' },
+                { height: '22px', flexBasis: '22px' }
+            ], {
+                duration: 220,
+                delay,
+                easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+                fill: 'backwards'
+            });
+            animation.finished.then(() => {
+                if (slot._nekoQuickControlVisibilityGeneration === visibilityGeneration
+                    && slot.style.display !== 'none') {
+                    slot.style.overflow = 'visible';
+                }
+            }).catch(() => {});
+        };
+
         ManagerPrototype.createMicMuteButton = function(btnWrapper) {
             const opts = this._avatarButtonOptions;
             const prefix = this._avatarPrefix;
@@ -16,7 +120,9 @@ Object.assign(AvatarButtonMixin.methods, {
             muteSvg.setAttribute('height', '16');
             Object.assign(muteSvg.style, {
                 pointerEvents: 'none',
-                display: 'block'
+                display: 'block',
+                transition: 'transform 0.1s ease',
+                transform: 'scale(1)'
             });
 
             const micPath = document.createElementNS('http://www.w3.org/2000/svg', 'path');
@@ -46,18 +152,17 @@ Object.assign(AvatarButtonMixin.methods, {
             muteBtn.appendChild(muteSvg);
 
             Object.assign(muteBtn.style, {
-                width: '24px', height: '24px', borderRadius: '50%',
+                width: '22px', height: '22px', minWidth: '22px', minHeight: '22px', borderRadius: '50%',
                 background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
                 backdropFilter: 'saturate(180%) blur(20px)',
                 border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                display: 'none', alignItems: 'center', justifyContent: 'center',
                 cursor: 'pointer', userSelect: 'none',
                 boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
-                transition: 'all 0.1s ease', pointerEvents: 'auto',
-                position: 'absolute',
-                left: '-28px',
-                top: '50%',
-                transform: 'translateY(-50%)'
+                transition: 'background 0.1s ease, box-shadow 0.1s ease', pointerEvents: 'auto',
+                position: 'relative',
+                flex: '0 0 22px',
+                boxSizing: 'border-box'
             });
 
             const stopMuteEvent = (e) => { e.stopPropagation(); };
@@ -79,11 +184,8 @@ Object.assign(AvatarButtonMixin.methods, {
                 }
             };
 
-            const isRecording = window.isRecording || false;
-            muteBtn.style.display = isRecording ? 'flex' : 'none';
-
             const updateMuteButtonVisibility = (visible) => {
-                muteBtn.style.display = visible ? 'flex' : 'none';
+                setVoiceSessionQuickButtonVisible(muteBtn, Boolean(visible));
             };
 
             if (typeof window.isMicMuted === 'function') {
@@ -91,7 +193,7 @@ Object.assign(AvatarButtonMixin.methods, {
             }
 
             muteBtn.addEventListener('mouseenter', () => {
-                muteBtn.style.transform = 'translateY(-50%) scale(1.1)';
+                muteSvg.style.transform = 'scale(1.08)';
                 muteBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
                 const isMuted = typeof window.isMicMuted === 'function' && window.isMicMuted();
                 if (!isMuted) {
@@ -100,7 +202,7 @@ Object.assign(AvatarButtonMixin.methods, {
             });
 
             muteBtn.addEventListener('mouseleave', () => {
-                muteBtn.style.transform = 'translateY(-50%) scale(1)';
+                muteSvg.style.transform = 'scale(1)';
                 muteBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
                 const isMuted = typeof window.isMicMuted === 'function' && window.isMicMuted();
                 updateMuteButtonState(isMuted);
@@ -128,7 +230,8 @@ Object.assign(AvatarButtonMixin.methods, {
                 target: window
             });
 
-            btnWrapper.appendChild(muteBtn);
+            getVoiceSessionQuickControlsRail(btnWrapper).appendChild(createVoiceSessionQuickControlSlot(muteBtn));
+            updateMuteButtonVisibility(Boolean(window.isRecording));
 
             const muteData = {
                 button: muteBtn,
@@ -144,6 +247,191 @@ Object.assign(AvatarButtonMixin.methods, {
             }
 
             return muteData;
+        };
+
+        /**
+         * 创建屏幕分享快捷按钮（附加在麦克风按钮的外侧快捷轨道）
+         * @param {HTMLElement} btnWrapper - 麦克风按钮的包装器
+         * @returns {Object|null} 屏幕分享按钮数据
+         */
+        ManagerPrototype.createScreenShareQuickButton = function(btnWrapper) {
+            const opts = this._avatarButtonOptions;
+            const prefix = this._avatarPrefix;
+
+            const previousQuickButton = this._floatingButtons && this._floatingButtons['screen-share-quick'];
+            if (previousQuickButton && typeof previousQuickButton.cleanup === 'function') {
+                previousQuickButton.cleanup();
+            }
+
+            const screenShareBtn = document.createElement('div');
+            screenShareBtn.id = `${prefix}-btn-screen-share-quick`;
+            screenShareBtn.className = `${opts.buttonClassPrefix} ${prefix}-screen-share-quick-btn neko-screen-share-quick-btn`;
+            screenShareBtn.setAttribute('role', 'button');
+            screenShareBtn.setAttribute('tabindex', '0');
+
+            const monitorSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            monitorSvg.setAttribute('viewBox', '0 0 24 24');
+            monitorSvg.setAttribute('width', '15');
+            monitorSvg.setAttribute('height', '15');
+            monitorSvg.setAttribute('aria-hidden', 'true');
+            Object.assign(monitorSvg.style, {
+                display: 'block',
+                pointerEvents: 'none',
+                transition: 'transform 0.1s ease',
+                transform: 'scale(1)'
+            });
+
+            const monitorFrame = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+            monitorFrame.setAttribute('x', '3');
+            monitorFrame.setAttribute('y', '4');
+            monitorFrame.setAttribute('width', '18');
+            monitorFrame.setAttribute('height', '13');
+            monitorFrame.setAttribute('rx', '2');
+            monitorFrame.setAttribute('fill', 'none');
+            monitorFrame.setAttribute('stroke', 'currentColor');
+            monitorFrame.setAttribute('stroke-width', '2');
+
+            const monitorStand = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            monitorStand.setAttribute('d', 'M8 21h8M12 17v4');
+            monitorStand.setAttribute('fill', 'none');
+            monitorStand.setAttribute('stroke', 'currentColor');
+            monitorStand.setAttribute('stroke-width', '2');
+            monitorStand.setAttribute('stroke-linecap', 'round');
+
+            monitorSvg.appendChild(monitorFrame);
+            monitorSvg.appendChild(monitorStand);
+            screenShareBtn.appendChild(monitorSvg);
+
+            Object.assign(screenShareBtn.style, {
+                width: '22px', height: '22px', minWidth: '22px', minHeight: '22px', borderRadius: '50%',
+                background: 'var(--neko-btn-bg, rgba(255,255,255,0.65))',
+                backdropFilter: 'saturate(180%) blur(20px)',
+                border: 'var(--neko-btn-border, 1px solid rgba(255,255,255,0.18))',
+                display: 'none', alignItems: 'center', justifyContent: 'center',
+                color: '#4a90d9', cursor: 'pointer', userSelect: 'none',
+                boxShadow: 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))',
+                transition: 'background 0.2s ease, color 0.2s ease, box-shadow 0.2s ease',
+                pointerEvents: 'auto', position: 'relative', flex: '0 0 22px', boxSizing: 'border-box'
+            });
+
+            let screenShareActive = false;
+            let voiceSessionActive = false;
+
+            const updateScreenShareButtonVisibility = () => {
+                const visible = voiceSessionActive || screenShareActive;
+                setVoiceSessionQuickButtonVisible(screenShareBtn, visible, 45);
+            };
+
+            const currentScreenShareState = () => {
+                const hiddenScreenButton = document.getElementById('screenButton');
+                return !!(hiddenScreenButton && hiddenScreenButton.classList.contains('active'));
+            };
+
+            const updateScreenShareState = (active) => {
+                screenShareActive = Boolean(active);
+                screenShareBtn.dataset.active = screenShareActive ? 'true' : 'false';
+                screenShareBtn.setAttribute('aria-pressed', screenShareActive ? 'true' : 'false');
+                const titleKey = screenShareActive ? 'voiceControl.stopShare' : 'buttons.screenShare';
+                const title = screenShareActive
+                    ? (window.t ? window.t(titleKey) : '停止屏幕分享')
+                    : (window.t ? window.t(titleKey) : '屏幕分享');
+                screenShareBtn.title = title;
+                screenShareBtn.setAttribute('aria-label', title);
+                screenShareBtn.setAttribute('data-i18n-title', titleKey);
+                screenShareBtn.setAttribute('data-i18n-aria', titleKey);
+                screenShareBtn.style.color = screenShareActive ? '#fff' : '#4a90d9';
+                screenShareBtn.style.background = screenShareActive
+                    ? '#44b7fe'
+                    : 'var(--neko-btn-bg, rgba(255,255,255,0.65))';
+                screenShareBtn.style.boxShadow = 'var(--neko-btn-shadow, 0 2px 4px rgba(0,0,0,0.04), 0 4px 8px rgba(0,0,0,0.08))';
+                updateScreenShareButtonVisibility();
+            };
+
+            const updateVoiceSessionState = (active) => {
+                voiceSessionActive = Boolean(active);
+                screenShareBtn.dataset.voiceSessionActive = voiceSessionActive ? 'true' : 'false';
+                updateScreenShareButtonVisibility();
+            };
+
+            const stopQuickButtonEvent = (event) => { event.stopPropagation(); };
+            ['pointerdown', 'mousedown', 'touchstart'].forEach((eventName) => {
+                screenShareBtn.addEventListener(eventName, stopQuickButtonEvent);
+            });
+
+            const activateScreenShareQuickButton = (event) => {
+                event.preventDefault();
+                event.stopPropagation();
+                if (typeof window.toggleScreenShare === 'function') {
+                    window.toggleScreenShare();
+                }
+            };
+
+            screenShareBtn.addEventListener('click', activateScreenShareQuickButton);
+            screenShareBtn.addEventListener('keydown', (event) => {
+                if (!event.repeat && (event.key === 'Enter' || event.key === ' ')) {
+                    activateScreenShareQuickButton(event);
+                }
+            });
+            screenShareBtn.addEventListener('mouseenter', () => {
+                monitorSvg.style.transform = 'scale(1.08)';
+                if (!screenShareActive) {
+                    screenShareBtn.style.background = 'var(--neko-btn-bg-hover, rgba(255,255,255,0.8))';
+                    screenShareBtn.style.boxShadow = 'var(--neko-btn-shadow-hover, 0 4px 8px rgba(0,0,0,0.08), 0 8px 16px rgba(0,0,0,0.08))';
+                }
+            });
+            screenShareBtn.addEventListener('mouseleave', () => {
+                monitorSvg.style.transform = 'scale(1)';
+                updateScreenShareState(screenShareActive);
+            });
+
+            const hiddenScreenButton = document.getElementById('screenButton');
+            let screenStateObserver = null;
+            if (hiddenScreenButton && typeof MutationObserver !== 'undefined') {
+                screenStateObserver = new MutationObserver(() => {
+                    updateScreenShareState(currentScreenShareState());
+                });
+                screenStateObserver.observe(hiddenScreenButton, { attributes: true, attributeFilter: ['class'] });
+            }
+
+            const micToggleHandler = (event) => {
+                const active = Boolean(event && event.detail && event.detail.active);
+                const muteButtonData = this._floatingButtons && this._floatingButtons['mic-mute'];
+                if (muteButtonData && typeof muteButtonData.updateVisibility === 'function') {
+                    muteButtonData.updateVisibility(active);
+                }
+                updateVoiceSessionState(active);
+            };
+            window.addEventListener('live2d-mic-toggle', micToggleHandler);
+
+            getVoiceSessionQuickControlsRail(btnWrapper).appendChild(createVoiceSessionQuickControlSlot(screenShareBtn));
+            updateScreenShareState(currentScreenShareState());
+            updateVoiceSessionState(Boolean(window.isRecording));
+
+            const screenShareData = {
+                button: screenShareBtn,
+                svg: monitorSvg,
+                updateState: updateScreenShareState,
+                updateVoiceSessionState: updateVoiceSessionState,
+                cleanup: () => {
+                    if (screenStateObserver) screenStateObserver.disconnect();
+                    window.removeEventListener('live2d-mic-toggle', micToggleHandler);
+                    const slot = screenShareBtn._nekoVoiceSessionQuickControlSlot;
+                    if (slot) slot.remove();
+                    else screenShareBtn.remove();
+                }
+            };
+
+            if (this._floatingButtons) {
+                this._floatingButtons['screen-share-quick'] = screenShareData;
+            }
+
+            return screenShareData;
+        };
+
+        ManagerPrototype.createVoiceSessionQuickControls = function(btnWrapper) {
+            const screenShare = this.createScreenShareQuickButton(btnWrapper);
+            const mute = this.createMicMuteButton(btnWrapper);
+            return { screenShare, mute };
         };
 
         /**
@@ -176,8 +464,30 @@ Object.assign(AvatarButtonMixin.methods, {
          * 设置按钮激活状态
          */
         ManagerPrototype.setButtonActive = function(buttonId, active) {
+            if (buttonId === 'screen') {
+                const screenShareQuickData = this._floatingButtons && this._floatingButtons['screen-share-quick'];
+                if (screenShareQuickData && typeof screenShareQuickData.updateState === 'function') {
+                    screenShareQuickData.updateState(active);
+                }
+            }
+            if (buttonId === 'mic') {
+                const muteButtonData = this._floatingButtons && this._floatingButtons['mic-mute'];
+                if (muteButtonData && muteButtonData.updateVisibility) {
+                    muteButtonData.updateVisibility(active);
+                }
+                const screenShareQuickData = this._floatingButtons && this._floatingButtons['screen-share-quick'];
+                if (screenShareQuickData && typeof screenShareQuickData.updateVoiceSessionState === 'function') {
+                    screenShareQuickData.updateVoiceSessionState(active);
+                }
+            }
+
             const buttonData = this._floatingButtons && this._floatingButtons[buttonId];
             if (!buttonData || !buttonData.button) return;
+
+            if (typeof buttonData.updateState === 'function') {
+                buttonData.updateState(active);
+                return;
+            }
 
             buttonData.button.dataset.active = active ? 'true' : 'false';
             buttonData.button.style.background = active
@@ -193,13 +503,6 @@ Object.assign(AvatarButtonMixin.methods, {
 
             this.updateSeparatePopupTriggerIcon(buttonId);
 
-            // 同步静音按钮的显示状态
-            if (buttonId === 'mic') {
-                const muteButtonData = this._floatingButtons && this._floatingButtons['mic-mute'];
-                if (muteButtonData && muteButtonData.updateVisibility) {
-                    muteButtonData.updateVisibility(active);
-                }
-            }
         };
 
         /**
@@ -225,9 +528,10 @@ Object.assign(AvatarButtonMixin.methods, {
             }
 
             // 桌面槽位由 social 取代，但移动布局仍有独立的 screen 按钮。
-            // 以隐藏的 #screenButton 为真实状态，避免重建按钮后保留乐观状态。
+            // 桌面快捷按钮与移动端完整按钮都以隐藏的 #screenButton 为真实状态，
+            // 避免重建按钮后保留乐观状态。
             const screenButton = document.getElementById('screenButton');
-            if (this._floatingButtons.screen && screenButton) {
+            if ((this._floatingButtons.screen || this._floatingButtons['screen-share-quick']) && screenButton) {
                 this.setButtonActive('screen', screenButton.classList.contains('active'));
             }
         };
@@ -237,6 +541,21 @@ Object.assign(AvatarButtonMixin.methods, {
          */
         ManagerPrototype.cleanupFloatingButtons = function() {
             const opts = this._avatarButtonOptions;
+
+            // Cancel before removing the old return container so no release
+            // timeout or queued animation frame can publish stale drag state.
+            if (this._returnButtonDragHandlers &&
+                typeof this._returnButtonDragHandlers.cleanup === 'function') {
+                this._returnButtonDragHandlers.cleanup();
+            }
+
+            if (this._floatingButtons) {
+                Object.values(this._floatingButtons).forEach((buttonData) => {
+                    if (buttonData && typeof buttonData.cleanup === 'function') {
+                        buttonData.cleanup();
+                    }
+                });
+            }
 
             // 停止 RAF 循环
             if (this._uiUpdateLoopId !== null && this._uiUpdateLoopId !== undefined) {
@@ -296,6 +615,10 @@ Object.assign(AvatarButtonMixin.methods, {
                 document.removeEventListener('touchcancel', this._returnButtonDragHandlers.touchCancel);
                 document.removeEventListener('visibilitychange', this._returnButtonDragHandlers.visibilityChange);
                 window.removeEventListener('blur', this._returnButtonDragHandlers.windowBlur);
+                window.removeEventListener(
+                    'neko:niri-pet-physical-crop-state-applied',
+                    this._returnButtonDragHandlers.cropStateApplied
+                );
                 this._returnButtonDragHandlers = null;
             }
 

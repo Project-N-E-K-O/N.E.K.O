@@ -578,6 +578,37 @@ function patchProps(dom, oldProps, newProps) {
     if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
   });
 }
+const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input']);
+let __hostedUserActionDepth = 0;
+const __hostedConfirmedActionCredits = [];
+function retainHostedConfirmedAction() {
+  const credit = {};
+  __hostedConfirmedActionCredits.push(credit);
+  // Promise continuations registered by resolve run before this cleanup, so a
+  // confirmed `await useConfirm()` flow can claim one action without giving a
+  // later background request a time-based attribution window.
+  queueMicrotask(() => {
+    const index = __hostedConfirmedActionCredits.indexOf(credit);
+    if (index >= 0) __hostedConfirmedActionCredits.splice(index, 1);
+  });
+}
+function consumeHostedConfirmedAction() {
+  return __hostedConfirmedActionCredits.shift() !== undefined;
+}
+function wrapHostedEventHandler(eventName, handler) {
+  if (!__hostedUserActionEvents.has(eventName)) return handler;
+  return (event) => {
+    // Synthetic events are automatic activity, even if they invoke the same
+    // handler as a real click. happy-dom leaves isTrusted undefined.
+    const userInitiated = event && event.isTrusted !== false;
+    if (userInitiated) __hostedUserActionDepth += 1;
+    try {
+      return handler(event);
+    } finally {
+      if (userInitiated) __hostedUserActionDepth -= 1;
+    }
+  };
+}
 function setProp(dom, name, oldValue, newValue) {
   if (name === 'className') name = 'class';
   if (name === 'style') {
@@ -597,8 +628,15 @@ function setProp(dom, name, oldValue, newValue) {
   }
   if (name.startsWith('on') && typeof (oldValue || newValue) === 'function') {
     const eventName = name.slice(2).toLowerCase();
-    if (oldValue) dom.removeEventListener(eventName, oldValue);
-    if (newValue) dom.addEventListener(eventName, newValue);
+    const listeners = dom.__nekoEventListeners || (dom.__nekoEventListeners = {});
+    if (listeners[eventName]) dom.removeEventListener(eventName, listeners[eventName]);
+    if (newValue) {
+      const listener = wrapHostedEventHandler(eventName, newValue);
+      listeners[eventName] = listener;
+      dom.addEventListener(eventName, listener);
+    } else {
+      delete listeners[eventName];
+    }
     return;
   }
   if (name === 'dangerouslySetInnerHTML' || name === 'innerHTML' || name === 'srcdoc') {
@@ -1017,6 +1055,7 @@ function useConfirm() {
         renderPortal(null);
         host.remove();
         resolve(value);
+        if (value && __hostedUserActionDepth > 0) retainHostedConfirmedAction();
       };
       renderPortal(h(ConfirmDialog, {
         open: true,
@@ -1926,7 +1965,8 @@ function requestHost(method, payload, options) {
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
-    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs }, hostedTargetOrigin());
+    const userInitiated = method === 'call' && options && options.userInitiated === true;
+    parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
     window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
       __pendingRequests.delete(requestId);
@@ -1935,7 +1975,17 @@ function requestHost(method, payload, options) {
   });
 }
 const api = {
-  call(actionId, args, options) { return requestHost('call', { actionId, args: args || {} }, options || {}); },
+  // Async handlers lose the synchronous DOM event scope after an await. They
+  // can explicitly preserve the attribution for this one action with
+  // { userInitiated: true }, without making unrelated background calls noisy.
+  call(actionId, args, options) {
+    const requestOptions = options || {};
+    const confirmedUserAction = consumeHostedConfirmedAction();
+    return requestHost('call', { actionId, args: args || {} }, {
+      ...requestOptions,
+      userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0 || confirmedUserAction,
+    });
+  },
   async refresh() {
     const context = await requestHost('refresh', {});
     return refreshHostedPayload(context);
@@ -1952,7 +2002,7 @@ function ActionButton(props) {
     tone: props.tone || action.tone || 'primary',
     disabled: loading,
     children: props.children || label,
-    onClick: async () => {
+    onClick: async (event) => {
       try {
         setError('');
         const confirmMessage = props.confirm || action.confirm;
@@ -1960,7 +2010,7 @@ function ActionButton(props) {
           return;
         }
         setLoading(true);
-        const result = await api.call(actionId, props.values || props.args || {});
+        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated: event && event.isTrusted !== false });
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {

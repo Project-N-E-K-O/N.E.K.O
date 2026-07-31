@@ -3,6 +3,7 @@ import contextlib
 import json
 import shutil
 import sqlite3
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -260,6 +261,37 @@ def test_bootstrap_imports_legacy_root_after_seed_migration(tmp_path):
     assert Path(cm.get_config_path("core_config.json")).is_file()
     assert (cm.live2d_dir / "legacy_model" / "legacy_model.model3.json").is_file()
     assert cm.root_state_path.is_file()
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows held-file replacement semantics")
+def test_bootstrap_replaces_runtime_root_while_single_instance_lock_is_held(tmp_path, monkeypatch):
+    from utils import single_instance
+    from utils.cloudsave_runtime import bootstrap_local_cloudsave_environment
+
+    local_app_data = tmp_path / "LocalAppData"
+    legacy_root = tmp_path / "legacy" / "N.E.K.O"
+    legacy_model = legacy_root / "live2d" / "legacy-model"
+    legacy_model.mkdir(parents=True)
+    (legacy_model / "legacy.model3.json").write_text('{"Version": 3}', encoding="utf-8")
+
+    cm = _make_config_manager(local_app_data, legacy_candidates=[str(legacy_root)])
+    monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    handle = single_instance.acquire_single_instance(instance_id="bootstrap-regression")
+    try:
+        assert handle is not None
+        assert handle.lock_file.parent == local_app_data / single_instance.RUNTIME_STATE_DIR_NAME
+        assert cm.app_docs_dir not in handle.lock_file.parents
+
+        result = bootstrap_local_cloudsave_environment(cm)
+    finally:
+        single_instance.release_single_instance()
+
+    assert result["legacy_import"]["migrated"] is True
+    assert (cm.live2d_dir / "legacy-model" / "legacy.model3.json").is_file()
 
 
 @pytest.mark.unit

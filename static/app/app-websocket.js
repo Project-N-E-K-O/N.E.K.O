@@ -1583,8 +1583,16 @@
             if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
                 try {
                     var msg = JSON.parse(data);
+                    var handshakeStamped = false;
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
+                        msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
+                        handshakeStamped = true;
+                    }
+                    if (handshakeStamped) {
                         data = JSON.stringify(msg);
                     }
                 } catch (e) {
@@ -1869,6 +1877,13 @@
                         return;
                     }
                     var isNewMessage = response.isNewMessage || false;
+                    // Ordinary responses historically expose lifecycle metadata as
+                    // `meta`, while mirror responses (including game dialogue) use
+                    // `metadata`. Preserve the legacy field when present, but let
+                    // mirror turns carry their session identity into turn-start.
+                    var assistantResponseMeta = response.meta !== undefined
+                        ? response.meta
+                        : response.metadata;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
                         var gameEvent = gameMeta.event || {};
@@ -1908,7 +1923,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
@@ -1929,7 +1944,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }

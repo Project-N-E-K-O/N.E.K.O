@@ -147,6 +147,41 @@ def test_chat_settings_auto_cat_and_cat_audio_toggles_are_independent():
     assert zh_tw_locale["settings"]["toggles"]["catAudio"] == "貓貓音效"
 
 
+def test_model_settings_proactive_controls_use_right_aligned_sliders():
+    source = AVATAR_UI_POPUP_PATH.read_text(encoding="utf-8")
+    settings_toggles_block = source.split("const settingsToggles = [", 1)[1].split("];", 1)[0]
+
+    for toggle_id in ("proactive-chat", "proactive-vision"):
+        toggle_object = re.search(
+            rf"\{{[^{{}}]*id:\s*'{re.escape(toggle_id)}'[^{{}}]*\}}",
+            settings_toggles_block,
+        )
+        assert toggle_object, f"missing settings toggle object for {toggle_id}"
+        assert "controlStyle: 'slider'" in toggle_object.group(0)
+
+    assert ".${prefix}-toggle-item.${prefix}-toggle-item-slider" in source
+    slider_label_style = source.split(
+        ".${prefix}-toggle-item-slider .${prefix}-toggle-label {", 1
+    )[1].split("}", 1)[0]
+    assert "flex: 1 1 auto;" in slider_label_style
+    assert ".${prefix}-toggle-indicator.${prefix}-toggle-slider" in source
+    assert "width: 36px;" in source
+    assert "height: 20px;" in source
+    assert ".${prefix}-toggle-slider[aria-checked=\"true\"] .${prefix}-toggle-thumb" in source
+    assert "transform: translateX(16px);" in source
+
+    settings_item_block = source.split("function createSettingsToggleItem", 1)[1].split(
+        "function createMenuItem", 1
+    )[0]
+    slider_order_block = settings_item_block.split("toggleItem.appendChild(checkbox);", 1)[1].split(
+        "toggleItem.addEventListener('mouseenter'", 1
+    )[0]
+    assert "if (usesSliderControl)" in slider_order_block
+    assert slider_order_block.index("toggleItem.appendChild(label);") < slider_order_block.index(
+        "toggleItem.appendChild(indicator);"
+    )
+
+
 def test_index_game_window_state_pauses_hidden_avatar_rendering():
     source = INDEX_TEMPLATE_PATH.read_text(encoding="utf-8")
     block = source.split("var pngtuberHiddenForGameWindow = false;", 1)[1].split(
@@ -1364,6 +1399,7 @@ def test_externalized_chat_input_spotlight_uses_global_overlay_only():
     assert "var pcWindowMetrics = pcOverlayAvailable && typeof getYuiGuideWindowMetrics === 'function'" in update_block
     assert "getYuiGuideChatSpotlightSourceRect(kind, yuiGuideChatSpotlightVariant, rect, pcWindowMetrics)" in update_block
     assert "metrics.waylandWorkAreaCarrier === true" in script
+    assert "metrics.niriWaylandRuntime !== true" in script
     assert "var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;" in update_block
     assert "toYuiGuideScreenRect({" in update_block
     assert "}, kind, yuiGuideChatSpotlightVariant, pcWindowMetrics)" in update_block

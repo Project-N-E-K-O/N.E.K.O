@@ -139,6 +139,74 @@ MERGED_SERVER_SHUTDOWN_ORDER = ("Main", "Memory", "Agent")
 _merged_shutdown_request = None
 _merged_shutdown_complete = threading.Event()
 
+
+class _JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ('PerProcessUserTimeLimit', ctypes.c_int64),
+        ('PerJobUserTimeLimit', ctypes.c_int64),
+        ('LimitFlags', ctypes.c_uint32),
+        ('MinimumWorkingSetSize', ctypes.c_size_t),
+        ('MaximumWorkingSetSize', ctypes.c_size_t),
+        ('ActiveProcessLimit', ctypes.c_uint32),
+        ('Affinity', ctypes.c_size_t),
+        ('PriorityClass', ctypes.c_uint32),
+        ('SchedulingClass', ctypes.c_uint32),
+    ]
+
+
+class _IO_COUNTERS(ctypes.Structure):
+    _fields_ = [
+        ('ReadOperationCount', ctypes.c_uint64),
+        ('WriteOperationCount', ctypes.c_uint64),
+        ('OtherOperationCount', ctypes.c_uint64),
+        ('ReadTransferCount', ctypes.c_uint64),
+        ('WriteTransferCount', ctypes.c_uint64),
+        ('OtherTransferCount', ctypes.c_uint64),
+    ]
+
+
+class _JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+    _fields_ = [
+        ('BasicLimitInformation', _JOBOBJECT_BASIC_LIMIT_INFORMATION),
+        ('IoInfo', _IO_COUNTERS),
+        ('ProcessMemoryLimit', ctypes.c_size_t),
+        ('JobMemoryLimit', ctypes.c_size_t),
+        ('PeakProcessMemoryUsed', ctypes.c_size_t),
+        ('PeakJobMemoryUsed', ctypes.c_size_t),
+    ]
+
+
+def _get_windows_job_api():
+    """Load kernel32 with pointer-sized signatures for Job Object calls."""
+    if sys.platform != "win32":
+        raise RuntimeError("Windows Job Object API is only available on win32")
+
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetCurrentProcess.argtypes = []
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    kernel32.IsProcessInJob.argtypes = [
+        wintypes.HANDLE,
+        wintypes.HANDLE,
+        ctypes.POINTER(wintypes.BOOL),
+    ]
+    kernel32.IsProcessInJob.restype = wintypes.BOOL
+    kernel32.CreateJobObjectW.argtypes = [wintypes.LPVOID, wintypes.LPCWSTR]
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [
+        wintypes.HANDLE,
+        ctypes.c_int,
+        wintypes.LPVOID,
+        wintypes.DWORD,
+    ]
+    kernel32.SetInformationJobObject.restype = wintypes.BOOL
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    kernel32.AssignProcessToJobObject.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    return kernel32
+
 #: Upper bound on how long owner death waits for the merged ordered shutdown.
 #: Matches the watchdog inside ``_begin_merged_shutdown``: once that fires the
 #: process is going down regardless, so waiting longer buys nothing.
@@ -362,42 +430,8 @@ def _relax_job_kill_on_close() -> None:
     if sys.platform != "win32" or not JOB_HANDLE:
         return
     try:
-        kernel32 = ctypes.windll.kernel32
-
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('PerProcessUserTimeLimit', ctypes.c_int64),
-                ('PerJobUserTimeLimit', ctypes.c_int64),
-                ('LimitFlags', ctypes.c_uint32),
-                ('MinimumWorkingSetSize', ctypes.c_size_t),
-                ('MaximumWorkingSetSize', ctypes.c_size_t),
-                ('ActiveProcessLimit', ctypes.c_uint32),
-                ('Affinity', ctypes.c_size_t),
-                ('PriorityClass', ctypes.c_uint32),
-                ('SchedulingClass', ctypes.c_uint32),
-            ]
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ('ReadOperationCount', ctypes.c_uint64),
-                ('WriteOperationCount', ctypes.c_uint64),
-                ('OtherOperationCount', ctypes.c_uint64),
-                ('ReadTransferCount', ctypes.c_uint64),
-                ('WriteTransferCount', ctypes.c_uint64),
-                ('OtherTransferCount', ctypes.c_uint64),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ('IoInfo', IO_COUNTERS),
-                ('ProcessMemoryLimit', ctypes.c_size_t),
-                ('JobMemoryLimit', ctypes.c_size_t),
-                ('PeakProcessMemoryUsed', ctypes.c_size_t),
-                ('PeakJobMemoryUsed', ctypes.c_size_t),
-            ]
-
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        kernel32 = _get_windows_job_api()
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = 0
         if not kernel32.SetInformationJobObject(
             JOB_HANDLE,
@@ -646,7 +680,10 @@ def _get_last_error() -> int:
     """Get the most recent Win32 error code."""
     if sys.platform != 'win32':
         return 0
-    return ctypes.windll.kernel32.GetLastError()
+    get_last_error = getattr(ctypes, "get_last_error", None)
+    if callable(get_last_error):
+        return int(get_last_error())
+    return int(ctypes.windll.kernel32.GetLastError())
 
 
 _child_graceful_stop_hooks: list = []
@@ -879,14 +916,15 @@ def setup_job_object():
         return None
 
     try:
-        kernel32 = ctypes.windll.kernel32
+        kernel32 = _get_windows_job_api()
+        from ctypes import wintypes
 
         # Job Object 常量
         JOB_OBJECT_EXTENDED_LIMIT_INFORMATION = 9
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000
 
         # 先检查当前进程是否已在某个 Job 中（Steam 场景常见）
-        is_in_job = ctypes.c_int(0)
+        is_in_job = wintypes.BOOL(0)
         current_process = kernel32.GetCurrentProcess()
         if not kernel32.IsProcessInJob(current_process, None, ctypes.byref(is_in_job)):
             print(f"[Launcher] Warning: IsProcessInJob failed (err={_get_last_error()})", flush=True)
@@ -901,40 +939,7 @@ def setup_job_object():
         # 设置 Job Object 信息
         # JOBOBJECT_EXTENDED_LIMIT_INFORMATION 结构体
         # 我们只需要设置 BasicLimitInformation.LimitFlags
-        class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('PerProcessUserTimeLimit', ctypes.c_int64),
-                ('PerJobUserTimeLimit', ctypes.c_int64),
-                ('LimitFlags', ctypes.c_uint32),
-                ('MinimumWorkingSetSize', ctypes.c_size_t),
-                ('MaximumWorkingSetSize', ctypes.c_size_t),
-                ('ActiveProcessLimit', ctypes.c_uint32),
-                ('Affinity', ctypes.c_size_t),
-                ('PriorityClass', ctypes.c_uint32),
-                ('SchedulingClass', ctypes.c_uint32),
-            ]
-
-        class IO_COUNTERS(ctypes.Structure):
-            _fields_ = [
-                ('ReadOperationCount', ctypes.c_uint64),
-                ('WriteOperationCount', ctypes.c_uint64),
-                ('OtherOperationCount', ctypes.c_uint64),
-                ('ReadTransferCount', ctypes.c_uint64),
-                ('WriteTransferCount', ctypes.c_uint64),
-                ('OtherTransferCount', ctypes.c_uint64),
-            ]
-
-        class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
-            _fields_ = [
-                ('BasicLimitInformation', JOBOBJECT_BASIC_LIMIT_INFORMATION),
-                ('IoInfo', IO_COUNTERS),
-                ('ProcessMemoryLimit', ctypes.c_size_t),
-                ('JobMemoryLimit', ctypes.c_size_t),
-                ('PeakProcessMemoryUsed', ctypes.c_size_t),
-                ('PeakJobMemoryUsed', ctypes.c_size_t),
-            ]
-
-        info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+        info = _JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
 
         result = kernel32.SetInformationJobObject(

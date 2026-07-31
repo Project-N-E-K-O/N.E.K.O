@@ -337,9 +337,6 @@ class QQAutoReplyPromptingMixin:
             login_nickname=login_nickname,
         )
 
-    async def _ensure_session_for_user(self, user_data: dict[str, object]) -> Optional[dict[str, object]]:
-        return await self.session_bootstrap_service.ensure_session_for_user(user_data)
-
     async def _generate_reply(
         self,
         message: str,

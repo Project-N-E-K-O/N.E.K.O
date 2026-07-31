@@ -1629,7 +1629,7 @@
                     existingHud && existingHud.style.display !== 'none' && this.isElementVisible(existingHud)
                 );
                 if (window.AgentHUD && typeof window.AgentHUD.showAgentTaskHUD === 'function') {
-                    window.AgentHUD.showAgentTaskHUD();
+                    window.AgentHUD.showAgentTaskHUD({ ignoreVisibilityPreference: true });
                     this.avatarFloatingGuideTemporaryHudShown = true;
                     if (typeof window.AgentHUD.expandAgentTaskHUD === 'function') {
                         window.AgentHUD.expandAgentTaskHUD();

@@ -43,6 +43,7 @@ from ._shared import (
     IDLE_SESSION_RESET_THRESHOLD_SECONDS,
     IDLE_SESSION_RESET_CHECK_INTERVAL_SECONDS,
     FRONTEND_START_SESSION_TIMEOUT_SECONDS,
+    _HANDSHAKE_OVERRIDE_UNSET,
     _START_LLM_CONCURRENT_ABORTED,
     _ORPHAN_SESSION_REAPER_TASKS,
 )
@@ -57,7 +58,6 @@ from .callback_render import (
 # those names here: a from-import snapshots the value at import time and the
 # facade patch would no longer reach this module's methods.
 from main_logic import core as _core_facade
-
 
 class LifecycleMixin:
     """Session lifecycle methods (see module docstring)."""
@@ -683,8 +683,17 @@ class LifecycleMixin:
         except Exception as e:
             logger.debug("[%s] 活动心跳 kick 失败: %s", self.lanlan_name, e)
 
-    async def start_session(self, websocket: WebSocket, new=False, input_mode='audio',
-                            *, user_initiated=False, _allow_cross_mode_restart=True):
+    async def start_session(
+        self,
+        websocket: WebSocket,
+        new=False,
+        input_mode='audio',
+        *,
+        user_initiated=False,
+        _allow_cross_mode_restart=True,
+        handshake_override=_HANDSHAKE_OVERRIDE_UNSET,
+        resource_optimization_override=_HANDSHAKE_OVERRIDE_UNSET,
+    ):
         # user_initiated：True 仅由 websocket_router 的 start_session action 传入，
         # 标记"用户显式点击启动"。跨模式撞车时只有用户显式请求才会等 in-flight
         # 落定后改起目标模式；后台 proactive / greeting 的 auto-start 跨模式撞车
@@ -701,8 +710,19 @@ class LifecycleMixin:
         # frontend whose field is absent and therefore CLEARS the override --
         # replaced the first request's value, so that audio session selected the
         # persisted or opposite route. Read once here, then carry it down.
-        session_handshake_override = getattr(
-            self, "_independent_asr_handshake_override", None
+        session_handshake_override = (
+            getattr(self, "_independent_asr_handshake_override", None)
+            if handshake_override is _HANDSHAKE_OVERRIDE_UNSET
+            else handshake_override
+        )
+        session_resource_optimization_handshake_override = (
+            getattr(
+                self,
+                "_voice_input_resource_optimization_handshake_override",
+                None,
+            )
+            if resource_optimization_override is _HANDSHAKE_OVERRIDE_UNSET
+            else resource_optimization_override
         )
         self._start_session_seed_turn_language()
         # 重置防刷屏标志
@@ -720,6 +740,10 @@ class LifecycleMixin:
             websocket, new, input_mode,
             user_initiated=user_initiated,
             _allow_cross_mode_restart=_allow_cross_mode_restart,
+            handshake_override=session_handshake_override,
+            resource_optimization_override=(
+                session_resource_optimization_handshake_override
+            ),
         ):
             return
 
@@ -810,6 +834,9 @@ class LifecycleMixin:
                     llm_result,
                     _diag_start,
                     handshake_override=session_handshake_override,
+                    resource_optimization_override=(
+                        session_resource_optimization_handshake_override
+                    ),
                 )
             else:
                 raise Exception("Session not initialized")
@@ -838,8 +865,17 @@ class LifecycleMixin:
                     # Cancellation echo or the prefetch's own error — moot once this start attempt ends.
                     pass
 
-    async def _start_session_handle_inflight(self, websocket, new, input_mode, *,
-                                             user_initiated, _allow_cross_mode_restart):
+    async def _start_session_handle_inflight(
+        self,
+        websocket,
+        new,
+        input_mode,
+        *,
+        user_initiated,
+        _allow_cross_mode_restart,
+        handshake_override,
+        resource_optimization_override,
+    ):
         """Handle a start request that collides with an in-flight start_session.
 
         Returns True when the collision was fully handled here (same-mode dedup
@@ -939,8 +975,15 @@ class LifecycleMixin:
                 # 二次并发撞车回落静默 return 而非无界递归（greptile P2）。guard 检查
                 # （_starting_session_count 判定）前无 await，count==0 的判定到重入是原子的。
                 self.reset_session_start_circuit()
-                await self.start_session(websocket, new, input_mode,
-                                         user_initiated=True, _allow_cross_mode_restart=False)
+                await self.start_session(
+                    websocket,
+                    new,
+                    input_mode,
+                    user_initiated=True,
+                    _allow_cross_mode_restart=False,
+                    handshake_override=handshake_override,
+                    resource_optimization_override=resource_optimization_override,
+                )
         else:
             logger.warning("⚠️ Session正在启动中（跨模式重复请求），忽略")
         return True
@@ -1518,6 +1561,7 @@ class LifecycleMixin:
         diag_start,
         *,
         handshake_override=...,
+        resource_optimization_override=...,
     ):
         """Post-connect activation: flip the active flags, start the message
         handler, reset the failure circuit, ack the frontend, and open the
@@ -1542,6 +1586,7 @@ class LifecycleMixin:
         await self._start_independent_asr_if_enabled(
             input_mode,
             handshake_override=handshake_override,
+            resource_optimization_override=resource_optimization_override,
         )
 
         # 启动成功，重置失败计数器和熔断
@@ -2173,8 +2218,20 @@ class LifecycleMixin:
                 _extras_for_budget = _selected
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=False)
-                except (web_exceptions.ConnectionClosed, AttributeError) as e:
-                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
+                except (
+                    web_exceptions.ConnectionClosed,
+                    AttributeError,
+                    ConnectionError,
+                    RuntimeError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作。
+                    # skipped=False 的 prime 走 create_response → response arbiter，
+                    # ticket 失败以 ConnectionError / RuntimeError / TimeoutError 浮出
+                    # （派发被打断、连接不可用、终态超时等）——这些同样意味着"本次
+                    # prime 没有送达、放弃本次 swap、老会话继续用"，必须走本分支的
+                    # 定向收尾，而不是落到外层兜底把良性放弃当 INTERNAL_UPDATE_FAILED
+                    # 报给前端。
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
                     await self._reset_preparation_state(clear_main_cache=True)
@@ -2212,8 +2269,16 @@ class LifecycleMixin:
                         final_prime_text += "\n" + _passive_swap_text
                 try:
                     await self.pending_session.prime_context(final_prime_text, skipped=True)
-                except (web_exceptions.ConnectionClosed, AttributeError) as e:
-                    # pending_session 连接已关闭或websocket为None，放弃整个 swap 操作
+                except (
+                    web_exceptions.ConnectionClosed,
+                    AttributeError,
+                    ConnectionError,
+                    RuntimeError,
+                    asyncio.TimeoutError,
+                ) as e:
+                    # 与上方 skipped=False 分支同款收窄→放宽（对偶）：Gemini 的
+                    # skipped=True prime 走 SDK send，同样以 RuntimeError /
+                    # ConnectionError 浮出；良性"放弃本次 swap"不该落外层兜底。
                     logger.error(f"💥 Final Swap Sequence: pending_session不可用，放弃swap操作: {e}")
                     await self._cleanup_pending_session_resources()
                     await self._reset_preparation_state(clear_main_cache=True)
@@ -2303,38 +2368,42 @@ class LifecycleMixin:
                 except Exception as e:
                     logger.warning(f"Final Swap Sequence: Old task exited with error: {e}")
 
-            # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────────
-            if old_main_session:
-                try:
-                    await old_main_session.close()
-                except Exception as e:
-                    logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
+            # Exclude Core voice-final delivery across the entire close+promote
+            # window. The ASR dispatcher shares this lock, so a final either
+            # completes before the old arbiter closes or sees the replacement
+            # after promotion; it can no longer land between the two.
+            core_voice_session_lock = getattr(
+                self,
+                "_core_voice_session_swap_lock",
+                None,
+            )
+            if core_voice_session_lock is None:
+                core_voice_session_lock = asyncio.Lock()
+                self._core_voice_session_swap_lock = core_voice_session_lock
+            async with core_voice_session_lock:
+                # ── 步骤 2：旧 task 已停，安全关闭旧 session ─────────────────────
+                if old_main_session:
+                    try:
+                        await old_main_session.close()
+                    except Exception as e:
+                        logger.error(f"💥 Final Swap Sequence: Error closing old session: {e}")
 
-            # ── promote 前的协作取消检查点 ───────────────────────────────────────
-            # Python 3.11 的 asyncio.wait_for（步骤 1）以及部分 session.close()（步骤 2）
-            # 在外层取消恰好落在其内层 await 已完成之后时，会把该取消“正常返回”式吞掉
-            # —— except CancelledError 分支不触发，僵尸带着 cancelling()>0 继续走到 promote。
-            # 步骤 1 的 except 只能拦到 wait_for *抛出* 取消的路径，拦不到这条“被吞”的路径。
-            # 这里在真正改 self.session 之前补一次显式检查：只要本任务有未确认的取消请求，
-            # 就 re-raise 交给下面的 CancelledError 处理器关闭 new_session、重置状态。
-            # 对正常热切换零影响（无外层取消时 cancelling()==0）。
-            _swap_task = asyncio.current_task()
-            if _swap_task is not None and _swap_task.cancelling() > 0:
-                raise asyncio.CancelledError()
+                # ── promote 前的协作取消检查点 ───────────────────────────────────
+                # Python 3.11 的 asyncio.wait_for（步骤 1）以及部分 session.close()
+                # （步骤 2）在外层取消恰好落在其内层 await 已完成之后时，会把该取消
+                # “正常返回”式吞掉。只要本任务有未确认的取消请求，就交给下面的
+                # CancelledError 处理器关闭 new_session、重置状态。
+                _swap_task = asyncio.current_task()
+                if _swap_task is not None and _swap_task.cancelling() > 0:
+                    raise asyncio.CancelledError()
 
-            # ── 步骤 3：promote 新 session ────────────────────────────────────────
-            # 旧 listener 已停、旧 session 已关，现在切换 self.session；
-            # 此后旧 task 的任何回调若再执行也已看不到旧 ws。
-            # 镜像启动侧的强 CAS（_start_session_start_llm 的持锁提升）：整段 swap
-            # 期间本函数从不改 self.session，正常路径它必然仍是入口快照的
-            # old_main_session；任何偏离都意味着并发 start/end_session 已接管会话
-            # （典型：swap 被取消但存活成僵尸后，新 start_session 已清场或已就位），
-            # 此时覆盖 self.session 会孤儿化赢家 —— 中止 swap 并关闭 new_session。
-            # 不回滚共享准备状态：它已属于接管方的新纪元，由接管方管理。
-            async with self.lock:
-                _promote_allowed = self.session is old_main_session
-                if _promote_allowed:
-                    self.session = new_session
+                # ── 步骤 3：promote 新 session ────────────────────────────────────
+                # 镜像启动侧的强 CAS：任何偏离都意味着并发 start/end_session
+                # 已接管会话，此时覆盖 self.session 会孤儿化赢家。
+                async with self.lock:
+                    _promote_allowed = self.session is old_main_session
+                    if _promote_allowed:
+                        self.session = new_session
             if not _promote_allowed:
                 logger.warning("⚠️ Final Swap Sequence: promote 时 self.session 已被并发接管，中止 swap 并关闭 new_session")
                 try:

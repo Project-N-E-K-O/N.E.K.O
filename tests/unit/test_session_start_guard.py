@@ -151,7 +151,13 @@ async def test_cross_mode_start_waits_then_restarts_in_requested_mode():
 
     # 重入禁用二次跨模式重启（深度封顶 1）。
     restart_mock.assert_awaited_once_with(
-        ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
+        ws,
+        False,
+        "audio",
+        user_initiated=True,
+        _allow_cross_mode_restart=False,
+        handshake_override=None,
+        resource_optimization_override=None,
     )
 
 
@@ -243,7 +249,13 @@ async def test_cross_mode_start_restarts_even_if_inflight_failed_internally():
 
     # param ws still connected + self.websocket is None ⇒ restart proceeds.
     restart_mock.assert_awaited_once_with(
-        ws, False, "audio", user_initiated=True, _allow_cross_mode_restart=False
+        ws,
+        False,
+        "audio",
+        user_initiated=True,
+        _allow_cross_mode_restart=False,
+        handshake_override=None,
+        resource_optimization_override=None,
     )
 
 

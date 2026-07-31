@@ -1391,7 +1391,7 @@ I.mod = window.appUi;
 
     // --- syncFloatingMicButtonState ---
     I.syncFloatingMicButtonState = function syncFloatingMicButtonState(isActive) {
-        const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
+        const managers = [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager];
 
         for (const manager of managers) {
             if (manager && manager._floatingButtons && manager._floatingButtons.mic) {
@@ -1420,23 +1420,34 @@ I.mod = window.appUi;
 
     // --- syncFloatingScreenButtonState ---
     I.syncFloatingScreenButtonState = function syncFloatingScreenButtonState(isActive) {
-        const managers = [window.live2dManager, window.vrmManager, window.mmdManager];
+        const managers = [window.live2dManager, window.vrmManager, window.mmdManager, window.pngtuberManager];
 
         for (const manager of managers) {
-            if (manager && manager._floatingButtons && manager._floatingButtons.screen) {
+            if (
+                manager
+                && manager._floatingButtons
+                && (manager._floatingButtons.screen || manager._floatingButtons['screen-share-quick'])
+            ) {
                 if (typeof manager.setButtonActive === 'function') {
                     manager.setButtonActive('screen', isActive);
                 } else {
-                    const { button, imgOff, imgOn } = manager._floatingButtons.screen;
-                    if (button) {
-                        button.dataset.active = isActive ? 'true' : 'false';
-                        if (imgOff && imgOn) {
-                            imgOff.style.opacity = isActive ? '0' : '0.75';
-                            imgOn.style.opacity = isActive ? '1' : '0';
+                    const screenRef = manager._floatingButtons.screen;
+                    const quickRef = manager._floatingButtons['screen-share-quick'];
+                    if (screenRef) {
+                        const { button, imgOff, imgOn } = screenRef;
+                        if (button) {
+                            button.dataset.active = isActive ? 'true' : 'false';
+                            if (imgOff && imgOn) {
+                                imgOff.style.opacity = isActive ? '0' : '0.75';
+                                imgOn.style.opacity = isActive ? '1' : '0';
+                            }
+                            if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
+                                manager.updateSeparatePopupTriggerIcon('screen');
+                            }
                         }
-                        if (typeof manager.updateSeparatePopupTriggerIcon === 'function') {
-                            manager.updateSeparatePopupTriggerIcon('screen');
-                        }
+                    }
+                    if (quickRef && typeof quickRef.updateState === 'function') {
+                        quickRef.updateState(isActive);
                     }
                 }
             }

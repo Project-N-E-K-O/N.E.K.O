@@ -13,7 +13,9 @@ import pytest
 from main_logic.core import LLMSessionManager
 from main_logic.core.asr_runtime import AsrRuntimeMixin, _HotSwapAudioFrame
 from main_logic.asr_client.runtime import AsrStartResult, AsrStartStatus
-from main_logic.asr_client.detector_runtime import DetectorFeedResult, DetectorRuntime
+from main_logic.asr_client.endpointing.detector_runtime import DetectorFeedResult, DetectorRuntime
+from main_logic.voice_input import VoiceInputDispatchResult
+from main_logic.voice_input.consumers import CoreChatTurnContext
 from main_logic.asr_client.lifecycle import (
     VoiceLifecycleEvent,
     VoiceLifecycleState,
@@ -34,8 +36,8 @@ from main_logic.voice_turn.contracts import (
     VoiceTranscriptEvent,
 )
 from main_logic.voice_turn.contracts import EvaluationStatus, TurnDecision
-from main_logic.voice_turn.coordinator import CoordinatorState
-from main_logic.asr_client.detector import (
+from main_logic.asr_client.endpointing.coordinator import CoordinatorState
+from main_logic.asr_client.endpointing.detector import (
     BoundDetectorTurn,
     CoreDetectorEventEnvelope,
     DetectorCandidateKey,
@@ -726,10 +728,23 @@ async def test_game_takeover_wins_even_if_provider_clear_fails() -> None:
     assert runtime._asr_lifecycle.snapshot.state.value == "suspended"
 
 
-async def test_bound_game_consumer_reuses_smart_turn_asr_without_core() -> None:
+async def test_game_consumer_reuses_smart_turn_asr_without_core(
+    monkeypatch,
+) -> None:
     runtime = _Runtime()
-    on_final = AsyncMock()
-    binding = runtime.bind_voice_input_consumer("game", on_final)
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
 
     assert (
         await runtime._handle_voice_input_control(
@@ -749,18 +764,18 @@ async def test_bound_game_consumer_reuses_smart_turn_asr_without_core() -> None:
     await runtime._handle_independent_asr_final("play", epoch, "qwen")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    event = on_final.await_args.args[0]
-    assert isinstance(event, VoiceTranscriptEvent)
-    assert event.text == "play"
-    assert event.provider == "qwen"
-    assert event.turn_token.turn_id > 0
+    route_transcript.assert_awaited_once_with(
+        "Test",
+        "play",
+        request_id=f"asr-{epoch}-1",
+        game_type="game",
+        session_id="session-a",
+    )
     runtime.handle_new_message.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.create_response.assert_not_awaited()
     assert runtime._omni_mic_audio_bytes == 0
 
-    with pytest.raises(RuntimeError, match="RELEASE_LEASE_FIRST"):
-        runtime.unbind_voice_input_consumer(binding)
     assert (
         await runtime._handle_voice_input_control(
             "lease_sync",
@@ -771,13 +786,23 @@ async def test_bound_game_consumer_reuses_smart_turn_asr_without_core() -> None:
         )
         is True
     )
-    assert runtime.unbind_voice_input_consumer(binding) is True
 
 
-async def test_bound_game_consumer_ignores_empty_final() -> None:
+async def test_game_consumer_ignores_empty_final(monkeypatch) -> None:
     runtime = _Runtime()
-    on_final = AsyncMock()
-    runtime.bind_voice_input_consumer("game", on_final)
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
     assert (
         await runtime._handle_voice_input_control(
             "lease_sync",
@@ -797,19 +822,156 @@ async def test_bound_game_consumer_ignores_empty_final() -> None:
         text="",
     )
 
-    await runtime._dispatch_core_asr_transcript(event)
+    assert await runtime._prepare_voice_input_turn(event.turn_token) is True
+    await runtime._dispatch_voice_input_final(event)
+    await runtime._voice_input_registry.wait_idle()
 
-    on_final.assert_not_awaited()
+    route_transcript.assert_not_awaited()
     runtime.handle_new_message.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.create_response.assert_not_awaited()
 
 
-async def test_bound_game_consumer_accepts_real_pcm_through_pipeline() -> None:
+async def test_game_takeover_pre_abort_window_rejects_stale_core_turn(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    assert (
+        await runtime._handle_voice_input_control(
+            "lease_sync",
+            1,
+            owner="core",
+            hard_muted=False,
+            focus_suppressed=False,
+        )
+        is True
+    )
+    _install_ready_lifecycle(runtime, "openai")
+    runtime._asr_session.close = AsyncMock()
+    runtime._asr_session.signal_user_activity_end = AsyncMock()
+
+    preview_clear_started = asyncio.Event()
+    release_preview_clear = asyncio.Event()
+
+    async def block_preview_clear(payload: dict[str, object]) -> None:
+        if (
+            payload.get("type") == "user_transcript_preview"
+            and payload.get("text") == ""
+        ):
+            preview_clear_started.set()
+            await release_preview_clear.wait()
+
+    runtime.websocket = SimpleNamespace(
+        send_json=AsyncMock(side_effect=block_preview_clear),
+    )
+    epoch = runtime._asr_session_epoch
+    await _start_and_seal_turn(runtime, "openai")
+    sealed = runtime._asr_runtime._asr_sealed_turn_token
+    assert sealed is not None
+    stale_ingress = sealed.turn.ingress
+
+    await runtime._handle_independent_asr_final("", epoch, "openai")
+    await asyncio.wait_for(preview_clear_started.wait(), 1)
+
+    takeover = asyncio.create_task(
+        runtime._handle_voice_input_control("game_takeover", 2)
+    )
+    endpoint: asyncio.Task[None] | None = None
+    try:
+        for _ in range(100):
+            if runtime._voice_lease_owner == "game":
+                break
+            await asyncio.sleep(0)
+        assert runtime._voice_lease_owner == "game"
+        assert runtime._voice_lease_generation == 2
+        assert takeover.done() is False
+
+        await runtime._handle_independent_asr_activity(
+            SpeechActivityEvent.SPEECH_STARTED,
+            epoch,
+        )
+        prepared_token = runtime._asr_runtime._asr_partial_turn_token
+        endpoint = asyncio.create_task(
+            runtime._handle_independent_asr_endpoint(epoch)
+        )
+        for _ in range(100):
+            if endpoint.done():
+                break
+            await asyncio.sleep(0)
+        await runtime._handle_independent_asr_final(
+            "stale core audio",
+            epoch,
+            "openai",
+        )
+        await runtime._asr_runtime.wait_transcript_idle()
+
+        assert stale_ingress.lease_generation == 1
+        assert prepared_token is None
+        route_transcript.assert_not_awaited()
+    finally:
+        release_preview_clear.set()
+        pending = [takeover]
+        if endpoint is not None:
+            pending.append(endpoint)
+        results = await asyncio.wait_for(asyncio.gather(*pending), 1)
+        assert results[0] is True
+        await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{epoch}-1"
+    )
+
+
+async def test_rejected_voice_input_final_is_observable(monkeypatch) -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    event = VoiceTranscriptEvent(
+        turn_token=runtime._asr_runtime._capture_turn_token(
+            runtime._asr_lifecycle
+        ),
+        provider="qwen",
+        text="hello",
+    )
+    runtime._voice_input_registry.dispatch_final = AsyncMock(
+        return_value=VoiceInputDispatchResult.REJECTED
+    )
+    debug = MagicMock()
+    monkeypatch.setattr(core_asr_runtime_module.logger, "debug", debug)
+
+    await runtime._dispatch_voice_input_final(event)
+
+    debug.assert_called_once()
+    assert "voice input final rejected" in debug.call_args.args[0]
+
+
+async def test_game_consumer_accepts_real_pcm_through_pipeline(
+    monkeypatch,
+) -> None:
     runtime = _Runtime()
     runtime.is_active = True
     runtime.is_hot_swap_imminent = False
-    runtime.bind_voice_input_consumer("game", AsyncMock())
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
     assert (
         await runtime._handle_voice_input_control(
             "lease_sync",
@@ -852,9 +1014,12 @@ async def test_bound_game_consumer_accepts_real_pcm_through_pipeline() -> None:
     )
 
 
-async def test_bound_game_consumer_submit_preserves_owner_identity() -> None:
+async def test_game_consumer_submit_preserves_owner_identity(monkeypatch) -> None:
     runtime = _Runtime()
-    runtime.bind_voice_input_consumer("game", AsyncMock())
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
     assert (
         await runtime._handle_voice_input_control(
             "lease_sync",
@@ -892,12 +1057,22 @@ async def test_bound_game_consumer_submit_preserves_owner_identity() -> None:
     )
 
 
-async def test_game_consumer_failure_never_falls_back_to_core() -> None:
+async def test_game_consumer_failure_never_falls_back_to_core(
+    monkeypatch,
+) -> None:
     runtime = _Runtime()
-    on_final = AsyncMock(side_effect=RuntimeError("consumer failed"))
-    runtime.bind_voice_input_consumer(
-        "game",
-        on_final,
+    route_transcript = AsyncMock(side_effect=RuntimeError("consumer failed"))
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
     )
     await runtime._handle_voice_input_control(
         "lease_sync",
@@ -913,21 +1088,34 @@ async def test_game_consumer_failure_never_falls_back_to_core() -> None:
     await runtime._handle_independent_asr_final("play", epoch, "qwen")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    on_final.assert_awaited_once()
-    event = on_final.await_args.args[0]
-    assert isinstance(event, VoiceTranscriptEvent)
-    assert event.text == "play"
-    assert event.provider == "qwen"
+    route_transcript.assert_awaited_once_with(
+        "Test",
+        "play",
+        request_id=f"asr-{epoch}-1",
+        game_type="game",
+        session_id="session-a",
+    )
     runtime.handle_new_message.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.create_response.assert_not_awaited()
     assert runtime._omni_mic_audio_bytes == 0
 
 
-async def test_game_final_cannot_cross_lease_back_to_core() -> None:
+async def test_game_final_cannot_cross_lease_back_to_core(monkeypatch) -> None:
     runtime = _Runtime()
-    on_final = AsyncMock()
-    runtime.bind_voice_input_consumer("game", on_final)
+    route_transcript = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.get_active_game_route_identity",
+        lambda _name: ("game", "session-a"),
+    )
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.route_external_voice_transcript",
+        route_transcript,
+    )
     await runtime._handle_voice_input_control(
         "lease_sync",
         1,
@@ -949,15 +1137,18 @@ async def test_game_final_cannot_cross_lease_back_to_core() -> None:
     await runtime._handle_independent_asr_final("stale", epoch, "qwen")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    on_final.assert_not_awaited()
+    route_transcript.assert_not_awaited()
     runtime.handle_input_transcript.assert_not_awaited()
     runtime.session.create_response.assert_not_awaited()
     assert runtime._omni_mic_audio_bytes == 0
 
 
-async def test_hard_mute_overrides_bound_game_consumer() -> None:
+async def test_hard_mute_overrides_game_consumer(monkeypatch) -> None:
     runtime = _Runtime()
-    runtime.bind_voice_input_consumer("game", AsyncMock())
+    monkeypatch.setattr(
+        "main_logic.voice_input.consumers.game.is_game_route_active",
+        lambda _name: True,
+    )
 
     await runtime._handle_voice_input_control(
         "lease_sync",
@@ -1080,9 +1271,44 @@ async def test_game_takeover_during_core_prepare_drops_stale_message() -> None:
     runtime.handle_new_message.assert_not_awaited()
     external_turn_id = f"asr-{token.ingress.session_epoch}-{token.turn_id}"
     assert runtime.session.abandon_external_voice_turn.call_args_list == [
-        call(None),
         call(external_turn_id),
     ]
+
+
+async def test_stale_core_prepare_restores_previous_preview_owner() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    prepare_started = asyncio.Event()
+    release_prepare = asyncio.Event()
+
+    async def block_prepare(*, turn_id: str) -> None:
+        del turn_id
+        prepare_started.set()
+        await release_prepare.wait()
+
+    runtime.session.prepare_external_voice_turn = AsyncMock(side_effect=block_prepare)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    previous_token = replace(token, turn_id=token.turn_id + 100)
+    previous_turn_id = (
+        f"asr-{previous_token.ingress.session_epoch}-{previous_token.turn_id}"
+    )
+    runtime._core_asr_preview_turn_id = previous_turn_id
+    runtime._core_asr_preview_turn_token = previous_token
+    runtime._core_asr_preview_text = "previous partial"
+
+    prepare_task = asyncio.create_task(runtime._prepare_core_voice_turn(token))
+    await asyncio.wait_for(prepare_started.wait(), 1)
+    runtime._voice_input_transition_generation += 1
+    release_prepare.set()
+
+    assert await asyncio.wait_for(prepare_task, 1) is False
+    assert runtime._core_asr_preview_turn_id == previous_turn_id
+    assert runtime._core_asr_preview_turn_token == previous_token
+    assert runtime._core_asr_preview_text == "previous partial"
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
 
 
 async def test_turn_endpoint_seals_immediately_before_provider_final() -> None:
@@ -1174,6 +1400,16 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
         runtime._asr_session_epoch,
         "qwen",
     )
+    # Teardown racing the queued empty final may win or lose, but both paths
+    # terminate the same pinned route. Repeated invalidation and a duplicate
+    # provider final must not produce a second cancellation/abandonment.
+    runtime._invalidate_voice_pcm_sync("duplicate_after_empty_final")
+    runtime._invalidate_voice_pcm_sync("duplicate_after_empty_final")
+    await runtime._handle_independent_asr_final(
+        "",
+        runtime._asr_session_epoch,
+        "qwen",
+    )
     await runtime._wait_asr_transcript_dispatch_idle()
 
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
@@ -1182,6 +1418,36 @@ async def test_empty_final_completes_turn_without_core_injection() -> None:
     runtime.session.create_response.assert_not_awaited()
     runtime.session.abandon_external_voice_turn.assert_called_once_with(turn_id)
     assert runtime._omni_mic_audio_bytes == 0
+
+
+async def test_blocked_consumer_callback_does_not_block_next_turn_lifecycle() -> (
+    None
+):
+    runtime = _Runtime()
+    callback_started = asyncio.Event()
+    release_callback = asyncio.Event()
+
+    async def block_first_final(*_args, **_kwargs) -> bool:
+        callback_started.set()
+        await release_callback.wait()
+        return True
+
+    runtime.handle_input_transcript.side_effect = block_first_final
+    await _start_and_seal_turn(runtime, "qwen")
+    epoch = runtime._asr_session_epoch
+
+    await runtime._handle_independent_asr_final("first", epoch, "qwen")
+    await asyncio.wait_for(callback_started.wait(), 1)
+    await runtime._handle_independent_asr_activity(
+        SpeechActivityEvent.SPEECH_STARTED,
+        epoch,
+    )
+
+    assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.ACTIVE
+    assert runtime._asr_turn_prepared is True
+    release_callback.set()
+    await runtime._wait_asr_transcript_dispatch_idle()
+    runtime.session.create_response.assert_awaited_once_with("first")
 
 
 async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:
@@ -1200,13 +1466,42 @@ async def test_prepare_failure_releases_keyed_external_turn_pause() -> None:
     )
 
 
-async def test_final_transcript_submits_to_the_session_it_was_validated_against() -> None:
-    # Codex P2. _dispatch_core_asr_transcript validates `self.session is
-    # session_ref`, then awaits _restore_core_asr_preview_after_final -- a
-    # websocket send. _submit_core_voice_turn used to re-read self.session after
-    # that await, discarding the validation: a hot swap promoting a replacement
-    # session inside the window made it inject this conversation's transcript
-    # into the next one, producing a reply in the wrong conversation.
+async def test_registry_prepare_rejection_releases_keyed_external_turn_pause() -> (
+    None
+):
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    runtime.handle_new_message = AsyncMock(side_effect=RuntimeError("history failed"))
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+
+    assert await runtime._prepare_voice_input_turn(token) is False
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+
+
+async def test_registry_cancelled_prepare_releases_keyed_external_turn_pause() -> (
+    None
+):
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    runtime.handle_new_message = AsyncMock(side_effect=asyncio.CancelledError)
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime._prepare_voice_input_turn(token)
+    await runtime._voice_input_registry.wait_idle()
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+
+
+async def test_final_transcript_drops_new_conversation_swap_mid_restore() -> None:
+    """A real conversation transition still invalidates the prepared final."""
     runtime = _Runtime()
     _install_ready_lifecycle(runtime)
     runtime.session.abandon_external_voice_turn = MagicMock()
@@ -1218,6 +1513,7 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
     replacement.abandon_external_voice_turn = MagicMock()
 
     async def _hot_swap_mid_restore(*_args, **_kwargs) -> None:
+        runtime._voice_input_transition_generation += 1
         runtime.session = replacement
 
     runtime._restore_core_asr_preview_after_final = _hot_swap_mid_restore
@@ -1233,11 +1529,116 @@ async def test_final_transcript_submits_to_the_session_it_was_validated_against(
     # assertions below would pass while modelling an ordinary final with no hot
     # swap at all. Pin that the swap really happened first.
     assert runtime.session is replacement
-    # The turn lands on the session that produced it...
-    timed_session.create_response.assert_awaited_once_with("hello")
-    # ...and never touches the one that replaced it.
+    timed_session.create_response.assert_not_awaited()
     replacement.create_response.assert_not_awaited()
     replacement.submit_external_voice_turn.assert_not_awaited()
+
+
+async def test_pre_dispatch_hot_swap_reprepares_turn_on_promoted_session() -> None:
+    """A same-route hot swap transfers the final off the closed old arbiter."""
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    prepared_session = runtime.session
+    prepared_session.create_response.side_effect = RuntimeError("closed arbiter")
+
+    replacement = type("Omni", (), {})()
+    replacement.create_response = AsyncMock()
+    replacement.submit_external_voice_turn = AsyncMock()
+    replacement.prepare_external_voice_turn = AsyncMock()
+    replacement.abandon_external_voice_turn = MagicMock()
+
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    runtime.session = replacement
+    await runtime._dispatch_core_asr_transcript(
+        VoiceTranscriptEvent(turn_token=token, provider="qwen", text="prepared"),
+        session_ref=prepared_session,
+    )
+
+    prepared_session.create_response.assert_not_awaited()
+    replacement.prepare_external_voice_turn.assert_awaited_once_with(
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+    replacement.submit_external_voice_turn.assert_awaited_once_with(
+        "prepared",
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
+
+
+async def test_final_waits_for_shared_swap_barrier_then_uses_promoted_session() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    prepared_session = runtime.session
+    prepared_session.abandon_external_voice_turn = MagicMock()
+
+    replacement = type("Omni", (), {})()
+    replacement.submit_external_voice_turn = AsyncMock()
+    replacement.prepare_external_voice_turn = AsyncMock()
+    replacement.abandon_external_voice_turn = MagicMock()
+
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    await runtime._core_voice_session_swap_lock.acquire()
+    dispatch = asyncio.create_task(
+        runtime._dispatch_core_asr_transcript(
+            VoiceTranscriptEvent(
+                turn_token=token,
+                provider="qwen",
+                text="after swap",
+            ),
+            session_ref=prepared_session,
+        )
+    )
+    try:
+        await asyncio.sleep(0)
+        assert dispatch.done() is False
+        runtime.session = replacement
+    finally:
+        runtime._core_voice_session_swap_lock.release()
+    await dispatch
+
+    replacement.prepare_external_voice_turn.assert_awaited_once_with(
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+    replacement.submit_external_voice_turn.assert_awaited_once_with(
+        "after swap",
+        turn_id=f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
+
+
+async def test_final_swap_barrier_timeout_drops_without_blocking_dispatcher() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    runtime._core_voice_session_swap_barrier_timeout_s = 0.01
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+
+    await runtime._core_voice_session_swap_lock.acquire()
+    try:
+        await asyncio.wait_for(
+            runtime._dispatch_core_asr_transcript(
+                VoiceTranscriptEvent(
+                    turn_token=token,
+                    provider="qwen",
+                    text="bounded",
+                )
+            ),
+            timeout=0.5,
+        )
+    finally:
+        runtime._core_voice_session_swap_lock.release()
+
+    runtime.session.create_response.assert_not_awaited()
+
+
+async def test_hot_swap_lifecycle_guards_close_and_promote_with_voice_barrier() -> None:
+    source = inspect.getsource(
+        core_module.LLMSessionManager._perform_final_swap_sequence
+    )
+
+    barrier = source.index("async with core_voice_session_lock")
+    close = source.index("await old_main_session.close()")
+    promote = source.index("self.session = new_session")
+    assert barrier < close < promote
 
 
 async def test_final_transcript_is_dropped_when_the_route_leaves_core_mid_restore() -> None:
@@ -1295,12 +1696,142 @@ async def test_transcript_dispatch_failure_releases_keyed_external_turn_pause() 
     )
 
 
+async def test_cancelled_preview_clear_still_releases_keyed_external_turn_pause() -> None:
+    runtime = _Runtime()
+    session = runtime.session
+    session.abandon_external_voice_turn = MagicMock()
+    runtime._send_core_asr_preview_clear = AsyncMock(
+        side_effect=asyncio.CancelledError
+    )
+    token = VoiceTurnToken(ingress=runtime._capture_ingress_token(), turn_id=7)
+    context = CoreChatTurnContext(
+        token=token,
+        external_turn_id="asr-cancelled-preview",
+        session_ref=session,
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await runtime._cancel_core_chat_voice_turn(context, "takeover")
+
+    session.abandon_external_voice_turn.assert_called_once_with(
+        "asr-cancelled-preview"
+    )
+
+
+@pytest.mark.parametrize("stale_guard", ["ingress", "owner"])
+async def test_stale_final_guard_releases_keyed_external_turn_pause(
+    stale_guard: str,
+) -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime)
+    runtime.session.abandon_external_voice_turn = MagicMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    event = VoiceTranscriptEvent(
+        turn_token=token,
+        provider="qwen",
+        text="hello",
+    )
+    if stale_guard == "ingress":
+        runtime._asr_audio_generation += 1
+    else:
+        runtime._voice_lease_owner = "game"
+
+    await runtime._dispatch_core_asr_transcript(event)
+
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}"
+    )
+
+
+async def test_abort_bumps_generation_before_waiting_for_registry_cancel() -> None:
+    runtime = _Runtime()
+    order: list[str] = []
+    runtime._asr_runtime.abort = AsyncMock(
+        side_effect=lambda _reason: order.append("abort")
+    )
+    runtime._invalidate_voice_pcm_sync = MagicMock(
+        side_effect=lambda _reason: order.append("invalidate")
+    )
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=lambda: order.append("wait_idle")
+    )
+
+    await runtime._abort_independent_asr("ingress_backpressure")
+
+    assert order == ["abort", "invalidate", "wait_idle"]
+
+
+async def test_suspend_advances_runtime_barrier_before_waiting_for_registry_cancel() -> (
+    None
+):
+    runtime = _Runtime()
+    order: list[str] = []
+    runtime._invalidate_voice_pcm_sync = MagicMock(
+        side_effect=lambda _reason: order.append("invalidate")
+    )
+    runtime._asr_runtime.suspend = AsyncMock(
+        side_effect=lambda _reason: order.append("suspend")
+    )
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=lambda: order.append("wait_idle")
+    )
+
+    await runtime._suspend_independent_asr("game_takeover")
+
+    assert order == ["suspend", "invalidate", "wait_idle"]
+
+
+@pytest.mark.parametrize(
+    ("previous_owner", "owner", "reason", "barrier_method"),
+    [
+        ("core", "game", "game_takeover", "suspend"),
+        ("game", "core", "game_release", "abort"),
+        ("core", "none", "connection_closed", "abort"),
+    ],
+)
+async def test_voice_lease_advances_runtime_barrier_before_waiting_for_registry(
+    previous_owner: str,
+    owner: str,
+    reason: str,
+    barrier_method: str,
+) -> None:
+    runtime = _Runtime()
+    runtime._voice_lease_owner = previous_owner
+    order: list[str] = []
+    runtime._invalidate_voice_pcm_sync = MagicMock(
+        side_effect=lambda _reason: order.append("invalidate")
+    )
+    runtime._asr_runtime.suspend = AsyncMock(
+        side_effect=lambda _reason: order.append("suspend")
+    )
+    runtime._asr_runtime.abort = AsyncMock(
+        side_effect=lambda _reason: order.append("abort")
+    )
+    runtime._asr_runtime.resume = AsyncMock()
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=lambda: order.append("wait_idle")
+    )
+
+    await runtime._apply_voice_lease_state(
+        owner=owner,
+        hard_muted=False,
+        focus_suppressed=False,
+        reason=reason,
+        force_abort=True,
+    )
+
+    assert order == ["invalidate", barrier_method, "wait_idle"]
+
+
 @pytest.mark.parametrize("operation", ["abort", "close"])
 async def test_core_asr_teardown_force_releases_external_turn_pause(
     operation: str,
 ) -> None:
     runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
     runtime.session.abandon_external_voice_turn = MagicMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    assert await runtime._prepare_voice_input_turn(token) is True
 
     if operation == "abort":
         runtime._asr_runtime.abort = AsyncMock()
@@ -1311,12 +1842,17 @@ async def test_core_asr_teardown_force_releases_external_turn_pause(
         await runtime._close_independent_asr(next_route_mode="blocked")
         runtime._asr_runtime.close.assert_awaited_once_with()
 
-    runtime.session.abandon_external_voice_turn.assert_called_once_with(None)
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
 
 
 async def test_current_asr_failure_force_releases_external_turn_pause() -> None:
     runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
     runtime.session.abandon_external_voice_turn = MagicMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    assert await runtime._prepare_voice_input_turn(token) is True
 
     await runtime._handle_core_asr_failure(
         AsrFailureEvent(
@@ -1326,7 +1862,73 @@ async def test_current_asr_failure_force_releases_external_turn_pause() -> None:
         )
     )
 
-    runtime.session.abandon_external_voice_turn.assert_called_once_with(None)
+    runtime.session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
+
+
+async def test_registry_cancellation_abandons_the_prepared_session_after_swap() -> (
+    None
+):
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    original_session = runtime.session
+    original_session.abandon_external_voice_turn = MagicMock()
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    assert await runtime._prepare_voice_input_turn(token) is True
+
+    replacement = type("Omni", (), {})()
+    replacement.abandon_external_voice_turn = MagicMock()
+    runtime.session = replacement
+    assert runtime._voice_input_registry.invalidate_utterance(
+        token,
+        reason="session_hot_swap",
+    )
+    await runtime._voice_input_registry.wait_idle()
+
+    original_session.abandon_external_voice_turn.assert_called_once_with(
+        f"asr-{token.ingress.session_epoch}-{token.turn_id}",
+    )
+    replacement.abandon_external_voice_turn.assert_not_called()
+
+
+async def test_runtime_close_preserves_manager_lifetime_registry_builtins() -> None:
+    runtime = _Runtime()
+    _install_ready_lifecycle(runtime, "qwen")
+    registry = runtime._voice_input_registry
+    core_registration = runtime._core_chat_voice_input_registration
+    game_registration = runtime._game_voice_input_registration
+    token = runtime._asr_runtime._capture_turn_token(runtime._asr_lifecycle)
+    assert await runtime._prepare_voice_input_turn(token) is True
+    runtime._asr_runtime.close = AsyncMock()
+
+    await runtime._close_independent_asr(next_route_mode="blocked")
+    runtime._ensure_asr_runtime_state()
+    runtime._ensure_asr_runtime_state()
+
+    assert runtime._voice_input_registry is registry
+    assert runtime._core_chat_voice_input_registration is core_registration
+    assert runtime._game_voice_input_registration is game_registration
+    assert core_registration.closed is False
+    assert game_registration.closed is False
+    assert len(registry._records) == 2
+
+
+async def test_runtime_state_initializes_and_backfills_phase4a_fields() -> None:
+    runtime = _Runtime()
+
+    assert runtime._voice_input_resource_optimization_handshake_override is None
+    assert runtime._voice_input_resource_optimization_session_value is None
+    assert runtime._core_asr_preview_turn_token is None
+
+    del runtime._voice_input_resource_optimization_handshake_override
+    del runtime._voice_input_resource_optimization_session_value
+    del runtime._core_asr_preview_turn_token
+    runtime._ensure_asr_runtime_state()
+
+    assert runtime._voice_input_resource_optimization_handshake_override is None
+    assert runtime._voice_input_resource_optimization_session_value is None
+    assert runtime._core_asr_preview_turn_token is None
 
 
 async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
@@ -1347,7 +1949,11 @@ async def test_provider_final_watchdog_blocks_only_independent_asr() -> None:
     runtime._asr_detector = _ReadyDetector()
 
     await _start_and_seal_turn(runtime)
-    await asyncio.sleep(0.03)
+    # 10ms 超时跟 Windows 的 15.6ms 定时器分辨率同量级，固定 sleep 到底睡多久
+    # 完全看运气；守护任务跑完才是「已开火」的权威信号，直接等它。
+    watchdog = runtime._asr_final_watchdog_task
+    assert watchdog is not None
+    await asyncio.wait_for(watchdog, 5)
 
     assert runtime._asr_route_mode == "blocked"
     runtime.handle_input_transcript.assert_not_awaited()
@@ -1365,7 +1971,9 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     # default; scale both down so the watchdog must track the policy value.
     policy = replace(
         resolve_provider_policy("glm", "manual"),
-        provider_final_timeout_ms=80,
+        # 500ms 而不是 80ms：下面「还没到点」那半只能靠时间证明，被测窗口必须
+        # 远大于 Windows 的 15.6ms 定时器分辨率，否则余量不到一个 tick。
+        provider_final_timeout_ms=500,
     )
     assert resolve_provider_policy("glm", "manual").provider_final_timeout_ms == 40_000
     runtime._asr_lifecycle = VoiceInputLifecycleController(
@@ -1376,15 +1984,35 @@ async def test_provider_final_watchdog_honors_per_provider_policy_timeout() -> N
     runtime._asr_detector = _ReadyDetector()
 
     await _start_and_seal_turn(runtime, "glm")
-    await asyncio.sleep(0.03)
+    armed_at = time.monotonic()
+    watchdog = runtime._asr_final_watchdog_task
+    assert watchdog is not None
 
+    # 单个 sleep 睡了多久在 Windows 上不可信（15.6ms 分辨率，既会提前弹出也会
+    # 超发），所以只信真实时钟：轮询到确实过了 150ms —— 远超一个 tick，也远小于
+    # 上面的 500ms 窗口。醒来后必须先复查挂钟再断言：这一觉可能被别的任务拖长而
+    # 睡过了观察窗口（甚至睡过 500ms 守护窗口），那时守护任务改成 blocked 是合法的，
+    # 先断言就会把「事后才发生」误报成「窗口内提前开火」。
     # A watchdog stuck on the shared default (10 ms in the scaled test above)
     # would have fired by now; the per-provider override keeps it armed.
-    assert runtime._asr_route_mode == "independent"
+    deadline = armed_at + 0.15
+    while True:
+        await asyncio.sleep(0.005)
+        if time.monotonic() >= deadline:
+            break
+        assert runtime._asr_route_mode == "independent"
 
-    await asyncio.sleep(0.09)
+    # 正向那半不猜时间：守护任务自己跑完（内部 await 完错误处理才结束）即同步点。
+    await asyncio.wait_for(watchdog, 5)
+    elapsed = time.monotonic() - armed_at
 
     assert runtime._asr_route_mode == "blocked"
+    # 上界也必须钉住，否则这条用例只主张「五秒内会开火」：把 per-provider 超时写成
+    # 常量 2s、或者把 ms 当成 s 换算错的回归，在 150ms 观察窗口里同样还是
+    # independent，然后在 5s 内跑完，照样通过。配置是 500ms，给 3 倍余量。
+    assert elapsed < 1.5, (
+        f"守护任务没有按 per-provider 的 500ms 超时开火，实际 {elapsed:.3f}s"
+    )
 
 
 async def test_optimization_disabled_continuously_uploads_with_smart_turn() -> None:
@@ -1734,9 +2362,10 @@ async def test_stale_overlap_onset_is_not_replayed_after_final() -> None:
 
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.WARM_IDLE
     assert runtime._asr_turn_prepared is False
-    assert [
-        call.args[0] for call in runtime.handle_input_transcript.await_args_list
-    ] == ["first"]
+    # The prepared Registry route retains the original full VoiceTurnToken.
+    # Rotating audio_generation makes the later final a different route, so
+    # strict routing drops it together with the stale overlap onset.
+    runtime.handle_input_transcript.assert_not_awaited()
     assert runtime.handle_new_message.await_count == 1
 
 
@@ -1955,9 +2584,9 @@ async def test_stale_completed_overlap_is_dropped_at_next_endpoint() -> None:
     await runtime._handle_independent_asr_final("ghost", epoch, "openai")
     await runtime._wait_asr_transcript_dispatch_idle()
 
-    assert [
-        call.args[0] for call in runtime.handle_input_transcript.await_args_list
-    ] == ["first"]
+    # Both the overlap credit and the final belong to the superseded full
+    # VoiceTurnToken once audio_generation rotates.
+    runtime.handle_input_transcript.assert_not_awaited()
     assert runtime.handle_new_message.await_count == 1
 
 
@@ -2175,7 +2804,11 @@ async def test_initial_ready_transport_also_expires_from_local_listen() -> None:
     runtime._asr_lifecycle.open(route_mode=VoiceRouteMode.INDEPENDENT)
 
     runtime._schedule_transport_warm_expiry(runtime._asr_session_epoch)
-    await asyncio.sleep(0.03)
+    # 同上：10ms TTL 落在 Windows 定时器分辨率的量级里，固定 sleep 赌不起；
+    # 到期任务本身就是「已过期并关闭」的同步点。
+    expiry = runtime._asr_warm_expiry_task
+    assert expiry is not None
+    await asyncio.wait_for(expiry, 5)
 
     assert runtime._asr_session is None
     assert runtime._asr_lifecycle.snapshot.state is VoiceLifecycleState.DEEP_SLEEP
@@ -3048,6 +3681,13 @@ async def test_asr_stream_failure_never_replays_the_failed_frame_to_omni() -> No
 
 async def test_asr_backpressure_reports_specific_blocking_status() -> None:
     runtime = _Runtime()
+    blocking_status_sent = asyncio.Event()
+
+    async def record_status(message: str) -> None:
+        if "ASR_STREAM_BACKPRESSURE" in message:
+            blocking_status_sent.set()
+
+    runtime.send_status.side_effect = record_status
     asr = type("Asr", (), {})()
     asr.is_ready = True
     asr.stream_audio = AsyncMock(
@@ -3064,6 +3704,7 @@ async def test_asr_backpressure_reports_specific_blocking_status() -> None:
         sample_rate_hz=16_000,
     )
     await runtime._asr_audio_dispatcher.wait_idle()
+    await asyncio.wait_for(blocking_status_sent.wait(), 1)
 
     assert "ASR_STREAM_BACKPRESSURE" in runtime.send_status.await_args.args[0]
     assert runtime._asr_route_mode == "blocked"
@@ -4034,7 +4675,11 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
     runtime.websocket = websocket
     runtime.current_speech_id = "speech-current"
     runtime._set_microphone_route("independent")
+    await _install_active_smart_turn(runtime)
     epoch = runtime._asr_session_epoch
+    token = runtime._asr_runtime._asr_partial_turn_token
+    assert token is not None
+    assert runtime._activate_asr_audio_dispatcher(runtime._asr_lifecycle, token)
 
     await runtime._send_independent_asr_preview(" draft ", epoch)
     await runtime._send_independent_asr_preview("stale", epoch + 1)
@@ -4044,9 +4689,40 @@ async def test_partial_preview_is_display_only_and_epoch_guarded() -> None:
             "type": "user_transcript_preview",
             "text": "draft",
             "turn_id": "speech-current",
+            "asr_turn_id": f"asr-{epoch}-1",
         }
     )
     runtime.handle_input_transcript.assert_not_awaited()
+
+
+async def test_partial_preview_keeps_prepared_token_and_rejects_after_abort() -> None:
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    on_partial = AsyncMock()
+    runtime._asr_runtime._callbacks = replace(
+        runtime._asr_runtime._callbacks,
+        on_partial=on_partial,
+    )
+    await _install_active_smart_turn(runtime)
+    epoch = runtime._asr_session_epoch
+    captured_token = runtime._asr_runtime._asr_partial_turn_token
+    assert captured_token is not None
+    assert runtime._activate_asr_audio_dispatcher(
+        runtime._asr_lifecycle,
+        captured_token,
+    )
+
+    await runtime._send_independent_asr_preview("current", epoch)
+
+    event = on_partial.await_args.args[0]
+    assert event.turn_token is captured_token
+    assert event.session_epoch == epoch
+    on_partial.reset_mock()
+
+    runtime._asr_audio_dispatcher.abort(captured_token)
+    await runtime._send_independent_asr_preview("late", epoch)
+
+    on_partial.assert_not_awaited()
 
 
 async def test_start_failure_blocks_omni_without_leaking_error(monkeypatch) -> None:
@@ -4266,6 +4942,110 @@ async def test_start_session_handshake_false_overrides_persisted_enabled(
     assert runtime._asr_route_mode == "native"
 
 
+async def test_resource_optimization_handshake_false_overrides_persisted_enabled(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voiceInputResourceOptimizationEnabled": True,
+            }
+        ),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_voice_input_resource_optimization_handshake(False)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is False
+
+
+async def test_provider_restart_reuses_accepted_session_optimization(
+    monkeypatch,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    runtime.input_mode = "audio"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voiceInputResourceOptimizationEnabled": True,
+            }
+        ),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.READY,
+            provider="qwen",
+            session_epoch=0,
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled(
+        "audio",
+        resource_optimization_override=False,
+    )
+    assert runtime._voice_input_resource_optimization_session_value is False
+
+    # A losing/deduplicated request may overwrite the shared handshake, but a
+    # provider-changing restart still belongs to the already accepted session.
+    runtime.set_voice_input_resource_optimization_handshake(True)
+    runtime.core_api_type = "openai"
+    await runtime._reconcile_independent_asr_after_core_change()
+
+    assert start_mock.await_count == 2
+    assert all(
+        call.kwargs["resource_optimization_enabled"] is False
+        for call in start_mock.await_args_list
+    )
+
+
+@pytest.mark.parametrize("malformed", ["false", 0, 1, [False], {"enabled": False}])
+async def test_resource_optimization_handshake_malformed_falls_back_to_persisted(
+    monkeypatch,
+    malformed,
+) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(
+            return_value={
+                "independentAsrEnabled": True,
+                "voiceInputResourceOptimizationEnabled": True,
+            }
+        ),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    runtime.set_voice_input_resource_optimization_handshake(malformed)
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is True
+
+
 async def test_start_session_handshake_missing_falls_back_to_persisted(
     monkeypatch,
 ) -> None:
@@ -4291,6 +5071,29 @@ async def test_start_session_handshake_missing_falls_back_to_persisted(
     await runtime._start_independent_asr_if_enabled("audio")
 
     start_mock.assert_awaited_once()
+
+
+async def test_missing_independent_asr_setting_defaults_enabled(monkeypatch) -> None:
+    runtime = _Runtime()
+    runtime.core_api_type = "gemini"
+    monkeypatch.setattr(
+        core_module,
+        "aload_global_conversation_settings",
+        AsyncMock(return_value={}),
+    )
+    start_mock = AsyncMock(
+        return_value=AsrStartResult(
+            status=AsrStartStatus.FAILED,
+            failure_code="ASR_START_STALE",
+        )
+    )
+    monkeypatch.setattr(runtime._asr_runtime, "start", start_mock)
+
+    await runtime._start_independent_asr_if_enabled("audio")
+
+    start_mock.assert_awaited_once()
+    assert start_mock.await_args.kwargs["resource_optimization_enabled"] is True
+    assert runtime._asr_route_mode != "native"
 
 
 @pytest.mark.parametrize("malformed", ["true", 1, 0, [True], {"enabled": True}])
@@ -5265,10 +6068,20 @@ async def test_injection_failure_is_reported_once_without_provider_body() -> Non
     runtime.session.create_response.assert_awaited_once_with("hello")
 
 
-async def test_session_swap_during_transcript_drops_old_final_injection() -> None:
+async def test_session_swap_during_transcript_reprepares_promoted_final() -> None:
     runtime = _Runtime()
     old_session = runtime.session
-    new_session = type("Omni", (), {"create_response": AsyncMock()})()
+    old_session.create_response.side_effect = RuntimeError("closed arbiter")
+    new_session = type(
+        "Omni",
+        (),
+        {
+            "create_response": AsyncMock(),
+            "prepare_external_voice_turn": AsyncMock(),
+            "submit_external_voice_turn": AsyncMock(),
+            "abandon_external_voice_turn": MagicMock(),
+        },
+    )()
 
     async def swap_session(*_args, **_kwargs) -> bool:
         runtime.session = new_session
@@ -5286,6 +6099,8 @@ async def test_session_swap_during_transcript_drops_old_final_injection() -> Non
 
     old_session.create_response.assert_not_awaited()
     new_session.create_response.assert_not_awaited()
+    new_session.prepare_external_voice_turn.assert_awaited_once()
+    new_session.submit_external_voice_turn.assert_awaited_once()
 
 
 async def test_game_takeover_during_transcript_drops_stale_core_final() -> None:
@@ -5513,27 +6328,35 @@ async def test_partial_preview_requires_current_core_lease() -> None:
     runtime.websocket = websocket
     runtime._set_microphone_route("independent")
     epoch = runtime._asr_session_epoch
+    token = VoiceTurnToken(
+        ingress=runtime._capture_ingress_token(),
+        turn_id=1,
+    )
+    stale_token = VoiceTurnToken(
+        ingress=replace(token.ingress, session_epoch=epoch + 1),
+        turn_id=token.turn_id,
+    )
 
     runtime._voice_lease_owner = "game"
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="game", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="game")
     )
     runtime._voice_lease_owner = "core"
     runtime._voice_lease_hard_muted = True
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="muted", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="muted")
     )
     runtime._voice_lease_hard_muted = False
     runtime._voice_lease_focus_suppressed = True
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="focused", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="focused")
     )
     runtime._voice_lease_focus_suppressed = False
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="stale", session_epoch=epoch + 1)
+        VoicePartialEvent(turn_token=stale_token, text="stale")
     )
     await runtime._send_core_asr_preview(
-        VoicePartialEvent(text="current", session_epoch=epoch)
+        VoicePartialEvent(turn_token=token, text="current")
     )
 
     websocket.send_json.assert_awaited_once_with(
@@ -5691,7 +6514,7 @@ async def test_runtime_failure_still_fences_a_competing_newer_operation() -> Non
 
 
 async def test_runtime_failure_leaves_the_game_lease_alone() -> None:
-    # The galgame route holds the mic through its own consumer binding and tears
+    # The galgame route holds the mic through its built-in consumer route and tears
     # down via GAME_ROUTE_ENDED; re-basing the identity must not start
     # collaterally revoking it.
     runtime = _Runtime()
@@ -6127,6 +6950,41 @@ async def test_notification_waiting_on_lock_drops_same_epoch_stale_identity(
     assert runtime._asr_route_mode == "independent"
 
 
+async def test_failure_cancellation_can_publish_without_notification_deadlock() -> (
+    None
+):
+    runtime = _Runtime()
+    runtime._set_microphone_route("independent")
+    current_epoch = runtime._asr_session_epoch
+
+    async def cancellation_wait_idle() -> None:
+        assert runtime._asr_notification_lock.locked() is False
+        await runtime._send_core_asr_status(
+            AsrStatusEvent(
+                code="ASR_CANCEL_CLEANUP",
+                provider="plugin-consumer",
+                session_epoch=current_epoch,
+            )
+        )
+
+    runtime._voice_input_registry.wait_idle = AsyncMock(
+        side_effect=cancellation_wait_idle
+    )
+
+    await asyncio.wait_for(
+        runtime._handle_core_asr_failure(
+            AsrFailureEvent(
+                code="ASR_INDEPENDENT_FAILED",
+                provider="current-provider",
+                session_epoch=current_epoch,
+            )
+        ),
+        1,
+    )
+
+    assert "ASR_CANCEL_CLEANUP" in str(runtime.send_status.await_args_list)
+
+
 def _lease_resync_statuses(runtime: _Runtime) -> list[dict]:
     statuses = [
         json.loads(call.args[0]) for call in runtime.send_status.await_args_list
@@ -6504,11 +7362,8 @@ async def test_start_resolves_selection_off_event_loop(monkeypatch) -> None:
         "_create_asr_session_from_selection",
         lambda _core_type, **_kwargs: session,
     )
-    monkeypatch.setattr(
-        runtime_module,
-        "DetectorRuntime",
-        MagicMock(return_value=_ReadyDetector()),
-    )
+    detector_factory = MagicMock(return_value=_ReadyDetector())
+    monkeypatch.setattr(runtime_module, "DetectorRuntime", detector_factory)
 
     result = await runtime._asr_runtime.start(
         route_key="qwen",
@@ -6518,6 +7373,9 @@ async def test_start_resolves_selection_off_event_loop(monkeypatch) -> None:
     assert result.status is AsrStartStatus.READY
     assert len(resolver_threads) == 1
     assert resolver_threads[0] is not threading.main_thread()
+    assert (
+        detector_factory.call_args.kwargs["resource_optimization_enabled"] is False
+    )
 
 
 async def test_teardown_routines_share_one_turn_state_reset() -> None:
