@@ -822,3 +822,37 @@ async def test_an_empty_string_clears_the_override(monkeypatch):
 
     blank = await config_files.save_workshop_config_api({"user_mod_folder": "  "})
     assert blank["success"] is False, "全空白不该被当成清除"
+
+
+def test_the_cache_lock_is_created_exactly_once_under_concurrency(tmp_path):
+    """Two threads racing the lazy init must not end up with different locks.
+
+    A lock that each caller creates for itself guards nothing: the reader and
+    the saver would enter the compare-and-set section independently, which is
+    exactly the interleaving the lock was added to prevent.
+    """
+    import threading
+
+    from utils.config_manager import workshop as workshop_mixin
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        pass
+
+    cm = _CM()
+    seen: list = []
+    start = threading.Barrier(8)
+
+    def _grab():
+        start.wait(timeout=5)
+        seen.append(cm._last_good_workshop_config_lock)
+
+    threads = [threading.Thread(target=_grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert len(seen) == 8
+    assert len({id(lock) for lock in seen}) == 1, (
+        "并发懒创建造出了多把锁——那这把锁等于不存在"
+    )

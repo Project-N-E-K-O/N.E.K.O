@@ -31,6 +31,9 @@ from utils.file_utils import (
 
 from ._shared import logger
 
+# 守护上面那把「last-good 缓存微锁」的懒创建，见 _last_good_workshop_config_lock。
+_LAST_GOOD_LOCK_GUARD = threading.Lock()
+
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
 
@@ -136,9 +139,15 @@ class WorkshopMixin:
     def _last_good_workshop_config_lock(self):
         """Tiny lock guarding only the cache compare-and-set (never any I/O)."""
         lock = getattr(self, "_last_good_lock_obj", None)
-        if lock is None:
-            lock = threading.Lock()
-            self._last_good_lock_obj = lock
+        if lock is not None:
+            return lock
+        # 懒创建本身也要串行：两个线程同时进来会各造一把锁、各自守着不同的东西，
+        # 那这把锁就等于不存在。用模块级 guard 做双检。
+        with _LAST_GOOD_LOCK_GUARD:
+            lock = getattr(self, "_last_good_lock_obj", None)
+            if lock is None:
+                lock = threading.Lock()
+                self._last_good_lock_obj = lock
         return lock
 
     def _remember_good_workshop_config(self, config, generation) -> None:

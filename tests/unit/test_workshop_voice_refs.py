@@ -647,3 +647,35 @@ def test_a_manifest_naming_a_non_audio_asset_deletes_nothing(tmp_path):
     assert (tmp_path / "preview.png").read_bytes() == b"user-artwork", (
         "清理把用户的工坊素材删了"
     )
+
+
+def test_a_nested_reference_is_not_treated_as_owned(tmp_path):
+    """This module only ever writes directly into the content folder.
+
+    `assets/theme.mp3` passes containment and the audio-extension check, but a
+    reference with a directory component was never written by us — and
+    `_normalize_workshop_voice_manifest` basenames it anyway, so no normal
+    reader resolves it to the nested file either. Deleting it would remove
+    unrelated user content from a subdirectory.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    assets = tmp_path / "assets"
+    assets.mkdir()
+    (assets / "theme.mp3").write_bytes(b"user-track")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({"version": 1, "reference_audio": "assets/theme.mp3", "prefix": "old"}),
+        encoding="utf-8",
+    )
+
+    assert voice_refs._current_reference_audio_path(str(tmp_path)) is None
+
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / "voice_sample_bbbbbbbbbbbb.wav"),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+    )
+
+    assert (assets / "theme.mp3").read_bytes() == b"user-track", "删了子目录里的用户素材"

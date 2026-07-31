@@ -121,6 +121,12 @@ def _current_reference_audio_path(content_folder: str) -> str | None:
     # manifest 里写的不一定是音频。手改或畸形的 manifest 指向同目录的 preview.png
     # 这类资产时，下面那次 os.remove 就会把用户的工坊素材删掉 —— 扩展名不对就当它
     # 不是我们的东西。
+    # 带目录分量的引用永远不是我们的：本模块只往内容目录**直接**写
+    # voice_sample_<hex>.<ext>。`assets/theme.mp3` 这种能过下面的 containment
+    # 校验，但删的是用户放在子目录里的素材。
+    if os.path.basename(reference) != reference:
+        logger.warning('voice_manifest 的 reference_audio 带目录分量，拒绝清理: %r', reference)
+        return None
     if os.path.splitext(reference)[1].lower() not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
         logger.warning('voice_manifest 的 reference_audio 不是支持的音频格式，拒绝清理: %r', reference)
         return None
