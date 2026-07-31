@@ -1779,3 +1779,138 @@ async def test_a_user_turn_starting_on_server_vad_advances_the_epoch():
         "and before on_new_message runs, since that is what takes the new "
         "speech id a suspended release must not finalize against"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_queued_request_is_not_a_turn_the_host_should_end(make_harness):
+    # Codex P2, the second route into the same defect. An idle-wait timeout
+    # escalates over a request that is still QUEUED — _current is set, but
+    # nothing of it reached the provider under its own name, so there is no
+    # owner. Meanwhile the host can be tracking a live server-initiated
+    # response, because response.created is what sets its identity and that
+    # event does not care who asked. Treating _current as a released turn
+    # tells the host to finalize that live response.
+    seen: list[tuple[str, str | None]] = []
+
+    async def _record(reason: str, response_id: str | None) -> None:
+        seen.append((reason, response_id))
+
+    harness = make_harness(fail_open=True, on_stuck_release=_record)
+    # A server response holds the lane; the queued request never became an
+    # owner.
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-1"}}
+    )
+    ticket = await harness.arbiter.enqueue(source="native")
+    await _settle()
+    assert harness.arbiter._response_owner is None
+    harness.arbiter._current = harness.arbiter._queued_by_ticket.get(id(ticket))
+
+    await harness.arbiter._release_stuck_lifecycle("idle wait timed out")
+    await _settle()
+
+    assert seen == [], (
+        "a queued request is not a turn; ending one would finalize the live "
+        "server response the host is actually tracking"
+    )
+    assert "srv-1" in harness.arbiter._server_response_ids, (
+        "which this release deliberately keeps, because it may still be "
+        "streaming"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_adds_what_the_turn_said_to_the_repetition_history():
+    # Codex P2. Ending a turn has to record its reply on EVERY path. A
+    # provider that keeps losing response.done — precisely what the hatch
+    # exists for — would otherwise never contribute an audible reply to
+    # _recent_responses, so three identical turns in a row could not trigger
+    # on_repetition_detected at all.
+    client = _free_client()
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    client._current_response_transcript = "一模一样的回答"
+    client._audio_delta_count = 2
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert client._recent_responses == ["一模一样的回答"], (
+        "the released turn's reply must reach the repetition history"
+    )
+    assert client._last_response_transcript == "一模一样的回答"
+    assert client._current_response_transcript == "", "and be consumed once"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_repeats_the_terminal_paths_repetition_bookkeeping():
+    # The dual, and the point of contract 3: both paths run the SAME work
+    # because it is the same implementation. Drive three identical turns
+    # through the ordinary terminal path and through releases, and the
+    # detection fires either way.
+    repetitions: list[str] = []
+
+    async def _on_repetition() -> None:
+        repetitions.append("detected")
+
+    client = _free_client(on_repetition_detected=_on_repetition)
+    client._repetition_threshold = 0.5
+
+    for turn in range(3):
+        client._current_response_id = f"resp-{turn}"
+        client._is_responding = True
+        client._turn_epoch += 1
+        client._current_response_transcript = "完全相同的一句话"
+        client._audio_delta_count = 1
+        await client._on_arbiter_stuck_release(f"abandoned resp-{turn}", f"resp-{turn}")
+
+    assert repetitions == ["detected"], (
+        "three released turns saying the same thing must trigger detection, "
+        "exactly as three terminal turns would"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_turn_starting_inside_the_done_hook_still_gets_a_speech_id():
+    # Codex P2. The two hooks are not independent: on_response_done queues
+    # this turn's TTS-done sentinel, which CLOSES its speech id, and
+    # on_sid_rotate is what hands out the next one. Re-checking the epoch
+    # between them let a successor split the pair — old sid closed, no new one
+    # issued — and on a provider without server VAD the successor then speaks
+    # under a closed sid and its text is silently dropped.
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    rotations: list[str] = []
+
+    async def _on_done() -> None:
+        entered.set()
+        await proceed.wait()
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+
+    release = asyncio.create_task(
+        client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    # The successor announces itself while the done hook is still running —
+    # after that hook has already closed the old speech id.
+    client._turn_epoch += 1
+
+    proceed.set()
+    await asyncio.wait_for(release, timeout=2)
+
+    assert rotations == ["rotate"], (
+        "the rotation repairs the speech id the done hook just closed; "
+        "skipping it strands the successor on a dead one"
+    )

@@ -1062,15 +1062,18 @@ class RealtimeResponseArbiter:
         # never resolve its ticket.
         released_owner = owner
         released_id = owner.response_id if owner is not None else None
-        # cancel_current()'s unowned branch escalates over a server-initiated
-        # response the arbiter never owned. There is no lifecycle to give up
-        # there, and the host must not be told to end a turn: it is tracking
-        # that server response, whose id this release deliberately keeps
-        # because the response may still be streaming. Telling the host to
-        # finalize would discard the turn on one side while the other side
-        # goes on tracking it, and the response's own later events would then
-        # be stale-filtered against an identity the host no longer holds.
-        had_lifecycle = current is not None or released_owner is not None
+        # Only a released OWNER is a turn the host should end. Two escalation
+        # routes reach here without one — cancel_current()'s unowned branch,
+        # and an idle-wait timeout on a request that is still queued — and in
+        # both the host may nonetheless be tracking a live server-initiated
+        # response, because ``response.created`` is what sets its identity and
+        # that event does not care who asked. Telling the host to finalize
+        # then discards the turn on one side while this release deliberately
+        # keeps that response's id on the other, and the response's own later
+        # deltas are stale-filtered against an identity the host no longer
+        # holds. A queued ``_current`` is not a turn: nothing of it has
+        # reached the provider under its own name.
+        had_lifecycle = released_owner is not None
         try:
             if self._on_stuck_release is not None and had_lifecycle:
                 await asyncio.wait_for(

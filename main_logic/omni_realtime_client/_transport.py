@@ -47,10 +47,11 @@ _ATTACHED_TRANSPORT = object()
 # The arbiter bounds the WHOLE notification with one shared budget
 # (_STUCK_RELEASE_NOTIFY_TIMEOUT, 2.0s); without a per-step ceiling the first
 # await consumes it and everything after it is cancelled where it stands.
-# Two bounded steps x 0.5s leaves the rest of the arbiter's budget for the
-# speech-id rotation, which is deliberately NOT bounded. This is a necessary
-# condition, not a guarantee: asyncio.wait_for bounds when the cancellation is
-# DELIVERED, not when the coroutine returns.
+# Three bounded steps x 0.5s leaves the rest of the arbiter's budget for the
+# speech-id rotation, which gets no ceiling of its own because it is last —
+# nothing behind it can be starved. That is a necessary condition, not a
+# guarantee: asyncio.wait_for bounds when the cancellation is DELIVERED, not
+# when the coroutine returns, and the outer budget still reaches the rotation.
 _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 
 
@@ -986,6 +987,50 @@ class _TransportMixin:
             self._take_pending_output_transcript()
         )
 
+    def _take_response_transcript(self) -> str:
+        """Close the books on what this turn actually said.
+
+        Split from the repetition check that consumes it for the same reason
+        as the output-transcript pair below: the release path has to commit
+        every synchronous write before its first await, or a cancellation
+        strands this turn's state for the next one to inherit.
+
+        Reads ``_audio_delta_count`` for its log line, so it must run BEFORE
+        the per-turn reset zeroes it.
+        """
+
+        transcript = self._current_response_transcript
+        if transcript:
+            self._last_response_transcript = transcript
+            print(
+                f"OmniRealtimeClient: response.done - 当前转录: "
+                f"'{transcript[:50]}...' | audio_deltas={self._audio_delta_count}"
+            )
+            self._current_response_transcript = ""
+        else:
+            self._last_response_transcript = ""
+            print(
+                "OmniRealtimeClient: response.done - 没有转录文本 | "
+                f"audio_deltas={self._audio_delta_count}"
+            )
+        return transcript
+
+    async def _record_response_repetition(self, transcript: str) -> None:
+        """Add what this turn said to the repetition history.
+
+        Ending a turn has to do this on EVERY path, not just the terminal one.
+        A provider that repeatedly loses its ``response.done`` — the case the
+        fail-open hatch exists for — would otherwise never contribute an
+        audible reply to ``_recent_responses``, so three identical turns in a
+        row could not trigger ``on_repetition_detected`` at all.
+
+        The history is recorded before ``_check_repetition``'s only await, so
+        a bounded caller that cuts the host callback short still keeps it.
+        """
+
+        if transcript:
+            await self._check_repetition(transcript)
+
     def _take_pending_output_transcript(self) -> tuple[str, bool] | None:
         """Decide what the fallback flush owes the host, and settle the state.
 
@@ -1052,9 +1097,17 @@ class _TransportMixin:
 
         Both keywords belong to the fail-open release path, and both default
         to the terminal path's behaviour so this stays one implementation
-        rather than two. ``still_ours`` is re-checked before EACH hook,
-        because both can block on the same frontend socket and a new turn can
-        start between them.
+        rather than two.
+
+        ``still_ours`` gates the PAIR, once, rather than each hook. They are
+        not independent: ``on_response_done`` queues this turn's TTS-done
+        sentinel, which closes its speech id, and ``on_sid_rotate`` is what
+        hands out the next one. Re-checking between them lets a turn that
+        starts mid-notification split the pair — the old sid closed, no new
+        one issued — and on a provider without server VAD the successor then
+        speaks under a closed sid and has its text silently dropped, which is
+        the failure this hook exists to prevent. So either the release still
+        owns the turn and finishes ending it, or it never started.
 
         ``on_sid_rotate`` gets no step bound of its own, because it is the
         last step — there is nothing behind it for a slow hook to starve. That
@@ -1091,7 +1144,13 @@ class _TransportMixin:
         the turn cannot skip the rotation that follows it.
         """
 
-        if self.on_response_done and (still_ours is None or still_ours()):
+        if still_ours is not None and not still_ours():
+            logger.info(
+                "a new turn started before this one could be ended; leaving "
+                "both end-of-turn hooks to it"
+            )
+            return
+        if self.on_response_done:
             try:
                 if step_timeout is None:
                     await self.on_response_done()
@@ -1109,11 +1168,7 @@ class _TransportMixin:
                 )
             except Exception as exc:
                 logger.warning("turn-finished notification failed: %s", exc)
-        if (
-            not self._has_server_vad
-            and self.on_sid_rotate
-            and (still_ours is None or still_ours())
-        ):
+        if not self._has_server_vad and self.on_sid_rotate:
             try:
                 await self.on_sid_rotate()
             except asyncio.CancelledError:
@@ -1193,8 +1248,26 @@ class _TransportMixin:
         # lifecycle is exactly the case where the terminal that would normally
         # flush it never arrives.
         pending_transcript = self._take_pending_output_transcript()
+        pending_response = self._take_response_transcript()
         self._clear_turn_response_state()
         self._reset_per_turn_output_state()
+        # Same order the terminal path uses: repetition history first, then
+        # the fallback transcript flush.
+        try:
+            await asyncio.wait_for(
+                self._record_response_repetition(pending_response),
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "stuck-release repetition check exceeded %.1fs; ending the "
+                "turn anyway",
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning("stuck-release repetition check failed: %s", exc)
         # Best-effort, and the only step that is. A host that blocks or raises
         # while taking this turn's last half-sentence must not take the
         # rotation behind it down as well. Not epoch-guarded: this is the
@@ -1447,14 +1520,9 @@ class _TransportMixin:
                         pass
                     self._clear_turn_response_state()
                     # 响应完成，检测重复度
-                    if self._current_response_transcript:
-                        self._last_response_transcript = self._current_response_transcript
-                        print(f"OmniRealtimeClient: response.done - 当前转录: '{self._current_response_transcript[:50]}...' | audio_deltas={self._audio_delta_count}")
-                        await self._check_repetition(self._current_response_transcript)
-                        self._current_response_transcript = ""
-                    else:
-                        self._last_response_transcript = ""
-                        print(f"OmniRealtimeClient: response.done - 没有转录文本 | audio_deltas={self._audio_delta_count}")
+                    await self._record_response_repetition(
+                        self._take_response_transcript()
+                    )
                     # [有声无字兜底] 部分 provider（如 lanlan.app Gemini 语音代理）只发
                     # response.audio_transcript.delta、从不发 response.audio_transcript.done，
                     # 输出转录全靠下面 streaming 分支（_print_input_transcript=True）实时送出。
