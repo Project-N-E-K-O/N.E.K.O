@@ -1497,3 +1497,67 @@ def test_the_degree_negation_is_told_apart_from_the_superlative(
     """
     assert _label(text, confidence) == label_expected
     assert _heur(text) == heuristic_expected
+
+
+@pytest.mark.parametrize("text", [
+    "我沒有很開心", "沒有真的生氣", "其實沒有那麼難過", "我没有很开心", "並沒有很開心",
+])
+def test_the_bare_negation_survives_a_degree_adverb(text):
+    """The tight lookback is two characters, so a degree word fills it entirely.
+
+    With one in between, the window holds only the tail of the negation and the
+    head of the adverb, and the sentence scored as the emotion it denies. The
+    adjacency table peels the adverb first, which is exactly what this needs.
+    """
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("una jornada feliz", "happy"),
+    ("uma jornada feliz", "happy"),
+    ("nada feliz", None),
+    ("la nada feliz", None),
+])
+def test_a_latin_modal_negation_has_to_end_a_word(text, expected):
+    """Third time this shape has appeared, second time I introduced it.
+
+    A Latin entry compared with `endswith` against raw text matches the tail of
+    any longer word -- here the last four letters of the Spanish for "workday".
+    """
+    assert _heur(text) == expected
+
+
+def test_every_latin_modal_negation_is_boundary_checked():
+    """Auto-discovered from the table, because the list keeps growing.
+
+    Each Latin entry must fail when glued to the end of a word and pass when it
+    stands alone. Written against the table rather than against a few sentences
+    so an entry added later is covered without anyone remembering to.
+    """
+    from main_routers.system_router.emotion import (
+        _HEURISTIC_MODAL_NEGATIONS, _UNBOUNDED_SCRIPT_RE, _modal_ends_window,
+    )
+
+    latin = [m for m in _HEURISTIC_MODAL_NEGATIONS if not _UNBOUNDED_SCRIPT_RE.search(m)]
+    assert latin, "本用例的前提是表里有拉丁词条"
+    for modal in latin:
+        assert _modal_ends_window(modal, modal), modal
+        assert _modal_ends_window("xyz " + modal, modal), modal
+        assert not _modal_ends_window("xyz" + modal, modal), f"{modal} 会命中长词的词尾"
+
+
+@pytest.mark.parametrize("text", [
+    "這是一個困難過程", "經歷困難過後終於完成", "这是一个困难过程", "艱難過程", "災難過後",
+])
+def test_a_keyword_formed_across_a_compound_boundary_is_not_one(text):
+    """Neither half is an emotion word; the keyword only exists in the seam.
+
+    Substring matching has no notion of a word boundary, so the left-hand word
+    has to be removed before scoring. `困難` + `過程` floats a `難過` between them.
+    """
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("text", ["我很難過", "困難重重我好難過", "好難過喔"])
+def test_the_real_emotion_word_still_scores(text):
+    assert _heur(text) == "sad"

@@ -192,6 +192,21 @@ def _looks_like_emotion_compact_candidate(candidate, cutoff):
     ))
 
 
+def _modal_ends_window(window, modal):
+    """Whether `window` ends with `modal`, honouring word boundaries in Latin.
+
+    Han and kana have none to honour, so those entries are compared as written.
+    A Latin one has to end a word as well: `una jornada feliz` ends in the four
+    letters of the Spanish `nada` and came back with no emotion at all.
+    """
+    if not window.endswith(modal):
+        return False
+    if _UNBOUNDED_SCRIPT_RE.search(modal):
+        return True
+    head = window[:-len(modal)]
+    return not head or not head[-1].isalnum()
+
+
 def _strip_negation_blocklist(text):
     """Drop the words that merely *contain* a negation character.
 
@@ -666,7 +681,7 @@ def _has_heuristic_negation_before(text_value, position):
     window_tail = sanitized.rstrip()
     peeled_window = _strip_degree_adverbs(window_tail)
     if any(
-        window_tail.endswith(modal) or peeled_window.endswith(modal)
+        _modal_ends_window(window_tail, modal) or _modal_ends_window(peeled_window, modal)
         for modal in _HEURISTIC_MODAL_NEGATIONS
     ):
         return True
