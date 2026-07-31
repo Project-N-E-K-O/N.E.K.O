@@ -112,6 +112,25 @@ If every escalation in your logs carries one of these, the variable is working
 as designed and the disconnects have a different cause — attach those lines to
 the report rather than assuming the switch had no effect.
 
+### What it cannot protect you from
+
+The blockers above cover what the arbiter can *see*. One thing it cannot:
+whether the events that follow will carry a response id at all.
+
+A provider that identifies its `response.created` but omits the id from the
+events after it puts the arbiter in a position with no good answer. The
+abandoned response's late audio, text and — worst — tool calls are then
+indistinguishable from the next turn's, so they are delivered as the next
+turn's. Keeping the connection is what exposes this: the default teardown
+takes the socket with it, and those late events never arrive.
+
+Nothing in the arbiter can pre-empt it, because the events it would have to
+judge are the ones it has not received yet, and suppressing id-less events
+after a release would suppress the successor's too — on such a provider they
+are id-less as well. So if you enable this on a provider whose streaming
+events lack `response_id`, treat a stuck turn as possibly leaking into the
+next one. Tracked in issue #2611.
+
 ### A third line: kept, but nothing was released
 
 Some escalations are raised over a response the arbiter never owned — a
