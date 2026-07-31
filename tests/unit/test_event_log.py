@@ -540,7 +540,7 @@ def test_apply_and_advance_does_not_interleave_with_record_and_save(tmp_path):
         # list.append 在 GIL 下是原子的，两个线程共写一条时间线是安全的
         timeline.append((real_threading.current_thread().name, step))
 
-    import memory.event_log as event_log_module
+    from memory import event_log as event_log_module
     real_write_json = event_log_module.atomic_write_json
 
     def tracking_write_json(*args, **kwargs):
@@ -635,7 +635,7 @@ def test_advance_sentinel_does_not_interleave_with_record_and_save(tmp_path):
     def mark(step: str) -> None:
         timeline.append((real_threading.current_thread().name, step))
 
-    import memory.event_log as event_log_module
+    from memory import event_log as event_log_module
     real_write_json = event_log_module.atomic_write_json
 
     def tracking_write_json(*args, **kwargs):
@@ -940,7 +940,7 @@ async def test_reconciler_blames_the_sentinel_write_not_the_handler(tmp_path):
     versus "view already repaired, only the sentinel is behind" — and the
     warning is the only signal an operator gets.
     """
-    import memory.event_log as event_log_module
+    from memory import event_log as event_log_module
     from memory.event_log import EVT_FACT_ADDED
 
     log, rec = _fresh_reconciler(str(tmp_path))
