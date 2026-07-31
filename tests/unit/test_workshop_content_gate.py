@@ -47,6 +47,21 @@ def test_partial_writers_remain_shared(tmp_path):
             pass
 
 
+def test_parent_and_descendant_claims_conflict_in_both_directions(tmp_path):
+    child = tmp_path / 'nested'
+    child.mkdir()
+
+    with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
+        with pytest.raises(ContentFolderBusy):
+            with claim_partial_writer(str(child), purpose='上传预览图'):
+                pass
+
+    with claim_partial_writer(str(child), purpose='上传预览图'):
+        with pytest.raises(ContentFolderBusy):
+            with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
+                pass
+
+
 def test_claim_releases_after_exception(tmp_path):
     with pytest.raises(RuntimeError, match='boom'):
         _raise_inside(

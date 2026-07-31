@@ -36,6 +36,10 @@ from utils.config_manager import get_reserved
 from .content_gate import ContentFolderBusy, claim_partial_writer
 
 
+class _PreviewContentFolderMissing(RuntimeError):
+    """The accepted content folder disappeared before its worker could write."""
+
+
 WORKSHOP_CARD_FACE_SIZE = (768, 1024)
 
 
@@ -488,6 +492,10 @@ def _write_preview_image(
         else nullcontext()
     )
     with claim:
+        if content_folder and not os.path.isdir(content_folder):
+            raise _PreviewContentFolderMissing(
+                '内容目录已被清理，请重新开始上传'
+            )
         atomic_write_bytes(preview_image_path, image_bytes)
 
 
@@ -567,10 +575,11 @@ async def upload_preview_image(request: Request):
             "file_path": preview_image_path,
             "message": "文件上传成功"
         })
-    except ContentFolderBusy as e:
+    except (ContentFolderBusy, _PreviewContentFolderMissing) as e:
         return JSONResponse({
             "success": False,
             "error": str(e),
+            "message": str(e),
         }, status_code=409)
     except Exception as e:
         logger.error(f"上传预览图片时出错: {e}")

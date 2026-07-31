@@ -4,7 +4,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import shutil
 import threading
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -138,4 +140,30 @@ def test_upload_preview_returns_409_while_the_folder_is_publishing(tmp_path):
     assert response.status_code == 409
     assert payload['success'] is False
     assert '正在发布' in payload['error']
+    assert payload['message'] == payload['error']
     assert not (tmp_path / 'preview.png').exists()
+
+
+def test_upload_preview_does_not_recreate_a_folder_removed_before_claim(
+    tmp_path, monkeypatch
+):
+    @contextmanager
+    def cleanup_before_claim(content_folder, *, purpose):
+        assert purpose == '上传预览图'
+        shutil.rmtree(content_folder)
+        yield
+
+    monkeypatch.setattr(
+        preview_cards,
+        'claim_partial_writer',
+        cleanup_before_claim,
+    )
+
+    response = asyncio.run(
+        preview_cards.upload_preview_image(_Request(tmp_path))
+    )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 409
+    assert payload['message'] == '内容目录已被清理，请重新开始上传'
+    assert not tmp_path.exists()
