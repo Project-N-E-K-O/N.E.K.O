@@ -130,6 +130,20 @@ class WorkshopMixin:
         except Exception:
             return None
 
+    def _remember_good_workshop_config(self, config, generation) -> None:
+        """Cache a successful read, unless a save landed while it was in flight.
+
+        The read happens outside the lock, so it can start before a save and
+        return after it. Writing that snapshot into the cache would make a
+        later transient-read fallback hand back the configuration from *before*
+        the change — harder to notice than falling back to defaults.
+        """
+        if not isinstance(config, dict):
+            return
+        if getattr(self, "_workshop_config_generation", 0) != generation:
+            return
+        self._last_good_workshop_config = dict(config)
+
     def workshop_config_lock(self):
         """The lock that serializes every read-modify-write of workshop_config.json.
 
@@ -224,6 +238,9 @@ class WorkshopMixin:
             dict: workshop config data
         """
         config_path = self.get_workshop_config_path()
+        # 读之前先记下代数。这次读是在锁外做的，可能在一次 save 之前就开始了却在它
+        # 之后才回来 —— 那样把结果写进 last-known-good 就是拿旧快照盖掉新配置。
+        generation = getattr(self, "_workshop_config_generation", 0)
         try:
             if os.path.exists(config_path):
                 # ⚠️ 这条读路径**不许拿 _workshop_config_lock**。get_workshop_path()
@@ -239,7 +256,7 @@ class WorkshopMixin:
                 config = read_json_tolerating_replace(config_path)
                 config = self._rebase_workshop_config_after_storage_migration(config)
                 logger.debug(f"成功加载workshop配置: {config}")
-                self._last_good_workshop_config = dict(config)
+                self._remember_good_workshop_config(config, generation)
                 return config
             else:
                 # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
@@ -311,6 +328,9 @@ class WorkshopMixin:
             # 存下新配置后缓存里还是它进来时读到的旧值 —— 之后一次瞬时读失败就会
             # 回落到**改动之前**的配置，比回落到默认值更难查。
             if isinstance(config_data, dict):
+                self._workshop_config_generation = (
+                    getattr(self, "_workshop_config_generation", 0) + 1
+                )
                 self._last_good_workshop_config = dict(config_data)
 
             logger.info(f"成功保存workshop配置: {config_data}")

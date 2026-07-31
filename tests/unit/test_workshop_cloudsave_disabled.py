@@ -660,3 +660,59 @@ def test_the_missing_config_branch_is_lock_free_on_the_loop():
         "缺配置分支没有事件循环守卫 —— 首次 POST /config 创建文件期间，"
         "循环上的 get_workshop_path() 会卡在写者锁上"
     )
+
+
+def test_an_in_flight_read_cannot_clobber_the_cache_with_a_stale_snapshot(tmp_path, monkeypatch):
+    """A read that started before a save must not cache its pre-save snapshot.
+
+    The read runs outside the lock, so it can begin before `POST /config`
+    commits and return after it. Letting it refresh last-known-good would make
+    a later transient-read fallback hand back the configuration from *before*
+    the change — harder to notice than falling back to defaults.
+    """
+    from utils.config_manager import workshop as workshop_mixin
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text(json.dumps({"user_mod_folder": "/old"}), encoding="utf-8")
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        def __init__(self):
+            import threading
+
+            self._workshop_config_lock = threading.RLock()
+            self.workshop_dir = tmp_path / "default"
+
+        def get_workshop_config_path(self):
+            return config_path
+
+        def get_runtime_config_path(self, name):
+            return config_path
+
+        def ensure_config_directory(self):
+            return None
+
+        def _rebase_workshop_config_after_storage_migration(self, config):
+            return config
+
+    cm = _CM()
+    monkeypatch.setattr(
+        "utils.cloudsave_runtime.assert_cloudsave_writable", lambda *a, **kw: None
+    )
+
+    # 模拟「读开始 → 中途发生一次 save → 读才回来」：读到的是旧内容。
+    def _slow_read(*args, **kwargs):
+        cm.save_workshop_config({"user_mod_folder": "/new"})
+        return {"user_mod_folder": "/old"}
+
+    monkeypatch.setattr(workshop_mixin, "read_json_tolerating_replace", _slow_read)
+    assert cm.load_workshop_config()["user_mod_folder"] == "/old"
+
+    busy = PermissionError(13, "Access is denied")
+    busy.winerror = 32
+    monkeypatch.setattr(
+        workshop_mixin, "read_json_tolerating_replace",
+        lambda *a, **kw: (_ for _ in ()).throw(busy),
+    )
+    assert cm.load_workshop_config()["user_mod_folder"] == "/new", (
+        "在飞的旧读把缓存盖回了保存之前的配置"
+    )
