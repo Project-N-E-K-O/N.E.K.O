@@ -520,14 +520,21 @@ class _ToolingMixin:
                     # 发了会让这段文本既不在 tool_calls 行、又被 final
                     # AIMessage 跳过，从历史里彻底消失。
                     yield _LLMStreamChunk(content="", tool_round_persisted=True)
-                elif streamed_text_buffer:
+                elif (
+                    streamed_text_buffer
+                    and getattr(self, "on_tool_round_start", None) is None
+                ):
                     # 零执行轮：messages 一个字都没变，重来一轮不会有新信息，
                     # 只会让模型把同样的 pre-tool 文本再流一遍给用户。已经流
                     # 过文本就跳出循环去 forced-finalize（forced-finalize 与
                     # 封顶日志都保留，被砍掉的只是没有意义的重试）；什么都
                     # 没流出去的零执行轮仍允许再试一轮——重试没有用户可见
-                    # 代价，而 provider 抖动确实可能下一轮就正常。与 genai
-                    # 路径对偶。
+                    # 代价，而 provider 抖动确实可能下一轮就正常。
+                    #
+                    # 装了 round-start 回调的调用方是缓冲型的（回调体就是
+                    # 丢弃 pre-tool 文本），本轮那截文本根本没送到用户手里，
+                    # "重放"无从谈起——那种情况仍然重试，别白丢一次本可恢复
+                    # 的工具调用。与 genai 路径对偶。
                     zero_exec_break = True
                     break
                 continue

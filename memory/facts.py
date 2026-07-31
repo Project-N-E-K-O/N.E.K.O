@@ -1064,7 +1064,10 @@ class FactStore:
           这种形态整个 dict 原样交给 persist（event_when / entity / source
           等字段那边自己读），所以它身上没有"被丢弃的内容"可言；
         - ``facts`` 里的裸字符串（见 :meth:`_as_fact_entry`）。
-        ``facts`` 存在但不是数组 = 形状坏了且可能带内容 → 放不下去。"""  # noqa: DOCSTRING_CJK
+        ``facts`` 存在、不是数组、又不是 ``null`` = 形状坏了且可能带内容 →
+        放不下去。``null`` 例外：它不承载任何内容，语义与"没给这个字段"、
+        与空数组都一样是"本段无事实"，按缺席处理（判成畸形会为了一个空值
+        把整批 8 段一起打回重抽）。"""  # noqa: DOCSTRING_CJK
         if not isinstance(item, dict):
             return None, [], 0, 0
         index = cls._coerce_segment_index(item.get('segment'), segment_count)

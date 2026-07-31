@@ -613,7 +613,13 @@ class _GenaiMixin:
                 # 标记文本、被 leak filter 整段抑制时 had_text 也是真，可用户
                 # 一个字都没看到——那种轮次白白放弃重试，下一轮本来可能给出
                 # 合法调用（Codex P2）。
-                if visible_text:
+                #
+                # 装了 round-start 回调的调用方（QQ 召回）是缓冲型的：那个
+                # 回调体就是 reply_chunks.clear()，而它在上面几行已经跑过，
+                # 本轮的 pre-tool 文本**根本没送到用户手里**。对它们"重放"
+                # 无从谈起，break 只是白白丢掉一次本可恢复的工具调用——那正
+                # 是召回轮，代价是这条回复没有记忆结果（Codex）。
+                if visible_text and getattr(self, "on_tool_round_start", None) is None:
                     zero_exec_break = True
                     break
                 continue

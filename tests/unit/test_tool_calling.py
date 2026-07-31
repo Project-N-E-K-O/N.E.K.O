@@ -3759,6 +3759,67 @@ async def test_genai_zero_execution_round_counts_the_leak_filter_tail_as_visible
 
 
 @pytest.mark.asyncio
+async def test_zero_execution_round_still_retries_for_buffering_callers(
+    monkeypatch,
+):
+    """缓冲型调用方（装了 round-start 回调）的零执行轮仍要重试。
+
+    那个回调体就是丢弃 pre-tool 文本（QQ 召回路径的
+    ``reply_chunks.clear()``），而它在判断之前就跑过了——本轮那截文本根本
+    没送到用户手里，"重放"无从谈起。这时 break 只是白白丢掉一次本可恢复的
+    工具调用，而那正是召回轮：代价是这条回复没有记忆结果（Codex）。
+
+    与 ``test_genai_zero_execution_round_does_not_replay_streamed_text``
+    互为对照——那条没装回调，文本真的流出去了，才该 break。"""  # noqa: DOCSTRING_CJK
+    from main_logic.tool_calling import ToolCall, ToolResult
+
+    monkeypatch.setattr(_ofc_genai, "_GENAI_AVAILABLE", True)
+    handler_calls: list = []
+
+    async def handler(call: ToolCall) -> ToolResult:
+        handler_calls.append(call.name)
+        return ToolResult(call_id=call.call_id, name=call.name, output={"ok": True})
+
+    client, calls = _bare_genai_client(
+        [
+            # 第 1 轮：pre-tool 文本 + 无名分片（零执行）。
+            [
+                _GenaiPart(text="我查一下"),
+                _GenaiPart(function_call=_GenaiFunctionCall("", id_="c_empty")),
+            ],
+            # 第 2 轮：provider 恢复正常——只有允许重试才够得着。
+            [_GenaiPart(function_call=_GenaiFunctionCall(
+                "recall_memory", {"query": "x"}, id_="c1",
+            ))],
+            [_GenaiPart(text="按群规是不剧透")],
+        ],
+        handler, cap=3,
+    )
+
+    discarded: list = []
+
+    async def _round_start():
+        # 缓冲型调用方在这里把本轮 pre-tool 文本整个丢掉。
+        discarded.append(True)
+
+    client.set_tool_round_start_callback(_round_start)
+
+    streamed = ""
+    async for c in client._astream_genai_with_tools(
+        [{"role": "user", "content": "x"}]
+    ):
+        if getattr(c, "content", ""):
+            streamed += c.content
+
+    assert handler_calls == ["recall_memory"], (
+        "缓冲型调用方的零执行轮被 break 掉了——那截文本本来就没外发，"
+        "白丢一次召回"
+    )
+    assert "按群规是不剧透" in streamed
+    assert len(calls) == 3
+
+
+@pytest.mark.asyncio
 async def test_genai_cap_multi_runaway_still_warns(monkeypatch):
     """genai 版三分支封顶日志的第三路（与 OpenAI 版对偶）：cap>1 且执行过
     tool 的真 runaway 保持 WARNING——主程序（cap=3）的封顶信号不因 cap=1
