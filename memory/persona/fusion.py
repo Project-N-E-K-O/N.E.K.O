@@ -315,8 +315,12 @@ class ExternalFusionMixin:
             prefix = f"{section}: " if section and section.casefold() not in text.casefold() else ""
             lines.append(f"{idx}. {prefix}{text}")
         cand_text = "\n".join(lines)
+        locale_text = "\n".join(
+            str(cand.get("text") or "").strip()
+            for cand in candidates
+        )
         lang = detect_prompt_language(
-            cand_text,
+            locale_text,
             ui_language=get_global_language_full(),
         )
         entity_label = get_persona_fusion_entity_label(entity, lang)

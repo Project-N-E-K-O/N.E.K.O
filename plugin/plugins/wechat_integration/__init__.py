@@ -751,7 +751,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
-            payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+            from utils.language_utils import get_global_language_full
+            payload = {
+                "input_history": json.dumps(messages, ensure_ascii=False),
+                "language": get_global_language_full(),
+            }
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{her_name}",
@@ -771,10 +775,14 @@ class WechatIntegrationPlugin(NekoPluginBase):
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
+            from utils.language_utils import get_global_language_full
             # /settle with an empty increment performs compression/review for
             # cached turns.  Passing the in-memory session history to /process
             # would append the same messages to recent history and SQLite again.
-            payload = {"input_history": json.dumps([], ensure_ascii=False)}
+            payload = {
+                "input_history": json.dumps([], ensure_ascii=False),
+                "language": get_global_language_full(),
+            }
             async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/settle/{her_name}",

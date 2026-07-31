@@ -509,6 +509,35 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.debug(f"[RecentHistory] {lanlan_name}: 写 recent_meta 失败: {e}")
 
+    def _render_message_content(self, msg):
+        from utils.tokenize import truncate_head_tail_tokens
+
+        content = getattr(msg, 'content', '')
+        half_cap = self._summary_message_half_cap()
+        if isinstance(content, str):
+            return truncate_head_tail_tokens(content, half_cap, half_cap)
+        parts = []
+        try:
+            for item in content:
+                if isinstance(item, dict):
+                    parts.append(item.get('text', f"|{item.get('type', '')}|"))
+                else:
+                    parts.append(str(item))
+        except Exception:
+            parts = [str(content)]
+        return truncate_head_tail_tokens(
+            "\n".join(parts),
+            half_cap,
+            half_cap,
+        )
+
+    @staticmethod
+    def _summary_message_half_cap():
+        return RECENT_PER_MESSAGE_MAX_TOKENS // 2
+
+    def _summary_prompt_locale_text(self, messages):
+        return "\n".join(self._render_message_content(msg) for msg in messages)
+
     def _render_messages_to_text(self, messages, lanlan_name):
         """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。
 
@@ -516,35 +545,15 @@ class CompressedRecentHistoryManager:
         （head=tail=半数 token）。用户长贴 / AI 偶尔写小作文都会触发；头尾各
         保留确保问候/问题与结尾的总结/请求都不丢，中段砍掉。
         """
-        from utils.tokenize import truncate_head_tail_tokens
-        per_msg_cap = RECENT_PER_MESSAGE_MAX_TOKENS
-        head_tail = per_msg_cap // 2
         name_mapping = self.name_mapping.copy()
         name_mapping['ai'] = lanlan_name
         lines = []
         for msg in messages:
             role = name_mapping.get(getattr(msg, 'type', ''), getattr(msg, 'type', ''))
-            content = getattr(msg, 'content', '')
-            if isinstance(content, str):
-                content = truncate_head_tail_tokens(content, head_tail, head_tail)
-                line = f"{role} | {content}"
-            else:
-                parts = []
-                try:
-                    for item in content:
-                        if isinstance(item, dict):
-                            parts.append(item.get('text', f"|{item.get('type', '')}|"))
-                        else:
-                            parts.append(str(item))
-                except Exception:
-                    parts = [str(content)]
-                joined = "\n".join(parts)
-                joined = truncate_head_tail_tokens(joined, head_tail, head_tail)
-                line = f"{role} | {joined}"
-            lines.append(line)
+            lines.append(f"{role} | {self._render_message_content(msg)}")
         return "\n".join(lines)
 
-    def _build_summary_prompt(self, messages_text, detailed):
+    def _build_summary_prompt(self, messages_text, detailed, *, locale_text=None):
         """构建 Stage-1 摘要 prompt（不含 stale-hint 前缀；单次压缩与分段 map 共用）。
 
         ``{MASTER_NAME}`` 是 prompt 里"保留负面反馈"段引用 master 实名的字面
@@ -553,7 +562,7 @@ class CompressedRecentHistoryManager:
         ``%s`` 会被先前的 ``.replace("%s", ...)`` 二次替换（codex P2）。
         """
         lang = detect_prompt_language(
-            messages_text,
+            locale_text if locale_text is not None else messages_text,
             ui_language=get_global_language_full(),
         )
         master_name = self.name_mapping['human']
@@ -661,7 +670,11 @@ class CompressedRecentHistoryManager:
         partials = []
         for chunk in chunks:
             s = await self._invoke_summary_llm(
-                self._build_summary_prompt(self._render_messages_to_text(chunk, lanlan_name), detailed)
+                self._build_summary_prompt(
+                    self._render_messages_to_text(chunk, lanlan_name),
+                    detailed,
+                    locale_text=self._summary_prompt_locale_text(chunk),
+                )
             )
             if s is None:
                 return None
@@ -700,6 +713,7 @@ class CompressedRecentHistoryManager:
     # detailed: 保留尽可能多的细节
     async def compress_history(self, messages, lanlan_name, detailed=False):
         messages_text = self._render_messages_to_text(messages, lanlan_name)
+        locale_text = self._summary_prompt_locale_text(messages)
         # 输入过大（积压一直压不掉时会膨胀）→ 先分段 map-reduce 缩小输入，减小
         # 单次 LLM 输入、避免输入过大导致超时。正常输入不走这条。
         if await acount_tokens(messages_text) > RECENT_COMPRESS_INPUT_BUDGET_TOKENS:
@@ -708,12 +722,17 @@ class CompressedRecentHistoryManager:
                 logger.warning(f"[RecentHistory] {lanlan_name} 分段压缩失败，跳过本轮压缩")
                 return None
             messages_text = reduced
+            locale_text = reduced
 
         lang = detect_prompt_language(
-            messages_text,
+            locale_text,
             ui_language=get_global_language_full(),
         )
-        prompt = self._build_summary_prompt(messages_text, detailed)
+        prompt = self._build_summary_prompt(
+            messages_text,
+            detailed,
+            locale_text=locale_text,
+        )
 
         # Past block 时间衰减：距上次"实际更新 past block"超过
         # RECENT_SUMMARY_STALE_HOURS 小时时，在 prompt 头部加提醒让 LLM 把明显

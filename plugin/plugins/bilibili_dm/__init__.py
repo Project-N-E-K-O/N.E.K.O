@@ -1389,11 +1389,15 @@ class BiliDMPlugin(NekoPluginBase):
         """发送对话历史到 Memory Server"""
         import httpx
         from config import MEMORY_SERVER_PORT
+        from utils.language_utils import get_global_language_full
 
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 f"http://localhost:{MEMORY_SERVER_PORT}/{endpoint}/{her_name}",
-                json={"input_history": json.dumps(messages, ensure_ascii=False)},
+                json={
+                    "input_history": json.dumps(messages, ensure_ascii=False),
+                    "language": get_global_language_full(),
+                },
                 timeout=timeout,
             )
             response.raise_for_status()

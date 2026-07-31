@@ -124,12 +124,25 @@ def test_emotion_prompt_keeps_fixed_expert_preamble():
 def test_summary_prompt_uses_request_scoped_traditional_locale():
     from memory.recent import CompressedRecentHistoryManager
     from utils.language_utils import language_context
+    from utils.llm_client import AIMessage, HumanMessage
 
     manager = object.__new__(CompressedRecentHistoryManager)
-    manager.name_mapping = {"human": "主人"}
+    manager.name_mapping = {"human": "Alice"}
+    messages = [
+        HumanMessage(content="好"),
+        AIMessage(content="嗯"),
+    ]
+    rendered = manager._render_messages_to_text(messages, "Neko")
+    locale_text = manager._summary_prompt_locale_text(messages)
     with language_context("zh-TW"):
-        prompt = manager._build_summary_prompt("human | 今天想喝咖啡", False)
+        prompt = manager._build_summary_prompt(
+            rendered,
+            False,
+            locale_text=locale_text,
+        )
 
+    assert locale_text == "好\n嗯"
+    assert rendered == "Alice | 好\nNeko | 嗯"
     assert "資訊豐富" in prompt
     assert "負面回饋" in prompt
 
@@ -205,6 +218,50 @@ async def test_new_dialog_request_forwards_session_locale(monkeypatch):
 
     assert result == "ok"
     assert calls[0]["params"] == {"language": "zh-TW"}
+
+
+@pytest.mark.asyncio
+async def test_game_archive_writer_forwards_full_session_locale(monkeypatch):
+    from main_routers.game_router import archive
+    from utils import internal_http_client
+
+    calls = []
+
+    class Response:
+        content = b"{}"
+        is_success = True
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {}
+
+    class Client:
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    async def highlights(_archive):
+        return {}
+
+    monkeypatch.setattr(archive, "_ensure_game_archive_memory_highlights", highlights)
+    monkeypatch.setattr(
+        archive,
+        "_build_game_archive_memory_messages",
+        lambda _archive: [{"role": "user", "content": "好"}],
+    )
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
+
+    result = await archive._submit_game_archive_to_memory({
+        "lanlan_name": "Neko",
+        "session_id": "game-1",
+        "game_type": "soccer",
+        "user_language": "zh-TW",
+        "soccer_game_memory_archive_enabled": True,
+    })
+
+    assert result["ok"] is True
+    assert calls[0][1]["json"]["language"] == "zh-TW"
 
 
 @pytest.mark.asyncio
@@ -481,6 +538,67 @@ async def test_idle_maintenance_uses_latest_session_locale(monkeypatch, tmp_path
     locale_state.record_character_prompt_locale("Neko", None)
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") is None
+
+
+@pytest.mark.asyncio
+async def test_periodic_promotion_uses_durable_character_locale(monkeypatch, tmp_path):
+    from app.memory_server import evidence_loops, locale_state, runtime
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    class ReflectionEngine:
+        async def aauto_promote_stale(self, name):
+            observed.append((name, get_global_language_full()))
+            return 1
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    locale_state._locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-TW")
+    locale_state._locale_cache.clear()
+
+    result = await evidence_loops._auto_promote_character("Neko", True)
+
+    assert result == 1
+    assert observed == [("Neko", "zh-TW")]
+
+
+@pytest.mark.asyncio
+async def test_persona_fusion_detects_locale_from_candidate_body(monkeypatch):
+    from memory.persona import fusion
+    from utils.language_utils import language_context
+
+    observed = []
+
+    def detect(text, *, ui_language):
+        observed.append((text, ui_language))
+        return "zh-TW"
+
+    class ConfigManager:
+        async def aget_character_data(self):
+            return (None, None, None, None, {}, None, None, None, None)
+
+        async def aget_model_api_config(self, _tier, *, core_config=None):
+            raise RuntimeError("stop after prompt construction")
+
+    class Harness(fusion.ExternalFusionMixin):
+        def __init__(self):
+            self._config_manager = ConfigManager()
+
+    monkeypatch.setattr(fusion, "detect_prompt_language", detect)
+
+    with language_context("zh-TW"):
+        result = await Harness()._allm_call_fusion(
+            "Neko",
+            "master",
+            [{"source_section": "Preferences", "text": "喜歡貓"}],
+            600,
+        )
+
+    assert result is None
+    assert observed == [("喜歡貓", "zh-TW")]
 
 
 @pytest.mark.asyncio

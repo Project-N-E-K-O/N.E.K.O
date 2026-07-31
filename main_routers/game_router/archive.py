@@ -29,7 +29,7 @@ from ._shared import (
     _strip_json_fence,
     logger,
 )
-from .char_info import _get_game_route_summary_llm_info, _resolve_game_prompt_language
+from .char_info import _get_game_route_summary_llm_info
 from .game_context import (
     _dialog_memory_line,
     _extract_score_text,
@@ -54,7 +54,7 @@ from config.prompts.prompts_minigame_route import (
     get_game_archive_memory_text_labels,
 )
 from ..shared_state import get_session_manager
-from utils.language_utils import normalize_language_code
+from utils.language_utils import get_global_language_full, normalize_language_code
 
 
 def _route_game_started_elapsed_ms(state: dict, *, prefer_exit_elapsed: bool = False) -> float | None:
@@ -124,7 +124,7 @@ def _build_game_archive(state: dict) -> dict:
         "game_type": state.get("game_type"),
         "session_id": state.get("session_id"),
         "lanlan_name": state.get("lanlan_name"),
-        "user_language": _resolve_game_prompt_language(str(state.get("lanlan_name") or "")),
+        "user_language": _archive_prompt_language(state),
         "dialog_count": len(dialog),
         "full_dialogues": dialog,
         "last_full_dialogues": dialog[-keep_last:],
@@ -164,7 +164,7 @@ def _archive_game_context_degraded(archive: dict) -> bool:
 def _archive_prompt_language(archive: dict) -> str:
     language = str(archive.get("user_language") or "").strip()
     if language:
-        return language
+        return normalize_language_code(language, format="full") or language
     lanlan_name = str(archive.get("lanlan_name") or "").strip()
     if not lanlan_name:
         return ""
@@ -173,10 +173,14 @@ def _archive_prompt_language(archive: dict) -> str:
         manager = session_manager.get(lanlan_name) if hasattr(session_manager, "get") else None
         language = str(getattr(manager, "user_language", "") or "").strip()
         if language:
-            return normalize_language_code(language, format="short") or language
+            return normalize_language_code(language, format="full") or language
     except Exception:
         logger.debug("赛后归档语言解析失败，使用默认 prompt 语言", exc_info=True)
     return ""
+
+
+def _archive_memory_language(archive: dict) -> str:
+    return _archive_prompt_language(archive) or get_global_language_full()
 
 
 def _build_game_archive_memory_text(archive: dict) -> str:
@@ -640,7 +644,10 @@ async def _submit_game_archive_to_memory(archive: dict) -> dict:
         client = get_internal_http_client()
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-            json={"input_history": json.dumps(messages, ensure_ascii=False)},
+            json={
+                "input_history": json.dumps(messages, ensure_ascii=False),
+                "language": _archive_memory_language(archive),
+            },
             timeout=8.0,
         )
         data = response.json() if response.content else {}

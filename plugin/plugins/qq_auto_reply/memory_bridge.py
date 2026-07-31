@@ -266,10 +266,15 @@ class QQMemoryBridge:
         return "\n".join(kept)
 
     async def post_memory_history(self, endpoint: str, her_name: str, messages: list[dict[str, Any]], *, timeout: float = 5.0) -> dict[str, Any]:
+        from utils.language_utils import get_global_language_full
+
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/{endpoint}/{her_name}",
-            json={"input_history": json.dumps(messages, ensure_ascii=False)},
+            json={
+                "input_history": json.dumps(messages, ensure_ascii=False),
+                "language": get_global_language_full(),
+            },
             timeout=timeout,
         )
         response.raise_for_status()

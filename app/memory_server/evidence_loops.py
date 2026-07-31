@@ -63,6 +63,15 @@ async def _run_with_character_language(name: str, operation):
     return await run_with_character_prompt_locale(name, operation, name)
 
 
+async def _auto_promote_character(name: str, powerful: bool):
+    operation = (
+        runtime.reflection_engine.aauto_promote_stale
+        if powerful
+        else runtime.reflection_engine.aauto_promote_time_driven
+    )
+    return await _run_with_character_language(name, operation)
+
+
 async def _check_feedback_for_confirmed(
     name: str,
     confirmed: list[dict],
@@ -401,12 +410,7 @@ async def _periodic_auto_promote_loop():
 
         async def _promote_one(name: str):
             try:
-                if powerful:
-                    # score-driven + merge LLM (current evidence-RFC 路径)
-                    transitions = await runtime.reflection_engine.aauto_promote_stale(name)
-                else:
-                    # 强力记忆关：time-driven 直接 aadd_fact，零 LLM
-                    transitions = await runtime.reflection_engine.aauto_promote_time_driven(name)
+                transitions = await _auto_promote_character(name, powerful)
                 if transitions:
                     logger.info(
                         f"[AutoPromote] {name}: {transitions} 条状态迁移"

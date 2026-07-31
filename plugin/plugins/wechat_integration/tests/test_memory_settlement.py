@@ -10,13 +10,19 @@ async def test_settle_memory_session_settles_cached_turns_without_reposting_hist
     client.__aexit__.return_value = False
     client.post.return_value.is_success = True
 
-    with patch("httpx.AsyncClient", return_value=client):
+    with (
+        patch("httpx.AsyncClient", return_value=client),
+        patch(
+            "utils.language_utils.get_global_language_full",
+            return_value="zh-TW",
+        ),
+    ):
         await WechatIntegrationPlugin._settle_memory_session("neko", reason="idle_timeout")
 
     url = client.post.await_args.args[0]
     payload = client.post.await_args.kwargs["json"]
     assert url.endswith("/settle/neko")
-    assert payload == {"input_history": "[]"}
+    assert payload == {"input_history": "[]", "language": "zh-TW"}
 
 
 async def test_shutdown_settles_each_active_cached_session_before_closing_client():
@@ -61,7 +67,11 @@ async def test_idle_cleanup_tracks_settlement_task_until_completion():
         await release.wait()
         return True
 
-    with patch.object(WechatIntegrationPlugin, "_settle_memory_session", new=settle):
+    with patch.object(
+        WechatIntegrationPlugin,
+        "_settle_memory_session",
+        new=staticmethod(settle),
+    ):
         plugin._cleanup_wechat_sessions(now=301)
 
     assert len(plugin._settle_memory_tasks) == 1
