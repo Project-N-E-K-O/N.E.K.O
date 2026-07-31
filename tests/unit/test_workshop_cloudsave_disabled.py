@@ -1037,8 +1037,10 @@ def _make_workshop_cm(tmp_path, config_path):
 class _RecordingLogger:
     """Capture .error() without caplog.
 
-    这个模块的 logger 由项目日志初始化关掉了 propagate，caplog 的 handler 挂在 root
-    上，所以它收不到 —— 单独跑绿、跟整个文件一起跑红。注入替身没有这个顺序依赖。
+    The project's logging setup turns off propagation on this module's logger,
+    and caplog installs its handler on the root, so caplog sees nothing — which
+    shows up as a test that passes alone and fails with the rest of the file.
+    Injecting a stand-in has no such ordering dependency.
     """
 
     def __init__(self):
