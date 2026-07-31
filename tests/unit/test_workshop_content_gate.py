@@ -25,6 +25,7 @@ somewhere.
 
 import ast
 import asyncio
+from contextlib import asynccontextmanager
 import inspect
 import json
 import os
@@ -268,21 +269,49 @@ def _swap_args(content_folder, audio_name: str, audio: bytes, prefix: str) -> tu
     )
 
 
-async def _parked(gate: threading.Event, what: str) -> None:
-    """Wait for the worker to reach its gate, and say so plainly if it never does.
+# 宽到只有真的挂住了才会到点。放行永远由 `_worker_parked_at` 的 finally 保证，
+# 所以短超时买不到任何安全性，只会在负载高的 runner 上把交错悄悄拆掉：假 worker
+# 提前离开它该卡住的位置、提前放开占用，于是竞争方合法地拿到了 claim，用例把这
+# 报成一次「互斥失效」——一个纯粹由超时造出来的假回归。
+_SYNC_TIMEOUT = 30.0
 
-    Dropping the flag ``Event.wait`` returns would let a synchronisation
-    timeout fall straight through into the assertions below, which then fail
-    for the wrong reason: "DID NOT RAISE" reads like the exclusion is broken
-    when in fact the interleaving these tests exist to force was never
-    established.
+
+async def _drain(task) -> None:
+    """Wait the task out and retrieve its outcome, without changing the verdict."""
+    await asyncio.wait({task})
+    if not task.cancelled():
+        task.exception()
+
+
+@asynccontextmanager
+async def _worker_parked_at(gate: threading.Event, release: threading.Event, task, what: str):
+    """Run the body while ``task``'s worker sits parked, then always let it go.
+
+    Three things have to hold together here, and each one was its own defect
+    before it did:
+
+    * the checkpoint is **asserted**, so a synchronisation timeout says "the
+      interleaving never happened" instead of letting the body fail as
+      ``DID NOT RAISE`` -- which reads like the exclusion is broken;
+    * the checkpoint sits **inside** the cleanup, so a failed checkpoint still
+      releases the parked worker instead of leaving it holding the claim;
+    * the task is **drained**, so a late worker cannot acquire the claim after
+      teardown has begun -- that surfaces as a registry-leak error pointing at
+      the wrong thing, or as the worker running on after monkeypatch put the
+      real upload function back.
     """
-    assert await asyncio.to_thread(gate.wait, 5), (
-        f'{what} 没在 5s 内就位——交错没建立起来，后面的断言证明不了任何东西'
-    )
+    try:
+        assert await asyncio.to_thread(gate.wait, _SYNC_TIMEOUT), (
+            f'{what} 没在 {_SYNC_TIMEOUT:.0f}s 内就位——交错没建立起来，'
+            f'后面的断言证明不了任何东西'
+        )
+        yield
+    finally:
+        release.set()
+        await _drain(task)
 
 
-def _wait_until_nobody_holds(content_folder: str, *, timeout: float = 5.0) -> bool:
+def _wait_until_nobody_holds(content_folder: str, *, timeout: float = _SYNC_TIMEOUT) -> bool:
     """Poll until no claim of either kind is left, so a test can assert release.
 
     Probes with the *exclusive* claim deliberately. ``claim_reference_pair``
@@ -323,7 +352,7 @@ async def test_a_reference_swap_cannot_slip_into_the_steam_upload(tmp_path, monk
     def _fake_steam_upload(steamworks, title, description, content_folder, *rest):
         seen.append(_snapshot_pair(content_folder))    # SetItemContent 开始读目录
         uploading.set()
-        finish.wait(timeout=5)
+        assert finish.wait(timeout=_SYNC_TIMEOUT), '放行信号没来——worker 提前离开了它该卡住的位置'
         seen.append(_snapshot_pair(content_folder))    # 读完
         return 4242
 
@@ -342,21 +371,14 @@ async def test_a_reference_swap_cannot_slip_into_the_steam_upload(tmp_path, monk
     publishing = asyncio.create_task(
         asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
     )
-    await _parked(uploading, '假 SetItemContent')
-
-    # finally 而不是顺着往下写：断言失败时假上传还卡在门上，它会攥着占用直到 5s
-    # 超时，清账 fixture 于是在真正的失败上面再叠一条「占用泄漏」，把人往错误的
-    # 方向带。放行永远要发生。
-    try:
+    async with _worker_parked_at(uploading, finish, publishing, '假 SetItemContent'):
         with pytest.raises(ContentFolderBusy):
             await asyncio.to_thread(
                 voice_refs._replace_voice_reference,
                 *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'sneaked-in', 'sneaked'),
             )
-    finally:
-        finish.set()
 
-    assert await publishing == 4242
+    assert publishing.result() == 4242
 
     assert seen[0] == seen[1], f'Steam 读的过程中这对文件被换掉了：{seen}'
     assert seen[0]['reference_audio'] == preflighted['manifest']['reference_audio'], (
@@ -379,7 +401,7 @@ async def test_a_delete_cannot_slip_into_the_steam_upload(tmp_path, monkeypatch)
 
     def _fake_steam_upload(steamworks, title, description, content_folder, *rest):
         uploading.set()
-        finish.wait(timeout=5)
+        assert finish.wait(timeout=_SYNC_TIMEOUT), '放行信号没来——worker 提前离开了它该卡住的位置'
         return 7
 
     monkeypatch.setattr(publish, '_publish_workshop_item', _fake_steam_upload)
@@ -387,15 +409,11 @@ async def test_a_delete_cannot_slip_into_the_steam_upload(tmp_path, monkeypatch)
     publishing = asyncio.create_task(
         asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
     )
-    await _parked(uploading, '假 SetItemContent')
-
-    try:
+    async with _worker_parked_at(uploading, finish, publishing, '假 SetItemContent'):
         with pytest.raises(ContentFolderBusy):
             await asyncio.to_thread(voice_refs._remove_voice_reference, str(tmp_path))
-    finally:
-        finish.set()
 
-    assert await publishing == 7, '发布本身必须照常跑完——被挡的是删，不是它'
+    assert publishing.result() == 7, '发布本身必须照常跑完——被挡的是删，不是它'
 
     assert (tmp_path / 'voice_sample.wav').read_bytes() == b'validated-audio'
     assert _snapshot_pair(str(tmp_path))['prefix'] == 'validated'
@@ -413,7 +431,7 @@ async def test_a_publish_cannot_start_on_top_of_a_running_swap(tmp_path, monkeyp
 
     def _park_before_commit(*args, **kwargs):
         mid_swap.set()
-        finish.wait(timeout=5)
+        assert finish.wait(timeout=_SYNC_TIMEOUT), '放行信号没来——worker 提前离开了它该卡住的位置'
         return real_write(*args, **kwargs)
 
     monkeypatch.setattr(voice_refs, 'atomic_write_json', _park_before_commit)
@@ -428,15 +446,10 @@ async def test_a_publish_cannot_start_on_top_of_a_running_swap(tmp_path, monkeyp
             *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'new-audio', 'new'),
         )
     )
-    await _parked(mid_swap, 'swap 的提交点')
-
-    try:
+    async with _worker_parked_at(mid_swap, finish, swapping, 'swap 的提交点'):
         with pytest.raises(ContentFolderBusy):
             await asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
-    finally:
-        finish.set()
 
-    await swapping
     assert _snapshot_pair(str(tmp_path))['prefix'] == 'new', (
         '被挡下的发布不该影响 swap 自己——它必须照常提交完'
     )
@@ -459,7 +472,7 @@ async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, m
 
     def _slow_upload(steamworks, title, description, content_folder, *rest):
         uploading.set()
-        finish.wait(timeout=5)
+        assert finish.wait(timeout=_SYNC_TIMEOUT), '放行信号没来——worker 提前离开了它该卡住的位置'
         return 99
 
     monkeypatch.setattr(publish, '_publish_workshop_item', _slow_upload)
@@ -467,9 +480,7 @@ async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, m
     task = asyncio.create_task(
         asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
     )
-    await _parked(uploading, '假 SetItemContent')
-
-    try:
+    async with _worker_parked_at(uploading, finish, task, '假 SetItemContent'):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
@@ -479,8 +490,6 @@ async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, m
                 voice_refs._replace_voice_reference,
                 *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'sneaked-in', 'sneaked'),
             )
-    finally:
-        finish.set()
 
     assert await asyncio.to_thread(_wait_until_nobody_holds, str(tmp_path)), (
         'worker 跑完之后目录还是被占着——占用泄漏了'
@@ -505,7 +514,7 @@ async def test_cancelling_the_upload_does_not_free_the_pair_early(tmp_path, monk
 
     def _park_before_commit(*args, **kwargs):
         swapping.set()
-        finish.wait(timeout=5)
+        assert finish.wait(timeout=_SYNC_TIMEOUT), '放行信号没来——worker 提前离开了它该卡住的位置'
         return real_write(*args, **kwargs)
 
     monkeypatch.setattr(voice_refs, 'atomic_write_json', _park_before_commit)
@@ -516,17 +525,13 @@ async def test_cancelling_the_upload_does_not_free_the_pair_early(tmp_path, monk
             *_swap_args(tmp_path, 'voice_sample_bbbbbbbbbbbb.wav', b'new-audio', 'new'),
         )
     )
-    await _parked(swapping, 'swap 的提交点')
-
-    try:
+    async with _worker_parked_at(swapping, finish, task, 'swap 的提交点'):
         task.cancel()
         with pytest.raises(asyncio.CancelledError):
             await task
 
         with pytest.raises(ContentFolderBusy):
             await asyncio.to_thread(publish._preflight_and_publish, *_publish_args(str(tmp_path)))
-    finally:
-        finish.set()
 
     assert await asyncio.to_thread(_wait_until_nobody_holds, str(tmp_path)), (
         'swap 跑完之后这对文件还是被占着——占用泄漏了'
@@ -755,11 +760,105 @@ _MUST_BE_CLAIMED = {
     '_cleanup_workshop_voice_reference',  # 删掉这对文件
     'atomic_write_json',                  # 提交新 manifest，swap 的唯一提交点
     'rmtree',                             # 删掉整个目录
+    # 预览图也是「Steam 会一起读走的字节」，跟那对参考语音没有区别。
+    'copy2', 'copyfile', 'copytree',
 }
 
-# 唯一的例外，理由是结构性的：那个目录是它自己刚 mkdir 出来的，路径还没返回给任何人，
-# 不可能有第二个持有者。
+# 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
+# 什么都不证明 —— `with claim: executor.submit(_publish_workshop_item, ...)` 的
+# 上传会在占用放开之后才真正发生，正是这条守卫要防的那个竞态，而按词法包含判定
+# 它是绿的。所以这种形状一律算越界，不看它嵌在哪儿。
+_DEFERRAL_CALLS = {
+    'to_thread', 'run_in_executor', 'submit', 'create_task', 'ensure_future', 'partial',
+}
+
+# 结构性豁免：那个目录是它自己刚 mkdir 出来的，路径还没返回给任何人，不可能有第二
+# 个持有者。
 _ALLOWED_UNCLAIMED = {('publish', 'prepare_workshop_upload')}
+
+# ⚠️ 已知缺口，不是豁免。放在这里是为了让它**可见**、而且会随代码漂移被重新审视：
+# publish_to_workshop 把预览图 copy2 进内容目录发生在 claim **之前**，同一目录被
+# 重复发布时能撕裂预览图。修它要连 /upload-preview-image 一起动 —— 那条路由既没
+# 占用，也没有 _assert_under_base 路径校验，而且是在事件循环上直接 open().write()，
+# 要拿占用得先把这次写挪进 worker 单元。那是独立一个 PR 的事。删掉这一条之前先确认
+# 那边真的修好了。
+_KNOWN_GAPS = {('publish', 'publish_to_workshop')}
+
+
+def _unclaimed_folder_operations(func, short: str) -> list:
+    """Sentinel operations in ``func`` that no claim covers.
+
+    Two ways to be uncovered, and the second one is why lexical containment
+    alone is not enough: the reference sits outside every claiming ``with``,
+    or it is handed to something that runs it later (see ``_DEFERRAL_CALLS``),
+    in which case being inside the ``with`` says nothing about when the work
+    actually touches the folder.
+    """
+    claimed_nodes = set()
+    for block in ast.walk(func):
+        if not isinstance(block, ast.With):
+            continue
+        if not any(
+            _referenced_names(item.context_expr) & _CLAIM_CALLS
+            for item in block.items
+        ):
+            continue
+        for inner in ast.walk(block):
+            claimed_nodes.add(id(inner))
+
+    deferred_nodes = set()
+    for call in ast.walk(func):
+        if not isinstance(call, ast.Call):
+            continue
+        tail = (
+            call.func.id if isinstance(call.func, ast.Name)
+            else call.func.attr if isinstance(call.func, ast.Attribute)
+            else None
+        )
+        if tail not in _DEFERRAL_CALLS:
+            continue
+        for arg in list(call.args) + [kw.value for kw in call.keywords]:
+            deferred_nodes.add(id(arg))
+
+    offenders = []
+    for child in ast.walk(func):
+        if not isinstance(child, (ast.Name, ast.Attribute)):
+            continue
+        name = child.id if isinstance(child, ast.Name) else child.attr
+        if name not in _MUST_BE_CLAIMED:
+            continue
+        if id(child) in deferred_nodes:
+            offenders.append(f'{short}.{func.name}:{child.lineno} -> {name}（交给别处延后跑）')
+        elif id(child) not in claimed_nodes:
+            offenders.append(f'{short}.{func.name}:{child.lineno} -> {name}')
+    return offenders
+
+
+def test_the_claim_guard_sees_through_deferred_work():
+    """Handing the operation to a worker does not put it under the claim.
+
+    ``with claim: executor.submit(_publish_workshop_item, ...)`` satisfies
+    lexical containment while the upload runs after the claim is released --
+    the very race the guard exists to catch. Pinned on synthetic source so the
+    rule holds even when no production code currently has this shape.
+    """
+    tree = ast.parse(
+        'def deferred():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        executor.submit(_publish_workshop_item, folder)\n'
+        '\n'
+        'def direct():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        _publish_workshop_item(folder)\n'
+    )
+    functions = {node.name: node for node in tree.body}
+
+    assert _unclaimed_folder_operations(functions['deferred'], 'x'), (
+        '推迟执行的上传必须被报出来——占用早就放开了'
+    )
+    assert _unclaimed_folder_operations(functions['direct'], 'x') == [], (
+        '直接在占用里同步跑完是合法的，守卫不该报它'
+    )
 
 
 def test_every_folder_consuming_call_sits_inside_a_claim():
@@ -768,6 +867,10 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
     Listing the functions that take a claim today would pass forever. This
     walks the two modules that own a content folder's lifecycle and asks the
     opposite question: who touches the folder without one.
+
+    ``_KNOWN_GAPS`` is not an exemption list -- it is the one place where the
+    preview-image gap is written down as machine-checked debt rather than a
+    sentence in a PR description that nobody will read again.
     """
     from main_routers.workshop_router import voice_refs
 
@@ -778,29 +881,29 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if (short, node.name) in _ALLOWED_UNCLAIMED:
+            if (short, node.name) in _ALLOWED_UNCLAIMED | _KNOWN_GAPS:
                 continue
-
-            claimed_nodes = set()
-            for block in ast.walk(node):
-                if not isinstance(block, ast.With):
-                    continue
-                if not any(
-                    _referenced_names(item.context_expr) & _CLAIM_CALLS
-                    for item in block.items
-                ):
-                    continue
-                for inner in ast.walk(block):
-                    claimed_nodes.add(id(inner))
-
-            for child in ast.walk(node):
-                if not isinstance(child, (ast.Name, ast.Attribute)):
-                    continue
-                name = child.id if isinstance(child, ast.Name) else child.attr
-                if name not in _MUST_BE_CLAIMED:
-                    continue
-                if id(child) in claimed_nodes:
-                    continue
-                offenders.append(f'{short}.{node.name}:{child.lineno} -> {name}')
+            offenders.extend(_unclaimed_folder_operations(node, short))
 
     assert not offenders, f'这些地方在没拿到目录占用的情况下消费/改动内容目录：{offenders}'
+
+
+def test_the_known_gaps_are_still_gaps():
+    """A known gap that quietly got fixed must not stay on the list.
+
+    Otherwise the list rots into a permanent blindfold: the day someone moves
+    the preview copy inside the claim, this entry would keep excusing whatever
+    lands in that function next.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    modules = {'publish': publish, 'voice_refs': voice_refs}
+    for short, name in sorted(_KNOWN_GAPS):
+        tree = ast.parse(inspect.getsource(modules[short]))
+        target = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name
+        )
+        assert _unclaimed_folder_operations(target, short), (
+            f'{short}.{name} 已经没有未占用的目录操作了——把它从 _KNOWN_GAPS 里删掉'
+        )
