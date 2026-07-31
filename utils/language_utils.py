@@ -1630,6 +1630,26 @@ def detect_language(text: str) -> str:
         return 'unknown'
 
 
+def _session_or_default_language(ui_language: Optional[str], default: str) -> str:
+    """The session's language as a prompt code, or `default` if there is none.
+
+    Traditional Chinese keeps its full code because the templates are keyed by
+    it; everything else is reduced to the short code the templates use.
+    """
+    if not ui_language:
+        return default
+    try:
+        configured = normalize_language_code(ui_language, format='full')
+    except Exception:
+        return default
+    if configured == 'zh-TW':
+        return 'zh-TW'
+    try:
+        return normalize_language_code(configured, format='short')
+    except Exception:
+        return default
+
+
 def detect_prompt_language(
     text: str, default: str = 'zh', ui_language: Optional[str] = None
 ) -> str:
@@ -1663,9 +1683,10 @@ def detect_prompt_language(
         detected = detect_language(str(text or ''))
         if detected == 'unknown':
             # Emoji, digits or punctuation only. Normalizing 'unknown' lands on
-            # 'en', which is a guess dressed up as a detection; the caller's own
-            # default is the honest answer.
-            return default
+            # 'en', which is a guess dressed up as a detection. The session's own
+            # language is the best evidence there is about someone who just sent
+            # `😀😀`; the caller's default only applies when there is no session.
+            return _session_or_default_language(ui_language, default)
         detected = normalize_language_code(detected, format='short')
     except Exception:
         return default

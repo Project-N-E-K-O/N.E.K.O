@@ -49,6 +49,7 @@ from config.prompts.prompts_emotion import (
     get_emotion_negation_prefixes_flat,
     get_emotion_negation_words_flat,
     get_emotion_negation_suffixes_flat,
+    get_emotion_negation_suffix_exceptions_flat,
     get_emotion_negation_degree_adverbs_flat,
     get_heuristic_modal_negations_flat,
     get_emotion_keyword_false_friends_flat,
@@ -98,6 +99,13 @@ _EMOTION_NEGATION_PREFIXES = get_emotion_negation_prefixes_flat()
 
 
 _EMOTION_NEGATION_SUFFIXES = get_emotion_negation_suffixes_flat()
+
+
+_EMOTION_NEGATION_SUFFIX_EXCEPTIONS = tuple(sorted({
+    re.sub(r"[\W_]+", "", str(word).strip().lower(), flags=re.UNICODE)
+    for word in get_emotion_negation_suffix_exceptions_flat()
+    if str(word).strip()
+}, key=len, reverse=True))
 
 
 # 保留撇号：否则 `don't` 被切成 `don` + `t`，两半都不在否定词表里，而
@@ -232,6 +240,21 @@ def _alias_after(compact_text, position):
     """
     tail = compact_text[position:]
     return any(alias and alias in tail for alias in _EMOTION_COMPACT_ALIAS_LOOKUP)
+
+
+def _suffix_negates_at(compact_text, position, marker):
+    """Whether the postposed marker at `position` really is a negation there.
+
+    Some words open with one: the Japanese conjunction for "or" starts with the
+    plain negative ending, so an alias followed by it read as denied when the
+    sentence is simply listing alternatives.
+    """
+    if not compact_text.startswith(marker, position):
+        return False
+    return not any(
+        compact_text.startswith(exception, position)
+        for exception in _EMOTION_NEGATION_SUFFIX_EXCEPTIONS
+    )
 
 
 def _marker_attaches_to_head(head):
@@ -481,7 +504,7 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
                     # with a Japanese suffix -- and without this the denied half
                     # stayed in the running and won the ranking.
                     if any(
-                        compact_text.startswith(marker, compact_start + len(alias))
+                        _suffix_negates_at(compact_text, compact_start + len(alias), marker)
                         for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
                     ):
                         continue
@@ -497,7 +520,7 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
             if match_start < 0:
                 break
             if not _is_negated_compact_match(match_start) and not any(
-                compact_text.startswith(marker, match_start + len(compact_alias))
+                _suffix_negates_at(compact_text, match_start + len(compact_alias), marker)
                 for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
             ):
                 matches.append((match_start, -len(compact_alias), canonical))
@@ -717,7 +740,7 @@ def _has_heuristic_negation_after(text_value, position):
     marker further along belongs to some later phrase.
     """
     return any(
-        text_value.startswith(marker, position)
+        _suffix_negates_at(text_value, position, marker)
         for marker in _EMOTION_NEGATION_COMPACT_SUFFIXES
     )
 

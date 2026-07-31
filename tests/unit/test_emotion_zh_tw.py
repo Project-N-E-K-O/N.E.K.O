@@ -1547,7 +1547,9 @@ def test_every_latin_modal_negation_is_boundary_checked():
 
 
 @pytest.mark.parametrize("text", [
-    "這是一個困難過程", "經歷困難過後終於完成", "这是一个困难过程", "艱難過程", "災難過後",
+    "這是一個困難過程", "經歷困難過後終於完成", "这是一个困难过程", "艱難過程",
+    "他身上有一種學生氣質", "這個房間有一股陌生氣息", "昨天那條街發生氣爆事故",
+    "這款飲料會產生氣泡", "他身上有一种学生气质", "衛生氣味", "先生氣色不好", "人生氣息",
 ])
 def test_a_keyword_formed_across_a_compound_boundary_is_not_one(text):
     """Neither half is an emotion word; the keyword only exists in the seam.
@@ -1562,3 +1564,91 @@ def test_a_keyword_formed_across_a_compound_boundary_is_not_one(text):
 @pytest.mark.parametrize("text", ["我很難過", "困難重重我好難過", "好難過喔"])
 def test_the_real_emotion_word_still_scores(text):
     assert _heur(text) == "sad"
+
+
+@pytest.mark.parametrize("text", [
+    "我因为难过不想说话", "我感到痛苦难过", "我因為難過不想說話", "我感到痛苦難過",
+])
+def test_the_seam_filter_does_not_eat_a_real_keyword(text):
+    """The filter has the same blind spot as the bug it fixes, mirrored.
+
+    Removing a left-hand word to stop a seam match will, for some words, remove
+    the first character of a genuine keyword instead: the two entries that could
+    precede a real one were taken back out. This is the cost of not segmenting,
+    and it points the safer way -- a false positive on neutral text beats losing
+    a common way of saying you are sad.
+    """
+    assert _heur(text) == "sad"
+
+
+@pytest.mark.parametrize("text", ["學生很生氣", "發生了讓我生氣的事", "我好生氣", "他很生气"])
+def test_the_seam_filter_leaves_real_anger_alone(text):
+    assert _heur(text) == "angry"
+
+
+@pytest.mark.parametrize("text", [
+    "有沒有很開心", "有没有很开心", "你今天有沒有很開心呀", "有沒有很可愛",
+])
+def test_the_rhetorical_question_is_not_a_negation(text):
+    """It reads as a negation but asserts the emotion, and emphatically.
+
+    The bare negation it contains has a real job one word later, so the fix is
+    the blocklist rather than dropping it.
+    """
+    assert _heur(text) is not None
+
+
+@pytest.mark.parametrize("text", ["我沒有很開心", "沒有真的生氣", "其實沒有那麼難過"])
+def test_the_bare_negation_still_works_after_the_blocklist_entry(text):
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", [
+    "não cansado e feliz", "no cansado y feliz", "not sad and happy",
+])
+def test_a_coordinator_ends_the_negation_scope(label, confidence):
+    """The negation modifies the first predicate; the second is asserted.
+
+    Contrast conjunctions already ended the scope; the plain coordinator did
+    not, so the negation reached forward and discarded the only emotion named.
+    Latin only -- the Chinese coordinator often joins two objects of one
+    negation, where ending the scope would read it wrong.
+    """
+    assert _label(label, confidence) == "happy"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+def test_a_coordinator_does_not_undo_a_second_negation(confidence):
+    assert _label("not sad and not happy", confidence) == "neutral"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+def test_a_conjunction_that_opens_with_a_negative_ending(confidence):
+    """The Japanese for "or" begins with the plain negative ending.
+
+    An alias followed by it read as denied, when the sentence is listing
+    alternatives. Checked after the marker matches, because a substring test
+    cannot see the difference.
+    """
+    assert _label("悲しいないし平穏", confidence) == "sad"
+    assert _label("嬉しくない", confidence) == "neutral"
+    assert _label("興奮していません", confidence) == "neutral"
+
+
+@pytest.mark.parametrize("text, ui, expected", [
+    ("😀😀", "en", "en"),
+    ("😀😀", "ja", "ja"),
+    ("😀😀", "zh-TW", "zh-TW"),
+    ("😀😀", "zh-CN", "zh"),
+    ("123!!", "en", "en"),
+    ("😀😀", None, "zh"),
+])
+def test_undetectable_text_falls_back_to_the_session_language(text, ui, expected):
+    """Emoji and digits carry no script, and the hard-coded default is a guess.
+
+    Every caller passes the session locale, which is the best evidence there is
+    about someone who just sent an emoji. The default applies only where there
+    is no session at all.
+    """
+    assert detect_prompt_language(text, ui_language=ui) == expected
