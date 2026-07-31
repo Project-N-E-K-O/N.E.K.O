@@ -25,6 +25,7 @@ somewhere.
 
 import ast
 import asyncio
+from collections import Counter
 from contextlib import asynccontextmanager
 import inspect
 import json
@@ -472,6 +473,9 @@ async def test_a_publish_cannot_start_on_top_of_a_running_swap(tmp_path, monkeyp
     assert _snapshot_pair(str(tmp_path))['prefix'] == 'new', (
         '被挡下的发布不该影响 swap 自己——它必须照常提交完'
     )
+    assert not (tmp_path / 'voice_sample.wav').exists(), (
+        '提交新 pair 后旧录音必须被删掉，否则 Steam 仍会把它一起上传'
+    )
 
 
 async def test_cancelling_the_publish_does_not_free_the_folder_early(tmp_path, monkeypatch):
@@ -693,6 +697,26 @@ async def test_publishing_during_a_publish_answers_409(export_folder, monkeypatc
     assert json.loads(response.body)['success'] is False
 
 
+async def test_publishing_without_a_claim_returns_the_published_id(export_folder, monkeypatch):
+    """The public handler must still finish its ordinary success path."""
+    (export_folder / 'content.txt').write_text('payload', encoding='utf-8')
+    monkeypatch.setattr(publish, 'get_steamworks', object)
+    monkeypatch.setattr(publish, '_is_workshop_publish_native_crash_risk', bool)
+
+    def _published_id(*args, **kwargs):
+        return 4242
+
+    monkeypatch.setattr(publish, '_publish_workshop_item', _published_id)
+    response = await publish.publish_to_workshop(_JsonRequest({
+        'title': 'ordinary item',
+        'content_folder': str(export_folder),
+        'visibility': 0,
+    }))
+
+    assert response.status_code == 200, json.loads(response.body)
+    assert json.loads(response.body)['published_file_id'] == 4242
+
+
 async def test_the_routes_still_work_when_nothing_holds_the_folder(export_folder):
     """The gate must not 409 the ordinary path -- that would be worse."""
     from main_routers.workshop_router import voice_refs
@@ -823,13 +847,30 @@ def _claiming_helpers_called_on_loop(func) -> list:
     if not helpers:
         return []
 
+    return _claiming_names_called_on_loop(func, set(helpers))
+
+
+def _reference_name(node) -> str | None:
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
+
+
+def _claiming_names_called_on_loop(func, claiming_names: set[str]) -> list:
+    """References to claim-owning sync workers must be worker callables."""
+    if not claiming_names:
+        return []
+
     parents = _parent_map(func)
     offenders = []
     for node in _walk_own_scope(func):
-        if not isinstance(node, ast.Name) or node.id not in helpers:
+        name = _reference_name(node)
+        if name not in claiming_names:
             continue
         if not _is_deferred_reference(node, parents, func):
-            offenders.append((node.id, node.lineno))
+            offenders.append((name, node.lineno))
     return offenders
 
 
@@ -881,6 +922,28 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
     )
 
 
+def test_the_event_loop_guard_checks_module_level_claim_owners():
+    tree = ast.parse(
+        'def _claiming_worker():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        pass\n'
+        '\n'
+        'async def offloaded():\n'
+        '    await asyncio.to_thread(_claiming_worker)\n'
+        '\n'
+        'async def direct():\n'
+        '    _claiming_worker()\n'
+    )
+    functions = {node.name: node for node in tree.body}
+
+    assert _claiming_names_called_on_loop(
+        functions['offloaded'], {'_claiming_worker'}
+    ) == []
+    assert _claiming_names_called_on_loop(
+        functions['direct'], {'_claiming_worker'}
+    ), '模块级 claim owner 被协程直接调用时也必须报出来'
+
+
 def test_no_claim_is_ever_taken_on_the_event_loop():
     """Rule 1, pinned: a claim taken in an ``async def`` is released by cancellation.
 
@@ -891,9 +954,17 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
     """
     from main_routers.workshop_router import preview_cards, voice_manifest, voice_refs
 
+    modules = (publish, voice_refs, preview_cards, voice_manifest, content_gate)
+    trees = [(module, ast.parse(inspect.getsource(module))) for module in modules]
+    claiming_workers = {
+        node.name
+        for _, tree in trees
+        for node in tree.body
+        if isinstance(node, ast.FunctionDef) and _claim_calls_in_own_scope(node)
+    }
+
     offenders = []
-    for module in (publish, voice_refs, preview_cards, voice_manifest, content_gate):
-        tree = ast.parse(inspect.getsource(module))
+    for module, tree in trees:
         short = module.__name__.rsplit('.', 1)[-1]
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef):
@@ -903,6 +974,8 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
                 offenders.append(f'{short}.{node.name}:{call.lineno}')
             for helper, line in _claiming_helpers_called_on_loop(node):
                 offenders.append(f'{short}.{node.name}:{line} -> {helper}（在事件循环直调）')
+            for worker, line in _claiming_names_called_on_loop(node, claiming_workers):
+                offenders.append(f'{short}.{node.name}:{line} -> {worker}（模块 worker 未 offload）')
 
     assert not offenders, f'这些占用是在协程里拿的，取消会把它们提前放开：{offenders}'
 
@@ -924,14 +997,22 @@ _MUST_BE_CLAIMED = {
 # claim 外面都会被抓住，而不会把别处无关的 ``write`` 当成目录竞态。
 _UNIT_OPERATIONS = {
     ('publish', '_preflight_and_publish'): {
-        'resolve_voice_reference_serialized', '_publish_workshop_item',
+        'resolve_voice_reference_serialized': 1,
+        '_publish_workshop_item': 1,
     },
     ('voice_refs', '_replace_voice_reference'): {
-        '_current_reference_audio_path', 'mkstemp', 'fdopen', 'write', 'flush',
-        'fsync', 'replace', 'atomic_write_json', 'remove',
+        '_current_reference_audio_path': 1,
+        'mkstemp': 1,
+        'fdopen': 1,
+        'write': 1,
+        'flush': 1,
+        'fsync': 1,
+        'replace': 1,
+        'atomic_write_json': 1,
+        'remove': 3,
     },
-    ('voice_refs', '_remove_voice_reference'): {'_cleanup_workshop_voice_reference'},
-    ('publish', '_delete_content_folder'): {'rmtree'},
+    ('voice_refs', '_remove_voice_reference'): {'_cleanup_workshop_voice_reference': 1},
+    ('publish', '_delete_content_folder'): {'rmtree': 1},
 }
 
 _UNIT_CLAIMS = {
@@ -984,7 +1065,7 @@ def _operation_name(node) -> str | None:
 
 def _operation_nodes(func, short: str) -> list[tuple[ast.AST, str]]:
     required = set(_MUST_BE_CLAIMED) if short in {'publish', 'voice_refs'} else set()
-    required |= _UNIT_OPERATIONS.get((short, func.name), set())
+    required |= set(_UNIT_OPERATIONS.get((short, func.name), {}))
     required |= _SCOPED_OPERATIONS.get((short, func.name), set())
     found = []
     for node in _walk_own_scope(func):
@@ -1037,13 +1118,19 @@ def _unclaimed_folder_operations(func, short: str) -> list:
         elif not any(id(child) in scope for _, scope in claimed_scopes):
             offenders.append((short, func.name, child.lineno, name, '未占用'))
 
-    unit_names = _UNIT_OPERATIONS.get((short, func.name))
-    if unit_names:
-        present = {name for _, name in operations if name in unit_names}
-        missing = unit_names - present
-        if missing:
-            offenders.append((short, func.name, func.lineno, ','.join(sorted(missing)), '清单操作消失'))
-        unit_ids = {id(node) for node, name in operations if name in unit_names}
+    unit_inventory = _UNIT_OPERATIONS.get((short, func.name))
+    if unit_inventory:
+        actual = Counter(name for _, name in operations if name in unit_inventory)
+        expected = Counter(unit_inventory)
+        if actual != expected:
+            offenders.append((
+                short,
+                func.name,
+                func.lineno,
+                'operation-inventory',
+                f'操作清单漂移：expected={dict(expected)}, actual={dict(actual)}',
+            ))
+        unit_ids = {id(node) for node, name in operations if name in unit_inventory}
         required_claim = _UNIT_CLAIMS[(short, func.name)]
         if unit_ids and not any(
             required_claim in kinds and unit_ids <= scope
