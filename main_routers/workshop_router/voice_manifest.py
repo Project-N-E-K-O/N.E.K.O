@@ -114,7 +114,12 @@ _VOICE_REFERENCE_LOCKS_GUARD = threading.Lock()
 
 
 def voice_reference_lock(content_folder: str) -> threading.Lock:
-    key = os.path.normcase(os.path.abspath(content_folder))
+    # realpath 而不是 abspath：abspath 只做词法规范化，不解析 symlink / junction。
+    # 写侧的 content_folder 来自 _assert_under_base 规范过的路径，读侧的
+    # install_folder 直接来自 Steam 的订阅项元数据 —— 同一个目录经由不同路径进来时
+    # 会各拿一把锁，串行化**静默**失效，而且不报任何错。Windows 上 Steam 库跨盘常用
+    # junction，这不是假想。realpath 对不存在的路径退化成词法规范化，不会抛。
+    key = os.path.normcase(os.path.realpath(content_folder))
     with _VOICE_REFERENCE_LOCKS_GUARD:
         lock = _VOICE_REFERENCE_LOCKS.get(key)
         if lock is None:

@@ -20,10 +20,10 @@ Split out of the former monolithic ``main_routers/workshop_router.py``.
 """
 
 from ._shared import logger, router
+from ..shared_state import get_config_manager
 
 import os
 import asyncio
-import threading
 from urllib.parse import unquote
 from fastapi.responses import JSONResponse
 from utils.workshop_utils import (
@@ -48,15 +48,19 @@ async def get_workshop_config():
 #
 # 这几步现在都跑在 worker 线程上（落盘含无上界 fsync，ensure 还可能对着网络盘或
 # 可移动盘做 exists / makedirs，留在事件循环上会卡住所有协程）。但一挪进线程，两个
-# 并发的 /config 请求就能真交错，而 ensure_workshop_folder_exists 会**重新读一次
-# 配置文件**来决定 auto_create（utils/workshop_utils.py:53 与 :75）：A 存下
-# auto_create=true + 目录 A，B 紧接着存下 auto_create=false，A 的 ensure 读到的是
-# B 的配置于是拒绝建目录，而 A 照样返回 success —— 用户看到"保存成功"但目录没建。
-# 改动前这一整段同步跑在循环线程上，物理上交错不了。
+# 并发请求就能真交错：
 #
-# 锁覆盖到 ensure 之内，所以它那次重读看到的一定是本次事务自己刚写的配置，不需要
-# 去改 ensure_workshop_folder_exists 这个公共 util 的签名。
-_WORKSHOP_CONFIG_TRANSACTION_LOCK = threading.Lock()
+# * 两个 /config 之间 —— ensure_workshop_folder_exists 会**重新读一次配置文件**来
+#   决定 auto_create（utils/workshop_utils.py:53 与 :75）：A 存下 auto_create=true +
+#   目录 A，B 紧接着存下 auto_create=false，A 的 ensure 读到 B 的配置于是拒绝建目录，
+#   而 A 照样返回 success。
+# * /config 与 GET /config 之间 —— load_workshop_config 那条路径**不是只读**：存储
+#   迁移之后 _rebase_workshop_config_after_storage_migration 会把自愈结果 save 回去。
+#   GET 可以「事务之前读、事务之后写」，把用户刚提交的设置整份盖掉。
+#
+# 所以用的是 ConfigManager 自己那把 _workshop_config_lock（经 workshop_config_lock()
+# 拿），而不是本模块私有的一把 —— 自愈写走的就是它，两边必须是同一把才挡得住。
+# 它是 RLock，所以持着它再调 load_workshop_config 不会自死锁。
 
 
 @router.post('/config')
@@ -66,7 +70,7 @@ async def save_workshop_config_api(config_data: dict):
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
 
         def _apply_config_transaction() -> tuple[dict, bool | None]:
-            with _WORKSHOP_CONFIG_TRANSACTION_LOCK:
+            with get_config_manager().workshop_config_lock():
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
                 # 后写的那次会把前一次的字段整份盖掉。
                 merged = load_workshop_config() or {}

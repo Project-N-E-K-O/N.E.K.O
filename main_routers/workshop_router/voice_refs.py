@@ -36,6 +36,7 @@ from .voice_manifest import (
 
 import os
 import asyncio
+import uuid
 import tempfile
 from contextlib import suppress
 import mimetypes
@@ -62,69 +63,61 @@ def _replace_voice_reference(
     request can never observe a half-replaced pair. The per-folder lock covers
     the other direction — two workers racing the same folder.
 
-    Nothing is deleted until the replacement is durable. Writing the new audio
-    first (staged, fsynced, then renamed into place) means a disk-full or
-    permission failure leaves the previous pair exactly as it was, instead of
-    destroying a reference the user cannot get back.
+    The manifest write is the single commit point. The new audio goes to its
+    own filename, so nothing that the current manifest points at is ever
+    overwritten or deleted before that commit: any failure up to it leaves the
+    previous pair byte-for-byte intact, and any state after it is the complete
+    new pair. There is no window in which the two halves come from different
+    uploads, so there is nothing to roll back.
     """
     with voice_reference_lock(content_folder):
-        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 顶上去。
+        # 1) 新音频先落到同目录的 tmp，fsync 之后再 os.replace 到它**自己的**文件名。
+        #    这个名字不会是当前 manifest 指着的那个（handler 每次生成新 token），
+        #    所以这一步不覆盖、不删除任何在用的东西。
         fd, temp_audio = tempfile.mkstemp(dir=content_folder, suffix='.tmp')
-        backup_audio = None
         try:
             with os.fdopen(fd, 'wb') as f:
                 f.write(audio_bytes)
                 f.flush()
                 os.fsync(f.fileno())
-
-            # 同扩展名替换时，os.replace 会把旧音频原地顶掉 —— 而 manifest 还没写。
-            # 万一第 2 步失败，盘上就是「新音频 + 旧 manifest」，偏偏文件名没变，
-            # _resolve_workshop_voice_reference 会认为这对有效：新音频配旧的
-            # prefix / 语言 / display_name / provider，而用户收到的是 500。静默的
-            # 不一致比响亮的失败糟得多，所以先把旧音频原子挪到一边留作回滚。
-            if os.path.exists(audio_path):
-                backup_audio = f'{temp_audio}.bak'
-                os.replace(audio_path, backup_audio)
-
             os.replace(temp_audio, audio_path)
 
-            # 2) manifest 也是原子替换。走到这里新的一对才算完整可用。
+            # 2) 唯一的提交点。atomic_write_json 是 tmp + os.replace，要么整份旧
+            #    manifest，要么整份新 manifest —— 这一步之前失败，盘上还是完完整整的
+            #    旧一对。
             atomic_write_json(manifest_path, manifest, ensure_ascii=False, indent=2)
         except BaseException:
             with suppress(OSError):
                 os.remove(temp_audio)
-            # 回滚到进来时的状态：旧音频挪回原位，旧 manifest 本来就没动过。
-            if backup_audio is not None:
-                try:
-                    os.replace(backup_audio, audio_path)
-                except OSError as restore_error:
-                    # ⚠️ 恢复也失败了（Windows 上目标仍被占着是最常见的原因）。
-                    # 此刻这个 .bak 是旧音频**唯一**的副本，绝不能删 —— 删了就是
-                    # 永久丢数据。留着它并把两个路径打进日志，至少还能人工恢复。
-                    logger.error(
-                        '参考语音回滚失败，旧音频保留在备份路径未删除: %s -> %s (%s)',
-                        backup_audio, audio_path, restore_error,
-                    )
-                else:
-                    with suppress(OSError):
-                        os.remove(backup_audio)
+            # 没提交成功就把刚落下的新音频也清掉：它没人引用，但 publish 是把整个
+            # 内容目录交给 SetItemContent 的，留着会让一次「报了失败」的上传照样被
+            # 发布出去。删不掉也只是个孤儿，下次成功替换时会被扫走。
+            with suppress(OSError):
+                os.remove(audio_path)
             raise
 
-        # 成功路径：manifest 已经提交，备份到这里才可以删。
-        if backup_audio is not None:
-            with suppress(OSError):
-                os.remove(backup_audio)
+        # 3) 提交之后再扫掉所有没人引用的参考音频（上一次的、以及之前失败留下的
+        #    孤儿）。删失败只是占点磁盘，不影响这对引用可用，所以吞掉。
+        _sweep_unreferenced_audio(content_folder, keep=audio_path)
 
-        # 3) 最后才清掉「换了扩展名」留下的旧音频（mp3 → wav 这种）。同名的那次
-        #    已经被上面的 os.replace 顶掉了。删失败只是留个孤儿文件，不影响这对
-        #    引用可用，所以吞掉。
-        for ext in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
-            stale = os.path.join(content_folder, f'voice_sample{ext}')
-            if os.path.abspath(stale) == os.path.abspath(audio_path):
-                continue
-            if os.path.exists(stale):
-                with suppress(OSError):
-                    os.remove(stale)
+
+def _sweep_unreferenced_audio(content_folder: str, *, keep: str) -> None:
+    """Delete reference-audio files that no manifest points at any more."""
+    keep_real = os.path.normcase(os.path.abspath(keep))
+    try:
+        entries = os.listdir(content_folder)
+    except OSError:
+        return
+    for name in entries:
+        if not name.startswith('voice_sample'):
+            continue
+        if os.path.splitext(name)[1].lower() not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
+            continue
+        candidate = os.path.join(content_folder, name)
+        if os.path.normcase(os.path.abspath(candidate)) == keep_real:
+            continue
+        with suppress(OSError):
+            os.remove(candidate)
 
 
 def _remove_voice_reference(content_folder: str) -> None:
@@ -192,7 +185,10 @@ async def upload_reference_audio(request: Request):
         if provider_hint not in WORKSHOP_REFERENCE_PROVIDER_HINTS:
             provider_hint = 'cosyvoice'
 
-        reference_audio_name = f'voice_sample{file_ext}'
+        # 每次上传都用一个新的文件名：这样写新音频永远不会覆盖当前 manifest 指着的
+        # 那个文件，manifest 写才能成为唯一的提交点（见 _replace_voice_reference）。
+        # 消费侧一律从 manifest 的 reference_audio 取名字，不认死 voice_sample.<ext>。
+        reference_audio_name = f'voice_sample_{uuid.uuid4().hex[:12]}{file_ext}'
         manifest = _normalize_workshop_voice_manifest({
             'version': 1,
             'reference_audio': reference_audio_name,

@@ -172,7 +172,11 @@ class StorageRootsMixin:
         self._user_workshop_folder_persisted = False
         self.chara_dir = self.app_docs_dir / "character_cards"
         self.card_faces_dir = self.app_docs_dir / "card_faces"
-        self._workshop_config_lock = threading.Lock()
+        # RLock 而不是 Lock：workshop 配置的「整段事务」（读→合并→写→建目录，见
+        # main_routers/workshop_router/config_files.py）要持着它再调 load_workshop_config，
+        # 而 load 自己在某些分支也拿这把锁 —— 不可重入就是自死锁。可重入只放宽同线程
+        # 再取，跨线程仍然严格串行，对既有用法没有任何削弱。
+        self._workshop_config_lock = threading.RLock()
 
         self._characters_cache: dict | None = None
         self._characters_cache_mtime: float | None = None

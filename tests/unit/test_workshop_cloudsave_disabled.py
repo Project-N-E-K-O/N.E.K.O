@@ -120,6 +120,26 @@ def test_the_workshop_config_route_can_import_what_it_uses():
     )
 
 
+def _stub_config_manager_lock(monkeypatch):
+    """Give the transaction a real reentrant lock without booting shared state.
+
+    The route deliberately borrows ConfigManager's own workshop lock — the
+    self-healing write inside load_workshop_config takes the same one — so the
+    test has to supply something lock-shaped rather than bypass it.
+    """
+    import threading
+
+    from main_routers.workshop_router import config_files
+
+    lock = threading.RLock()
+
+    class _CM:
+        def workshop_config_lock(self):
+            return lock
+
+    monkeypatch.setattr(config_files, "get_config_manager", lambda: _CM())
+    return lock
+
 @pytest.mark.asyncio
 async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monkeypatch):
     """Two overlapping /config requests must not read each other's half-state.
@@ -130,6 +150,7 @@ async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monke
     request B's freshly-saved config and decline to create A's folder while A
     still answers `success`.
     """
+    _stub_config_manager_lock(monkeypatch)
     import threading
 
     from main_routers.workshop_router import config_files
@@ -188,6 +209,7 @@ async def test_a_folder_that_cannot_be_created_is_reported(monkeypatch):
     response has to say the folder is not usable, or the user is told an
     unusable workshop path was set up fine.
     """
+    _stub_config_manager_lock(monkeypatch)
     from main_routers.workshop_router import config_files
     from utils import workshop_utils
 
@@ -206,6 +228,7 @@ async def test_a_folder_that_cannot_be_created_is_reported(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_a_created_folder_reports_ready(monkeypatch):
+    _stub_config_manager_lock(monkeypatch)
     from main_routers.workshop_router import config_files
     from utils import workshop_utils
 
@@ -219,3 +242,58 @@ async def test_a_created_folder_reports_ready(monkeypatch):
 
     assert result["folder_ready"] is True
     assert "warning" not in result
+
+
+def test_the_self_healing_read_shares_the_transaction_lock():
+    """`load_workshop_config` is not read-only; it must take the same lock.
+
+    After a storage migration it rebases paths and saves the result. If that
+    write happens outside the lock the POST transaction uses, a concurrent GET
+    can read before the transaction and save after it, silently overwriting
+    the folder settings the user just submitted while POST reports success.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from utils.config_manager import workshop as workshop_mixin
+
+    # 方法源码带类体缩进，直接 ast.parse 会 IndentationError。
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(workshop_mixin.WorkshopMixin.load_workshop_config))
+    )
+    rebase_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "_rebase_workshop_config_after_storage_migration"
+    ]
+    assert rebase_calls, "自愈读的调用点不见了，这条守卫需要跟着更新"
+
+    guarded = {
+        call.lineno
+        for node in ast.walk(tree) if isinstance(node, ast.With)
+        for item in node.items
+        if "_workshop_config_lock" in ast.unparse(item.context_expr)
+        for call in ast.walk(node)
+        if isinstance(call, ast.Call)
+        and isinstance(call.func, ast.Attribute)
+        and call.func.attr == "_rebase_workshop_config_after_storage_migration"
+    }
+    unguarded = {call.lineno for call in rebase_calls} - guarded
+    assert not unguarded, (
+        f"这些自愈读没有进 _workshop_config_lock（相对行号 {sorted(unguarded)}）——"
+        "它会写盘，不进锁就能盖掉刚提交的配置"
+    )
+
+
+def test_the_workshop_config_lock_is_reentrant():
+    """The transaction holds it and then calls load_workshop_config underneath."""
+    import threading
+
+    from utils.config_manager import get_config_manager
+
+    lock = get_config_manager().workshop_config_lock()
+    assert isinstance(lock, type(threading.RLock())), (
+        "必须是 RLock：事务持着它再调 load_workshop_config，不可重入就是自死锁"
+    )

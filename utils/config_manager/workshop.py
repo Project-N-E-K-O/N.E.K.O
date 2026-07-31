@@ -116,6 +116,15 @@ class WorkshopMixin:
         for candidate in candidates:
             self._cleanup_invalid_workshop_config_file(candidate)
 
+    def workshop_config_lock(self):
+        """The lock that serializes every read-modify-write of workshop_config.json.
+
+        Exposed so a caller that needs load → merge → save → side effects to be
+        one transaction can hold it across the whole sequence. Reentrant, so
+        the nested ``load_workshop_config`` inside such a transaction is fine.
+        """
+        return self._workshop_config_lock
+
     def repair_workshop_configs(self):
         """Explicitly repair the workshop config file; runs only when the caller explicitly allows writing to disk."""
         with self._workshop_config_lock:
@@ -176,9 +185,14 @@ class WorkshopMixin:
         config_path = self.get_workshop_config_path()
         try:
             if os.path.exists(config_path):
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
-                config = self._rebase_workshop_config_after_storage_migration(config)
+                # 这条路径**不是只读**：_rebase_workshop_config_after_storage_migration
+                # 在存储迁移之后会把自愈结果 save 回去。不进锁的话，一次并发的
+                # GET /config 可以「事务之前读、事务之后写」，把用户刚提交的目录设置
+                # 用自己那份陈旧快照整份盖掉，而 POST 还报 success。
+                with self._workshop_config_lock:
+                    with open(config_path, 'r', encoding='utf-8') as f:
+                        config = json.load(f)
+                    config = self._rebase_workshop_config_after_storage_migration(config)
                 logger.debug(f"成功加载workshop配置: {config}")
                 return config
             else:

@@ -408,21 +408,21 @@ def test_a_failed_audio_write_stages_nothing(tmp_path, monkeypatch):
     assert leftovers == [], f"失败路径留下了暂存文件：{leftovers}"
 
 
-def test_a_same_extension_replace_rolls_back_when_the_manifest_fails(tmp_path, monkeypatch):
-    """New audio must not survive under the old manifest.
+def test_a_failed_manifest_write_never_touches_the_live_pair(tmp_path, monkeypatch):
+    """The commit point is the manifest; nothing before it may be destructive.
 
-    Replacing a .wav with another .wav reuses the filename, so os.replace
-    overwrites the old audio before the manifest is written. If the manifest
-    write then fails, resolution still finds a "valid" pair — new audio wearing
-    the old prefix / language / provider — while the upload answered 500. A
-    silent mismatch is worse than a loud failure, so the previous audio is
-    staged aside and restored.
+    The new audio lands under its own filename, so the file the current
+    manifest points at is never overwritten. A failed manifest write therefore
+    leaves the previous pair byte-for-byte intact — the earlier "overwrite then
+    restore from a backup" shape had a window where the pair came from two
+    different uploads, and every rollback path was one more thing that could
+    itself fail.
     """
     from main_routers.workshop_router import voice_refs
 
-    (tmp_path / "voice_sample.wav").write_bytes(b"old-audio")
+    (tmp_path / "voice_sample_old.wav").write_bytes(b"old-audio")
     (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
-        json.dumps({"version": 1, "reference_audio": "voice_sample.wav", "prefix": "old"}),
+        json.dumps({"version": 1, "reference_audio": "voice_sample_old.wav", "prefix": "old"}),
         encoding="utf-8",
     )
 
@@ -434,87 +434,115 @@ def test_a_same_extension_replace_rolls_back_when_the_manifest_fails(tmp_path, m
     with pytest.raises(OSError):
         voice_refs._replace_voice_reference(
             str(tmp_path),
-            str(tmp_path / "voice_sample.wav"),
+            str(tmp_path / "voice_sample_new.wav"),
             b"new-audio",
             str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
-            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+            {"version": 1, "reference_audio": "voice_sample_new.wav", "prefix": "new"},
         )
 
-    assert (tmp_path / "voice_sample.wav").read_bytes() == b"old-audio", (
-        "新音频留在了旧 manifest 底下——同名替换失败后必须回滚"
+    assert (tmp_path / "voice_sample_old.wav").read_bytes() == b"old-audio"
+    assert _manifest(tmp_path)["prefix"] == "old", "旧 manifest 必须原样还在"
+    assert (tmp_path / "voice_sample_old.wav").exists(), (
+        "提交点之前不许动当前 manifest 指着的那个文件"
     )
-    assert _manifest(tmp_path)["prefix"] == "old"
-    leftovers = sorted(p.name for p in tmp_path.iterdir() if ".tmp" in p.name)
-    assert leftovers == [], f"失败路径留下了暂存/备份文件：{leftovers}"
 
 
-def test_a_successful_replace_leaves_no_backup_behind(tmp_path):
-    """The staged backup must not outlive a successful swap."""
+def test_a_successful_replace_leaves_no_staging_behind(tmp_path):
+    """No temp file may outlive a successful swap."""
     from main_routers.workshop_router import voice_refs
 
-    (tmp_path / "voice_sample.wav").write_bytes(b"old-audio")
+    (tmp_path / "voice_sample_old.wav").write_bytes(b"old-audio")
     (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
-        json.dumps({"version": 1, "reference_audio": "voice_sample.wav", "prefix": "old"}),
+        json.dumps({"version": 1, "reference_audio": "voice_sample_old.wav", "prefix": "old"}),
         encoding="utf-8",
     )
 
     voice_refs._replace_voice_reference(
         str(tmp_path),
-        str(tmp_path / "voice_sample.wav"),
+        str(tmp_path / "voice_sample_new.wav"),
         b"new-audio",
         str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
-        {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
+        {"version": 1, "reference_audio": "voice_sample_new.wav", "prefix": "new"},
     )
 
-    assert (tmp_path / "voice_sample.wav").read_bytes() == b"new-audio"
+    assert (tmp_path / "voice_sample_new.wav").read_bytes() == b"new-audio"
     assert _manifest(tmp_path)["prefix"] == "new"
     leftovers = sorted(p.name for p in tmp_path.iterdir() if ".tmp" in p.name)
-    assert leftovers == [], f"成功路径留下了暂存/备份文件：{leftovers}"
+    assert leftovers == [], f"成功路径留下了暂存文件：{leftovers}"
 
 
-def test_a_failed_rollback_keeps_the_only_copy_of_the_old_audio(tmp_path, monkeypatch, caplog):
-    """If the restore itself fails, the backup is the last copy — keep it.
+def test_each_upload_gets_its_own_audio_filename(tmp_path):
+    """The handler must never reuse the filename the live manifest points at.
 
-    Deleting it unconditionally in a finally would turn a recoverable failure
-    into permanent data loss: the rollback rename can fail on Windows when the
-    destination is still held open, and at that moment the .bak file is the
-    only remaining copy of the audio the user uploaded earlier.
+    That is what makes the manifest write the single commit point: if the new
+    audio could land on the live filename, a failure between the two writes
+    would leave new audio wearing old metadata, and the resolver — which checks
+    only the manifest-named file's existence — would accept the mismatched
+    pair as valid.
     """
+    import ast
+    import inspect
+
     from main_routers.workshop_router import voice_refs
 
-    (tmp_path / "voice_sample.wav").write_bytes(b"old-audio")
+    tree = ast.parse(inspect.getsource(voice_refs.upload_reference_audio))
+    assigned = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(t, ast.Name) and t.id == "reference_audio_name"
+            for t in node.targets
+        )
+    ]
+    assert len(assigned) == 1
+    source = ast.unparse(assigned[0].value)
+    assert "uuid" in source, (
+        f"参考音频文件名不再是每次唯一的（{source}）——manifest 写就不再是唯一提交点"
+    )
+
+
+def test_an_orphan_from_an_earlier_failure_is_swept_after_the_commit(tmp_path):
+    """A failed upload leaves an unreferenced audio file; the next one clears it."""
+    from main_routers.workshop_router import voice_refs
+
+    (tmp_path / "voice_sample_orphan.wav").write_bytes(b"orphan")
+    (tmp_path / "voice_sample_old.mp3").write_bytes(b"old-audio")
     (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
-        json.dumps({"version": 1, "reference_audio": "voice_sample.wav", "prefix": "old"}),
+        json.dumps({"version": 1, "reference_audio": "voice_sample_old.mp3", "prefix": "old"}),
         encoding="utf-8",
     )
 
-    real_replace = os.replace
-    calls: list[tuple[str, str]] = []
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / "voice_sample_new.wav"),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {"version": 1, "reference_audio": "voice_sample_new.wav", "prefix": "new"},
+    )
 
-    def _replace_but_fail_the_restore(src, dst):
-        calls.append((str(src), str(dst)))
-        # 第三次调用是回滚（backup -> audio_path），让它失败。
-        if len(calls) >= 3:
-            raise OSError(13, "Permission denied")
-        return real_replace(src, dst)
+    remaining = sorted(p.name for p in tmp_path.iterdir())
+    assert remaining == [WORKSHOP_VOICE_MANIFEST_NAME, "voice_sample_new.wav"], (
+        f"提交后应该只剩新的一对：{remaining}"
+    )
 
-    def _boom(*args, **kwargs):
-        raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr(os, "replace", _replace_but_fail_the_restore)
-    monkeypatch.setattr(voice_refs, "atomic_write_json", _boom)
+def test_the_lock_key_resolves_symlinks(tmp_path):
+    """The same physical directory must map to one lock, however it is reached.
 
-    with pytest.raises(OSError):
-        voice_refs._replace_voice_reference(
-            str(tmp_path),
-            str(tmp_path / "voice_sample.wav"),
-            b"new-audio",
-            str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
-            {"version": 1, "reference_audio": "voice_sample.wav", "prefix": "new"},
-        )
+    `abspath` is purely lexical, so a junction/symlink pointing at the same
+    folder would silently hand out two different locks and the serialization
+    would stop working with no error anywhere.
+    """
+    from main_routers.workshop_router.voice_manifest import voice_reference_lock
 
-    monkeypatch.setattr(os, "replace", real_replace)
+    real_dir = tmp_path / "content"
+    real_dir.mkdir()
+    link_dir = tmp_path / "linked"
+    try:
+        os.symlink(real_dir, link_dir, target_is_directory=True)
+    except (OSError, NotImplementedError, AttributeError) as exc:
+        pytest.skip(f"这个环境不允许建符号链接: {exc}")
 
-    backups = [p for p in tmp_path.iterdir() if p.name.endswith(".bak")]
-    assert len(backups) == 1, "回滚失败后备份被删了——旧音频永久丢失"
-    assert backups[0].read_bytes() == b"old-audio"
+    assert voice_reference_lock(str(real_dir)) is voice_reference_lock(str(link_dir)), (
+        "同一个目录经由 symlink 进来时拿到了两把锁——串行化会静默失效"
+    )
