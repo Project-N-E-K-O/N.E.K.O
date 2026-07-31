@@ -156,6 +156,7 @@ def test_fallback_dense_batch_markers_leave_room_for_both_ends(monkeypatch, lang
         lang=lang,
     )
     bodies = _single_line_bodies(rendered)
+    rendered_messages = "\n".join(rendered.splitlines()[1:])
 
     assert count_tokens(f"| {marker}") < (
         SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS // len(messages)
@@ -163,6 +164,7 @@ def test_fallback_dense_batch_markers_leave_room_for_both_ends(monkeypatch, lang
     assert all(marker in body for body in bodies)
     assert all(body.startswith(f"H{index % 10}") for index, body in enumerate(bodies))
     assert all(body.endswith(f"T{index % 10}") for index, body in enumerate(bodies))
+    assert count_tokens(rendered_messages) <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
 
 
 def test_scoped_batch_fallback_budget_is_conservative_for_emoji(monkeypatch):

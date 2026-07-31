@@ -665,15 +665,19 @@ class FactStore:
 
         raw_by_segment: list[list[str]] = []
         flat_raw: list[str] = []
+        flat_separator_costs: list[int] = []
         for segment in segments:
             segment_bodies = []
-            for msg in segment.get('messages') or []:
+            for message_index, msg in enumerate(segment.get('messages') or []):
                 body = cls._SEGMENT_MARKER_LITERAL.sub(
                     '［SEGMENT',
                     cls._flatten_message_content(getattr(msg, 'content', '')),
                 )
                 segment_bodies.append(body)
                 flat_raw.append(body)
+                flat_separator_costs.append(
+                    count_tokens("\n") if message_index else 0
+                )
             raw_by_segment.append(segment_bodies)
 
         def _rendered_cost(body: str) -> int:
@@ -717,12 +721,24 @@ class FactStore:
             for body in flat_raw
         ]
         if (
-            sum(_rendered_cost(body) for body in individually_capped)
+            sum(
+                _rendered_cost(body) + separator_cost
+                for body, separator_cost in zip(
+                    individually_capped,
+                    flat_separator_costs,
+                )
+            )
             <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
         ):
             final_flat = individually_capped
         else:
-            costs = [_rendered_cost(body) for body in individually_capped]
+            costs = [
+                _rendered_cost(body) + separator_cost
+                for body, separator_cost in zip(
+                    individually_capped,
+                    flat_separator_costs,
+                )
+            ]
             allocations = [0] * len(costs)
             remaining_budget = SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
             active = list(range(len(costs)))
@@ -743,8 +759,12 @@ class FactStore:
                 break
 
             final_flat = [
-                _clip(body, budget)
-                for body, budget in zip(flat_raw, allocations)
+                _clip(body, max(0, budget - separator_cost))
+                for body, budget, separator_cost in zip(
+                    flat_raw,
+                    allocations,
+                    flat_separator_costs,
+                )
             ]
 
         final_iter = iter(final_flat)
