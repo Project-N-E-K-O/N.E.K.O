@@ -873,7 +873,7 @@ def restore_cloudsave_operation_backup(
     redirect_paths = set(recent_paths)
     redirect_paths.update(Path(path) for path in redirect_snapshot)
     redirect_paths.update(Path(path) for path in redirect_snapshot.values())
-    lock_scope = nullcontext() if recent_locks_held else recent_file_locks(list(recent_paths))
+    lock_scope = nullcontext() if recent_locks_held else recent_file_locks(list(redirect_paths))
     with lock_scope:
         current_redirects = clear_recent_redirects(list(redirect_paths))
         current_pending = {

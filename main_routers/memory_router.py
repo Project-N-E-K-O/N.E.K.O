@@ -45,6 +45,7 @@ from utils.logger_config import get_module_logger
 # merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
 # 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
 from utils.recent_file import (
+    RecentFileDeletedError,
     capture_recent_generation,
     read_recent_text,
     write_recent_payload,
@@ -354,7 +355,13 @@ async def get_recent_file(filename: str):
     
     # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
     # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
-    content = await asyncio.to_thread(read_recent_text, resolved_path)
+    try:
+        content = await asyncio.to_thread(read_recent_text, resolved_path)
+    except RecentFileDeletedError:
+        return JSONResponse(
+            {"success": False, "error": "文件不存在"},
+            status_code=path_error_status_code(PATH_ERROR_NOT_FOUND),
+        )
     return {"content": content}
 
 

@@ -1899,3 +1899,31 @@ def test_lock_registry_is_thread_safe(tmp_path):
         t.join()
 
     assert len({id(lock) for lock in seen}) == 1
+
+
+@pytest.mark.asyncio
+async def test_recent_file_route_maps_deleted_identity_to_not_found(
+    tmp_path, monkeypatch,
+):
+    """A read racing with character deletion preserves the route's 404 contract."""
+    import main_routers.memory_router as memory_router
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    recent_path.write_text("[]", encoding="utf-8")
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    def _raise_deleted(_path):
+        raise recent_file.RecentFileDeletedError("deleted during read")
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "read_recent_text", _raise_deleted)
+
+    response = await memory_router.get_recent_file("recent_Role.json")
+
+    assert response.status_code == 404
+    assert json.loads(response.body)["error"] == "文件不存在"

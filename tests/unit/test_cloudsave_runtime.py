@@ -2757,6 +2757,37 @@ def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
 
 
 @pytest.mark.unit
+def test_backup_restore_locks_historical_redirect_paths(tmp_path, monkeypatch):
+    from utils.cloudsave_runtime import operations
+
+    cm = _make_config_manager(tmp_path)
+    backup_root = tmp_path / "backup"
+    alias_path = Path(cm.memory_dir) / "Old" / "recent.json"
+    target_path = Path(cm.memory_dir) / "New" / "recent.json"
+    operations._write_operation_backup_metadata(
+        cm,
+        backup_root,
+        operation="test_restore",
+        character_name="New",
+        backup_records=[],
+        recent_pending={target_path: []},
+        recent_redirects={str(alias_path): str(target_path)},
+        recent_deleted=set(),
+    )
+    locked_paths = []
+
+    @contextlib.contextmanager
+    def _capture_locks(paths):
+        locked_paths.extend(Path(path) for path in paths)
+        yield
+
+    monkeypatch.setattr(operations, "recent_file_locks", _capture_locks)
+    operations.restore_cloudsave_operation_backup(cm, backup_root)
+
+    assert set(locked_paths) == {alias_path, target_path}
+
+
+@pytest.mark.unit
 def test_single_import_releases_retained_lock_when_detail_build_fails(tmp_path):
     from utils import recent_file
     from utils.cloudsave_runtime import (

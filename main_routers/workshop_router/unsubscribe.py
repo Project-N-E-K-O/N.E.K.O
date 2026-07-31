@@ -440,8 +440,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     notify_memory_server_reload,
                 )
                 from utils.character_memory import (
+                    begin_character_recent_transaction,
                     delete_character_memory_storage,
                     finalize_character_recent_delete,
+                    release_character_recent_transaction,
                     rollback_character_recent_delete,
                 )
                 from ..shared_state import get_remove_one_catgirl
@@ -500,27 +502,37 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             async def _delete_memory_with_retry(name: str) -> tuple[list, dict]:
                 """Windows file locks → one retry after 300ms as a safety net."""
+                transaction = await asyncio.to_thread(
+                    begin_character_recent_transaction, config_mgr, name,
+                )
                 try:
-                    removed_paths, transaction = await asyncio.to_thread(
-                        delete_character_memory_storage,
-                        config_mgr,
-                        name,
-                        capture_pending=True,
-                    )
+                    try:
+                        removed_paths, transaction = await asyncio.to_thread(
+                            delete_character_memory_storage,
+                            config_mgr,
+                            name,
+                            capture_pending=True,
+                            keep_recent_locks=True,
+                            recent_transaction=transaction,
+                        )
+                    except PermissionError as exc:
+                        logger.warning(
+                            f"同步清理: delete_character_memory_storage({name}) "
+                            f"PermissionError: {exc}，300ms 后重试"
+                        )
+                        await asyncio.sleep(0.3)
+                        removed_paths, transaction = await asyncio.to_thread(
+                            delete_character_memory_storage,
+                            config_mgr,
+                            name,
+                            capture_pending=True,
+                            keep_recent_locks=True,
+                            recent_transaction=transaction,
+                        )
                     return list(removed_paths or []), transaction
-                except PermissionError as exc:
-                    logger.warning(
-                        f"同步清理: delete_character_memory_storage({name}) "
-                        f"PermissionError: {exc}，300ms 后重试"
-                    )
-                    await asyncio.sleep(0.3)
-                    removed_paths, transaction = await asyncio.to_thread(
-                        delete_character_memory_storage,
-                        config_mgr,
-                        name,
-                        capture_pending=True,
-                    )
-                    return list(removed_paths or []), transaction
+                except BaseException:
+                    release_character_recent_transaction(transaction)
+                    raise
 
             async def _write_tombstone(name: str) -> None:
                 await asyncio.to_thread(
