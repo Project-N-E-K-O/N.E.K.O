@@ -110,21 +110,7 @@ async def save_workshop_config_api(config_data: dict):
             #
             # 不逐个字符类去补（NUL、控制字符、超长……）：让 OS 自己判「能不能用」，
             # 一条规则关掉整类，而不是想到哪个补哪个。
-            try:
-                os.stat(value)
-            except ValueError as exc:
-                # OS 层根本收不下这个串（嵌 NUL 是典型）。注意纯路径函数判不出来：
-                # os.path.isdir 会把 ValueError 吞成 False，normpath / realpath 原样
-                # 返回 —— 只有真正下到系统调用才暴露。不拦的话这个值会被写进配置，
-                # 之后每次 _assert_under_base → os.path.realpath → 实际 IO 都炸，
-                # 直到用户再存一次才好。
-                return {
-                    "success": False,
-                    "error": f"{key} 不是合法路径: {exc}",
-                }
-            except OSError:
-                # 不存在 / 无权限不是格式问题，交给后面的 ensure 去处理。
-                pass
+
         if 'auto_create_folder' in config_data and not isinstance(
             config_data['auto_create_folder'], bool
         ):
@@ -136,6 +122,23 @@ async def save_workshop_config_api(config_data: dict):
             }
 
         def _apply_config_transaction() -> tuple[dict, bool | None]:
+            # 「OS 收不收得下这个串」的探针必须下到真正的系统调用（纯路径函数判不
+            # 出嵌 NUL：os.path.isdir 把 ValueError 吞成 False，normpath / realpath
+            # 原样返回）。而系统调用意味着 I/O —— 目标是慢速 UNC / 网络盘 / 可移动盘
+            # 时它可能挂很久，所以只能在 worker 里做，不能留在事件循环上。
+            # 抛出去由外层 except 收成 {"success": false, ...}；此刻还没写任何东西。
+            for probe_key in ('default_workshop_folder', 'user_mod_folder'):
+                probe = config_data.get(probe_key)
+                if not isinstance(probe, str) or probe == '':
+                    continue
+                try:
+                    os.stat(probe)
+                except ValueError as exc:
+                    raise ValueError(f"{probe_key} 不是合法路径: {exc}") from exc
+                except OSError:
+                    # 不存在 / 无权限不是格式问题，交给后面的 ensure 去处理。
+                    pass
+
             with get_config_manager().workshop_config_lock():
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
                 # 后写的那次会把前一次的字段整份盖掉。

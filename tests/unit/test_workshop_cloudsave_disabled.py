@@ -891,3 +891,34 @@ async def test_a_path_the_os_cannot_parse_is_rejected_before_saving(monkeypatch)
         {"user_mod_folder": os.path.join(os.sep, "tmp", "workshop")}
     )
     assert ok["success"] is True
+
+
+def test_the_path_probe_runs_in_the_worker_not_on_the_loop():
+    """`os.stat` is a real syscall; on a slow UNC share it must not block the loop.
+
+    Detecting an embedded NUL requires going all the way down to a system
+    call — the pure path helpers cannot see it — and that means I/O against
+    whatever the value points at. Keeping it in the coroutine body would stall
+    every other coroutine on an unreachable network or removable path.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from main_routers.workshop_router import config_files
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(config_files.save_workshop_config_api))
+    )
+    worker = _fn(tree, "_apply_config_transaction")
+    worker_lines = {n.lineno for n in ast.walk(worker) if hasattr(n, "lineno")}
+    stats = [
+        node.lineno for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "stat"
+    ]
+    assert stats, "路径探针不见了，这条守卫需要跟着更新"
+    outside = [line for line in stats if line not in worker_lines]
+    assert not outside, (
+        f"os.stat 留在了协程体里（相对行 {outside}）——慢速网络盘会把事件循环挂住"
+    )

@@ -197,8 +197,16 @@ def _replace_voice_reference(
         #    换了扩展名（mp3 → wav）时它跟新文件不同名；理论上同名的话上面的
         #    os.replace 已经顶掉了，这里跳过。删失败只是占点磁盘。
         if previous_audio and os.path.normcase(os.path.abspath(previous_audio)) != os.path.normcase(os.path.abspath(audio_path)):
-            with suppress(OSError):
+            try:
                 os.remove(previous_audio)
+            except OSError as exc:
+                # 删不掉（杀软扫描、索引器、别的句柄占着）不影响这对引用可用 ——
+                # 但也别让它静默：那份被顶替的旧录音还留在内容目录里，publish 是把
+                # 整个目录交给 SetItemContent 的，会跟着发出去。打日志让它可查。
+                logger.warning(
+                    '被顶替的旧参考语音删除失败，仍留在内容目录里: %s (%s)',
+                    previous_audio, exc,
+                )
 
 
 def _remove_voice_reference(content_folder: str) -> None:
