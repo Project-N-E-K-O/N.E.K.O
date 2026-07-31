@@ -43,6 +43,16 @@ from ._shared import (
 
 _ATTACHED_TRANSPORT = object()
 
+# Ceiling on each host step inside a fail-open release that may be cut short.
+# The arbiter bounds the WHOLE notification with one shared budget
+# (_STUCK_RELEASE_NOTIFY_TIMEOUT, 2.0s); without a per-step ceiling the first
+# await consumes it and everything after it is cancelled where it stands.
+# Two bounded steps x 0.5s leaves the rest of the arbiter's budget for the
+# speech-id rotation, which is deliberately NOT bounded. This is a necessary
+# condition, not a guarantee: asyncio.wait_for bounds when the cancellation is
+# DELIVERED, not when the coroutine returns.
+_STUCK_RELEASE_STEP_TIMEOUT = 0.5
+
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
@@ -1030,10 +1040,29 @@ class _TransportMixin:
         # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
         self._interrupted = False
 
-    async def _notify_turn_finished(self) -> None:
+    async def _notify_turn_finished(
+        self,
+        *,
+        step_timeout: float | None = None,
+        still_ours: Callable[[], bool] | None = None,
+    ) -> None:
         """Tell the host this turn is over.
 
         The two hooks the terminal path fires, in the order it fires them.
+
+        Both keywords belong to the fail-open release path, and both default
+        to the terminal path's behaviour so this stays one implementation
+        rather than two. ``still_ours`` is re-checked before EACH hook,
+        because both can block on the same frontend socket and a new turn can
+        start between them.
+
+        ``on_sid_rotate`` is never bounded, on purpose:
+        ``rotate_speech_id_for_response_done`` clears
+        ``_tts_done_queued_for_turn`` and ``_tts_done_pending_until_ready``
+        and only THEN takes the session lock, so cancelling it at that lock
+        leaves the host half-rotated — the flags say a fresh turn, the speech
+        id still says the old one. A skipped rotation is recoverable by the
+        next turn's terminal; a half-applied one is not.
 
         ``on_sid_rotate`` is conditional because providers WITH server VAD
         rotate the speech id from ``speech_stopped`` instead; firing here too
@@ -1050,14 +1079,29 @@ class _TransportMixin:
         the turn cannot skip the rotation that follows it.
         """
 
-        if self.on_response_done:
+        if self.on_response_done and (still_ours is None or still_ours()):
             try:
-                await self.on_response_done()
+                if step_timeout is None:
+                    await self.on_response_done()
+                else:
+                    await asyncio.wait_for(self.on_response_done(), step_timeout)
             except asyncio.CancelledError:
                 raise
+            except asyncio.TimeoutError:
+                # Kept ahead of the bare Exception arm even though TimeoutError
+                # is one: "took too long" and "raised" are different diagnoses.
+                logger.warning(
+                    "turn-finished notification exceeded its %.1fs step bound; "
+                    "rotating anyway",
+                    step_timeout,
+                )
             except Exception as exc:
                 logger.warning("turn-finished notification failed: %s", exc)
-        if not self._has_server_vad and self.on_sid_rotate:
+        if (
+            not self._has_server_vad
+            and self.on_sid_rotate
+            and (still_ours is None or still_ours())
+        ):
             try:
                 await self.on_sid_rotate()
             except asyncio.CancelledError:
@@ -1092,16 +1136,32 @@ class _TransportMixin:
         name — it never learned one — and the tracked turn is finalized as
         before.
 
+        A tracked id of ``None`` is not a wildcard either. ``response_id``
+        comes from the owner's own ``response.created`` — the event that wrote
+        ``_current_response_id`` three lines later in the same handler — so a
+        named release implies the host once tracked that exact id. Seeing
+        ``None`` now means a later, id-less ``response.created`` overwrote it:
+        an overlapping response that is still streaming, and not this
+        release's to end.
+
         The synchronous state is settled before the first await on purpose.
         Both remaining awaits reach host code that can block past the
         arbiter's notification bound, and being cancelled there must not leave
         this turn's flags half-cleared for the next turn to inherit.
+
+        Identity has to survive those awaits, not merely precede them. The
+        lane can reopen mid-notification — the abandoned response's own
+        terminal can land and release it — and the next turn can be live
+        before the transcript flush returns. The arbiter cannot prevent that
+        from its side (the user's own turn starts through
+        ``handle_new_message``, which never consults the lane), so the check
+        lives here: the release captures ``_turn_epoch`` and abandons the rest
+        of its work the moment a new turn has started. The rotation it skips
+        is deferred rather than lost — the turn that took over ends through
+        its own terminal, which rotates.
         """
 
-        if response_id is not None and self._current_response_id not in (
-            None,
-            response_id,
-        ):
+        if response_id is not None and self._current_response_id != response_id:
             logger.info(
                 "Arbiter released %s but this turn is tracking %s; leaving it "
                 "alone",
@@ -1112,14 +1172,41 @@ class _TransportMixin:
         if not self._is_responding and self._current_response_id is None:
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
+        released_epoch = self._turn_epoch
+
+        def _still_ours() -> bool:
+            return self._turn_epoch == released_epoch
+
         # Captured before the reset, which is what clears the buffer: a stalled
         # lifecycle is exactly the case where the terminal that would normally
         # flush it never arrives.
         pending_transcript = self._take_pending_output_transcript()
         self._clear_turn_response_state()
         self._reset_per_turn_output_state()
-        await self._emit_pending_output_transcript(pending_transcript)
-        await self._notify_turn_finished()
+        # Best-effort, and the only step that is. A host that blocks or raises
+        # while taking this turn's last half-sentence must not take the
+        # rotation behind it down as well. Not epoch-guarded: this is the
+        # first await, nothing can have moved since the synchronous block, and
+        # the text belongs to the released turn either way.
+        try:
+            await asyncio.wait_for(
+                self._emit_pending_output_transcript(pending_transcript),
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except asyncio.CancelledError:
+            raise
+        except asyncio.TimeoutError:
+            logger.warning(
+                "stuck-release transcript flush exceeded %.1fs; ending the "
+                "turn anyway",
+                _STUCK_RELEASE_STEP_TIMEOUT,
+            )
+        except Exception as exc:
+            logger.warning("stuck-release transcript flush failed: %s", exc)
+        await self._notify_turn_finished(
+            step_timeout=_STUCK_RELEASE_STEP_TIMEOUT,
+            still_ours=_still_ours,
+        )
 
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
@@ -1374,6 +1461,7 @@ class _TransportMixin:
                     self._last_response_created_time = time.time()
                     self._current_response_id = event.get("response", {}).get("id")
                     self._is_responding = True
+                    self._turn_epoch += 1
                     self._interrupted = False  # Clear interruption flag on new response
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
                     # 清空转录 buffer，防止累积旧内容

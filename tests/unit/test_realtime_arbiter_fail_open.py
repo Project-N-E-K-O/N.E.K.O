@@ -36,9 +36,13 @@ Contracts, written so each can be falsified:
     end-of-turn work its terminal event drives — because it is the same
     implementation, not a second one.
 
-4.  **The host is told before the lane opens.** Ending the turn has to finish
-    before the next request can start one, or the next turn gets its speech id
-    rotated and its shared turn state finalized underneath it.
+4.  **A released turn's end-of-turn work lands on that turn, or not at all.**
+    The lane can reopen mid-notification — the abandoned response's own
+    terminal releases it — and the host's own turn can start from outside the
+    arbiter entirely. So the guarantee is identity, not ordering: the host
+    takes the released turn's id and its turn epoch, and stops the moment a
+    new turn has started. The release still opens the lane last, which is why
+    the ordering holds in the ordinary case.
 
 The previous attempt (withdrawn PR #2592) grew these as separate boolean
 conditions patched in over seven review rounds; see #2583 for how the 20
@@ -1223,3 +1227,325 @@ async def test_a_blocked_transcript_flush_cannot_strand_this_turns_state():
     assert client._image_recognized_this_turn is False
     assert client._audio_delta_count == 0
     assert client._output_transcript_buffer == ""
+
+
+# --------------------------------------------------------------------------
+# Contract 4, restated: identity survives the release's own awaits.
+#
+# The previous round scoped the release against the ARBITER's state. These pin
+# it against the HOST's, which is where turn identity actually lives — the
+# arbiter cannot serialize against a turn the user starts through
+# handle_new_message, because that path never consults the lane.
+# --------------------------------------------------------------------------
+
+
+def _free_client(**hooks):
+    """A client on a provider WITHOUT server VAD, where sid rotation matters.
+
+    The lanlan.app host is load-bearing, not decoration: ``_is_free_proxy``
+    keys on it, and that is what makes ``_has_server_vad`` False. With any
+    other host the same ``api_type="free"`` client HAS server VAD, rotates
+    from ``speech_stopped`` instead, and these tests would pass without ever
+    reaching the hook they are about.
+    """
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        **hooks,
+    )
+    assert client._has_server_vad is False, (
+        "this fixture exists to cover the providers whose only sid rotation "
+        "point is the turn-finished hook"
+    )
+    return client
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_id_less_overlap_is_not_the_releases_to_end():
+    # Codex P2. An owned response resp-1 is overlapped by a server-initiated
+    # response.created carrying NO id, which overwrites _current_response_id
+    # with None. Treating None as "matches every abandoned id" finalizes that
+    # overlapping response while it is still streaming: its half-sentence goes
+    # out as a separate transcript, its audio counter is zeroed, and the turn
+    # is ended a second time when its own terminal arrives.
+    done_calls: list[str] = []
+    transcripts: list[tuple[str, bool]] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    async def _on_transcript(text: str, is_first: bool) -> None:
+        transcripts.append((text, is_first))
+
+    client = _free_client(
+        on_response_done=_on_done, on_output_transcript=_on_transcript
+    )
+    # The owner announced itself with an id...
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    # ...then an id-less response.created took the turn over.
+    client._current_response_id = None
+    client._turn_epoch += 1
+    client._output_transcript_buffer = "第二个响应正在说"
+    client._audio_delta_count = 2
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert client._is_responding is True, "the overlapping response is still live"
+    assert client._audio_delta_count == 2, "and its audio accounting is untouched"
+    assert client._output_transcript_buffer == "第二个响应正在说", (
+        "its half-sentence stays buffered for its own terminal to flush whole"
+    )
+    assert transcripts == [], "nothing of its text is sent early"
+    assert done_calls == [], "and no turn end is announced under it"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_named_release_still_ends_the_turn_it_named():
+    # The dual, both ways: the named id matches, and an unnamed release (the
+    # arbiter never learned an id, as on Gemini) still finalizes.
+    for named_id in ("resp-1", None):
+        done_calls: list[str] = []
+
+        async def _on_done() -> None:
+            done_calls.append("done")
+
+        client = _free_client(on_response_done=_on_done)
+        client._current_response_id = "resp-1"
+        client._is_responding = True
+        client._turn_epoch += 1
+
+        await client._on_arbiter_stuck_release("abandoned", named_id)
+
+        assert client._is_responding is False, f"named_id={named_id}"
+        assert client._current_response_id is None, f"named_id={named_id}"
+        assert done_calls == ["done"], f"named_id={named_id}"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_turn_that_started_mid_release_keeps_its_speech_id():
+    # The damage the lane barrier was meant to prevent, closed from the side
+    # that owns turn identity instead. The release parks in the host's
+    # transcript flush; the abandoned response's real terminal lands, the lane
+    # reopens, a successor dispatches and announces itself. The dead turn's
+    # remaining hooks must not fire on it — on_sid_rotate above all, since
+    # throwing away the successor's speech id makes TTS drop its text.
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    done_calls: list[int] = []
+    rotations: list[int] = []
+
+    async def _blocks(text: str, is_first: bool) -> None:
+        entered.set()
+        await proceed.wait()
+
+    async def _on_done() -> None:
+        done_calls.append(client._turn_epoch)
+
+    async def _on_rotate() -> None:
+        rotations.append(client._turn_epoch)
+
+    client = _free_client(
+        on_output_transcript=_blocks,
+        on_response_done=_on_done,
+        on_sid_rotate=_on_rotate,
+    )
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    client._output_transcript_buffer = "旧轮说了半句"
+    client._audio_delta_count = 1
+
+    release = asyncio.create_task(
+        client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    # A successor turn starts while the release is parked in the flush.
+    client._current_response_id = "resp-2"
+    client._is_responding = True
+    client._turn_epoch += 1
+
+    proceed.set()
+    await asyncio.wait_for(release, timeout=2)
+
+    assert rotations == [], (
+        "rotating here would throw away the speech id the live turn is using"
+    )
+    assert done_calls == [], "and the live turn has not ended"
+    assert client._current_response_id == "resp-2", "the successor is untouched"
+    assert client._is_responding is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_undisturbed_release_still_runs_both_hooks():
+    # The dual. "Stop when the epoch moves" must not become "never run".
+    order: list[str] = []
+
+    async def _on_done() -> None:
+        order.append("done")
+
+    async def _on_rotate() -> None:
+        order.append("rotate")
+
+    client = _free_client(on_response_done=_on_done, on_sid_rotate=_on_rotate)
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert order == ["done", "rotate"], (
+        "an undisturbed release runs both hooks, in the terminal path's order"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_blocked_transcript_flush_cannot_cost_the_speech_id_rotation():
+    # For a provider without server VAD this hook is the ONLY rotation point,
+    # and losing it silently drops every later turn's text at TTS. A host that
+    # parks in on_output_transcript must not consume the whole notification
+    # budget: the flush is best-effort and bounded, the rotation is neither.
+    rotations: list[str] = []
+
+    async def _never_returns(text: str, is_first: bool) -> None:
+        await asyncio.Event().wait()
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = _free_client(
+        on_output_transcript=_never_returns, on_sid_rotate=_on_rotate
+    )
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    client._output_transcript_buffer = "说了半句"
+    client._audio_delta_count = 1
+
+    await asyncio.wait_for(
+        client._on_arbiter_stuck_release("abandoned resp-1", "resp-1"),
+        timeout=5,
+    )
+
+    assert rotations == ["rotate"], (
+        "the rotation must survive a transcript callback that never returns"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_raising_transcript_flush_cannot_cost_the_rotation_either():
+    # The same contract with no timing involved: the emit had no exception
+    # guard at all, so a raising host callback skipped the rotation outright.
+    rotations: list[str] = []
+
+    async def _raises(text: str, is_first: bool) -> None:
+        raise RuntimeError("frontend socket is gone")
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = _free_client(on_output_transcript=_raises, on_sid_rotate=_on_rotate)
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    client._output_transcript_buffer = "说了半句"
+    client._audio_delta_count = 1
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert rotations == ["rotate"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_blocked_done_hook_cannot_cost_the_rotation():
+    # The third trigger, and the one a bound on the transcript flush alone
+    # misses entirely: on_response_done is the hook that blocks.
+    rotations: list[str] = []
+
+    async def _never_returns() -> None:
+        await asyncio.Event().wait()
+
+    async def _on_rotate() -> None:
+        rotations.append("rotate")
+
+    client = _free_client(on_response_done=_never_returns, on_sid_rotate=_on_rotate)
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+
+    await asyncio.wait_for(
+        client._on_arbiter_stuck_release("abandoned resp-1", "resp-1"),
+        timeout=5,
+    )
+
+    assert rotations == ["rotate"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_terminal_path_leaves_the_hooks_unbounded():
+    # The other half of "one implementation, not two": the release passes its
+    # bounds in, and the ordinary response.done path must not inherit them. A
+    # slow host there is slow, not cut off — no arbiter budget is being shared.
+    from main_logic.omni_realtime_client import _transport
+
+    finished: list[str] = []
+
+    async def _slower_than_the_step_bound() -> None:
+        await asyncio.sleep(_transport._STUCK_RELEASE_STEP_TIMEOUT * 3)
+        finished.append("done")
+
+    client = _free_client(on_response_done=_slower_than_the_step_bound)
+
+    await client._notify_turn_finished()
+
+    assert finished == ["done"], (
+        "the terminal path must await the host, not bound it"
+    )
+
+
+@pytest.mark.unit
+def test_every_turn_start_advances_the_epoch():
+    # A completeness guard, not a checklist. The epoch is only sound while
+    # every place that STARTS a turn bumps it, and a new provider path is
+    # exactly where that gets forgotten. Discover the writers instead of
+    # listing them, so a new one fails here rather than silently weakening the
+    # release guard.
+    import pathlib
+    import re
+
+    import main_logic.omni_realtime_client as package
+
+    root = pathlib.Path(package.__file__).parent
+    starts = 0
+    offenders: list[str] = []
+    for path in sorted(root.glob("*.py")):
+        lines = path.read_text(encoding="utf-8").split("\n")
+        for index, line in enumerate(lines):
+            if not re.match(r"^\s*self\._is_responding\s*=\s*True\s*$", line):
+                continue
+            starts += 1
+            if "self._turn_epoch += 1" not in "\n".join(lines[index : index + 3]):
+                offenders.append(f"{path.name}:{index + 1}")
+    assert starts >= 2, (
+        "expected to find the turn-start sites; the search stopped matching, "
+        f"which makes this guard vacuous (found {starts})"
+    )
+    assert offenders == [], (
+        "every turn start must advance _turn_epoch within the next line or "
+        f"two; these start a turn without it: {offenders}"
+    )

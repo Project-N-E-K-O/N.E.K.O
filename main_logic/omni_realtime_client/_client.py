@@ -138,6 +138,14 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._current_response_id = None
         self._current_item_id = None
         self._is_responding = False
+        # Advanced once per turn START, by every writer that begins one. A
+        # fail-open release captures it and stops the moment it changes: an
+        # abandoned turn's end-of-turn hooks must not land on whatever turn is
+        # live by the time the host gets around to them. Nothing that ENDS a
+        # turn touches it — "this turn ended" is not "a new turn started", and
+        # an interrupted response's own terminal must still be able to finish
+        # the turn it belongs to.
+        self._turn_epoch = 0
         self._response_arbiter = RealtimeResponseArbiter(
             self.send_event,
             abort_transport=self._abort_failed_transport,
