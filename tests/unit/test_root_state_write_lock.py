@@ -243,6 +243,37 @@ def test_read_is_not_blocked_while_a_worker_holds_the_writer_lock(tmp_path):
     )
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_lifecycle_transaction_hands_off_to_to_thread_only():
+    """Inherited workers may write, while an unrelated thread stays blocked."""
+    inherited_entered = threading.Event()
+    unrelated_started = threading.Event()
+    unrelated_entered = threading.Event()
+
+    def _inherited_writer() -> None:
+        with root_state_lock.root_state_transaction():
+            inherited_entered.set()
+
+    def _unrelated_writer() -> None:
+        unrelated_started.set()
+        with root_state_lock.root_state_transaction():
+            unrelated_entered.set()
+
+    unrelated = threading.Thread(target=_unrelated_writer)
+    with root_state_lock.root_state_lifecycle_transaction():
+        await asyncio.wait_for(asyncio.to_thread(_inherited_writer), timeout=1)
+        assert inherited_entered.is_set()
+
+        unrelated.start()
+        assert unrelated_started.wait(1)
+        assert not unrelated_entered.wait(0.1)
+
+    unrelated.join(timeout=1)
+    assert not unrelated.is_alive()
+    assert unrelated_entered.is_set()
+
+
 # ── 2. 读路径不写 root_state（对偶 + 调用点） ─────────────────────────
 
 

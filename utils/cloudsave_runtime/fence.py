@@ -34,7 +34,7 @@ from typing import Any
 # ``cloud_apply_fence`` must see that patch, so the helper is resolved
 # through the facade at call time instead of via this module's globals.
 from utils import cloudsave_runtime as _facade
-from utils.root_state_lock import root_state_transaction
+from utils.root_state_lock import root_state_lifecycle_transaction, root_state_transaction
 
 from ._shared import (
     MaintenanceModeError,
@@ -285,10 +285,10 @@ def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READO
         # MAINTENANCE_READONLY while a cloud operation is active, only for the
         # fence's stale exit snapshot to restore NORMAL over the pending migration.
         #
-        # Lock order stays cloud_apply_lock -> root_state_transaction everywhere.
-        # The transaction is an RLock because fence bodies legitimately call
-        # ConfigManager writers on the same thread.
-        with root_state_transaction():
+        # Lock order stays cloud_apply_lock -> root_state transaction everywhere.
+        # The lifecycle scope also hands its logical ownership to to_thread
+        # workers, while unrelated storage writers remain excluded.
+        with root_state_lifecycle_transaction():
             # Read the pre-image only after both locks are held. Reading it before
             # acquire_cloud_apply_lock would still allow a storage writer to land
             # between the read and the acquisition and make this snapshot stale.
