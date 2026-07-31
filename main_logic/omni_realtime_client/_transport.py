@@ -956,6 +956,57 @@ class _TransportMixin:
             self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._image_sent_this_turn = False
 
+    def _clear_turn_response_state(self) -> None:
+        """Drop the flags that say "a response is in progress".
+
+        Extracted from the ``response.done`` handler alongside
+        ``_notify_turn_finished`` so that ending a turn is one implementation
+        rather than a sequence any second caller has to reproduce. Behaviour
+        is unchanged — same assignments, same order.
+        """
+
+        self._is_responding = False
+        self._current_response_id = None
+        self._current_item_id = None
+        self._skip_until_next_response = False
+        # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+        self._interrupted = False
+
+    async def _notify_turn_finished(self) -> None:
+        """Tell the host this turn is over.
+
+        The two hooks the terminal path fires, in the order it fires them.
+
+        ``on_sid_rotate`` is conditional because providers WITH server VAD
+        rotate the speech id from ``speech_stopped`` instead; firing here too
+        would be a second, unpaired rotation on a live turn. Providers without
+        it never emit ``speech_stopped`` (the Gemini proxy: lanlan.app+free,
+        and livestream), so this is their only rotation point — and without it
+        TTS upstream silently drops every later turn's text once the first
+        ``tts.response.done`` closes the initial sid. The lightweight
+        rotate-only path is deliberate: a full ``handle_new_message`` would
+        clip trailing TTS audio and mis-fire USER_INPUT, since no user input
+        actually happened.
+
+        Each hook is awaited independently so a host that raises while closing
+        the turn cannot skip the rotation that follows it.
+        """
+
+        if self.on_response_done:
+            try:
+                await self.on_response_done()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("turn-finished notification failed: %s", exc)
+        if not self._has_server_vad and self.on_sid_rotate:
+            try:
+                await self.on_sid_rotate()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("turn-finished speech-id rotation failed: %s", exc)
+
     async def handle_interruption(self):
         """Handle user interruption of the current response."""
         if not self._is_responding:
@@ -1181,11 +1232,7 @@ class _TransportMixin:
                             )
                     except Exception:
                         pass
-                    self._is_responding = False
-                    self._current_response_id = None
-                    self._current_item_id = None
-                    self._skip_until_next_response = False
-                    self._interrupted = False  # 确保中断标志在响应结束时清除，防止阻塞下一轮 text.delta
+                    self._clear_turn_response_state()
                     # 响应完成，检测重复度
                     if self._current_response_transcript:
                         self._last_response_transcript = self._current_response_transcript
@@ -1223,21 +1270,7 @@ class _TransportMixin:
                         )
                         self._is_first_transcript_chunk = False
                     self._reset_per_turn_output_state()
-                    if self.on_response_done:
-                        await self.on_response_done()
-                    # No-server-VAD providers (Gemini-proxy: lanlan.app+free /
-                    # livestream) never emit input_audio_buffer.speech_stopped,
-                    # so handle_messages' on_new_message path on speech_stopped
-                    # never fires and current_speech_id never rotates between
-                    # turns. Without rotation, TTS upstream silently drops text
-                    # after the first tts.response.done closes the initial sid.
-                    # Hook here at response.done (Gemini's turn_complete, the
-                    # only reliable end-of-AI-turn signal in those proxies) and
-                    # call the lightweight rotate-only path — full
-                    # handle_new_message would clip trailing TTS audio and
-                    # mis-fire USER_INPUT (no user input actually happened).
-                    if not self._has_server_vad and self.on_sid_rotate:
-                        await self.on_sid_rotate()
+                    await self._notify_turn_finished()
                 elif event_type == "response.created":
                     self._response_arbiter.notify_response_created(event)
                     self._response_created_total += 1
