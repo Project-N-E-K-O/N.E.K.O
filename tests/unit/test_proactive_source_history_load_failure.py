@@ -28,6 +28,7 @@ def _isolate_source_history_globals():
     saved_path = state._source_history_loaded_path
     saved_skipped = state._source_history_skipped_records
     saved_failures = state._source_history_read_failures
+    saved_authoritative = state._source_history_authoritative
     # 本文件里有几条会真的把 _source_history_lock 抢起来的用例。asyncio.Lock 只在
     # 「有竞争」那条路上才 _get_loop()，一旦绑定就跟那个事件循环绑死；pytest-asyncio
     # 每个用例一个新循环，模块级那把锁被这里绑上之后，别处的并发用例就会撞
@@ -40,6 +41,7 @@ def _isolate_source_history_globals():
     state._source_history_loaded_path = None
     state._source_history_skipped_records = 0
     state._source_history_read_failures = 0
+    state._source_history_authoritative = False
     yield
     state._source_history.clear()
     state._source_history.update(saved_history)
@@ -47,6 +49,7 @@ def _isolate_source_history_globals():
     state._source_history_loaded_path = saved_path
     state._source_history_skipped_records = saved_skipped
     state._source_history_read_failures = saved_failures
+    state._source_history_authoritative = saved_authoritative
     state._source_history_lock = saved_lock
 
 
@@ -432,3 +435,121 @@ async def test_permanent_read_failure_logs_at_a_throttled_rate(
     )
     assert [line for line in warnings if "连续跳过 1 次" in line], warnings
     assert [line for line in warnings if "连续失败 1 次" in line], warnings
+
+
+# --- 三条评审发现：损坏内容抛的不是 ValueError / 读失败后旧根仍被读路径看见 ---
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_oversized_timestamp_only_drops_that_one_entry(tmp_path):
+    # float() 对几百位的大整数抛 OverflowError，而它是 ArithmeticError 的子类、
+    # 不是 ValueError 的。逐条跳过的 except 元组漏掉它，异常就会一路逃出
+    # _ensure_source_history_loaded、逃出 _record_source_used，让**每一次**主动搭话
+    # 都炸在这里——而这份文件本来就是「可能被写坏」的前提下才有逐条跳过这套东西。
+    root = tmp_path / "mem"
+    root.mkdir()
+    good = {"ts": time.time(), "kind": "web", "title": "good"}
+    _history_path(root).write_text(
+        json.dumps(
+            {
+                "v": state._SOURCE_HISTORY_SCHEMA_VERSION,
+                "entries": {
+                    "goodhash": good,
+                    # JSON 允许任意精度整数，float() 转不过去。
+                    "hugehash": {"ts": int("9" * 400), "kind": "web", "title": "huge"},
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert await state._ensure_source_history_loaded(memory_dir=root) is True
+    assert set(state._source_history) == {"goodhash"}, "坏的那条该丢，好的那条不该陪葬"
+    assert state._source_history["goodhash"] == good
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_recursion_error_from_the_decoder_is_treated_as_corrupt_not_transient(
+    tmp_path,
+):
+    # 深嵌套 JSON 让解码器抛 RecursionError。它既不是 ValueError 也不是 OSError，
+    # 落进「瞬时失败」分支就是最坏的组合：由内容导致、因而永远失败的东西被当成
+    # 「下次重试」，于是 _record_source_used 永久拒绝写入、永远等不到自愈。
+    root = tmp_path / "mem"
+    root.mkdir()
+
+    def recursing_read(path):
+        raise RecursionError("maximum recursion depth exceeded while decoding a JSON object")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(state, "read_json", recursing_read)
+        assert await state._ensure_source_history_loaded(memory_dir=root) is True, (
+            "内容坏掉必须按空历史放行、由覆盖写自愈，不能挂在瞬时失败上"
+        )
+    assert state._source_history == {}
+    assert state._source_history_loaded is True
+    assert state._source_history_loaded_path == _history_path(root)
+
+    # 自愈的落点：下一次记录必须真的把文件写出来。
+    await state._record_source_used(
+        url="https://example.test/heal", kind="web", title="heal", memory_dir=root
+    )
+    written = json.loads(_history_path(root).read_text(encoding="utf-8"))
+    assert list(written["entries"]) == [state._source_hash("https://example.test/heal", "heal")]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_failed_reload_hides_the_previous_root_from_readers(tmp_path):
+    # 换根 + 新根读失败：写侧靠返回值挡住了，但内存里还留着 root_a 的历史。
+    # _should_skip_source 是同步读、拿不到 memory_dir，于是 root_b 的这次请求会被
+    # root_a 的「我聊过这个」压掉候选——她对这个角色明明没提过的素材闭口不谈。
+    root_a = tmp_path / "a"
+    root_b = tmp_path / "b"
+    root_b.mkdir()
+    seeded_a = _seed_history(root_a, 3)
+    hash_a = next(iter(seeded_a))
+
+    assert await state._ensure_source_history_loaded(memory_dir=root_a) is True
+    assert state._get_source_history_entry(hash_a) == seeded_a[hash_a]
+
+    def exploding_read(path):
+        raise OSError("root_b is unreadable right now")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(state, "read_json", exploding_read)
+        assert await state._ensure_source_history_loaded(memory_dir=root_b) is False
+
+    # 内存本身不许被清（清了会让「flag=已加载 / path=root_a / 内存空」复活，
+    # 下一次对 root_a 的记录就拿空内存全量覆盖写），但读路径不许再看见它。
+    assert state._source_history, "内存不该被清空"
+    assert state._get_source_history_entry(hash_a) is None, (
+        "读失败之后，上一个根的历史不许再被读路径当权威"
+    )
+
+    # 回到 root_a（走已加载快路径）必须重新可读——fail-open 不是单向闸门。
+    assert await state._ensure_source_history_loaded(memory_dir=root_a) is True
+    assert state._get_source_history_entry(hash_a) == seeded_a[hash_a]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_readers_stay_open_when_the_very_first_load_fails(tmp_path):
+    # 首次加载就失败时内存是空的，读侧本来就查不到东西；这条钉的是方向：
+    # 标记必须是 fail-open（查不到 → 不抑制），而不是 fail-closed（抑制一切）。
+    root = tmp_path / "mem"
+    root.mkdir()
+
+    def exploding_read(path):
+        raise OSError("nope")
+
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(state, "read_json", exploding_read)
+        assert await state._ensure_source_history_loaded(memory_dir=root) is False
+
+    from main_logic.proactive_chat.decisions import _should_skip_source
+
+    assert _should_skip_source("anyhash") is False, "读不出历史时必须放行候选，不是全压掉"

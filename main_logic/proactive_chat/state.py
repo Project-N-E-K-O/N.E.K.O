@@ -53,6 +53,13 @@ _source_history: dict[str, dict[str, Any]] = {}
 _source_history_lock = asyncio.Lock()
 _source_history_loaded = False
 _source_history_loaded_path: Path | None = None
+# 内存里那份能不能被**读路径**当权威。跟 _source_history_loaded 不是一回事：
+# 后者说的是「内存代表 _source_history_loaded_path 那个根」，而这个说的是「内存代表
+# 刚才那次请求要的那个根」。两者只在「换了根、而新根读失败」时分叉——那时内存里装的
+# 还是上一个根的历史，写侧靠返回值挡住了，读侧（_should_skip_source）却会拿 A 的
+# 历史去压 B 的候选，表现为她对这个角色明明没聊过的素材闭口不谈。
+# 读侧宁可漏抑制（顶多把某个素材再聊一遍）也不能跨根抑制，所以这里 fail-open。
+_source_history_authoritative = False
 # 连续失败计数，只用于给日志降频。一次性的读失败和「永久停摆」在单条 warning 里
 # 长得一模一样，靠的就是这两个累计数把它们区分开。任何一次成功都清零。
 _source_history_read_failures = 0
@@ -105,8 +112,14 @@ def _source_skip_probability(age: float, half_life: float) -> float:
 
 
 def _get_source_history_entry(url_hash: str) -> dict[str, Any] | None:
-    """Return the current in-memory source record for a stable hash."""
+    """Return the in-memory source record, or None when it is not authoritative."""
     if not url_hash:
+        return None
+    if not _source_history_authoritative:
+        # 上一次加载失败过，内存里可能装着**别的根**的历史。签名里没有 memory_dir，
+        # 加一个要串 _should_skip_source → candidate_selection / decisions /
+        # service 两处 / system_router 再导出，共五个调用点，为一条 fail-open 的
+        # 判据不值得。改成让加载侧把结论落在这个标记上，读侧只查标记。
         return None
     return _source_history.get(url_hash)
 
@@ -124,12 +137,14 @@ async def _ensure_source_history_loaded(
     # 无论哪种，被当成「已加载」都会让下一次记录把盘上整段历史截掉或换掉。所以
     # 「内存现在能不能代表 memory_dir 那份」必须是这个函数说了算，而不是让调用方去猜。
     global _source_history_loaded, _source_history_loaded_path
-    global _source_history_read_failures
+    global _source_history_read_failures, _source_history_authoritative
     path = _source_history_path(memory_dir=memory_dir)
     if _source_history_loaded and _source_history_loaded_path == path:
+        _source_history_authoritative = True
         return True
     async with _source_history_lock:
         if _source_history_loaded and _source_history_loaded_path == path:
+            _source_history_authoritative = True
             return True
         # 全程解析进这个局部 dict，只有走到函数末尾才整体换入 _source_history。
         # 这样「异常 / 取消」与「全局状态」彻底解耦：
@@ -145,11 +160,16 @@ async def _ensure_source_history_loaded(
             # 文件本来就不存在（首启 / 被清理过）= 正常的空历史，不是失败。
             # 照旧标记已加载，下一次记录会把文件创建出来。
             data = None
-        except (ValueError, TypeError) as exc:
+        except (ValueError, TypeError, RecursionError) as exc:
             # 整个文件读不成结构（JSONDecodeError / UnicodeDecodeError 都是 ValueError
             # 子类）：盘上那份已经不是可用的历史了，没有值得保护的东西，而且重试永远
             # 失败。按空历史起步、让后续覆盖写自愈——否则一个坏文件会让「我用过这个
             # 素材」永久停止记录。
+            #
+            # RecursionError 也归这里：json 解码器对足够深的嵌套（`[[[[...]]]]`）抛的
+            # 是它，而它既不是 ValueError 也不是 OSError。落到下面那个「瞬时失败」分支
+            # 就成了最坏的组合——由内容导致、因而**永远**失败的东西被当成「下次重试」，
+            # 于是记录永久停摆，而这正是自愈路径本来要消灭的状态。
             logger.warning(
                 "%s 内容损坏，按空历史起步并等待覆盖重建: %s: %s",
                 _SOURCE_HISTORY_FILENAME,
@@ -172,6 +192,10 @@ async def _ensure_source_history_loaded(
                     exc,
                     _source_history_read_failures,
                 )
+            # 内存原样保留（清掉会让「flag=已加载 / path=旧根 / 内存空」这个状态复活，
+            # 下一次针对旧根的记录就会拿空内存全量覆盖写），但读侧从这一刻起不许再用它，
+            # 否则旧根的历史会去压新根的候选。
+            _source_history_authoritative = False
             return False
         entries = data.get('entries') if isinstance(data, dict) else None
         if isinstance(entries, dict):
@@ -186,9 +210,11 @@ async def _ensure_source_history_loaded(
                         age,
                         _half_life_for(entry.get('kind', 'web')),
                     )
-                except (ValueError, TypeError):
+                except (ValueError, TypeError, OverflowError):
                     # 逐条跳过而不是整份作废：ts 是字符串抛 ValueError、kind 不可 hash
-                    # 抛 TypeError，都只说明**这一条**坏了。半损坏（几百条里坏一条）
+                    # 抛 TypeError、ts 是个几百位的大整数 float() 抛 OverflowError
+                    # （它是 ArithmeticError 而不是 ValueError 的子类，漏掉就会一路
+                    # 逃出本函数，让每一次主动搭话都炸），都只说明**这一条**坏了。半损坏（几百条里坏一条）
                     # 比整份 JSON 坏掉常见得多，把其余合法条目一起丢掉就是白白让她把
                     # 那些素材再聊一遍。坏的那条本来就该被遗忘，丢掉它没有代价。
                     damaged += 1
@@ -208,6 +234,7 @@ async def _ensure_source_history_loaded(
         _source_history_loaded = True
         _source_history_loaded_path = path
         _source_history_read_failures = 0
+        _source_history_authoritative = True
         return True
 
 
