@@ -1951,7 +1951,7 @@ async def _post_storage_location_restart_locked(
             # 必须单列。回滚本身是同步的，不会再被取消。
             if state_snapshot:
                 with suppress(Exception):
-                    _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
+                    _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
             raise
         except Exception as exc:
             try:
@@ -2043,7 +2043,7 @@ async def _post_storage_location_restart_locked(
             previous_migration_payload = rollback_state.get("migration")
             with suppress(Exception):
                 if isinstance(previous_migration_payload, dict):
-                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)
+                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
                 else:
                     delete_storage_migration(config_manager, anchor_root=anchor_root)
             with suppress(Exception):
@@ -2059,7 +2059,7 @@ async def _post_storage_location_restart_locked(
             previous_migration_payload = rollback_state.get("migration")
             try:
                 if isinstance(previous_migration_payload, dict):
-                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)
+                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
                 else:
                     delete_storage_migration(config_manager, anchor_root=anchor_root)
             except Exception:

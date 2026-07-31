@@ -58,6 +58,7 @@ from utils.port_utils import (
     is_port_in_excluded_range,
     set_port_probe_reuse,
 )
+from utils.root_state_lock import root_state_transaction
 from utils.cloudsave_runtime import (
     CLOUDSAVE_DISABLED_ENV,
     CLOUDSAVE_DISABLED_LOCAL_STATE_UNAVAILABLE,
@@ -646,16 +647,19 @@ def _maybe_schedule_storage_restart() -> bool:
 
 
 def _persist_post_startup_root_state(config_manager) -> None:
-    current_root_state = config_manager.load_root_state()
-    if should_write_root_mode_normal_after_startup(current_root_state):
-        set_root_mode(
-            config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(config_manager.app_docs_dir),
-            last_known_good_root=str(config_manager.app_docs_dir),
-            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-        )
-        return
+    # 判定和写进同一个锁内事务，理由同 app/memory_server/runtime.py 那处：
+    # "中间没有 await"只挡得住同一循环上的协程，挡不住工作线程上的存储变更写。
+    with root_state_transaction():
+        current_root_state = config_manager.load_root_state()
+        if should_write_root_mode_normal_after_startup(current_root_state):
+            set_root_mode(
+                config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(config_manager.app_docs_dir),
+                last_known_good_root=str(config_manager.app_docs_dir),
+                last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            )
+            return
 
     print(
         "[Launcher] Preserving non-normal root_state after startup: "
@@ -2837,17 +2841,19 @@ def _prepare_cloudsave_runtime_for_launch() -> dict:
             fence_already_active=True,
         )
 
-    load_root_state = getattr(config_manager, "load_root_state", None)
-    current_root_state = load_root_state() if callable(load_root_state) else {"mode": ROOT_MODE_NORMAL}
-    if should_write_root_mode_normal_after_startup(current_root_state):
-        root_state = set_root_mode(
-            config_manager,
-            ROOT_MODE_NORMAL,
-            current_root=str(config_manager.app_docs_dir),
-            last_known_good_root=str(config_manager.app_docs_dir),
-        )
-    else:
-        root_state = current_root_state
+    # 同上：判定和写不能被别的线程插进来，整段进锁。
+    with root_state_transaction():
+        load_root_state = getattr(config_manager, "load_root_state", None)
+        current_root_state = load_root_state() if callable(load_root_state) else {"mode": ROOT_MODE_NORMAL}
+        if should_write_root_mode_normal_after_startup(current_root_state):
+            root_state = set_root_mode(
+                config_manager,
+                ROOT_MODE_NORMAL,
+                current_root=str(config_manager.app_docs_dir),
+                last_known_good_root=str(config_manager.app_docs_dir),
+            )
+        else:
+            root_state = current_root_state
     root_mode = str(root_state.get("mode") or "")
     root_state_event_payload = {
         "mode": root_mode,

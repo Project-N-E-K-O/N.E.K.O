@@ -555,9 +555,11 @@ def test_startup_marker_keeps_its_eligibility_check_in_the_writing_scope():
     inserted an await between them, so a storage mutation worker could commit
     ``ROOT_MODE_MAINTENANCE_READONLY`` in the gap and get stomped back to normal.
 
-    The rule is shape-based: a ``set_root_mode`` call whose own scope lacks the
-    check while an *enclosing* scope has it means the check got left behind.
-    Sites that simply do not use the check (launcher paths) are untouched.
+    The rule is shape-based: any scope that does the check *and* the write itself
+    must hold both inside one ``root_state_transaction()``. In practice that means
+    nobody hand-rolls the pair — they call ``mark_startup_successful``, which is
+    the single scope that legitimately does both (under the lock). Sites that only
+    read the predicate, or only write, are untouched.
     """
     check = "should_write_root_mode_normal_after_startup"
     offenders: list[str] = []
@@ -568,32 +570,42 @@ def test_startup_marker_keeps_its_eligibility_check_in_the_writing_scope():
         except (SyntaxError, UnicodeDecodeError):
             continue
 
-        def _walk(scope: ast.AST, outer_has_check: bool) -> None:
+        for scope in ast.walk(tree):
+            if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
             own_calls = [n for n in _own_nodes(scope) if isinstance(n, ast.Call)]
             names = {_called_name(c) for c in own_calls}
-            has_check = check in names
-            if "set_root_mode" in names and not has_check and outer_has_check:
-                offenders.append(
-                    f"{path.relative_to(_REPO_ROOT).as_posix()}:{scope.lineno} "
-                    f"{getattr(scope, 'name', '<module>')}()"
-                )
-            for node in ast.walk(scope):
-                if node is scope:
-                    continue
-                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                    _walk(node, outer_has_check or has_check)
+            if not ({check, "set_root_mode"} <= names):
+                continue
 
-        for top in ast.iter_child_nodes(tree):
-            if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                _walk(top, False)
-            elif isinstance(top, ast.ClassDef):
-                for member in ast.iter_child_nodes(top):
-                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                        _walk(member, False)
+            guarded = False
+            for block in _own_nodes(scope):
+                if not isinstance(block, ast.With):
+                    continue
+                if not any(
+                    isinstance(item.context_expr, ast.Call)
+                    and _called_name(item.context_expr) == "root_state_transaction"
+                    for item in block.items
+                ):
+                    continue
+                inner = {
+                    _called_name(c)
+                    for c in _own_nodes(block)
+                    if isinstance(c, ast.Call)
+                }
+                if {check, "set_root_mode"} <= inner:
+                    guarded = True
+                    break
+            if not guarded:
+                offenders.append(
+                    f"{path.relative_to(_REPO_ROOT).as_posix()}:{scope.lineno} {scope.name}()"
+                )
 
     assert not offenders, (
-        "这些作用域写了启动成功标记，但判定留在了外层作用域——中间隔着 await，"
-        "判定和写就不再是不可分割的一步：\n  " + "\n  ".join(offenders)
+        "这些作用域自己拼了「判定 + 写启动标记」，却没把两步收进同一个 "
+        "root_state_transaction()。中间没有 await 只挡得住同一循环上的协程，挡不住"
+        "工作线程——存储变更路由的写现在就在工作线程上。改调 mark_startup_successful："
+        "\n  " + "\n  ".join(offenders)
     )
 
 

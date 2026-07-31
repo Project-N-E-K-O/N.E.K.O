@@ -60,6 +60,7 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
+from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from utils.host_origin_guard import HostOriginGuardMiddleware
@@ -596,23 +597,29 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             )
 
         if bootstrap_ok:
-            current_root_state = _config_manager.load_root_state()
-            if should_write_root_mode_normal_after_startup(current_root_state):
-                try:
-                    set_root_mode(
-                        _config_manager,
-                        ROOT_MODE_NORMAL,
-                        current_root=str(_config_manager.app_docs_dir),
-                        last_known_good_root=str(_config_manager.app_docs_dir),
-                        last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            # ⚠️ 判定和写必须在同一个锁内事务里。它们以前靠"中间没有 await"隐式原子，
+            # 但那只挡得住同一条事件循环上的协程 —— merged 模式下存储变更路由跟这段同
+            # 进程，而它的写现在跑在工作线程上，完全可以插在判定和写之间提交
+            # ROOT_MODE_MAINTENANCE_READONLY，随后被这里无条件写回 NORMAL，留下一个
+            # 没有写闸的待迁移。
+            with root_state_transaction():
+                current_root_state = _config_manager.load_root_state()
+                if should_write_root_mode_normal_after_startup(current_root_state):
+                    try:
+                        set_root_mode(
+                            _config_manager,
+                            ROOT_MODE_NORMAL,
+                            current_root=str(_config_manager.app_docs_dir),
+                            last_known_good_root=str(_config_manager.app_docs_dir),
+                            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+                else:
+                    logger.info(
+                        "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                        current_root_state.get("mode") or ROOT_MODE_NORMAL,
                     )
-                except Exception as e:
-                    logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
-            else:
-                logger.info(
-                    "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
-                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
-                )
         else:
             logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
