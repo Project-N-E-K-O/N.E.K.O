@@ -2535,7 +2535,13 @@ def test_private_synthetic_flush_replaces_control_row_with_real_inputs():
 
 
 @pytest.mark.asyncio
-async def test_failed_participant_permission_settlement_retains_session():
+@pytest.mark.parametrize("memory_enabled,pending_disable", [
+    (True, False),
+    (False, True),
+])
+async def test_failed_participant_permission_settlement_retains_session(
+    memory_enabled, pending_disable,
+):
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -2545,10 +2551,13 @@ async def test_failed_participant_permission_settlement_retains_session():
 
     session = SimpleNamespace(close=AsyncMock())
     user_data = {
-        "memory_enabled": True,
+        "memory_enabled": memory_enabled,
         "private_memory_mode": "participant",
         "session": session,
     }
+    if pending_disable:
+        user_data["pending_disable_settle"] = True
+        user_data["participant_opt_out_cutoff"] = 2
     plugin = SimpleNamespace(
         _user_sessions={"private:1001": user_data},
         _build_session_key=lambda **kwargs: "private:1001",
@@ -2562,6 +2571,9 @@ async def test_failed_participant_permission_settlement_retains_session():
 
     assert plugin._user_sessions["private:1001"] is user_data
     assert user_data["pending_permission_discard"] is True
+    service.finalize_user_memory_session.assert_awaited_once_with(
+        "private:1001", reason="permission_change",
+    )
     session.close.assert_not_awaited()
 
 

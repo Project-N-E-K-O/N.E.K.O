@@ -2015,7 +2015,10 @@ class QQSessionMemoryService:
 
         async def _invalidate() -> None:
             user_data = self.plugin._user_sessions.get(session_key)
-            if user_data and user_data.get("memory_enabled"):
+            if user_data and (
+                user_data.get("memory_enabled")
+                or user_data.get("pending_disable_settle")
+            ):
                 finalized = await self.finalize_user_memory_session(session_key, reason="permission_change")
                 if finalized:
                     return
