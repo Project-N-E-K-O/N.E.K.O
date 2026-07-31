@@ -81,6 +81,7 @@ class ReflectionEngine(
         # captures one before its out-of-lock LLM call and rechecks it before
         # append, so a concurrent scoped_forget can invalidate late results.
         self._subject_forget_epochs: dict[tuple[str, str, str], int] = {}
+        self._active_subject_forgets: set[tuple[str, str, str]] = set()
 
     def _get_alock(self, name: str) -> asyncio.Lock:
         """Get (or lazily create) the per-character asyncio.Lock.

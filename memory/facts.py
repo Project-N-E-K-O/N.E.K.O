@@ -617,31 +617,34 @@ class FactStore:
             # Fence every scoped extraction that captured the previous
             # generation before this critical section.
             self._bump_subject_forget_generation(lanlan_name, memory_subject)
-            facts = self._facts.get(lanlan_name)
-            if facts is None:
-                # The normal loader is intentionally best-effort and maps a
-                # malformed/transiently unreadable facts.json to cached []. An
-                # erasure must fail closed or it can report success while the
-                # active subject rows remain on disk.
-                facts_path = self._facts_path(lanlan_name)
-                facts = []
-                if await asyncio.to_thread(os.path.exists, facts_path):
-                    def _read_active_facts() -> object:
-                        with open(facts_path, encoding='utf-8') as f:
-                            return json.load(f)
+            # Never trust the cache here. The normal loader is deliberately
+            # best-effort and may already have cached [] after a malformed or
+            # transiently unreadable facts.json. Re-read the authoritative
+            # file on every forget attempt so a repaired file can be erased
+            # without restarting the process.
+            facts_path = self._facts_path(lanlan_name)
+            facts: list = []
+            if await asyncio.to_thread(os.path.exists, facts_path):
+                def _read_active_facts() -> object:
+                    with open(facts_path, encoding='utf-8') as f:
+                        return json.load(f)
 
-                    try:
-                        facts_data = await asyncio.to_thread(_read_active_facts)
-                    except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
-                        raise RuntimeError(
-                            f"facts state unreadable during forget: {exc}"
-                        ) from exc
-                    if not isinstance(facts_data, list):
-                        raise RuntimeError(
-                            "facts state is not a list during forget"
-                        )
-                    facts = facts_data
-                self._facts[lanlan_name] = facts
+                try:
+                    facts_data = await asyncio.to_thread(_read_active_facts)
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(facts_data, list):
+                    raise RuntimeError(
+                        "facts state is not a list during forget"
+                    )
+                facts = facts_data
+            else:
+                # A freshly-created in-process store may have durable work
+                # pending in its cache before the first file appears.
+                facts = self._facts.get(lanlan_name, [])
+            self._facts[lanlan_name] = facts
             removed = [
                 f for f in facts
                 if isinstance(f, dict) and entry_matches_subject(f, memory_subject)

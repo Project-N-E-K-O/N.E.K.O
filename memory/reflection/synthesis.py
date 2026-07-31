@@ -433,9 +433,14 @@ class SynthesisMixin:
         async with self._get_alock(lanlan_name):
             if (
                 memory_subject is not None
-                and self._subject_forget_epoch(
-                    lanlan_name, memory_subject,
-                ) != forget_epoch
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or self._subject_forget_epoch(
+                        lanlan_name, memory_subject,
+                    ) != forget_epoch
+                )
             ):
                 # The source facts were erased while the LLM was in flight.
                 # A late result must not recreate an immediately recallable

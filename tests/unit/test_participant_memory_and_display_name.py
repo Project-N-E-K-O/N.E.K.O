@@ -1193,6 +1193,25 @@ async def test_scoped_forget_reads_cold_active_facts_strictly(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_revalidates_poisoned_facts_cache(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(json.dumps([
+        {"id": "f1", "text": "target", **target.as_entry_fields()},
+    ]), encoding="utf-8")
+    store = FactStore(time_indexed_memory=None)
+    store._facts["Neko"] = []
+    store._facts_path = lambda name: str(facts_path)
+    store._facts_archive_path = lambda name: str(tmp_path / "missing.json")
+
+    with patch("memory.facts.assert_cloudsave_writable"):
+        stats = await store.aforget_subject("Neko", target)
+
+    assert stats["facts"] == 1
+    assert json.loads(facts_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_fences_inflight_fact_extraction(tmp_path):
     target = MemorySubject.participant("qq", "1001")
     archive_path = tmp_path / "missing-archive.json"
@@ -1645,6 +1664,30 @@ async def test_scoped_forget_aborts_on_unreadable_surfaced_state(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_rejects_non_list_reflections(tmp_path):
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    path = tmp_path / "reflections.json"
+    path.write_text('{"unexpected": "object"}', encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = PersistenceMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _reflections_path(self, name):
+            return str(path)
+
+    with pytest.raises(RuntimeError, match="reflections state is not a list"):
+        await _Harness().aforget_subject("Neko", target)
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_route_wires_all_three_stores():
     from app.memory_server import routes as memory_routes
     from app.memory_server.routes import ScopedForgetRequest
@@ -1664,8 +1707,11 @@ async def test_scoped_forget_route_wires_all_three_stores():
         ),
     )
     reflection = MagicMock()
-    reflection.abump_subject_forget_epoch = AsyncMock(
-        side_effect=lambda *args: calls.append("epoch"),
+    reflection.abegin_subject_forget = AsyncMock(
+        side_effect=lambda *args: calls.append("reflection_begin"),
+    )
+    reflection.aend_subject_forget = AsyncMock(
+        side_effect=lambda *args: calls.append("reflection_end"),
     )
     reflection.aforget_subject = AsyncMock(
         side_effect=lambda *args: (
@@ -1684,7 +1730,14 @@ async def test_scoped_forget_route_wires_all_three_stores():
             }
         ),
     )
+    dedup = MagicMock()
+    dedup.aforget_subject = AsyncMock(
+        side_effect=lambda *args: (
+            calls.append("dedup") or {"pending_dedup": 1}
+        ),
+    )
     with patch.object(memory_routes.runtime, "fact_store", store), \
+            patch.object(memory_routes.runtime, "fact_dedup_resolver", dedup), \
             patch.object(memory_routes.runtime, "reflection_engine", reflection), \
             patch.object(memory_routes.runtime, "persona_manager", persona):
         result = await memory_routes.forget_scoped_subject(
@@ -1697,11 +1750,12 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["facts"] == 1
     assert result["reflections"] == 2
     assert result["persona_entries"] == 3
+    assert result["pending_dedup"] == 1
     assert calls == [
-        "fact_begin", "epoch", "facts", "reflections", "persona", "epoch",
-        "fact_end",
+        "fact_begin", "reflection_begin", "dedup", "facts", "reflections",
+        "persona", "reflection_end", "fact_end",
     ]
-    for double in (store, reflection, persona):
+    for double in (store, dedup, reflection, persona):
         forgotten = double.aforget_subject.await_args.args[1]
         assert forgotten.subject_id == "qq:1001"
 
@@ -2119,6 +2173,75 @@ async def test_private_synthetic_flush_propagates_receipt_consent():
     assert synthetic.participant_memory_at_receipt is False
 
 
+def test_private_synthetic_flush_replaces_control_row_with_real_inputs():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    def _msg(msg_type, text):
+        return SimpleNamespace(type=msg_type, content=text)
+
+    history = [
+        _msg("human", "first"),
+        _msg("ai", "draft"),
+        _msg("human", "[system] summarize draft + user inputs"),
+        _msg("ai", "summary"),
+    ]
+    user_data = {
+        "is_group": False,
+        "private_memory_mode": "participant",
+        "session": SimpleNamespace(_conversation_history=history),
+    }
+    plugin = SimpleNamespace(_user_sessions={"private:1001": user_data})
+    service = QQSessionMemoryService(plugin)
+
+    inserted = service.record_synthetic_prompt_rows(
+        "private:1001",
+        2,
+        replacement_user_texts=["second", "third"],
+    )
+
+    assert inserted == 2
+    assert [(row.type, row.content) for row in history] == [
+        ("human", "first"),
+        ("ai", "draft"),
+        ("human", "second"),
+        ("human", "third"),
+        ("ai", "summary"),
+    ]
+    assert user_data.get("undelivered_draft_rows", []) == []
+
+
+@pytest.mark.asyncio
+async def test_failed_participant_permission_settlement_retains_session():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    async def _run_locked(key, factory):
+        return await factory()
+
+    session = SimpleNamespace(close=AsyncMock())
+    user_data = {
+        "memory_enabled": True,
+        "private_memory_mode": "participant",
+        "session": session,
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"private:1001": user_data},
+        _build_session_key=lambda **kwargs: "private:1001",
+        _run_with_session_lock=_run_locked,
+        logger=MagicMock(),
+    )
+    service = QQSessionMemoryService(plugin)
+    service.finalize_user_memory_session = AsyncMock(return_value=False)
+
+    await service.invalidate_private_session("1001")
+
+    assert plugin._user_sessions["private:1001"] is user_data
+    session.close.assert_not_awaited()
+
+
 def test_scoped_synthesis_rechecks_forget_epoch_before_append():
     import inspect
 
@@ -2127,7 +2250,50 @@ def test_scoped_synthesis_rechecks_forget_epoch_before_append():
     source = inspect.getsource(SynthesisMixin.synthesize_reflections)
     assert "forget_epoch = (" in source
     assert source.count("_subject_forget_epoch(") >= 2
+    assert "_subject_forget_is_active(" in source
     assert "dropping late result" in source
+
+
+@pytest.mark.asyncio
+async def test_reflection_forget_bracket_stays_active_for_whole_route():
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+
+    class _Harness:
+        _subject_forget_epoch = PersistenceMixin._subject_forget_epoch
+        _subject_forget_is_active = PersistenceMixin._subject_forget_is_active
+        abegin_subject_forget = PersistenceMixin.abegin_subject_forget
+        aend_subject_forget = PersistenceMixin.aend_subject_forget
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._subject_forget_epochs = {}
+            self._active_subject_forgets = set()
+
+        def _get_alock(self, name):
+            return self._lock
+
+    harness = _Harness()
+    await harness.abegin_subject_forget("Neko", target)
+    assert harness._subject_forget_is_active("Neko", target)
+    assert harness._subject_forget_epoch("Neko", target) == 1
+
+    await harness.aend_subject_forget("Neko", target)
+    assert not harness._subject_forget_is_active("Neko", target)
+    assert harness._subject_forget_epoch("Neko", target) == 2
+
+
+def test_scoped_promotion_holds_reflection_lock_through_persona_write():
+    import inspect
+
+    from memory.reflection.promotion_merge import PromotionMergeMixin
+
+    source = inspect.getsource(PromotionMergeMixin._apromote_with_merge)
+    assert source.count("_subject_forget_is_active(") >= 3
+    assert "async with self._get_alock(lanlan_name):" in source
+    assert "result = await self._persona_manager.aadd_fact(" in source
+    assert "merge_outcome = await self._persona_manager.amerge_into(" in source
 
 
 @pytest.mark.asyncio

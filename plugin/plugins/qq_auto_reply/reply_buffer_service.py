@@ -17,13 +17,19 @@ from typing import Any, Optional
 
 class PendingReply:
     """待发送的回复（缓冲模式：收消息时不合成，等暂停后统一生成回复）"""
-    __slots__ = ("buffered_texts", "wait_until", "task", "topic_hint", "message_count",
+    __slots__ = ("buffered_texts", "buffered_user_texts", "materialized_user_count",
+                 "wait_until", "task", "topic_hint", "message_count",
                  "sender_id", "is_group", "group_id", "_acked", "first_blocks",
                  "draft_rows", "mention_context", "has_nonconsent_input",
                  "consent_snapshot", "used_fallback_reply", "generation")
 
     def __init__(self, first_text: str, wait_seconds: float, sender_id: str, is_group: bool, group_id: str):
         self.buffered_texts: list[str] = [first_text]  # 缓冲的消息文本
+        # Keep real inbound text separate from buffered_texts: schedule_reply
+        # replaces buffered_texts[0] with the bot draft, while later private
+        # inputs never enter the normal pipeline/history.
+        self.buffered_user_texts: list[str] = [first_text]
+        self.materialized_user_count: int = 1
         self.wait_until = time.time() + wait_seconds
         self.task: Optional[asyncio.Task] = None
         # 代际：每次新消息作废当前等待任务时 +1。归属**不能**只看
@@ -153,9 +159,28 @@ class QQReplyBufferService:
     ) -> None:
         # 实现挪到 session_memory_service（proactive 合成轮同用）；语义见
         # record_synthetic_prompt_rows docstring。
-        self.plugin.session_memory_service.record_synthetic_prompt_rows(
-            session_key, history_len_before,
+        pending = (
+            getattr(self, "_synthetic_record_pending", None)
+            or self._pending.get(session_key)
         )
+        if pending is None:
+            self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                session_key, history_len_before,
+            )
+            return
+        missing_user_texts = pending.buffered_user_texts[
+            pending.materialized_user_count:
+        ]
+        materialized = (
+            self.plugin.session_memory_service.record_synthetic_prompt_rows(
+                session_key,
+                history_len_before,
+                include_ai_rows=pending.has_nonconsent_input,
+                replacement_user_texts=missing_user_texts,
+            )
+        )
+        if isinstance(materialized, int):
+            pending.materialized_user_count += materialized
 
     def _clear_undelivered_marks(
         self, session_key: str, pending: "PendingReply",
@@ -226,6 +251,7 @@ class QQReplyBufferService:
             # 已有缓冲 → 追加
             self._supersede(existing)
             existing.buffered_texts.append(message_text)
+            existing.buffered_user_texts.append(message_text)
             # 私聊第二条起会在这里直接 return，不再构造 QQReplyRequest，也
             # 不会经过 schedule_reply(consented=...)。必须在接收边界把 OFF
             # 章并进同一个 pending，否则 OFF→ON 后 synthetic flush 会把这条
@@ -378,12 +404,6 @@ class QQReplyBufferService:
                     self.plugin._emit_log("WARN", f"[Buffer] 简短确认失败: {e}")
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
-                    if existing.has_nonconsent_input:
-                        # ack 的 prompt 内嵌了缓冲内容摘录：OFF 时代输入
-                        # 存在时其 ai 行按同一口径排除。
-                        self.plugin.session_memory_service.record_synthetic_prompt_rows(
-                            session_key, hist_before, include_ai_rows=True,
-                        )
 
             # 17+ 条 → 走 pipeline 强制总结 + 清空缓冲
             if n >= 17 and self._consent_revoked_since(existing):
@@ -434,13 +454,13 @@ class QQReplyBufferService:
                 except Exception as e:
                     self.plugin._emit_log("WARN", f"[Buffer] 强制总结失败: {e}")
                 finally:
-                    self._record_synthetic_prompt_rows(session_key, hist_before)
-                    if existing.has_nonconsent_input:
-                        # 与 _deliver_after_wait 的合并分支对齐：缓冲含
-                        # OFF 时代输入时，衍生总结的 ai 行同样不得入库。
-                        self.plugin.session_memory_service.record_synthetic_prompt_rows(
-                            session_key, hist_before, include_ai_rows=True,
+                    self._synthetic_record_pending = existing
+                    try:
+                        self._record_synthetic_prompt_rows(
+                            session_key, hist_before,
                         )
+                    finally:
+                        self._synthetic_record_pending = None
                     self._settle_provisional(
                         (getattr(self.plugin, "_user_sessions", {}) or {}).get(
                             session_key
@@ -719,12 +739,6 @@ class QQReplyBufferService:
                     return await self.plugin.reply_pipeline.run(request)
                 finally:
                     self._record_synthetic_prompt_rows(session_key, hist_before)
-                    if pending.has_nonconsent_input:
-                        # 缓冲含 OFF 时代输入：summary 的 ai 行由它们衍生，
-                        # 投递前切 ON 会让该行落在 rebase 边界后——同样排除。
-                        self.plugin.session_memory_service.record_synthetic_prompt_rows(
-                            session_key, hist_before, include_ai_rows=True,
-                        )
 
             await self.plugin._run_with_session_lock(session_key, _run_flush)
         except Exception as e:

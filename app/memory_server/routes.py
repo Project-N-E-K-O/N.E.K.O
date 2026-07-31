@@ -1296,7 +1296,7 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     subject = req.subject.to_domain()
     stats: dict = {}
     fact_forget_started = False
-    forget_epoch_started = False
+    reflection_forget_started = False
     try:
         # Bracket the whole multi-store transaction on both write paths.
         # Fact extraction and reflection synthesis release their locks during
@@ -1304,10 +1304,16 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         # must not write after the endpoint reports forgotten.
         await runtime.fact_store.abegin_subject_forget(lanlan_name, subject)
         fact_forget_started = True
-        await runtime.reflection_engine.abump_subject_forget_epoch(
+        await runtime.reflection_engine.abegin_subject_forget(
             lanlan_name, subject,
         )
-        forget_epoch_started = True
+        reflection_forget_started = True
+        if runtime.fact_dedup_resolver is not None:
+            stats.update(
+                await runtime.fact_dedup_resolver.aforget_subject(
+                    lanlan_name, subject,
+                )
+            )
         stats.update(await runtime.fact_store.aforget_subject(lanlan_name, subject))
         stats.update(
             await runtime.reflection_engine.aforget_subject(lanlan_name, subject)
@@ -1323,8 +1329,8 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         ) from exc
     finally:
         try:
-            if forget_epoch_started:
-                await runtime.reflection_engine.abump_subject_forget_epoch(
+            if reflection_forget_started:
+                await runtime.reflection_engine.aend_subject_forget(
                     lanlan_name, subject,
                 )
         finally:

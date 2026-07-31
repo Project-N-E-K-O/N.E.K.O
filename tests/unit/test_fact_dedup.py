@@ -331,6 +331,51 @@ async def test_aenqueue_skips_rows_with_missing_ids(tmp_path):
     assert await resolver.aload_pending("小天") == []
 
 
+@pytest.mark.asyncio
+async def test_scoped_forget_purges_pending_text_and_rejects_stale_enqueue(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    target_rows = [
+        {**_fact("t1", "forgotten one"), **target.as_entry_fields()},
+        {**_fact("t2", "forgotten two"), **target.as_entry_fields()},
+    ]
+    other_rows = [
+        {**_fact("o1", "keep one"), **other.as_entry_fields()},
+        {**_fact("o2", "keep two"), **other.as_entry_fields()},
+    ]
+    await _seed_facts(fs, "小天", target_rows + other_rows)
+    target_pair = {
+        "candidate_id": "t1", "existing_id": "t2",
+        "candidate_text": "forgotten one", "existing_text": "forgotten two",
+        "entity": "participant", "subject_key": target.key,
+        "scope": target.scope, "cosine": 0.99,
+    }
+    other_pair = {
+        "candidate_id": "o1", "existing_id": "o2",
+        "candidate_text": "keep one", "existing_text": "keep two",
+        "entity": "participant", "subject_key": other.key,
+        "scope": other.scope, "cosine": 0.99,
+    }
+    assert await resolver.aenqueue_candidates(
+        "小天", [target_pair, other_pair],
+    ) == 2
+
+    assert await resolver.aforget_subject("小天", target) == {
+        "pending_dedup": 1,
+    }
+    pending = await resolver.aload_pending("小天")
+    assert [item["candidate_text"] for item in pending] == ["keep one"]
+
+    with patch("memory.facts.assert_cloudsave_writable"):
+        await fs.aforget_subject("小天", target)
+    assert await resolver.aenqueue_candidates("小天", [target_pair]) == 0
+
+
 # ── aresolve: action handling ────────────────────────────────────────
 
 

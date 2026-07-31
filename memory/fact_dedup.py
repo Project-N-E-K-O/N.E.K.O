@@ -220,6 +220,22 @@ class FactDedupResolver:
         if not pairs:
             return 0
         async with self._get_alock(name):
+            # Candidate detection runs outside this lock. A scoped forget may
+            # therefore delete its source facts after detection but before
+            # enqueue. Revalidate both ids against the live store so a stale
+            # worker cannot reintroduce forgotten text after the queue purge.
+            has_scoped_pairs = any(
+                p.get('subject_key') is not None or p.get('scope') is not None
+                for p in pairs
+            )
+            live_ids: set = set()
+            if has_scoped_pairs:
+                live_facts = await self._fact_store.aload_facts(name)
+                live_ids = {
+                    row.get('id')
+                    for row in live_facts
+                    if isinstance(row, dict) and row.get('id')
+                }
             existing = await self.aload_pending(name)
             existing_keys = {
                 (it.get('candidate_id'), it.get('existing_id'))
@@ -229,7 +245,20 @@ class FactDedupResolver:
             appended = 0
             for p in pairs:
                 key = (p.get('candidate_id'), p.get('existing_id'))
-                if key in existing_keys or None in key:
+                if (
+                    key in existing_keys
+                    or None in key
+                    or (
+                        (
+                            p.get('subject_key') is not None
+                            or p.get('scope') is not None
+                        )
+                        and (
+                            key[0] not in live_ids
+                            or key[1] not in live_ids
+                        )
+                    )
+                ):
                     continue
                 existing.append({
                     'candidate_id': p.get('candidate_id'),
@@ -259,6 +288,79 @@ class FactDedupResolver:
                     name, appended, len(existing),
                 )
         return appended
+
+    async def aforget_subject(self, name: str, subject) -> dict:
+        """Purge queued text for one exact subject under the resolver lock.
+
+        Holding the same lock as ``aresolve`` waits for any in-flight LLM
+        decision before returning. Old queue rows without explicit subject
+        fields are matched through their still-live fact ids, before the route
+        deletes those facts.
+        """
+        from memory.scopes import coerce_subject, entry_matches_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        async with self._get_alock(name):
+            path = self._pending_path(name)
+            pending: list = []
+            if await asyncio.to_thread(os.path.exists, path):
+                try:
+                    data = await read_json_async(path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts_pending_dedup unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(data, list):
+                    raise RuntimeError(
+                        "facts_pending_dedup is not a list during forget"
+                    )
+                pending = data
+
+            facts_path = self._fact_store._facts_path(name)
+            facts: list = []
+            if await asyncio.to_thread(os.path.exists, facts_path):
+                try:
+                    facts_data = await read_json_async(facts_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts state unreadable during dedup forget: {exc}"
+                    ) from exc
+                if not isinstance(facts_data, list):
+                    raise RuntimeError(
+                        "facts state is not a list during dedup forget"
+                    )
+                facts = facts_data
+            subject_fact_ids = {
+                row.get('id')
+                for row in facts
+                if (
+                    isinstance(row, dict)
+                    and row.get('id')
+                    and entry_matches_subject(row, memory_subject)
+                )
+            }
+
+            def _matches(item: object) -> bool:
+                if not isinstance(item, dict):
+                    return False
+                if (
+                    item.get('subject_key') == memory_subject.key
+                    and item.get('scope') == memory_subject.scope
+                ):
+                    return True
+                return bool(subject_fact_ids.intersection({
+                    item.get('candidate_id'), item.get('existing_id'),
+                }))
+
+            kept = [item for item in pending if not _matches(item)]
+            removed = len(pending) - len(kept)
+            if removed and not await self._asave_pending(name, kept):
+                raise RuntimeError(
+                    "facts_pending_dedup not writable during forget"
+                )
+        return {'pending_dedup': removed}
 
     # ── candidate detection ──────────────────────────────────────────
 

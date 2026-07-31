@@ -87,6 +87,57 @@ class PersistenceMixin:
             epochs[key] = int(epochs.get(key, 0)) + 1
             return epochs[key]
 
+    def _subject_forget_is_active(self, name: str, subject) -> bool:
+        """Return whether the complete scoped-forget route is still open."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            return False
+        active = getattr(self, "_active_subject_forgets", None) or set()
+        return (name, memory_subject.key, memory_subject.scope) in active
+
+    async def abegin_subject_forget(self, name: str, subject) -> None:
+        """Open a reflection-write tombstone for a scoped-forget route."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("abegin_subject_forget requires an explicit subject")
+        key = (name, memory_subject.key, memory_subject.scope)
+        async with self._get_alock(name):
+            active = getattr(self, "_active_subject_forgets", None)
+            if active is None:
+                active = set()
+                self._active_subject_forgets = active
+            if key in active:
+                raise RuntimeError("subject forget is already active")
+            active.add(key)
+            epochs = getattr(self, "_subject_forget_epochs", None)
+            if epochs is None:
+                epochs = {}
+                self._subject_forget_epochs = epochs
+            epochs[key] = int(epochs.get(key, 0)) + 1
+
+    async def aend_subject_forget(self, name: str, subject) -> None:
+        """Close the tombstone and invalidate work started while it was open."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aend_subject_forget requires an explicit subject")
+        key = (name, memory_subject.key, memory_subject.scope)
+        async with self._get_alock(name):
+            active = getattr(self, "_active_subject_forgets", None)
+            if active is None or key not in active:
+                return
+            epochs = getattr(self, "_subject_forget_epochs", None)
+            if epochs is None:
+                epochs = {}
+                self._subject_forget_epochs = epochs
+            epochs[key] = int(epochs.get(key, 0)) + 1
+            active.remove(key)
+
     def _reflections_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections.json')
@@ -350,9 +401,17 @@ class PersistenceMixin:
             path = self._reflections_path(name)
             rows: list = []
             if await asyncio.to_thread(os.path.exists, path):
-                data = await read_json_async(path)
-                if isinstance(data, list):
-                    rows = data
+                try:
+                    data = await read_json_async(path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"reflections state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(data, list):
+                    raise RuntimeError(
+                        "reflections state is not a list during forget"
+                    )
+                rows = data
             removed = [
                 r for r in rows
                 if isinstance(r, dict) and entry_matches_subject(r, memory_subject)

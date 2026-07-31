@@ -345,7 +345,8 @@ class QQSessionMemoryService:
     def record_synthetic_prompt_rows(
         self, session_key: str, history_len_before: int,
         *, include_ai_rows: bool = False,
-    ) -> None:
+        replacement_user_texts: list[str] | None = None,
+    ) -> int:
         """Synthetic control turns (rapid-fire flush / proactive speech) run
         the full pipeline, appending a fabricated human instruction row to
         the shared history. Record those rows into the exclusion list so
@@ -356,17 +357,9 @@ class QQSessionMemoryService:
             session_key
         )
         if not isinstance(user_data, dict):
-            return
-        if not user_data.get("is_group"):
-            # 私聊 pre_buffer 场景：第二条起的真实用户消息只活在 flush
-            # prompt 里（handle_private_message 在 pre_buffer 后直接返回，
-            # 不进正常历史）——排除整行会让私聊长期记忆丢真实输入。包装
-            # 噪声交提取端消化，完整性优先。群路径的成员消息每条都走过
-            # 正常轮次、已在历史里，照常排除合成行。
-            return
+            return 0
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []
-        rows = user_data.setdefault("undelivered_draft_rows", [])
         baseline = int(history_len_before)
         measured_on = getattr(history_len_before, "session", None)
         if measured_on is not None and measured_on is not session:
@@ -375,6 +368,64 @@ class QQSessionMemoryService:
             # 行就当成真人发言进了 scoped 记忆。新会话里现有的行全是本轮
             # 写的，从头算即可。
             baseline = 0
+
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") == "participant"
+        ):
+            rows = user_data.setdefault("undelivered_draft_rows", [])
+            # Private pre-buffer inputs after the first one never traverse the
+            # pipeline. Replace the fabricated rapid-fire human control row
+            # in-place with those real inputs, preserving their position
+            # before the generated AI reply. This avoids both prompt-wrapper
+            # leakage and loss of the actual participant messages.
+            human_indexes = [
+                index
+                for index in range(max(0, baseline), len(history))
+                if getattr(history[index], "type", "") == "human"
+            ]
+            texts = [
+                str(value).strip()
+                for value in (replacement_user_texts or [])
+                if str(value).strip()
+            ]
+            inserted = 0
+            if human_indexes and texts:
+                try:
+                    from langchain_core.messages import HumanMessage
+
+                    replacement_rows = [
+                        HumanMessage(content=value) for value in texts
+                    ]
+                except Exception:
+                    from types import SimpleNamespace
+
+                    replacement_rows = [
+                        SimpleNamespace(type="human", content=value)
+                        for value in texts
+                    ]
+                first_index = human_indexes[0]
+                for index in reversed(human_indexes[1:]):
+                    del history[index]
+                history[first_index:first_index + 1] = replacement_rows
+                inserted = len(replacement_rows)
+            else:
+                for index in human_indexes:
+                    msg = history[index]
+                    if not any(existing is msg for existing in rows):
+                        rows.append(msg)
+            if include_ai_rows:
+                for msg in history[max(0, baseline):]:
+                    if (
+                        getattr(msg, "type", "") == "ai"
+                        and not any(existing is msg for existing in rows)
+                    ):
+                        rows.append(msg)
+            return inserted
+
+        if not user_data.get("is_group"):
+            return 0
+        rows = user_data.setdefault("undelivered_draft_rows", [])
         for msg in history[max(0, baseline):]:
             msg_type = getattr(msg, "type", "")
             if msg_type != "human" and not (
@@ -385,6 +436,7 @@ class QQSessionMemoryService:
                 continue
             if not any(existing is msg for existing in rows):
                 rows.append(msg)
+        return 0
 
     def record_tail_undelivered_ai_row(self, session_key: str) -> None:
         """Mark the newest ai row as undelivered after a FAILED direct send.
@@ -1885,6 +1937,14 @@ class QQSessionMemoryService:
             if user_data and user_data.get("memory_enabled"):
                 finalized = await self.finalize_user_memory_session(session_key, reason="permission_change")
                 if finalized:
+                    return
+                if user_data.get("private_memory_mode") == "participant":
+                    # A failed participant settlement retains unsent history
+                    # for the next retry. Popping/closing here would make the
+                    # failure irreversible and silently discard that history.
+                    self.plugin.logger.warning(
+                        f"参与者私聊结算失败，保留会话等待重试（{session_key}）"
+                    )
                     return
 
             user_data = self.plugin._user_sessions.pop(session_key, None)
