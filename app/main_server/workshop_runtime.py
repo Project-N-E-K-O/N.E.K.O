@@ -26,7 +26,7 @@ from main_routers.workshop_router import (
     warmup_ugc_cache,
 )
 from utils.cloudsave_runtime import is_write_fence_active
-from utils.workshop_utils import get_workshop_path, get_workshop_root
+from utils.workshop_utils import get_workshop_path_async, get_workshop_root_async
 
 from ._shared import runtime
 
@@ -127,7 +127,7 @@ async def _init_and_mount_workshop():
             subscribed_items = workshop_items_result.get("items", [])
 
         # 3. 调用 utils 层函数获取/计算路径（路径会被持久化到 config）
-        workshop_path = get_workshop_root(subscribed_items)
+        workshop_path = await get_workshop_root_async(subscribed_items)
 
         # 4. 挂载静态文件目录
         if (
@@ -149,7 +149,7 @@ async def _init_and_mount_workshop():
     except Exception as e:
         logger.error(f"初始化创意工坊目录时出错: {e}")
         # 降级：确保至少有一个默认路径可用
-        workshop_path = get_workshop_path()
+        workshop_path = await get_workshop_path_async()
         logger.info(f"使用配置中的默认路径: {workshop_path}")
         if (
             workshop_path

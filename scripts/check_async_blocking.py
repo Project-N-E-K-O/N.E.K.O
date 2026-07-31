@@ -47,7 +47,12 @@ our model). A second pass addresses exactly that class:
    recognised blocking stdlib call (``PIL.Image.open``, Fernet
    encrypt/decrypt, ``shutil.*``, ``time.sleep``, ``requests.*``,
    ``subprocess.run``/``call``/``check_*``, ``urllib.request.urlopen``,
-   plus the queue/thread/socket tail-name heuristics above).
+   ``utils.file_utils.atomic_write_text`` / ``atomic_write_bytes`` /
+   ``atomic_write_json``, plus
+   the queue/thread/socket tail-name heuristics above). Helpers whose
+   own name is too generic to identify by name alone (``save``,
+   ``load``, ``run``, …) are deliberately NOT indexed — see
+   ``GENERIC_HELPER_NAMES``.
 2. Walk every ``async def`` body again, and for each bare ``foo(...)``
    or ``obj.foo(...)`` call match the tail name against the risky index.
    A hit is reported as: *blocking sync helper '<name>' ... called
@@ -55,12 +60,13 @@ our model). A second pass addresses exactly that class:
    ``await asyncio.to_thread(...)``*.
 
 We deliberately stop at depth 1 — tracing deeper chains needs type
-inference and/or module-level import resolution, and name-based
-heuristics past depth 1 produce more noise than signal. Imports are not
-resolved; a helper re-exported or aliased at import time will slip
-through. That is a known trade-off — easy to add later, hard to make
-quiet today. False positives from name collisions can be silenced per
-line with ``# noqa: ASYNC_BLOCK — <reason>``.
+inference and name-based heuristics past depth 1 produce more noise than
+signal. General imports are not resolved. The two ``utils.file_utils``
+atomic writers are the narrow exception: their direct aliases and module
+aliases are resolved because letting import spelling bypass this PR's
+central fsync guard would defeat the rule. False positives from name
+collisions can be silenced per line with
+``# noqa: ASYNC_BLOCK — <reason>``.
 
 Every violation prints as ``path:line:col  CODE  message``. Exit status
 is 1 when any violation is found, 0 otherwise.
@@ -126,6 +132,17 @@ SOCKET_SUFFIX = ("_sock", "_socket")
 # collapses to ``y.save``, which disambiguates ``fernet.encrypt`` vs.
 # ``self.encrypt``. Overly generic pairs are deliberately omitted.
 RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
+    # utils/file_utils 的原子落盘，模块限定写法。`from utils import file_utils`
+    # 之后 `file_utils.atomic_write_json(...)` 是 attribute 调用，走不到下面
+    # RISKY_BARE_CALLS 那条（那条只看 ast.Name），不补这些就等于给一种完全
+    # 正常的 import 风格开了后门。
+    ("file_utils", "atomic_write_text"): "utils.file_utils.atomic_write_text",
+    ("file_utils", "atomic_write_bytes"): "utils.file_utils.atomic_write_bytes",
+    ("file_utils", "atomic_write_json"): "utils.file_utils.atomic_write_json",
+    # Resolves workshop_config.json and may read/retry/rebase it. Calling it
+    # from an async handler was the source of several lock/I/O relays in this
+    # PR; route code must use its async twin.
+    ("workshop_utils", "get_workshop_path"): "utils.workshop_utils.get_workshop_path",
     # PIL
     ("Image", "open"): "PIL.Image.open",
     ("_PILImage", "open"): "PIL.Image.open",
@@ -193,7 +210,71 @@ RISKY_BARE_CALLS: dict[str, str] = {
     # is an attribute call (``asyncio.sleep``) so it won't be confused with
     # this bare ``sleep`` form.
     "sleep": "time.sleep",
+    # utils/file_utils 的原子落盘。名字够独特，不会跟别的东西撞。一次
+    # atomic_write 在调用线程上串着 mkdir、崩后残留 tmp 的整目录 scandir、
+    # mkstemp、write，以及**没有上界**的 os.fsync —— 放在事件循环上就是拿一次
+    # 物理刷盘的时间去堵住所有别的协程。异步孪生 atomic_write_json_async /
+    # atomic_write_text_async 早就存在（asyncio.to_thread 包一层），非测试代码里
+    # 已有 77 处在用；缺的从来不是异步安全层，是调用点纪律。
+    "atomic_write_text": "utils.file_utils.atomic_write_text",
+    "atomic_write_bytes": "utils.file_utils.atomic_write_bytes",
+    "atomic_write_json": "utils.file_utils.atomic_write_json",
+    "get_workshop_path": "utils.workshop_utils.get_workshop_path",
 }
+
+_ATOMIC_WRITE_LABELS = {
+    "atomic_write_text": "utils.file_utils.atomic_write_text",
+    "atomic_write_bytes": "utils.file_utils.atomic_write_bytes",
+    "atomic_write_json": "utils.file_utils.atomic_write_json",
+}
+
+
+def _collect_atomic_write_aliases(
+    tree: ast.Module,
+) -> tuple[dict[str, str], set[str]]:
+    """Return direct-name aliases and module aliases for ``utils.file_utils``.
+
+    This intentionally resolves only the atomic-write family. General import
+    resolution would turn the checker's name-based depth-1 pass into a much
+    larger cross-module analysis problem; these names are high-signal and
+    are the guard this PR is specifically adding.
+    """
+    direct: dict[str, str] = {}
+    modules: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom):
+            if node.module == "utils.file_utils":
+                for alias in node.names:
+                    label = _ATOMIC_WRITE_LABELS.get(alias.name)
+                    if label is not None:
+                        direct[alias.asname or alias.name] = label
+            elif node.module == "utils":
+                for alias in node.names:
+                    if alias.name == "file_utils":
+                        modules.add(alias.asname or alias.name)
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name == "utils.file_utils" and alias.asname:
+                    modules.add(alias.asname)
+    return direct, modules
+
+# 太通用、不足以靠名字认人的 helper 名，不进 depth-1 风险索引。
+#
+# 索引是按**名字**匹配的：pass 1 记下「某个同步 def 的体内有阻塞调用」，pass 2 在
+# async def 里看到同名调用就报。名字够独特时这招很准（save_storage_policy 只可能是
+# 那一个），名字是个通用动词时就全是噪声 —— 实测把 atomic_write_* 加进来之后，一个
+# 叫 `save` 的 helper 让 `img.save(png_path)`（PIL）和
+# `TokenTracker.get_instance().save()` 全部中招，而它们跟那个 helper 毫无关系。
+#
+# 这跟本文件对 queue/thread/socket 接收者尾名的既有取舍是同一条原则：名字太泛的
+# 一律不猜，宁可漏报也不制造假阳性。代价是漏掉真的叫 `save` 的阻塞 helper —— 那类
+# 只能靠 review 或者以后引入类型推断。
+GENERIC_HELPER_NAMES = frozenset({
+    "save", "load", "read", "write", "flush", "close", "open", "dump",
+    "update", "apply", "run", "start", "stop", "reset", "clear", "sync",
+    "commit", "persist", "get", "set", "add", "append", "remove", "delete",
+    "copy", "move", "send", "put", "wait", "join", "process", "handle",
+})
 
 
 def _tail_matches(tail: str, exact: set[str], suffix: tuple[str, ...]) -> bool:
@@ -221,7 +302,10 @@ def _tail_name(node: ast.expr) -> str:
     return ""
 
 
-def _describe_blocking_call(call: ast.Call) -> str | None:
+def _describe_blocking_call(
+    call: ast.Call,
+    atomic_aliases: tuple[dict[str, str], set[str]] | None = None,
+) -> str | None:
     """If the call matches a known blocking stdlib operation, return a
     short human-readable description; otherwise ``None``.
 
@@ -232,6 +316,14 @@ def _describe_blocking_call(call: ast.Call) -> str | None:
     if isinstance(func, ast.Attribute):
         receiver_tail = _tail_name(func.value)
         attr = func.attr
+        if atomic_aliases is not None:
+            _direct_aliases, module_aliases = atomic_aliases
+            if (
+                isinstance(func.value, ast.Name)
+                and func.value.id in module_aliases
+                and attr in _ATOMIC_WRITE_LABELS
+            ):
+                return _ATOMIC_WRITE_LABELS[attr]
         label = RISKY_ATTR_PAIRS.get((receiver_tail, attr))
         if label is not None:
             return label
@@ -252,6 +344,11 @@ def _describe_blocking_call(call: ast.Call) -> str | None:
             return f"blocking socket.{attr}()"
         return None
     if isinstance(func, ast.Name):
+        if atomic_aliases is not None:
+            direct_aliases, _module_aliases = atomic_aliases
+            label = direct_aliases.get(func.id)
+            if label is not None:
+                return label
         return RISKY_BARE_CALLS.get(func.id)
     return None
 
@@ -271,17 +368,32 @@ class RiskySyncDefIndexer(ast.NodeVisitor):
         # Filled by module-level driver.
         self.risky: dict[str, tuple[str, int, str]] = {}
 
-    def index_module(self, tree: ast.Module, path: Path) -> None:
+    def index_module(
+        self,
+        tree: ast.Module,
+        path: Path,
+        atomic_aliases: tuple[dict[str, str], set[str]] | None = None,
+    ) -> None:
+        if atomic_aliases is None:
+            atomic_aliases = _collect_atomic_write_aliases(tree)
         for node in tree.body:
             if isinstance(node, ast.FunctionDef):
-                self._consider_def(node, path)
+                self._consider_def(node, path, atomic_aliases)
             elif isinstance(node, ast.ClassDef):
                 for item in node.body:
                     if isinstance(item, ast.FunctionDef):
-                        self._consider_def(item, path)
+                        self._consider_def(item, path, atomic_aliases)
 
-    def _consider_def(self, node: ast.FunctionDef, path: Path) -> None:
-        reason = _sync_body_has_blocking_call(node)
+    def _consider_def(
+        self,
+        node: ast.FunctionDef,
+        path: Path,
+        atomic_aliases: tuple[dict[str, str], set[str]],
+    ) -> None:
+        if node.name in GENERIC_HELPER_NAMES:
+            # 名字太泛，认不出人——见 GENERIC_HELPER_NAMES 的注释。
+            return
+        reason = _sync_body_has_blocking_call(node, atomic_aliases)
         if reason is None:
             return
         # First-wins: if two helpers share a name, keep the first so the
@@ -310,7 +422,10 @@ def _collect_async_def_names(tree: ast.Module) -> set[str]:
     return names
 
 
-def _sync_body_has_blocking_call(func: ast.FunctionDef) -> str | None:
+def _sync_body_has_blocking_call(
+    func: ast.FunctionDef,
+    atomic_aliases: tuple[dict[str, str], set[str]] | None = None,
+) -> str | None:
     """Scan ``func``'s body for a known-blocking call, descending into
     control-flow (if/for/with/try) but NOT into nested functions or
     lambdas — a nested function's code only runs when invoked, which by
@@ -323,7 +438,7 @@ def _sync_body_has_blocking_call(func: ast.FunctionDef) -> str | None:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
             continue  # prune nested scope
         if isinstance(node, ast.Call):
-            reason = _describe_blocking_call(node)
+            reason = _describe_blocking_call(node, atomic_aliases)
             if reason is not None:
                 return reason
         for child in ast.iter_child_nodes(node):
@@ -338,6 +453,7 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         source: str,
         risky_helpers: dict[str, tuple[str, int, str]] | None = None,
         ambiguous_async_names: set[str] | None = None,
+        atomic_aliases: tuple[dict[str, str], set[str]] | None = None,
     ) -> None:
         self.path = path
         self.source_lines = source.splitlines()
@@ -354,6 +470,7 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         # separate bug and the sync variant is the only one that
         # runs-and-blocks when called unawaited.
         self._ambiguous_async_names = ambiguous_async_names or set()
+        self._atomic_aliases = atomic_aliases or ({}, set())
         # ids of Call nodes that are the direct target of an ``await`` —
         # suppresses ONLY the queue/thread/socket tail-name heuristics in
         # ``_check_attribute_call``. Those heuristics guess at the
@@ -397,6 +514,12 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         col = getattr(node, "col_offset", 0) + 1
         if self._line_has_noqa(lineno):
             return
+        # 同一个调用点只报一次。直接规则和 depth-1 传递规则会在同一处双双命中
+        # （`atomic_write_json(...)` 既是已知阻塞调用，本身又是一个体内含
+        # atomic_write_text 的同步 def），报两条只是噪声——留下先命中的那条，
+        # 也就是更精确的直接规则。
+        if any(pos == (lineno, col) for pos in ((v[0], v[1]) for v in self.violations)):
+            return
         self.violations.append((lineno, col, message))
 
     def visit_Await(self, node: ast.Await) -> None:
@@ -433,7 +556,7 @@ class AsyncBlockingChecker(ast.NodeVisitor):
         anything blocking-enough to mark a sync helper as risky is also
         blocking when written inline.
         """
-        reason = _describe_blocking_call(call)
+        reason = _describe_blocking_call(call, self._atomic_aliases)
         if reason is None:
             return
         # Avoid duplicating with the existing queue/thread/socket flags —
@@ -581,12 +704,16 @@ def check_file(
     tree: ast.Module,
     risky_helpers: dict[str, tuple[str, int, str]] | None = None,
     ambiguous_async_names: set[str] | None = None,
+    atomic_aliases: tuple[dict[str, str], set[str]] | None = None,
 ) -> list[tuple[int, int, str]]:
+    if atomic_aliases is None:
+        atomic_aliases = _collect_atomic_write_aliases(tree)
     checker = AsyncBlockingChecker(
         path,
         source,
         risky_helpers=risky_helpers,
         ambiguous_async_names=ambiguous_async_names,
+        atomic_aliases=atomic_aliases,
     )
     checker.visit(tree)
     return checker.violations
@@ -618,7 +745,11 @@ def main(argv: list[str] | None = None) -> int:
         # Re-seed indexer.risky entries with the relative path for nicer
         # error messages, but preserve first-wins.
         local_indexer = RiskySyncDefIndexer()
-        local_indexer.index_module(tree, rel)
+        local_indexer.index_module(
+            tree,
+            rel,
+            atomic_aliases=_collect_atomic_write_aliases(tree),
+        )
         for name, info in local_indexer.risky.items():
             indexer.risky.setdefault(name, info)
         async_names |= _collect_async_def_names(tree)

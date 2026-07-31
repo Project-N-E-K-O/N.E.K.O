@@ -173,6 +173,10 @@ dev = [
     "pytest-asyncio>=1.3.0",
     "pytest-cov>=7.1.0",
     "pytest-playwright>=0.7.2",
+    # 打乱用例顺序，暴露隐藏的用例间顺序依赖。日常 CI 用 pytest.ini 里钉死的
+    # seed 跑（确定性），另有 .github/workflows/random-order-tests.yml 定时用
+    # 随机 seed 单独跑、单独报，不挡任何人的 PR。
+    "pytest-randomly>=4.1.0",
     "ruff>=0.15.4",
 ]
 # galgame_plugin native deps. NOT installed by default `uv sync` — keeps dev

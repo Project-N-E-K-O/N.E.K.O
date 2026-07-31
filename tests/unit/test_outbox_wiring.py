@@ -419,3 +419,91 @@ async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
     noop.assert_called_once()
     # 没有 pending 记录产生（写盘本来就失败了）
     assert not os.path.exists(ob._outbox_path("小天"))
+
+
+# ── startup ordering: reconcile must finish before the outbox is resumed ──
+
+
+def _startup_function_ast():
+    """AST of ensure_memory_server_runtime_initialized (the startup sequencer)."""
+    import ast
+    import pathlib
+
+    source = (pathlib.Path(__file__).resolve().parents[2]
+              / 'app' / 'memory_server' / 'runtime.py')
+    tree = ast.parse(source.read_text(encoding='utf-8'))
+    for node in ast.walk(tree):
+        if (isinstance(node, ast.AsyncFunctionDef)
+                and node.name == 'ensure_memory_server_runtime_initialized'):
+            return ast, node
+    raise AssertionError('未找到 ensure_memory_server_runtime_initialized，断言失效')
+
+
+def _calls_named(ast, node, name):
+    return [c for c in ast.walk(node)
+            if isinstance(c, ast.Call) and getattr(c.func, 'attr', None) == name]
+
+
+def _reconcile_gathers(ast, node):
+    """gather(...) calls whose arguments mention the per-character reconcile."""
+    out = []
+    for call in _calls_named(ast, node, 'gather'):
+        names = {n.id for n in ast.walk(call) if isinstance(n, ast.Name)}
+        if '_reconcile_one' in names:
+            out.append(call)
+    return out
+
+
+def test_startup_reconciles_before_it_resumes_the_outbox():
+    """Reconciliation must be complete before any outbox op is resumed.
+
+    Both write the same view files, but their read points are asymmetric: a
+    replay handler loads/mutates/saves inside the EventLog lock, while the
+    reflection and persona live writers load their whole snapshot outside it
+    and only then hand it to record_and_save. Any overlap leaves a window
+    where a resumed op saves a pre-replay snapshot over a just-completed
+    repair — and the sentinel is already past that event, so no later boot
+    replays it again. Resumed ops are fire-and-forget background tasks, so
+    the only thing separating them from the replay is this ordering.
+    """
+    ast, fn = _startup_function_ast()
+
+    replay_calls = _calls_named(ast, fn, '_replay_pending_outbox')
+    assert replay_calls, 'startup 里找不到 outbox 补跑调用，断言失效'
+    gathers = _reconcile_gathers(ast, fn)
+    assert gathers, 'startup 里找不到 per-character reconcile 的 gather，断言失效'
+
+    # reconcile 必须是 await 到底的：换成 create_task / spawn 就又重叠了
+    awaited = {id(a.value) for a in ast.walk(fn) if isinstance(a, ast.Await)}
+    assert all(id(g) in awaited for g in gathers), \
+        'reconcile 的 gather 没有被 await，补跑会和重放重叠'
+
+    replay_lines = {c.lineno for c in replay_calls}
+    gather_lines = {g.lineno for g in gathers}
+
+    def _covers(stmt, lines):
+        return any(getattr(n, 'lineno', None) in lines for n in ast.walk(stmt))
+
+    # 在语句序列层面比先后，而不是比行号：谁被包在 try/if 里都不影响判定
+    checked = 0
+    for node in ast.walk(fn):
+        for field in ('body', 'orelse', 'finalbody'):
+            block = getattr(node, field, None)
+            if not isinstance(block, list) or not block:
+                continue
+            if not all(isinstance(s, ast.stmt) for s in block):
+                continue
+            idx_replay = [i for i, s in enumerate(block) if _covers(s, replay_lines)]
+            idx_gather = [i for i, s in enumerate(block) if _covers(s, gather_lines)]
+            if not idx_replay or not idx_gather:
+                continue
+            if set(idx_replay) & set(idx_gather):
+                # 两者落在同一条语句里 = 这是个外层容器（async with / try），
+                # 它只说明"都在里面"，判不了先后，继续往内层找。
+                continue
+            checked += 1
+            assert max(idx_gather) < min(idx_replay), (
+                'outbox 补跑排在了 reconcile 前面：补跑的 op 是后台 task，'
+                '会和重放并发写同一批 view 文件，重放结果可能被静默整覆盖'
+            )
+    assert checked, 'reconcile 与 outbox 补跑不在同一层语句序列里，前后顺序无从判定'

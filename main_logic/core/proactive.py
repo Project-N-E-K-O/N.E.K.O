@@ -260,6 +260,14 @@ class ProactiveMixin:
             if self.state.is_proactive_preempted():
                 logger.info("[%s] prepare_proactive_delivery: preempted during auto-start", self.lanlan_name)
                 return False
+        # ``finish_proactive_delivery`` must stage the committed text before
+        # terminal signals and cannot insert an await there. Pay the first
+        # corpus read here, before the proactive turn is claimed or visible.
+        try:
+            from memory.anti_repeat import get_anti_repeat_corpus
+            await get_anti_repeat_corpus().apreload(self.lanlan_name)
+        except Exception as exc:  # pragma: no cover - best-effort cache
+            logger.debug("[AntiRepeat] proactive preload skipped: %s", exc)
         async with self.lock:
             # lock 内二次复查：USER_INPUT 在 self.lock 内 rotate sid，sticky preempt
             # flag 先于 sid mutation 翻起；此处若已被抢占则不写 current_speech_id。
@@ -483,26 +491,32 @@ class ProactiveMixin:
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
+
+            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步、无 await，
+            # 所以不是取消点），落盘在之后。用户可能对着主动搭话立刻回一句，那一轮
+            # 打分必须已经看得到刚投递的这段；而落盘那个 await 一旦被取消就会跳过
+            # TTS 收尾和两处 turn end。两个要求方向相反，只有拆开才能同时满足。
+            #
+            # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+            # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+            # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+            # BM25 评分豁免对偶）。
+            staged_anti_repeat = None
+            if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    staged_anti_repeat = get_anti_repeat_corpus().stage_output(
+                        self.lanlan_name,
+                        full_text,
+                        is_proactive=True,
+                        now=publication_times[0] if publication_times else None,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] stage proactive skipped: %s", _exc)
                 # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
                 # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
                 # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
                 # BM25 评分豁免对偶）。
-                if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
-                    try:
-                        from memory.anti_repeat import get_anti_repeat_corpus
-                        get_anti_repeat_corpus().record_output(
-                            self.lanlan_name,
-                            full_text,
-                            is_proactive=True,
-                            now=(
-                                publication_times[0]
-                                if publication_times
-                                else None
-                            ),
-                        )
-                    except Exception as _exc:  # pragma: no cover
-                        logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
-
             if self.use_tts and self.tts_thread and self.tts_thread.is_alive() and not self._tts_done_queued_for_turn:
                 try:
                     await self._request_tts_done_for_turn("finish_proactive_delivery")
@@ -519,6 +533,19 @@ class ProactiveMixin:
             except Exception:
                 # Turn-end push is best-effort; the client may have gone away.
                 pass
+
+            # 落盘排在所有收尾信号之后（内存更新已经在投递后立刻做了，见上），而且
+            # **摘下来不 await**：到这里这一轮对用户已经发生完了，但下面那句
+            # `return True` 才是调用方的记账凭据（break reminder / 小游戏邀请看它决定
+            # 要不要把这条来源标记成已消费）。在这里 await 就等于把一个取消点插在
+            # 「已投递」和「报告已投递」之间 —— CancelledError 是 BaseException，
+            # 下面的 except Exception 接不住，同一条提醒会被再发一次。
+            if staged_anti_repeat is not None:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    get_anti_repeat_corpus().flush_staged_detached(staged_anti_repeat)
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] flush proactive skipped: %s", _exc)
         # proactive 原文不写 logger（隐私）；本地 print 兜底
         logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")

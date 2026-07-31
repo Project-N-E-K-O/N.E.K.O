@@ -21,6 +21,7 @@ All configured paths come uniformly from config_manager
 Dependency hierarchy: utils layer -> config layer (one-way; no dependency on the main layer)
 """
 
+import asyncio
 import os
 import pathlib
 from typing import Optional, List, Dict, Any
@@ -33,12 +34,23 @@ logger = get_module_logger(__name__)
 # 从config_manager导入workshop配置相关功能
 from utils.config_manager import (
     load_workshop_config,
+    save_workshop_config,
     save_workshop_path,
     persist_user_workshop_folder,
     get_workshop_path
 )
 
-def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
+
+async def get_workshop_path_async() -> str:
+    """Resolve the configured workshop root without blocking the event loop."""
+    return await asyncio.to_thread(get_workshop_path)
+
+
+def ensure_workshop_folder_exists(
+    folder_path: Optional[str] = None,
+    *,
+    auto_create: Optional[bool] = None,
+) -> bool:
     """
     Ensure the local mod folder (formerly the Workshop folder) exists, creating it if missing
     
@@ -48,8 +60,10 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     Returns:
         bool: whether the folder exists or was created successfully
     """
-    # 确定目标文件夹路径
-    config = load_workshop_config()
+    # auto_create 由调用方给定时**不重读配置**：读改写事务里，重读会看到并发事务刚写
+    # 的那份，从而对着别人的策略做决定（Codex P2）；而且把这次重读留在事务的锁里会
+    # 让事件循环上的 get_workshop_path() 跟着一起等（同一个锁传导陷阱）。
+    config = {} if auto_create is not None else load_workshop_config()
     # 使用get_workshop_path()函数获取路径，该函数已更新为优先使用user_mod_folder
     raw_folder = folder_path or get_workshop_path()
     
@@ -66,12 +80,16 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     
     logger.info(f'ensure_workshop_folder_exists - 最终处理的目标文件夹: {target_folder}')
     
-    # 如果文件夹存在，直接返回True
-    if os.path.exists(target_folder):
+    # isdir 而不是 exists：路径指向一个**普通文件**时 exists 也为真，于是这里报
+    # 「目录已就绪」，配置把那个文件存成了工坊根目录，后面凡是往它上面拼
+    # WorkshopExport 的调用全部失败。指着文件就当没就绪 —— 下面 makedirs 会抛
+    # FileExistsError，被 except 收成 False，正是想要的结论。
+    if os.path.isdir(target_folder):
         return True
     
     # 如果文件夹不存在，检查是否允许自动创建
-    auto_create = config.get("auto_create_folder", True)
+    if auto_create is None:
+        auto_create = config.get("auto_create_folder", True)
     
     # 如果不允许自动创建，明确返回False
     if not auto_create:
@@ -167,6 +185,13 @@ def get_workshop_root(subscribed_items: Optional[List[Dict[str, Any]]] = None) -
     # 确保路径存在
     ensure_workshop_folder_exists(workshop_path)
     return workshop_path
+
+
+async def get_workshop_root_async(
+    subscribed_items: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """Resolve and persist the workshop root without blocking the event loop."""
+    return await asyncio.to_thread(get_workshop_root, subscribed_items)
 
 
 def get_default_workshop_folder() -> Optional[str]:

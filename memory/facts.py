@@ -42,6 +42,8 @@ from config import (
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     EXTERNAL_IMPORT_DAILY_MAX_FILES,
     MEMORY_SCHEMA_VERSION_CURRENT,
+    SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS,
+    SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
     SCOPED_BATCH_SEGMENT_NONCE_BYTES,
 )
 from memory.temporal import (
@@ -51,6 +53,7 @@ from memory.temporal import (
 from config.prompts.prompts_memory import (
     get_fact_extraction_batch_prompt,
     get_fact_extraction_prompt,
+    get_scoped_batch_middle_omission_marker,
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
@@ -866,6 +869,257 @@ class FactStore:
         logger.info(f"[FactStore] {name}: 归档 {len(to_archive)} 条已吸收的旧 facts，剩余 {len(facts)} 条")
         return len(to_archive)
 
+    # ── scoped subject archival (time-driven, 群记忆系列 5/7) ────────
+
+    def _archive_subject_facts(
+        self, name: str, subject: MemorySubject, archived_at_iso: str,
+        stale_cutoff: datetime,
+    ) -> int | None:
+        """Move the stale facts of one scoped subject into facts_archive.json.
+
+        Returns the number of rows stamped, or ``None`` when the pass ABORTED
+        because a fresh write revealed the subject just revived — the caller
+        must treat None as "subject is active again" and skip the subject's
+        remaining stores, not as an ordinary zero-count result.
+
+        Also stamps ``subject_archived_at`` onto the subject's rows that the
+        absorbed-shrink path had ALREADY moved into facts_archive.json: those
+        rows stay recallable by design for live subjects, so without the
+        in-place stamp an archived subject would remain searchable through
+        its absorbed history forever.
+
+        Time-driven counterpart of `_archive_absorbed` (score/absorbed-driven).
+        Every moved row is stamped with ``subject_archived_at`` — the marker
+
+          * excludes the row from both recall paths' archive pool
+            (`hybrid_recall._aload_archive_facts` filters on it), unlike
+            absorbed-archived rows which stay recallable by design;
+          * excludes the row from the FTS near-dup guard in
+            `_apersist_new_facts_locked`, so a revived subject re-stating an
+            archived fact lands a NEW active fact instead of being silently
+            deduped into invisibility;
+          * is what `_restore_subject_facts` strips when moving rows back.
+
+        ``stale_cutoff`` re-validates the sweep's staleness snapshot UNDER
+        the write lock: a fact written (or explicitly restored — the
+        ``restored_at`` stamp counts like the ledger does) between the
+        sweep's judgement and this call has a timestamp ``>= cutoff`` — the
+        subject just revived, so the whole archival aborts (returning
+        ``None``) rather than sweeping the subject's first fresh memory out
+        of recall. Rows with unparseable timestamps never archive (unknown
+        age must not mean "old"), but also never veto the pass — one
+        corrupt row must not immortalize the subject. A corrupt archive
+        file likewise aborts with ``None``: proceeding would leave the
+        subject permanently split (facts active, higher stores archived).
+
+        Same two-file commit discipline as `_archive_absorbed`: archive first,
+        facts.json second — an interruption leaves the row in BOTH files
+        (readers converge by id, next run is idempotent), never in neither.
+        """
+        self.load_facts(name)  # ensure cache before taking the lock (non-reentrant)
+        with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="archive",
+                target=f"memory/{name}/facts.json",
+            )
+            facts = self._facts.get(name, [])
+            matching = [
+                f for f in facts
+                if isinstance(f, dict) and entry_matches_subject(f, subject)
+            ]
+            to_archive: list[dict] = []
+            for f in matching:
+                # 复活检查同时看 created_at 与 restored_at：判定窗口内的
+                # 显式 restore 给行盖的是 restored_at（created_at 仍是旧
+                # 值），只看 created_at 会把刚恢复的行立刻再归档。
+                latest: datetime | None = None
+                for field in ('created_at', 'restored_at'):
+                    try:
+                        parsed = datetime.fromisoformat(f.get(field) or '')
+                    except (ValueError, TypeError):
+                        continue
+                    if parsed.tzinfo is not None:
+                        parsed = parsed.astimezone().replace(tzinfo=None)
+                    if latest is None or parsed > latest:
+                        latest = parsed
+                if latest is None:
+                    continue  # 未知年龄的行留在活跃池（对齐 _archive_absorbed）
+                if latest >= stale_cutoff:
+                    # 判定后落进来的新写入/恢复：subject 已复活，本轮整体
+                    # 中止。新写入只会落在活跃池，归档池里的行都早于判定
+                    # 快照，所以复活检查只需要看活跃行。
+                    logger.info(
+                        f"[FactStore] {name}: subject "
+                        f"[scoped {subject.kind}/{subject.subject_id}] 在归档窗口"
+                        f"内有新写入，中止本轮 subject 归档"
+                    )
+                    return None
+                to_archive.append(f)
+            archive_path = self._facts_archive_path(name)
+            existing_archive: list[dict] = []
+            if os.path.exists(archive_path):
+                try:
+                    with open(archive_path, encoding='utf-8') as fh:
+                        data = json.load(fh)
+                    if not isinstance(data, list):
+                        logger.warning(
+                            f"[FactStore] {name}: 归档文件顶层不是列表，"
+                            "中止本轮 subject 归档"
+                        )
+                        return None
+                    existing_archive = data
+                except (json.JSONDecodeError, OSError) as e:
+                    # 归档文件损坏时按中止（None）而非普通零结果返回：让
+                    # caller 跳过 reflection/persona——否则每轮都在同一处
+                    # 失败，subject 永久劈叉成「facts 活跃、高层已归档」。
+                    logger.warning(
+                        f"[FactStore] {name}: 读取归档文件失败，中止本轮 subject 归档: {e}"
+                    )
+                    return None
+            # absorbed 收缩早已搬进归档文件的同 subject 行：就地补
+            # subject_archived_at 标记，让它们与活跃行一起退出召回。
+            stamped_in_archive = 0
+            for f in existing_archive:
+                if (
+                    isinstance(f, dict)
+                    and not f.get('subject_archived_at')
+                    and entry_matches_subject(f, subject)
+                ):
+                    f['subject_archived_at'] = archived_at_iso
+                    stamped_in_archive += 1
+            if not to_archive and not stamped_in_archive:
+                return 0
+            stamped = []
+            for f in to_archive:
+                copy = dict(f)
+                copy['subject_archived_at'] = archived_at_iso
+                stamped.append(copy)
+            existing_archive = _merge_archive_entries(existing_archive, stamped)
+            atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
+            if to_archive:
+                active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
+                atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+                # 缓存按身份原地剔除（并发 append 的行保留在缓存里，下次 save 落盘）。
+                archived_identities = {id(f) for f in to_archive}
+                facts[:] = [f for f in facts if id(f) not in archived_identities]
+            # 隐私口径：只打域标识与条数，不打原文。
+            logger.info(
+                f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
+                f"/{subject.subject_id}] 活跃 {len(to_archive)} 条 + 归档池补标记 "
+                f"{stamped_in_archive} 条"
+            )
+            return len(to_archive) + stamped_in_archive
+
+    async def aarchive_subject_facts(
+        self, name: str, subject: MemorySubject, archived_at_iso: str,
+        stale_cutoff: datetime,
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._archive_subject_facts, name, subject, archived_at_iso,
+            stale_cutoff,
+        )
+
+    def _restore_subject_facts(
+        self, name: str, subject: MemorySubject,
+        restored_at_iso: str | None = None,
+    ) -> int:
+        """Move a subject's ``subject_archived_at`` rows back into facts.json.
+
+        Inverse of `_archive_subject_facts`; absorbed-archived rows (no
+        marker) are untouched. Write order is the mirror image — facts.json
+        (with the restored rows) first, archive (without them) second — so an
+        interruption again leaves rows in BOTH files, and every reader's
+        by-id convergence keeps the active copy.
+
+        Every restored row is stamped with ``restored_at``: the staleness
+        ledger counts it as a write (see ``subject_archive._TIMESTAMP_FIELDS``),
+        so an explicit restore resets the subject's archival clock instead of
+        being undone by the very next sweep.
+
+        Returns the number of rows moved back, or ``None`` when the archive
+        file is corrupt — mirroring the archival side's abort semantics, so
+        the orchestrator skips the higher stores instead of leaving the
+        subject split (facts still archived, reflections/persona active).
+        A missing archive file is an ordinary no-op 0.
+        """
+        if restored_at_iso is None:
+            restored_at_iso = datetime.now().isoformat()
+        self.load_facts(name)
+        with self._get_lock(name):
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{name}/facts.json",
+            )
+            archive_path = self._facts_archive_path(name)
+            if not os.path.exists(archive_path):
+                return 0
+            try:
+                with open(archive_path, encoding='utf-8') as fh:
+                    archived = json.load(fh)
+            except (json.JSONDecodeError, OSError) as e:
+                logger.warning(
+                    f"[FactStore] {name}: 读取归档文件失败，中止 subject 恢复: {e}"
+                )
+                return None
+            if not isinstance(archived, list):
+                logger.warning(
+                    f"[FactStore] {name}: 归档文件顶层非 list，中止 subject 恢复"
+                )
+                return None
+
+            def _is_subject_archived_row(f) -> bool:
+                return (
+                    isinstance(f, dict)
+                    and f.get('subject_archived_at')
+                    and entry_matches_subject(f, subject)
+                )
+
+            to_restore = [f for f in archived if _is_subject_archived_row(f)]
+            if not to_restore:
+                return 0
+            facts = self._facts.get(name, [])
+            active_ids = {
+                fid for fid in (
+                    _readable_fact_id(f) for f in facts if isinstance(f, dict)
+                ) if fid is not None
+            }
+            restored: list[dict] = []
+            for f in to_restore:
+                fid = _readable_fact_id(f)
+                if fid is not None and fid in active_ids:
+                    # 上次恢复被打断留下的「两边都有」：active 赢，归档副本
+                    # 直接收敛掉即可。
+                    continue
+                copy = dict(f)
+                copy.pop('subject_archived_at', None)
+                copy['restored_at'] = restored_at_iso
+                restored.append(copy)
+            remaining_archive = [
+                f for f in archived if not _is_subject_archived_row(f)
+            ]
+            atomic_write_json(
+                self._facts_path(name), facts + restored, indent=2, ensure_ascii=False,
+            )
+            atomic_write_json(
+                archive_path, remaining_archive, indent=2, ensure_ascii=False,
+            )
+            facts.extend(restored)
+            logger.info(
+                f"[FactStore] {name}: subject 恢复 [scoped {subject.kind}"
+                f"/{subject.subject_id}] {len(restored)} 条 facts 回活跃池"
+            )
+            return len(restored)
+
+    async def arestore_subject_facts(
+        self, name: str, subject: MemorySubject,
+        restored_at_iso: str | None = None,
+    ) -> int | None:
+        return await asyncio.to_thread(
+            self._restore_subject_facts, name, subject, restored_at_iso,
+        )
+
     # ── extraction ───────────────────────────────────────────────────
 
     @staticmethod
@@ -917,7 +1171,180 @@ class FactStore:
         return ' '.join(text.split())[:64].strip()
 
     @classmethod
-    def _format_speaker_segments(cls, segments: list[dict], *, nonce: str) -> str:
+    def _cap_speaker_message_bodies(
+        cls,
+        segments: list[dict],
+        *,
+        omission_marker: str,
+    ) -> list[list[str]]:
+        """Apply per-message and whole-batch token budgets to prompt text.
+
+        Short messages are returned byte-for-byte unchanged. Long messages
+        keep both ends, and an over-budget batch shares its remaining content
+        budget fairly so late segments cannot be starved by earlier ones.
+        """
+        from utils.tokenize import count_tokens, truncate_head_tail_tokens
+
+        omission_tokens = count_tokens(omission_marker)
+
+        raw_by_segment: list[list[str]] = []
+        flat_raw: list[str] = []
+        flat_separator_costs: list[int] = []
+        for segment in segments:
+            segment_bodies = []
+            for message_index, msg in enumerate(segment.get('messages') or []):
+                body = cls._SEGMENT_MARKER_LITERAL.sub(
+                    '［SEGMENT',
+                    cls._flatten_message_content(getattr(msg, 'content', '')),
+                )
+                segment_bodies.append(body)
+                flat_raw.append(body)
+                flat_separator_costs.append(
+                    count_tokens("\n") if message_index else 0
+                )
+            raw_by_segment.append(segment_bodies)
+
+        def _rendered_cost(body: str) -> int:
+            body_lines = body.splitlines() or ['']
+            rendered_lines = [f"> {body_lines[0]}"]
+            rendered_lines.extend(f"| {line}" for line in body_lines[1:])
+            return count_tokens("\n".join(rendered_lines))
+
+        def _clip(body: str, budget: int) -> str:
+            if budget <= 0:
+                return ''
+
+            # Tokenizers can be pathologically slow on a single enormous run
+            # (for example hundreds of thousands of repeated ASCII chars).
+            # This is a CPU guard, not the prompt contract: the final output is
+            # still governed by token budgets below and keeps both ends plus a
+            # visible marker. The generous factor avoids touching ordinary
+            # prose while bounding what any tokenizer invocation receives.
+            working_char_limit = (
+                SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS * 16
+            )
+            if len(body) > working_char_limit:
+                guard_head = working_char_limit // 2
+                guard_tail = working_char_limit - guard_head
+                guarded = (
+                    f"{body[:guard_head]}{omission_marker}{body[-guard_tail:]}"
+                )
+                if _rendered_cost(guarded) <= budget:
+                    return guarded
+                body = f"{body[:guard_head]}{body[-guard_tail:]}"
+            elif _rendered_cost(body) <= budget:
+                return body
+
+            # Bound the working set once before binary search. Otherwise each
+            # probe would re-encode the complete untrusted body. An empty
+            # separator deliberately joins the retained ends only internally;
+            # the final probe below inserts the visible localized marker.
+            working_budget = min(
+                SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
+                budget,
+            )
+            working_head = working_budget // 2
+            working_body = truncate_head_tail_tokens(
+                body,
+                working_head,
+                working_budget - working_head,
+                separator='',
+            )
+            working_was_truncated = working_body != body
+
+            # The budget covers the generated per-line ``| `` prefix too.
+            # Binary-search the largest content allocation whose fully
+            # rendered form fits; this closes the newline-dense amplification
+            # path without discarding either retained end.
+            low = 0
+            high = min(SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS, budget)
+            if working_was_truncated:
+                # Force the final pass to insert the visible marker instead
+                # of accepting the internal marker-less working set as-is.
+                high = min(high, max(0, count_tokens(working_body) - 1))
+            best = ''
+            while low <= high:
+                content_budget = (low + high) // 2
+                retained_budget = max(0, content_budget - omission_tokens)
+                head = retained_budget // 2
+                candidate = truncate_head_tail_tokens(
+                    working_body,
+                    head + omission_tokens,
+                    retained_budget - head,
+                    separator=omission_marker,
+                )
+                if _rendered_cost(candidate) <= budget:
+                    best = candidate
+                    low = content_budget + 1
+                else:
+                    high = content_budget - 1
+            return best
+
+        individually_capped = [
+            _clip(body, SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS)
+            for body in flat_raw
+        ]
+        if (
+            sum(
+                _rendered_cost(body) + separator_cost
+                for body, separator_cost in zip(
+                    individually_capped,
+                    flat_separator_costs,
+                )
+            )
+            <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
+        ):
+            final_flat = individually_capped
+        else:
+            costs = [
+                _rendered_cost(body) + separator_cost
+                for body, separator_cost in zip(
+                    individually_capped,
+                    flat_separator_costs,
+                )
+            ]
+            allocations = [0] * len(costs)
+            remaining_budget = SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
+            active = list(range(len(costs)))
+            while active:
+                fair_share = remaining_budget // len(active)
+                satisfied = [index for index in active if costs[index] <= fair_share]
+                if satisfied:
+                    for index in satisfied:
+                        allocations[index] = costs[index]
+                        remaining_budget -= costs[index]
+                    satisfied_set = set(satisfied)
+                    active = [index for index in active if index not in satisfied_set]
+                    continue
+
+                bonus_count = remaining_budget % len(active)
+                for position, index in enumerate(active):
+                    allocations[index] = fair_share + (position < bonus_count)
+                break
+
+            final_flat = [
+                _clip(body, max(0, budget - separator_cost))
+                for body, budget, separator_cost in zip(
+                    flat_raw,
+                    allocations,
+                    flat_separator_costs,
+                )
+            ]
+
+        final_iter = iter(final_flat)
+        return [
+            [next(final_iter) for _ in segment_bodies]
+            for segment_bodies in raw_by_segment
+        ]
+
+    @classmethod
+    def _format_speaker_segments(
+        cls,
+        segments: list[dict],
+        *,
+        nonce: str,
+        lang: str = "en",
+    ) -> str:
         """Render multi-speaker segments for the batch extraction prompt.
 
         段首标记 ``[SEGMENT n:nonce | speaker: label]`` 是 locale 无关的固定
@@ -932,12 +1359,14 @@ class FactStore:
            "| ［SEGMENT 2 | ...]"，明确落在自己那段里。按 ``splitlines()``
            切，覆盖 \\r / \\x85 / U+2028 这些同样会被渲染成换行的分隔符。
 
-           续行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
+           正文每行用的是**短标记**而不是重复整条 label：label 可以到 64 字符，
            而消息里的换行数不受任何上游限制（路由只数消息条数、群名片也
            没有长度校验），逐行重复 label 等于给攻击者一个 ~67 倍的放大器
            ——一条几千行的消息就能把 prompt 撑爆或耗光抽取超时，而失败的
-           批是保留重试的，同批其他成员会被一起拖住（Codex）。短标记把
-           放大压到每行 2 字节，防伪性质不变：行首不是段首形状就够了。
+           批是保留重试的，同批其他成员会被一起拖住（Codex）。发言人已在
+           段首唯一标明；消息首行用 ``> ``、续行用 ``| ``，既保留消息边界，
+           又把固定开销压到每行 2 字节。这些生成前缀也计入 batch token
+           预算，避免换行密集正文再次放大。
         2. **段首带一次性 nonce**——攻击者的消息在 nonce 生成之前就写死了，
            猜不到本次请求的 token，伪造头与真段首形状对不上。
         3. **label 与正文里的结构字面量中和**——label 剥方括号/竖线/换行，
@@ -945,18 +1374,21 @@ class FactStore:
 
         nonce 只用于渲染侧的边界防伪，**不要求模型原样回吐**（归属输出仍是
         段号整数）——让模型复述 token 只会凭空增加它出错的面。"""  # noqa: DOCSTRING_CJK
+        omission_marker = get_scoped_batch_middle_omission_marker(lang)
+        capped_bodies = cls._cap_speaker_message_bodies(
+            segments,
+            omission_marker=omission_marker,
+        )
         blocks = []
-        for index, segment in enumerate(segments, start=1):
+        for index, (segment, message_bodies) in enumerate(
+            zip(segments, capped_bodies),
+            start=1,
+        ):
             label = cls.sanitize_speaker_label(segment.get('speaker_label'))
             lines = [f"[SEGMENT {index}:{nonce} | speaker: {label}]"]
-            for msg in segment.get('messages') or []:
-                body = cls._SEGMENT_MARKER_LITERAL.sub(
-                    '［SEGMENT',
-                    cls._flatten_message_content(getattr(msg, 'content', '')),
-                )
+            for body in message_bodies:
                 body_lines = body.splitlines() or ['']
-                lines.append(f"{label} | {body_lines[0]}")
-                # 续行只冠短标记：同一条消息的后续行，发言人显然没变。
+                lines.append(f"> {body_lines[0]}")
                 lines.extend(f"| {line}" for line in body_lines[1:])
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
@@ -1133,14 +1565,18 @@ class FactStore:
         二次替换（后者尤其重要——那等于让攻击者把 nonce 印进自己的正文）。"""  # noqa: DOCSTRING_CJK
         # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
+        lang = get_global_language_full()
+        rendered_segments = await asyncio.to_thread(
+            self._format_speaker_segments,
+            segments,
+            nonce=nonce,
+            lang=lang,
+        )
         prompt = (
-            get_fact_extraction_batch_prompt(get_global_language_full())
+            get_fact_extraction_batch_prompt(lang)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{SEGMENT_NONCE}', nonce)
-            .replace(
-                '{SEGMENTS}',
-                self._format_speaker_segments(segments, nonce=nonce),
-            )
+            .replace('{SEGMENTS}', rendered_segments)
         )
         extracted = await self._allm_call_with_retries(
             prompt, lanlan_name,
@@ -1459,19 +1895,6 @@ class FactStore:
         """  # noqa: DOCSTRING_CJK
         if not segments:
             return []
-        if len(segments) == 1:
-            # 单段无归属风险：走成熟的单发抽取管线（prompt 更完整、
-            # malformed 判定也更严）。
-            segment = segments[0]
-            created = await self.extract_facts(
-                segment.get('messages') or [],
-                lanlan_name,
-                subject=segment.get('subject'),
-                fail_closed=True,
-                speaker_label=segment.get('speaker_label'),
-                speaker_provenance=self._speaker_provenance_of(segment),
-            )
-            return [{'status': 'ok', 'created': created, 'dropped': 0}]
 
         segment_generations = [
             (
@@ -1874,7 +2297,16 @@ class FactStore:
                         hit = facts_by_id.get(fid)
                         if hit is None:
                             hit = (await _aarchived_by_id()).get(fid)
-                        if hit is None or not entry_matches_subject(hit, memory_subject):
+                        # subject 时间归档的行（subject_archived_at 标记）不算
+                        # 去重障碍：subject 复活时重述的旧事实必须能落新
+                        # active fact——归档行已退出召回与渲染，挡住重述等于
+                        # 让这条信息永久不可见。absorbed 归档行（无标记）仍
+                        # 照旧挡重复。
+                        if (
+                            hit is None
+                            or hit.get('subject_archived_at')
+                            or not entry_matches_subject(hit, memory_subject)
+                        ):
                             continue
                         same_subject_seen += 1
                         if same_subject_seen > 3:

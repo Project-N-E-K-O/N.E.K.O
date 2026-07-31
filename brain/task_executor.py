@@ -427,7 +427,18 @@ class DirectTaskExecutor:
         finally:
             self._short_desc_prewarm_inflight -= pids
             # 把本批生成的（贵的）条目落盘，下次启动直接复用、不再现生成。
-            self._persist_generated_short_descriptions(generated)
+            # 这里刻意保留同步落盘（不改 await asyncio.to_thread），两个原因：
+            # 1) _persist_generated_short_descriptions 内部是「读盘—合并—写盘」，
+            #    全程没有锁；今天靠「整段同步、不让出事件循环」才保证两批并发
+            #    prewarm 不互相覆盖（见该函数里 re-read 那行注释）。挪进线程后，
+            #    两批会各自在自己的 worker 线程里 load→merge→write 交错，先写的
+            #    那批条目会被后写的整份 payload 盖掉。
+            # 2) 这是 finally，而本协程绝大部分时间挂在 llm.ainvoke 上——事件循环
+            #    收尾时它正是会被 cancel 的 pending task。在取消路径的 finally 里
+            #    await，落盘可能被直接跳过，白白丢掉花了 LLM 调用生成的条目。
+            # 代价可控：每批 prewarm 只写一次小 JSON，发生在插件加载期，不在
+            # analyze 热路径上。
+            self._persist_generated_short_descriptions(generated)  # noqa: ASYNC_BLOCK — 无锁读-改-写 + 取消路径 finally，加 await 会引入互相覆盖/漏落盘
 
     async def plugin_list_provider(self, force_refresh: bool = True) -> List[Dict[str, Any]]:
         # return cached list when allowed

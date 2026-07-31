@@ -399,7 +399,17 @@ async def _aload_archive_facts(fact_store, lanlan_name: str) -> list[dict]:
         def _read() -> list[dict]:
             with open(path, encoding='utf-8') as f:
                 data = json.load(f)
-            return data if isinstance(data, list) else []
+            if not isinstance(data, list):
+                return []
+            # subject 时间归档（subject_archived_at 标记）的行不进召回：
+            # absorbed 归档行留在池里是设计（BM25 长尾），但 subject 归档
+            # 的语义就是「这个群/成员的记忆整体退出候选」——这里是两条召
+            # 回路径（hybrid_recall / recall_by_time）唯一的 archive 池装
+            # 配点，单点过滤即可覆盖。恢复路径会剥掉标记，行自然回池。
+            return [
+                row for row in data
+                if not (isinstance(row, dict) and row.get('subject_archived_at'))
+            ]
         return await asyncio.to_thread(_read)
     except (json.JSONDecodeError, OSError) as exc:
         logger.warning(
