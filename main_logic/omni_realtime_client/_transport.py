@@ -1336,11 +1336,24 @@ class _TransportMixin:
             # Leaving this turn's per-turn flags for the successor's own
             # terminal to clear is the lesser harm, and the successor's
             # `response.created` overwrites the identity fields regardless.
+            # One thing does still have to happen: give up the identity. The
+            # stale-event filter keys on `_current_response_id`, so leaving it
+            # naming the abandoned response makes that response's LATER
+            # id-bearing events match and pass — a delayed
+            # `function_call_arguments.done` would execute its tool, and its
+            # `response.done` would run a full finalization against the user's
+            # new turn. Clearing it is what quarantines them, and it is the one
+            # piece of `_clear_turn_response_state` that belongs to the dead
+            # turn rather than the live one: `_is_responding`, `_interrupted`
+            # and the per-turn flags are the successor's now.
             logger.info(
-                "a turn already started before this release ran (%s); leaving "
-                "the host alone",
+                "a turn already started before this release ran (%s); "
+                "quarantining %s and leaving the rest of the host alone",
                 reason,
+                self._current_response_id,
             )
+            self._current_response_id = None
+            self._current_item_id = None
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
         # Captured before the reset, which is what clears the buffer: a stalled

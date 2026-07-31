@@ -2276,6 +2276,17 @@ async def test_a_barge_in_before_the_release_is_not_adopted_as_its_own_turn():
         "resets the shared focus scorer and emotion state, which would land "
         "on the live turn"
     )
+    # But the identity IS given up: the stale-event filter keys on it, so
+    # leaving it would let the abandoned response's later id-bearing events
+    # through — including a delayed function_call_arguments.done, which
+    # executes a tool.
+    assert client._current_response_id is None, (
+        "the dead turn's identity is the one piece of the cleanup that does "
+        "not belong to the successor"
+    )
+    assert client._is_responding is True, (
+        "while everything that IS the successor's stays untouched"
+    )
 
 
 @pytest.mark.unit
@@ -2434,3 +2445,50 @@ async def test_an_undisturbed_repetition_still_triggers_its_recovery():
     await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
 
     assert recoveries == ["recovered"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_quarantined_response_cannot_run_its_tool_afterwards():
+    # The consequence the identity clearing exists for, driven through the
+    # real receive loop: after a barge-in release quarantines resp-1, that
+    # response's own later id-bearing events must not be acted on. A delayed
+    # function_call_arguments.done would otherwise execute its tool under the
+    # user's new turn.
+    import json
+    from unittest.mock import AsyncMock
+
+    tool_calls: list[str] = []
+
+    async def _on_tool_call(name, arguments, call_id=None):
+        tool_calls.append(name)
+        return {"ok": True}
+
+    client = _free_client(on_tool_call=_on_tool_call)
+    _begin_response(client, "resp-1")
+    client._turn_epoch += 1  # the user barges in
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+    assert client._current_response_id is None
+
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps(
+            {
+                "type": "response.function_call_arguments.done",
+                "response_id": "resp-1",
+                "call_id": "call-1",
+                "name": "some_tool",
+                "arguments": "{}",
+            }
+        ),
+    ]
+    try:
+        await client.handle_messages()
+    finally:
+        await client._response_arbiter.shutdown("test teardown")
+
+    assert tool_calls == [], (
+        "an abandoned response's tool call must not run under the turn that "
+        "replaced it"
+    )
