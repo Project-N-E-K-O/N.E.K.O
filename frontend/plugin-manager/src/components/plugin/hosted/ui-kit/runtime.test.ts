@@ -111,6 +111,36 @@ describe('hosted ui runtime', () => {
     })
   })
 
+  it('preserves explicit user attribution after an async handler awaits', async () => {
+    let requestMessage: any
+    Object.defineProperty(window, 'parent', {
+      value: {
+        postMessage(message: any) {
+          requestMessage = message
+          window.dispatchEvent(new MessageEvent('message', {
+            data: { type: 'neko-hosted-surface-response', requestId: message.requestId, ok: true, result: {} },
+          }))
+        },
+      },
+      configurable: true,
+    })
+    ui.render(ui.h('button', {
+      onClick: async () => {
+        await Promise.resolve()
+        void ui.api.call('save', {}, { userInitiated: true })
+      },
+    }), root)
+    const event = new Event('click', { bubbles: true })
+    Object.defineProperty(event, 'isTrusted', { value: true })
+    fireEvent(root.querySelector('button')!, event)
+    await flushMicrotasks()
+
+    expect(requestMessage).toMatchObject({
+      method: 'call',
+      userInitiated: true,
+    })
+  })
+
   it('runs hooks inside function components', async () => {
     function Counter() {
       const [count, setCount] = ui.useState(0)

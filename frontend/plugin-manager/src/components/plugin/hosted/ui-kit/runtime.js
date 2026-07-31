@@ -1949,7 +1949,7 @@ function requestHost(method, payload, options) {
   const timeoutMs = Number.isFinite(requestedTimeoutMs) && requestedTimeoutMs > 0 ? requestedTimeoutMs : 30000;
   return new Promise((resolve, reject) => {
     __pendingRequests.set(requestId, { resolve, reject });
-    const userInitiated = method === 'call' && __hostedUserActionDepth > 0;
+    const userInitiated = method === 'call' && options && options.userInitiated === true;
     parent.postMessage({ type: 'neko-hosted-surface-request', requestId, method, payload, timeoutMs, userInitiated }, hostedTargetOrigin());
     window.setTimeout(() => {
       if (!__pendingRequests.has(requestId)) return;
@@ -1959,7 +1959,16 @@ function requestHost(method, payload, options) {
   });
 }
 const api = {
-  call(actionId, args, options) { return requestHost('call', { actionId, args: args || {} }, options || {}); },
+  // Async handlers lose the synchronous DOM event scope after an await. They
+  // can explicitly preserve the attribution for this one action with
+  // { userInitiated: true }, without making unrelated background calls noisy.
+  call(actionId, args, options) {
+    const requestOptions = options || {};
+    return requestHost('call', { actionId, args: args || {} }, {
+      ...requestOptions,
+      userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0,
+    });
+  },
   async refresh() {
     const context = await requestHost('refresh', {});
     return refreshHostedPayload(context);
@@ -1984,7 +1993,7 @@ function ActionButton(props) {
           return;
         }
         setLoading(true);
-        const result = await api.call(actionId, props.values || props.args || {});
+        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated: true });
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
