@@ -34,8 +34,9 @@ from config import (
 )
 from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
+from utils.language_utils import language_context
 
-from . import gates, review, runtime
+from . import gates, review, runtime, signal_extraction
 from ._shared import logger
 from .gates import (
     IDLE_CHECK_INTERVAL,
@@ -55,6 +56,13 @@ REBUTTAL_DRAIN_BATCH_LIMIT = 20
 # 读 SQL 时的硬上限——bound memory，防止 1h fallback 把整张表拉进来。
 # 200 行通常包含 50-100 条 user 消息，足以喂多次 drain。
 REBUTTAL_SQL_ROW_LIMIT = 200
+
+
+async def _run_with_character_language(name: str, operation):
+    """Run one async maintenance operation with the latest session locale."""
+    state = signal_extraction._signal_check_state.get(name, {})
+    with language_context(state.get("language")):
+        return await operation(name)
 
 
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
@@ -484,7 +492,10 @@ async def _periodic_idle_maintenance_loop():
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
                                 )
-                                resolved = await runtime.fact_dedup_resolver.aresolve(name)
+                                resolved = await _run_with_character_language(
+                                    name,
+                                    runtime.fact_dedup_resolver.aresolve,
+                                )
                                 if resolved:
                                     logger.info(
                                         f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
@@ -507,7 +518,10 @@ async def _periodic_idle_maintenance_loop():
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
                                 )
-                                resolved = await runtime.persona_manager.resolve_corrections(name)
+                                resolved = await _run_with_character_language(
+                                    name,
+                                    runtime.persona_manager.resolve_corrections,
+                                )
                                 if resolved:
                                     logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
                         except Exception as e:
@@ -923,4 +937,3 @@ async def _periodic_archive_sweep_loop():
             )
 
         await asyncio.sleep(EVIDENCE_ARCHIVE_SWEEP_INTERVAL_SECONDS)
-

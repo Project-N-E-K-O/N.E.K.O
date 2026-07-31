@@ -50,6 +50,21 @@ from ._shared import (
     logger,
 )
 
+
+def _detect_correction_prompt_language(pairs: list[tuple[int, dict]]) -> str:
+    """Detect the prompt locale from correction values, excluding UI labels."""
+    from utils.language_utils import detect_prompt_language, get_global_language_full
+
+    raw_text = "\n".join(
+        f"{item['old_text']}\n{item['new_text']}"
+        for _, item in pairs
+    )
+    return detect_prompt_language(
+        raw_text,
+        ui_language=get_global_language_full(),
+    )
+
+
 class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
@@ -254,12 +269,8 @@ class CorrectionsMixin:
                 f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
                 for i, item in pairs
             )
-            from utils.language_utils import detect_prompt_language, get_global_language_full
             prompt = get_persona_correction_prompt(
-                detect_prompt_language(
-                    batch_text,
-                    ui_language=get_global_language_full(),
-                )
+                _detect_correction_prompt_language(pairs)
             ).format(pairs=batch_text, count=len(pairs))
 
             # ── LLM (锁外) ──

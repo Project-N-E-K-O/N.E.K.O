@@ -134,7 +134,13 @@ def _build_icebreaker_memory_message(role: str, text: str) -> dict | None:
     }
 
 
-async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text: str) -> tuple[bool, str]:
+async def _cache_icebreaker_context_memory(
+    *,
+    lanlan_name: str,
+    role: str,
+    text: str,
+    language: str | None = None,
+) -> tuple[bool, str]:
     message = _build_icebreaker_memory_message(role, text)
     if message is None:
         return False, "invalid_memory_message"
@@ -146,6 +152,7 @@ async def _cache_icebreaker_context_memory(*, lanlan_name: str, role: str, text:
             lanlan_name,
             [message],
             timeout_s=ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+            language=language,
         )
         return bool(ok), str(err_detail or "")
     except Exception as exc:
@@ -417,6 +424,7 @@ async def icebreaker_context(request: Request):
         lanlan_name=lanlan_name,
         role=role,
         text=text,
+        language=getattr(mgr, "user_language", None),
     )
     if not memory_cached:
         logger.warning(

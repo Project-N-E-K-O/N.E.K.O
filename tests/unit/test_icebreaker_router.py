@@ -185,6 +185,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
             "role": "assistant",
             "text": "教程看完啦？",
             "session_id": "icebreaker-day1-test",
+            "i18n_language": "zh-TW",
         })
     )
 
@@ -208,6 +209,7 @@ async def test_icebreaker_context_endpoint_appends_session_history(monkeypatch):
         "lanlan_name": "Lan",
         "role": "assistant",
         "text": "教程看完啦？",
+        "language": "zh-TW",
     }]
     assert mgr.engagement_calls == 0
 
@@ -242,6 +244,7 @@ async def test_icebreaker_context_caches_user_choice_to_recent_memory(monkeypatc
         "lanlan_name": "Lan",
         "role": "user",
         "text": "可以，多陪一会儿",
+        "language": "zh-CN",
     }]
     assert mgr.engagement_calls == 1
 
@@ -407,6 +410,7 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
         "lanlan_name": "Lan",
         "role": "assistant",
         "text": "教程看完啦？",
+        "language": "zh-CN",
     }]
     assert warning_calls
     assert "icebreaker memory cache failed" in warning_calls[0][0]
@@ -468,12 +472,20 @@ async def test_icebreaker_context_falls_back_to_active_session_id(monkeypatch):
 async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monkeypatch):
     calls = []
 
-    async def fake_post_memory_server(endpoint, lanlan_name, payload, *, timeout_s):
+    async def fake_post_memory_server(
+        endpoint,
+        lanlan_name,
+        payload,
+        *,
+        timeout_s,
+        language,
+    ):
         calls.append({
             "endpoint": endpoint,
             "lanlan_name": lanlan_name,
             "payload": payload,
             "timeout_s": timeout_s,
+            "language": language,
         })
         return True, "", {"status": "cached", "count": 1}
 
@@ -485,6 +497,7 @@ async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monk
         lanlan_name="Lan",
         role="user",
         text="可以，多陪一会儿",
+        language="zh-TW",
     )
 
     assert ok is True
@@ -497,6 +510,7 @@ async def test_icebreaker_context_memory_cache_uses_existing_cache_endpoint(monk
             "content": [{"type": "text", "text": "可以，多陪一会儿"}],
         }],
         "timeout_s": icebreaker_router.ICEBREAKER_MEMORY_CACHE_TIMEOUT_SECONDS,
+        "language": "zh-TW",
     }]
 
 

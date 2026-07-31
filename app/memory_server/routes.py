@@ -187,7 +187,8 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
     # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
     persona_entities = list(persona_candidates_by_entity.items())
-    with language_context(_activate_request_language(request.language)):
+    memory_language = _activate_request_language(request.language)
+    with language_context(memory_language):
         fusion_outcomes = await asyncio.gather(
             *(
                 runtime.persona_manager.afuse_external_facts(
@@ -280,9 +281,10 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     daily_added = 0
     if daily_candidates:
         try:
-            daily_result = await runtime.fact_store.aimport_external_daily(
-                name, daily_candidates, request.source_format, imported_at,
-            )
+            with language_context(memory_language):
+                daily_result = await runtime.fact_store.aimport_external_daily(
+                    name, daily_candidates, request.source_format, imported_at,
+                )
         except ExternalMemoryImportTooLargeError as exc:
             # 确定性超限（真正要抽取的日记天数超 cap）：重试同一份必然再超 →
             # too_large 引导拆分。已导入天会被逐日指纹 skip，分次导入零重复成本。

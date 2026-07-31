@@ -302,3 +302,32 @@ def test_signal_loop_clears_stale_session_locale():
     signal_extraction._signal_check_record_turn("Neko")
 
     assert signal_extraction._signal_check_state["Neko"]["language"] is None
+
+
+@pytest.mark.asyncio
+async def test_idle_maintenance_uses_latest_session_locale():
+    from app.memory_server import evidence_loops, signal_extraction
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    async def operation(name):
+        observed.append((name, get_global_language_full()))
+        return 1
+
+    signal_extraction._signal_check_state.clear()
+    signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
+
+    result = await evidence_loops._run_with_character_language("Neko", operation)
+
+    assert result == 1
+    assert observed == [("Neko", "zh-TW")]
+
+
+def test_persona_correction_locale_ignores_formatter_labels():
+    from memory.persona.corrections import _detect_correction_prompt_language
+    from utils.language_utils import language_context
+
+    pairs = [(0, {"old_text": "A", "new_text": "B"})]
+    with language_context("en"):
+        assert _detect_correction_prompt_language(pairs) == "en"
