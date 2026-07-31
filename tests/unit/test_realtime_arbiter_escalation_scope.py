@@ -160,6 +160,63 @@ async def test_an_unnamed_escalation_still_acts(harness):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_an_escalation_whose_terminal_just_arrived_does_nothing(harness, caplog):
+    # The race a timeout cannot avoid: notify_response_terminal clears
+    # _response_owner synchronously, but the worker has not run its finally,
+    # so _current still names a request that is in fact finished. Identity
+    # alone would call that stuck.
+    ticket = await harness.arbiter.enqueue(source="turn-a")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-a"}}
+    )
+    observed = harness.arbiter._current
+    assert observed is not None
+
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-a"}}
+    )
+    # Deliberately no settle: the worker has not unwound, so _current still
+    # points at the finished request — exactly the window being tested.
+    assert harness.arbiter._current is observed
+    assert observed.terminal is not None and observed.terminal.done()
+
+    with caplog.at_level(logging.DEBUG, logger=ARBITER_LOGGER):
+        await harness.arbiter._escalate("racing escalation", observed=observed)
+
+    assert harness.aborted == [], (
+        "a request whose terminal just landed is finished, not stuck"
+    )
+    assert harness.arbiter._connection_available is True
+    assert any(
+        "its terminal arrived" in record.getMessage() for record in caplog.records
+    )
+    await asyncio.wait_for(ticket.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_escalation_after_its_own_cancel_still_acts(harness):
+    # The dual, and the reason the check excludes cancelled futures: the
+    # escalation paths cancel the terminal themselves immediately before
+    # calling in. Treating that as an arrival would suppress every real
+    # escalation — which is what a first attempt at this guard did.
+    ticket = await harness.arbiter.enqueue(
+        source="turn-a", response_started_timeout=0.05, cancel_timeout=0.05
+    )
+    await asyncio.wait_for(ticket.sent, timeout=1)
+
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, timeout=2)
+    await _settle()
+
+    assert harness.aborted, (
+        "a terminal cancelled by the escalation path is not an arrival"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_two_concurrent_cancellers_cost_only_the_stuck_turn(harness):
     # The user-visible shape of the same defect, driven through the public
     # API instead of the private one: two callers cancel the same stuck

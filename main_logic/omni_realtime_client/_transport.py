@@ -956,6 +956,42 @@ class _TransportMixin:
             self._image_description = _IMAGE_ANALYSIS_PENDING_DESCRIPTION
         self._image_sent_this_turn = False
 
+    async def _flush_pending_output_transcript(self) -> None:
+        """Forward transcript text this turn produced but never flushed.
+
+        Some providers (the lanlan.app Gemini proxy among them) emit
+        ``response.audio_transcript.delta`` and no transcript-done event, so
+        the buffer is normally drained by the streaming branch. In a turn that
+        used tools, the tool round's terminal clears
+        ``_print_input_transcript``, and the real reply's transcript then
+        accumulates in the buffer with nothing left to flush it — resetting
+        per-turn state would drop it and the frontend shows audio with no text.
+
+        Fires only when this turn actually spoke, so a normal turn is a no-op
+        and nothing is sent twice. Must run BEFORE the per-turn reset, which
+        is what clears the buffer.
+        """
+
+        if not (
+            self._output_transcript_buffer
+            and self.on_output_transcript
+            and self._audio_delta_count > 0
+        ):
+            return
+        # 「有声无字」是反复出现的问题（见 ISSUE4b），留一条 debug 日志方便下次
+        # 诊断时确认是这条兜底生效、还是 streaming/transcript.done 路径生效。
+        # audio_delta_count 此处尚未清零，记录的是本轮真实值。
+        logger.debug(
+            "turn-end 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
+            len(self._output_transcript_buffer),
+            self._audio_delta_count,
+            self._is_first_transcript_chunk,
+        )
+        await self.on_output_transcript(
+            self._output_transcript_buffer, self._is_first_transcript_chunk
+        )
+        self._is_first_transcript_chunk = False
+
     def _clear_turn_response_state(self) -> None:
         """Drop the flags that say "a response is in progress".
 
@@ -1027,6 +1063,10 @@ class _TransportMixin:
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
         self._clear_turn_response_state()
+        # Before the reset, which is what clears the buffer: a stalled
+        # lifecycle is exactly the case where the terminal that would normally
+        # flush it never arrives.
+        await self._flush_pending_output_transcript()
         self._reset_per_turn_output_state()
         await self._notify_turn_finished()
 
@@ -1274,24 +1314,7 @@ class _TransportMixin:
                     # 就在这里被直接清空 → 前端有声无字。这里在清空前补一次 flush：只要本轮真
                     # 出过声（audio_delta_count>0）且 buffer 仍有残留就补发。streaming 分支每次都
                     # 会清空 buffer，故正常轮此处为 no-op，不会重复发送。
-                    if (
-                        self._output_transcript_buffer
-                        and self.on_output_transcript
-                        and self._audio_delta_count > 0
-                    ):
-                        # 「有声无字」是反复出现的问题（见上方 ISSUE4b），留一条 debug
-                        # 日志方便下次诊断时确认是这条兜底生效、还是 streaming/transcript.done
-                        # 路径生效。audio_delta_count 此处尚未清零，记录的是本轮真实值。
-                        logger.debug(
-                            "response.done 兜底 flush 输出转录: buffer_len=%d audio_deltas=%d is_first=%s",
-                            len(self._output_transcript_buffer),
-                            self._audio_delta_count,
-                            self._is_first_transcript_chunk,
-                        )
-                        await self.on_output_transcript(
-                            self._output_transcript_buffer, self._is_first_transcript_chunk
-                        )
-                        self._is_first_transcript_chunk = False
+                    await self._flush_pending_output_transcript()
                     self._reset_per_turn_output_state()
                     await self._notify_turn_finished()
                 elif event_type == "response.created":

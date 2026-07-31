@@ -551,6 +551,72 @@ async def test_a_pending_server_vad_response_stands_the_hatch_down(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_the_release_keeps_the_lane_closed_under_a_live_server_response(
+    make_harness,
+):
+    # Greptile P1 on this PR. The abandoned turn's bookkeeping is what became
+    # untrustworthy — a separately initiated server response tracked alongside
+    # it is still tracking fine, and it is still RUNNING. Discarding its
+    # identity and forcing the lane open would put the next create straight on
+    # top of it (response_already_active, or two live responses).
+    harness = make_harness(fail_open=True)
+    await harness.own_a_live_response("resp-owned")
+    # A server-initiated response starts and is tracked separately.
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-live"}}
+    )
+    assert "srv-live" in harness.arbiter._server_response_ids
+
+    raised = await _stick_a_cancel(harness)
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    assert harness.aborted == [], "the connection itself is fine"
+    assert "srv-live" in harness.arbiter._server_response_ids, (
+        "a live server response's identity is not this turn's to discard"
+    )
+    dispatched_before = harness.dispatch_count
+    queued = await harness.arbiter.enqueue(source="native-after")
+    await _settle()
+    assert harness.dispatch_count == dispatched_before, (
+        "and the lane stays closed while it runs"
+    )
+
+    # Its own terminal releases the lane through the ordinary path.
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "srv-live"}}
+    )
+    await _settle()
+    assert harness.dispatch_count == dispatched_before + 1
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-next"}}
+    )
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-next"}}
+    )
+    await asyncio.wait_for(queued.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_opens_the_lane_when_nothing_else_is_running(make_harness):
+    # The dual: with no other live response, the release must actually reopen
+    # the lane. Without this pair, never reopening would look correct.
+    harness = make_harness(fail_open=True)
+    await harness.own_a_live_response("resp-owned")
+    assert harness.arbiter._server_response_ids == {}
+
+    raised = await _stick_a_cancel(harness)
+    assert isinstance(raised, asyncio.TimeoutError)
+    await _settle()
+
+    assert harness.arbiter.is_busy is False
+    revived = await harness.arbiter.enqueue(source="native-after")
+    await asyncio.wait_for(revived.sent, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_the_release_ends_the_turn_before_the_lane_opens(make_harness):
     # Ordering, not just occurrence. If the lane opened first, the next
     # request could dispatch while the host was still closing the previous
@@ -616,6 +682,108 @@ async def test_a_hanging_host_notification_cannot_wedge_the_consumer(
         await asyncio.wait_for(follow_up.sent, timeout=1)
     finally:
         released.set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_flushes_transcript_the_turn_never_got_to_send():
+    # Codex P2 on this PR. Some providers emit transcript deltas and no
+    # transcript-done, so the buffer is drained by response.done's fallback
+    # flush — and a stalled lifecycle is precisely the case where that
+    # terminal never comes. Resetting per-turn state without flushing first
+    # loses whatever the turn already said: audio the user heard, with no text.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    transcripts: list[tuple[str, bool]] = []
+
+    async def _on_output_transcript(text: str, is_first: bool) -> None:
+        transcripts.append((text, is_first))
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_output_transcript=_on_output_transcript,
+    )
+
+    async def _send(event: dict) -> None:
+        return None
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    arbiter._fail_open = True
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        client._current_response_id = "resp-1"
+        client._is_responding = True
+        # The turn spoke, and its transcript is still buffered.
+        client._audio_delta_count = 3
+        client._output_transcript_buffer = "half a sentence"
+
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+        await _settle()
+
+        # The contract is that the buffered text reaches the frontend. The
+        # is_first flag is transport bookkeeping driven by response.created,
+        # which this test does not go through, so it is not asserted here.
+        assert [text for text, _ in transcripts] == ["half a sentence"], (
+            "text the user already heard must not be dropped by the release"
+        )
+        assert client._output_transcript_buffer == ""
+    finally:
+        await arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_release_does_not_flush_a_turn_that_never_spoke():
+    # The dual: the flush is conditional on the turn having produced audio, so
+    # a silent turn must not push a stray transcript at the frontend.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    transcripts: list[tuple[str, bool]] = []
+
+    async def _on_output_transcript(text: str, is_first: bool) -> None:
+        transcripts.append((text, is_first))
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_output_transcript=_on_output_transcript,
+    )
+
+    async def _send(event: dict) -> None:
+        return None
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    arbiter._fail_open = True
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        client._current_response_id = "resp-1"
+        client._is_responding = True
+        client._audio_delta_count = 0
+        client._output_transcript_buffer = "never spoken"
+
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+        await _settle()
+
+        assert transcripts == []
+    finally:
+        await arbiter.shutdown("test teardown")
 
 
 @pytest.mark.unit

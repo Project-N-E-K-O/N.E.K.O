@@ -911,6 +911,30 @@ class RealtimeResponseArbiter:
                     reason,
                 )
                 return
+            if (
+                observed.terminal is not None
+                and observed.terminal.done()
+                and not observed.terminal.cancelled()
+            ):
+                # Its terminal actually arrived while this caller's timeout was
+                # firing. ``notify_response_terminal`` clears
+                # ``_response_owner`` synchronously but the worker has not run
+                # its ``finally`` yet, so ``_current`` still names a request
+                # that is, in fact, done. Escalating here would end a completed
+                # turn a second time — duplicate host finalization under
+                # fail-open, and a teardown over a terminal that just landed
+                # under the default.
+                #
+                # ``cancelled()`` is excluded on purpose: the escalation paths
+                # themselves cancel this future immediately before calling in,
+                # so treating that as an arrival would suppress every real
+                # escalation.
+                logger.debug(
+                    "skipping escalation for %s (%s): its terminal arrived",
+                    observed.source,
+                    reason,
+                )
+                return
             observed.escalated = True
 
         blocker = self._cannot_keep_the_connection(
@@ -1035,16 +1059,18 @@ class RealtimeResponseArbiter:
                     "stuck-release host notification failed: %s", exc_host
                 )
 
-        # Give up on the bookkeeping just declared untrustworthy: leaving the
-        # owner or the remembered ids in place would hold the lane closed
-        # waiting for terminals nobody expects any more.
+        # Give up on THIS turn's bookkeeping, and only this turn's. The
+        # remembered server response ids belong to separately initiated
+        # responses that are still tracking normally: clearing them would
+        # discard a live response's identity, and the next queued create would
+        # then overlap it. Nothing about the abandoned owner makes those
+        # untrustworthy.
         self._response_owner = None
-        self._server_response_active = False
-        self._server_vad_response_pending = False
-        self._server_response_ids.clear()
-        self._cancel_server_vad_pending_timer()
-        self._cancel_stale_release_timer()
-        self._idle.set()
+        # Which is why the lane reopens through the ordinary release check
+        # rather than by force — it already knows to keep the lane closed
+        # while a live server response is being tracked, and to arm the
+        # staleness timer that eventually retires one.
+        self._release_lane_if_clear()
         logger.warning(
             "response arbiter failing open, transport kept: %s "
             "(current=%s owner=%s queue_depth=%d)",
