@@ -73,8 +73,11 @@ def ensure_workshop_folder_exists(
     
     logger.info(f'ensure_workshop_folder_exists - 最终处理的目标文件夹: {target_folder}')
     
-    # 如果文件夹存在，直接返回True
-    if os.path.exists(target_folder):
+    # isdir 而不是 exists：路径指向一个**普通文件**时 exists 也为真，于是这里报
+    # 「目录已就绪」，配置把那个文件存成了工坊根目录，后面凡是往它上面拼
+    # WorkshopExport 的调用全部失败。指着文件就当没就绪 —— 下面 makedirs 会抛
+    # FileExistsError，被 except 收成 False，正是想要的结论。
+    if os.path.isdir(target_folder):
         return True
     
     # 如果文件夹不存在，检查是否允许自动创建

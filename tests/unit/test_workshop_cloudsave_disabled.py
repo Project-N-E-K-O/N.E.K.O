@@ -309,3 +309,29 @@ def test_the_workshop_config_lock_is_reentrant():
     assert isinstance(lock, type(threading.RLock())), (
         "必须是 RLock：事务持着它再调 load_workshop_config，不可重入就是自死锁"
     )
+
+
+def test_a_path_naming_a_file_is_not_a_ready_folder(tmp_path):
+    """`exists()` is true for regular files; the workshop root must be a dir.
+
+    Reporting ready for a file persists it as the workshop root, and every
+    later `os.path.join(root, 'WorkshopExport')` fails against it.
+    """
+    from utils.workshop_utils import ensure_workshop_folder_exists
+
+    a_file = tmp_path / "not-a-folder.txt"
+    a_file.write_text("x", encoding="utf-8")
+
+    assert ensure_workshop_folder_exists(str(a_file), auto_create=True) is False
+
+    a_dir = tmp_path / "real-folder"
+    a_dir.mkdir()
+    assert ensure_workshop_folder_exists(str(a_dir), auto_create=True) is True
+
+    fresh = tmp_path / "created-on-demand"
+    assert ensure_workshop_folder_exists(str(fresh), auto_create=True) is True
+    assert fresh.is_dir()
+
+    blocked = tmp_path / "not-allowed"
+    assert ensure_workshop_folder_exists(str(blocked), auto_create=False) is False
+    assert not blocked.exists()
