@@ -881,10 +881,11 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
         "relation_type": "preference",
         "temporal_scope": "pattern",
     }])
+    promotion_line = '[persona.master.fedcba0987654321] "愛狗" (score=1)'
     promotion_text = PromotionMergeMixin._promotion_locale_text(
         {"id": "reflection.abcdef1234567890", "text": "怕貓"},
-        [("master", {"id": "fedcba0987654321", "text": "愛狗"})],
-        [],
+        [(promotion_line, "愛狗", promotion_line.index("愛狗"))],
+        promotion_line,
     )
     synthesis_text = SynthesisMixin._synthesis_locale_text(
         [{"id": "abcdef1234567890", "text": "怕貓", "importance": 5}],
@@ -893,6 +894,25 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
 
     for raw_text in (dedup_text, refine_text, promotion_text, synthesis_text):
         assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
+
+
+def test_promotion_locale_detection_excludes_truncated_pool_tail():
+    from memory.reflection.promotion_merge import PromotionMergeMixin
+    from utils.language_utils import detect_prompt_language
+
+    visible = '[persona.master.a] "愛狗" (score=1)'
+    hidden = '[persona.master.b] "english words dominate hidden tail" (score=0)'
+    raw_text = PromotionMergeMixin._promotion_locale_text(
+        {"text": "怕貓"},
+        [
+            (visible, "愛狗", visible.index("愛狗")),
+            (hidden, "english words dominate hidden tail", hidden.index("english")),
+        ],
+        visible,
+    )
+
+    assert raw_text == "怕貓\n愛狗"
+    assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
 
 
 def test_review_locale_detection_ignores_ascii_speaker_labels():
@@ -935,6 +955,40 @@ def test_multimodal_locale_detection_uses_text_parts_only():
     assert detect_prompt_language(summary_text, ui_language="zh-TW") == "zh-TW"
 
 
+def test_multimodal_locale_detection_accepts_all_prompt_text_part_types():
+    from types import SimpleNamespace
+
+    from memory.recent import (
+        CompressedRecentHistoryManager,
+        _PROMPT_TEXT_PART_TYPES,
+        _review_prompt_locale_text,
+    )
+    from utils.language_utils import detect_prompt_language
+
+    assert _PROMPT_TEXT_PART_TYPES == {
+        None,
+        "text",
+        "input_text",
+        "output_text",
+    }
+    content = [
+        {"type": part_type, "text": "english words"}
+        for part_type in _PROMPT_TEXT_PART_TYPES
+    ]
+    content.append({"type": "image_url", "text": "不應納入"})
+    manager = object.__new__(CompressedRecentHistoryManager)
+
+    review_text = _review_prompt_locale_text([{"content": content}])
+    summary_text = manager._summary_prompt_locale_text([
+        SimpleNamespace(content=content),
+    ])
+
+    assert review_text.count("english words") == len(_PROMPT_TEXT_PART_TYPES)
+    assert summary_text == review_text
+    assert "不應納入" not in review_text
+    assert detect_prompt_language(review_text, ui_language="zh-TW") == "en"
+
+
 @pytest.mark.asyncio
 async def test_memory_reload_invalidates_prompt_locale_caches(monkeypatch):
     from app.memory_server import locale_state, runtime
@@ -968,6 +1022,66 @@ async def test_memory_reload_invalidates_prompt_locale_caches(monkeypatch):
     assert invalidations == [True]
     assert locale_state._locale_cache == {}
     assert locale_state._subject_locale_cache == {}
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_cache_invalidation_rejects_inflight_stale_load(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    import json
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "RaceNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    subject_key = locale_state._subject_locale_key(subject)
+
+    def payload(language):
+        row = {"language": language, "order": 1, "reserved_order": 1}
+        return {"subjects": {subject_key: row}} if scoped else row
+
+    locale_path.write_text(json.dumps(payload("en")), encoding="utf-8")
+    path_helper = "_subject_locale_path" if scoped else "_locale_path"
+    monkeypatch.setattr(locale_state, path_helper, lambda _name: str(locale_path))
+    locale_state.invalidate_prompt_locale_caches()
+
+    started = threading.Event()
+    release = threading.Event()
+    load_count = 0
+    original_load = locale_state.json.load
+
+    def delayed_load(handle):
+        nonlocal load_count
+        loaded = original_load(handle)
+        load_count += 1
+        if load_count == 1:
+            started.set()
+            assert release.wait(timeout=5)
+        return loaded
+
+    monkeypatch.setattr(locale_state.json, "load", delayed_load)
+    def getter():
+        if scoped:
+            return locale_state.get_subject_prompt_locale(name, subject)
+        return locale_state.get_character_prompt_locale(name)
+
+    with ThreadPoolExecutor(max_workers=1) as pool:
+        future = pool.submit(getter)
+        assert started.wait(timeout=5)
+        locale_path.write_text(json.dumps(payload("zh-TW")), encoding="utf-8")
+        locale_state.invalidate_prompt_locale_caches()
+        release.set()
+        assert future.result(timeout=5) == "zh-TW"
+
+    assert load_count == 2
 
 
 @pytest.mark.asyncio

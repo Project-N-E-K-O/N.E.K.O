@@ -61,13 +61,23 @@ class PromotionMergeMixin:
     @staticmethod
     def _promotion_locale_text(
         reflection: dict,
-        persona_pool: list[tuple[str, dict]],
-        reflection_pool: list[dict],
+        pool_rows: list[tuple[str, str, int]],
+        visible_pool_text: str,
     ) -> str:
-        """Return raw impression text without IDs, scores, or labels."""
+        """Return only raw text that remains visible after pool truncation."""
         texts = [reflection.get('text', '')]
-        texts.extend(entry.get('text', '') for _key, entry in persona_pool)
-        texts.extend(entry.get('text', '') for entry in reflection_pool)
+        visible_length = len(visible_pool_text)
+        cursor = 0
+        for line, raw_text, text_offset in pool_rows:
+            visible_chars = min(
+                len(raw_text),
+                max(0, visible_length - cursor - text_offset),
+            )
+            if visible_chars:
+                texts.append(raw_text[:visible_chars])
+            cursor += len(line) + 1
+            if cursor >= visible_length:
+                break
         return "\n".join(str(text) for text in texts if text)
 
     @staticmethod
@@ -354,17 +364,24 @@ class PromotionMergeMixin:
         # Build the impression pool block with stable ordering — protected
         # persona entries first, then non-protected by score DESC, then
         # confirmed/promoted reflections by score DESC.
-        pool_lines: list[str] = []
+        pool_rows: list[tuple[str, str, int]] = []
         for ek, e in persona_pool:
-            pool_lines.append(
-                f"[persona.{ek}.{e.get('id')}] \"{e.get('text', '')}\""
+            raw_text = str(e.get('text', '') or '')
+            prefix = f"[persona.{ek}.{e.get('id')}] \""
+            line = (
+                f"{prefix}{raw_text}\""
                 f" (evidence_score={evidence_score(e, now):.2f})"
             )
+            pool_rows.append((line, raw_text, len(prefix)))
         for r in reflection_pool:
-            pool_lines.append(
-                f"[reflection.{r.get('id')}] \"{r.get('text', '')}\""
+            raw_text = str(r.get('text', '') or '')
+            prefix = f"[reflection.{r.get('id')}] \""
+            line = (
+                f"{prefix}{raw_text}\""
                 f" (evidence_score={evidence_score(r, now):.2f})"
             )
+            pool_rows.append((line, raw_text, len(prefix)))
+        pool_lines = [line for line, _raw_text, _text_offset in pool_rows]
         pool_text = "\n".join(pool_lines) if pool_lines else "(印象池为空)"
         # Cap the impression pool at PERSONA_MERGE_POOL_MAX_TOKENS — same
         # entity 长期累积下来 persona+reflection 池可能超 8k tokens；
@@ -375,7 +392,7 @@ class PromotionMergeMixin:
 
         prompt = get_promotion_merge_prompt(
             detect_prompt_language(
-                self._promotion_locale_text(R, persona_pool, reflection_pool),
+                self._promotion_locale_text(R, pool_rows, pool_text),
                 ui_language=get_global_language_full(),
             )
         ).format(

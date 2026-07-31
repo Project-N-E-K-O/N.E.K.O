@@ -40,12 +40,17 @@ _subject_locale_cache: dict[
 ] = {}
 _locale_locks: dict[str, threading.Lock] = {}
 _locale_locks_guard = threading.Lock()
+_locale_cache_guard = threading.Lock()
+_locale_cache_generation = 0
 
 
 def invalidate_prompt_locale_caches() -> None:
     """Force the next locale lookup to reload both durable sidecars."""
-    _locale_cache.clear()
-    _subject_locale_cache.clear()
+    global _locale_cache_generation
+    with _locale_cache_guard:
+        _locale_cache_generation += 1
+        _locale_cache.clear()
+        _subject_locale_cache.clear()
 
 
 def _locale_path(name: str) -> str:
@@ -105,36 +110,48 @@ def _get_locale_lock(name: str) -> threading.Lock:
 def _load_locale_state_unlocked(
     name: str,
 ) -> tuple[str | None, int | None, int | None]:
-    if name in _locale_cache:
-        return _locale_cache[name]
+    while True:
+        with _locale_cache_guard:
+            if name in _locale_cache:
+                return _locale_cache[name]
+            generation = _locale_cache_generation
 
-    selected = None
-    order = None
-    reserved_order = None
-    try:
-        with open(_locale_path(name), encoding="utf-8") as handle:
-            payload = json.load(handle)
-        candidate = payload.get("language") if isinstance(payload, dict) else None
-        if is_supported_language_code(candidate):
-            selected = normalize_language_code(str(candidate), format="full")
-        candidate_order = payload.get("order") if isinstance(payload, dict) else None
-        if isinstance(candidate_order, int) and not isinstance(candidate_order, bool):
-            order = candidate_order
-        candidate_reserved = (
-            payload.get("reserved_order") if isinstance(payload, dict) else None
-        )
-        if isinstance(candidate_reserved, int) and not isinstance(
-            candidate_reserved,
-            bool,
-        ):
-            reserved_order = candidate_reserved
-    except (OSError, json.JSONDecodeError):
-        # A missing or partially-written sidecar is equivalent to no saved locale.
-        pass
-    if order is not None:
-        reserved_order = max(reserved_order or order, order)
-    _locale_cache[name] = (selected, order, reserved_order)
-    return selected, order, reserved_order
+        selected = None
+        order = None
+        reserved_order = None
+        try:
+            with open(_locale_path(name), encoding="utf-8") as handle:
+                payload = json.load(handle)
+            candidate = payload.get("language") if isinstance(payload, dict) else None
+            if is_supported_language_code(candidate):
+                selected = normalize_language_code(str(candidate), format="full")
+            candidate_order = (
+                payload.get("order") if isinstance(payload, dict) else None
+            )
+            if isinstance(candidate_order, int) and not isinstance(
+                candidate_order,
+                bool,
+            ):
+                order = candidate_order
+            candidate_reserved = (
+                payload.get("reserved_order") if isinstance(payload, dict) else None
+            )
+            if isinstance(candidate_reserved, int) and not isinstance(
+                candidate_reserved,
+                bool,
+            ):
+                reserved_order = candidate_reserved
+        except (OSError, json.JSONDecodeError):
+            # A missing or partially-written sidecar is equivalent to no saved locale.
+            pass
+        if order is not None:
+            reserved_order = max(reserved_order or order, order)
+        loaded = (selected, order, reserved_order)
+        with _locale_cache_guard:
+            if generation != _locale_cache_generation:
+                continue
+            _locale_cache[name] = loaded
+            return loaded
 
 
 def _persist_locale_state_unlocked(
@@ -143,7 +160,8 @@ def _persist_locale_state_unlocked(
     order: int | None,
     reserved_order: int | None,
 ) -> None:
-    _locale_cache[name] = (language, order, reserved_order)
+    with _locale_cache_guard:
+        _locale_cache[name] = (language, order, reserved_order)
     try:
         atomic_write_json(
             _locale_path(name),
@@ -165,41 +183,47 @@ def _persist_locale_state_unlocked(
 def _load_subject_locale_state_unlocked(
     name: str,
 ) -> dict[str, tuple[str | None, int | None, int | None]]:
-    if name in _subject_locale_cache:
-        return _subject_locale_cache[name]
+    while True:
+        with _locale_cache_guard:
+            if name in _subject_locale_cache:
+                return _subject_locale_cache[name]
+            generation = _locale_cache_generation
 
-    loaded: dict[str, tuple[str | None, int | None, int | None]] = {}
-    try:
-        with open(_subject_locale_path(name), encoding="utf-8") as handle:
-            payload = json.load(handle)
-        rows = payload.get("subjects") if isinstance(payload, dict) else None
-        if isinstance(rows, dict):
-            for key, row in rows.items():
-                if not isinstance(key, str) or not isinstance(row, dict):
-                    continue
-                language = row.get("language")
-                selected = (
-                    normalize_language_code(str(language), format="full")
-                    if is_supported_language_code(language)
-                    else None
-                )
-                order = row.get("order")
-                if not isinstance(order, int) or isinstance(order, bool):
-                    order = None
-                reserved_order = row.get("reserved_order")
-                if not isinstance(reserved_order, int) or isinstance(
-                    reserved_order,
-                    bool,
-                ):
-                    reserved_order = None
-                if order is not None:
-                    reserved_order = max(reserved_order or order, order)
-                loaded[key] = (selected, order, reserved_order)
-    except (OSError, json.JSONDecodeError):
-        # Missing or partially-written scoped state starts as an empty map.
-        pass
-    _subject_locale_cache[name] = loaded
-    return loaded
+        loaded: dict[str, tuple[str | None, int | None, int | None]] = {}
+        try:
+            with open(_subject_locale_path(name), encoding="utf-8") as handle:
+                payload = json.load(handle)
+            rows = payload.get("subjects") if isinstance(payload, dict) else None
+            if isinstance(rows, dict):
+                for key, row in rows.items():
+                    if not isinstance(key, str) or not isinstance(row, dict):
+                        continue
+                    language = row.get("language")
+                    selected = (
+                        normalize_language_code(str(language), format="full")
+                        if is_supported_language_code(language)
+                        else None
+                    )
+                    order = row.get("order")
+                    if not isinstance(order, int) or isinstance(order, bool):
+                        order = None
+                    reserved_order = row.get("reserved_order")
+                    if not isinstance(reserved_order, int) or isinstance(
+                        reserved_order,
+                        bool,
+                    ):
+                        reserved_order = None
+                    if order is not None:
+                        reserved_order = max(reserved_order or order, order)
+                    loaded[key] = (selected, order, reserved_order)
+        except (OSError, json.JSONDecodeError):
+            # Missing or partially-written scoped state starts as an empty map.
+            pass
+        with _locale_cache_guard:
+            if generation != _locale_cache_generation:
+                continue
+            _subject_locale_cache[name] = loaded
+            return loaded
 
 
 def _persist_subject_locale_state_unlocked(
@@ -207,7 +231,8 @@ def _persist_subject_locale_state_unlocked(
     states: dict[str, tuple[str | None, int | None, int | None]],
 ) -> None:
     snapshot = dict(states)
-    _subject_locale_cache[name] = snapshot
+    with _locale_cache_guard:
+        _subject_locale_cache[name] = snapshot
     try:
         atomic_write_json(
             _subject_locale_path(name),

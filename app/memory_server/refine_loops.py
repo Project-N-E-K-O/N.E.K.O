@@ -389,6 +389,9 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
                 engine_ref, character, bucket.subject, cluster, cluster_hash,
             )
 
+    async def _prompt_locale(subject):
+        return await aget_subject_prompt_locale(character, subject)
+
     result = await lite.refine_pass(
         buckets,
         apply_fn=_apply,
@@ -397,6 +400,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
         start_after=_scoped_refine_cursor.get(character),
         # trust_of 留空：系列 7/7（发言人信赖度）在这里接 speaker_trust。
         trust_of=None,
+        prompt_locale_resolver=_prompt_locale,
     )
     if result.get('served') is not None:
         _scoped_refine_cursor[character] = result['served']

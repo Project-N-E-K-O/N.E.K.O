@@ -253,6 +253,55 @@ async def test_refine_pass_single_llm_call_and_no_cross_bucket_text():
 
 
 @pytest.mark.asyncio
+async def test_refine_pass_restores_served_subject_prompt_locale(monkeypatch):
+    from config.prompts import prompts_memory
+    from utils.language_utils import language_context
+
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(f"a{i}", f"A群文本{i}", GROUP_A, va if i % 2 else vb)
+        for i in range(8)
+    ]
+    buckets = gather_scoped_refine_buckets({}, entries)
+    requested = []
+    prompt_locales = []
+
+    async def _resolve_locale(subject):
+        requested.append(subject)
+        return "zh-TW"
+
+    def _prompt_for(locale):
+        prompt_locales.append(locale)
+        return "{CLUSTER}\n{COUNT}"
+
+    async def _apply(*_args):
+        return 1
+
+    monkeypatch.setattr(
+        prompts_memory,
+        "get_scoped_memory_refine_prompt",
+        _prompt_for,
+    )
+    with (
+        language_context("zh-CN"),
+        patch(
+            'utils.llm_client.create_chat_llm_async',
+            AsyncMock(return_value=_make_llm([])),
+        ),
+    ):
+        await engine.refine_pass(
+            buckets,
+            apply_fn=_apply,
+            scope_label='scoped/t',
+            prompt_locale_resolver=_resolve_locale,
+        )
+
+    assert requested == [GROUP_A]
+    assert prompt_locales == ["zh-TW"]
+
+
+@pytest.mark.asyncio
 async def test_refine_pass_llm_config_is_lite():
     """Pin the cost contract: summary tier, extra_body OMITTED (= the
     provider-dialect thinking-off default), short timeout. A wrong
@@ -1021,6 +1070,15 @@ def test_scoped_refine_loop_gated_on_powerful_memory():
 
     src = inspect.getsource(refine_loops._periodic_scoped_refine_loop)
     assert "_ais_powerful_memory_enabled" in src
+
+
+def test_scoped_refine_runner_wires_subject_locale_resolver():
+    import inspect
+    from app.memory_server import refine_loops
+
+    src = inspect.getsource(refine_loops._run_scoped_refine_for_character)
+    assert "aget_subject_prompt_locale(character, subject)" in src
+    assert "prompt_locale_resolver=_prompt_locale" in src
 
 
 @pytest.mark.asyncio

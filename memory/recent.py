@@ -57,6 +57,7 @@ MAX_SUMMARY_TOKENS = RECENT_SUMMARY_MAX_TOKENS
 # 抗碰撞（连续 3 条 mixed user+ai 几乎不会误命中）和定位精度。
 REVIEW_FINGERPRINT_K = 3
 REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
+_PROMPT_TEXT_PART_TYPES = frozenset((None, 'text', 'input_text', 'output_text'))
 
 
 def _review_message_content(message) -> str:
@@ -103,7 +104,7 @@ def _message_locale_text(message) -> str:
             continue
         item_type = item.get('type')
         text = item.get('text')
-        if item_type in (None, 'text') and isinstance(text, str):
+        if item_type in _PROMPT_TEXT_PART_TYPES and isinstance(text, str):
             parts.append(text)
     return '\n'.join(parts)
 

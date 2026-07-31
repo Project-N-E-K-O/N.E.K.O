@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from contextlib import nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Awaitable, Callable
@@ -92,6 +93,7 @@ except ImportError:
 from memory._reflection.schema import normalize_reflection, refine_reflection_id
 from memory.scopes import MemorySubject, entry_matches_subject, subject_from_entry
 from memory.temporal import to_naive_local
+from utils.language_utils import language_context
 from utils.logger_config import get_module_logger
 from utils.token_tracker import set_call_type
 
@@ -224,6 +226,7 @@ ScopedApplyFn = Callable[
 ScopedFailureFn = Callable[
     [ScopedRefineBucket, list[dict], str], Awaitable[None]
 ]
+PromptLocaleResolver = Callable[[MemorySubject], Awaitable[str | None]]
 
 
 class ScopedLiteRefineEngine:
@@ -247,6 +250,7 @@ class ScopedLiteRefineEngine:
         failure_fn: ScopedFailureFn | None = None,
         start_after: tuple | None = None,
         trust_of: TrustFn | None = None,
+        prompt_locale_resolver: PromptLocaleResolver | None = None,
     ) -> dict:
         """Process at most ONE cluster of ONE bucket; return pass stats.
 
@@ -295,9 +299,20 @@ class ScopedLiteRefineEngine:
             result['served'] = bucket.marker
             cluster_failed = False
             try:
-                ok = await self._resolve_cluster(
-                    bucket, cluster, cluster_hash, apply_fn, trust_of,
+                prompt_locale = (
+                    await prompt_locale_resolver(bucket.subject)
+                    if prompt_locale_resolver is not None
+                    else None
                 )
+                locale_scope = (
+                    language_context(prompt_locale)
+                    if prompt_locale
+                    else nullcontext()
+                )
+                with locale_scope:
+                    ok = await self._resolve_cluster(
+                        bucket, cluster, cluster_hash, apply_fn, trust_of,
+                    )
                 if ok:
                     result['resolved'] = 1
                 else:
@@ -455,11 +470,11 @@ class ScopedLiteRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_scoped_memory_refine_prompt
-        from utils.language_utils import get_global_language
+        from utils.language_utils import get_global_language_full
         from utils.llm_client import create_chat_llm_async
 
         prompt = (
-            get_scoped_memory_refine_prompt(get_global_language())
+            get_scoped_memory_refine_prompt(get_global_language_full())
             .replace('{CLUSTER}', cluster_text)
             .replace('{COUNT}', str(len(cluster)))
         )
