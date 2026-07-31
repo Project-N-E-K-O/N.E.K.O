@@ -621,7 +621,7 @@ _REPLACE_BUSY_WINERRORS = frozenset({5, 32})
 _REPLACE_RETRY_BACKOFF_S = (0.005, 0.01, 0.02, 0.04, 0.08)
 
 
-def _running_on_event_loop() -> bool:
+def running_on_event_loop() -> bool:
     """Whether this thread is currently inside a running asyncio event loop."""
     try:
         asyncio.get_running_loop()
@@ -641,7 +641,7 @@ def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
                 raise
             # 只在真的撞上 busy 之后才问「我是不是在循环上」：happy path 一条
             # 指令都不多。
-            if _running_on_event_loop():
+            if running_on_event_loop():
                 raise
         time.sleep(delay)
     os.replace(temp_path, target_path)

@@ -69,6 +69,17 @@ async def save_workshop_config_api(config_data: dict):
         # 导入与get_workshop_config相同路径的函数，保持一致性
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
 
+        # 落盘前先校验类型。前端塞个 {} 或 list 进来的话，这里不拦就直接写进配置文件，
+        # 之后 ensure_workshop_folder_exists 在 os.path.isabs() 上抛出来才报错 —— 配置
+        # 已经被写坏了，后续 get_workshop_path() 会把这个对象原样返回，凡是拿它去
+        # os.path.join() 的 workshop 调用全部失败，直到用户手工修好。
+        for key in ('default_workshop_folder', 'user_mod_folder'):
+            if key in config_data and not isinstance(config_data[key], str):
+                return {
+                    "success": False,
+                    "error": f"{key} 必须是字符串路径",
+                }
+
         def _apply_config_transaction() -> tuple[dict, str, bool]:
             with get_config_manager().workshop_config_lock():
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，

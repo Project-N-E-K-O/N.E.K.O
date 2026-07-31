@@ -335,3 +335,75 @@ def test_a_path_naming_a_file_is_not_a_ready_folder(tmp_path):
     blocked = tmp_path / "not-allowed"
     assert ensure_workshop_folder_exists(str(blocked), auto_create=False) is False
     assert not blocked.exists()
+
+
+@pytest.mark.asyncio
+async def test_a_non_string_folder_value_is_rejected_before_it_is_persisted(monkeypatch):
+    """A `{}` or list for a folder field must not reach the config file.
+
+    Persisting it corrupts the config: `get_workshop_path()` later hands the
+    object straight to `os.path.join()` in every workshop handler, and the user
+    cannot recover without editing the file by hand.
+    """
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True)
+
+    for bad in ({}, ["a"], 5):
+        result = await config_files.save_workshop_config_api({"user_mod_folder": bad})
+        assert result["success"] is False, f"{bad!r} 被接受了"
+        assert "user_mod_folder" in result["error"]
+
+    assert saved == [], "校验失败的请求不该写盘"
+
+    ok = await config_files.save_workshop_config_api({"user_mod_folder": "C:/mods"})
+    assert ok["success"] is True
+    assert saved and saved[-1]["user_mod_folder"] == "C:/mods"
+
+
+@pytest.mark.asyncio
+async def test_the_self_healing_write_is_skipped_on_the_event_loop(monkeypatch, tmp_path):
+    """`get_workshop_path()` runs on the loop; its self-heal must not take the lock.
+
+    The rebase only fires after a storage migration, but when it does the write
+    would acquire the same lock a worker may hold across an fsync — stalling the
+    whole loop. The corrected paths are still returned to this caller; only the
+    persistence waits for a reader that runs off-loop.
+    """
+    from utils.config_manager import workshop as workshop_mixin
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        def __init__(self):
+            import threading
+
+            self._workshop_config_lock = threading.RLock()
+            self.app_docs_dir = str(tmp_path)
+            self.saves: list[dict] = []
+
+        def load_root_state(self):
+            return {"last_migration_source": str(tmp_path / "old")}
+
+        def _read_workshop_config_file(self):
+            # 必须返回真东西：否则没有守卫时也会在这里抛、被外层 except 吞掉，
+            # 两种实现都「没落盘」，用例就分辨不出来了。
+            return {"user_mod_folder": "old"}
+
+        def save_workshop_config(self, config):
+            self.saves.append(dict(config))
+
+    cm = _CM()
+    monkeypatch.setattr(
+        "utils.storage_path_rewrite.rebase_runtime_bound_workshop_config_paths",
+        lambda cfg, **kw: {**cfg, "user_mod_folder": "rebased"},
+    )
+
+    rebased = cm._rebase_workshop_config_after_storage_migration({"user_mod_folder": "old"})
+
+    assert rebased["user_mod_folder"] == "rebased", "调用方仍然要拿到修正后的路径"
+    assert cm.saves == [], "在事件循环上不许落盘——那会去抢 worker 可能持着的锁"

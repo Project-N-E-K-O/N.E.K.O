@@ -21,7 +21,7 @@ root path resolution.
 import json
 import os
 
-from utils.file_utils import atomic_write_json
+from utils.file_utils import atomic_write_json, running_on_event_loop
 
 from ._shared import logger
 
@@ -180,9 +180,19 @@ class WorkshopMixin:
         if rebased_config is config:
             return config
 
-        # 走到这里才需要写盘 —— 也只有这里需要锁。锁内**重读一次**再决定：调用方那份
-        # 快照是在锁外读的，直接写回去就可能把并发事务刚提交的配置整份盖掉（正是
-        # POST /config 与 GET /config 之间那个竞态）。重读之后没得可改就什么都不做。
+        # ⚠️ 在事件循环上就**不写**，直接把改好的结果返回给调用方。
+        # get_workshop_path() 走的就是这条读路径，而 voice_refs / publish 的 async
+        # handler 在循环上裸调它 —— 去抢一把 worker 可能正持着（跨 fsync）的锁，就是
+        # 把整条循环挂在那儿。自愈只是把盘上的路径修正过来，晚一点写没有任何损失：
+        # 下一次跑在 worker 线程上的读（GET /config 走 to_thread、POST 事务、启动期
+        # 的 persist）就会落地。这一趟的调用方拿到的路径已经是对的。
+        if running_on_event_loop():
+            logger.debug("在事件循环上，跳过 workshop 配置路径自愈的落盘，留给下一次线程内读取")
+            return rebased_config
+
+        # 只有这里需要锁。锁内**重读一次**再决定：调用方那份快照是在锁外读的，直接
+        # 写回去就可能把并发事务刚提交的配置整份盖掉（正是 POST /config 与
+        # GET /config 之间那个竞态）。重读之后没得可改就什么都不做。
         try:
             with self._workshop_config_lock:
                 fresh = self._read_workshop_config_file()
