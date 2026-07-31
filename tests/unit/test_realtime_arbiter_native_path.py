@@ -446,6 +446,56 @@ async def test_a_terminal_notifies_the_host_and_rotates_only_without_server_vad(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_second_terminal_for_a_finished_turn_does_not_finalize_it_again():
+    # Ending a turn clears _current_response_id, which is what makes a late
+    # terminal for that same response read as stale: the filter forwards it to
+    # the arbiter (so the lane still releases) and drops it otherwise.
+    #
+    # Worth pinning because the temptation runs the other way. handle_
+    # interruption deliberately KEEPS the identity, so the cancelled
+    # response's own terminal still finalizes the turn — the opposite need.
+    # A path that ends a turn early and keeps the identity would let the late
+    # terminal finalize a second time, over whatever turn came next.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+        on_response_done=_on_done,
+    )
+    socket = _RecordingSocket()
+    client.ws = socket
+    receive_loop = asyncio.create_task(client.handle_messages())
+
+    socket.feed({"type": "response.created", "response": {"id": "resp-a"}})
+    await _settle()
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    await _settle()
+    assert done_calls == ["done"]
+    assert client._current_response_id is None
+
+    # The provider repeats itself, or a buffered duplicate lands late.
+    socket.feed({"type": "response.done", "response": {"id": "resp-a"}})
+    await _settle()
+
+    assert done_calls == ["done"], (
+        "a turn already finalized must not be finalized again by its own "
+        "late terminal"
+    )
+
+    socket.finish()
+    await asyncio.wait_for(receive_loop, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_a_raising_host_hook_does_not_skip_the_rotation():
     # The hooks are independent: a host that blows up ending the turn must
     # not take the speech-id rotation down with it, or the failure silently
