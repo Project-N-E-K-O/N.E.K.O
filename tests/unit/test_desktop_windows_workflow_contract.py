@@ -111,7 +111,7 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     expected_windows_assets = (
         "python-backend-win-*.zip",
         "N.E.K.O_*_win.zip",
-        "N.E.K.O_*_win_delta.bin",
+        "N.E.K.O_*_win_delta.zip",
         "N.E.K.O_*_win_manifest.json",
         "N.E.K.O_*_win_manifest.json.sig",
     )

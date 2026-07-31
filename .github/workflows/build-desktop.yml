@@ -1149,7 +1149,7 @@ jobs:
           if gh release view nightly >/dev/null 2>&1; then
             while IFS= read -r asset; do
               case "$asset" in
-                python-backend-win-*.zip|N.E.K.O_*_win.zip|N.E.K.O_*_win_delta.bin|N.E.K.O_*_win_manifest.json|N.E.K.O_*_win_manifest.json.sig)
+                python-backend-win-*.zip|N.E.K.O_*_win.zip|N.E.K.O_*_win_delta.zip|N.E.K.O_*_win_manifest.json|N.E.K.O_*_win_manifest.json.sig)
                   gh release delete-asset nightly "$asset" --yes
                   ;;
               esac
