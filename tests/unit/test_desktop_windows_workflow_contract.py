@@ -356,6 +356,15 @@ def test_local_release_build_pins_output_directory_before_changing_location() ->
     assert resolve_output < staged_output < change_location
 
 
+def test_local_release_build_metadata_does_not_expose_absolute_backend_path() -> None:
+    local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
+
+    assert 'backend = "bin/$([System.IO.Path]::GetFileName($backendPath))"' in (
+        local_script
+    )
+    assert "backend = $backendPath" not in local_script
+
+
 def test_local_release_build_rejects_unsupported_architecture_and_handles_missing_linux_config() -> None:
     local_script = LOCAL_RELEASE_SCRIPT.read_text(encoding="utf-8")
 

@@ -296,7 +296,7 @@ try {
         platform = $buildPlatform
         architecture = $Architecture
         portableTarget = $target.Key
-        backend = $backendPath
+        backend = "bin/$([System.IO.Path]::GetFileName($backendPath))"
         previousReleaseTag = $PreviousReleaseTag
         generatedAt = [DateTime]::UtcNow.ToString('o')
     } | ConvertTo-Json -Depth 3
