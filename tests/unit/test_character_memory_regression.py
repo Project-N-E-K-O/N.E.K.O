@@ -165,6 +165,108 @@ async def test_add_catgirl_activates_reused_recent_name_before_config_publish(
         )
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_character_publish_cancellation_waits_for_save_and_keeps_activation(
+    tmp_path,
+):
+    """Cancellation cannot roll identity back after the config publish succeeds."""
+    from utils import recent_file
+    from utils.character_memory import (
+        asave_characters_with_recent_activation,
+        list_character_recent_paths,
+    )
+
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def asave_characters(self, _characters):
+            entered.set()
+            await release.wait()
+
+    config = _Config()
+    names = ("First", "Second")
+    for name in names:
+        recent_file.redirect_recent_paths(
+            list_character_recent_paths(config, name),
+            tmp_path / f"Former-{name}" / "recent.json",
+        )
+
+    operation = asyncio.create_task(asave_characters_with_recent_activation(
+        config, {"猫娘": {}}, *names,
+    ))
+    await entered.wait()
+    operation.cancel()
+    await asyncio.sleep(0.05)
+    assert not operation.done()
+
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+
+    with recent_file._LOCKS_GUARD:
+        for name in names:
+            for path in list_character_recent_paths(config, name):
+                key = recent_file._lock_key(path)
+                assert recent_file._resolve_key_unlocked(key) == key
+        assert all(not lock.locked() for lock in recent_file._LOCKS.values())
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_save_character_card_activates_reused_name_before_publish(
+    tmp_path, monkeypatch,
+):
+    """Character-card creation publishes only after its reused identity is active."""
+    from utils import recent_file
+    from utils.character_memory import list_character_recent_paths
+
+    reused_name = "Card-Reused"
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def aload_characters(self):
+            return {"猫娘": {}}
+
+        async def asave_characters(self, _characters):
+            for path in list_character_recent_paths(self, reused_name):
+                key = recent_file._lock_key(path)
+                with recent_file._LOCKS_GUARD:
+                    assert recent_file._resolve_key_unlocked(key) == key
+
+    config = _Config()
+    recent_file.redirect_recent_paths(
+        list_character_recent_paths(config, reused_name),
+        tmp_path / "Former-Card" / "recent.json",
+    )
+    cards_module = reload_module("main_routers.characters_router.cards")
+    monkeypatch.setattr(cards_module, "get_config_manager", lambda: config)
+    monkeypatch.setattr(
+        cards_module,
+        "_mark_new_character_greeting_pending_safe",
+        AsyncMock(return_value=(True, "")),
+    )
+    monkeypatch.setattr(
+        cards_module,
+        "_refresh_catgirl_context_after_profile_change",
+        AsyncMock(return_value={"context_refreshed": True}),
+    )
+
+    result = await cards_module.save_character_card(_DummyRequest({
+        "character_card_name": reused_name,
+        "charaData": {"档案名": reused_name, "昵称": "Card"},
+    }))
+
+    assert result["success"] is True
+    assert result["context_refreshed"] is True
+
+
 class _DummyGetRequest:
     def __init__(self, query_params=None, headers=None):
         self.query_params = query_params or {}

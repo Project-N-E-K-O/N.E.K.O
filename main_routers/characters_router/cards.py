@@ -66,7 +66,7 @@ from utils.config_manager import (
 from utils.file_utils import atomic_write_json_async, read_json_async
 from utils.frontend_utils import find_model_directory, is_user_imported_model
 from utils.cloudsave_runtime import MaintenanceModeError
-from utils.character_memory import clear_character_recent_redirects
+from utils.character_memory import asave_characters_with_recent_activation
 from config import (
     DEFAULT_LIVE2D_MODEL_NAME,
 )
@@ -234,11 +234,12 @@ async def save_character_card(request: Request):
         characters['猫娘'][chara_name] = catgirl_data
 
         # 保存到characters.json
-        await _config_manager.asave_characters(characters)
         if is_new_character:
-            await asyncio.to_thread(
-                clear_character_recent_redirects, _config_manager, chara_name,
+            await asave_characters_with_recent_activation(
+                _config_manager, characters, chara_name,
             )
+        else:
+            await _config_manager.asave_characters(characters)
         prompt_fields_changed = (
             is_new_character
             or _catgirl_prompt_fields_changed(previous_catgirl_data, catgirl_data)
@@ -999,9 +1000,8 @@ async def import_character_card(
             characters['猫娘'][character_name] = chara_data_to_save
 
             # 保存到文件
-            await _config_manager.asave_characters(characters)
-            await asyncio.to_thread(
-                clear_character_recent_redirects, _config_manager, character_name,
+            await asave_characters_with_recent_activation(
+                _config_manager, characters, character_name,
             )
             pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, character_name, "import")
 

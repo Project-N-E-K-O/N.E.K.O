@@ -53,7 +53,7 @@ from ..shared_state import (
 from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
-    begin_character_recent_activation,
+    asave_characters_with_recent_activation,
     begin_character_recent_transaction,
     delete_character_memory_storage,
     finalize_character_recent_delete,
@@ -61,7 +61,6 @@ from utils.character_memory import (
     list_character_memory_paths,
     rename_character_memory_storage,
     release_character_recent_transaction,
-    rollback_character_recent_activation,
     rollback_character_recent_delete,
     rollback_character_recent_rename,
 )
@@ -1111,24 +1110,9 @@ async def add_catgirl(request: Request):
     # 从 free_voices['cuteGirl'] 读以避免硬编码漂移；缺失时回退到首个非空预设，再回退到旧版默认值。
     default_free_voice_id = _get_new_catgirl_default_voice_id()
     set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
-    recent_activation = None
-    try:
-        recent_activation, activation_cancelled = await _await_thread_call_to_completion(
-            begin_character_recent_activation, _config_manager, key,
-        )
-        if activation_cancelled:
-            raise asyncio.CancelledError
-        await _config_manager.asave_characters(characters)
-    except BaseException:
-        if recent_activation is not None:
-            await _await_cleanup_to_completion(
-                asyncio.to_thread(
-                    rollback_character_recent_activation, recent_activation,
-                )
-            )
-        raise
-    else:
-        release_character_recent_transaction(recent_activation)
+    await asave_characters_with_recent_activation(
+        _config_manager, characters, key,
+    )
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。

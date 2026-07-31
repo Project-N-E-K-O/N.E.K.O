@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 from copy import deepcopy
@@ -440,9 +441,11 @@ def clear_character_recent_redirects(config_manager, character_name: str) -> Non
         activate_recent_paths(recent_paths)
 
 
-def begin_character_recent_activation(config_manager, character_name: str) -> dict[str, Any]:
+def begin_character_recent_activation(
+    config_manager, *character_names: str,
+) -> dict[str, Any]:
     """Activate a reused character identity while retaining its recent locks."""
-    transaction = begin_character_recent_transaction(config_manager, character_name)
+    transaction = begin_character_recent_transaction(config_manager, *character_names)
     recent_paths = transaction["recent_paths"]
     try:
         (
@@ -479,6 +482,53 @@ def rollback_character_recent_activation(transaction: dict[str, Any]) -> None:
         )
     finally:
         transaction["held_locks"] = held_locks
+        release_character_recent_transaction(transaction)
+
+
+async def _await_task_to_completion(task: asyncio.Task) -> Any:
+    while not task.done():
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            continue
+    return task.result()
+
+
+async def asave_characters_with_recent_activation(
+    config_manager, characters: dict[str, Any], *character_names: str,
+) -> None:
+    """Publish character config and reused recent identities as one transaction."""
+    activation_task = asyncio.create_task(asyncio.to_thread(
+        begin_character_recent_activation, config_manager, *character_names,
+    ))
+    try:
+        transaction = await asyncio.shield(activation_task)
+    except asyncio.CancelledError:
+        transaction = await _await_task_to_completion(activation_task)
+        await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
+            rollback_character_recent_activation, transaction,
+        )))
+        raise
+
+    save_task = asyncio.create_task(config_manager.asave_characters(characters))
+    try:
+        await asyncio.shield(save_task)
+    except asyncio.CancelledError:
+        try:
+            await _await_task_to_completion(save_task)
+        except BaseException:
+            await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
+                rollback_character_recent_activation, transaction,
+            )))
+        else:
+            release_character_recent_transaction(transaction)
+        raise
+    except BaseException:
+        await _await_task_to_completion(asyncio.create_task(asyncio.to_thread(
+            rollback_character_recent_activation, transaction,
+        )))
+        raise
+    else:
         release_character_recent_transaction(transaction)
 
 
