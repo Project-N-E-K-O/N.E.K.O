@@ -542,12 +542,15 @@ def _valid_merge_source_ids(
     # 文本快照校验：LLM 决策是针对 cluster 里那份文本做出的。锁外 LLM
     # 窗口期间若有并发写者改了该行文本，按 id 盲信会把「模型没见过的
     # 内容」合并掉——文本不一致的源直接失效，cluster 下轮重聚重审。
+    # suppress 同理要在锁内重验：gather 时未抑制、LLM 窗口内被标记
+    # suppress 的源若被消费，其内容会以普通可见条目的身份复活。
     valid = [
         sid for sid in src_ids_raw
         if sid in cluster_ids
         and sid in by_id
         and sid not in consumed
         and not by_id[sid].get('protected')
+        and not by_id[sid].get('suppress')
         and by_id[sid].get('text') == cluster_text_by_id.get(sid)
     ]
     # 去重保序（LLM 偶发重复 id 会让 evidence 继承重复计数）。

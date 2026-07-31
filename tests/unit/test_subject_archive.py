@@ -382,9 +382,80 @@ async def test_fact_archival_aborts_on_fresh_write_in_window(tmp_path):
     moved = await fs.aarchive_subject_facts(
         "小天", SUBJ_STALE, NOW.isoformat(), cutoff,
     )
-    assert moved == 0
+    # None = 复活中止（区别于普通零结果），caller 要跳过其余存储。
+    assert moved is None
     assert {f['id'] for f in await fs.aload_facts("小天")} == {"fs1", "fs2", "fresh"}
     assert not os.path.exists(fs._facts_archive_path("小天"))
+
+
+@pytest.mark.asyncio
+async def test_sweep_skips_other_stores_when_fact_archival_aborts(tmp_path):
+    """greptile/codex round-2 P1: when the fact store aborts because the
+    subject revived mid-window, the sweep must NOT go on to archive the
+    subject's reflections and persona entries — a revived subject keeps
+    all three stores or archives all three, never a partial split."""
+    from unittest.mock import AsyncMock, patch as _patch
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    stale_pid, _ = await _seed_two_subjects(fs, pm, re)
+
+    with _patch.object(
+        fs, "aarchive_subject_facts", AsyncMock(return_value=None),
+    ):
+        report = await asweep_scoped_subject_archive(
+            "小天", **_sweep_kwargs(fs, pm, re),
+        )
+    assert report['archived'] == {}
+    # reflection/persona 全部原样：没有出现「fact 留下、其余被归档」的劈叉。
+    assert {r['id'] for r in await re._aload_reflections_full("小天")} == {"rs1", "ra1"}
+    persona = await pm.aensure_persona("小天")
+    all_ids = {
+        e.get('id')
+        for sec in persona.values() if isinstance(sec, dict)
+        for e in sec.get('facts', []) if isinstance(e, dict)
+    }
+    assert stale_pid in all_ids
+
+
+@pytest.mark.asyncio
+async def test_sweep_stamps_absorbed_archived_rows_of_stale_subject(tmp_path):
+    """codex round-2 P1: a stale subject whose facts were ALREADY moved to
+    facts_archive.json by the absorbed-shrink path must still exit recall —
+    the sweep stamps those rows in place, including when the subject has
+    no active facts at all."""
+    from memory.hybrid_recall import _aload_archive_facts
+    from utils.file_utils import atomic_write_json
+
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    # 该 subject 只有 absorbed 归档历史，活跃池为空。
+    absorbed_row = _scoped_fact(
+        "abs1", "只剩 absorbed 历史的群", SUBJ_STALE,
+        created_at=_iso(120), absorbed=True,
+    )
+    atomic_write_json(
+        fs._facts_archive_path("小天"), [absorbed_row],
+        indent=2, ensure_ascii=False,
+    )
+    # 归档前：absorbed 行在召回池里（活跃 subject 的设计行为）。
+    assert {r['id'] for r in await _aload_archive_facts(fs, "小天")} == {"abs1"}
+
+    report = await asweep_scoped_subject_archive(
+        "小天", **_sweep_kwargs(fs, pm, re),
+    )
+    key = f"{SUBJ_STALE.key}|{SUBJ_STALE.scope}"
+    assert report['archived'][key]['facts'] == 1
+    # 归档后：补了标记，退出召回池；absorbed 溯源保留。
+    assert await _aload_archive_facts(fs, "小天") == []
+    with open(fs._facts_archive_path("小天"), encoding="utf-8") as f:
+        rows = json.load(f)
+    assert rows[0]['subject_archived_at']
+    assert rows[0]['absorbed'] is True
+
+    # 幂等：第二轮无待办。
+    report2 = await asweep_scoped_subject_archive(
+        "小天", **_sweep_kwargs(fs, pm, re),
+    )
+    assert report2['archived'] == {}
 
 
 @pytest.mark.asyncio

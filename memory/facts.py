@@ -598,8 +598,19 @@ class FactStore:
     def _archive_subject_facts(
         self, name: str, subject: MemorySubject, archived_at_iso: str,
         stale_cutoff: datetime,
-    ) -> int:
+    ) -> int | None:
         """Move the stale facts of one scoped subject into facts_archive.json.
+
+        Returns the number of rows stamped, or ``None`` when the pass ABORTED
+        because a fresh write revealed the subject just revived — the caller
+        must treat None as "subject is active again" and skip the subject's
+        remaining stores, not as an ordinary zero-count result.
+
+        Also stamps ``subject_archived_at`` onto the subject's rows that the
+        absorbed-shrink path had ALREADY moved into facts_archive.json: those
+        rows stay recallable by design for live subjects, so without the
+        in-place stamp an archived subject would remain searchable through
+        its absorbed history forever.
 
         Time-driven counterpart of `_archive_absorbed` (score/absorbed-driven).
         Every moved row is stamped with ``subject_archived_at`` — the marker
@@ -646,15 +657,15 @@ class FactStore:
                     continue  # 未知年龄的行留在活跃池（对齐 _archive_absorbed）
                 if created >= stale_cutoff:
                     # 判定后落进来的新写入：subject 已复活，本轮整体中止。
+                    # 新写入只会落在活跃池，归档池里的行都早于判定快照，
+                    # 所以复活检查只需要看活跃行。
                     logger.info(
                         f"[FactStore] {name}: subject "
                         f"[scoped {subject.kind}/{subject.subject_id}] 在归档窗口"
                         f"内有新写入，中止本轮 subject 归档"
                     )
-                    return 0
+                    return None
                 to_archive.append(f)
-            if not to_archive:
-                return 0
             archive_path = self._facts_archive_path(name)
             existing_archive: list[dict] = []
             if os.path.exists(archive_path):
@@ -668,6 +679,19 @@ class FactStore:
                         f"[FactStore] {name}: 读取归档文件失败，跳过本次 subject 归档: {e}"
                     )
                     return 0
+            # absorbed 收缩早已搬进归档文件的同 subject 行：就地补
+            # subject_archived_at 标记，让它们与活跃行一起退出召回。
+            stamped_in_archive = 0
+            for f in existing_archive:
+                if (
+                    isinstance(f, dict)
+                    and not f.get('subject_archived_at')
+                    and entry_matches_subject(f, subject)
+                ):
+                    f['subject_archived_at'] = archived_at_iso
+                    stamped_in_archive += 1
+            if not to_archive and not stamped_in_archive:
+                return 0
             stamped = []
             for f in to_archive:
                 copy = dict(f)
@@ -675,22 +699,24 @@ class FactStore:
                 stamped.append(copy)
             existing_archive = _merge_archive_entries(existing_archive, stamped)
             atomic_write_json(archive_path, existing_archive, indent=2, ensure_ascii=False)
-            active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
-            atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
-            # 缓存按身份原地剔除（并发 append 的行保留在缓存里，下次 save 落盘）。
-            archived_identities = {id(f) for f in to_archive}
-            facts[:] = [f for f in facts if id(f) not in archived_identities]
+            if to_archive:
+                active = [f for f in facts if id(f) not in {id(x) for x in to_archive}]
+                atomic_write_json(self._facts_path(name), active, indent=2, ensure_ascii=False)
+                # 缓存按身份原地剔除（并发 append 的行保留在缓存里，下次 save 落盘）。
+                archived_identities = {id(f) for f in to_archive}
+                facts[:] = [f for f in facts if id(f) not in archived_identities]
             # 隐私口径：只打域标识与条数，不打原文。
             logger.info(
                 f"[FactStore] {name}: subject 归档 [scoped {subject.kind}"
-                f"/{subject.subject_id}] {len(to_archive)} 条 facts"
+                f"/{subject.subject_id}] 活跃 {len(to_archive)} 条 + 归档池补标记 "
+                f"{stamped_in_archive} 条"
             )
-            return len(to_archive)
+            return len(to_archive) + stamped_in_archive
 
     async def aarchive_subject_facts(
         self, name: str, subject: MemorySubject, archived_at_iso: str,
         stale_cutoff: datetime,
-    ) -> int:
+    ) -> int | None:
         return await asyncio.to_thread(
             self._archive_subject_facts, name, subject, archived_at_iso,
             stale_cutoff,

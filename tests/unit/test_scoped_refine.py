@@ -632,6 +632,41 @@ async def test_apply_rejects_source_whose_text_changed_since_cluster(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_apply_rejects_source_suppressed_since_cluster(tmp_path):
+    """greptile round-2 P1: a source marked suppress=True during the
+    unlocked LLM window has unchanged text, so the snapshot check alone
+    passes — the apply layer must re-check suppression or the merge
+    resurfaces do-not-mention content as an ordinary visible entry."""
+    fs, pm, re = _install(str(tmp_path))
+    refls = [
+        _r_entry("r0", "普通反思", GROUP_A),
+        _r_entry("r1", "待抑制反思", GROUP_A),
+    ]
+    await re.asave_reflections("小天", refls)
+    active = await re.aload_reflections("小天")
+    cluster = [dict(r) for r in active]
+
+    # LLM 窗口内 r1 被标记 suppress（文本未变）。
+    live = await re.aload_reflections("小天")
+    next(r for r in live if r['id'] == "r1")['suppress'] = True
+    await re.asave_reflections("小天", live)
+
+    actions = [{
+        'action': 'merge', 'source_ids': ['r0', 'r1'],
+        'produce': {'text': '合并产物'},
+    }]
+    applied = await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, actions, "hashSup",
+    )
+    assert applied == 0
+    full = await re._aload_reflections_full("小天")
+    by_id = {r['id']: r for r in full}
+    assert set(by_id) == {"r0", "r1"}
+    assert by_id['r1']['suppress'] is True
+    assert by_id['r1']['status'] == 'confirmed'  # 未被消费
+
+
+@pytest.mark.asyncio
 async def test_apply_rejects_garbage_actions_without_stamping(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     refls = [_r_entry(f"r{i}", f"文本{i}", GROUP_A) for i in range(3)]

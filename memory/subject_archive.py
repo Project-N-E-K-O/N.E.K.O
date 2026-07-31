@@ -218,7 +218,6 @@ async def asweep_scoped_subject_archive(
     if not stale:
         return report
 
-    active_facts = await fact_store.aload_facts(name)
     active_refls = await reflection_engine.aload_reflections(name)
     now_iso = now.isoformat()
     # stale 判据的快照口径带进执行层：fact store 在写锁内用它重验——
@@ -227,9 +226,14 @@ async def asweep_scoped_subject_archive(
     stale_cutoff = now - timedelta(days=stale_days)
 
     for subject, last_dt in stale:
+        # fact 侧的待办按全池「无标记行」计：活跃行要搬走，absorbed 收缩
+        # 早已搬进归档文件的行要就地补 subject_archived_at——否则只有
+        # absorbed 历史的 stale subject 会永远留在召回池里。
         fact_targets = [
-            f for f in active_facts
-            if isinstance(f, dict) and entry_matches_subject(f, subject)
+            f for f in facts_full
+            if isinstance(f, dict)
+            and entry_matches_subject(f, subject)
+            and not f.get('subject_archived_at')
         ]
         refl_targets = [
             r for r in active_refls
@@ -270,7 +274,7 @@ async def asweep_scoped_subject_archive(
                            'last_write': last_dt.isoformat()}
         if fact_targets:
             try:
-                archived_counts['facts'] = await fact_store.aarchive_subject_facts(
+                moved = await fact_store.aarchive_subject_facts(
                     name, subject, now_iso, stale_cutoff,
                 )
             except Exception as e:
@@ -278,6 +282,19 @@ async def asweep_scoped_subject_archive(
                     f"[SubjectArchive] {name}: subject "
                     f"[{_domain_marker(subject)}] facts 归档失败: {e}"
                 )
+                moved = 0
+            if moved is None:
+                # fact store 在锁内发现判定窗口里落了新写入：subject 已
+                # 复活。三个存储要么按同一判定走、要么全不走——跳过该
+                # subject 的 reflection/persona 归档，下一轮 sweep 用新
+                # 的 last_write 重新判定。
+                logger.info(
+                    f"[SubjectArchive] {name}: subject "
+                    f"[{_domain_marker(subject)}] 判定窗口内复活，跳过本轮"
+                    f"其余存储的归档"
+                )
+                continue
+            archived_counts['facts'] = moved
         for r in refl_targets:
             try:
                 if await reflection_engine.aarchive_reflection(name, r['id']):
