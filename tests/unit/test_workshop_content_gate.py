@@ -813,31 +813,32 @@ def _tail_name(call: ast.Call) -> str | None:
     return None
 
 
-def _claim_aliases(func) -> dict[str, str]:
+def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
     """Resolve imports and assignments that rename a claim factory."""
     aliases = {name: name for name in _CLAIM_CALLS}
-    nodes = list(_walk_own_scope(func))
-    changed = True
-    while changed:
-        changed = False
-        for node in nodes:
-            if isinstance(node, ast.ImportFrom):
-                for imported in node.names:
-                    canonical = aliases.get(imported.name)
-                    local = imported.asname or imported.name
-                    if canonical and aliases.get(local) != canonical:
-                        aliases[local] = canonical
-                        changed = True
-            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
-                value = node.value
-                value_name = value.id if isinstance(value, ast.Name) else None
-                canonical = aliases.get(value_name or '')
-                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+    nodes = sorted(
+        _walk_own_scope(func), key=lambda node: getattr(node, 'lineno', -1)
+    )
+    for node in nodes:
+        if before_line is not None and getattr(node, 'lineno', -1) >= before_line:
+            continue
+        if isinstance(node, ast.ImportFrom):
+            for imported in node.names:
+                canonical = aliases.get(imported.name)
+                local = imported.asname or imported.name
                 if canonical:
-                    for target in targets:
-                        if isinstance(target, ast.Name) and aliases.get(target.id) != canonical:
-                            aliases[target.id] = canonical
-                            changed = True
+                    aliases[local] = canonical
+        elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+            value = node.value
+            canonical = aliases.get(value.id) if isinstance(value, ast.Name) else None
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if canonical:
+                    aliases[target.id] = canonical
+                else:
+                    aliases.pop(target.id, None)
     return aliases
 
 
@@ -901,12 +902,12 @@ def _claim_calls_in_own_scope(func) -> list:
     text -- would then be reported as a violation. Prune by refusing to
     descend, not by skipping a single node.
     """
-    aliases = _claim_aliases(func)
     found = []
     for node in _walk_own_scope(func):
         if isinstance(node, ast.Lambda):
             continue
         if isinstance(node, ast.Call):
+            aliases = _claim_aliases(func, node.lineno)
             name = _resolved_claim_factory(node, aliases)
             if name:
                 found.append(node)
@@ -931,22 +932,31 @@ def _worker_callable(call: ast.Call):
     return call.args[index] if len(call.args) > index else None
 
 
-def _known_event_loop_names(func) -> set[str]:
+def _known_event_loop_names(func, before_line: int) -> set[str]:
     names = set()
-    for node in _walk_own_scope(func):
+    for node in sorted(
+        _walk_own_scope(func), key=lambda item: getattr(item, 'lineno', -1)
+    ):
+        if getattr(node, 'lineno', -1) >= before_line:
+            continue
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         value = node.value
-        if not (
+        is_event_loop = (
             isinstance(value, ast.Call)
             and isinstance(value.func, ast.Attribute)
             and isinstance(value.func.value, ast.Name)
             and value.func.value.id == 'asyncio'
             and value.func.attr in {'get_event_loop', 'get_running_loop'}
-        ):
-            continue
+        )
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
-        names.update(target.id for target in targets if isinstance(target, ast.Name))
+        for target in targets:
+            if not isinstance(target, ast.Name):
+                continue
+            if is_event_loop:
+                names.add(target.id)
+            else:
+                names.discard(target.id)
     return names
 
 
@@ -963,7 +973,7 @@ def _is_worker_offload_call(call: ast.Call, func) -> bool:
     return (
         target.attr == 'run_in_executor'
         and isinstance(target.value, ast.Name)
-        and target.value.id in _known_event_loop_names(func)
+        and target.value.id in _known_event_loop_names(func, call.lineno)
     )
 
 
@@ -1511,6 +1521,18 @@ def _module_level_claiming_workers(trees):
             return claiming, generators, module_aliases
 
 
+def _local_instance_class(
+    name: str,
+    line: int,
+    local_instances: dict[str, list[tuple[int, str | None]]],
+) -> str | None:
+    return next((
+        class_name
+        for assigned_line, class_name in reversed(local_instances.get(name, []))
+        if assigned_line < line
+    ), None)
+
+
 def _class_protocol_claim(
     node,
     module: str,
@@ -1522,11 +1544,9 @@ def _class_protocol_claim(
     if not isinstance(node, ast.Name):
         return None
     parent = parents.get(id(node))
-    stored_class = next((
-        class_name
-        for line, class_name in reversed(local_instances.get(node.id, []))
-        if line < node.lineno
-    ), None)
+    stored_class = _local_instance_class(
+        node.id, node.lineno, local_instances
+    )
     if (
         stored_class
         and isinstance(parent, ast.withitem)
@@ -1617,9 +1637,38 @@ def _scope_claiming_names_called_on_loop(
                 source_module = alias.name.rsplit('.', 1)[-1]
                 if source_module in module_names and alias.asname:
                     local_module_aliases[alias.asname] = source_module
+    local_callable_aliases = {}
+    alias_source_ids = set()
+    for child in sorted(own_scope, key=lambda node: getattr(node, 'lineno', -1)):
+        if not isinstance(child, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = child.value
+        resolution = None
+        if isinstance(value, ast.Name):
+            prior = next((
+                resolved
+                for line, resolved in reversed(
+                    local_callable_aliases.get(value.id, [])
+                )
+                if line < child.lineno
+            ), None)
+            candidate = prior or local_names.get(
+                value.id, ((module, None), value.id)
+            )
+            if candidate[1] in claiming_by_scope.get(candidate[0], set()):
+                resolution = candidate
+                alias_source_ids.add(id(value))
+        targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+        for target in targets:
+            if isinstance(target, ast.Name):
+                local_callable_aliases.setdefault(target.id, []).append((
+                    child.lineno, resolution
+                ))
     offenders = []
     for node in own_scope:
         if isinstance(node, ast.Name):
+            if id(node) in alias_source_ids:
+                continue
             name = node.id
             protocol_claim = _class_protocol_claim(
                 node, module, claiming_by_scope, parents, local_instances
@@ -1627,13 +1676,25 @@ def _scope_claiming_names_called_on_loop(
             if protocol_claim:
                 scope, resolved_name = protocol_claim
             else:
-                scope, resolved_name = local_names.get(
+                local_alias = next((
+                    resolved
+                    for line, resolved in reversed(
+                        local_callable_aliases.get(name, [])
+                    )
+                    if line < node.lineno
+                ), None)
+                scope, resolved_name = local_alias or local_names.get(
                     name, ((module, None), name)
                 )
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             name = node.attr
+            stored_class = _local_instance_class(
+                node.value.id, node.lineno, local_instances
+            )
             if node.value.id in {'self', 'cls'} and class_name:
                 scope = (module, class_name)
+            elif stored_class:
+                scope = (module, stored_class)
             elif (module, node.value.id) in claiming_by_scope:
                 scope = (module, node.value.id)
             elif node.value.id in local_module_aliases:
@@ -1917,6 +1978,16 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    dispatcher.to_thread(_claiming_worker)\n'
         'async def ambiguous_run_in_executor():\n'
         '    dispatcher.run_in_executor(None, _claiming_worker)\n'
+        'async def rebound_run_in_executor():\n'
+        '    loop = asyncio.get_running_loop()\n'
+        '    loop = dispatcher\n'
+        '    loop.run_in_executor(None, _claiming_worker)\n'
+        'async def local_alias_offloaded():\n'
+        '    callback = _claiming_worker\n'
+        '    await asyncio.to_thread(callback)\n'
+        'async def local_alias_direct():\n'
+        '    callback = _claiming_worker\n'
+        '    callback()\n'
         '\n'
         'class ModuleWrapperService:\n'
         '    def module_wrapper(self):\n'
@@ -1940,6 +2011,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '        return callback\n'
         '    async def property_handler(self):\n'
         '        await asyncio.to_thread(self.property_worker)\n'
+        '\n'
+        'async def stored_method_direct():\n'
+        '    service = Service()\n'
+        '    service.worker()\n'
     )
     functions = {
         node.name: node
@@ -2035,6 +2110,13 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('ambiguous_run_in_executor'), (
         '未知 receiver 的 run_in_executor 不能被当成 event loop executor'
     )
+    assert module_offenders('rebound_run_in_executor'), (
+        'event-loop variable 重绑定后不能保留 offload 身份'
+    )
+    assert module_offenders('local_alias_offloaded') == []
+    assert module_offenders('local_alias_direct'), (
+        'local callable alias 直调仍必须继承 claim owner 身份'
+    )
     assert _scope_claiming_names_called_on_loop(
         functions['module_wrapper_handler'],
         'synthetic', 'ModuleWrapperService', claiming, generators, aliases,
@@ -2047,6 +2129,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         functions['property_handler'],
         'synthetic', 'PropertyService', claiming, generators, aliases,
     ), 'property getter 会在 to_thread 收参前执行，不能算安全 offload'
+    assert module_offenders('stored_method_direct'), (
+        'stored class instance 的普通 claim-owning method 也必须解析'
+    )
     assert module_offenders('safe_attribute_handler') == [], (
         'Safe().owner() 不能因 tail name 与模块 owner 相同而污染 wrapper'
     )
@@ -2360,8 +2445,10 @@ _DEFERRAL_CALLS = {
 _ALLOWED_UNCLAIMED = {('publish', 'prepare_workshop_upload')}
 
 
-def _is_allowed_unclaimed(module: str, function: str) -> bool:
-    return (module, function) in _ALLOWED_UNCLAIMED
+def _is_allowed_unclaimed(
+    module: str, function: str, *, top_level: bool
+) -> bool:
+    return top_level and (module, function) in _ALLOWED_UNCLAIMED
 
 # ⚠️ 已知缺口，不是豁免。放在这里是为了让它**可见**、而且会随代码漂移被重新审视：
 # publish_to_workshop 把预览图 copy2 进内容目录发生在 claim **之前**，同一目录被
@@ -2451,7 +2538,7 @@ def _operation_nodes(
     return found
 
 
-def _path_expression_key(node) -> str:
+def _path_expression_key(node) -> str | None:
     while (
         isinstance(node, ast.Call)
         and _tail_name(node) in {'Path', 'str'}
@@ -2459,6 +2546,8 @@ def _path_expression_key(node) -> str:
         and not node.keywords
     ):
         node = node.args[0]
+    if any(isinstance(child, ast.Call) for child in ast.walk(node)):
+        return None
     return ast.dump(node, include_attributes=False)
 
 
@@ -2518,7 +2607,6 @@ def _unclaimed_folder_operations(
     in which case being inside the ``with`` says nothing about when the work
     actually touches the folder.
     """
-    claim_factories = _claim_aliases(func)
     def claim_value(value):
         expressions = (
             [value.body, value.orelse]
@@ -2526,24 +2614,36 @@ def _unclaimed_folder_operations(
             else [value]
         )
         branch_kinds = [
-            {_resolved_claim_factory(branch, claim_factories)}
+            {_resolved_claim_factory(branch, _claim_aliases(func, branch.lineno))}
             - {None}
             for branch in expressions
         ]
         branch_targets = [
-            {_path_expression_key(folder)}
-            if _resolved_claim_factory(branch, claim_factories)
+            {key}
+            if _resolved_claim_factory(
+                branch, _claim_aliases(func, branch.lineno)
+            )
             and (folder := _claim_folder_expression(branch)) is not None
+            and (key := _path_expression_key(folder)) is not None
             else set()
             for branch in expressions
         ]
         branch_target_names = [
             _path_expression_names(folder)
-            if _resolved_claim_factory(branch, claim_factories)
+            if _resolved_claim_factory(
+                branch, _claim_aliases(func, branch.lineno)
+            )
             and (folder := _claim_folder_expression(branch)) is not None
             else set()
             for branch in expressions
         ]
+        branch_pairs = []
+        for branch in expressions:
+            aliases = _claim_aliases(func, branch.lineno)
+            kind = _resolved_claim_factory(branch, aliases)
+            folder = _claim_folder_expression(branch) if kind else None
+            key = _path_expression_key(folder) if folder is not None else None
+            branch_pairs.append({(kind, key)} if kind and key is not None else set())
         kinds = set.intersection(*branch_kinds) if branch_kinds else set()
         folder_targets = (
             set.intersection(*branch_targets) if branch_targets else set()
@@ -2552,9 +2652,10 @@ def _unclaimed_folder_operations(
             set.intersection(*branch_target_names)
             if branch_target_names else set()
         )
+        pairs = set.intersection(*branch_pairs) if branch_pairs else set()
         if branch_kinds and all(branch_kinds):
             kinds.add('<all-branches-claimed>')
-        return (kinds, folder_targets, target_names) if kinds else None
+        return (kinds, folder_targets, target_names, pairs) if kinds else None
 
     def merge_claim_states(left, right):
         return {
@@ -2600,29 +2701,42 @@ def _unclaimed_folder_operations(
         claim_kinds = set()
         claim_targets = set()
         claim_target_names = set()
+        claim_pairs = set()
         claim_contexts = claim_states_by_with.get(id(block), {})
         for item in block.items:
             context = item.context_expr
-            claim_kind = _resolved_claim_factory(context, claim_factories)
+            claim_kind = _resolved_claim_factory(
+                context, _claim_aliases(func, context.lineno)
+            )
             if claim_kind:
                 claim_kinds.add(claim_kind)
                 folder = _claim_folder_expression(context)
                 if folder is not None:
-                    claim_targets.add(_path_expression_key(folder))
+                    key = _path_expression_key(folder)
+                    if key is not None:
+                        claim_targets.add(key)
+                        claim_pairs.add((claim_kind, key))
                     claim_target_names.update(_path_expression_names(folder))
             elif isinstance(context, ast.Name):
-                alias_kinds, alias_targets, alias_target_names = claim_contexts.get(
-                    context.id, (set(), set(), set())
+                (
+                    alias_kinds,
+                    alias_targets,
+                    alias_target_names,
+                    alias_pairs,
+                ) = claim_contexts.get(
+                    context.id, (set(), set(), set(), set())
                 )
                 claim_kinds.update(alias_kinds)
                 claim_targets.update(alias_targets)
                 claim_target_names.update(alias_target_names)
+                claim_pairs.update(alias_pairs)
         if not claim_kinds:
             continue
         claimed_scopes.append((
             claim_kinds,
             claim_targets,
             claim_target_names,
+            claim_pairs,
             [
                 (inner.lineno, _assigned_names(inner))
                 for statement in block.body
@@ -2688,16 +2802,18 @@ def _unclaimed_folder_operations(
         folder_key = _operation_folder_key(child, name, parents)
         protected = any(
             id(child) in scope
-            and (not required_kinds or bool(kinds & required_kinds))
             and (
-                name not in _PACKAGE_OPERATION_FOLDER_ARGS
-                or folder_key in targets
+                not required_kinds
+                or any(
+                    kind in required_kinds and target == folder_key
+                    for kind, target in pairs
+                )
             )
             and not any(
                 line < child.lineno and names & target_names
                 for line, names in rebindings
             )
-            for kinds, targets, target_names, rebindings, scope in claimed_scopes
+            for kinds, targets, target_names, pairs, rebindings, scope in claimed_scopes
         )
         if not protected:
             offenders.append((short, func.name, child.lineno, name, '未占用'))
@@ -2720,7 +2836,7 @@ def _unclaimed_folder_operations(
         required_claim = _UNIT_CLAIMS[unit_key]
         if unit_ids and not any(
             required_claim in kinds and unit_ids <= scope
-            for kinds, _, _, _, scope in claimed_scopes
+            for kinds, _, _, _, _, scope in claimed_scopes
         ):
             offenders.append((
                 short,
@@ -2882,6 +2998,13 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with guard:\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    reassigned_factory = ast.parse(
+        'def publish():\n'
+        '    factory = claim_content_folder\n'
+        '    factory = nullcontext\n'
+        '    with factory(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
 
     assert _unclaimed_folder_operations(fully_guarded, 'preview_cards') == []
     assert _unclaimed_folder_operations(conditionally_guarded, 'preview_cards'), (
@@ -2892,6 +3015,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(statement_conditional, 'publish'), (
         'statement-level if 只有一个分支拿 claim 时不能算完整占用'
+    )
+    assert _unclaimed_folder_operations(reassigned_factory, 'publish'), (
+        'claim factory alias 被普通 callable 重赋值后必须失效'
     )
 
 
@@ -2983,6 +3109,19 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
         '        folder = other_folder\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    crossed_claims = ast.parse(
+        'def publish():\n'
+        '    with (\n'
+        '        claim_content_folder(first, purpose=p),\n'
+        '        claim_partial_writer(second),\n'
+        '    ):\n'
+        '        _publish_workshop_item(a, b, c, second)\n'
+    ).body[0]
+    dynamic_folder = ast.parse(
+        'def publish():\n'
+        '    with claim_content_folder(next(folders), purpose=p):\n'
+        '        _publish_workshop_item(a, b, c, next(folders))\n'
+    ).body[0]
 
     assert _unclaimed_folder_operations(matching, 'publish') == []
     assert _unclaimed_folder_operations(wrong_kind, 'publish'), (
@@ -3000,6 +3139,12 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
     assert _unclaimed_folder_operations(keyword_claim, 'publish') == []
     assert _unclaimed_folder_operations(rebound_folder, 'publish'), (
         'claim 后重绑定 folder 时，名字相同也不再代表同一目录'
+    )
+    assert _unclaimed_folder_operations(crossed_claims, 'publish'), (
+        'claim kind 必须与它自己的 folder target 成对匹配，不能交叉组合'
+    )
+    assert _unclaimed_folder_operations(dynamic_folder, 'publish'), (
+        '重复求值的动态 folder expression 不能证明目录身份相同'
     )
 
 
@@ -3020,7 +3165,9 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
         for node in ast.walk(tree):
             if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 continue
-            if _is_allowed_unclaimed(short, node.name):
+            if _is_allowed_unclaimed(
+                short, node.name, top_level=node in tree.body
+            ):
                 continue
             offenders.extend(_unclaimed_folder_operations(node, short, module_aliases))
 
@@ -3032,8 +3179,15 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
 
 
 def test_unclaimed_exemptions_are_module_scoped():
-    assert _is_allowed_unclaimed('publish', 'prepare_workshop_upload')
-    assert not _is_allowed_unclaimed('workers.publish', 'prepare_workshop_upload')
+    assert _is_allowed_unclaimed(
+        'publish', 'prepare_workshop_upload', top_level=True
+    )
+    assert not _is_allowed_unclaimed(
+        'workers.publish', 'prepare_workshop_upload', top_level=True
+    )
+    assert not _is_allowed_unclaimed(
+        'publish', 'prepare_workshop_upload', top_level=False
+    )
 
 
 def test_the_known_gaps_are_still_gaps():
