@@ -578,8 +578,23 @@ function patchProps(dom, oldProps, newProps) {
     if (oldProps[name] !== newProps[name]) setProp(dom, name, oldProps[name], newProps[name]);
   });
 }
-const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown']);
+const __hostedUserActionEvents = new Set(['click', 'submit', 'keydown', 'change', 'input']);
 let __hostedUserActionDepth = 0;
+const __hostedConfirmedActionCredits = [];
+function retainHostedConfirmedAction() {
+  const credit = {};
+  __hostedConfirmedActionCredits.push(credit);
+  // Promise continuations registered by resolve run before this cleanup, so a
+  // confirmed `await useConfirm()` flow can claim one action without giving a
+  // later background request a time-based attribution window.
+  queueMicrotask(() => {
+    const index = __hostedConfirmedActionCredits.indexOf(credit);
+    if (index >= 0) __hostedConfirmedActionCredits.splice(index, 1);
+  });
+}
+function consumeHostedConfirmedAction() {
+  return __hostedConfirmedActionCredits.shift() !== undefined;
+}
 function wrapHostedEventHandler(eventName, handler) {
   if (!__hostedUserActionEvents.has(eventName)) return handler;
   return (event) => {
@@ -1039,6 +1054,7 @@ function useConfirm() {
       const close = (value) => {
         renderPortal(null);
         host.remove();
+        if (value && __hostedUserActionDepth > 0) retainHostedConfirmedAction();
         resolve(value);
       };
       renderPortal(h(ConfirmDialog, {
@@ -1964,9 +1980,10 @@ const api = {
   // { userInitiated: true }, without making unrelated background calls noisy.
   call(actionId, args, options) {
     const requestOptions = options || {};
+    const confirmedUserAction = consumeHostedConfirmedAction();
     return requestHost('call', { actionId, args: args || {} }, {
       ...requestOptions,
-      userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0,
+      userInitiated: requestOptions.userInitiated === true || __hostedUserActionDepth > 0 || confirmedUserAction,
     });
   },
   async refresh() {
@@ -1985,7 +2002,7 @@ function ActionButton(props) {
     tone: props.tone || action.tone || 'primary',
     disabled: loading,
     children: props.children || label,
-    onClick: async () => {
+    onClick: async (event) => {
       try {
         setError('');
         const confirmMessage = props.confirm || action.confirm;
@@ -1993,7 +2010,7 @@ function ActionButton(props) {
           return;
         }
         setLoading(true);
-        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated: true });
+        const result = await api.call(actionId, props.values || props.args || {}, { userInitiated: event && event.isTrusted !== false });
         if (action.refresh_context !== false && props.refresh !== false) await api.refresh();
         if (typeof props.onResult === 'function') props.onResult(result);
       } catch (error) {
