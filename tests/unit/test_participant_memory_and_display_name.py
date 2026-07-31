@@ -2595,7 +2595,11 @@ async def test_reload_shares_subject_forget_fences_with_old_components():
 
     old_store = FactStore(time_indexed_memory=None)
     new_store = FactStore(time_indexed_memory=None)
+    old_store._facts["Neko"] = [{"id": "old"}]
+    old_fact_lock = old_store._get_lock("Neko")
+    old_persist_lock = old_store._get_persist_alock("Neko")
     runtime._share_subject_forget_state(old_store, new_store)
+    runtime._share_fact_store_write_state(old_store, new_store)
     subject = MemorySubject.participant("qq", "1001")
     old_generation = old_store._subject_forget_generation("Neko", subject)
 
@@ -2607,16 +2611,26 @@ async def test_reload_shares_subject_forget_fences_with_old_components():
         old_store._get_subject_forget_transaction_lock("Neko", subject)
         is new_store._get_subject_forget_transaction_lock("Neko", subject)
     )
+    assert new_store._get_lock("Neko") is old_fact_lock
+    assert new_store._get_persist_alock("Neko") is old_persist_lock
+    assert new_store._locks_guard is old_store._locks_guard
+    assert new_store._facts is old_store._facts
+    new_store._facts["Neko"] = [{"id": "forgotten"}]
+    assert old_store._facts["Neko"] == [{"id": "forgotten"}]
 
     old_reflection = ReflectionEngine(old_store, MagicMock())
     new_reflection = ReflectionEngine(new_store, MagicMock())
+    old_reflection_lock = old_reflection._get_alock("Neko")
     runtime._share_subject_forget_state(old_reflection, new_reflection)
+    runtime._share_reflection_write_locks(old_reflection, new_reflection)
     old_epoch = old_reflection._subject_forget_epoch("Neko", subject)
 
     await new_reflection.abegin_subject_forget("Neko", subject)
 
     assert old_reflection._subject_forget_epoch("Neko", subject) != old_epoch
     assert old_reflection._subject_forget_is_active("Neko", subject)
+    assert new_reflection._get_alock("Neko") is old_reflection_lock
+    assert new_reflection._alocks_guard is old_reflection._alocks_guard
 
     old_persona = PersonaManager()
     new_persona = PersonaManager()

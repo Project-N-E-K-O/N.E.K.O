@@ -208,6 +208,24 @@ def _share_subject_forget_state(old_component, new_component) -> None:
             setattr(new_component, attr, getattr(old_component, attr))
 
 
+def _share_fact_store_write_state(old_component, new_component) -> None:
+    """Keep full-file fact writers serialized and cache-coherent on reload."""
+    if old_component is None:
+        return
+    for attr in ("_locks", "_locks_guard", "_persist_alocks", "_facts"):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
+def _share_reflection_write_locks(old_component, new_component) -> None:
+    """Keep reflection and surfaced full-file writers serialized on reload."""
+    if old_component is None:
+        return
+    for attr in ("_alocks", "_alocks_guard"):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
 def _share_persona_write_state(old_component, new_component) -> None:
     """Keep persona writes and their cache coherent across a hot reload."""
     if old_component is None:
@@ -263,6 +281,8 @@ async def reload_memory_components():
             # the swap.
             _share_subject_forget_state(fact_store, new_facts)
             _share_subject_forget_state(reflection_engine, new_reflection)
+            _share_fact_store_write_state(fact_store, new_facts)
+            _share_reflection_write_locks(reflection_engine, new_reflection)
             _share_persona_write_state(persona_manager, new_persona)
             new_cursor_store = CursorStore()
             new_outbox = Outbox()
