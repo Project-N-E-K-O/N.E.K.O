@@ -695,6 +695,66 @@ def test_prompt_locale_writes_honor_cloudsave_fence(monkeypatch):
 
 
 @pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_writes_propagate_final_transaction_fence(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_BOOTSTRAP_IMPORTING,
+        MaintenanceModeError,
+    )
+
+    name = "FinalFenceNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    path_helper = "_subject_locale_path" if scoped else "_locale_path"
+    monkeypatch.setattr(locale_state, path_helper, lambda _name: str(locale_path))
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+
+    @contextmanager
+    def blocked_transaction(target):
+        raise MaintenanceModeError(
+            ROOT_MODE_BOOTSTRAP_IMPORTING,
+            operation="save",
+            target=target,
+        )
+        yield
+
+    monkeypatch.setattr(
+        locale_state,
+        "_prompt_locale_write_transaction",
+        blocked_transaction,
+    )
+    locale_state.invalidate_prompt_locale_caches()
+
+    with pytest.raises(MaintenanceModeError):
+        if scoped:
+            locale_state.record_subject_prompt_locale(
+                name,
+                subject,
+                "zh-TW",
+                order=1,
+            )
+        else:
+            locale_state.record_character_prompt_locale(
+                name,
+                "zh-TW",
+                order=1,
+            )
+
+    assert not locale_path.exists()
+
+
+@pytest.mark.parametrize("scoped", [False, True])
 def test_prompt_locale_write_failure_does_not_publish_cache(
     monkeypatch,
     tmp_path,
@@ -2362,3 +2422,23 @@ def test_persona_correction_locale_ignores_formatter_labels():
     pairs = [(0, {"old_text": "A", "new_text": "B"})]
     with language_context("en"):
         assert _detect_correction_prompt_language(pairs) == "en"
+
+
+@pytest.mark.parametrize(
+    ("ui_language", "text", "expected"),
+    [
+        ("es", "Me gusta el cafe", "es"),
+        ("pt", "Eu gosto de cafe", "pt"),
+        ("en", "I like coffee", "en"),
+    ],
+)
+def test_persona_fusion_keeps_ascii_ui_language(
+    ui_language,
+    text,
+    expected,
+):
+    from memory.persona.fusion import _detect_fusion_prompt_language
+    from utils.language_utils import language_context
+
+    with language_context(ui_language):
+        assert _detect_fusion_prompt_language(text) == expected

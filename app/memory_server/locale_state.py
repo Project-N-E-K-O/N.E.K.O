@@ -23,6 +23,7 @@ import os
 import threading
 import time
 
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.file_utils import atomic_write_json
 from utils.language_utils import (
     is_supported_language_code,
@@ -193,6 +194,8 @@ def _persist_locale_state_unlocked(
                     return
                 os.replace(staging_path, path)
                 _locale_cache[name] = (language, order, reserved_order)
+    except MaintenanceModeError:
+        raise
     except Exception as exc:
         logger.warning(
             "[PromptLocale] %s: persist failed: %s",
@@ -287,6 +290,8 @@ def _persist_subject_locale_state_unlocked(
                     return
                 os.replace(staging_path, path)
                 _subject_locale_cache[name] = snapshot
+    except MaintenanceModeError:
+        raise
     except Exception as exc:
         logger.warning(
             "[PromptLocale] %s: scoped locale persist failed: %s",

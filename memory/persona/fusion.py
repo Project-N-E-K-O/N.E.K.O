@@ -83,7 +83,11 @@ from config.prompts.prompts_memory import (
 )
 from memory.evidence import initial_reinforcement_from_importance
 from utils.file_utils import robust_json_loads
-from utils.language_utils import detect_prompt_language, get_global_language_full
+from utils.language_utils import (
+    detect_prompt_language,
+    get_global_language_full,
+    normalize_language_code,
+)
 from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens, truncate_to_tokens
 
@@ -97,6 +101,15 @@ _ENTITY_BUDGET = {
 }
 
 _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
+
+
+def _detect_fusion_prompt_language(text: str) -> str:
+    ui_language = get_global_language_full()
+    detected = detect_prompt_language(text, ui_language=ui_language)
+    ui_short = normalize_language_code(ui_language, format="short")
+    if detected == "en" and ui_short in {"es", "pt"}:
+        return ui_short
+    return detected
 
 
 class ExternalMemoryFusionError(RuntimeError):
@@ -319,10 +332,7 @@ class ExternalFusionMixin:
             str(cand.get("text") or "").strip()
             for cand in candidates
         )
-        lang = detect_prompt_language(
-            locale_text,
-            ui_language=get_global_language_full(),
-        )
+        lang = _detect_fusion_prompt_language(locale_text)
         entity_label = get_persona_fusion_entity_label(entity, lang)
         if count_tokens(cand_text) > EXTERNAL_IMPORT_FUSION_INPUT_MAX_TOKENS:
             # 候选超过单次融合输入池：尾部会被截掉、但整批指纹仍会记 folded，后段记忆

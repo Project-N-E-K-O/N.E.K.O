@@ -58,6 +58,15 @@ def test_cluster_hash_changes_when_refl_member_changes():
     assert a != b
 
 
+def test_cluster_locale_text_excludes_read_only_facts():
+    from memory.refine import MemoryRefineEngine
+
+    assert MemoryRefineEngine._cluster_locale_text([
+        _refl('r1', text='喜歡貓'),
+        _fact('f1', text='A long English fact used only as reference context.'),
+    ]) == '喜歡貓'
+
+
 # ── _all_stamped_fresh ───────────────────────────────────────────────
 
 

@@ -140,8 +140,12 @@ class MemoryRefineEngine:
 
     @staticmethod
     def _cluster_locale_text(cluster: list[dict]) -> str:
-        """Return raw member text without IDs or formatter metadata."""
-        return "\n".join(str(entry.get('text') or '') for entry in cluster)
+        """Return mutable member text without IDs or read-only fact context."""
+        return "\n".join(
+            str(entry.get('text') or '')
+            for entry in cluster
+            if entry.get(REFINE_TYPE_KEY) != 'fact'
+        )
 
     def __init__(self, config_manager):
         self._cm = config_manager
