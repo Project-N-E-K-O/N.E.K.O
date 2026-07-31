@@ -375,15 +375,7 @@ class _GenaiMixin:
         # 工具处于启用状态，就暂存整轮 text：普通文本轮在确认后释放，工具轮
         # 丢弃。这样 UI/TTS/history 三处都不会看到模型顺口生成的过渡语。
         buffer_iteration_text = bool(tools_payload and self.on_tool_call is not None)
-
-        def _cancelled() -> bool:
-            return hasattr(self, "_is_responding") and not self._is_responding
-
         for tool_iter in range(self.max_tool_iterations):
-            if _cancelled():
-                if tool_leak_filter is not None:
-                    tool_leak_filter.reset()
-                return
             system_instruction, contents = _genai_messages_to_contents(
                 _slop_reduced_for_genai(messages)
             )
@@ -438,10 +430,6 @@ class _GenaiMixin:
 
             try:
                 async for chunk in stream:
-                    if _cancelled():
-                        if tool_leak_filter is not None:
-                            tool_leak_filter.reset()
-                        return
                     # prompt_feedback.block_reason：Gemini 整段 input 被 safety
                     # 拦掉时填这个，candidate 可能根本没出现。
                     pf = getattr(chunk, "prompt_feedback", None)
@@ -558,10 +546,6 @@ class _GenaiMixin:
                     raise _GenaiToolsUnsupported(f"genai stream rejected tools: {e}") from e
                 raise
 
-            if _cancelled():
-                if tool_leak_filter is not None:
-                    tool_leak_filter.reset()
-                return
             if buffer_iteration_text and tool_leak_filter is not None:
                 tail, event = tool_leak_filter.finalize()
                 if event:
@@ -672,10 +656,6 @@ class _GenaiMixin:
                 "OmniOfflineClient(genai): tool iteration cap %d reached; forcing final answer without tools",
                 self.max_tool_iterations,
             )
-        if _cancelled():
-            if tool_leak_filter is not None:
-                tool_leak_filter.reset()
-            return
         # Forced-finalize：与 OpenAI 路径对偶。去掉 tools 再生成一次，逼模型
         # 基于已积累的 tool 结果输出最终文本，避免封顶后整轮静默。
         # 不吞异常：与 OpenAI 路径一致，让 SDK 调用失败原样向上抛，由 stream_text /

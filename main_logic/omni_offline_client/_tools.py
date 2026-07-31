@@ -364,15 +364,7 @@ class _ToolingMixin:
         # 文本，等 finish_reason 确认 turn 类型：普通文本轮再释放，工具轮丢弃。
         # 没启用工具时没有这种歧义，继续逐 chunk 流式转发。
         buffer_iteration_text = bool(tools_payload and self.on_tool_call is not None)
-
-        def _cancelled() -> bool:
-            return hasattr(self, "_is_responding") and not self._is_responding
-
         for tool_iter in range(self.max_tool_iterations):
-            if _cancelled():
-                if tool_leak_filter is not None:
-                    tool_leak_filter.reset()
-                return
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
             had_visible_text = False
@@ -383,10 +375,6 @@ class _ToolingMixin:
             streamed_reasoning_buffer = ""
             try:
                 async for chunk in self.llm.astream(messages, **overrides):  # noqa: LLM_INPUT_BUDGET  # dialog messages bounded by SESSION_ARCHIVE_TRIGGER_TOKENS + RECENT_PER_MESSAGE_MAX_TOKENS truncation; output budget set per-call via overrides.
-                    if _cancelled():
-                        if tool_leak_filter is not None:
-                            tool_leak_filter.reset()
-                        return
                     if getattr(chunk, "content", None):
                         if tool_leak_filter is not None:
                             chunk.content = self._filter_tool_leak_content(
@@ -441,10 +429,6 @@ class _ToolingMixin:
                     tool_leak_filter.reset()
                 raise
 
-            if _cancelled():
-                if tool_leak_filter is not None:
-                    tool_leak_filter.reset()
-                return
             if buffer_iteration_text and tool_leak_filter is not None:
                 tail, event = tool_leak_filter.finalize()
                 if event:
@@ -529,10 +513,6 @@ class _ToolingMixin:
                 "OmniOfflineClient: tool iteration cap %d reached; forcing final answer without tools",
                 self.max_tool_iterations,
             )
-        if _cancelled():
-            if tool_leak_filter is not None:
-                tool_leak_filter.reset()
-            return
         # Forced-finalize：工具轮次封顶后，去掉 tools 再调一次，逼模型基于已
         # 积累的 tool 结果给出最终文本。否则弱模型在 finish_reason=tool_calls
         # 上死循环到封顶后整轮静默，上游只能报"未产生文本回复"，用户那边就
