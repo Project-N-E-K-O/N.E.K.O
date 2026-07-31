@@ -60,7 +60,9 @@ def _registry_must_be_empty_afterwards():
     """
     yield
     assert content_gate._EXCLUSIVE == {}, f"独占占用泄漏：{content_gate._EXCLUSIVE}"
-    assert content_gate._PAIR_WRITERS == {}, f"共享占用泄漏：{content_gate._PAIR_WRITERS}"
+    assert content_gate._PARTIAL_WRITERS == {}, (
+        f"共享占用泄漏：{content_gate._PARTIAL_WRITERS}"
+    )
 
 
 def _raise_inside(claim):
@@ -93,7 +95,7 @@ def test_partial_writers_remain_shared(tmp_path):
     with claim_reference_pair(str(tmp_path)):
         with claim_partial_writer(str(tmp_path), purpose='上传预览图'):
             pass
-        with pytest.raises(ContentFolderBusy, match='参考语音正在写入'):
+        with pytest.raises(ContentFolderBusy, match='局部文件正在写入'):
             with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
                 pass
 
@@ -794,7 +796,9 @@ async def test_the_routes_still_work_when_nothing_holds_the_folder(export_folder
 # ── structural guards ───────────────────────────────────────────────────
 
 
-_CLAIM_CALLS = {'claim_content_folder', 'claim_reference_pair'}
+_CLAIM_CALLS = {
+    'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+}
 _WORKER_OFFLOAD_CALLS = {'to_thread', 'run_in_executor', 'submit'}
 _EAGER_ITERATOR_CONSUMERS = {
     'all', 'any', 'dict', 'frozenset', 'list', 'max', 'min', 'set', 'sorted', 'sum', 'tuple',
@@ -1760,10 +1764,9 @@ _UNIT_CLAIMS = {
     ('publish', '_delete_content_folder'): 'claim_content_folder',
 }
 
-# 已知欠账也用函数专属名字入账。`open`/`write` 不能全模块扫描，但在这个路由里正是
-# 那次未校验路径、未占用、还直接跑在事件循环上的 preview 写入。
+# 通用写 API 只在具体 worker 里入账，避免把无关 metadata 写入当成目录竞态。
 _SCOPED_OPERATIONS = {
-    ('preview_cards', 'upload_preview_image'): {'open', 'write'},
+    ('preview_cards', '_write_preview_image'): {'atomic_write_bytes'},
 }
 
 # 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
@@ -1781,16 +1784,12 @@ _ALLOWED_UNCLAIMED = {('publish', 'prepare_workshop_upload')}
 
 # ⚠️ 已知缺口，不是豁免。放在这里是为了让它**可见**、而且会随代码漂移被重新审视：
 # publish_to_workshop 把预览图 copy2 进内容目录发生在 claim **之前**，同一目录被
-# 重复发布时能撕裂预览图。修它要连 /upload-preview-image 一起动 —— 那条路由既没
-# 占用，也没有 _assert_under_base 路径校验，而且是在事件循环上直接 open().write()，
-# 要拿占用得先把这次写挪进 worker 单元。那是独立一个 PR 的事。删掉这一条之前先确认
-# 那边真的修好了。
+# 重复发布时仍能撕裂预览图。独立的 /upload-preview-image 路径已由 #2627 改成
+# worker 内的 partial claim + atomic write，因此不再列为欠账。
 _KNOWN_GAPS = {
     # 绑定到具体源码位置，而不是同函数同名操作的数量；旧点被修、新点冒出来不能互换。
     ('publish', 'publish_to_workshop', 596, 'copy2'),
     ('publish', 'publish_to_workshop', 620, 'copy2'),
-    ('preview_cards', 'upload_preview_image', 538, 'open'),
-    ('preview_cards', 'upload_preview_image', 539, 'write'),
 }
 
 
@@ -1882,6 +1881,26 @@ def _unclaimed_folder_operations(
     in which case being inside the ``with`` says nothing about when the work
     actually touches the folder.
     """
+    claim_aliases = {}
+    for node in _walk_own_scope(func):
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = node.value
+        expressions = [value]
+        if isinstance(value, ast.IfExp):
+            expressions = [value.body, value.orelse]
+        kinds = {
+            _tail_name(expression)
+            for expression in expressions
+            if isinstance(expression, ast.Call)
+            and _tail_name(expression) in _CLAIM_CALLS
+        }
+        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        if kinds:
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    claim_aliases[target.id] = kinds
+
     claimed_scopes = []
     for block in _walk_own_scope(func):
         if not isinstance(block, ast.With):
@@ -1891,6 +1910,8 @@ def _unclaimed_folder_operations(
             context = item.context_expr
             if isinstance(context, ast.Call) and _tail_name(context) in _CLAIM_CALLS:
                 claim_kinds.add(_tail_name(context))
+            elif isinstance(context, ast.Name):
+                claim_kinds.update(claim_aliases.get(context.id, set()))
         if not claim_kinds:
             continue
         claimed_scopes.append((
@@ -2096,6 +2117,20 @@ def test_the_claim_guard_resolves_operation_aliases():
         assert any(item[3] == 'rmtree' for item in offenders), (
             f'{name} 必须把 alias 还原成受保护的 rmtree'
         )
+
+
+def test_the_claim_guard_resolves_claim_context_aliases():
+    guarded = ast.parse(
+        'def _write_preview_image():\n'
+        '    claim = (\n'
+        "        claim_partial_writer(folder, purpose='preview')\n"
+        '        if folder else nullcontext()\n'
+        '    )\n'
+        '    with claim:\n'
+        '        atomic_write_bytes(path, data)\n'
+    ).body[0]
+
+    assert _unclaimed_folder_operations(guarded, 'preview_cards') == []
 
 
 def test_the_claim_guard_requires_one_continuous_claim():
