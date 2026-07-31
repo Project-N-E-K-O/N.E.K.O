@@ -295,6 +295,14 @@ async def _run_locked_storage_job(job: Callable[[], Any]) -> Any:
     except asyncio.CancelledError:
         with suppress(asyncio.CancelledError):
             await asyncio.wait({task})
+        # 取回异常再走人：没人 retrieve 的话 asyncio 会在 GC 时打
+        # "Task exception was never retrieved"，把一次落盘失败变成一条谁也对不上的
+        # 日志。这里只是消费掉它——取消已经发生，原来的 CancelledError 才是要传出去的。
+        if task.done() and not task.cancelled() and task.exception() is not None:
+            logger.warning(
+                "storage write job failed after the request was cancelled: %s",
+                task.exception(),
+            )
         raise
 
 
