@@ -31,10 +31,10 @@ import re
 # concrete language/tokenize helpers at app startup; we read them via
 # resolvers that fall back gracefully when nothing is bound.
 from config._runtime import (
-    normalize_language_code,
     resolve_global_language,
     truncate_to_tokens,
 )
+from config.prompts._locale import normalize_prompt_locale
 from config.prompts.avatar_interaction_contract import (
     AVATAR_INTERACTION_ROUND_GESTURES as _AVATAR_INTERACTION_ROUND_GESTURES,
     AVATAR_INTERACTION_TOUCH_ZONE_TOOLS as _AVATAR_INTERACTION_TOUCH_ZONE_PROMPT_TOOLS,
@@ -843,24 +843,19 @@ _AVATAR_INTERACTION_PROMPT_ACTOR_FALLBACK: dict[str, str] = {
     "pt": "A outra pessoa",
 }
 def _avatar_interaction_locale(language: str | None) -> str:
+    """Normalize a language code to an avatar-interaction prompt key.
+
+    Deliberately no longer pre-normalizes through
+    ``config._runtime.normalize_language_code``: that forwarder returns its
+    input unchanged while unbound, which made Steam codes resolve differently
+    in a bare import than in the running app ("tchinese" gave ``en`` in tests
+    but ``zh-TW`` in production). ``normalize_prompt_locale`` is self-contained,
+    so both agree.
+    """
     raw_language = language or resolve_global_language()
-    normalized = normalize_language_code(raw_language, format="full")
-    locale = str(normalized or "en").strip().lower()
-    if locale.startswith("zh"):
-        if "tw" in locale or "hant" in locale or "hk" in locale:
-            return "zh-TW"
-        return "zh"
-    if locale.startswith("ja"):
-        return "ja"
-    if locale.startswith("ko"):
-        return "ko"
-    if locale.startswith("ru"):
-        return "ru"
-    if locale.startswith("es"):
-        return "es"
-    if locale.startswith("pt"):
-        return "pt"
-    return "en"
+    return normalize_prompt_locale(
+        raw_language, default="en", simplified="zh", keep_traditional=True
+    )
 
 
 def _avatar_interaction_korean_subject_actor(name: str) -> str:

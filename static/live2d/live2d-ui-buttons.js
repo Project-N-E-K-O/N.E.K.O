@@ -474,10 +474,11 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
 
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !isMobileWidth()) {
-            const muteData = this.createMicMuteButton(btnWrapper);
-            // 监听麦克风切换事件以更新静音按钮可见性
+            const quickControls = this.createVoiceSessionQuickControls(btnWrapper);
+            const muteData = quickControls && quickControls.mute;
+            // 监听麦克风切换事件以更新静音按钮可见性；屏幕分享快捷按钮在共享工厂中自行同步。
             const micToggleHandler = (e) => {
                 if (muteData && muteData.updateVisibility) {
                     muteData.updateVisibility(e.detail.active);
@@ -764,6 +765,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         if (this.isLocked) {
             return;
         }
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
             hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
             return;
@@ -772,6 +782,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
         buttonsContainer.style.display = 'flex';
 
         setTimeout(() => {
+            if (
+                typeof this.isLive2DPeekActive === 'function'
+                && this.isLive2DPeekActive()
+            ) {
+                if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                    this._setLive2DPeekControlsSuppressed(true);
+                }
+                return;
+            }
             const inTutorial = buttonsContainer.dataset.inTutorial === 'true' || window.isInTutorial === true;
             if (!this.isFocusing && !inTutorial) {
                 buttonsContainer.style.display = 'none';
@@ -792,6 +811,15 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     }
 
     this.tutorialProtectionTimer = setInterval(() => {
+        if (
+            typeof this.isLive2DPeekActive === 'function'
+            && this.isLive2DPeekActive()
+        ) {
+            if (typeof this._setLive2DPeekControlsSuppressed === 'function') {
+                this._setLive2DPeekControlsSuppressed(true);
+            }
+            return;
+        }
         if (window.isInTutorial === true) {
             if (isYuiGuideLive2DPreparing() || isYuiGuideFloatingToolbarSuppressed()) {
                 hideYuiGuideLive2DPreparingButtonStyles(buttonsContainer);
@@ -830,6 +858,13 @@ Live2DManager.prototype.setupFloatingButtons = function(model) {
     this._uiWindowHandlers = this._uiWindowHandlers || [];
     this._uiWindowHandlers.push({ event: 'click', handler: this._outsideClickHandler, target: document });
 
+    if (
+        typeof this.isLive2DPeekActive === 'function' &&
+        this.isLive2DPeekActive() &&
+        typeof this._setLive2DPeekControlsSuppressed === 'function'
+    ) {
+        this._setLive2DPeekControlsSuppressed(true);
+    }
     window.dispatchEvent(new CustomEvent('live2d-floating-buttons-ready'));
     console.log('[Live2D] 浮动按钮就绪事件已发送');
 };

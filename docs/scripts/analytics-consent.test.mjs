@@ -254,6 +254,39 @@ test('recognizes only the N.E.K.O. Steam store app URL', async () => {
   )
 })
 
+test('recognizes locale home navigation only when leaving a concrete docs page', async () => {
+  const analytics = await freshAnalyticsModule()
+
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online/guide/'),
+    true,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/zh-CN/api/'),
+    true,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/', 'https://project-neko.online/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/zh-CN/', 'https://project-neko.online/ja/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('/api/', 'https://project-neko.online/guide/'),
+    false,
+  )
+  assert.equal(
+    analytics.isDocsHomeUrl('https://project-neko.cn/', 'https://project-neko.online/guide/'),
+    false,
+  )
+})
+
 test('delegated Steam CTA tracking emits one consented GA4 event', async () => {
   const analytics = await freshAnalyticsModule()
   const fixture = browserFixture()
@@ -307,6 +340,44 @@ test('Steam CTA placement is sanitized before it is sent to GA4', async () => {
     eventCommand[2].link_url,
     'https://store.steampowered.com/app/4099310/__NEKO/',
   )
+})
+
+test('delegated docs-to-home tracking emits one consented GA4 event', async () => {
+  const analytics = await freshAnalyticsModule()
+  const fixture = browserFixture()
+  fixture.windowObject.location.href =
+    'https://project-neko.online/guide/?utm_source=sidebar&token=secret#account'
+  const anchor = {
+    href: 'https://project-neko.online/?token=secret#account',
+    textContent: '  N.E.K.O. Docs  ',
+  }
+  const target = {
+    closest(selector) {
+      assert.equal(selector, 'a[href]')
+      return anchor
+    },
+  }
+
+  analytics.installSteamCtaClickTracking(fixture)
+  fixture.documentObject.dispatch('click', { target })
+  assert.equal(fixture.windowObject.dataLayer, undefined)
+
+  analytics.acceptGoogleAnalytics(fixture)
+  fixture.documentObject.dispatch('click', { target })
+
+  const eventCommand = Array.from(fixture.windowObject.dataLayer.at(-1))
+  assert.equal(eventCommand[0], 'event')
+  assert.equal(eventCommand[1], analytics.DOCS_HOME_EVENT_NAME)
+  assert.deepEqual(eventCommand[2], {
+    link_url: 'https://project-neko.online/',
+    link_domain: 'project-neko.online',
+    source_path: '/guide/',
+    destination_path: '/',
+    page_location:
+      'https://project-neko.online/guide/?utm_source=sidebar',
+    page_title: 'N.E.K.O. Docs',
+    transport_type: 'beacon',
+  })
 })
 
 test('a cross-tab denial immediately disables active analytics', async () => {

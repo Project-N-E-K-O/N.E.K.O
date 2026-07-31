@@ -904,3 +904,90 @@ async def test_final_swap_restore_excludes_extra_delivered_after_promote():
     assert mgr.session is new_session
     assert mgr.pending_extra_replies == [extra_kept], \
         "an extra whose callback was consumed inside the window must not be re-queued"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# prime_context dispatch failures (#2515 T2): since #2345 the skipped=False
+# prime dispatches through the response arbiter, whose ticket surfaces
+# failures as RuntimeError / ConnectionError / TimeoutError — none of them in
+# the targeted handler's legacy (ConnectionClosed, AttributeError) tuple.
+# Nothing leaked before this fix: the swap's OUTER except Exception caught
+# them and ran the same cleanup. What was wrong is the ENVELOPE — the outer
+# handler reports INTERNAL_UPDATE_FAILED to the frontend, while a failed
+# prime is the benign "abandon this swap, keep the old session" case the
+# targeted handler exists for. These tests pin the envelope, one per prime
+# branch (each guards its own except site).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class _PrimeDispatchFails(_FakeSession):
+    """prime_context raises the way an arbiter ticket failure surfaces."""
+
+    async def prime_context(self, text, *, skipped=False):
+        await super().prime_context(text, skipped=skipped)
+        raise RuntimeError(
+            "response dispatch interrupted by pending server VAD response"
+        )
+
+
+@pytest.mark.asyncio
+async def test_prime_dispatch_failure_takes_the_targeted_abort_not_the_generic_handler():
+    """skipped=False branch (announce prime, the arbiter-queued one)."""
+    mgr = _make_swap_manager()
+    statuses = []
+
+    async def _send_status(payload):
+        statuses.append(payload)
+
+    mgr.send_status = _send_status
+    old_session = _FakeSession("old")
+    new_session = _PrimeDispatchFails("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    # A queued extra forces the skipped=False announce-prime branch.
+    mgr.pending_extra_replies = [_extra_entry("id-a", "task A finished")]
+
+    await mgr._perform_final_swap_sequence()
+
+    assert new_session.prime_calls and new_session.prime_calls[0][1] is False, \
+        "the failing prime must be the skipped=False announce prime"
+    assert mgr.session is old_session, "an abandoned swap keeps the old session"
+    assert new_session.closed, "the targeted abort must close the pending session"
+    assert mgr.pending_session is None
+    assert mgr.is_hot_swap_imminent is False
+    assert not any("INTERNAL_UPDATE_FAILED" in s for s in statuses), (
+        "a failed prime dispatch is a benign swap abort — it must take the "
+        "targeted handler, not fall through to the generic one that alarms "
+        "the frontend with INTERNAL_UPDATE_FAILED"
+    )
+
+
+@pytest.mark.asyncio
+async def test_prime_dispatch_failure_on_the_skipped_branch_takes_the_targeted_abort():
+    """skipped=True branch (instruction prime) — guards the second except site."""
+    mgr = _make_swap_manager()
+    statuses = []
+
+    async def _send_status(payload):
+        statuses.append(payload)
+
+    mgr.send_status = _send_status
+    old_session = _FakeSession("old")
+    new_session = _PrimeDispatchFails("pending")
+    mgr.session = old_session
+    mgr.pending_session = new_session
+    mgr.is_hot_swap_imminent = True
+    mgr.message_handler_task = None
+    mgr.pending_extra_replies = []  # no extras → the skipped=True branch
+
+    await mgr._perform_final_swap_sequence()
+
+    assert new_session.prime_calls and new_session.prime_calls[0][1] is True, \
+        "the failing prime must be the skipped=True instruction prime"
+    assert mgr.session is old_session
+    assert new_session.closed
+    assert mgr.pending_session is None
+    assert mgr.is_hot_swap_imminent is False
+    assert not any("INTERNAL_UPDATE_FAILED" in s for s in statuses)

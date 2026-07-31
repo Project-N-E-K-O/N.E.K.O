@@ -3962,7 +3962,7 @@
 
                 btnWrapper.appendChild(btn);
                 if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) {
-                    this.createMicMuteButton(btnWrapper);
+                    this.createVoiceSessionQuickControls(btnWrapper);
                 }
 
                 let triggerBtn = null;

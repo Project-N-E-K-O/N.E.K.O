@@ -125,6 +125,7 @@ from utils.logger_config import setup_logging  # noqa: E402
 from utils.ssl_env_diagnostics import probe_ssl_environment, write_ssl_diagnostic  # noqa: E402
 from utils.asyncio_executor import configure_default_executor  # noqa: E402
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware  # noqa: E402
+from utils.host_origin_guard import HostOriginGuardMiddleware  # noqa: E402
 
 _main_log_level = getattr(
     logging, (os.environ.get("NEKO_LOG_LEVEL") or "INFO").upper(), logging.INFO
@@ -607,6 +608,9 @@ async def main_storage_limited_mode_guard(request: Request, call_next):
 # 文件上传（模型/音乐/角色卡等）一律放行，交给各上传 router 自带的流式分块守门。
 # add_middleware 后注册即处于最外层，最先执行——解析前拒收，不浪费后续处理。
 app.add_middleware(InboundBodySizeLimitMiddleware)
+# Registered after the body guard so it is the outermost ASGI middleware and
+# rejects DNS-rebinding Host values before any HTTP or WebSocket route runs.
+app.add_middleware(HostOriginGuardMiddleware)
 
 
 @app.exception_handler(MaintenanceModeError)

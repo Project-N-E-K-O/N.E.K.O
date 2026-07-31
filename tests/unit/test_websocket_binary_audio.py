@@ -76,6 +76,9 @@ class _ProtocolManager:
     def set_independent_asr_handshake(self, value) -> None:
         self.calls.append(("asr_handshake", value))
 
+    def set_voice_input_resource_optimization_handshake(self, value) -> None:
+        self.calls.append(("resource_optimization_handshake", value))
+
     def start_session(self, *_args, **_kwargs):
         self.calls.append(("start_session", None))
 
@@ -125,6 +128,35 @@ class _EventWebSocket:
 
     async def close(self) -> None:
         self.closed = True
+
+
+class _DeferredHandshakeManager(_ProtocolManager):
+    """Model the real async start task reading manager fallback state late."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.asr_override = None
+        self.optimization_override = None
+        self.started_overrides: list[tuple[object, object]] = []
+
+    def set_independent_asr_handshake(self, value) -> None:
+        super().set_independent_asr_handshake(value)
+        self.asr_override = value if isinstance(value, bool) else None
+
+    def set_voice_input_resource_optimization_handshake(self, value) -> None:
+        super().set_voice_input_resource_optimization_handshake(value)
+        self.optimization_override = value if isinstance(value, bool) else None
+
+    async def start_session(self, *_args, **kwargs) -> None:
+        self.started_overrides.append(
+            (
+                kwargs.get("handshake_override", self.asr_override),
+                kwargs.get(
+                    "resource_optimization_override",
+                    self.optimization_override,
+                ),
+            )
+        )
 
 
 def _install_protocol_endpoint(
@@ -344,6 +376,7 @@ async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
                 "action": "start_session",
                 "input_type": "audio",
                 "independent_asr_enabled": True,
+                "voice_input_resource_optimization_enabled": False,
             },
             {"action": "start_session", "input_type": "audio"},
         ]
@@ -362,8 +395,36 @@ async def test_start_session_forwards_independent_asr_handshake_before_dispatch(
     assert [
         payload for name, payload in manager.calls if name == "asr_handshake"
     ] == [True, None]
+    assert [
+        payload
+        for name, payload in manager.calls
+        if name == "resource_optimization_handshake"
+    ] == [False, None]
     call_names = [name for name, _payload in manager.calls]
-    assert call_names.index("asr_handshake") < call_names.index("start_session")
+    start_indices = [
+        index for index, name in enumerate(call_names) if name == "start_session"
+    ]
+    asr_indices = [
+        index for index, name in enumerate(call_names) if name == "asr_handshake"
+    ]
+    optimization_indices = [
+        index
+        for index, name in enumerate(call_names)
+        if name == "resource_optimization_handshake"
+    ]
+    assert len(start_indices) == len(asr_indices) == len(optimization_indices) == 2
+    assert all(
+        asr_handshake < start
+        for asr_handshake, start in zip(asr_indices, start_indices, strict=True)
+    )
+    assert all(
+        optimization_handshake < start
+        for optimization_handshake, start in zip(
+            optimization_indices,
+            start_indices,
+            strict=True,
+        )
+    )
 
 
 @pytest.mark.asyncio
@@ -1438,3 +1499,41 @@ async def test_replaced_socket_cannot_authorize_or_start_audio(
     assert "authorize" not in [name for name, _payload in manager.calls]
     assert "start_session" not in [name for name, _payload in manager.calls]
     assert websocket.closed is True
+
+
+@pytest.mark.asyncio
+async def test_each_start_task_keeps_its_own_voice_handshake_overrides(
+    monkeypatch,
+) -> None:
+    manager = _DeferredHandshakeManager()
+    websocket = _EventWebSocket(
+        [
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_enabled": False,
+                "voice_input_resource_optimization_enabled": True,
+            },
+            {
+                "action": "start_session",
+                "input_type": "text",
+                "independent_asr_enabled": True,
+                "voice_input_resource_optimization_enabled": False,
+            },
+        ]
+    )
+    _install_protocol_endpoint(
+        monkeypatch,
+        manager=manager,
+        websocket=websocket,
+    )
+    deferred: list[object] = []
+    monkeypatch.setattr(websocket_router, "_fire_task", deferred.append)
+
+    await websocket_router.websocket_endpoint(websocket, "Lan")
+    await asyncio.gather(*deferred)
+
+    assert manager.started_overrides == [
+        (False, True),
+        (True, False),
+    ]

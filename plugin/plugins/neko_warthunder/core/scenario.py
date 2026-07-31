@@ -11,11 +11,11 @@ from .contracts import (
     COMBAT_STRESS,
     CRITICAL_RISK,
     DEAD,
-    END_MISSION_STATUSES,
     IN_FLIGHT,
     OUT_OF_BATTLE,
     SPAWNING,
     BattleState,
+    is_battle_end_status,
 )
 
 _STRESS_G_THRESHOLD = 5.0
@@ -65,7 +65,7 @@ class ScenarioResolver:
             self._clear_runtime_stress()
             return OUT_OF_BATTLE
 
-        if (state.mission_status or "").lower() in END_MISSION_STATUSES:
+        if is_battle_end_status(state.mission_status):
             return BATTLE_ENDED
 
         if not state.in_battle:
@@ -118,12 +118,15 @@ class ScenarioResolver:
             if _has_close_surface_contact(state, _NAVAL_CONTACT_FALLBACK_M):
                 self._extend_stress("surface_contact", now, _NAVAL_CONTACT_WINDOW_SECONDS)
 
+        # 交火压力只认可归属到本机的战斗条目。
+        # state.hud_events 是未过滤的全场战斗日志（数据层原样 append 全部 HUD 消息），
+        # 多人对局里击杀榜近乎连续，按它计压力会让玩家独自巡航时也长期停在
+        # COMBAT_STRESS，进而压掉 low_fuel 与陪伴类输出。combat.feed 是同一条 damage
+        # 流的已解析版本，且带 is_my_kill / is_my_death 归属标记。
         max_dmg_id: int | None = None
-        for event in state.hud_events:
-            if str(event.get("kind")) != "damage":
-                continue
+        for item in _owned_combat_feed_items(state):
             try:
-                eid = int(event.get("id"))
+                eid = int(item.get("id"))
             except (TypeError, ValueError):
                 continue
             if max_dmg_id is None or eid > max_dmg_id:
@@ -156,6 +159,27 @@ class ScenarioResolver:
         expired = [reason for reason, until in self._stress_reason_until.items() if now >= until]
         for reason in expired:
             self._stress_reason_until.pop(reason, None)
+
+
+def _owned_combat_feed_items(state: BattleState):
+    """combat.feed 中归属本机的条目（致命与非致命交火）。
+
+    身份未确定时数据层不会置 involves_me，此时不产生 damage 压力——宁可少压制，
+    也不要把全场活跃度误判成本机在交火。
+    """
+    feed = state.combat.get("feed") if isinstance(state.combat, dict) else None
+    if not isinstance(feed, list):
+        return []
+    return [
+        item
+        for item in feed
+        if isinstance(item, dict)
+        and (
+            item.get("involves_me") is True
+            or item.get("is_my_kill") is True
+            or item.get("is_my_death") is True
+        )
+    ]
 
 
 def _damage_stress_window_seconds(domain: str) -> float:

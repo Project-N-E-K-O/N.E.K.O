@@ -13,6 +13,7 @@ from plugin.plugins.neko_warthunder.adapters.neko_dispatcher import (
     _output_event_max_age_seconds,
     _quiet_window_suppression,
 )
+from plugin.plugins.neko_warthunder.adapters.runtime_timeline import RuntimeTimeline
 from plugin.plugins.neko_warthunder.adapters.telemetry_client import parse_telemetry
 from plugin.plugins.neko_warthunder.core.arbiter import Arbiter
 from plugin.plugins.neko_warthunder.core.contracts import (
@@ -22,11 +23,20 @@ from plugin.plugins.neko_warthunder.core.contracts import (
     WtConfig,
 )
 from plugin.plugins.neko_warthunder.core.safety_guard import SafetyGuard
+from plugin.plugins.neko_warthunder.detectors._base import DetectorEngine
 from plugin.plugins.neko_warthunder.detectors.discrete.lifecycle import (
     BattleEndDetector,
     DeathDetector,
+    KillDetector,
+)
+from plugin.plugins.neko_warthunder.detectors.discrete.free_text import (
+    FreeTextActivityDetector,
+)
+from plugin.plugins.neko_warthunder.detectors.discrete.notices import (
+    HudNoticeDetector,
 )
 from plugin.plugins.neko_warthunder.detectors.discrete.proximity import ProximityDetector
+from plugin.plugins.neko_warthunder.detectors.discrete.radio import RadioCommandDetector
 from plugin.plugins.neko_warthunder.detectors.discrete.situation import AirSituationDetector
 
 
@@ -41,6 +51,7 @@ _DATA_PROCESS = (
 sys.path.insert(0, str(_DATA_PROCESS))
 
 from wt_server import TelemetryService  # noqa: E402
+from wt_recorder import SessionRecorder  # noqa: E402
 import wt_capture  # noqa: E402
 from wt_telemetry import (  # noqa: E402
     ConnectionState,
@@ -70,6 +81,157 @@ def test_urgent_output_migration_marker_write_failure_does_not_abort_startup() -
     )
 
     assert warnings == ["urgent output TTS migration flag persist failed: OSError"]
+
+
+def test_late_kill_while_dead_reaches_trade_arbiter_once() -> None:
+    cfg = WtConfig(
+        global_rate_limit_seconds=0,
+        critical_preempt_cooldown_seconds=0,
+        kill_coalesce_window_seconds=2,
+    )
+    engine = DetectorEngine([KillDetector()])
+    arbiter = Arbiter(SafetyGuard(cfg))
+    base = {
+        "connected": True,
+        "conn_state": "in_battle",
+        "in_battle": True,
+        "vehicle_valid": True,
+        "battle_id": "B1",
+    }
+    alive = BattleState(**base, combat={"feed": []}, timestamp=100)
+    death, _ = arbiter.decide(
+        [BattleEvent("you_died", level="critical", ts=100)],
+        "DEAD",
+        100,
+    )
+
+    dead_feed = {
+        "feed": [
+            {
+                "id": 4,
+                "is_kill": True,
+                "is_my_kill": True,
+                "killer": "Me",
+                "victim": "V4",
+            }
+        ]
+    }
+    dead = BattleState(
+        **base,
+        combat=dead_feed,
+        dead=True,
+        dead_source="hud",
+        timestamp=101,
+    )
+    candidates = engine.feed(alive, dead)
+    trade, chain = arbiter.decide(candidates, "DEAD", 101)
+
+    assert death is not None and death.event_id == "you_died"
+    assert [event.event_id for event in candidates] == ["you_killed"]
+    assert trade is not None and trade.event_id == "you_killed"
+    assert trade.payload["trade_death"] is True
+    assert any(item["reason"] == "trade_kill_after_death" for item in chain)
+
+    respawned = BattleState(**base, combat=dead_feed, timestamp=102)
+    assert engine.feed(dead, respawned) == []
+
+
+def test_dead_state_consumes_persistent_feeds_without_respawn_replay() -> None:
+    engine = DetectorEngine(
+        [
+            FreeTextActivityDetector(),
+            HudNoticeDetector(),
+            ProximityDetector(),
+            RadioCommandDetector(),
+        ]
+    )
+    persistent_data = {
+        "connected": True,
+        "conn_state": "in_battle",
+        "in_battle": True,
+        "vehicle_valid": True,
+        "domain": "ground",
+        "battle_id": "B1",
+        "combat": {
+            "player_name": "Pilot",
+            "self": {"name": "Pilot", "source": "manual", "confidence": 1.0},
+        },
+        "raw": {"awards": {"feed": [{"id": 20, "code": "final_blow"}]}},
+        "hud_notices": [
+            {"id": 21, "code": "engine_overheat", "level": "critical"}
+        ],
+        "proximity_events": [{"id": 22, "kind": "enter", "distance_m": 500}],
+        "chat": [{"id": 23, "sender": "Pilot", "msg": "进攻 D 点！"}],
+    }
+    alive = BattleState(
+        connected=True,
+        conn_state="in_battle",
+        in_battle=True,
+        vehicle_valid=True,
+        battle_id="B1",
+    )
+    dead = BattleState(**persistent_data, dead=True)
+    assert engine.feed(alive, dead) == []
+
+    respawned = BattleState(**persistent_data)
+    assert engine.feed(dead, respawned) == []
+
+
+def test_stopped_recorder_preserves_final_session_size(tmp_path) -> None:
+    recorder = SessionRecorder(root_dir=str(tmp_path), max_session_bytes=2048)
+    recorder.start()
+    for _ in range(200):
+        recorder.write_events("hudmsg", [{"blob": "x" * 512}])
+        if not recorder.recording:
+            break
+
+    status = recorder.status()
+    assert status["recording"] is False
+    assert status["stopped_reason"] == "max_session_bytes_reached"
+    assert status["session_bytes"] >= 2048
+
+
+def test_plugin_panel_uses_ordinary_button_semantics_for_view_switching() -> None:
+    panel = (
+        Path(__file__).resolve().parents[2]
+        / "plugin"
+        / "plugins"
+        / "neko_warthunder"
+        / "ui"
+        / "panel.tsx"
+    ).read_text(encoding="utf-8")
+
+    assert 'role="tablist"' not in panel
+    assert 'role="tab"' not in panel
+    for view in ("overview", "activity", "diagnostics"):
+        assert (
+            f'<button type="button" aria-pressed={{activeTab === "{view}"}}'
+            in panel
+        )
+
+
+def test_apply_config_refreshes_detector_heartbeat_without_rebuild() -> None:
+    plugin = object.__new__(NekoWarthunderPlugin)
+    plugin.cfg = WtConfig()
+    plugin.safety = SafetyGuard(plugin.cfg)
+    plugin.timeline = RuntimeTimeline()
+    plugin.data_layer_manager = SimpleNamespace(configure=lambda _cfg: None)
+    plugin._session_dry_run_override = None
+    plugin.engine = plugin._build_engine()
+    original_engine = plugin.engine
+    heartbeat_detectors = [
+        detector
+        for detector in plugin.engine.detectors
+        if getattr(detector, "id", "")
+        in {"stall_risk", "high_aoa", "over_g", "low_alt_danger", "overspeed"}
+    ]
+    assert heartbeat_detectors
+    assert all(detector.critical_heartbeat_seconds == 5 for detector in heartbeat_detectors)
+
+    plugin._apply_config(WtConfig(critical_preempt_cooldown_seconds=0))
+
+    assert plugin.engine is original_engine
+    assert all(detector.critical_heartbeat_seconds == 0 for detector in heartbeat_detectors)
 
 
 def test_exited_managed_process_preserves_failure_when_auto_start_is_disabled(tmp_path) -> None:
@@ -439,7 +601,10 @@ def test_battle_end_uses_normal_output_suppression_without_preempting() -> None:
     event = BattleEvent("battle_end", ts=100.0)
     chosen, chain = Arbiter(safety).decide([event], BATTLE_ENDED, 100.0)
     assert chosen is None
-    assert chain[-1]["reason"] == "rate_limited(11.0s)"
+    # battle_end is not a preempting cue. Its 8s freshness window cannot
+    # survive the remaining 11s global rate limit, so it must not occupy the
+    # arbiter's single pending slot.
+    assert chain[-1]["reason"] == "expired_before_flush"
 
     plugin = SimpleNamespace(
         cfg=config,
@@ -589,6 +754,57 @@ def test_battle_identity_survives_respawn_and_changes_after_confirmed_exit() -> 
     next_battle = service.get_snapshot()
     assert next_battle["battle_id"] != battle_id
     assert next_battle["life_index"] == 1
+
+
+def test_respawn_resets_replay_clock_before_backwards_time_check() -> None:
+    class RespawnClient:
+        game_time_sec = 1 * 3600.0
+
+        def get_indicators_with_status(self):
+            return (
+                True,
+                ConnectionState.IN_BATTLE,
+                Indicators(
+                    valid=True,
+                    army="tank",
+                    speed=8.0,
+                    game_time_sec=self.game_time_sec,
+                ),
+                MapInfo(valid=True),
+            )
+
+        def get_state_with_status(self):
+            return True, VehicleState(valid=True)
+
+    client = RespawnClient()
+    service = TelemetryService(client)
+    service._state = ConnectionState.IN_BATTLE
+    service._battle_entry_ts = 1.0
+    service._battle_id = "arcade-battle"
+    service._life_index = 1
+    service._mission_status = "running"
+    service._mission_running_seen = True
+    service._last_game_time = 20 * 3600.0
+    service._dead = True
+    service._dead_inert_seen = True
+    service._last_deaths = 1
+    service._combat = {"my": {"deaths": 1}}
+
+    service._poll_fast()
+
+    assert service._replay is False
+    assert service._last_game_time == client.game_time_sec
+    assert service._life_index == 2
+
+    # A backwards jump within the new life is still treated as replay scrubbing.
+    service._last_game_time = 2 * 3600.0
+    client.game_time_sec = 1 * 3600.0
+    with service._lock:
+        service._detect_replay_locked(
+            Indicators(valid=True, game_time_sec=client.game_time_sec),
+            2.0,
+        )
+    assert service._replay is True
 
 
 def test_new_generation_drain_overwrites_late_old_cursor_side_effect() -> None:

@@ -16,6 +16,8 @@ function createHarness({
     innerHeight = 800,
     platform = '',
     currentDisplay = null,
+    controls = {},
+    physicalCropState = null,
     desktopRuntime = true,
     interactionActive = true,
     reducedMotion = false
@@ -50,6 +52,11 @@ function createHarness({
             devicePixelRatio: 1.25,
             matchMedia: () => ({ matches: reducedMotion }),
             __NEKO_DESKTOP_RUNTIME__: desktopRuntime ? { platform } : null,
+            __nekoNiriPetPhysicalCrop: physicalCropState ? {
+                getState() {
+                    return physicalCropState;
+                }
+            } : null,
             electronScreen: currentDisplay ? {
                 async getCurrentDisplay() {
                     return currentDisplay;
@@ -84,7 +91,7 @@ function createHarness({
                     contains: (name) => bodyClasses.has(name)
                 }
             },
-            getElementById: () => null
+            getElementById: (id) => controls[id] || null
         }
     };
     context.globalThis = context;
@@ -97,10 +104,60 @@ function createHarness({
         rafQueue,
         bodyClasses,
         window: context.window,
+        controls,
+        getLive2DPeekViewport: context.getLive2DPeekViewport,
+        isLive2DHostModelDragActive: context.isLive2DHostModelDragActive,
         setStealthModeEnabled(enabled) {
             stealthEnabledState = enabled === true;
         }
     };
+}
+
+function createInlineStyle(initial = {}) {
+    const values = new Map();
+    const priorities = new Map();
+    Object.entries(initial).forEach(([name, entry]) => {
+        const normalized = typeof entry === 'string' ? { value: entry, priority: '' } : entry;
+        values.set(name, normalized.value || '');
+        priorities.set(name, normalized.priority || '');
+    });
+    const style = {
+        getPropertyValue(name) {
+            return values.get(name) || '';
+        },
+        getPropertyPriority(name) {
+            return priorities.get(name) || '';
+        },
+        setProperty(name, value, priority = '') {
+            values.set(name, String(value));
+            priorities.set(name, String(priority));
+        },
+        removeProperty(name) {
+            const previous = values.get(name) || '';
+            values.delete(name);
+            priorities.delete(name);
+            return previous;
+        }
+    };
+    Object.defineProperties(style, {
+        display: {
+            get: () => values.get('display') || '',
+            set: (value) => {
+                values.set('display', String(value));
+                priorities.set('display', '');
+            },
+            enumerable: true
+        },
+        pointerEvents: {
+            get: () => values.get('pointer-events') || '',
+            set: (value) => {
+                values.set('pointer-events', String(value));
+                priorities.set('pointer-events', '');
+            },
+            enumerable: true
+        }
+    });
+    return style;
 }
 
 function createModel({ x = 0, y = 120, width = 500, height = 600 } = {}) {
@@ -188,7 +245,8 @@ function createCoreHarness({
     innerHeight = 800,
     elementsById = {},
     bodyClasses = new Set(),
-    getComputedStyle = null
+    getComputedStyle = null,
+    physicalCropState = null
 } = {}) {
     const context = {
         console,
@@ -205,6 +263,11 @@ function createCoreHarness({
             screen: { width: innerWidth, height: innerHeight },
             devicePixelRatio: 1,
             addEventListener() {},
+            __nekoNiriPetPhysicalCrop: physicalCropState ? {
+                getState() {
+                    return physicalCropState;
+                }
+            } : null,
             __LANLAN_IS_ELECTRON_PET__: false,
             getComputedStyle: getComputedStyle || undefined
         },
@@ -228,6 +291,38 @@ function createCoreHarness({
         window: context.window
     };
 }
+
+test('physical-crop drag ownership fails closed only after the host declares support', () => {
+    const {
+        window,
+        isLive2DHostModelDragActive,
+    } = createHarness();
+
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop = {};
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop = {
+        hostModelDragOwnershipVersion: 1,
+        isHostModelDragActive: () => false,
+    };
+    assert.equal(isLive2DHostModelDragActive(), false);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => true;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => undefined;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    delete window.__nekoNiriPetPhysicalCrop.isHostModelDragActive;
+    assert.equal(isLive2DHostModelDragActive(), true);
+
+    window.__nekoNiriPetPhysicalCrop.isHostModelDragActive = () => {
+        throw new Error('bridge failure');
+    };
+    assert.equal(isLive2DHostModelDragActive(), true);
+});
 
 test('edge peek enter naturally moves model offscreen and reports visible bounds', async () => {
     const harness = createHarness();
@@ -635,6 +730,40 @@ test('drag-style clear exits peek without restoring position but restores transf
     assert.equal(model.scale.x, 1);
 });
 
+test('edge peek overrides important toolbar visibility and restores the previous inline styles', async () => {
+    const floatingStyle = createInlineStyle({
+        display: { value: 'flex', priority: 'important' },
+        'pointer-events': { value: 'auto', priority: 'important' }
+    });
+    const lockStyle = createInlineStyle({
+        display: { value: 'block', priority: '' }
+    });
+    const harness = createHarness({
+        controls: {
+            'live2d-floating-buttons': { style: floatingStyle },
+            'live2d-lock-icon': { style: lockStyle }
+        }
+    });
+    const manager = new harness.Live2DManager();
+    const model = createModel({ x: 0, y: 120 });
+
+    const enterPromise = manager._tryApplyLive2DPeek(model);
+    assert.equal(floatingStyle.getPropertyValue('display'), 'none');
+    assert.equal(floatingStyle.getPropertyPriority('display'), 'important');
+    assert.equal(lockStyle.getPropertyValue('display'), 'none');
+    flushNextFrame(harness);
+    assert.equal(await enterPromise, true);
+
+    manager.clearLive2DPeek('drag-start', { restore: false });
+
+    assert.equal(floatingStyle.getPropertyValue('display'), 'flex');
+    assert.equal(floatingStyle.getPropertyPriority('display'), 'important');
+    assert.equal(floatingStyle.getPropertyValue('pointer-events'), 'auto');
+    assert.equal(floatingStyle.getPropertyPriority('pointer-events'), 'important');
+    assert.equal(lockStyle.getPropertyValue('display'), 'block');
+    assert.equal(lockStyle.getPropertyValue('pointer-events'), '');
+});
+
 test('edge peek only triggers while Widget Mode is enabled', async () => {
     const harness = createHarness({ widgetModeEnabled: false });
     const manager = new harness.Live2DManager();
@@ -771,6 +900,76 @@ test('core edge peek screen bounds use renderer screen instead of wider window',
         centerX: 1025,
         centerY: 400
     });
+});
+
+test('Niri edge peek viewport stays virtual while the physical crop renderer changes size', () => {
+    const physicalCropState = {
+        enabled: true,
+        virtualBounds: { x: 0, y: 0, width: 1280, height: 720 },
+        cropBounds: { x: 972, y: 576, width: 276, height: 300 }
+    };
+    const interactionHarness = createHarness({
+        innerWidth: 1280,
+        innerHeight: 720,
+        physicalCropState
+    });
+    const interactionManager = new interactionHarness.Live2DManager();
+    interactionManager.pixi_app = {
+        renderer: {
+            screen: { width: 276, height: 300 }
+        }
+    };
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(interactionHarness.getLive2DPeekViewport(null, interactionManager))),
+        { left: 0, top: 0, right: 1280, bottom: 720, width: 1280, height: 720 }
+    );
+
+    interactionManager.pixi_app.renderer.screen = { width: 600, height: 684 };
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(interactionHarness.getLive2DPeekViewport(null, interactionManager))),
+        { left: 0, top: 0, right: 1280, bottom: 720, width: 1280, height: 720 }
+    );
+
+    const coreHarness = createCoreHarness({
+        innerWidth: 1280,
+        innerHeight: 720,
+        physicalCropState
+    });
+    const coreManager = new coreHarness.Live2DManager();
+    coreManager.pixi_app = {
+        renderer: {
+            screen: { width: 276, height: 300 }
+        }
+    };
+    const model = createModel({ x: 1150, y: 100, width: 500, height: 600 });
+    coreManager.currentModel = model;
+    coreManager._live2DPeekState = {
+        active: true,
+        model
+    };
+    const expectedBounds = {
+        left: 1150,
+        right: 1280,
+        top: 100,
+        bottom: 700,
+        width: 130,
+        height: 600,
+        centerX: 1215,
+        centerY: 400
+    };
+
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(coreManager.getModelScreenBounds())),
+        expectedBounds
+    );
+
+    physicalCropState.cropBounds = { x: 900, y: 360, width: 600, height: 684 };
+    coreManager.pixi_app.renderer.screen = { width: 600, height: 684 };
+    assert.deepEqual(
+        JSON.parse(JSON.stringify(coreManager.getModelScreenBounds())),
+        expectedBounds
+    );
 });
 
 test('core model input regions preserve asymmetric drawable geometry before viewport clipping', () => {

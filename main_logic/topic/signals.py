@@ -8,6 +8,7 @@ few chat turns.
 from __future__ import annotations
 
 import json
+import logging
 import time
 import threading
 import atexit
@@ -22,12 +23,28 @@ from utils.file_utils import atomic_write_json
 from utils.tokenize import truncate_to_tokens
 
 
+logger = logging.getLogger("N.E.K.O.Main.topic.signals")
+
+
 # Per-turn evidence cap in tokens. The topic candidate prompt feeds this slow
 # evidence as its only conversation input, so the per-turn budget lives here.
 _MAX_SIGNAL_TOKENS_PER_TURN = 500
 _TOKEN_PRECAP_CHARS_PER_TOKEN = 8
 _MAX_GLOBAL_TURNS = 60
 _SIGNAL_RETENTION_SECONDS = 12 * 60 * 60
+# 落盘失败的自愈重试预算。只约束 flush 的重试链 —— _request_persist 那条链按
+# 对话 / 剪枝节奏触发（retention 12h，剪枝极稀疏），本身不构成热循环。
+# base=persistence_flush_delay_seconds，生产走默认 1.0 → 序列 1/2/4/8/16s
+# （合计 ~31s）；耗尽后保持 dirty，等下一次真实数据变更或显式 flush 再试一次，
+# 所以短暂故障仍会在下一条消息时自愈，而永久性写失败不会退化成每秒一次的静默
+# 重试。
+_PERSIST_MAX_RETRIES = 5
+# 单次退避上限。生产默认 base 下末项正好等于它、min() 不改变任何一项；它管的是
+# 调用方把 flush delay 配大（>4s）的情况——没有它，base=60 会让最后一次重试排到
+# 16 分钟之后，早已跟"自愈"无关。base=0 是另一头：退避塌成 5 个零延迟 timer，
+# 仍然有界（次数封顶在 _PERSIST_MAX_RETRIES），不额外加下限，免得再多一个生产
+# 路径上永不生效的旋钮。
+_PERSIST_RETRY_BACKOFF_CAP_SECONDS = 16.0
 _FILLER_TEXTS = {
     "你好",
     "啊",
@@ -170,12 +187,18 @@ class TopicSignalStore:
         self._persist_write_lock = threading.Lock()
         self._persist_timer: threading.Timer | None = None
         self._persist_dirty = False
+        # 连续落盘失败次数（成功即清零）+ 退出标记，见 flush 的失败分支。
+        # 寿命：这个 store 由模块级单例 _GLOBAL_TOPIC_POOL 持有、没有 reload
+        # 路径会造第二个实例，所以预算实际上是 per-process 的 —— 已有的
+        # _persist_write_lock 也是实例级、靠同一个理由才真的串起了所有写者。
+        self._persist_retry_count = 0
+        self._shutting_down = False
         self._turns: dict[str, deque[TopicTurnSignal]] = defaultdict(
             lambda: deque(maxlen=self._max_turns)
         )
         self._load()
         if self._persistence_path is not None:
-            atexit.register(self.flush)
+            atexit.register(self._atexit_flush)
 
     def note_turn(
         self,
@@ -390,15 +413,42 @@ class TopicSignalStore:
 
             write_result = self._write_payload(payload)
         if write_result is not False:
+            with self._persist_lock:
+                self._persist_retry_count = 0
             return
 
         with self._persist_lock:
             self._persist_dirty = True
-            if self._persistence_path is not None and self._persist_timer is None:
-                timer = threading.Timer(self._persistence_flush_delay_seconds, self.flush)
-                timer.daemon = True
-                self._persist_timer = timer
-                timer.start()
+            if self._shutting_down:
+                # 退出路径上排 timer 是自欺：atexit 里起的 daemon Timer 不抛异常、
+                # is_alive() 也为 True，但解释器在 delay 到达前就 finalize 了，
+                # 回调永不执行。如实报告丢盘，不假装排了重试。
+                logger.warning(
+                    "topic signal state not persisted at exit; the in-memory "
+                    "window is lost (path=%s)", self._persistence_path,
+                )
+                return
+            if self._persistence_path is None or self._persist_timer is not None:
+                return
+            if self._persist_retry_count >= _PERSIST_MAX_RETRIES:
+                # 有界：永久性写失败（只读盘 / ACL）原来会变成每秒一次的静默
+                # 写盘尝试，无次数上限也无退避。
+                logger.warning(
+                    "topic signal persistence failed %d times in a row; giving "
+                    "up the retry chain, state stays dirty and the next real "
+                    "change retries once (path=%s)",
+                    self._persist_retry_count, self._persistence_path,
+                )
+                return
+            delay = min(
+                self._persistence_flush_delay_seconds * (2 ** self._persist_retry_count),
+                _PERSIST_RETRY_BACKOFF_CAP_SECONDS,
+            )
+            self._persist_retry_count += 1
+            timer = threading.Timer(delay, self.flush)
+            timer.daemon = True
+            self._persist_timer = timer
+            timer.start()
 
     def _request_persist(self) -> None:
         path = self._persistence_path
@@ -406,7 +456,9 @@ class TopicSignalStore:
             return
         with self._persist_lock:
             self._persist_dirty = True
-            if self._persist_timer is not None:
+            # 退出中到来的 note_turn 不该再排一个跑不了的 timer（与 flush 失败
+            # 分支的守卫对偶）。
+            if self._shutting_down or self._persist_timer is not None:
                 return
             timer = threading.Timer(self._persistence_flush_delay_seconds, self.flush)
             timer.daemon = True
@@ -442,7 +494,29 @@ class TopicSignalStore:
             atomic_write_json(path, payload, ensure_ascii=False, indent=2)
             return True
         except Exception:
+            # 原来异常被整个吞掉，连原因都留不下。分级：每次尝试记 debug（避免
+            # 退避期间刷 warning），give-up 和退出丢盘才由 flush 记 warning。
+            logger.debug(
+                "topic signal persistence write failed (path=%s)",
+                path, exc_info=True,
+            )
             return False
+
+    def _atexit_flush(self) -> None:
+        """atexit entry point: flush once, never schedule a retry.
+
+        Registered instead of ``flush`` itself so the failure branch can tell
+        "the process is on its way out" from a normal delayed flush. A daemon
+        Timer started from here can never fire — the interpreter finalizes long
+        before the delay elapses — so pretending to schedule one turns a
+        reportable failure into a silent loss.
+
+        Deliberately does not retry synchronously: blocking atexit slows
+        shutdown, and the one thing already proven unavailable here is time.
+        """
+        with self._persist_lock:
+            self._shutting_down = True
+        self.flush()
 
 
 def _is_meaningful_turn(text: str) -> bool:

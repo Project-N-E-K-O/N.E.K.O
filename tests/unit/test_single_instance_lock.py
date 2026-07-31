@@ -340,3 +340,59 @@ def test_lock_path_does_not_drift_with_the_ambient_environment(monkeypatch, tmp_
     assert sandboxed == bare, (
         f"lock path drifted with the environment: {sandboxed} vs {bare}"
     )
+
+
+@pytest.mark.unit
+def test_windows_runtime_state_is_outside_the_replaceable_cloudsave_root(monkeypatch, tmp_path):
+    """A held launcher.lock must not block first-run root replacement on Windows."""
+    local_app_data = tmp_path / "LocalAppData"
+    monkeypatch.setattr(single_instance.sys, "platform", "win32")
+    monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
+    monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+    monkeypatch.delenv("APPDATA", raising=False)
+
+    current = single_instance.runtime_state_dir()
+    replaceable_root = local_app_data / single_instance.APP_SIGNATURE
+
+    assert current == local_app_data / single_instance.RUNTIME_STATE_DIR_NAME
+    assert replaceable_root not in current.parents
+    assert single_instance.legacy_state_dirs() == [replaceable_root / "runtime"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(sys.platform != "win32", reason="requires real Windows file-lock semantics")
+def test_windows_new_path_detects_a_holder_at_the_retired_cloudsave_path(monkeypatch, tmp_path):
+    local_app_data = tmp_path / "LocalAppData"
+    retired = local_app_data / single_instance.APP_SIGNATURE / "runtime"
+    holder = _start_holder(retired)
+    try:
+        monkeypatch.setattr(single_instance.sys, "platform", "win32")
+        monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
+        monkeypatch.setenv("LOCALAPPDATA", str(local_app_data))
+        monkeypatch.delenv("APPDATA", raising=False)
+
+        status, record = single_instance.legacy_owner_status()
+
+        assert status == single_instance.OWNER_OWNED
+        assert record is not None
+        assert record["pid"] == holder.holder_pid
+    finally:
+        holder.kill()
+        holder.wait(timeout=10)
+
+
+@pytest.mark.unit
+def test_macos_runtime_state_is_outside_the_replaceable_cloudsave_root(monkeypatch, tmp_path):
+    """A root swap must not unlink the inode that proves single-instance ownership."""
+    home = tmp_path / "home"
+    support = home / "Library" / "Application Support"
+    monkeypatch.setattr(single_instance.sys, "platform", "darwin")
+    monkeypatch.setattr(single_instance, "_stable_home_dir", lambda: str(home))
+    monkeypatch.delenv(single_instance.RUNTIME_STATE_DIR_ENV, raising=False)
+
+    current = single_instance.runtime_state_dir()
+    replaceable_root = support / single_instance.APP_SIGNATURE
+
+    assert current == support / single_instance.RUNTIME_STATE_DIR_NAME
+    assert replaceable_root not in current.parents
+    assert single_instance.legacy_state_dirs() == [replaceable_root / "runtime"]

@@ -139,8 +139,18 @@ def test_fact_extraction_prompts_resolve_per_locale(locale):
         assert "======以上为对话======" in prompt
 
 
-def test_zh_tw_fact_extraction_reuses_zh_template_body():
-    # zh-TW has no dedicated template and must resolve to the zh body verbatim,
-    # with nothing prepended that would make the two diverge.
-    assert get_fact_extraction_prompt("zh-TW") == get_fact_extraction_prompt("zh")
-    assert get_fact_extraction_ai_aware_prompt("zh-TW") == get_fact_extraction_ai_aware_prompt("zh")
+def test_zh_tw_fact_extraction_uses_its_own_template():
+    """zh-TW now has dedicated fact templates (issue #2500, batch 1).
+
+    This assertion used to run the other way — zh-TW resolved to the zh body
+    verbatim — because no Traditional template existed. What it was really
+    guarding is still guarded below: nothing may be *prepended* to a Simplified
+    body to fake Traditional output, which is the approach #1542 tried and
+    reverted. So the Traditional prompt has to be its own text rather than the zh
+    body with something bolted on.
+    """
+    for getter in (get_fact_extraction_prompt, get_fact_extraction_ai_aware_prompt):
+        traditional = getter("zh-TW")
+        simplified = getter("zh")
+        assert traditional != simplified
+        assert simplified not in traditional, "Traditional must not wrap the zh body"

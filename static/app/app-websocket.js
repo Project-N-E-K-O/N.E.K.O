@@ -1583,8 +1583,16 @@
             if (typeof data === 'string' && data.indexOf('start_session') !== -1) {
                 try {
                     var msg = JSON.parse(data);
+                    var handshakeStamped = false;
                     if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.independentAsrAuthoritative === true) {
                         msg.independent_asr_enabled = S.independentAsrEnabled === true;
+                        handshakeStamped = true;
+                    }
+                    if (msg && msg.action === 'start_session' && S.settingsHydrated === true && S.voiceInputResourceOptimizationAuthoritative === true) {
+                        msg.voice_input_resource_optimization_enabled = S.voiceInputResourceOptimizationEnabled !== false;
+                        handshakeStamped = true;
+                    }
+                    if (handshakeStamped) {
                         data = JSON.stringify(msg);
                     }
                 } catch (e) {
@@ -1869,6 +1877,13 @@
                         return;
                     }
                     var isNewMessage = response.isNewMessage || false;
+                    // Ordinary responses historically expose lifecycle metadata as
+                    // `meta`, while mirror responses (including game dialogue) use
+                    // `metadata`. Preserve the legacy field when present, but let
+                    // mirror turns carry their session identity into turn-start.
+                    var assistantResponseMeta = response.meta !== undefined
+                        ? response.meta
+                        : response.metadata;
                     if (response.metadata && response.metadata.game_route) {
                         var gameMeta = response.metadata.game_route;
                         var gameEvent = gameMeta.event || {};
@@ -1908,7 +1923,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_first_chunk',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
@@ -1929,7 +1944,7 @@
                         ensureAssistantTurnStarted(
                             'gemini_response_visible_bubble',
                             response.turn_id,
-                            response.meta,
+                            assistantResponseMeta,
                             response.request_id
                         );
                     }
@@ -2291,7 +2306,29 @@
                         typeof window.appAudioPlayback.schedulePendingAudioMetaStallCheck === 'function') {
                         window.appAudioPlayback.schedulePendingAudioMetaStallCheck();
                     }
+                    // 记下 speech_id 属于哪一轮：随后的 audio_done 只带 speech_id，
+                    // 音频通道上从来没有服务端权威的 turn_id。
+                    if (!shouldSkip && window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.rememberAssistantAudioSpeechTurn === 'function') {
+                        window.appAudioPlayback.rememberAssistantAudioSpeechTurn(
+                            speechId || S.currentPlayingSpeechId || null,
+                            resolveAssistantLifecycleTurnId(response.turn_id)
+                        );
+                    }
                     S.skipNextAudioBlob = false;
+
+                // -------- audio_done（本 speech 的音频流已关闭，权威结束信号）--------
+                // 后端 TTS worker / realtime provider 看得到"这一轮不会再有音频"，
+                // 前端看不到（阵间空档和真结束同构）。收到即可放行收尾；漏发时
+                // 由 app-audio-playback 的 give-up 计时器兜底。
+                } else if (response.type === 'audio_done') {
+                    logAssistantLifecycle('ws:audio_done', {
+                        speechId: response.speech_id || null
+                    });
+                    if (window.appAudioPlayback &&
+                        typeof window.appAudioPlayback.noteAssistantAudioStreamClosed === 'function') {
+                        window.appAudioPlayback.noteAssistantAudioStreamClosed(response.speech_id);
+                    }
 
                 // -------- cozy_audio --------
                 } else if (response.type === 'cozy_audio') {

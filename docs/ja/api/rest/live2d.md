@@ -31,7 +31,7 @@
 
 ## 設定と感情マッピング
 
-設定 `GET` は `{ "success": true, "config": {...} }` を返します。読み取れる `.model3.json` に `FileReferences.Motions` または `FileReferences.Expressions` がない場合、ハンドラーはコンテナを追加して書き戻しを試みます。
+設定 `GET` は `{ "success": true, "config": {...} }` を返します。読み取れる `.model3.json` に `FileReferences.Motions` または `FileReferences.Expressions` がない場合、ハンドラーは不足しているコンテナを**レスポンスにのみ**追加します。これらのルートがディスクに書き込むことはありません。修復した設定の永続化は `POST` ルートの役割です。
 
 設定 `POST` は Cubism 設定形式の JSON を受け取りますが、永続化するのは次だけです：
 

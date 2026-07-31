@@ -85,6 +85,13 @@ ASR_LAYERING
     import Core, provider literals cannot leak into the bridge, and streaming
     can only enqueue audio into the bridge.
 
+VOICE_INPUT_LAYERING
+    The controlled transcript Registry and its consumers may depend only on
+    their own package, provider-neutral voice-turn contracts, and the narrow
+    game-route facade. They cannot import Core, ASR/provider code, PCM
+    processing, routers, or arbitrary utility modules. ASR runtime code emits
+    neutral callbacks and cannot import the Core-owned Registry in reverse.
+
 Every violation prints as ``path:line:col  CODE  message``. Exit 1 on any
 violation, 0 otherwise, 2 when the expected layout itself is missing (this
 gate hard-fails rather than silently skipping when paths move — see the
@@ -97,6 +104,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import importlib.util
 import sys
 from pathlib import Path
 
@@ -108,7 +116,6 @@ OWNER_SUBMODULES = {
 }
 MIXIN_SUPPORT_CLASSES = {
     "asr_runtime": {
-        "VoiceInputConsumerBinding",
         "_QueuedMicFrame",
         "_AudioDurationQueue",
         "_HotSwapAudioFrame",
@@ -401,16 +408,20 @@ def _registry_provider_keys(path: Path) -> frozenset[str]:
     sys.exit(2)
 
 
-def _dynamic_import_target(node: ast.AST, alias_paths: dict[str, str]) -> tuple[str | None, bool]:
-    """(module, is_dynamic) for ``importlib.import_module``/``__import__`` calls.
+def _dynamic_import_target(
+    node: ast.AST,
+    alias_paths: dict[str, str],
+) -> tuple[tuple[str, ...] | None, bool]:
+    """(modules, is_dynamic) for dynamic-import entry points.
 
     The static layering scans see only ``import``/``from`` forms, so
     ``importlib.import_module("main_logic.core")`` would sail through the gate.
-    ``module`` is the string-literal module argument when statically known and
-    None otherwise; ``is_dynamic`` is True whenever the call is one of the two
-    dynamic-import entry points, so guarded packages can also reject
-    non-literal targets the AST cannot verify. Recognizes ``importlib`` under
-    a top-level alias and ``from importlib import import_module [as x]`` via
+    ``modules`` contains the absolute module paths the call can load when they
+    are statically knowable, including relative ``import_module`` targets and
+    literal ``__import__`` fromlist entries. It is None when any required part
+    cannot be inferred, so guarded packages fail closed. ``is_dynamic`` is True
+    whenever the call is one of the two entry points. Recognizes ``importlib``
+    under an alias and ``from importlib import import_module [as x]`` through
     ``alias_paths``.
     """
     if not isinstance(node, ast.Call):
@@ -421,11 +432,78 @@ def _dynamic_import_target(node: ast.AST, alias_paths: dict[str, str]) -> tuple[
     resolved = resolve_chain(chain, alias_paths) or chain
     if resolved not in {"__import__", "importlib.import_module"}:
         return None, False
-    arg = node.args[0] if node.args else next(
-        (kw.value for kw in node.keywords if kw.arg == "name"), None)
-    if isinstance(arg, ast.Constant) and isinstance(arg.value, str):
-        return arg.value, True
-    return None, True
+    name_arg = node.args[0] if node.args else next(
+        (kw.value for kw in node.keywords if kw.arg == "name"),
+        None,
+    )
+    if not (
+        isinstance(name_arg, ast.Constant)
+        and isinstance(name_arg.value, str)
+    ):
+        return None, True
+    name = name_arg.value
+
+    if resolved == "importlib.import_module":
+        if not name.startswith("."):
+            return (name,), True
+        package_arg = (
+            node.args[1]
+            if len(node.args) > 1
+            else next(
+                (kw.value for kw in node.keywords if kw.arg == "package"),
+                None,
+            )
+        )
+        if not (
+            isinstance(package_arg, ast.Constant)
+            and isinstance(package_arg.value, str)
+        ):
+            return None, True
+        try:
+            return (
+                importlib.util.resolve_name(name, package_arg.value),
+            ), True
+        except (ImportError, ValueError):
+            return None, True
+
+    level_arg = (
+        node.args[4]
+        if len(node.args) > 4
+        else next(
+            (kw.value for kw in node.keywords if kw.arg == "level"),
+            None,
+        )
+    )
+    if level_arg is not None and not (
+        isinstance(level_arg, ast.Constant)
+        and level_arg.value == 0
+    ):
+        return None, True
+    fromlist_arg = (
+        node.args[3]
+        if len(node.args) > 3
+        else next(
+            (kw.value for kw in node.keywords if kw.arg == "fromlist"),
+            None,
+        )
+    )
+    if fromlist_arg is None:
+        return (name,), True
+    if not isinstance(fromlist_arg, (ast.List, ast.Tuple, ast.Set)):
+        return None, True
+    entries: list[str] = []
+    for entry in fromlist_arg.elts:
+        if not (
+            isinstance(entry, ast.Constant)
+            and isinstance(entry.value, str)
+            and entry.value
+            and entry.value != "*"
+        ):
+            return None, True
+        entries.append(entry.value)
+    targets = [name]
+    targets.extend(f"{name}.{entry}" for entry in entries)
+    return tuple(dict.fromkeys(targets)), True
 
 
 def _name_binding(node: ast.AST) -> tuple[str, ast.AST] | None:
@@ -503,34 +581,57 @@ def _importlib_alias_paths(tree: ast.Module) -> dict[str, str]:
     return out
 
 
-def _dynamic_import_violations(path: Path, tree: ast.Module, alias_paths: dict[str, str],
-                               forbidden_prefix: str, where: str) -> list["Violation"]:
+def _dynamic_import_violations(
+    path: Path,
+    tree: ast.Module,
+    alias_paths: dict[str, str],
+    forbidden_prefix: str | tuple[str, ...],
+    where: str,
+) -> list["Violation"]:
     """ASR_LAYERING violations for dynamic imports in a guarded module.
 
-    Flags a literal target inside ``forbidden_prefix`` the same way the static
-    import ban does, and any non-literal target outright — the gate cannot
+    ``forbidden_prefix`` accepts one or multiple forbidden prefixes. A literal
+    target inside any of them is flagged the same way the static import ban
+    does, and any non-literal target is rejected outright — the gate cannot
     prove a computed module name stays on the right side of the boundary.
     """
+    forbidden_prefixes = (
+        (forbidden_prefix,)
+        if isinstance(forbidden_prefix, str)
+        else forbidden_prefix
+    )
     # Function-local importlib aliases win over same-named module-level
     # bindings so nested ``import importlib as il`` cannot dodge the gate;
     # module-level importlib aliases resolve identically through either dict.
     alias_paths = {**alias_paths, **_importlib_alias_paths(tree)}
     out: list[Violation] = []
     for node in ast.walk(tree):
-        target, dynamic = _dynamic_import_target(node, alias_paths)
+        targets, dynamic = _dynamic_import_target(node, alias_paths)
         if not dynamic:
             continue
-        if target is None:
+        if targets is None:
             out.append(Violation(
                 path, node.lineno, node.col_offset, "ASR_LAYERING",
                 f"dynamic import with a non-literal module name is not allowed in "
                 f"{where} — the layering gate cannot verify its target; use a "
                 f"static import or a string literal",
             ))
-        elif target == forbidden_prefix or target.startswith(f"{forbidden_prefix}."):
+        else:
+            matched_prefix = next(
+                (
+                    prefix
+                    for target in targets
+                    for prefix in forbidden_prefixes
+                    if target == prefix
+                    or target.startswith(f"{prefix}.")
+                ),
+                None,
+            )
+            if matched_prefix is None:
+                continue
             out.append(Violation(
                 path, node.lineno, node.col_offset, "ASR_LAYERING",
-                f"{where} must not import {forbidden_prefix} (dynamic import)",
+                f"{where} must not import {matched_prefix} (dynamic import)",
             ))
     return out
 
@@ -967,23 +1068,25 @@ def run(root: Path) -> list[Violation]:
     asr_audio_path = asr_client_dir / "audio.py"
     asr_registry_path = asr_client_dir / "_registry_meta.py"
     voice_input_path = root / "main_logic" / "voice_turn" / "audio_input.py"
-    for required in (
-        asr_bridge_path,
-        tts_path,
-        streaming_path,
-        asr_client_dir,
-        asr_component_path,
-        asr_audio_path,
-        asr_registry_path,
-        voice_input_path,
+    transcript_registry_dir = root / "main_logic" / "voice_input"
+    for required, violation_code in (
+        (asr_bridge_path, "ASR_LAYERING"),
+        (tts_path, "ASR_LAYERING"),
+        (streaming_path, "ASR_LAYERING"),
+        (asr_client_dir, "ASR_LAYERING"),
+        (asr_component_path, "ASR_LAYERING"),
+        (asr_audio_path, "ASR_LAYERING"),
+        (asr_registry_path, "ASR_LAYERING"),
+        (voice_input_path, "ASR_LAYERING"),
+        (transcript_registry_dir, "VOICE_INPUT_LAYERING"),
     ):
         if not required.exists():
             violations.append(Violation(
                 required,
                 1,
                 0,
-                "ASR_LAYERING",
-                "required ASR layering path is missing",
+                violation_code,
+                f"required layering path is missing ({violation_code})",
             ))
 
     if tts_path.exists():
@@ -1031,22 +1134,104 @@ def run(root: Path) -> list[Violation]:
             pkg = ".".join(path.relative_to(root).parts[:-1])
             alias_paths = module_alias_paths(tree, pkg)
             for node in ast.walk(tree):
-                if any(
-                    module == "main_logic.core"
-                    or module.startswith("main_logic.core.")
-                    for module in _imported_paths(node, pkg, alias_paths)
-                ):
+                for module in _imported_paths(node, pkg, alias_paths):
+                    forbidden = next(
+                        (
+                            prefix
+                            for prefix in (
+                                "main_logic.core",
+                                "main_logic.voice_input",
+                            )
+                            if module == prefix
+                            or module.startswith(f"{prefix}.")
+                        ),
+                        None,
+                    )
+                    if forbidden is not None:
+                        violations.append(Violation(
+                            path,
+                            node.lineno,
+                            node.col_offset,
+                            "ASR_LAYERING",
+                            f"asr_client must not import {forbidden}",
+                        ))
+            violations.extend(_dynamic_import_violations(
+                path, tree, alias_paths,
+                ("main_logic.core", "main_logic.voice_input"),
+                "asr_client",
+            ))
+
+    if transcript_registry_dir.exists():
+        allowed_dependency_prefixes = (
+            "main_logic.voice_input",
+            "main_logic.voice_turn.contracts",
+            "utils.game_route_state",
+        )
+        # Resolve first-party roots from the repository instead of maintaining
+        # a narrow allowlist. Any importable sibling package/module (plugin,
+        # config, scripts, or a future root) must pass the same frozen
+        # dependency allowlist rather than silently bypassing the gate.
+        guarded_roots = tuple(sorted({
+            entry.name if entry.is_dir() else entry.stem
+            for entry in root.iterdir()
+            if (
+                entry.is_dir()
+                and entry.name.isidentifier()
+            ) or (
+                entry.is_file()
+                and entry.suffix == ".py"
+                and entry.stem.isidentifier()
+            )
+        }))
+        for path in sorted(transcript_registry_dir.rglob("*.py")):
+            tree = parse(path)
+            pkg = ".".join(path.relative_to(root).parts[:-1])
+            alias_paths = module_alias_paths(tree, pkg)
+            dynamic_alias_paths = {
+                **alias_paths,
+                **_importlib_alias_paths(tree),
+            }
+            for node in ast.walk(tree):
+                for module in _imported_paths(node, pkg, alias_paths):
+                    if not any(
+                        module == root_name
+                        or module.startswith(f"{root_name}.")
+                        for root_name in guarded_roots
+                    ):
+                        continue
+                    if any(
+                        module == allowed
+                        or module.startswith(f"{allowed}.")
+                        for allowed in allowed_dependency_prefixes
+                    ):
+                        continue
                     violations.append(Violation(
                         path,
                         node.lineno,
                         node.col_offset,
-                        "ASR_LAYERING",
-                        "asr_client must not import main_logic.core",
+                        "VOICE_INPUT_LAYERING",
+                        "voice_input may depend only on its own package, "
+                        "voice_turn.contracts, and utils.game_route_state "
+                        f"(found {module})",
                     ))
-            violations.extend(_dynamic_import_violations(
-                path, tree, alias_paths,
-                "main_logic.core", "asr_client",
-            ))
+                targets, dynamic = _dynamic_import_target(
+                    node,
+                    dynamic_alias_paths,
+                )
+                if dynamic:
+                    detail = (
+                        ", ".join(targets)
+                        if targets is not None
+                        else "a non-literal module name"
+                    )
+                    violations.append(Violation(
+                        path,
+                        node.lineno,
+                        node.col_offset,
+                        "VOICE_INPUT_LAYERING",
+                        "dynamic imports are not allowed in voice_input "
+                        f"(found {detail})",
+                    ))
 
     if asr_bridge_path.exists():
         bridge_tree = parse(asr_bridge_path)

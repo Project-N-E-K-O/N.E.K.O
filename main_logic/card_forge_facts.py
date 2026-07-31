@@ -577,9 +577,16 @@ async def build_forge_facts_payload(
         "archiveFilteredCount": 0,
     }
     if limit >= 5 and raw_archive:
-        active_ids = {str(item.get("id") or "") for item in facts if item.get("id")}
+        # 排除集取自**全部**活跃 facts，而不是这次抽中的那几条：归档的两文件
+        # 提交（先 facts_archive.json 再 facts.json）被打断时同一行会同时留在
+        # 两个文件里，最长到下一次成功归档才收敛。只按抽中的几条排除的话，
+        # 那种行只要这轮没被抽中，就会作为"久远记忆"发出去，而它其实还活着。
+        active_source = [item for item in raw if isinstance(item, dict)]
+        active_ids = {
+            str(item.get("id") or "") for item in active_source if item.get("id")
+        }
         active_hashes = {
-            str(item.get("hash") or "") for item in facts if item.get("hash")
+            str(item.get("hash") or "") for item in active_source if item.get("hash")
         }
         archive_fact, archive_stats = await asyncio.to_thread(
             _select_archive_distant_fact,

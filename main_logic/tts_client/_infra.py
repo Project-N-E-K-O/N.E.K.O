@@ -32,6 +32,63 @@ logger = get_module_logger(__name__, "Main")
 # worker 的 sid is None 分支）。两种语义必须分开。
 TTS_SHUTDOWN_SENTINEL = "__shutdown__"
 
+# 本轮 speech 的音频流已关闭：worker → core 的内部哨兵，core 再翻成下行的
+# {"type": "audio_done", "speech_id": ...}。与 ("__ready__", bool) /
+# ("__error__", msg) 同为 len==2 的 tuple，由 main_logic/core/tts_runtime.py
+# 的 tts_response_handler 消费。
+TTS_AUDIO_DONE_SENTINEL = "__audio_done__"
+
+
+class AudioDoneEmitter:
+    """One-shot per-speech "audio stream closed" signal for the frontend.
+
+    The frontend treats the signal as authoritative and finalizes lip-sync the
+    moment it arrives, so ordering is a hard requirement: enqueue it only after
+    the last audio chunk of that speech has already been put on the same
+    response queue. A missing signal is a tolerated degradation (the frontend
+    falls back to its own give-up timer); an early or mis-attributed one is the
+    exact defect this signal exists to remove.
+
+    Interrupted speech is never signalled — interrupts own a separate cancel
+    channel. Callers wrap their interrupt teardown in
+    ``begin_interrupt()`` / ``end_interrupt()`` so a completion event that
+    lands mid-teardown cannot slip through.
+    """
+
+    __slots__ = ("_response_queue", "_emitted_speech_id", "_interrupted")
+
+    def __init__(self, response_queue):
+        self._response_queue = response_queue
+        self._emitted_speech_id = None
+        self._interrupted = False
+
+    def begin_interrupt(self) -> None:
+        """Suppress emission for the duration of an interrupt teardown."""
+        self._interrupted = True
+
+    def end_interrupt(self) -> None:
+        """Re-arm after the interrupt teardown finished."""
+        self._interrupted = False
+
+    def reset(self) -> None:
+        """Clear dedup state for a new speech / reconnect / session restart."""
+        self._emitted_speech_id = None
+
+    def emit(self, speech_id) -> None:
+        """Enqueue the sentinel at most once for ``speech_id``."""
+        if self._interrupted:
+            return
+        if not speech_id or speech_id == "__interrupt__":
+            return
+        if speech_id == self._emitted_speech_id:
+            return
+        self._emitted_speech_id = speech_id
+        try:
+            self._response_queue.put((TTS_AUDIO_DONE_SENTINEL, speech_id))
+        except Exception:
+            # 漏发是可接受的降级（前端有 give-up 计时器兜底），不能让它打断收尾路径。
+            logger.debug("audio_done 哨兵投递失败 speech_id=%s", speech_id)
+
 # Stable diagnostic code for user-configured endpoints. Never attach the raw
 # exception because SDK/network errors may echo API keys, signed queries, or text.
 # 用户自填端点的异常可能回显密钥、签名 query 或原文；后端日志只记录稳定错误码、
@@ -391,6 +448,9 @@ async def _non_bistream_tts_main_loop(
     _drain_seq: int = 0                                 # drain 当前正在投递的序号
     _drain_task: asyncio.Task | None = None
     _generation_id: int = 0                             # 每次 cancel 递增
+    # 本轮音频流关闭信号。必须绑真实队列：drain 已经把所有 chunk 投到 real_queue，
+    # 走 proxy 会被路由进（此刻已释放的）slot 缓冲。
+    audio_done = AudioDoneEmitter(real_queue)
 
     def _trace_sentence(event: str, seq: int, sid: str, text: str, **extra) -> None:
         if sentence_trace_fn is None:
@@ -555,19 +615,26 @@ async def _non_bistream_tts_main_loop(
         _tasks[seq] = task
         _ensure_drain()
 
-    async def _drain_remaining() -> None:
-        """Wait until all submitted sentences are synthesized and delivered."""
+    async def _drain_remaining() -> bool:
+        """Wait until all submitted sentences are synthesized and delivered.
+
+        Returns True only when every slot actually drained. A False return means
+        the 2s ceiling expired with audio still pending, so the caller must not
+        claim the audio stream is closed.
+        """
         tasks = list(_tasks.values())
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         for _ in range(200):  # 最多等 2 秒
             if not _slot_buffers:
-                break
+                return True
             await asyncio.sleep(0.01)
+        return not _slot_buffers
 
     async def _cancel_all() -> None:
         nonlocal _drain_task, _next_seq, _drain_seq, _generation_id
         _generation_id += 1  # 使所有 in-flight 的 synth 和 drain 立即失效
+        audio_done.reset()  # 新轮次 / 打断：重置 audio_done 去重标记
 
         for task in list(_tasks.values()):
             if not task.done():
@@ -611,7 +678,11 @@ async def _non_bistream_tts_main_loop(
             break
 
         if sid == "__interrupt__":
-            await _cancel_all()
+            audio_done.begin_interrupt()
+            try:
+                await _cancel_all()
+            finally:
+                audio_done.end_interrupt()
             sentence_buf.clear()
             current_speech_id = None
             continue
@@ -625,7 +696,17 @@ async def _non_bistream_tts_main_loop(
             remaining = sentence_buf.flush()
             if remaining and current_speech_id is not None:
                 _enqueue_sentence(remaining, current_speech_id)
-            await _drain_remaining()
+            # 先捕获本轮 sid：_drain_remaining 会让出，期间不能依赖循环变量。
+            finished_speech_id = current_speech_id
+            drained = await _drain_remaining()
+            if drained:
+                audio_done.emit(finished_speech_id)
+            else:
+                # 抽干撞上 2 秒硬上限，音频可能还没产完，此时发 audio_done 就是早发。
+                # 宁可漏发（前端 give-up 计时器兜底）也不能让前端提前收尾。
+                logger.warning(
+                    "%s 抽干超时，跳过 audio_done speech_id=%s", label, finished_speech_id
+                )
             current_speech_id = None
             continue
 

@@ -4,6 +4,7 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 LIVE2D_INTERACTION_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-interaction.js"
 LIVE2D_CORE_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-core.js"
+LIVE2D_UI_BUTTONS_PATH = PROJECT_ROOT / "static" / "live2d" / "live2d-ui-buttons.js"
 INDEX_CSS_PATH = PROJECT_ROOT / "static" / "css" / "index.css"
 
 
@@ -54,6 +55,9 @@ def test_live2d_widget_mode_edge_peek_hides_controls_without_locking_live2d():
     full_edge_peek_source = full_edge_peek_source.split("Live2DManager.prototype.setupDragAndDrop", 1)[0]
     assert ".classList.add('neko-live2d-peek')" in full_edge_peek_source
     assert ".classList.remove('neko-live2d-peek')" in full_edge_peek_source
+    assert "this._setLive2DPeekControlsSuppressed(true)" in full_edge_peek_source
+    assert "this._setLive2DPeekControlsSuppressed(false)" in full_edge_peek_source
+    assert "element.style.setProperty('display', 'none', 'important')" in full_edge_peek_source
     assert "setLocked(true" not in full_edge_peek_source
     assert "this.isLocked = true" not in full_edge_peek_source
 
@@ -120,6 +124,21 @@ def test_live2d_widget_mode_edge_peek_prefers_head_anchor_and_preserves_vertical
     assert "getLive2DPeekVerticalCorrection" in edge_peek_source
 
 
+def test_live2d_widget_mode_show_buttons_clears_hide_timer_before_peek_suppression():
+    source = _source(LIVE2D_INTERACTION_PATH)
+    show_buttons_source = source.split("const showButtons = () => {", 1)[1]
+    show_buttons_source = show_buttons_source.split("const startHideTimer", 1)[0]
+
+    peek_guard = show_buttons_source.split("if (this.isLive2DPeekActive()) {", 1)[1].split("return;", 1)[0]
+    assert "clearTimeout(this._hideButtonsTimer);" in peek_guard
+    assert "this._hideButtonsTimer = null;" in peek_guard
+    assert "this._setLive2DPeekControlsSuppressed(true);" in peek_guard
+    clear_index = peek_guard.index("clearTimeout(this._hideButtonsTimer);")
+    null_index = peek_guard.index("this._hideButtonsTimer = null;")
+    suppress_index = peek_guard.index("_setLive2DPeekControlsSuppressed(true);")
+    assert clear_index < null_index < suppress_index
+
+
 def test_live2d_widget_mode_edge_peek_click_keeps_anchor_and_explicit_drag_exits():
     source = _source(LIVE2D_INTERACTION_PATH)
     drag_source = source.split("Live2DManager.prototype.setupDragAndDrop = function", 1)[1]
@@ -166,18 +185,53 @@ def test_live2d_widget_mode_edge_peek_reports_viewport_intersection_bounds():
     assert "const renderer = this.pixi_app && this.pixi_app.renderer;" in bounds_source
     assert "const screen = renderer && renderer.screen;" in bounds_source
     assert "Number.isFinite(rendererW) && rendererW > 0" in bounds_source
+    assert "const niriVirtualViewport = getLive2DNiriPetVirtualViewportSize();" in bounds_source
+    assert "? niriVirtualViewport.width" in bounds_source
+    assert "? niriVirtualViewport.height" in bounds_source
     assert "maskPoints" not in bounds_source
     assert "drawPolygon" not in bounds_source
-    assert "const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;" in edge_peek_source
-    assert "const screen = renderer && renderer.screen;" in edge_peek_source
-    assert "const canvasW = Number(screen && screen.width);" in edge_peek_source
-    assert "const vw = Number(window.innerWidth);" in edge_peek_source
-    assert "const viewportW = Number.isFinite(canvasW) && canvasW > 0" in edge_peek_source
-    assert "? Math.min(canvasW, vw)" in edge_peek_source
-    assert ": (validVw ? vw : fallbackW);" in edge_peek_source
+    assert "const renderer = manager && manager.pixi_app && manager.pixi_app.renderer;" in viewport_source
+    assert "const screen = renderer && renderer.screen;" in viewport_source
+    assert "const canvasW = Number(screen && screen.width);" in viewport_source
+    assert "const vw = Number(window.innerWidth);" in viewport_source
+    assert "const niriVirtualViewport = getLive2DNiriPetVirtualViewport();" in viewport_source
+    assert "const viewportW = niriVirtualViewport" in viewport_source
+    assert "? niriVirtualViewport.width" in viewport_source
+    assert "? niriVirtualViewport.height" in viewport_source
+    assert "Number.isFinite(canvasW) && canvasW > 0" in viewport_source
+    assert "? Math.min(canvasW, vw)" in viewport_source
+    assert "(validVw ? vw : fallbackW)" in viewport_source
+    assert "(validVh ? vh : fallbackH)" in viewport_source
+    assert "__nekoNiriPetPhysicalCrop" in core_source
+    assert "__nekoNiriPetPhysicalCrop" in interaction_source
+    assert "state && state.enabled === true ? state.virtualBounds : null" in core_source
+    assert "state && state.enabled === true ? state.virtualBounds : null" in interaction_source
     assert "getLive2DPeekPlacement(model, bounds, this)" in edge_peek_source
     assert "Math.max(fallbackW" not in viewport_source
     assert "Math.max(fallbackH" not in viewport_source
+
+
+def test_live2d_delayed_toolbar_initialization_preserves_active_peek_suppression():
+    source = _source(LIVE2D_UI_BUTTONS_PATH)
+    delayed_setup = source.split("this.pixi_app.ticker.add(tick);", 1)[1]
+    delayed_setup = delayed_setup.split("if (this.tutorialProtectionTimer)", 1)[0]
+    tutorial_protection = source.split(
+        "this.tutorialProtectionTimer = setInterval(() => {", 1
+    )[1]
+    tutorial_protection = tutorial_protection.split("}, 300);", 1)[0]
+
+    assert delayed_setup.count("this.isLive2DPeekActive()") >= 2
+    assert delayed_setup.count("this._setLive2DPeekControlsSuppressed(true);") >= 2
+    assert delayed_setup.index("this.isLive2DPeekActive()") < delayed_setup.index(
+        "buttonsContainer.style.display = 'flex';"
+    )
+    assert "this.isLive2DPeekActive()" in tutorial_protection
+    assert (
+        "this._setLive2DPeekControlsSuppressed(true);" in tutorial_protection
+    )
+    assert tutorial_protection.index(
+        "this.isLive2DPeekActive()"
+    ) < tutorial_protection.index("if (window.isInTutorial === true)")
 
 
 def test_live2d_widget_mode_edge_peek_normal_snap_caps_renderer_at_web_viewport():

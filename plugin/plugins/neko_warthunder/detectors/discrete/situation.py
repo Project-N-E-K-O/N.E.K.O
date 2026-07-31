@@ -12,12 +12,19 @@ from typing import Any
 
 from ...core.contracts import BattleEvent, BattleState
 from .._base import DiscreteDetector
+from ._common import as_float as _as_float
+from ._common import as_int as _as_int
+from ._common import is_rear as _is_rear
+from ._common import safe_short_text as _safe_short_text
+from ._common import (
+    SITUATION_TAIL_CONFIRM_FRAMES,
+    SITUATION_TAIL_DISTANCE_M,
+    SITUATION_TAIL_WINDOW_SECONDS,
+)
 
 _DEFAULT_TARGET_DISTANCE_M = 3000.0
 _DEFAULT_AIR_THREAT_DISTANCE_M = 5000.0
 _DEFAULT_REAR_THREAT_DISTANCE_M = 5000.0
-_DEFAULT_TAIL_DISTANCE_M = 1500.0
-_BEHIND_CLOCKS = {5, 6, 7}
 
 
 class AirSituationDetector(DiscreteDetector):
@@ -28,9 +35,9 @@ class AirSituationDetector(DiscreteDetector):
         *,
         air_distance_m: float = _DEFAULT_AIR_THREAT_DISTANCE_M,
         rear_distance_m: float = _DEFAULT_REAR_THREAT_DISTANCE_M,
-        tail_distance_m: float = _DEFAULT_TAIL_DISTANCE_M,
-        tail_window_seconds: float = 5.0,
-        tail_confirm_frames: int = 2,
+        tail_distance_m: float = SITUATION_TAIL_DISTANCE_M,
+        tail_window_seconds: float = SITUATION_TAIL_WINDOW_SECONDS,
+        tail_confirm_frames: int = SITUATION_TAIL_CONFIRM_FRAMES,
     ) -> None:
         self.air_distance_m = max(0.0, float(air_distance_m))
         self.rear_distance_m = max(0.0, float(rear_distance_m))
@@ -221,14 +228,6 @@ def _is_air_enemy(item: dict[str, Any]) -> bool:
     return False
 
 
-def _is_rear(item: dict[str, Any]) -> bool:
-    clock = _as_int(item.get("clock"))
-    if clock in _BEHIND_CLOCKS:
-        return True
-    rel = _as_float(item.get("relative_deg"))
-    return rel is not None and abs(rel) >= 135.0
-
-
 def _has_tailing_evidence(item: dict[str, Any]) -> bool:
     if item.get("approaching") is True:
         return True
@@ -289,7 +288,6 @@ def _air_payload(item: dict[str, Any]) -> dict[str, Any]:
     }
     return {key: value for key, value in payload.items() if value is not None and value != ""}
 
-
 def _clock_from_relative(value: Any) -> int | None:
     relative_deg = _as_float(value)
     if relative_deg is None:
@@ -329,30 +327,3 @@ def _payload(item: dict[str, Any]) -> dict[str, Any]:
         "relative_deg": _as_float(item.get("relative_deg")),
     }
     return {key: value for key, value in payload.items() if value is not None and value != ""}
-
-
-def _as_float(value: Any) -> float | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _as_int(value: Any) -> int | None:
-    if isinstance(value, bool) or value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _safe_short_text(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    if not text or len(text) > 32:
-        return None
-    return text

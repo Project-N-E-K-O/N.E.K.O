@@ -219,6 +219,18 @@ class TelemetryProcessor:
         }
         self._build_family_rules()
 
+    def resolve_profile(
+        self, vehicle_type: str | None, army: str | None
+    ) -> tuple[dict[str, Any], bool, str, str | None]:
+        """公开的机型阈值解析入口。
+
+        wt_proximity / wt_server 曾经直接 import 私有的 _merge_profile、再用
+        getattr(processor, "_family_rules", []) 把家族规则掏出来回传——改名或调整
+        规则结构会同时炸掉三个模块，而带默认值的 getattr 还会静默退化成空规则
+        （家族匹配无声失效而不是报错）。统一走这里。
+        """
+        return _merge_profile(self.profiles, vehicle_type, army, self._family_rules)
+
     def _build_family_rules(self) -> None:
         """从 profiles['_families'] 预构建模糊家族规则表：compact 化前缀并按长度降序排序。
 
@@ -276,9 +288,7 @@ class TelemetryProcessor:
             self._cur_type = vtype
             self._cur_class = vehicle_class
 
-        cfg, matched, source, family = _merge_profile(
-            self.profiles, vtype, army, self._family_rules
-        )
+        cfg, matched, source, family = self.resolve_profile(vtype, army)
 
         dt = 0.0
         if self._last_ts is not None:
