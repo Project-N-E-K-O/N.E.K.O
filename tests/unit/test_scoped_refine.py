@@ -302,6 +302,53 @@ async def test_refine_pass_restores_served_subject_prompt_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_refine_prompt_detects_english_cluster_under_zh_tw_ui(monkeypatch):
+    from config.prompts import prompts_memory
+    from utils.language_utils import language_context
+
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(
+            f"a{i}",
+            f"The user prefers quiet mornings {i}",
+            GROUP_A,
+            va if i % 2 else vb,
+        )
+        for i in range(8)
+    ]
+    buckets = gather_scoped_refine_buckets({}, entries)
+    prompt_locales = []
+
+    def _prompt_for(locale):
+        prompt_locales.append(locale)
+        return "{CLUSTER}\n{COUNT}"
+
+    async def _apply(*_args):
+        return 1
+
+    monkeypatch.setattr(
+        prompts_memory,
+        "get_scoped_memory_refine_prompt",
+        _prompt_for,
+    )
+    with (
+        language_context("zh-TW"),
+        patch(
+            "utils.llm_client.create_chat_llm_async",
+            AsyncMock(return_value=_make_llm([])),
+        ),
+    ):
+        await engine.refine_pass(
+            buckets,
+            apply_fn=_apply,
+            scope_label="scoped/t",
+        )
+
+    assert prompt_locales == ["en"]
+
+
+@pytest.mark.asyncio
 async def test_refine_pass_llm_config_is_lite():
     """Pin the cost contract: summary tier, extra_body OMITTED (= the
     provider-dialect thinking-off default), short timeout. A wrong

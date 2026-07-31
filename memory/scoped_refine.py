@@ -470,11 +470,18 @@ class ScopedLiteRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_scoped_memory_refine_prompt
-        from utils.language_utils import get_global_language_full
+        from utils.language_utils import (
+            detect_prompt_language,
+            get_global_language_full,
+        )
         from utils.llm_client import create_chat_llm_async
 
+        prompt_locale = detect_prompt_language(
+            "\n".join(str(entry.get("text") or "") for entry in cluster),
+            ui_language=get_global_language_full(),
+        )
         prompt = (
-            get_scoped_memory_refine_prompt(get_global_language_full())
+            get_scoped_memory_refine_prompt(prompt_locale)
             .replace('{CLUSTER}', cluster_text)
             .replace('{COUNT}', str(len(cluster)))
         )

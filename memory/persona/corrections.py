@@ -294,16 +294,26 @@ class CorrectionsMixin:
             # 错误消费。
             allowed_indices = {i for i, _ in pairs}
 
+            from config.prompts.prompts_memory import (
+                get_persona_correction_pair_labels,
+            )
+
+            prompt_language = _detect_correction_prompt_language(
+                pairs,
+                ui_language=prompt_ui_language,
+            )
+            old_label, new_label = get_persona_correction_pair_labels(
+                prompt_language
+            )
             batch_text = "\n".join(
-                f"[{i}] 已有: {item['old_text']} | 新观察: {item['new_text']}"
+                f"[{i}] {old_label}: {item['old_text']} | "
+                f"{new_label}: {item['new_text']}"
                 for i, item in pairs
             )
-            prompt = get_persona_correction_prompt(
-                _detect_correction_prompt_language(
-                    pairs,
-                    ui_language=prompt_ui_language,
-                )
-            ).format(pairs=batch_text, count=len(pairs))
+            prompt = get_persona_correction_prompt(prompt_language).format(
+                pairs=batch_text,
+                count=len(pairs),
+            )
 
             # ── LLM (锁外) ──
             try:

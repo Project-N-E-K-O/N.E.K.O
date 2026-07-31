@@ -21,6 +21,7 @@ unabsorbed-facts → pending-reflections synthesis pass.
 import asyncio
 
 from config import (
+    MEMORY_REFINE_CLUSTERS_PER_PASS,
     MEMORY_REFINE_CRON_INTERVAL_SECONDS,
     MEMORY_REFLECTION_SYNTHESIS_INTERVAL_SECONDS,
     SCOPED_REFINE_CRON_INTERVAL_SECONDS,
@@ -41,6 +42,11 @@ from .gates import (
 
 
 # ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
+
+_reflection_refine_subject_cursor: dict[
+    str,
+    tuple[str | None, str | None],
+] = {}
 
 
 async def _run_persona_refine_for_character(character: str) -> None:
@@ -156,7 +162,8 @@ async def _run_reflection_refine_for_character(
     character: str,
     *,
     subject=None,
-) -> None:
+    max_clusters: int | None = None,
+) -> int:
     """Single-character reflection refine pass. The cluster may mix in absorbed
     facts of the same entity as a read-only information source (facts cannot be
     split/discarded/modified; the apply layer enforces this as a backstop)."""
@@ -178,11 +185,11 @@ async def _run_reflection_refine_for_character(
     engine_ref = runtime.reflection_engine
     fs = runtime.fact_store
     if engine_ref is None or fs is None:
-        return
+        return 0
 
     refls = await engine_ref.aload_reflections(character, include_archived=False)
     if not refls:
-        return
+        return 0
     facts = await fs.aload_facts(character)
 
     candidates_by_entity: dict[str, list[dict]] = {}
@@ -217,7 +224,7 @@ async def _run_reflection_refine_for_character(
         if entity_refls:  # 至少要有 reflection；fact 是只读补料
             candidates_by_entity[entity] = entity_refls + entity_facts
     if not candidates_by_entity:
-        return
+        return 0
 
     engine = MemoryRefineEngine(runtime._config_manager)
 
@@ -242,6 +249,7 @@ async def _run_reflection_refine_for_character(
         apply_fn=_apply,
         scope_label=f"reflection/{character}/{subject_label}",
         failure_fn=_failure,
+        max_clusters=max_clusters,
     )
     if result['clusters_resolved'] or result['clusters_failed']:
         logger.info(
@@ -250,6 +258,7 @@ async def _run_reflection_refine_for_character(
             f"resolved={result['clusters_resolved']}, "
             f"failed={result['clusters_failed']}"
         )
+    return result['clusters_resolved'] + result['clusters_failed']
 
 
 async def _run_reflection_refine_with_subject_locales(character: str) -> None:
@@ -283,7 +292,22 @@ async def _run_reflection_refine_with_subject_locales(character: str) -> None:
         seen_domains.add(domain)
         subjects.append(subject)
 
+    if not subjects:
+        return
+
+    markers = [
+        (subject.key, subject.scope) if subject is not None else (None, None)
+        for subject in subjects
+    ]
+    cursor = _reflection_refine_subject_cursor.get(character)
+    if cursor in markers:
+        start = (markers.index(cursor) + 1) % len(subjects)
+        subjects = subjects[start:] + subjects[:start]
+
+    remaining = MEMORY_REFINE_CLUSTERS_PER_PASS
     for subject in subjects:
+        if remaining <= 0:
+            break
         selected_locale = None
         if subject is not None:
             selected_locale = await aget_subject_prompt_locale(
@@ -292,14 +316,24 @@ async def _run_reflection_refine_with_subject_locales(character: str) -> None:
             )
         if selected_locale:
             with language_context(selected_locale):
-                await _run_reflection_refine_for_character(
+                attempts = await _run_reflection_refine_for_character(
                     character,
                     subject=subject,
+                    max_clusters=remaining,
                 )
         else:
-            await _run_reflection_refine_for_character(
+            attempts = await _run_reflection_refine_for_character(
                 character,
                 subject=subject,
+                max_clusters=remaining,
+            )
+        attempts = int(attempts or 0)
+        if attempts:
+            remaining -= attempts
+            _reflection_refine_subject_cursor[character] = (
+                (subject.key, subject.scope)
+                if subject is not None
+                else (None, None)
             )
 
 

@@ -160,9 +160,15 @@ def _persist_locale_state_unlocked(
     order: int | None,
     reserved_order: int | None,
 ) -> None:
+    path = _locale_path(name)
+    with _locale_cache_guard:
+        generation = _locale_cache_generation
+    staging_path = (
+        f"{path}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.pending"
+    )
     try:
         atomic_write_json(
-            _locale_path(name),
+            staging_path,
             {
                 "language": language,
                 "order": order,
@@ -170,15 +176,28 @@ def _persist_locale_state_unlocked(
             },
             ensure_ascii=False,
         )
+        with _locale_cache_guard:
+            if generation != _locale_cache_generation:
+                return
+            # Re-check the cloud-save fence immediately before the final
+            # replace. A writer may have passed the caller's fence check before
+            # a restore started, while its staged write was still in flight.
+            _assert_prompt_locale_writable("prompt_locale.json")
+            os.replace(staging_path, path)
+            _locale_cache[name] = (language, order, reserved_order)
     except Exception as exc:
         logger.warning(
             "[PromptLocale] %s: persist failed: %s",
             name,
             exc,
         )
-        return
-    with _locale_cache_guard:
-        _locale_cache[name] = (language, order, reserved_order)
+    finally:
+        try:
+            os.remove(staging_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("[PromptLocale] stale staging cleanup failed: %s", exc)
 
 
 def _load_subject_locale_state_unlocked(
@@ -232,9 +251,15 @@ def _persist_subject_locale_state_unlocked(
     states: dict[str, tuple[str | None, int | None, int | None]],
 ) -> None:
     snapshot = dict(states)
+    path = _subject_locale_path(name)
+    with _locale_cache_guard:
+        generation = _locale_cache_generation
+    staging_path = (
+        f"{path}.{os.getpid()}.{threading.get_ident()}.{time.time_ns()}.pending"
+    )
     try:
         atomic_write_json(
-            _subject_locale_path(name),
+            staging_path,
             {
                 "subjects": {
                     key: {
@@ -247,15 +272,25 @@ def _persist_subject_locale_state_unlocked(
             },
             ensure_ascii=False,
         )
+        with _locale_cache_guard:
+            if generation != _locale_cache_generation:
+                return
+            _assert_prompt_locale_writable("scoped_prompt_locales.json")
+            os.replace(staging_path, path)
+            _subject_locale_cache[name] = snapshot
     except Exception as exc:
         logger.warning(
             "[PromptLocale] %s: scoped locale persist failed: %s",
             name,
             exc,
         )
-        return
-    with _locale_cache_guard:
-        _subject_locale_cache[name] = snapshot
+    finally:
+        try:
+            os.remove(staging_path)
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            logger.debug("[PromptLocale] stale staging cleanup failed: %s", exc)
 
 
 def reserve_character_prompt_locale_order(name: str) -> int:

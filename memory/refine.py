@@ -156,6 +156,7 @@ class MemoryRefineEngine:
         apply_fn: ApplyFn,
         scope_label: str,  # for logging: "persona/character" etc.
         failure_fn: FailureFn | None = None,
+        max_clusters: int | None = None,
     ) -> dict:
         """Generic pass: candidates are already sliced by entity (each tagged via
         annotate_entry); the engine runs cluster + hash skip + ranking + LLM +
@@ -228,7 +229,12 @@ class MemoryRefineEngine:
         # Starvation-first ordering (smallest last_refine_at first).
         active.sort(key=lambda t: self._cluster_starvation_key(t[1]))
 
-        to_process = active[:MEMORY_REFINE_CLUSTERS_PER_PASS]
+        cluster_budget = (
+            MEMORY_REFINE_CLUSTERS_PER_PASS
+            if max_clusters is None
+            else max(0, min(max_clusters, MEMORY_REFINE_CLUSTERS_PER_PASS))
+        )
+        to_process = active[:cluster_budget]
         resolved = 0
         failed = 0
         for entity, cluster, cluster_hash in to_process:

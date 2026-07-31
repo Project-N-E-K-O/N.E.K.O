@@ -3560,13 +3560,15 @@ async def test_correction_batch_uses_scoped_prompt_locale(tmp_path):
         encoding="utf-8",
     )
     observed_subjects = []
+    captured_prompts = []
 
     async def resolve_locale(actual_subject):
         observed_subjects.append(actual_subject)
         return "zh-TW"
 
     class _FakeLLM:
-        async def ainvoke(self, _prompt):
+        async def ainvoke(self, prompt):
+            captured_prompts.append(prompt)
             response = MagicMock()
             response.content = "[]"
             return response
@@ -3590,6 +3592,7 @@ async def test_correction_batch_uses_scoped_prompt_locale(tmp_path):
 
     assert observed_subjects == [subject]
     get_prompt.assert_called_once_with("zh-TW")
+    assert "已有: 好 | 新觀察: 嗯" in captured_prompts[0]
 
 
 @pytest.mark.asyncio

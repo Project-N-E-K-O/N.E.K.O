@@ -545,7 +545,9 @@ def test_scoped_prompt_locale_survives_restart_and_rejects_stale_write(
     assert locale_state.get_subject_prompt_locale("Neko", subject) == "zh-TW"
 
 
-def test_scoped_prompt_locale_batch_persists_once_per_phase(monkeypatch):
+def test_scoped_prompt_locale_batch_persists_once_per_phase(monkeypatch, tmp_path):
+    import json
+
     from app.memory_server import locale_state
     from memory.scopes import MemorySubject
 
@@ -554,17 +556,25 @@ def test_scoped_prompt_locale_batch_persists_once_per_phase(monkeypatch):
         MemorySubject.group_participant("qq", "7788", "1002"),
     ]
     writes = []
+    locale_path = tmp_path / "scoped_prompt_locales.json"
     locale_state._subject_locale_cache["BatchNeko"] = {}
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(locale_path),
+    )
     monkeypatch.setattr(
         locale_state,
         "_assert_prompt_locale_writable",
         lambda _target: None,
     )
-    monkeypatch.setattr(
-        locale_state,
-        "atomic_write_json",
-        lambda path, payload, **kwargs: writes.append((path, payload, kwargs)),
-    )
+
+    def capture_write(path, payload, **kwargs):
+        writes.append((path, payload, kwargs))
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=kwargs.get("ensure_ascii", True))
+
+    monkeypatch.setattr(locale_state, "atomic_write_json", capture_write)
 
     orders = locale_state.reserve_subject_prompt_locale_orders(
         "BatchNeko",
@@ -582,6 +592,67 @@ def test_scoped_prompt_locale_batch_persists_once_per_phase(monkeypatch):
     ) == ["zh-TW", "en"]
     assert len(writes) == 2
     assert len(writes[-1][1]["subjects"]) == 2
+
+
+@pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_inflight_write_cannot_replace_restored_sidecar(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    import json
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "RestoreRaceNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    subject_key = locale_state._subject_locale_key(subject)
+    old_state = {"language": "en", "order": 1, "reserved_order": 1}
+    restored_state = {"language": "zh-TW", "order": 9, "reserved_order": 9}
+    initial = {"subjects": {subject_key: old_state}} if scoped else old_state
+    restored = (
+        {"subjects": {subject_key: restored_state}}
+        if scoped
+        else restored_state
+    )
+    locale_path.write_text(json.dumps(initial), encoding="utf-8")
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path" if scoped else "_locale_path",
+        lambda _name: str(locale_path),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+    locale_state.invalidate_prompt_locale_caches()
+
+    def restore_during_staged_write(path, payload, **_kwargs):
+        with open(path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False)
+        locale_path.write_text(json.dumps(restored), encoding="utf-8")
+        locale_state.invalidate_prompt_locale_caches()
+
+    monkeypatch.setattr(
+        locale_state,
+        "atomic_write_json",
+        restore_during_staged_write,
+    )
+
+    if scoped:
+        locale_state.reserve_subject_prompt_locale_order(name, subject)
+        selected = locale_state.get_subject_prompt_locale(name, subject)
+    else:
+        locale_state.reserve_character_prompt_locale_order(name)
+        selected = locale_state.get_character_prompt_locale(name)
+
+    assert selected == "zh-TW"
+    assert json.loads(locale_path.read_text(encoding="utf-8")) == restored
 
 
 def test_prompt_locale_writes_honor_cloudsave_fence(monkeypatch):
@@ -1552,8 +1623,9 @@ async def test_reflection_refine_partitions_subject_locales(
             assert include_archived is False
             return reflections
 
-    async def run_batch(name, *, subject=None):
+    async def run_batch(name, *, subject=None, max_clusters=None):
         observed.append((name, subject, get_global_language_full()))
+        return 1
 
     subject_locale_path = tmp_path / "prompt_locale_subjects.json"
     monkeypatch.setattr(
@@ -1576,6 +1648,55 @@ async def test_reflection_refine_partitions_subject_locales(
     assert observed == [
         ("Neko", None, "zh-CN"),
         ("Neko", subject, "zh-TW"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_reflection_refine_shares_budget_and_rotates_subjects(monkeypatch):
+    from app.memory_server import refine_loops, runtime
+    from config import MEMORY_REFINE_CLUSTERS_PER_PASS
+    from memory.scopes import MemorySubject
+
+    first = MemorySubject.group_chat("qq", "7788")
+    second = MemorySubject.group_chat("qq", "9900")
+    reflections = [
+        {"id": "legacy", "entity": "master"},
+        {"id": "first", "entity": "master", **first.as_entry_fields()},
+        {"id": "second", "entity": "master", **second.as_entry_fields()},
+    ]
+    calls = []
+
+    class ReflectionEngine:
+        async def aload_reflections(self, _name, *, include_archived):
+            assert include_archived is False
+            return reflections
+
+    async def run_batch(name, *, subject=None, max_clusters=None):
+        calls.append((name, subject, max_clusters))
+        return max_clusters
+
+    async def no_subject_locale(_name, _subject):
+        return None
+
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(
+        refine_loops,
+        "_run_reflection_refine_for_character",
+        run_batch,
+    )
+    monkeypatch.setattr(
+        refine_loops,
+        "aget_subject_prompt_locale",
+        no_subject_locale,
+    )
+    refine_loops._reflection_refine_subject_cursor.pop("BudgetNeko", None)
+
+    await refine_loops._run_reflection_refine_with_subject_locales("BudgetNeko")
+    await refine_loops._run_reflection_refine_with_subject_locales("BudgetNeko")
+
+    assert calls == [
+        ("BudgetNeko", None, MEMORY_REFINE_CLUSTERS_PER_PASS),
+        ("BudgetNeko", first, MEMORY_REFINE_CLUSTERS_PER_PASS),
     ]
 
 

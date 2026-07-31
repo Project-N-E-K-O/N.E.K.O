@@ -23,9 +23,13 @@ inner-thoughts injection fragments, and chat-gap notices.
 from __future__ import annotations
 
 import re
+from typing import TypeVar
 
 from config.prompts._locale import normalize_prompt_locale
 from config.prompts.prompts_sys import _loc as _base_loc
+
+
+_PromptValue = TypeVar("_PromptValue")
 
 
 def _normalize_memory_prompt_lang(lang: str | None) -> str:
@@ -33,7 +37,10 @@ def _normalize_memory_prompt_lang(lang: str | None) -> str:
     return normalize_prompt_locale(lang, default="en", simplified="zh", keep_traditional=True)
 
 
-def _loc(templates: dict[str, str], lang: str | None) -> str:
+def _loc(
+    templates: dict[str, _PromptValue],
+    lang: str | None,
+) -> _PromptValue:
     """Resolve a memory prompt after applying its locale policy."""
     return _base_loc(templates, _normalize_memory_prompt_lang(lang))
 
@@ -4019,9 +4026,24 @@ Retorne apenas um array JSON. Cada item deve conter index, action e text (opcion
 [{{"index": 0, "action": "merge", "text": "texto combinado"}}]""",
 }
 
+PERSONA_CORRECTION_PAIR_LABELS = {
+    "zh": ("已有", "新观察"),
+    "zh-TW": ("已有", "新觀察"),
+    "en": ("Existing", "New observation"),
+    "ja": ("既存", "新しい観察"),
+    "ko": ("기존", "새 관찰"),
+    "ru": ("Существующее", "Новое наблюдение"),
+    "es": ("Existente", "Nueva observación"),
+    "pt": ("Existente", "Nova observação"),
+}
+
 
 def get_persona_correction_prompt(lang: str = "zh") -> str:
     return _loc(PERSONA_CORRECTION_PROMPT, lang)
+
+
+def get_persona_correction_pair_labels(lang: str = "zh") -> tuple[str, str]:
+    return _loc(PERSONA_CORRECTION_PAIR_LABELS, lang)
 
 
 persona_correction_prompt = PERSONA_CORRECTION_PROMPT["zh"]
