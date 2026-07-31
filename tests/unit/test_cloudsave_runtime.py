@@ -1108,6 +1108,7 @@ def test_local_cloudsave_import_locks_recent_before_rollback_backup(tmp_path):
 @pytest.mark.unit
 def test_local_cloudsave_import_rejects_writer_waiting_before_activation(tmp_path):
     cm = _make_config_manager(tmp_path)
+    cm.project_memory_dir = tmp_path / "project-memory"
 
     from utils import cloudsave_runtime, recent_file
     from utils.cloudsave_runtime import operations
@@ -1121,14 +1122,17 @@ def test_local_cloudsave_import_rejects_writer_waiting_before_activation(tmp_pat
     writer_attempting = threading.Event()
     writer_errors = []
     writer = None
+    activated_paths = set()
     real_access = recent_file.recent_file_access
     real_activate = operations.activate_recent_paths
 
     @contextlib.contextmanager
-    def _probe_access(path):
+    def _probe_access(path, *, expected_generation=None):
         if threading.current_thread() is writer:
             writer_attempting.set()
-        with real_access(path) as resolved_path:
+        with real_access(
+            path, expected_generation=expected_generation,
+        ) as resolved_path:
             yield resolved_path
 
     def _write_stale_batch():
@@ -1142,6 +1146,7 @@ def test_local_cloudsave_import_rejects_writer_waiting_before_activation(tmp_pat
 
     def _activate_with_waiting_writer(paths):
         nonlocal writer
+        activated_paths.update(Path(path) for path in paths)
         writer = threading.Thread(target=_write_stale_batch)
         writer.start()
         assert writer_attempting.wait(3)
@@ -1160,6 +1165,8 @@ def test_local_cloudsave_import_rejects_writer_waiting_before_activation(tmp_pat
     assert len(writer_errors) == 1
     assert isinstance(writer_errors[0], recent_file.RecentFileDeletedError)
     assert json.loads(current_path.read_text(encoding="utf-8")) == cloud_payload
+    from utils.character_memory import list_character_recent_paths
+    assert set(list_character_recent_paths(cm, "B")) <= activated_paths
 
 
 def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_path: str) -> None:
@@ -2594,6 +2601,7 @@ def test_single_character_import_commits_and_restores_recent_runtime_state(tmp_p
 
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")
+    target_cm.project_memory_dir = tmp_path / "target-project-memory"
     character_name = "云端角色"
     _write_runtime_state(source_cm, character_name=character_name)
     source_recent = Path(source_cm.memory_dir) / character_name / "recent.json"
@@ -2606,31 +2614,48 @@ def test_single_character_import_commits_and_restores_recent_runtime_state(tmp_p
     export_cloudsave_character_unit(source_cm, character_name)
 
     _write_runtime_state(target_cm, character_name=character_name)
+    from utils.character_memory import list_character_recent_paths
+
     target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    target_recent_paths = list_character_recent_paths(target_cm, character_name)
     redirected_recent = Path(target_cm.memory_dir) / "redirect-target" / "recent.json"
-    recent_file.redirect_recent_paths([target_recent], redirected_recent)
-    with recent_file.recent_file_locks([target_recent]):
-        recent_file.set_recent_pending_unlocked(
-            target_recent, [HumanMessage(content="pending-before-import")],
-        )
+    recent_file.redirect_recent_paths(target_recent_paths, redirected_recent)
+    with recent_file.recent_file_locks(target_recent_paths):
+        for recent_path in target_recent_paths:
+            recent_file.set_recent_pending_unlocked(
+                recent_path, [HumanMessage(content=f"pending:{recent_path.name}")],
+            )
 
     shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
     result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
 
     assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "cloud"
-    with recent_file.recent_file_locks([target_recent]):
-        assert recent_file.get_recent_pending_unlocked(target_recent) == []
-    target_key = recent_file._lock_key(target_recent)
+    with recent_file.recent_file_locks(target_recent_paths):
+        assert all(
+            recent_file.get_recent_pending_unlocked(recent_path) == []
+            for recent_path in target_recent_paths
+        )
     redirected_key = recent_file._lock_key(redirected_recent)
-    assert recent_file._resolve_key_unlocked(target_key) == target_key
+    assert all(
+        recent_file._resolve_key_unlocked(recent_file._lock_key(recent_path))
+        == recent_file._lock_key(recent_path)
+        for recent_path in target_recent_paths
+    )
 
     restore_cloudsave_operation_backup(target_cm, result["backup_path"])
 
     assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
-    with recent_file.recent_file_locks([target_recent]):
-        restored_pending = recent_file.get_recent_pending_unlocked(target_recent)
-    assert [message.content for message in restored_pending] == ["pending-before-import"]
-    assert recent_file._resolve_key_unlocked(target_key) == redirected_key
+    with recent_file.recent_file_locks(target_recent_paths):
+        restored_pending = {
+            recent_path: recent_file.get_recent_pending_unlocked(recent_path)
+            for recent_path in target_recent_paths
+        }
+    assert all(messages for messages in restored_pending.values())
+    assert all(
+        recent_file._resolve_key_unlocked(recent_file._lock_key(recent_path))
+        == redirected_key
+        for recent_path in target_recent_paths
+    )
 
 
 @pytest.mark.unit
@@ -2686,6 +2711,7 @@ def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
         finalize_cloudsave_character_import,
         import_cloudsave_character_unit,
         restore_cloudsave_operation_backup,
+        rollback_cloudsave_character_import_registry,
     )
 
     source_cm = _make_config_manager(tmp_path / "source")
@@ -2701,10 +2727,14 @@ def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
         target_cm, character_name, overwrite=True, retain_recent_locks=True,
     )
     writer_entered = threading.Event()
+    writer_errors = []
 
     def _waiting_writer():
-        with recent_file.recent_file_access(target_recent):
-            writer_entered.set()
+        try:
+            with recent_file.recent_file_access(target_recent):
+                writer_entered.set()
+        except Exception as exc:  # noqa: BLE001 - asserted in the main thread
+            writer_errors.append(exc)
 
     writer = threading.Thread(target=_waiting_writer)
     writer.start()
@@ -2714,12 +2744,15 @@ def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
     restore_cloudsave_operation_backup(
         target_cm, result["backup_path"], recent_locks_held=True,
     )
+    rollback_cloudsave_character_import_registry(result)
     assert not writer_entered.is_set()
     finalize_cloudsave_character_import(result)
     writer.join(3)
 
     assert not writer.is_alive()
-    assert writer_entered.is_set()
+    assert not writer_entered.is_set()
+    assert len(writer_errors) == 1
+    assert isinstance(writer_errors[0], recent_file.RecentFileDeletedError)
     assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
 
 

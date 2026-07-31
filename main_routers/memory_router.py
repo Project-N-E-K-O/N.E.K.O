@@ -44,7 +44,11 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from utils.logger_config import get_module_logger
 # merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
 # 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
-from utils.recent_file import read_recent_text, write_recent_payload
+from utils.recent_file import (
+    capture_recent_generation,
+    read_recent_text,
+    write_recent_payload,
+)
 from fastapi.responses import JSONResponse
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
@@ -379,17 +383,16 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
+    resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
+    admission_generation = capture_recent_generation(resolved_path)
     assert_cloudsave_writable(
         cm,
         operation="save",
         target=f"memory/{catgirl_name}/recent.json",
     )
 
-    resolved_path, path_error, _path_error_code, catgirl_name = resolve_recent_file_path(cm, filename, create=True)
-    if resolved_path is None:
-        logger.warning(f"Recent file path resolution failed for filename: {filename!r} - {path_error}")
-        return JSONResponse({"success": False, "error": path_error}, status_code=400)
-    
+    await asyncio.to_thread(resolved_path.parent.mkdir, parents=True, exist_ok=True)
+
     arr = []
     for msg in chat:
         t = msg.get('role')
@@ -408,7 +411,12 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        await asyncio.to_thread(write_recent_payload, resolved_path, arr)
+        await asyncio.to_thread(
+            write_recent_payload,
+            resolved_path,
+            arr,
+            expected_generation=admission_generation,
+        )
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务

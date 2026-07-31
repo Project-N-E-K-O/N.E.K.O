@@ -39,8 +39,10 @@ from utils.file_utils import atomic_write_json
 
 __all__ = [
     "RecentFileDeletedError",
+    "RecentGenerationConflictError",
     "acquire_recent_file_locks",
     "activate_recent_paths",
+    "capture_recent_generation",
     "clear_recent_deletions",
     "clear_recent_redirects",
     "fence_recent_deletions_and_clear_redirects",
@@ -68,6 +70,10 @@ __all__ = [
 
 class RecentFileDeletedError(RuntimeError):
     """Raised when a stale writer targets a character deleted in this process."""
+
+
+class RecentGenerationConflictError(RuntimeError):
+    """Raised when rollback no longer owns the identity transition it would undo."""
 
 
 # ── per-path lock registry ────────────────────────────────────────────────
@@ -100,6 +106,7 @@ _PENDING_GUARD = threading.Lock()
 _REDIRECTS: dict[str, str] = {}
 _DELETED: set[str] = set()
 _GENERATIONS: dict[str, int] = {}
+_NEXT_GENERATION = 1
 
 
 def _lock_key(path: Any) -> str:
@@ -126,12 +133,31 @@ def recent_file_lock(path: Any) -> threading.Lock:
     return lock
 
 
+def _next_generation_unlocked() -> int:
+    global _NEXT_GENERATION
+    generation = _NEXT_GENERATION
+    _NEXT_GENERATION += 1
+    return generation
+
+
+def capture_recent_generation(path: Any) -> tuple[str, int]:
+    """Capture the current identity token before admitting a write operation."""
+    key = _lock_key(path)
+    with _LOCKS_GUARD:
+        return (key, _GENERATIONS.get(key, 0))
+
+
 @contextmanager
-def recent_file_access(path: Any) -> Iterator[str]:
+def recent_file_access(
+    path: Any, *, expected_generation: tuple[str, int] | None = None,
+) -> Iterator[str]:
     """Lock a path and retry if a completed rename redirected it while waiting."""
     original_key = _lock_key(path)
-    with _LOCKS_GUARD:
-        access_generation = _GENERATIONS.get(original_key, 0)
+    if expected_generation is None:
+        expected_generation = capture_recent_generation(path)
+    expected_key, expected_value = expected_generation
+    if _lock_key(expected_key) != original_key:
+        raise ValueError("recent generation token belongs to a different path")
     while True:
         with _LOCKS_GUARD:
             resolved_key = _resolve_key_unlocked(original_key)
@@ -144,7 +170,7 @@ def recent_file_access(path: Any) -> Iterator[str]:
             latest_key = _resolve_key_unlocked(original_key)
             latest_lock = _LOCKS.get(latest_key)
             stable = latest_key == resolved_key and latest_lock is lock
-            stale = _GENERATIONS.get(original_key, 0) != access_generation
+            stale = _GENERATIONS.get(original_key, 0) != expected_value
             deleted = latest_key in _DELETED
         if not stable:
             lock.release()
@@ -172,18 +198,33 @@ def recent_file_locks(paths: list[Any]) -> Iterator[None]:
 
 def acquire_recent_file_locks(paths: list[Any]) -> list[threading.Lock]:
     """Acquire physical path locks for a transaction spanning multiple calls."""
-    keyed_paths = {_lock_key(path): path for path in paths}
-    with _LOCKS_GUARD:
-        locks = []
-        for key in sorted(keyed_paths):
-            lock = _LOCKS.get(key)
-            if lock is None:
-                lock = threading.Lock()
-                _LOCKS[key] = lock
-            locks.append(lock)
-    for lock in locks:
-        lock.acquire()
-    return locks
+    original_keys = {_lock_key(path) for path in paths}
+    while True:
+        with _LOCKS_GUARD:
+            redirect_keys = _redirect_keys_touching_unlocked(original_keys)
+            scoped_keys = original_keys | redirect_keys
+            scoped_keys.update(
+                _resolve_key_unlocked(key) for key in tuple(scoped_keys)
+            )
+            locks = []
+            for key in sorted(scoped_keys):
+                lock = _LOCKS.get(key)
+                if lock is None:
+                    lock = threading.Lock()
+                    _LOCKS[key] = lock
+                locks.append(lock)
+        for lock in locks:
+            lock.acquire()
+        with _LOCKS_GUARD:
+            latest_redirects = _redirect_keys_touching_unlocked(original_keys)
+            latest_scope = original_keys | latest_redirects
+            latest_scope.update(
+                _resolve_key_unlocked(key) for key in tuple(latest_scope)
+            )
+            stable = latest_scope == scoped_keys
+        if stable:
+            return locks
+        release_recent_file_locks(locks)
 
 
 def release_recent_file_locks(locks: list[threading.Lock]) -> None:
@@ -302,18 +343,22 @@ def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
 
 def activate_recent_paths(
     paths: list[Any],
-) -> tuple[dict[str, str], set[str], set[str]]:
+) -> tuple[dict[str, str], set[str], set[str], dict[str, tuple[int, int]]]:
     """Atomically activate reused names and invalidate accesses from older identities."""
     keys = {_lock_key(path) for path in paths}
     with _LOCKS_GUARD:
         redirect_keys = _redirect_keys_touching_unlocked(keys)
         activation_scope = keys | redirect_keys
         deletion_snapshot = activation_scope & _DELETED
+        generation_snapshot = {}
         redirects = {key: _REDIRECTS.pop(key) for key in redirect_keys}
         _DELETED.difference_update(keys)
         for key in activation_scope:
-            _GENERATIONS[key] = _GENERATIONS.get(key, 0) + 1
-    return redirects, activation_scope, deletion_snapshot
+            previous = _GENERATIONS.get(key, 0)
+            activated = _next_generation_unlocked()
+            generation_snapshot[key] = (previous, activated)
+            _GENERATIONS[key] = activated
+    return redirects, activation_scope, deletion_snapshot, generation_snapshot
 
 
 def fence_recent_deletions_and_clear_redirects(
@@ -341,10 +386,21 @@ def restore_recent_redirects(redirects: dict[str, str]) -> None:
 
 def restore_recent_registry_state(
     paths: list[Any], redirects: dict[str, str], deletion_snapshot: set[str],
+    generation_snapshot: dict[str, tuple[int, int]] | None = None,
 ) -> None:
-    """Atomically restore redirect/deletion state while invalidating in-flight access."""
+    """Atomically restore redirect, deletion, and identity-token state."""
     keys = {_lock_key(path) for path in paths}
     with _LOCKS_GUARD:
+        if generation_snapshot is not None:
+            conflicts = [
+                key
+                for key, (_, activated) in generation_snapshot.items()
+                if _GENERATIONS.get(_lock_key(key), 0) != activated
+            ]
+            if conflicts:
+                raise RecentGenerationConflictError(
+                    "recent identity changed after this transaction activated it"
+                )
         for key in _redirect_keys_touching_unlocked(keys):
             _REDIRECTS.pop(key, None)
         _REDIRECTS.update({
@@ -353,8 +409,16 @@ def restore_recent_registry_state(
         })
         _DELETED.difference_update(keys)
         _DELETED.update(deletion_snapshot)
-        for key in keys:
-            _GENERATIONS[key] = _GENERATIONS.get(key, 0) + 1
+        if generation_snapshot is None:
+            for key in keys:
+                _GENERATIONS[key] = _next_generation_unlocked()
+        else:
+            for key, (previous, _) in generation_snapshot.items():
+                key = _lock_key(key)
+                if previous:
+                    _GENERATIONS[key] = previous
+                else:
+                    _GENERATIONS.pop(key, None)
 
 
 def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:
@@ -383,8 +447,15 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
 
 
-def write_recent_payload(path: Any, payload: Any) -> None:
+def write_recent_payload(
+    path: Any,
+    payload: Any,
+    *,
+    expected_generation: tuple[str, int] | None = None,
+) -> None:
     """Authoritatively replace the file and invalidate older pending messages."""
-    with recent_file_access(path) as resolved_path:
+    with recent_file_access(
+        path, expected_generation=expected_generation,
+    ) as resolved_path:
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])

@@ -291,6 +291,15 @@ class CompressedRecentHistoryManager:
             logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径")
         return self.log_file_path[lanlan_name]
 
+    def _capture_recent_operation_admission(self, lanlan_name: str):
+        """Freeze the path identity before an operation reaches its first await."""
+        file_path = (self.log_file_path or {}).get(lanlan_name)
+        if not file_path:
+            file_path = os.path.join(
+                self._config_manager.memory_dir, lanlan_name, "recent.json",
+            )
+        return file_path, recent_file.capture_recent_generation(file_path)
+
     def _reset_history_file_unlocked(self, file_path, lanlan_name, reason):
         """Reset a corrupt/empty recent file to ``[]``.
 
@@ -364,9 +373,13 @@ class CompressedRecentHistoryManager:
             return cached[:-pending_count]
         return cached
 
-    def _read_history_locked(self, file_path, lanlan_name) -> list:
+    def _read_history_locked(
+        self, file_path, lanlan_name, expected_generation=None,
+    ) -> list:
         """Read one character's history under the file lock. Run me in a worker thread."""
-        with recent_file.recent_file_access(file_path) as file_path:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
@@ -382,13 +395,18 @@ class CompressedRecentHistoryManager:
 
     def _commit_hard_cap_locked(
         self, file_path, lanlan_name, expected_history, new_history,
+        expected_generation=None,
     ) -> str:
         """Persist a precomputed trim only if the locked disk snapshot is unchanged."""
-        with recent_file.recent_file_access(file_path) as file_path:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
             status, current = self._load_history_unlocked(file_path, lanlan_name)
             if status == RECENT_READ_UNREADABLE:
                 return 'failed'
-            if messages_to_dict(current) != messages_to_dict(expected_history):
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            current_visible = list(current) + list(pending)
+            if messages_to_dict(current_visible) != messages_to_dict(expected_history):
                 return 'stale'
             try:
                 recent_file.write_recent_payload_unlocked(
@@ -400,14 +418,17 @@ class CompressedRecentHistoryManager:
                     exc_info=True,
                 )
                 return 'failed'
+            recent_file.set_recent_pending_unlocked(file_path, [])
             self._cache_history_view(lanlan_name, new_history)
             return 'committed'
 
     def _merge_backup_memo_locked(
-        self, file_path, lanlan_name, snapshot, memo,
+        self, file_path, lanlan_name, snapshot, memo, expected_generation=None,
     ) -> tuple[str, int, int]:
         """Re-read, locate, merge and persist a backup memo in one critical section."""
-        with recent_file.recent_file_access(file_path) as file_path:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
             read_status, current = self._load_history_unlocked(file_path, lanlan_name)
             if read_status == RECENT_READ_UNREADABLE:
                 return ('failed', 0, 0)
@@ -478,7 +499,9 @@ class CompressedRecentHistoryManager:
             provider_type=api_config.get('provider_type'),
         )
 
-    def _append_and_persist_locked(self, file_path, lanlan_name, new_messages) -> tuple[list, bool]:
+    def _append_and_persist_locked(
+        self, file_path, lanlan_name, new_messages, expected_generation=None,
+    ) -> tuple[list, bool]:
         """Read → merge unpersisted batches → append → persist, as one critical section.
 
         Returns ``(history, persisted)``. ``persisted`` is False when the batch
@@ -486,7 +509,9 @@ class CompressedRecentHistoryManager:
         that the next call re-attaches them instead of letting the on-disk copy
         silently win.
         """
-        with recent_file.recent_file_access(file_path) as file_path:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
             pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
@@ -528,7 +553,9 @@ class CompressedRecentHistoryManager:
             self._cache_history_view(lanlan_name, merged)
             return (merged, True)
 
-    def _splice_compressed_locked(self, file_path, lanlan_name, snapshot, memo) -> str:
+    def _splice_compressed_locked(
+        self, file_path, lanlan_name, snapshot, memo, expected_generation=None,
+    ) -> str:
         """Replace the compressed head with ``memo`` and persist, as one critical section.
 
         Re-reads the file inside the lock. The compression LLM ran for seconds to
@@ -536,7 +563,9 @@ class CompressedRecentHistoryManager:
         view taken *before* the LLM call, so every batch persisted during that
         window was overwritten wholesale.
         """
-        with recent_file.recent_file_access(file_path) as file_path:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
             status, current = self._load_history_unlocked(file_path, lanlan_name)
             if status == RECENT_READ_UNREADABLE:
                 logger.warning(f"[RecentHistory] {lanlan_name} 压缩结果合并时读盘失败，放弃本轮合并")
@@ -569,6 +598,9 @@ class CompressedRecentHistoryManager:
             return 'merged'
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
         try:
             _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
             self.log_file_path = recent_log
@@ -583,14 +615,16 @@ class CompressedRecentHistoryManager:
             target=f"memory/{lanlan_name}/recent.json",
         )
 
-        file_path = self._ensure_path_for_character(lanlan_name)
-
         try:
             # CS-1：读盘 + 合并未落盘批次 + append + 落盘，一个临界区。
             # 先把未压缩状态落盘再进耗时的 compress_history：后者走 LLM，数秒到
             # 数十秒，期间进程崩溃或 task 被 cancel 会导致本批 new_messages 丢失。
             history, persisted = await asyncio.to_thread(
-                self._append_and_persist_locked, file_path, lanlan_name, list(new_messages),
+                self._append_and_persist_locked,
+                file_path,
+                lanlan_name,
+                list(new_messages),
+                admission_generation,
             )
             logger.debug(
                 f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，"
@@ -628,6 +662,7 @@ class CompressedRecentHistoryManager:
                     splice_status = await asyncio.to_thread(
                         self._splice_compressed_locked,
                         file_path, lanlan_name, snapshot, compressed_result[0],
+                        admission_generation,
                     )
                     # merged / moot 都不需要再跑同一份后台摘要；只有读写失败才触发兜底。
                     await self._notify_compress_done(
@@ -984,6 +1019,9 @@ class CompressedRecentHistoryManager:
         while preserving the first memo, when present, and at least the latest
         max_history_length entries.
         """
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
         from utils.tokenize import count_tokens
 
         def _raw_tokens(msgs):
@@ -1019,13 +1057,18 @@ class CompressedRecentHistoryManager:
             kept.reverse()
             return head + kept
 
-        file_path = self._ensure_path_for_character(lanlan_name)
         # tokenize 始终在锁外；提交时用完整磁盘快照做 CAS。若期间有新批次，重读后
         # 最多再算一次，绝不拿 stale 结果覆盖并发 append。
         for _ in range(2):
-            history = await asyncio.to_thread(
-                self._read_history_locked, file_path, lanlan_name,
-            )
+            try:
+                history = await asyncio.to_thread(
+                    self._read_history_locked,
+                    file_path,
+                    lanlan_name,
+                    admission_generation,
+                )
+            except recent_file.RecentFileDeletedError:
+                return
             if not history:
                 return
             new_history = await asyncio.to_thread(_trim, list(history))
@@ -1036,13 +1079,17 @@ class CompressedRecentHistoryManager:
                 self._config_manager, operation="save",
                 target=f"memory/{lanlan_name}/recent.json",
             )
-            commit_status = await asyncio.to_thread(
-                self._commit_hard_cap_locked,
-                file_path,
-                lanlan_name,
-                history,
-                new_history,
-            )
+            try:
+                commit_status = await asyncio.to_thread(
+                    self._commit_hard_cap_locked,
+                    file_path,
+                    lanlan_name,
+                    history,
+                    new_history,
+                    admission_generation,
+                )
+            except recent_file.RecentFileDeletedError:
+                return
             if commit_status == 'committed':
                 dropped = len(history) - len(new_history)
                 logger.warning(
@@ -1061,10 +1108,18 @@ class CompressedRecentHistoryManager:
         section. A changed or cleared head makes the result moot instead of
         resurrecting stale content.
         """
-        file_path = self._ensure_path_for_character(lanlan_name)
-        current = await asyncio.to_thread(
-            self._read_history_locked, file_path, lanlan_name,
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
         )
+        try:
+            current = await asyncio.to_thread(
+                self._read_history_locked,
+                file_path,
+                lanlan_name,
+                admission_generation,
+            )
+        except recent_file.RecentFileDeletedError:
+            return 'moot'
         if not current or not snapshot:
             return 'moot'
         capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
@@ -1082,6 +1137,7 @@ class CompressedRecentHistoryManager:
                 lanlan_name,
                 snapshot,
                 memo,
+                admission_generation,
             )
         except MaintenanceModeError:
             raise
@@ -1163,29 +1219,47 @@ class CompressedRecentHistoryManager:
         return None
 
     def get_recent_history(self, lanlan_name):
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
         try:
             _, _, _, _, _, _, _, _, recent_log = self._config_manager.get_character_data()
             self.log_file_path = recent_log
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        file_path = self._ensure_path_for_character(lanlan_name)
         # 读者也必须进锁：Windows 上一个裸 open() 就足以让并发的 os.replace 抛
         # PermissionError，只锁写者会漏掉一半以上的失败。
-        return self._read_history_locked(file_path, lanlan_name)
+        try:
+            return self._read_history_locked(
+                file_path, lanlan_name, admission_generation,
+            )
+        except recent_file.RecentFileDeletedError:
+            return []
 
     async def aget_recent_history(self, lanlan_name):
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
         try:
             _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
             self.log_file_path = recent_log
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        file_path = self._ensure_path_for_character(lanlan_name)
-        return await asyncio.to_thread(self._read_history_locked, file_path, lanlan_name)
+        try:
+            return await asyncio.to_thread(
+                self._read_history_locked,
+                file_path,
+                lanlan_name,
+                admission_generation,
+            )
+        except recent_file.RecentFileDeletedError:
+            return []
 
     def _commit_review_locked(
         self, file_path, lanlan_name, snapshot, corrected_messages,
+        expected_generation=None,
     ) -> tuple[str, list[dict] | None, str]:
         """Locate the review window, splice the corrected messages in and persist.
 
@@ -1198,7 +1272,9 @@ class CompressedRecentHistoryManager:
         Persist failures are NOT swallowed — they propagate so that the caller's
         ``except Exception`` maps them to ``('failed', None)`` exactly as before.
         """
-        with recent_file.recent_file_access(file_path) as file_path:
+        with recent_file.recent_file_access(
+            file_path, expected_generation=expected_generation,
+        ) as file_path:
             read_status, current = self._load_history_unlocked(file_path, lanlan_name)
             if read_status == RECENT_READ_UNREADABLE:
                 # 读不到就定位不了 cutoff。这里绝不能报 'white'：_mutate_review_white
@@ -1291,6 +1367,10 @@ class CompressedRecentHistoryManager:
               ('white', None) — cutoff failed to match in the current history; batch dropped
               ('failed', None) — LLM failure / cancelled / empty history / malformed response
         """
+        file_path, admission_generation = self._capture_recent_operation_admission(
+            lanlan_name,
+        )
+
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():
             print(f"⚠️ {lanlan_name} 的记忆整理被取消（启动前）")
@@ -1298,7 +1378,15 @@ class CompressedRecentHistoryManager:
 
         # snapshot 由 caller 提供（spawn 时拍下）；为兼容老调用兜底从磁盘读
         if snapshot is None:
-            snapshot = await self.aget_recent_history(lanlan_name)
+            try:
+                snapshot = await asyncio.to_thread(
+                    self._read_history_locked,
+                    file_path,
+                    lanlan_name,
+                    admission_generation,
+                )
+            except recent_file.RecentFileDeletedError:
+                return ('failed', None)
 
         if not snapshot:
             print(f"{lanlan_name} 的历史记录为空，无需审阅")
@@ -1466,11 +1554,17 @@ class CompressedRecentHistoryManager:
                 # 读 current → 定位 → splice → 落盘必须是**一个**临界区：重构前
                 # 这四步中间隔着两次 await，review LLM 跑完到落盘之间涌进来的
                 # /cache 批次会被整体覆盖。
-                file_path = self._ensure_path_for_character(lanlan_name)
-                commit_status, new_fingerprint, detail = await asyncio.to_thread(
-                    self._commit_review_locked,
-                    file_path, lanlan_name, snapshot, corrected_messages,
-                )
+                try:
+                    commit_status, new_fingerprint, detail = await asyncio.to_thread(
+                        self._commit_review_locked,
+                        file_path,
+                        lanlan_name,
+                        snapshot,
+                        corrected_messages,
+                        admission_generation,
+                    )
+                except recent_file.RecentFileDeletedError:
+                    return ('failed', None)
                 if commit_status == 'white':
                     print(f"⚠️ {lanlan_name} {detail}（白 review，丢弃）")
                     return ('white', None)

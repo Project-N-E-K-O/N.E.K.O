@@ -55,6 +55,7 @@ from utils.cloudsave_runtime import (
     import_cloudsave_character_unit,
     is_cloudsave_provider_available,
     restore_cloudsave_operation_backup,
+    rollback_cloudsave_character_import_registry,
 )
 
 
@@ -480,6 +481,7 @@ async def _complete_cloudsave_character_download(config_manager, name: str, resu
                     restore_cloudsave_operation_backup(
                         config_manager, backup_path, recent_locks_held=True,
                     )
+                    rollback_cloudsave_character_import_registry(result)
                     initialize_character_data = get_initialize_character_data()
                     await initialize_character_data()
                     rollback_notify_ok = await notify_memory_server_reload(

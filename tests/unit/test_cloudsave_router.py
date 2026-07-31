@@ -962,7 +962,10 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             indent=2,
         )
         original_characters = target_cm.load_characters()
-        original_recent = (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8")
+        target_recent = Path(target_cm.memory_dir) / "小满" / "recent.json"
+        original_recent = target_recent.read_text(encoding="utf-8")
+        from utils import recent_file
+        admitted_generation = recent_file.capture_recent_generation(target_recent)
         shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
 
         async def _noop_init():
@@ -1000,7 +1003,8 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             _assert_localized_error_payload(failed_payload, "cloudsave.error.localReloadFailedRolledBack")
             assert failed_payload["rolled_back"] is True
             assert target_cm.load_characters() == original_characters
-            assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+            assert target_recent.read_text(encoding="utf-8") == original_recent
+            assert recent_file.capture_recent_generation(target_recent) == admitted_generation
 
 
 @pytest.mark.unit

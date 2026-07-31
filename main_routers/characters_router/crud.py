@@ -70,7 +70,7 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.recent_file import write_recent_payload
+from utils.recent_file import capture_recent_generation, write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -150,6 +150,7 @@ def _append_profile_rename_event(character_payload: dict, old_name: str, new_nam
 
 async def _clear_character_recent_history(config_manager, character_name: str) -> None:
     recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    admission_generation = capture_recent_generation(recent_path)
     assert_cloudsave_writable(
         config_manager,
         operation="save",
@@ -158,7 +159,12 @@ async def _clear_character_recent_history(config_manager, character_name: str) -
     await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
     # 走 utils.recent_file 的 per-path 锁：merged 单进程下 memory_server 的写者
     # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。
-    await asyncio.to_thread(write_recent_payload, recent_path, [])
+    await asyncio.to_thread(
+        write_recent_payload,
+        recent_path,
+        [],
+        expected_generation=admission_generation,
+    )
 
 
 def _normalize_prompt_synced_field_value(value):

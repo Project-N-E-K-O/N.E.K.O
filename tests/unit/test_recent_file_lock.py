@@ -350,6 +350,180 @@ def test_reused_name_rejects_writer_waiting_on_old_redirect_target(tmp_path):
     ]
 
 
+def test_update_captures_generation_before_first_await(tmp_path):
+    """A write blocked on config refresh must retain its starting identity."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="old-character")])
+    config_entered = threading.Event()
+    release_config = threading.Event()
+
+    class _BlockingConfig(_FakeConfig):
+        memory_dir = tmp_path
+
+        async def aget_character_data(self):
+            config_entered.set()
+            assert await asyncio.to_thread(release_config.wait, 3)
+            return await super().aget_character_data()
+
+    mgr._config_manager = _BlockingConfig(name, path)
+    writer = threading.Thread(
+        target=lambda: asyncio.run(mgr.update_history(
+            [HumanMessage(content="pre-activation-turn")], name, compress=False,
+        )),
+    )
+    writer.start()
+    assert config_entered.wait(3)
+
+    recent_file.activate_recent_paths([path])
+    recent_file.write_recent_payload(
+        path, messages_to_dict([HumanMessage(content="authoritative-import")]),
+    )
+    release_config.set()
+    writer.join(3)
+
+    assert not writer.is_alive()
+    assert [message.content for message in _read_disk(path)] == ["authoritative-import"]
+    assert recent_file.get_recent_pending(path) == []
+
+
+def test_async_read_cannot_reset_a_new_identity_after_config_await(tmp_path):
+    """A stale reader must not repair malformed bytes owned by a new identity."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="old-character")])
+    config_entered = threading.Event()
+    release_config = threading.Event()
+    result = []
+
+    class _BlockingConfig(_FakeConfig):
+        memory_dir = tmp_path
+
+        async def aget_character_data(self):
+            config_entered.set()
+            assert await asyncio.to_thread(release_config.wait, 3)
+            return await super().aget_character_data()
+
+    mgr._config_manager = _BlockingConfig(name, path)
+    reader = threading.Thread(
+        target=lambda: result.extend(asyncio.run(mgr.aget_recent_history(name))),
+    )
+    reader.start()
+    assert config_entered.wait(3)
+
+    recent_file.activate_recent_paths([path])
+    malformed = "{new-identity-malformed"
+    Path(path).write_text(malformed, encoding="utf-8")
+    release_config.set()
+    reader.join(3)
+
+    assert not reader.is_alive()
+    assert result == []
+    assert Path(path).read_text(encoding="utf-8") == malformed
+
+
+def test_sync_read_cannot_reset_a_new_identity_during_config_fetch(tmp_path):
+    """A stale synchronous reader must not repair bytes after identity activation."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="old-character")])
+    config_entered = threading.Event()
+    release_config = threading.Event()
+    result = []
+
+    class _BlockingConfig(_FakeConfig):
+        memory_dir = tmp_path
+
+        def get_character_data(self):
+            config_entered.set()
+            assert release_config.wait(3)
+            return super().get_character_data()
+
+    mgr._config_manager = _BlockingConfig(name, path)
+    reader = threading.Thread(
+        target=lambda: result.extend(mgr.get_recent_history(name)),
+    )
+    reader.start()
+    assert config_entered.wait(3)
+
+    recent_file.activate_recent_paths([path])
+    malformed = "{new-sync-identity-malformed"
+    Path(path).write_text(malformed, encoding="utf-8")
+    release_config.set()
+    reader.join(3)
+
+    assert not reader.is_alive()
+    assert result == []
+    assert Path(path).read_text(encoding="utf-8") == malformed
+
+
+def test_generation_rollback_restores_only_pretransaction_writers(tmp_path):
+    """Rollback accepts the restored cohort and rejects the transient cohort."""
+    path = tmp_path / "Role" / "recent.json"
+    path.parent.mkdir()
+    recent_file.write_recent_payload(path, [])
+    path_lock = recent_file.recent_file_lock(path)
+    path_lock.acquire()
+    entered: list[str] = []
+    errors: dict[str, Exception] = {}
+
+    def _access(label):
+        try:
+            with recent_file.recent_file_access(path):
+                entered.append(label)
+        except Exception as exc:  # noqa: BLE001 - asserted in the main thread
+            errors[label] = exc
+
+    before = threading.Thread(target=_access, args=("before",))
+    before.start()
+    time.sleep(0.05)
+    redirects, scope, deleted, generations = recent_file.activate_recent_paths([path])
+    transient_generation = recent_file.capture_recent_generation(path)
+    during = threading.Thread(target=_access, args=("during",))
+    during.start()
+    time.sleep(0.05)
+
+    recent_file.restore_recent_registry_state(
+        list(scope), redirects, deleted, generations,
+    )
+    path_lock.release()
+    before.join(3)
+    during.join(3)
+
+    assert entered == ["before"]
+    assert isinstance(errors.get("during"), recent_file.RecentFileDeletedError)
+    assert recent_file.capture_recent_generation(path)[1] == 0
+    recent_file.activate_recent_paths([path])
+    assert recent_file.capture_recent_generation(path) != transient_generation
+
+
+def test_generation_token_cannot_be_reused_for_another_path(tmp_path):
+    first = tmp_path / "A" / "recent.json"
+    second = tmp_path / "B" / "recent.json"
+    token = recent_file.capture_recent_generation(first)
+
+    with pytest.raises(ValueError, match="different path"):
+        with recent_file.recent_file_access(second, expected_generation=token):
+            pass
+
+
+def test_older_rollback_cannot_clobber_a_newer_activation(tmp_path):
+    path = tmp_path / "Role" / "recent.json"
+    first = recent_file.activate_recent_paths([path])
+    newer = recent_file.activate_recent_paths([path])
+    newer_token = recent_file.capture_recent_generation(path)
+
+    with pytest.raises(recent_file.RecentGenerationConflictError):
+        recent_file.restore_recent_registry_state(
+            list(first[1]), first[0], first[2], first[3],
+        )
+
+    assert recent_file.capture_recent_generation(path) == newer_token
+    recent_file.restore_recent_registry_state(
+        list(newer[1]), newer[0], newer[2], newer[3],
+    )
+    assert recent_file.capture_recent_generation(path)[1] == first[3][
+        recent_file._lock_key(path)
+    ][1]
+
+
 # ─────────────── T3: failed persist keeps the batch and flushes it later ───────────────
 
 
@@ -725,6 +899,102 @@ def test_rename_into_reused_name_invalidates_obsolete_redirect(tmp_path):
     with open(reused_path, encoding="utf-8") as handle:
         assert json.load(handle) == [{"owner": "new-A"}]
     assert [m.content for m in _read_disk(str(former_target))] == ["belongs-to-B"]
+
+
+def test_reused_rename_target_activates_every_storage_layout(tmp_path):
+    """Nested and flat aliases in both roots must reject obsolete writers."""
+    from utils.character_memory import (
+        list_character_recent_paths,
+        rename_character_memory_storage,
+    )
+
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+
+    class _RenameConfig:
+        memory_dir = runtime_root
+        project_memory_dir = project_root
+
+    source_path = runtime_root / "C" / "recent.json"
+    former_target = runtime_root / "B" / "recent.json"
+    source_path.parent.mkdir(parents=True)
+    former_target.parent.mkdir(parents=True)
+    _write_disk(str(source_path), [HumanMessage(content="belongs-to-C")])
+    _write_disk(str(former_target), [HumanMessage(content="belongs-to-B")])
+    reused_paths = list_character_recent_paths(_RenameConfig(), "A")
+    assert len(reused_paths) == 4
+    recent_file.redirect_recent_paths(reused_paths, former_target)
+    old_tokens = {
+        path: recent_file.capture_recent_generation(path)
+        for path in reused_paths
+    }
+
+    rename_character_memory_storage(_RenameConfig(), "C", "A")
+
+    for path, token in old_tokens.items():
+        with pytest.raises(recent_file.RecentFileDeletedError):
+            with recent_file.recent_file_access(
+                path, expected_generation=token,
+            ):
+                pass
+    assert [message.content for message in _read_disk(str(former_target))] == [
+        "belongs-to-B",
+    ]
+
+
+def test_reused_rename_waits_for_access_already_inside_redirect_target(tmp_path):
+    """Activation cannot commit while an obsolete alias still owns its target lock."""
+    from utils.character_memory import rename_character_memory_storage
+
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+
+    class _RenameConfig:
+        memory_dir = runtime_root
+        project_memory_dir = project_root
+
+    alias_path = project_root / "A" / "recent.json"
+    former_target = runtime_root / "B" / "recent.json"
+    source_path = runtime_root / "C" / "recent.json"
+    former_target.parent.mkdir(parents=True)
+    source_path.parent.mkdir(parents=True)
+    _write_disk(str(former_target), [HumanMessage(content="belongs-to-B")])
+    _write_disk(str(source_path), [HumanMessage(content="belongs-to-C")])
+    recent_file.redirect_recent_paths([alias_path], former_target)
+    access_entered = threading.Event()
+    release_access = threading.Event()
+
+    def _inside_old_access():
+        with recent_file.recent_file_access(alias_path) as resolved_path:
+            access_entered.set()
+            assert release_access.wait(3)
+            recent_file.write_recent_payload_unlocked(
+                resolved_path, [{"content": "old-access-finished-first"}],
+            )
+
+    old_access = threading.Thread(target=_inside_old_access)
+    old_access.start()
+    assert access_entered.wait(3)
+    rename = threading.Thread(
+        target=rename_character_memory_storage,
+        args=(_RenameConfig(), "C", "A"),
+    )
+    rename.start()
+    time.sleep(0.05)
+    assert rename.is_alive(), "rename must wait for the resolved physical target lock"
+
+    release_access.set()
+    old_access.join(3)
+    rename.join(3)
+
+    assert not old_access.is_alive()
+    assert not rename.is_alive()
+    assert json.loads(former_target.read_text(encoding="utf-8")) == [
+        {"content": "old-access-finished-first"},
+    ]
+    assert [message.content for message in _read_disk(
+        str(runtime_root / "A" / "recent.json"),
+    )] == ["belongs-to-C"]
 
 
 def test_rename_rollback_restores_target_redirect(tmp_path):
@@ -1485,6 +1755,89 @@ def test_hard_cap_retries_when_disk_changes_before_commit(tmp_path, monkeypatch)
 
     asyncio.run(_go())
     assert _read_disk(path)[-1].content == "append-during-trim"
+
+
+def test_hard_cap_commits_disk_plus_pending_and_clears_pending(tmp_path, monkeypatch):
+    mgr, name, path = _make_manager(tmp_path)
+    disk = [HumanMessage(content=f"disk-{i} with enough text" * 10) for i in range(6)]
+    pending = [HumanMessage(content=f"pending-{i} with enough text" * 10) for i in range(2)]
+    _write_disk(path, disk)
+    with recent_file.recent_file_lock(path):
+        recent_file.set_recent_pending_unlocked(path, pending)
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
+
+    asyncio.run(mgr.enforce_hard_cap(name))
+
+    persisted = _read_disk(path)
+    assert [message.content for message in persisted[-2:]] == [
+        message.content for message in pending
+    ]
+    assert len(persisted) < len(disk) + len(pending)
+    assert recent_file.get_recent_pending(path) == []
+    assert [message.content for message in mgr.user_histories[name]] == [
+        message.content for message in persisted
+    ]
+
+
+def test_hard_cap_write_failure_preserves_pending(tmp_path, monkeypatch):
+    mgr, name, path = _make_manager(tmp_path)
+    disk = [HumanMessage(content=f"disk-{i} with enough text" * 10) for i in range(6)]
+    pending = [HumanMessage(content="pending-must-survive" * 10)]
+    _write_disk(path, disk)
+    with recent_file.recent_file_lock(path):
+        recent_file.set_recent_pending_unlocked(path, pending)
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
+    monkeypatch.setattr(
+        recent_file,
+        "write_recent_payload_unlocked",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("simulated failure")),
+    )
+
+    asyncio.run(mgr.enforce_hard_cap(name))
+
+    assert [message.content for message in _read_disk(path)] == [
+        message.content for message in disk
+    ]
+    assert [message.content for message in recent_file.get_recent_pending(path)] == [
+        message.content for message in pending
+    ]
+
+
+def test_hard_cap_cannot_trim_a_new_identity_with_identical_bytes(tmp_path, monkeypatch):
+    mgr, name, path = _make_manager(tmp_path)
+    history = [HumanMessage(content=f"same-{i} with enough text" * 10) for i in range(6)]
+    _write_disk(path, history)
+    gate_entered = threading.Event()
+    release_gate = threading.Event()
+
+    def _blocking_gate(*args, **kwargs):
+        gate_entered.set()
+        assert release_gate.wait(3)
+
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", _blocking_gate)
+    errors = []
+
+    def _run_hard_cap():
+        try:
+            asyncio.run(mgr.enforce_hard_cap(name))
+        except Exception as exc:  # noqa: BLE001 - asserted in the main thread
+            errors.append(exc)
+
+    worker = threading.Thread(target=_run_hard_cap)
+    worker.start()
+    assert gate_entered.wait(3)
+
+    recent_file.activate_recent_paths([path])
+    recent_file.write_recent_payload(path, messages_to_dict(history))
+    release_gate.set()
+    worker.join(3)
+
+    assert not worker.is_alive()
+    assert errors == []
+    assert [message.content for message in _read_disk(path)] == [
+        message.content for message in history
+    ]
 
 
 def test_reset_maintenance_error_still_reaches_update_caller(tmp_path, monkeypatch):

@@ -240,4 +240,5 @@ from .operations import (  # noqa: F401
     import_cloudsave_character_unit,
     import_local_cloudsave_snapshot,
     restore_cloudsave_operation_backup,
+    rollback_cloudsave_character_import_registry,
 )

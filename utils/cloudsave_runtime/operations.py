@@ -29,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json
+from utils.character_memory import list_character_recent_paths
 from utils.recent_file import (
     acquire_recent_file_locks,
     activate_recent_paths,
@@ -465,18 +466,26 @@ def import_cloudsave_character_unit(
         if backup_before_overwrite or not local_exists:
             backup_targets.add(target_memory_dir)
         recent_target = target_memory_dir / "recent.json"
-        held_locks = acquire_recent_file_locks([recent_target])
+        recent_targets = list_character_recent_paths(config_manager, character_name)
+        held_locks = acquire_recent_file_locks(recent_targets)
         recent_transaction = {
             "held_locks": held_locks,
-            "recent_paths": [recent_target],
+            "recent_paths": recent_targets,
         }
         ownership_transferred = False
         try:
-            redirect_snapshot, activation_scope, deletion_snapshot = (
-                activate_recent_paths([recent_target])
+            (
+                redirect_snapshot,
+                activation_scope,
+                deletion_snapshot,
+                generation_snapshot,
+            ) = (
+                activate_recent_paths(recent_targets)
             )
+            recent_state_paths = set(recent_targets) | set(activation_scope)
             pending_snapshot = {
-                recent_target: get_recent_pending_unlocked(recent_target),
+                recent_path: get_recent_pending_unlocked(recent_path)
+                for recent_path in recent_state_paths
             }
             backup_records: list[dict[str, Any]] = []
             try:
@@ -507,19 +516,21 @@ def import_cloudsave_character_unit(
                 try:
                     _restore_backup_records(backup_records)
                 finally:
-                    set_recent_pending_unlocked(
-                        recent_target, pending_snapshot[recent_target],
-                    )
+                    for recent_path, messages in pending_snapshot.items():
+                        set_recent_pending_unlocked(recent_path, messages)
                     restore_recent_registry_state(
                         list(activation_scope), redirect_snapshot, deletion_snapshot,
+                        generation_snapshot,
                     )
                 raise
-            set_recent_pending_unlocked(recent_target, [])
+            for recent_path in recent_state_paths:
+                set_recent_pending_unlocked(recent_path, [])
             recent_transaction.update({
                 "pending_snapshot": pending_snapshot,
                 "redirect_snapshot": redirect_snapshot,
                 "deletion_snapshot": deletion_snapshot,
                 "activation_scope": activation_scope,
+                "generation_snapshot": generation_snapshot,
             })
             if not retain_recent_locks:
                 release_recent_file_locks(held_locks)
@@ -551,6 +562,17 @@ def finalize_cloudsave_character_import(result: dict[str, Any]) -> None:
     if held_locks:
         transaction["held_locks"] = []
         release_recent_file_locks(held_locks)
+
+
+def rollback_cloudsave_character_import_registry(result: dict[str, Any]) -> None:
+    """Restore the pre-import recent identity after its disk backup is restored."""
+    transaction = result.get("_recent_import_transaction") or {}
+    restore_recent_registry_state(
+        list(transaction.get("activation_scope") or ()),
+        transaction.get("redirect_snapshot") or {},
+        transaction.get("deletion_snapshot") or set(),
+        transaction.get("generation_snapshot") or {},
+    )
 
 
 def _collect_memory_stage_entries(
@@ -1374,18 +1396,28 @@ def import_local_cloudsave_snapshot(
             for target_path in set(runtime_targets) | delete_file_targets
             if target_path.name == "recent.json"
         }
-        recent_targets.update(
-            Path(config_manager.memory_dir) / character_name / "recent.json"
-            for character_name in imported_character_names
-        )
-        recent_targets.update(directory / "recent.json" for directory in delete_dir_targets)
+        for character_name in imported_character_names:
+            recent_targets.update(
+                list_character_recent_paths(config_manager, character_name)
+            )
+        for directory in delete_dir_targets:
+            recent_targets.update(
+                list_character_recent_paths(config_manager, directory.name)
+            )
         with recent_file_locks(list(recent_targets)):
-            deleted_recent_paths = [
-                directory / "recent.json" for directory in delete_dir_targets
-            ]
+            deleted_recent_paths = {
+                recent_path
+                for directory in delete_dir_targets
+                for recent_path in list_character_recent_paths(
+                    config_manager, directory.name,
+                )
+            }
             imported_recent_paths = {
-                Path(config_manager.memory_dir) / character_name / "recent.json"
+                recent_path
                 for character_name in imported_character_names
+                for recent_path in list_character_recent_paths(
+                    config_manager, character_name,
+                )
             }
             (
                 deleted_redirects,
@@ -1396,6 +1428,7 @@ def import_local_cloudsave_snapshot(
                 active_redirects,
                 activation_scope,
                 active_deletion_snapshot,
+                active_generation_snapshot,
             ) = activate_recent_paths(list(imported_recent_paths))
             redirect_snapshot = dict(deleted_redirects)
             redirect_snapshot.update(active_redirects)
@@ -1403,9 +1436,10 @@ def import_local_cloudsave_snapshot(
                 active_deletion_snapshot - deletion_scope
             )
             registry_restore_scope = deletion_scope | activation_scope
+            recent_state_paths = set(recent_targets) | registry_restore_scope
             pending_snapshot = {
                 recent_path: get_recent_pending_unlocked(recent_path)
-                for recent_path in recent_targets
+                for recent_path in recent_state_paths
             }
             backup_records: list[dict[str, Any]] = []
             try:
@@ -1447,7 +1481,7 @@ def import_local_cloudsave_snapshot(
                     if target_path.exists():
                         shutil.rmtree(target_path)
 
-                for recent_path in recent_targets:
+                for recent_path in recent_state_paths:
                     set_recent_pending_unlocked(recent_path, [])
                 return {
                     "manifest_fingerprint": computed_fingerprint,
@@ -1481,5 +1515,6 @@ def import_local_cloudsave_snapshot(
                         list(registry_restore_scope),
                         redirect_snapshot,
                         deletion_snapshot,
+                        active_generation_snapshot,
                     )
                 raise

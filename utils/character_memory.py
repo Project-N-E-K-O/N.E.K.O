@@ -27,6 +27,7 @@ from utils.recent_file import (
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
     recent_file_lock,
+    recent_file_locks,
     redirect_recent_paths,
     release_recent_file_locks,
     restore_recent_deletions,
@@ -318,6 +319,7 @@ def rename_character_memory_storage(
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
     roots = iter_character_memory_roots(config_manager)
     pending_sources = list_character_recent_paths(config_manager, old_name)
+    target_recent_paths = list_character_recent_paths(config_manager, new_name)
     target_recent = runtime_target_dir / "recent.json"
     transaction = recent_transaction or begin_character_recent_transaction(
         config_manager, old_name, new_name,
@@ -326,10 +328,17 @@ def rename_character_memory_storage(
     redirect_snapshot = snapshot_recent_redirects(recent_paths)
     deletion_snapshot = snapshot_recent_deletions(recent_paths)
     activation_scope: set[str] = set()
+    generation_snapshot: dict[str, tuple[int, int]] = {}
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
-        _, activation_scope, _ = activate_recent_paths([target_recent])
+        (
+            _,
+            activation_scope,
+            activation_deletion_snapshot,
+            generation_snapshot,
+        ) = activate_recent_paths(target_recent_paths)
+        deletion_snapshot |= activation_deletion_snapshot
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_paths
@@ -377,6 +386,7 @@ def rename_character_memory_storage(
             "redirect_snapshot": redirect_snapshot,
             "deletion_snapshot": deletion_snapshot,
             "activation_scope": activation_scope,
+            "generation_snapshot": generation_snapshot,
         })
         if not keep_recent_locks:
             release_character_recent_transaction(transaction)
@@ -386,6 +396,7 @@ def rename_character_memory_storage(
             list(set(recent_paths) | activation_scope),
             redirect_snapshot,
             deletion_snapshot,
+            generation_snapshot,
         )
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
@@ -413,6 +424,7 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
             list(set(recent_paths) | set(activation_scope)),
             transaction.get("redirect_snapshot") or {},
             transaction.get("deletion_snapshot") or set(),
+            transaction.get("generation_snapshot") or {},
         )
         for path, messages in snapshot.items():
             set_recent_pending_unlocked(path, messages)
@@ -424,7 +436,8 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
 def clear_character_recent_redirects(config_manager, character_name: str) -> None:
     """Detach obsolete path redirects before a newly created name starts writing."""
     recent_paths = list_character_recent_paths(config_manager, character_name)
-    activate_recent_paths(recent_paths)
+    with recent_file_locks(recent_paths):
+        activate_recent_paths(recent_paths)
 
 
 def delete_character_memory_storage(
