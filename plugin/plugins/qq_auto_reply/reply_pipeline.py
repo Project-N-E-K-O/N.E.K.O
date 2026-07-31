@@ -520,6 +520,18 @@ class QQReplyPipelineRunner:
         """True when a switch this reply's prompt relied on went off since
         generation — same judgement the buffer applies before a delayed
         send, so the unbuffered direct path is not the weak link."""
+        permission_snapshot = getattr(
+            context, "private_permission_level_at_receipt", None,
+        )
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        if (
+            not getattr(context, "is_group", False)
+            and permission_snapshot is not None
+            and permission_mgr is not None
+            and permission_mgr.get_permission_level(context.sender_id)
+            != permission_snapshot
+        ):
+            return True
         snapshot = getattr(context, "consent_snapshot", None)
         if not snapshot:
             return False

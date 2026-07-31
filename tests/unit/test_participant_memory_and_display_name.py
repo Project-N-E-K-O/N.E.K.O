@@ -1529,6 +1529,34 @@ async def test_fact_forget_route_bracket_rejects_work_started_inside(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_direct_scoped_write_keeps_generation_while_waiting_for_lock(
+    tmp_path,
+):
+    target = MemorySubject.participant("qq", "1001")
+    store = _ForgetFactStore([], tmp_path / "missing-archive.json")
+    await store.abegin_subject_forget("Neko", target)
+    persist_lock = store._get_persist_alock("Neko")
+    await persist_lock.acquire()
+
+    # Queue tombstone close before the direct scoped writer. The writer starts
+    # while forget is active, but enters persistence only after close removed
+    # the active marker; the captured generation is the remaining fence.
+    close_task = asyncio.create_task(
+        store.aend_subject_forget("Neko", target)
+    )
+    await asyncio.sleep(0)
+    write_task = asyncio.create_task(store.apersist_scoped_facts(
+        "Neko", [{"text": "stale", "importance": 8}], subject=target,
+    ))
+    await asyncio.sleep(0)
+    persist_lock.release()
+
+    await close_task
+    assert await write_task == []
+    assert store._facts["Neko"] == []
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_fences_only_target_inflight_batch_segment(tmp_path):
     target = MemorySubject.participant("qq", "1001")
     other = MemorySubject.participant("qq", "1002")
@@ -2649,6 +2677,31 @@ def test_private_buffer_permission_snapshot_revokes_delayed_reply():
     assert service._consent_revoked_since(pending) is False
     live_permission["value"] = "admin"
     assert service._consent_revoked_since(pending) is True
+
+
+def test_private_direct_delivery_rechecks_receipt_permission():
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    live_permission = {"value": "trusted"}
+    plugin = SimpleNamespace(
+        _qq_settings={},
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda _sender: live_permission["value"],
+        ),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    context = SimpleNamespace(
+        is_group=False,
+        sender_id="1001",
+        private_permission_level_at_receipt="trusted",
+        consent_snapshot={},
+    )
+
+    assert runner._consent_revoked_before_send(context) is False
+    live_permission["value"] = "none"
+    assert runner._consent_revoked_before_send(context) is True
 
 
 @pytest.mark.asyncio

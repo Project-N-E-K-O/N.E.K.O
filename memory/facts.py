@@ -1654,10 +1654,21 @@ class FactStore:
         subject: MemorySubject | dict,
     ) -> list[dict]:
         """Persist already extracted facts for an explicitly scoped adapter request."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("apersist_scoped_facts requires an explicit subject")
+        # Capture before waiting for the per-character persistence lock. If
+        # a queued tombstone close wins that lock first, its generation bump
+        # must still invalidate this request even though the active marker is
+        # gone by the time persistence enters its critical section.
+        expected_subject_generation = self._subject_forget_generation(
+            lanlan_name, memory_subject,
+        )
         return await self._apersist_new_facts(
             lanlan_name,
             extracted,
-            subject=subject,
+            subject=memory_subject,
+            expected_subject_generation=expected_subject_generation,
         )
 
     async def _apersist_new_facts_locked(
