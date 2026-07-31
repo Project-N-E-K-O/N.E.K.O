@@ -41,6 +41,7 @@ from .gates import (
     REVIEW_MIN_INTERVAL,
     REVIEW_SKIP_HISTORY_LEN,
 )
+from utils.recent_file import capture_recent_generation
 
 
 # 全局变量用于管理correction任务
@@ -371,25 +372,54 @@ async def _record_review_output_exhaustion(
 compress_backup_tasks: dict[str, asyncio.Task] = {}
 
 
-def _mutate_record_compress_backup_failure(cur_fp, state: dict) -> tuple[bool, int]:
+def _generation_marker(admission_generation):
+    return list(admission_generation) if admission_generation is not None else None
+
+
+def _generation_is_current(admission_generation) -> bool:
+    return (
+        admission_generation is None
+        or capture_recent_generation(admission_generation[0]) == admission_generation
+    )
+
+
+def _mutate_record_compress_backup_failure(
+    cur_fp, admission_generation, state: dict,
+) -> tuple[bool, int | None]:
     """Mutator: bump the backup-compression failure counter for this input fingerprint."""
-    if state.get('compress_backup_fail_fp') != cur_fp:
+    if not _generation_is_current(admission_generation):
+        return False, None
+    generation_marker = _generation_marker(admission_generation)
+    if (
+        state.get('compress_backup_fail_fp') != cur_fp
+        or state.get('compress_backup_generation') != generation_marker
+    ):
         state['compress_backup_fail_attempts'] = 0
     state['compress_backup_fail_attempts'] = (state.get('compress_backup_fail_attempts', 0) or 0) + 1
     state['compress_backup_fail_fp'] = cur_fp
+    state['compress_backup_generation'] = generation_marker
     return True, state['compress_backup_fail_attempts']
 
 
-async def _record_compress_backup_failure(lanlan_name: str, snapshot: list) -> int:
+async def _record_compress_backup_failure(
+    lanlan_name: str, snapshot: list, admission_generation=None,
+) -> int | None:
     """Record one backup-compression failure and return the current attempt count.
 
     A changed input fingerprint resets the counter so each backlog segment gets
     its own budget, matching the review-failure backoff shape.
     """
+    if not _generation_is_current(admission_generation):
+        return None
     from memory.recent import build_review_fingerprint
     cur_fp = build_review_fingerprint(snapshot)
     return await gates._amutate_maint_state(
-        lanlan_name, functools.partial(_mutate_record_compress_backup_failure, cur_fp),
+        lanlan_name,
+        functools.partial(
+            _mutate_record_compress_backup_failure,
+            cur_fp,
+            admission_generation,
+        ),
     )
 
 
@@ -399,10 +429,25 @@ def _mutate_clear_compress_backup_failure(state: dict) -> tuple[bool, None]:
         return False, None
     state['compress_backup_fail_attempts'] = 0
     state['compress_backup_fail_fp'] = None
+    state['compress_backup_generation'] = None
     return True, None
 
 
-async def _clear_compress_backup_failure(lanlan_name: str) -> None:
+def _mutate_clear_compress_backup_failure_for_generation(
+    admission_generation, state: dict,
+) -> tuple[bool, None]:
+    if not _generation_is_current(admission_generation):
+        return False, None
+    generation_marker = _generation_marker(admission_generation)
+    state_marker = state.get('compress_backup_generation')
+    if state_marker is not None and state_marker != generation_marker:
+        return False, None
+    return _mutate_clear_compress_backup_failure(state)
+
+
+async def _clear_compress_backup_failure(
+    lanlan_name: str, admission_generation=None,
+) -> None:
     """Clear the backup-compression failure backoff counter."""
     # 锁外快筛，与 gates._aclear_review_clean 对偶。调用点 _on_compress_done 的
     # ok=True 分支每次主路径压缩成功都会走到这里，而它由 memory/recent.py 的
@@ -412,19 +457,38 @@ async def _clear_compress_backup_failure(lanlan_name: str) -> None:
     # 白排一次 default executor。快筛读到的值可能过期，但无害——真正的判定在
     # _mutate_clear_compress_backup_failure 里锁内又做了一次，「假阴性」只会让本轮
     # 少写一次（下次压缩成功立刻会补上），不会写坏状态。
+    if not _generation_is_current(admission_generation):
+        return
     view = gates._maint_view(lanlan_name)
     if not (view.get('compress_backup_fail_attempts') or view.get('compress_backup_fail_fp')):
         return
-    await gates._amutate_maint_state(lanlan_name, _mutate_clear_compress_backup_failure)
+    if admission_generation is None:
+        await gates._amutate_maint_state(
+            lanlan_name, _mutate_clear_compress_backup_failure,
+        )
+    else:
+        await gates._amutate_maint_state(
+            lanlan_name,
+            functools.partial(
+                _mutate_clear_compress_backup_failure_for_generation,
+                admission_generation,
+            ),
+        )
 
 
 def _mutate_reset_compress_backup_backoff(
-    cur_fp, max_attempts: int, state: dict,
+    cur_fp, max_attempts: int, state: dict, *, admission_generation=None,
 ) -> tuple[bool, str]:
     """Mutator: re-check the compress-backup dead-letter under lock and expire it if the input changed.
 
-    Returns ``'dead_letter'`` (caller must not spawn) or ``'proceed'``.
+    Returns ``'dead_letter'``, ``'proceed'``, or ``'stale'``.
     """
+    if not _generation_is_current(admission_generation):
+        return False, 'stale'
+    generation_marker = _generation_marker(admission_generation)
+    state_marker = state.get('compress_backup_generation')
+    if admission_generation is not None and state_marker != generation_marker:
+        return False, 'proceed'
     attempts = state.get('compress_backup_fail_attempts', 0) or 0
     if attempts < max_attempts:
         return False, 'proceed'
@@ -432,6 +496,7 @@ def _mutate_reset_compress_backup_backoff(
         return False, 'dead_letter'
     state['compress_backup_fail_attempts'] = 0
     state['compress_backup_fail_fp'] = None
+    state['compress_backup_generation'] = generation_marker
     return True, 'proceed'
 
 
@@ -448,13 +513,22 @@ async def _run_backup_compress(
         except Exception as e:
             logger.warning(f"[CompressBackup] {lanlan_name} 后台压缩抛异常，按失败处理: {e}")
             result = None
+        if not _generation_is_current(admission_generation):
+            return
         if result is None:
-            attempts = await _record_compress_backup_failure(lanlan_name, snapshot)
+            attempts = await _record_compress_backup_failure(
+                lanlan_name, snapshot, admission_generation,
+            )
+            if attempts is None:
+                return
             logger.info(f"[CompressBackup] {lanlan_name} 后台压缩失败，退避计数 → {attempts}")
             # best-effort 也没压成 → 实在不行才丢：若历史仍超硬上限，裁剪最旧未压缩
             # 原文兜底（锁内串行化写）。暂时性失败时后台会成功、走不到这里。
             async with runtime._get_settle_lock(lanlan_name):
-                await runtime.recent_history_manager.enforce_hard_cap(lanlan_name)
+                await runtime.recent_history_manager.enforce_hard_cap(
+                    lanlan_name,
+                    expected_generation=admission_generation,
+                )
             return
         # 2) 合并写回（锁内，快）。merge_backup_memo 用 fingerprint 对齐，积压已被
         #    主路径压掉 / 被清空就返回 'moot' 丢弃（白做）。
@@ -467,11 +541,15 @@ async def _run_backup_compress(
             )
         if status == 'failed':
             # 合并落盘失败 → 没真正写成功，bump 退避（不清），下次再试。
-            attempts = await _record_compress_backup_failure(lanlan_name, snapshot)
+            attempts = await _record_compress_backup_failure(
+                lanlan_name, snapshot, admission_generation,
+            )
+            if attempts is None:
+                return
             logger.info(f"[CompressBackup] {lanlan_name} 后台压缩合并落盘失败，退避计数 → {attempts}")
             return
         # 'merged' 或 'moot' 都说明这段积压已处理 / 已过时，清退避计数。
-        await _clear_compress_backup_failure(lanlan_name)
+        await _clear_compress_backup_failure(lanlan_name, admission_generation)
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩完成：{status}")
     except asyncio.CancelledError:
         logger.info(f"[CompressBackup] {lanlan_name} 后台压缩被取消（主路径已成功）")
@@ -500,11 +578,13 @@ async def _on_compress_done(
     This callback only spawns / cancels tasks and never awaits the background
     LLM — it may be invoked while _get_settle_lock is held (/renew, /settle)
     and must not block."""
+    if not _generation_is_current(admission_generation):
+        return
     if ok:
         task = compress_backup_tasks.get(lanlan_name)
         if task is not None and not task.done():
             task.cancel()
-        await _clear_compress_backup_failure(lanlan_name)
+        await _clear_compress_backup_failure(lanlan_name, admission_generation)
         return
     # ok=False：主路径压缩失败 → 起后台兜底
     if not snapshot:
@@ -516,7 +596,12 @@ async def _on_compress_done(
     # 防 summary 模型持续故障时每轮都起一个注定失败的后台任务空烧。
     from config import MEMORY_LIVENESS_MAX_ATTEMPTS
     from memory.recent import build_review_fingerprint
-    fail_attempts = gates._maint_view(lanlan_name).get('compress_backup_fail_attempts', 0) or 0
+    state_view = gates._maint_view(lanlan_name)
+    state_marker = state_view.get('compress_backup_generation')
+    generation_marker = _generation_marker(admission_generation)
+    fail_attempts = 0
+    if state_marker == generation_marker:
+        fail_attempts = state_view.get('compress_backup_fail_attempts', 0) or 0
     if fail_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
         cur_fp = build_review_fingerprint(snapshot)
         # dead-letter 判定与复位是同一次 RMW（见 _mutate_reset_compress_backup_backoff）。
@@ -527,8 +612,11 @@ async def _on_compress_done(
             lanlan_name,
             functools.partial(
                 _mutate_reset_compress_backup_backoff, cur_fp, MEMORY_LIVENESS_MAX_ATTEMPTS,
+                admission_generation=admission_generation,
             ),
         )
+        if decision == 'stale':
+            return
         if decision == 'dead_letter':
             logger.debug(
                 f"[CompressBackup] {lanlan_name} 失败退避 dead-letter"
@@ -544,7 +632,10 @@ async def _on_compress_done(
             # 那一刻文件锁必定未被本调用链持有，所以这里是首次获取。
             # ⚠️ 谁把 _notify_compress_done 挪进任何一个文件临界区，这行就是 worker
             # 线程上的无超时永久死锁（threading.Lock 不可重入）。
-            await runtime.recent_history_manager.enforce_hard_cap(lanlan_name)
+            await runtime.recent_history_manager.enforce_hard_cap(
+                lanlan_name,
+                expected_generation=admission_generation,
+            )
             return
     task = runtime._spawn_background_task(
         _run_backup_compress(

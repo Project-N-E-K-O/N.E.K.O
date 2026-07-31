@@ -1865,6 +1865,26 @@ def test_hard_cap_cannot_trim_a_new_identity_with_identical_bytes(tmp_path, monk
     ]
 
 
+def test_hard_cap_rejects_stale_caller_token_before_read(tmp_path, monkeypatch):
+    """An old fallback cannot trim a reused identity with matching bytes."""
+    mgr, name, path = _make_manager(tmp_path)
+    history = [HumanMessage(content=f"same-{i} with enough text" * 10) for i in range(6)]
+    _write_disk(path, history)
+    admission_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    _write_disk(path, history)
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
+
+    asyncio.run(mgr.enforce_hard_cap(
+        name,
+        expected_generation=admission_generation,
+    ))
+
+    assert [message.content for message in _read_disk(path)] == [
+        message.content for message in history
+    ]
+
+
 def test_reset_maintenance_error_still_reaches_update_caller(tmp_path, monkeypatch):
     """The reset fence keeps the pre-lock MaintenanceModeError contract."""
     mgr, name, path = _make_manager(tmp_path)
@@ -1946,9 +1966,40 @@ async def test_recent_file_route_maps_deleted_identity_to_not_found(
         raise recent_file.RecentFileDeletedError("deleted during read")
 
     monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
-    monkeypatch.setattr(memory_router, "read_recent_text", _raise_deleted)
+    monkeypatch.setattr(memory_router, "_read_recent_browser_text", _raise_deleted)
 
     response = await memory_router.get_recent_file("recent_Role.json")
 
     assert response.status_code == 404
     assert json.loads(response.body)["error"] == "文件不存在"
+
+
+@pytest.mark.asyncio
+async def test_recent_file_route_includes_pending_before_authoritative_save(
+    tmp_path, monkeypatch,
+):
+    """The browser must not erase accepted pending turns when saving its view."""
+    import main_routers.memory_router as memory_router
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    _write_disk(recent_path, [HumanMessage(content="disk")])
+    with recent_file.recent_file_access(recent_path) as resolved_path:
+        recent_file.set_recent_pending_unlocked(
+            resolved_path, [HumanMessage(content="accepted-pending")],
+        )
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+
+    response = await memory_router.get_recent_file("recent_Role.json")
+    payload = json.loads(response["content"])
+
+    assert [item["data"]["content"] for item in payload] == [
+        "disk",
+        "accepted-pending",
+    ]

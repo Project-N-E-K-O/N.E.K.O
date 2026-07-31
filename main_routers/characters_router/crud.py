@@ -388,6 +388,14 @@ async def _await_cleanup_to_completion(coro):
     return operation.result()
 
 
+async def _await_thread_mutation(func, *args, **kwargs):
+    """Finish a worker mutation before propagating caller cancellation."""
+    result, cancelled = await _await_thread_call_to_completion(func, *args, **kwargs)
+    if cancelled:
+        raise asyncio.CancelledError
+    return result
+
+
 def _restore_snapshot_paths(records) -> None:
     for record in sorted(records, key=lambda item: len(item["target"].parts), reverse=True):
         target_path = record["target"]
@@ -694,7 +702,9 @@ async def rename_catgirl(old_name: str, request: Request):
             # 如果当前猫娘是被重命名的猫娘，也需要更新
             if is_current_catgirl:
                 characters['当前猫娘'] = new_name
-            await _config_manager.asave_characters(characters)
+            await _await_thread_mutation(
+                _config_manager.save_characters, characters,
+            )
 
             # Fast path：移除旧名 + 以新名启动一个 catgirl slot。
             # 等价于"删除旧 + 新增新"，不遍历其它 N-1 个。
@@ -709,16 +719,16 @@ async def rename_catgirl(old_name: str, request: Request):
             if old_face.exists():
                 if new_face.exists():
                     backup_face = _config_manager.card_faces_dir / f"{new_name}.png.conflict-{_ts}.bak"
-                    await asyncio.to_thread(new_face.rename, backup_face)
+                    await _await_thread_mutation(new_face.rename, backup_face)
                     logger.info(f"[重命名卡面] 冲突备份: {new_face} -> {backup_face}")
-                await asyncio.to_thread(old_face.rename, new_face)
+                await _await_thread_mutation(old_face.rename, new_face)
                 logger.info(f"[重命名卡面] 已迁移: {old_face} -> {new_face}")
             if old_meta.exists():
                 if new_meta.exists():
                     backup_meta = _config_manager.card_face_meta_path(f"{new_name}.conflict-{_ts}.bak")
-                    await asyncio.to_thread(new_meta.rename, backup_meta)
+                    await _await_thread_mutation(new_meta.rename, backup_meta)
                     logger.info(f"[重命名卡面元数据] 冲突备份: {new_meta} -> {backup_meta}")
-                await asyncio.to_thread(old_meta.rename, new_meta)
+                await _await_thread_mutation(old_meta.rename, new_meta)
                 logger.info(f"[重命名卡面元数据] 已迁移: {old_meta} -> {new_meta}")
 
             memory_server_reloaded = await notify_memory_server_reload(
@@ -1444,19 +1454,21 @@ async def _delete_catgirl_by_name(name: str):
 
             # 同步删除卡面 PNG 与 sidecar JSON（纳入同一事务以便回滚）
             if face_path.exists():
-                await asyncio.to_thread(face_path.unlink)
+                await _await_thread_mutation(face_path.unlink)
             if meta_path.exists():
-                await asyncio.to_thread(meta_path.unlink)
+                await _await_thread_mutation(meta_path.unlink)
 
             if not is_cloudsave_disabled():
-                await asyncio.to_thread(
+                await _await_thread_mutation(
                     _config_manager.save_character_tombstones_state,
                     _build_character_tombstones_state(_config_manager, name),
                 )
 
             # 删除角色配置
             del characters['猫娘'][name]
-            await _config_manager.asave_characters(characters)
+            await _await_thread_mutation(
+                _config_manager.save_characters, characters,
+            )
             # Fast path：只停该角色的线程 + 清 dict + 刷 globals，不遍历其它 N-1 个。
             remove_one_catgirl = get_remove_one_catgirl()
             await remove_one_catgirl(name)

@@ -1027,7 +1027,7 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.debug(f"[RecentHistory] {lanlan_name} on_compress_done({ok}) 回调异常: {e}")
 
-    async def enforce_hard_cap(self, lanlan_name):
+    async def enforce_hard_cap(self, lanlan_name, expected_generation=None):
         """Keep recent-history prompt size bounded as a final fallback.
 
         When history still exceeds RECENT_HARD_CAP_TOKENS after best-effort
@@ -1035,9 +1035,13 @@ class CompressedRecentHistoryManager:
         while preserving the first memo, when present, and at least the latest
         max_history_length entries.
         """
-        file_path, admission_generation = self._capture_recent_operation_admission(
-            lanlan_name,
-        )
+        if expected_generation is None:
+            file_path, admission_generation = self._capture_recent_operation_admission(
+                lanlan_name,
+            )
+        else:
+            file_path = expected_generation[0]
+            admission_generation = expected_generation
         from utils.tokenize import count_tokens
 
         def _raw_tokens(msgs):

@@ -181,11 +181,14 @@ async def test_run_backup_compress_failure_bumps_backoff():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_run_backup_compress_merges_and_clears_backoff():
+async def test_run_backup_compress_merges_and_clears_backoff(tmp_path):
     from app import memory_server
+    from utils import recent_file
     name = "测试角色C"
     snapshot = _history(6)
-    admission_generation = ("C:/memory/recent.json", 7)
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text("[]", encoding="utf-8")
+    admission_generation = recent_file.capture_recent_generation(recent_path)
     memory_server.gates._maint_state[name] = {"compress_backup_fail_attempts": 2}
 
     fake_mgr = MagicMock()
@@ -204,4 +207,148 @@ async def test_run_backup_compress_merges_and_clears_backoff():
         expected_generation=admission_generation,
     )
     assert not memory_server.gates._maint_state[name].get("compress_backup_fail_attempts")  # 退避清零
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_backup_failure_does_not_record_or_trim_new_identity(tmp_path):
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色C"
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text("[]", encoding="utf-8")
+    admission_generation = recent_file.capture_recent_generation(recent_path)
+    recent_file.activate_recent_paths([recent_path])
+    memory_server.gates._maint_state.pop(name, None)
+
+    fake_mgr = MagicMock()
+    fake_mgr.compress_history = AsyncMock(return_value=None)
+    fake_mgr.enforce_hard_cap = AsyncMock()
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        await memory_server._run_backup_compress(
+            name, _history(6), False, admission_generation,
+        )
+
+    assert name not in memory_server.gates._maint_state
+    fake_mgr.enforce_hard_cap.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_backup_success_does_not_clear_new_identity_backoff(tmp_path):
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色C"
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(recent_path)
+    recent_file.activate_recent_paths([recent_path])
+    new_generation = recent_file.capture_recent_generation(recent_path)
+    memory_server.gates._maint_state[name] = {
+        "compress_backup_fail_attempts": 2,
+        "compress_backup_fail_fp": "new-identity-fingerprint",
+        "compress_backup_generation": list(new_generation),
+    }
+
+    fake_mgr = MagicMock()
+    fake_mgr.compress_history = AsyncMock(
+        return_value=(SystemMessage(content="stale-memo"), "stale-memo"),
+    )
+    fake_mgr.merge_backup_memo = AsyncMock(return_value="moot")
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        await memory_server._run_backup_compress(
+            name, _history(6), False, old_generation,
+        )
+
+    fake_mgr.merge_backup_memo.assert_not_awaited()
+    assert memory_server.gates._maint_state[name]["compress_backup_fail_attempts"] == 2
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_deadletter_callback_does_not_trim_new_identity(tmp_path):
+    from app import memory_server
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.recent import build_review_fingerprint
+    from utils import recent_file
+
+    name = "测试角色C"
+    snapshot = _history(6)
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text("[]", encoding="utf-8")
+    admission_generation = recent_file.capture_recent_generation(recent_path)
+    memory_server.gates._maint_state[name] = {
+        "compress_backup_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
+        "compress_backup_fail_fp": build_review_fingerprint(snapshot),
+        "compress_backup_generation": list(admission_generation),
+    }
+    recent_file.activate_recent_paths([recent_path])
+
+    fake_mgr = MagicMock()
+    fake_mgr.enforce_hard_cap = AsyncMock()
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        await memory_server._on_compress_done(
+            name,
+            snapshot,
+            ok=False,
+            detailed=False,
+            admission_generation=admission_generation,
+        )
+
+    assert memory_server.gates._maint_state[name]["compress_backup_fail_attempts"] == (
+        MEMORY_LIVENESS_MAX_ATTEMPTS
+    )
+    fake_mgr.enforce_hard_cap.assert_not_awaited()
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_failure_cannot_overwrite_new_generation_backoff(tmp_path):
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色C"
+    recent_path = tmp_path / "recent.json"
+    recent_path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(recent_path)
+    memory_server.gates._maint_state.pop(name, None)
+    old_reached_write = asyncio.Event()
+    release_old_write = asyncio.Event()
+    real_amutate = memory_server.gates._amutate_maint_state
+    calls = 0
+
+    async def _delay_first_write(lanlan_name, mutator):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            old_reached_write.set()
+            await release_old_write.wait()
+        return await real_amutate(lanlan_name, mutator)
+
+    with patch.object(
+        memory_server.gates, "_amutate_maint_state", side_effect=_delay_first_write,
+    ), patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        old_record = asyncio.create_task(memory_server._record_compress_backup_failure(
+            name, _history(4), old_generation,
+        ))
+        await old_reached_write.wait()
+        recent_file.activate_recent_paths([recent_path])
+        new_generation = recent_file.capture_recent_generation(recent_path)
+        assert await memory_server._record_compress_backup_failure(
+            name, _history(6), new_generation,
+        ) == 1
+        release_old_write.set()
+        assert await old_record is None
+
+    state = memory_server.gates._maint_state[name]
+    assert state["compress_backup_fail_attempts"] == 1
+    assert state["compress_backup_generation"] == list(new_generation)
     memory_server.gates._maint_state.pop(name, None)

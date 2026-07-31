@@ -512,6 +512,7 @@ def import_cloudsave_character_unit(
                     if target_path.exists():
                         target_path.unlink()
                         _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
+                detail = build_cloudsave_character_detail(config_manager, character_name)
             except BaseException:
                 try:
                     _restore_backup_records(backup_records)
@@ -536,7 +537,6 @@ def import_cloudsave_character_unit(
                 release_recent_file_locks(held_locks)
                 recent_transaction["held_locks"] = []
 
-            detail = build_cloudsave_character_detail(config_manager, character_name)
             result = {
                 "character_name": character_name,
                 "applied_at_utc": apply_time,
@@ -826,7 +826,15 @@ def restore_cloudsave_operation_backup(
                 _restore_backup_records(backup_records)
                 for path in backup_recent_paths:
                     set_recent_pending_unlocked(path, [])
-                clear_recent_deletions(list(backup_recent_paths))
+                if recent_locks_held:
+                    clear_recent_deletions(list(backup_recent_paths))
+                else:
+                    generation_scope = set(backup_recent_paths)
+                    generation_scope.update(Path(path) for path in current_redirects)
+                    generation_scope.update(Path(path) for path in current_redirects.values())
+                    restore_recent_registry_state(
+                        list(generation_scope), {}, set(),
+                    )
             except Exception:
                 for path, messages in current_pending.items():
                     set_recent_pending_unlocked(path, messages)
@@ -885,8 +893,16 @@ def restore_cloudsave_operation_backup(
             _restore_backup_records(backup_records)
             for path in recent_paths:
                 set_recent_pending_unlocked(path, pending_snapshot.get(path, []))
-            restore_recent_deletions(list(recent_paths), deleted_snapshot)
-            restore_recent_redirects(redirect_snapshot)
+            if recent_locks_held:
+                restore_recent_deletions(list(recent_paths), deleted_snapshot)
+                restore_recent_redirects(redirect_snapshot)
+            else:
+                generation_scope = set(redirect_paths)
+                generation_scope.update(Path(path) for path in current_redirects)
+                generation_scope.update(Path(path) for path in current_redirects.values())
+                restore_recent_registry_state(
+                    list(generation_scope), redirect_snapshot, deleted_snapshot,
+                )
         except Exception:
             for path, messages in current_pending.items():
                 set_recent_pending_unlocked(path, messages)

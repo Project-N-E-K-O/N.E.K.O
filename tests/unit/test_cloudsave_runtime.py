@@ -2214,6 +2214,8 @@ def test_import_cloudsave_character_unit_rolls_back_on_apply_failure(tmp_path):
 
 @pytest.mark.unit
 def test_restore_cloudsave_operation_backup_restores_previous_character_state(tmp_path):
+    from utils import recent_file
+
     source_cm = _make_config_manager(tmp_path / "source")
     target_cm = _make_config_manager(tmp_path / "target")
 
@@ -2250,6 +2252,8 @@ def test_restore_cloudsave_operation_backup_restores_previous_character_state(tm
     shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
 
     import_result = import_cloudsave_character_unit(target_cm, "小满", overwrite=True)
+    target_recent = Path(target_cm.memory_dir) / "小满" / "recent.json"
+    imported_generation = recent_file.capture_recent_generation(target_recent)
 
     assert target_cm.load_characters()["猫娘"]["小满"]["喜欢的食物"] == "鱼干"
     assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") != original_recent
@@ -2258,6 +2262,12 @@ def test_restore_cloudsave_operation_backup_restores_previous_character_state(tm
 
     assert target_cm.load_characters() == original_characters
     assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(
+            target_recent,
+            [{"content": "stale-import-writer"}],
+            expected_generation=imported_generation,
+        )
 
 
 @pytest.mark.unit
@@ -2788,6 +2798,49 @@ def test_backup_restore_locks_historical_redirect_paths(tmp_path, monkeypatch):
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("legacy_metadata", [False, True])
+def test_standalone_restore_invalidates_current_alias_writers(
+    tmp_path, legacy_metadata,
+):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+
+    if legacy_metadata:
+        metadata_path = Path(result["backup_path"]) / "_operation.json"
+        metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+        metadata["schema_version"] = 1
+        metadata.pop("recent_state", None)
+        atomic_write_json(metadata_path, metadata, ensure_ascii=False, indent=2)
+
+    alias_path = Path(target_cm.memory_dir) / "CurrentAlias" / "recent.json"
+    recent_file.redirect_recent_paths([alias_path], target_recent)
+    alias_generation = recent_file.capture_recent_generation(alias_path)
+
+    restore_cloudsave_operation_backup(target_cm, result["backup_path"])
+
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(
+            alias_path,
+            [{"content": "stale-alias-writer"}],
+            expected_generation=alias_generation,
+        )
+
+
+@pytest.mark.unit
 def test_single_import_releases_retained_lock_when_detail_build_fails(tmp_path):
     from utils import recent_file
     from utils.cloudsave_runtime import (
@@ -2803,6 +2856,19 @@ def test_single_import_releases_retained_lock_when_detail_build_fails(tmp_path):
     _write_runtime_state(target_cm, character_name=character_name)
     shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
     target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    atomic_write_json(
+        target_recent,
+        [{"type": "human", "data": {"content": "local-before"}}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    from utils.llm_client import HumanMessage
+
+    with recent_file.recent_file_locks([target_recent]):
+        recent_file.set_recent_pending_unlocked(
+            target_recent, [HumanMessage(content="pending-before")],
+        )
+    generation_before = recent_file.capture_recent_generation(target_recent)
 
     with patch(
         "utils.cloudsave_runtime.operations.build_cloudsave_character_detail",
@@ -2823,6 +2889,13 @@ def test_single_import_releases_retained_lock_when_detail_build_fails(tmp_path):
     worker.join(3)
     assert acquired.is_set()
     assert not worker.is_alive()
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["data"]["content"] == (
+        "local-before"
+    )
+    with recent_file.recent_file_locks([target_recent]):
+        pending = recent_file.get_recent_pending_unlocked(target_recent)
+    assert [message.content for message in pending] == ["pending-before"]
+    assert recent_file.capture_recent_generation(target_recent) == generation_before
 
 
 @pytest.mark.unit
@@ -2844,6 +2917,7 @@ def test_legacy_operation_backup_restore_locks_recent_and_clears_pending(tmp_pat
     target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
     shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
     result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+    imported_generation = recent_file.capture_recent_generation(target_recent)
 
     metadata_path = Path(result["backup_path"]) / "_operation.json"
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -2860,6 +2934,12 @@ def test_legacy_operation_backup_restore_locks_recent_and_clears_pending(tmp_pat
     assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
     with recent_file.recent_file_locks([target_recent]):
         assert recent_file.get_recent_pending_unlocked(target_recent) == []
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        recent_file.write_recent_payload(
+            target_recent,
+            [{"content": "stale-import-writer"}],
+            expected_generation=imported_generation,
+        )
 
 
 @pytest.mark.unit

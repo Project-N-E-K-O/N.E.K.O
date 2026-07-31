@@ -47,7 +47,9 @@ from utils.logger_config import get_module_logger
 from utils.recent_file import (
     RecentFileDeletedError,
     capture_recent_generation,
-    read_recent_text,
+    get_recent_pending_unlocked,
+    read_recent_text_unlocked,
+    recent_file_access,
     write_recent_payload,
 )
 from fastapi.responses import JSONResponse
@@ -317,6 +319,25 @@ def safe_memory_path(memory_dir: Path, filename: str) -> tuple[Path | None, str]
 logger = get_module_logger(__name__, "Main")
 
 
+def _read_recent_browser_text(path: Path) -> str:
+    """Read one editable disk-plus-pending snapshot under the recent lock."""
+    with recent_file_access(path) as resolved_path:
+        content = read_recent_text_unlocked(resolved_path)
+        pending = get_recent_pending_unlocked(resolved_path)
+        if not pending:
+            return content
+        payload = json.loads(content)
+        if not isinstance(payload, list):
+            raise ValueError(f"recent history is not a list: {resolved_path}")
+        if all(isinstance(message, dict) for message in pending):
+            pending_payload = list(pending)
+        else:
+            from utils.llm_client import messages_to_dict
+
+            pending_payload = messages_to_dict(pending)
+        return json.dumps(payload + pending_payload, ensure_ascii=False, indent=2)
+
+
 @router.get('/recent_files')
 async def get_recent_files():
     """List all recent*.json filenames under the memory directory."""
@@ -356,7 +377,7 @@ async def get_recent_file(filename: str):
     # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
     # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
     try:
-        content = await asyncio.to_thread(read_recent_text, resolved_path)
+        content = await asyncio.to_thread(_read_recent_browser_text, resolved_path)
     except RecentFileDeletedError:
         return JSONResponse(
             {"success": False, "error": "文件不存在"},

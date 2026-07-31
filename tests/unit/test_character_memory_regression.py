@@ -111,6 +111,136 @@ async def test_cancelled_thread_call_returns_retained_lock_transaction():
         assert all(not lock.locked() for lock in locks)
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_path):
+    """A late config publish must not overwrite the cancellation rollback."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        old_recent = Path(cm.memory_dir) / "Old" / "recent.json"
+        old_recent.parent.mkdir(parents=True, exist_ok=True)
+        old_recent.write_text("[]", encoding="utf-8")
+
+        entered = threading.Event()
+        release = threading.Event()
+        original_save = cm.save_characters
+
+        def _delayed_save(data, character_json_path=None, *, bypass_write_fence=False):
+            if not bypass_write_fence and "New" in (data.get("猫娘") or {}):
+                entered.set()
+                assert release.wait(3)
+            return original_save(
+                data,
+                character_json_path=character_json_path,
+                bypass_write_fence=bypass_write_fence,
+            )
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(cm, "save_characters", side_effect=_delayed_save),
+        ):
+            operation = asyncio.create_task(
+                crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+            )
+            assert await asyncio.to_thread(entered.wait, 3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        saved = cm.load_characters()
+        assert "Old" in saved.get("猫娘", {})
+        assert "New" not in saved.get("猫娘", {})
+        assert old_recent.is_file()
+        assert not (Path(cm.memory_dir) / "New").exists()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_cancellation_waits_for_config_worker_before_rollback(tmp_path):
+    """A late delete publish must not overwrite the cancellation rollback."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["DeleteMe"] = {"昵称": "DeleteMe"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        old_recent = Path(cm.memory_dir) / "DeleteMe" / "recent.json"
+        old_recent.parent.mkdir(parents=True, exist_ok=True)
+        old_recent.write_text("[]", encoding="utf-8")
+
+        entered = threading.Event()
+        release = threading.Event()
+        original_save = cm.save_characters
+
+        def _delayed_save(data, character_json_path=None, *, bypass_write_fence=False):
+            if not bypass_write_fence and "DeleteMe" not in (data.get("猫娘") or {}):
+                entered.set()
+                assert release.wait(3)
+            return original_save(
+                data,
+                character_json_path=character_json_path,
+                bypass_write_fence=bypass_write_fence,
+            )
+
+        with (
+            patch.object(crud, "release_memory_server_character", AsyncMock(return_value=True)),
+            patch.object(crud, "notify_memory_server_reload", AsyncMock(return_value=True)),
+            patch.object(crud, "is_cloudsave_disabled", return_value=True),
+            patch.object(cm, "save_characters", side_effect=_delayed_save),
+        ):
+            operation = asyncio.create_task(crud.delete_catgirl("DeleteMe"))
+            assert await asyncio.to_thread(entered.wait, 3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        assert "DeleteMe" in cm.load_characters().get("猫娘", {})
+        assert old_recent.is_file()
+
+
 class _DummyRequest:
     def __init__(self, payload):
         self._payload = payload
