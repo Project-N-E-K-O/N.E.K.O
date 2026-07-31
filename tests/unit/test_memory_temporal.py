@@ -406,7 +406,11 @@ def test_render_outdated_block_uses_six_equals(tmp_path):
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
-    with patch('utils.language_utils.get_global_language', return_value='zh'):
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
         md = pm._compose_markdown_from_trimmed(
             name='小天',
             persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
@@ -491,7 +495,7 @@ def test_render_past_block_localizes_to_active_language(tmp_path):
     with patch(
         'utils.language_utils.get_global_language', return_value='en',
     ), patch(
-        'utils.language_utils.get_global_language', return_value='en',
+        'utils.language_utils.get_global_language_full', return_value='en',
     ):
         md = pm._compose_markdown_from_trimmed(
             name='Mio',
@@ -523,7 +527,11 @@ def test_render_past_block_no_temporal_scope_label(tmp_path):
     """
     pm, _ = _persona_manager(str(tmp_path))
     old_iso = (datetime.now() - timedelta(days=10)).isoformat()
-    with patch('utils.language_utils.get_global_language', return_value='zh'):
+    with patch(
+        'utils.language_utils.get_global_language', return_value='zh',
+    ), patch(
+        'utils.language_utils.get_global_language_full', return_value='zh-CN',
+    ):
         md = pm._compose_markdown_from_trimmed(
             name='小天',
             persona={'master': {'facts': []}, 'neko': {'facts': []}, 'relationship': {'facts': []}},
