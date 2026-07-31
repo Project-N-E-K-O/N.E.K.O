@@ -562,3 +562,101 @@ def test_the_replace_tolerant_read_never_sleeps_on_the_event_loop():
         "读重试没有事件循环守卫 —— get_workshop_path() 这类同步读就挂在 async "
         "handler 上，会在循环上睡满退避预算"
     )
+
+
+def test_a_save_refreshes_the_last_good_config(tmp_path, monkeypatch):
+    """The fallback must not hand back the state from before this very save.
+
+    `POST /config` loads the old config, writes the new one, and the cache is
+    only refreshed on successful *reads* — so a transient read failure right
+    after would return the pre-change configuration, which is harder to spot
+    than falling back to defaults.
+    """
+    from utils.config_manager import workshop as workshop_mixin
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text(json.dumps({"user_mod_folder": "/old"}), encoding="utf-8")
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        def __init__(self):
+            import threading
+
+            self._workshop_config_lock = threading.RLock()
+            self.workshop_dir = tmp_path / "default"
+
+        def get_workshop_config_path(self):
+            return config_path
+
+        def get_runtime_config_path(self, name):
+            return config_path
+
+        def ensure_config_directory(self):
+            return None
+
+        def _rebase_workshop_config_after_storage_migration(self, config):
+            return config
+
+    cm = _CM()
+    assert cm.load_workshop_config()["user_mod_folder"] == "/old"
+    monkeypatch.setattr(
+        "utils.cloudsave_runtime.assert_cloudsave_writable", lambda *a, **kw: None
+    )
+    cm.save_workshop_config({"user_mod_folder": "/new"})
+
+    busy = PermissionError(13, "Access is denied")
+    busy.winerror = 32
+    monkeypatch.setattr(
+        workshop_mixin, "read_json_tolerating_replace",
+        lambda *a, **kw: (_ for _ in ()).throw(busy),
+    )
+
+    assert cm.load_workshop_config()["user_mod_folder"] == "/new", (
+        "读失败回落到了保存**之前**的配置"
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_blank_folder_value_is_rejected(monkeypatch):
+    """`"   "` must not slip past the absolute-path check and get persisted."""
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True)
+
+    result = await config_files.save_workshop_config_api({"user_mod_folder": "   "})
+    assert result["success"] is False
+    assert "空白" in result["error"]
+    assert saved == []
+
+
+def test_the_missing_config_branch_is_lock_free_on_the_loop():
+    """The first POST /config holds the lock while creating the file.
+
+    Until it commits, the target does not exist — so a loop-side
+    `get_workshop_path()` takes the "missing" branch, and if that branch waits
+    on the writer lock the whole loop waits with it. Returning defaults needs
+    no mutual exclusion.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from utils.config_manager import workshop as workshop_mixin
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(workshop_mixin.WorkshopMixin.load_workshop_config))
+    )
+    guards = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "running_on_event_loop"
+    ]
+    assert guards, (
+        "缺配置分支没有事件循环守卫 —— 首次 POST /config 创建文件期间，"
+        "循环上的 get_workshop_path() 会卡在写者锁上"
+    )

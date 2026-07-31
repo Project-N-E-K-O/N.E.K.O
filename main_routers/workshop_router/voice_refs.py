@@ -118,7 +118,14 @@ def _current_reference_audio_path(content_folder: str) -> str | None:
     reference = manifest.get('reference_audio') if isinstance(manifest, dict) else None
     if not isinstance(reference, str) or not reference:
         return None
-    return os.path.join(content_folder, reference)
+    # ⚠️ manifest 的内容不可信 —— 它可能是订阅来的、手改过的，`reference_audio` 里
+    # 写个绝对路径或 `../../x` 就能让下面那次 os.remove 删到内容目录**外面**去。
+    # 删任何东西之前先证明它在这个目录里。
+    try:
+        return _assert_under_base(os.path.join(content_folder, reference), content_folder)
+    except (PermissionError, ValueError, OSError):
+        logger.warning('voice_manifest 的 reference_audio 指向内容目录之外，拒绝清理: %r', reference)
+        return None
 
 
 def _replace_voice_reference(

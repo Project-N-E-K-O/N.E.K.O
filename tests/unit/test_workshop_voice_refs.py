@@ -584,3 +584,36 @@ def test_nothing_is_deleted_when_no_manifest_claims_anything(tmp_path):
     )
 
     assert (tmp_path / "voice_sample.wav").read_bytes() == b"user-file"
+
+
+def test_a_manifest_pointing_outside_the_folder_deletes_nothing(tmp_path):
+    """`reference_audio` is untrusted input; never delete outside the folder.
+
+    The manifest can arrive from a subscribed item or be hand-edited. An
+    absolute path or `../../x` in `reference_audio` would otherwise make the
+    post-commit cleanup remove a file elsewhere on disk.
+    """
+    from main_routers.workshop_router import voice_refs
+
+    content = tmp_path / "content"
+    content.mkdir()
+    outsider = tmp_path / "precious.wav"
+    outsider.write_bytes(b"not-ours")
+
+    for hostile in ("../precious.wav", str(outsider)):
+        (content / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+            json.dumps({"version": 1, "reference_audio": hostile, "prefix": "old"}),
+            encoding="utf-8",
+        )
+        assert voice_refs._current_reference_audio_path(str(content)) is None, (
+            f"{hostile!r} 被当成了可删除的目标"
+        )
+
+        voice_refs._replace_voice_reference(
+            str(content),
+            str(content / "voice_sample_bbbbbbbbbbbb.wav"),
+            b"new-audio",
+            str(content / WORKSHOP_VOICE_MANIFEST_NAME),
+            {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+        )
+        assert outsider.read_bytes() == b"not-ours", f"{hostile!r} 让清理删到了目录外面"

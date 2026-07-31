@@ -86,7 +86,12 @@ async def save_workshop_config_api(config_data: dict):
             # 解析它并报 folder_ready: true，而 get_workshop_path() 原样返回那个相对
             # 串、后续 _assert_under_base 又按服务进程的工作目录解析 —— 两边指向不同
             # 的地方，而我们已经告诉用户「建好了」。宁可让调用方给绝对路径。
-            if value.strip() and not os.path.isabs(value):
+            if not value.strip():
+                return {
+                    "success": False,
+                    "error": f"{key} 不能是空白",
+                }
+            if not os.path.isabs(value):
                 return {
                     "success": False,
                     "error": f"{key} 必须是绝对路径",

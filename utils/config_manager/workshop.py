@@ -243,6 +243,19 @@ class WorkshopMixin:
                 return config
             else:
                 # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
+                #
+                # ⚠️ 事件循环上不拿这把锁。首次 POST /config 正在创建这个文件时，
+                # 目标一直不存在、而 worker 持着锁在写 —— 循环上的 get_workshop_path()
+                # 就会卡在这儿。这条分支本来就只是「读不到就给默认值」，不需要互斥。
+                if running_on_event_loop():
+                    if os.path.exists(config_path):
+                        config = read_json_tolerating_replace(config_path)
+                        config = self._rebase_workshop_config_after_storage_migration(config)
+                        return config
+                    return {
+                        "default_workshop_folder": str(self.workshop_dir),
+                        "auto_create_folder": True
+                    }
                 with self._workshop_config_lock:
                     if os.path.exists(config_path):
                         config = read_json_tolerating_replace(config_path)
@@ -293,7 +306,13 @@ class WorkshopMixin:
             
             # 保存配置
             atomic_write_json(config_path, config_data, indent=4, ensure_ascii=False)
-            
+
+            # 写成功之后同步 last-known-good。只在读成功时更新的话，POST /config
+            # 存下新配置后缓存里还是它进来时读到的旧值 —— 之后一次瞬时读失败就会
+            # 回落到**改动之前**的配置，比回落到默认值更难查。
+            if isinstance(config_data, dict):
+                self._last_good_workshop_config = dict(config_data)
+
             logger.info(f"成功保存workshop配置: {config_data}")
         except Exception as e:
             error_msg = f"保存workshop配置失败: {e}"
