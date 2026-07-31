@@ -978,7 +978,30 @@ class FactsMixin:
             return False
         section_key = memory_subject.persona_section_key
         async with self._get_alock(name):
-            persona = await self._aensure_persona_locked(name)
+            # Cosmetic metadata must never invoke the recovery loader: a
+            # malformed persona file makes _aensure_persona_locked() create and
+            # save an empty replacement, destroying unrelated memory sections.
+            # Strict-read an existing file and fail closed instead.
+            path = self._persona_path(name)
+            if await asyncio.to_thread(os.path.exists, path):
+                try:
+                    persona = await read_json_async(path)
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                    logger.warning(
+                        f"[Persona] {name}: display_name skipped; strict load "
+                        f"failed: {exc}"
+                    )
+                    return False
+                if not isinstance(persona, dict):
+                    logger.warning(
+                        f"[Persona] {name}: display_name skipped; persona is not a dict"
+                    )
+                    return False
+                self._personas[name] = persona
+            else:
+                persona = self._personas.get(name)
+                if not isinstance(persona, dict):
+                    return False
             section = persona.get(section_key)
             if not isinstance(section, dict):
                 return False
@@ -1154,14 +1177,16 @@ class FactsMixin:
                         # survives, retaining the forgotten scope's metadata
                         # leaks its display_name into the surviving section and
                         # prevents that scope from refreshing the name.
-                        replacement_subject = next(
-                            (
-                                persona_subject_from_section(section_key, entry)
-                                for entry in section.get('facts') or []
-                                if isinstance(entry, dict)
-                            ),
-                            None,
-                        )
+                        replacement_subject = None
+                        for entry in section.get('facts') or []:
+                            if not isinstance(entry, dict):
+                                continue
+                            candidate = persona_subject_from_section(
+                                section_key, entry,
+                            )
+                            if candidate is not None:
+                                replacement_subject = candidate
+                                break
                         if replacement_subject is not None:
                             section.update(replacement_subject.as_entry_fields())
                         section.pop('display_name', None)

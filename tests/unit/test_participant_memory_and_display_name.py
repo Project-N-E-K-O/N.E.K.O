@@ -35,13 +35,18 @@ from memory.scopes import MemorySubject
 class _DisplayNamePersona:
     """Minimal persona-manager double exposing the real update logic."""
 
-    def __init__(self, persona: dict):
+    def __init__(self, persona: dict, persona_path: str | None = None):
         self.persona = persona
+        self._personas = {"Neko": persona}
+        self.persona_path = persona_path or "__missing_display_name_persona__.json"
         self.saved = 0
         self._lock = asyncio.Lock()
 
     def _get_alock(self, name):
         return self._lock
+
+    def _persona_path(self, name):
+        return self.persona_path
 
     async def _aensure_persona_locked(self, name):
         return self.persona
@@ -155,6 +160,28 @@ async def test_display_name_all_structural_is_dropped_not_cleared():
 
     assert changed is False
     assert section["display_name"] == "水群"
+
+
+@pytest.mark.asyncio
+async def test_display_name_update_never_repairs_an_unreadable_persona(tmp_path):
+    subject = MemorySubject.group_chat("qq", "7788")
+    path = tmp_path / "persona.json"
+    malformed = '{"master": {"facts": ['
+    path.write_text(malformed, encoding="utf-8")
+    manager = _DisplayNamePersona(
+        {subject.persona_section_key: {
+            "facts": [{"text": "cached"}], **subject.as_entry_fields(),
+        }},
+        str(path),
+    )
+
+    changed = await manager.aupdate_subject_display_name(
+        "Neko", subject.as_entry_fields(), "水群",
+    )
+
+    assert changed is False
+    assert path.read_text(encoding="utf-8") == malformed
+    assert manager.saved == 0
 
 
 @pytest.mark.asyncio
@@ -987,8 +1014,8 @@ def test_participant_off_transition_stamps_cutoff_once():
 
 def test_participant_on_transition_pushes_nonconsent_floor():
     """ON 盖章：OFF 时代可能有未 stamp 的尾行（nonconsent 边界只在生成轮
-    finally 记）——floor 推到转变时刻即闭合；带未消费 disable 章的会话
-    不动（旧时代结算先行）。"""  # noqa: DOCSTRING_CJK
+    finally 记）——floor 推到转变时刻即闭合；带未消费 disable 章的旧会话
+    必须强制 discard 后重建，不能让新授权行接在旧 cutoff 后面。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     off_era = {
@@ -1014,6 +1041,7 @@ def test_participant_on_transition_pushes_nonconsent_floor():
 
     assert off_era["nonconsent_history_end"] == 5
     assert pending["nonconsent_history_end"] == 1
+    assert pending["pending_permission_discard"] is True
     assert live["nonconsent_history_end"] == 1
 
 
@@ -1381,6 +1409,7 @@ async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
         "display_name": "小明",
         "facts": [
             {"id": "p1", "text": "t", **target.as_entry_fields()},
+            {"id": "legacy", "text": "unstamped survivor"},
             {"id": "p2", "text": "mixed scope", **mixed.as_entry_fields()},
         ],
         **target.as_entry_fields(),
@@ -1413,7 +1442,7 @@ async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
     assert stats["persona_section_dropped"] is False
     assert stats["corrections"] == 2
     remaining_section = harness.persona[target.persona_section_key]
-    assert [e["id"] for e in remaining_section["facts"]] == ["p2"]
+    assert [e["id"] for e in remaining_section["facts"]] == ["legacy", "p2"]
     assert "display_name" not in remaining_section
     assert remaining_section["scope"] == mixed.scope
     assert [c["old_text"] for c in harness.corrections_written] == ["keep"]
@@ -1801,10 +1830,12 @@ async def test_scoped_forget_waits_for_runtime_reload_barrier():
     reflection.aend_subject_forget = AsyncMock()
     persona = MagicMock()
     persona.aforget_subject = AsyncMock(return_value={})
+    dedup = MagicMock()
+    dedup.aforget_subject = AsyncMock(return_value={})
 
     with patch.object(memory_routes.runtime, "_reload_lock", barrier), \
             patch.object(memory_routes.runtime, "fact_store", store), \
-            patch.object(memory_routes.runtime, "fact_dedup_resolver", None), \
+            patch.object(memory_routes.runtime, "fact_dedup_resolver", dedup), \
             patch.object(memory_routes.runtime, "reflection_engine", reflection), \
             patch.object(memory_routes.runtime, "persona_manager", persona):
         task = asyncio.create_task(memory_routes.forget_scoped_subject(
@@ -1819,6 +1850,31 @@ async def test_scoped_forget_waits_for_runtime_reload_barrier():
         await task
 
     store.abegin_subject_forget.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_fails_closed_without_dedup_resolver():
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedForgetRequest
+
+    store = MagicMock()
+    store.abegin_subject_forget = AsyncMock()
+    with patch.object(memory_routes.runtime, "fact_store", store), \
+            patch.object(memory_routes.runtime, "fact_dedup_resolver", None), \
+            patch.object(memory_routes.runtime, "reflection_engine", MagicMock()), \
+            patch.object(memory_routes.runtime, "persona_manager", MagicMock()):
+        with pytest.raises(HTTPException) as exc_info:
+            await memory_routes.forget_scoped_subject(
+                "Neko",
+                ScopedForgetRequest(subject={
+                    "subject_kind": "participant", "subject_id": "qq:1001",
+                }),
+            )
+
+    assert exc_info.value.status_code == 503
+    store.abegin_subject_forget.assert_not_awaited()
 
 
 def test_participant_ui_key_exists_in_every_locale_bundle():

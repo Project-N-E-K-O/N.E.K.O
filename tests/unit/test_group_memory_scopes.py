@@ -12239,6 +12239,23 @@ async def test_private_prompt_is_refreshed_after_cross_group_opt_out():
     )
     assert applied == [False]
 
+    # A participant session can still cache its pre-opt-out bootstrap prompt
+    # even though the new context is already empty. The frozen settlement mode
+    # identifies that stale session and forces the sanitized prompt swap.
+    applied.clear()
+    service.plugin._qq_settings["private_participant_memory_enabled"] = False
+    await service._run_session_generation(
+        context=context, session_key="private:2046",
+        user_data={
+            "lock": asyncio.Lock(), "private_memory_mode": "participant",
+        },
+        user_session=SimpleNamespace(
+            stream_text=_stream, _conversation_history=[],
+        ),
+        reply_chunks=[],
+    )
+    assert applied == [True]
+
 
 @pytest.mark.asyncio
 async def test_pending_is_detached_before_the_settlement_await():

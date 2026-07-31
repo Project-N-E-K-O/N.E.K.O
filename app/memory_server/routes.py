@@ -1286,6 +1286,7 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     lanlan_name = validate_lanlan_name(lanlan_name)
     if (
         runtime.fact_store is None
+        or runtime.fact_dedup_resolver is None
         or runtime.persona_manager is None
         or runtime.reflection_engine is None
     ):
@@ -1312,12 +1313,11 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             lanlan_name, subject,
         )
         reflection_forget_started = True
-        if runtime.fact_dedup_resolver is not None:
-            stats.update(
-                await runtime.fact_dedup_resolver.aforget_subject(
-                    lanlan_name, subject,
-                )
+        stats.update(
+            await runtime.fact_dedup_resolver.aforget_subject(
+                lanlan_name, subject,
             )
+        )
         stats.update(await runtime.fact_store.aforget_subject(lanlan_name, subject))
         stats.update(
             await runtime.reflection_engine.aforget_subject(lanlan_name, subject)

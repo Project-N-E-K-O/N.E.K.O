@@ -260,6 +260,14 @@ class QQReplyGenerationService:
                 always_refresh=(
                     context.is_group
                     or bool(getattr(context, "cross_session_section", ""))
+                    or (
+                        user_data.get("private_memory_mode") == "participant"
+                        and not bool(
+                            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                                "private_participant_memory_enabled", False,
+                            )
+                        )
+                    )
                     or not bool(
                         (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                             "allow_cross_group_context", False,

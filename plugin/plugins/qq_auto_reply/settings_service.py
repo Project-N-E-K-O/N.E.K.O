@@ -64,7 +64,14 @@ class QQSettingsService:
             sess = ud.get("session")
             hist_len = len(getattr(sess, "_conversation_history", []) or [])
             if enabled_after:
-                if ud.get("memory_enabled") or ud.get("pending_disable_settle"):
+                if ud.get("pending_disable_settle"):
+                    # The old opt-out prefix still owns this session. Reusing it
+                    # after re-enable would append new authorized rows behind
+                    # the old cutoff, and the eventual retry would truncate
+                    # them. Force bootstrap to settle/discard it first.
+                    ud["pending_permission_discard"] = True
+                    continue
+                if ud.get("memory_enabled"):
                     continue
                 ud["nonconsent_history_end"] = max(
                     int(ud.get("nonconsent_history_end", 0) or 0), hist_len,
