@@ -2148,3 +2148,44 @@ async def test_recent_file_route_rejects_stale_browser_snapshot(tmp_path, monkey
     with recent_file.recent_file_access(recent_path) as resolved_path:
         pending = recent_file.get_recent_pending_unlocked(resolved_path)
     assert [message.content for message in pending] == ["arrived-after-read"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_file_route_saves_the_resolved_legacy_layout(
+    tmp_path, monkeypatch,
+):
+    from main_routers import memory_router
+    import utils.config_manager as config_manager_module
+
+    runtime_root = tmp_path / "runtime"
+    project_root = tmp_path / "project"
+    project_root.mkdir()
+    legacy_path = project_root / "recent_Role.json"
+    recent_file.write_recent_payload(
+        legacy_path,
+        [{"type": "human", "data": {"content": "legacy-disk"}}],
+    )
+
+    class _Config:
+        memory_dir = runtime_root
+        project_memory_dir = project_root
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [{"role": "human", "text": "edited"}],
+                "fingerprint": loaded["fingerprint"],
+            }
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *a, **k: None)
+    loaded = await memory_router.get_recent_file("recent_Role.json")
+
+    response = await memory_router.save_recent_file(_Request())
+
+    assert response["success"] is True
+    assert not (runtime_root / "Role" / "recent.json").exists()
+    saved = json.loads(legacy_path.read_text(encoding="utf-8"))
+    assert saved[0]["data"]["content"] == "edited"

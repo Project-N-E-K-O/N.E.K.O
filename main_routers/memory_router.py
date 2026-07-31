@@ -456,7 +456,18 @@ async def save_recent_file(request: Request):
         logger.warning(f"Failed to extract catgirl name from filename: {filename!r}")
         return JSONResponse({"success": False, "error": "文件名不合法"}, status_code=400)
 
-    resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
+    # 保存到读取时会解析到的同一布局；旧版 flat/project 文件不能被悄悄
+    # 改写到一个尚不存在的 runtime nested 路径，否则 CAS 比较失去对象。
+    resolved_path, _path_error, path_error_code, _ = resolve_recent_file_path(
+        cm, filename,
+    )
+    if resolved_path is None:
+        if path_error_code != PATH_ERROR_NOT_FOUND:
+            return JSONResponse(
+                {"success": False, "error": _path_error},
+                status_code=path_error_status_code(path_error_code),
+            )
+        resolved_path = Path(cm.memory_dir) / catgirl_name / 'recent.json'
     admission_generation = capture_recent_generation(resolved_path)
     assert_cloudsave_writable(
         cm,
