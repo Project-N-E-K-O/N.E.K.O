@@ -9,12 +9,10 @@ import pytest
 
 import main_logic.asr_client.endpointing.asset_manifest as asset_manifest
 import scripts.prepare_voice_turn_assets as preparer
-from main_logic.asr_client.endpointing.asset_manifest import AssetManifestError
-from scripts.prepare_voice_turn_assets import (
-    AssetManifestError as PreparerAssetManifestError,
-    prepare_assets,
-)
 
+AssetManifestError = asset_manifest.AssetManifestError
+PreparerAssetManifestError = preparer.AssetManifestError
+prepare_assets = preparer.prepare_assets
 
 SCRIPT_PATH = Path(__file__).resolve().parents[4] / "scripts" / "prepare_voice_turn_assets.py"
 
