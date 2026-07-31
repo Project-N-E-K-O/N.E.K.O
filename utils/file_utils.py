@@ -681,6 +681,30 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
         raise
 
 
+def atomic_write_bytes(path: str | os.PathLike[str], content: bytes) -> None:
+    """Atomically replace a binary file in the same directory."""
+    target_path = Path(path)
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_tmp_if_due(target_path)
+
+    fd, temp_path = tempfile.mkstemp(
+        prefix=f".{_TMP_OWNER_TAG}",
+        suffix=".tmp",
+        dir=str(target_path.parent),
+    )
+
+    try:
+        with os.fdopen(fd, "wb") as temp_file:
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+        _replace_with_busy_retry(temp_path, target_path)
+    except BaseException:
+        with suppress(OSError):
+            os.remove(temp_path)
+        raise
+
+
 def atomic_write_json(
     path: str | os.PathLike[str],
     data: Any,

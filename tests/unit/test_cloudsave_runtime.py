@@ -916,6 +916,47 @@ def test_cloud_apply_fence_releases_lock_when_mode_restore_fails(tmp_path):
 
 
 @pytest.mark.unit
+def test_cloud_apply_fence_does_not_restore_over_a_concurrent_storage_mode_write(tmp_path):
+    """A storage worker's blocking mode must land after the cloud fence exits."""
+    import threading
+
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import (
+        ROOT_MODE_MAINTENANCE_READONLY,
+        cloud_apply_fence,
+        get_root_mode,
+        set_root_mode,
+    )
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def _storage_writer() -> None:
+        started.set()
+        set_root_mode(
+            cm,
+            ROOT_MODE_MAINTENANCE_READONLY,
+            last_migration_result="restart_pending:test-target",
+        )
+        finished.set()
+
+    with cloud_apply_fence(cm, reason="unit_test"):
+        writer = threading.Thread(target=_storage_writer)
+        writer.start()
+        assert started.wait(5)
+        assert not finished.wait(0.1), (
+            "storage writer escaped the cloud fence lifecycle lock and can be "
+            "overwritten by its stale mode restore"
+        )
+
+    writer.join(timeout=5)
+    assert not writer.is_alive()
+    assert finished.is_set()
+    assert get_root_mode(cm) == ROOT_MODE_MAINTENANCE_READONLY
+
+
+@pytest.mark.unit
 def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     cm = _make_config_manager(tmp_path)
 

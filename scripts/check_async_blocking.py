@@ -47,7 +47,8 @@ our model). A second pass addresses exactly that class:
    recognised blocking stdlib call (``PIL.Image.open``, Fernet
    encrypt/decrypt, ``shutil.*``, ``time.sleep``, ``requests.*``,
    ``subprocess.run``/``call``/``check_*``, ``urllib.request.urlopen``,
-   ``utils.file_utils.atomic_write_text`` / ``atomic_write_json``, plus
+   ``utils.file_utils.atomic_write_text`` / ``atomic_write_bytes`` /
+   ``atomic_write_json``, plus
    the queue/thread/socket tail-name heuristics above). Helpers whose
    own name is too generic to identify by name alone (``save``,
    ``load``, ``run``, …) are deliberately NOT indexed — see
@@ -133,9 +134,10 @@ SOCKET_SUFFIX = ("_sock", "_socket")
 RISKY_ATTR_PAIRS: dict[tuple[str, str], str] = {
     # utils/file_utils 的原子落盘，模块限定写法。`from utils import file_utils`
     # 之后 `file_utils.atomic_write_json(...)` 是 attribute 调用，走不到下面
-    # RISKY_BARE_CALLS 那条（那条只看 ast.Name），不补这两条就等于给一种完全
+    # RISKY_BARE_CALLS 那条（那条只看 ast.Name），不补这些就等于给一种完全
     # 正常的 import 风格开了后门。
     ("file_utils", "atomic_write_text"): "utils.file_utils.atomic_write_text",
+    ("file_utils", "atomic_write_bytes"): "utils.file_utils.atomic_write_bytes",
     ("file_utils", "atomic_write_json"): "utils.file_utils.atomic_write_json",
     # Resolves workshop_config.json and may read/retry/rebase it. Calling it
     # from an async handler was the source of several lock/I/O relays in this
@@ -215,12 +217,14 @@ RISKY_BARE_CALLS: dict[str, str] = {
     # atomic_write_text_async 早就存在（asyncio.to_thread 包一层），非测试代码里
     # 已有 77 处在用；缺的从来不是异步安全层，是调用点纪律。
     "atomic_write_text": "utils.file_utils.atomic_write_text",
+    "atomic_write_bytes": "utils.file_utils.atomic_write_bytes",
     "atomic_write_json": "utils.file_utils.atomic_write_json",
     "get_workshop_path": "utils.workshop_utils.get_workshop_path",
 }
 
 _ATOMIC_WRITE_LABELS = {
     "atomic_write_text": "utils.file_utils.atomic_write_text",
+    "atomic_write_bytes": "utils.file_utils.atomic_write_bytes",
     "atomic_write_json": "utils.file_utils.atomic_write_json",
 }
 
@@ -230,9 +234,9 @@ def _collect_atomic_write_aliases(
 ) -> tuple[dict[str, str], set[str]]:
     """Return direct-name aliases and module aliases for ``utils.file_utils``.
 
-    This intentionally resolves only the two atomic writers. General import
+    This intentionally resolves only the atomic-write family. General import
     resolution would turn the checker's name-based depth-1 pass into a much
-    larger cross-module analysis problem; these two names are high-signal and
+    larger cross-module analysis problem; these names are high-signal and
     are the guard this PR is specifically adding.
     """
     direct: dict[str, str] = {}

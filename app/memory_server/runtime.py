@@ -60,6 +60,7 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager
+from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from utils.host_origin_guard import HostOriginGuardMiddleware
@@ -547,11 +548,6 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         except Exception as e:
             logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
 
-        try:
-            await outbox_infra._replay_pending_outbox()
-        except Exception as e:
-            logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
-
         async def _reconcile_one(n: str):
             try:
                 applied = await reconciler.areconcile(n)
@@ -560,11 +556,29 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             except Exception as e:
                 logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
 
+        # 顺序要求：reconcile 必须整体跑完，才允许 outbox 补跑起任何 op。
+        # 两边都写同一批 view 文件，但它们的读点不对称：reconcile 的 handler
+        # 是在 EventLog 锁内 load→改→save 的，而 reflection/persona 的 live
+        # writer 是在锁**外**先把整份快照读进内存，再交给 record_and_save 写回
+        # （见 memory/reflection/evidence_flow.py）。所以只要两者重叠，就存在
+        # 「live writer 用重放之前的快照整覆盖掉刚修好的结果」的窗口 —— 而哨兵
+        # 此时已经越过那条事件，之后再也不会重放，是静默永久丢失。
+        # 补跑侧是 fire-and-forget 的后台 task（_replay_pending_outbox 只 await
+        # 扫描），reconcile 这边是 await 到底的：先跑 reconcile 就没有重叠。
+        # 反向依赖不存在：补跑的 op 走 record_and_save，append+apply+save 一体，
+        # 不需要 reconcile 再补应用一次；RFC 也明写了「不得依赖 outbox 副作用先
+        # 可见」（docs/design/memory-event-log-rfc.md 启动恢复一节）。
+        # 顺带的好处：补跑 op 读到的是已经修复完的 view，而不是崩溃残留态。
         if catgirl_names:
             await asyncio.gather(
                 *(_reconcile_one(n) for n in catgirl_names),
                 return_exceptions=True,
             )
+
+        try:
+            await outbox_infra._replay_pending_outbox()
+        except Exception as e:
+            logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
 
         async def _migrate_one(n: str):
             try:
@@ -583,23 +597,29 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             )
 
         if bootstrap_ok:
-            current_root_state = _config_manager.load_root_state()
-            if should_write_root_mode_normal_after_startup(current_root_state):
-                try:
-                    set_root_mode(
-                        _config_manager,
-                        ROOT_MODE_NORMAL,
-                        current_root=str(_config_manager.app_docs_dir),
-                        last_known_good_root=str(_config_manager.app_docs_dir),
-                        last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            # ⚠️ 判定和写必须在同一个锁内事务里。它们以前靠"中间没有 await"隐式原子，
+            # 但那只挡得住同一条事件循环上的协程 —— merged 模式下存储变更路由跟这段同
+            # 进程，而它的写现在跑在工作线程上，完全可以插在判定和写之间提交
+            # ROOT_MODE_MAINTENANCE_READONLY，随后被这里无条件写回 NORMAL，留下一个
+            # 没有写闸的待迁移。
+            with root_state_transaction():
+                current_root_state = _config_manager.load_root_state()
+                if should_write_root_mode_normal_after_startup(current_root_state):
+                    try:
+                        set_root_mode(
+                            _config_manager,
+                            ROOT_MODE_NORMAL,
+                            current_root=str(_config_manager.app_docs_dir),
+                            last_known_good_root=str(_config_manager.app_docs_dir),
+                            last_successful_boot_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        )
+                    except Exception as e:
+                        logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
+                else:
+                    logger.info(
+                        "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
+                        current_root_state.get("mode") or ROOT_MODE_NORMAL,
                     )
-                except Exception as e:
-                    logger.warning(f"[Memory] 写入启动成功标记失败: {e}")
-            else:
-                logger.info(
-                    "[Memory] 跳过 ROOT_MODE_NORMAL 写入，当前仍处于阻断态: %s",
-                    current_root_state.get("mode") or ROOT_MODE_NORMAL,
-                )
         else:
             logger.warning("[Memory] 跳过 ROOT_MODE_NORMAL 写入：cloudsave bootstrap 未成功")
 
@@ -617,6 +637,8 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             _spawn_background_task(refine_loops._periodic_persona_refine_loop())
             _spawn_background_task(refine_loops._periodic_reflection_refine_loop())
             _spawn_background_task(refine_loops._periodic_reflection_synthesis_loop())
+            # 群记忆系列 5/7: scoped 轻量 refine cron
+            _spawn_background_task(refine_loops._periodic_scoped_refine_loop())
             _memory_background_tasks_started = True
 
         # memory-enhancements P2: vector embedding warmup + backfill worker.

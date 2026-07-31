@@ -470,10 +470,10 @@ class QQSessionMemoryService:
         ).strip()
         labels = user_data.setdefault("group_member_memory_labels", {})
         # "(sender_id)" 后缀是这条 label 的**保底可追溯部分**，必须活过截断：
-        # 昵称既可能是群名片（用户自己改）也可能是后台设的备注名，两条路径
-        # 都没有长度或字符校验。先按剩余额度裁昵称再拼后缀，否则一个 64 字
-        # 以上的昵称会把后缀整个挤掉——服务端中和完只剩空串，那一批直接
-        # 422，同批其他成员跟着无限重试（Codex）。
+        # 昵称既可能是群名片（用户自己改）也可能是后台设的备注名；后者的
+        # 新写入已经校验，但历史配置仍可能含超长/结构字符。先按剩余额度裁
+        # 昵称再拼后缀，否则一个 64 字以上的历史昵称会把后缀整个挤掉——
+        # 服务端中和完只剩空串，那一批会拖住同批其他成员反复重试。
         suffix = f"({sender_id})"
         nickname_budget = self.MEMBER_LABEL_MAX_CHARS - len(suffix)
         if nickname and nickname_budget > 0:

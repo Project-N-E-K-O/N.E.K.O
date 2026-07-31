@@ -84,6 +84,15 @@ def test_atomic_write_text_is_flagged_too():
     assert "atomic_write_text" in out[0][2]
 
 
+def test_atomic_write_bytes_is_flagged_too():
+    out = _violations('''
+    async def handler(payload):
+        atomic_write_bytes(path, payload)
+    ''')
+    assert len(out) == 1
+    assert "atomic_write_bytes" in out[0][2]
+
+
 def test_a_named_sync_helper_that_writes_is_flagged_through_one_hop():
     # 这是绝大多数真实调用点的形状：协程调一个同步的 save_xxx，落盘藏在
     # helper 体内。

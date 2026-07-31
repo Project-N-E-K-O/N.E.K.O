@@ -23,10 +23,19 @@ threshold:
      while it has both old and new vectors in hand, scans for
      cosine > FACT_DEDUP_COSINE_THRESHOLD against existing facts of
      the same entity.  Hits go into ``facts_pending_dedup.json``.
+     The queue is **ids-only**: fact text never lands in the sidecar
+     file. Scoped (group/member-derived) fact text must not exist in
+     any store outside facts.json itself — the queue used to carry
+     denormalized ``candidate_text`` / ``existing_text`` copies, which
+     both leaked member content into a second plaintext file and went
+     stale when the authoritative row was edited between enqueue and
+     resolve.
   2. The idle-maintenance loop periodically calls ``aresolve(name)``,
-     which batches the queue into one LLM call asking the model to
-     classify each (candidate, existing) pair as ``merge`` / ``replace``
-     / ``keep_both``.
+     which re-reads the current text for each queued id pair from
+     facts.json (a row that disappeared meanwhile is consumed via the
+     stale-pair path) and batches the queue into one LLM call asking
+     the model to classify each (candidate, existing) pair as
+     ``merge`` / ``replace`` / ``keep_both``.
   3. Decisions are applied to facts.json under the FactStore's
      existing per-character file lock, then processed queue items
      are removed.
@@ -210,8 +219,15 @@ class FactDedupResolver:
 
         Each pair dict must contain:
           * candidate_id / existing_id — stable fact ids
-          * candidate_text / existing_text — for the LLM prompt
           * cosine — scoring transparency (debugging + threshold tuning)
+
+        The queue is ids-only by design: fact TEXT is deliberately not
+        persisted here. The authoritative copy lives in facts.json;
+        ``_aresolve_locked`` re-reads it by id when assembling the LLM
+        prompt. A text copy in this sidecar would put scoped (group /
+        member-derived) content in a second plaintext file — the same
+        content whose extraction / dead-letter logs only ever print
+        domain markers and lengths.
 
         The id-pair dedup matters because an oscillating worker (e.g.
         re-embed under a new model_id) would otherwise re-enqueue the
@@ -221,6 +237,15 @@ class FactDedupResolver:
             return 0
         async with self._get_alock(name):
             existing = await self.aload_pending(name)
+            # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
+            # （全部撞去重），只要发生了 scrub 就必须重写队列文件——否则
+            # 磁盘上的明文要等下一次真正的写入才消失。
+            scrubbed = False
+            for it in existing:
+                if 'candidate_text' in it or 'existing_text' in it:
+                    it.pop('candidate_text', None)
+                    it.pop('existing_text', None)
+                    scrubbed = True
             existing_keys = {
                 (it.get('candidate_id'), it.get('existing_id'))
                 for it in existing
@@ -234,8 +259,6 @@ class FactDedupResolver:
                 existing.append({
                     'candidate_id': p.get('candidate_id'),
                     'existing_id': p.get('existing_id'),
-                    'candidate_text': p.get('candidate_text', ''),
-                    'existing_text': p.get('existing_text', ''),
                     'entity': p.get('entity'),
                     'subject_key': p.get('subject_key'),
                     'scope': p.get('scope'),
@@ -244,6 +267,8 @@ class FactDedupResolver:
                 })
                 existing_keys.add(key)
                 appended += 1
+            if scrubbed and not appended:
+                await self._asave_pending(name, existing)
             if appended:
                 if not await self._asave_pending(name, existing):
                     # Maintenance-mode skip: the queue file was NOT
@@ -346,7 +371,6 @@ class FactDedupResolver:
             if bucket is None:
                 continue
             entity = f.get('entity') or 'master'
-            ctext = f.get('text', '')
             collected = 0
             # Sort siblings by cosine descending so we capture the
             # strongest pair first; the per_fact_limit cap then keeps
@@ -397,11 +421,11 @@ class FactDedupResolver:
             for cos, sib in scored:
                 if collected >= per_fact_limit:
                     break
+                # ids-only（隐私收口）：pair 不携带 text，resolve 侧按 id
+                # 从 facts.json 现取——队列文件因此不落任何成员衍生原文。
                 results.append({
                     'candidate_id': cid,
                     'existing_id': sib.get('id'),
-                    'candidate_text': ctext,
-                    'existing_text': sib.get('text', ''),
                     'entity': entity,
                     # 隔离域随 pair 入队（legacy 为 None/None）：resolve 侧
                     # 按域锁批，跨隔离域的 fact 文本不得共现在同一个 prompt。
@@ -444,6 +468,23 @@ class FactDedupResolver:
         if not pending:
             return 0
 
+        # 队列 ids-only 迁移 scrub：老 schema 条目落盘携带 candidate_text/
+        # existing_text 明文副本（成员衍生内容），一经发现就地剥掉并立即
+        # 重写队列文件——不能等到批次消费时才顺带清，否则轮不上的长尾条
+        # 目会让明文在磁盘上一直躺到 dead-letter。维护态写失败无妨：内存
+        # 里已 scrub，本轮 prompt 不受影响，下轮重试重写。
+        scrubbed = False
+        for it in pending:
+            if 'candidate_text' in it or 'existing_text' in it:
+                it.pop('candidate_text', None)
+                it.pop('existing_text', None)
+                scrubbed = True
+        if scrubbed:
+            await self._asave_pending(name, pending)
+            logger.info(
+                "[FactDedup] %s: 队列明文字段 scrub 完成（ids-only 迁移）", name,
+            )
+
         # Liveness：过滤已达 MEMORY_LIVENESS_MAX_ATTEMPTS 的 dead-letter pair
         # （防御性——_abump_dedup_attempts_and_dead_letter_locked 命中阈值时直接
         # 从 queue 删除，正常路径不会让 attempts ≥ MAX 的 entry 还留着）。
@@ -451,21 +492,21 @@ class FactDedupResolver:
         # 单批锁定单一隔离域（对偶 corrections 的 batch_domain 锁）：legacy
         # 私聊为一域、每个 subject (key, scope) 各一域；跨域 pair 留队等
         # 下一轮 FIFO 轮到。新条目带 subject_key/scope 直接分类；升级前的
-        # 老队列条目查活体 fact 行兜底分类；两行都消失/损坏的条目按既有
-        # disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
+        # 老队列条目查活体 fact 行兜底分类。
+        #
+        # prompt 文本按 id 从 facts.json 现取（队列 ids-only）：任一侧行已
+        # 消失（被 absorb 归档 / 上一轮 merge 掉 / subject 归档）的 pair 按
+        # 既有 disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
         from memory.scopes import is_legacy_private_entry, subject_from_entry
 
-        facts_by_id: dict | None = None
+        rows = await self._fact_store.aload_facts(name)
+        facts_by_id: dict = {
+            r.get('id'): r for r in rows if isinstance(r, dict) and r.get('id')
+        }
 
-        async def _classify_domain(it: dict) -> tuple | None:
-            nonlocal facts_by_id
+        def _classify_domain(it: dict) -> tuple | None:
             if 'subject_key' in it:
                 return (it.get('subject_key'), it.get('scope'))
-            if facts_by_id is None:
-                rows = await self._fact_store.aload_facts(name)
-                facts_by_id = {
-                    r.get('id'): r for r in rows if isinstance(r, dict)
-                }
             for fid in (it.get('candidate_id'), it.get('existing_id')):
                 row = facts_by_id.get(fid)
                 if row is None:
@@ -478,12 +519,21 @@ class FactDedupResolver:
             return None
 
         batch: list[dict] = []
+        # 与 batch 平行的 (candidate_text, existing_text)。独立结构而不是
+        # 临时挂在 item 上：batch 条目在失败路径会带着 resolve_attempts 原样
+        # 写回队列文件，挂上去的文本会跟着落盘，把 ids-only 改回去。
+        batch_texts: list[tuple[str, str]] = []
         stale_keys: set[tuple] = set()
         batch_domain: tuple | None = None
         for it in pending:
             if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                 continue
-            domain = await _classify_domain(it)
+            cand_row = facts_by_id.get(it.get('candidate_id'))
+            exist_row = facts_by_id.get(it.get('existing_id'))
+            if cand_row is None or exist_row is None:
+                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                continue
+            domain = _classify_domain(it)
             if domain is None:
                 stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
                 continue
@@ -492,6 +542,9 @@ class FactDedupResolver:
             elif domain != batch_domain:
                 continue
             batch.append(it)
+            batch_texts.append(
+                (cand_row.get('text', '') or '', exist_row.get('text', '') or '')
+            )
             if len(batch) >= FACT_DEDUP_BATCH_LIMIT:
                 break
         if stale_keys:
@@ -502,16 +555,18 @@ class FactDedupResolver:
             # 落盘失败（维护态）无妨：下一轮重新识别重新丢。
             await self._asave_pending(name, kept)
             logger.info(
-                "[FactDedup] %s: 出队 %d 对无法归域的陈旧候选",
+                "[FactDedup] %s: 出队 %d 对行已消失/无法归域的陈旧候选",
                 name, len(stale_keys),
             )
         if not batch:
             return 0
         pairs_text = "\n".join(
-            f"[{i}] candidate: {item.get('candidate_text', '')}"
-            f" | existing: {item.get('existing_text', '')}"
+            f"[{i}] candidate: {cand_text}"
+            f" | existing: {exist_text}"
             f" | cosine={item.get('cosine', 0.0):.3f}"
-            for i, item in enumerate(batch)
+            for i, (item, (cand_text, exist_text)) in enumerate(
+                zip(batch, batch_texts)
+            )
         )
         prompt = (
             get_fact_dedup_prompt(get_global_language())

@@ -30,6 +30,7 @@ from .migration import (
     load_storage_migration,
 )
 from utils.logger_config import get_module_logger
+from utils.root_state_lock import root_state_transaction
 
 logger = get_module_logger(__name__)
 
@@ -185,11 +186,21 @@ def _reconcile_legacy_cleanup_pending_root_state(
     if bool(root_state.get("legacy_cleanup_pending")) == bool(derived_legacy_cleanup_pending):
         return root_state
 
-    updated_root_state = dict(root_state)
-    updated_root_state["legacy_cleanup_pending"] = bool(derived_legacy_cleanup_pending)
     try:
-        config_manager.save_root_state(updated_root_state)
-        return updated_root_state
+        with root_state_transaction():
+            # 锁内重读一次，别拿调用方手里那份 pre-image 去盖。调用方 load 到这里之间
+            # 变更路由可能已经写过一轮 root_state（回滚就是典型），直接 dict(root_state)
+            # 会把那一轮整份抹掉——PR #2598 里"回滚被 /status 盖掉"就是这个形状。
+            current_state = config_manager.load_root_state()
+            if not isinstance(current_state, dict):
+                current_state = root_state
+            if bool(current_state.get("legacy_cleanup_pending")) == bool(derived_legacy_cleanup_pending):
+                return current_state
+
+            updated_root_state = dict(current_state)
+            updated_root_state["legacy_cleanup_pending"] = bool(derived_legacy_cleanup_pending)
+            config_manager.save_root_state(updated_root_state)
+            return updated_root_state
     except Exception as exc:
         logger.warning(
             "_reconcile_legacy_cleanup_pending_root_state: config_manager.save_root_state failed: %s",
@@ -210,7 +221,25 @@ def _should_require_selection(config_manager, *, current_root: Path, anchor_root
     )
 
 
-def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
+def build_storage_location_bootstrap_payload(
+    config_manager,
+    *,
+    persist_reconcile: bool = False,
+) -> dict[str, Any]:
+    """Build the storage-location bootstrap payload.
+
+    ``persist_reconcile`` decides whether a drifted ``legacy_cleanup_pending``
+    flag is written back to root_state.json. It defaults to False so that read
+    endpoints stay read-only: this payload backs ``GET /bootstrap``,
+    ``GET /status`` (the storage page polls it on a 1200ms timer), ``GET /diagnostics``,
+    ``GET /retained-source`` and ``POST /exit``, none of which hold
+    ``_storage_mutation_lock``. A write from there races the mutation routes'
+    rollback and can clobber it wholesale, which is what stopped the offload in
+    PR #2598. Only callers already holding that lock pass True.
+
+    The returned payload carries the freshly derived flag either way — turning
+    persistence off changes what lands on disk, not what the client sees.
+    """
     current_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
     display_current_root = Path(
         getattr(config_manager, "reported_current_root", current_root)
@@ -264,11 +293,12 @@ def build_storage_location_bootstrap_payload(config_manager) -> dict[str, Any]:
         current_root=current_root,
         anchor_root=anchor_root,
     )
-    root_state = _reconcile_legacy_cleanup_pending_root_state(
-        config_manager,
-        root_state=root_state,
-        derived_legacy_cleanup_pending=legacy_cleanup_pending,
-    )
+    if persist_reconcile:
+        root_state = _reconcile_legacy_cleanup_pending_root_state(
+            config_manager,
+            root_state=root_state,
+            derived_legacy_cleanup_pending=legacy_cleanup_pending,
+        )
 
     return {
         "current_root": _normalize_path(display_current_root),
