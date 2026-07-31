@@ -51,6 +51,7 @@ __all__ = [
     "set_recent_pending_unlocked",
     "merge_recent_pending_snapshot",
     "redirect_recent_paths",
+    "restore_recent_redirects",
     "write_recent_payload",
     "write_recent_payload_unlocked",
 ]
@@ -209,16 +210,36 @@ def redirect_recent_paths(source_paths: list[Any], target_path: Any) -> None:
                 _REDIRECTS[source_key] = target_key
 
 
-def clear_recent_redirects(paths: list[Any]) -> None:
+def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
     """Forget redirects when an authoritative restore/delete reuses old paths."""
     keys = {_lock_key(path) for path in paths}
+
+    def _chain_touches_reused_path(start_key: str) -> bool:
+        current = start_key
+        seen: set[str] = set()
+        while current not in seen:
+            if current in keys:
+                return True
+            seen.add(current)
+            target = _REDIRECTS.get(current)
+            if target is None:
+                return False
+            current = target
+        return False
+
     with _LOCKS_GUARD:
         remove_keys = {
             key for key in _REDIRECTS
-            if key in keys or _resolve_key_unlocked(key) in keys
+            if _chain_touches_reused_path(key)
         }
-        for key in remove_keys:
-            _REDIRECTS.pop(key, None)
+        removed = {key: _REDIRECTS.pop(key) for key in remove_keys}
+    return removed
+
+
+def restore_recent_redirects(redirects: dict[str, str]) -> None:
+    """Restore redirects removed by a transaction that subsequently rolled back."""
+    with _LOCKS_GUARD:
+        _REDIRECTS.update(redirects)
 
 
 def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:

@@ -44,6 +44,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, is_write_fence_active
 from utils.file_utils import read_json_async
 from utils.config_manager import set_reserved
 from utils.character_name import PROFILE_NAME_MAX_UNITS, validate_character_name
+from utils.character_memory import clear_character_recent_redirects
 from config import CHARACTER_RESERVED_FIELDS
 
 
@@ -607,6 +608,11 @@ async def sync_workshop_character_cards(
                         return _write_fence_blocked_result()
 
                     logger.info(f"sync_workshop_character_cards: 已保存，新增 {added_count} 个角色卡，回填 {backfilled_face_count} 个封面")
+
+                    for added_name in actually_added_names:
+                        await asyncio.to_thread(
+                            clear_character_recent_redirects, config_mgr, added_name,
+                        )
 
                     for added_name in actually_added_names:
                         _append_unique(added_character_names, added_name)

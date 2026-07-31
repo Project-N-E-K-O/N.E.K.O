@@ -546,6 +546,86 @@ def test_character_rename_pending_snapshot_restores_on_rollback(tmp_path):
     assert recent_file.get_recent_pending(new_path) == []
 
 
+def test_rename_into_reused_name_invalidates_obsolete_redirect(tmp_path):
+    """A rename target reused later must own its physical recent file."""
+    from utils.character_memory import rename_character_memory_storage
+
+    reused_path = tmp_path / "A" / "recent.json"
+    former_target = tmp_path / "B" / "recent.json"
+    source_path = tmp_path / "C" / "recent.json"
+    former_target.parent.mkdir()
+    source_path.parent.mkdir()
+    _write_disk(str(former_target), [HumanMessage(content="belongs-to-B")])
+    _write_disk(str(source_path), [HumanMessage(content="belongs-to-C")])
+    recent_file.redirect_recent_paths([reused_path], former_target)
+
+    class _RenameConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    rename_character_memory_storage(_RenameConfig(), "C", "A")
+    recent_file.write_recent_payload(reused_path, [{"owner": "new-A"}])
+
+    with open(reused_path, encoding="utf-8") as handle:
+        assert json.load(handle) == [{"owner": "new-A"}]
+    assert [m.content for m in _read_disk(str(former_target))] == ["belongs-to-B"]
+
+
+def test_rename_rollback_restores_target_redirect(tmp_path):
+    """A failed rename must preserve routing for the still-unused target name."""
+    from utils.character_memory import (
+        rename_character_memory_storage,
+        rollback_character_recent_rename,
+    )
+
+    reused_path = tmp_path / "A" / "recent.json"
+    former_target = tmp_path / "B" / "recent.json"
+    source_path = tmp_path / "C" / "recent.json"
+    former_target.parent.mkdir()
+    source_path.parent.mkdir()
+    _write_disk(str(former_target), [HumanMessage(content="belongs-to-B")])
+    _write_disk(str(source_path), [HumanMessage(content="belongs-to-C")])
+    recent_file.redirect_recent_paths([reused_path], former_target)
+
+    class _RenameConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    result = rename_character_memory_storage(_RenameConfig(), "C", "A")
+    rollback_character_recent_rename(result)
+    recent_file.write_recent_payload(reused_path, [{"owner": "still-B"}])
+
+    with open(former_target, encoding="utf-8") as handle:
+        assert json.load(handle) == [{"owner": "still-B"}]
+
+
+def test_new_character_name_invalidates_obsolete_redirect(tmp_path):
+    """Every creation path can detach a name that was previously renamed away."""
+    from utils.character_memory import clear_character_recent_redirects
+
+    reused_path = tmp_path / "A" / "recent.json"
+    former_target = tmp_path / "B" / "recent.json"
+    older_source = tmp_path / "X" / "recent.json"
+    former_target.parent.mkdir()
+    _write_disk(str(former_target), [HumanMessage(content="belongs-to-B")])
+    recent_file.redirect_recent_paths([older_source], reused_path)
+    recent_file.redirect_recent_paths([reused_path], former_target)
+
+    class _CreateConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    clear_character_recent_redirects(_CreateConfig(), "A")
+    recent_file.write_recent_payload(reused_path, [{"owner": "new-A"}])
+    recent_file.write_recent_payload(older_source, [{"owner": "old-X"}])
+
+    with open(reused_path, encoding="utf-8") as handle:
+        assert json.load(handle) == [{"owner": "new-A"}]
+    with open(older_source, encoding="utf-8") as handle:
+        assert json.load(handle) == [{"owner": "old-X"}]
+    assert [m.content for m in _read_disk(str(former_target))] == ["belongs-to-B"]
+
+
 def test_character_rename_holds_recent_locks_across_physical_move(tmp_path, monkeypatch):
     """The directory move and pending migration form one recent-file transaction."""
     import utils.character_memory as character_memory

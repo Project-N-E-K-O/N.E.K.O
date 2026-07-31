@@ -29,6 +29,7 @@ from utils.recent_file import (
     recent_file_locks,
     redirect_recent_paths,
     release_recent_file_locks,
+    restore_recent_redirects,
     set_recent_pending_unlocked,
     write_recent_payload_unlocked,
 )
@@ -287,7 +288,10 @@ def rename_character_memory_storage(
     target_recent = runtime_target_dir / "recent.json"
     recent_paths = list(dict.fromkeys([*pending_sources, target_recent]))
     held_locks = acquire_recent_file_locks(recent_paths)
+    target_redirect_snapshot: dict[str, str] = {}
     try:
+        # 目标角色名可能曾被改走；复用该名字前必须切断旧跳转，否则新角色会写进旧目标。
+        target_redirect_snapshot = clear_recent_redirects([target_recent])
         pending_snapshot = {
             path: deepcopy(get_recent_pending_unlocked(path))
             for path in recent_paths
@@ -332,6 +336,7 @@ def rename_character_memory_storage(
                 "pending_snapshot": pending_snapshot,
                 "recent_paths": recent_paths,
                 "redirect_sources": pending_sources,
+                "target_redirect_snapshot": target_redirect_snapshot,
                 "held_locks": held_locks if keep_recent_locks else [],
             },
         }
@@ -339,6 +344,7 @@ def rename_character_memory_storage(
             release_recent_file_locks(held_locks)
         return result
     except BaseException:
+        restore_recent_redirects(target_redirect_snapshot)
         release_recent_file_locks(held_locks)
         raise
 
@@ -362,11 +368,17 @@ def rollback_character_recent_rename(result: dict[str, Any]) -> None:
         held_locks = acquire_recent_file_locks(recent_paths)
     try:
         clear_recent_redirects(transaction.get("redirect_sources") or [])
+        restore_recent_redirects(transaction.get("target_redirect_snapshot") or {})
         for path, messages in snapshot.items():
             set_recent_pending_unlocked(path, messages)
     finally:
         transaction["held_locks"] = []
         release_recent_file_locks(held_locks)
+
+
+def clear_character_recent_redirects(config_manager, character_name: str) -> None:
+    """Detach obsolete path redirects before a newly created name starts writing."""
+    clear_recent_redirects(list_character_recent_paths(config_manager, character_name))
 
 
 def delete_character_memory_storage(

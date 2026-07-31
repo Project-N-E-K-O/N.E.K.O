@@ -52,6 +52,7 @@ from ..shared_state import (
 from ..workshop_router import _ugc_sync_lock
 from ..agent_router import force_disable_agent_for_character_switch
 from utils.character_memory import (
+    clear_character_recent_redirects,
     delete_character_memory_storage,
     finalize_character_recent_rename,
     list_character_memory_paths,
@@ -1032,6 +1033,7 @@ async def add_catgirl(request: Request):
     default_free_voice_id = _get_new_catgirl_default_voice_id()
     set_reserved(catgirl_data, 'voice_id', default_free_voice_id)
     await _config_manager.asave_characters(characters)
+    await asyncio.to_thread(clear_character_recent_redirects, _config_manager, key)
     pending_mark_ok, pending_mark_error = await _mark_new_character_greeting_pending_safe(_config_manager, key, "create")
 
     # Fast path：新增只需为 `key` 这一个 catgirl 分配资源 + 启动线程，不影响其它角色。
