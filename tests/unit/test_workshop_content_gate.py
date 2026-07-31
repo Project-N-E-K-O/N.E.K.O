@@ -856,6 +856,14 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                         state.pop(target.id, None)
             elif isinstance(node, ast.If):
                 state = merge(after(node.body, state), after(node.orelse, state))
+            elif isinstance(node, ast.Try):
+                body_state = after(node.body, state)
+                paths = [after(node.orelse, body_state)]
+                paths.extend(after(handler.body, state) for handler in node.handlers)
+                merged = paths[0]
+                for path in paths[1:]:
+                    merged = merge(merged, path)
+                state = after(node.finalbody, merged)
         return state
 
     return after(
@@ -1293,7 +1301,7 @@ def _claiming_worker_inventory(
         claiming.update(wrappers)
 
 
-def _claiming_decorated_functions(functions) -> set[str]:
+def _claiming_decorator_names(functions) -> set[str]:
     claiming_decorators = set()
     for func in functions:
         helpers = [
@@ -1315,6 +1323,17 @@ def _claiming_decorated_functions(functions) -> set[str]:
             for node in _walk_own_scope(func)
         ):
             claiming_decorators.add(func.name)
+    return claiming_decorators
+
+
+def _claiming_decorated_functions(
+    functions, claiming_decorators: set[str] | None = None
+) -> set[str]:
+    claiming_decorators = (
+        _claiming_decorator_names(functions)
+        if claiming_decorators is None
+        else claiming_decorators
+    )
     return {
         func.name
         for func in functions
@@ -1445,16 +1464,83 @@ def _resolve_imported_module(
     return matches[0] if len(matches) == 1 else None
 
 
+def _walk_module_scope(statements):
+    """Module bindings, descending through control flow but not defs/classes."""
+    for node in statements:
+        yield node
+        if isinstance(node, ast.If):
+            yield from _walk_module_scope(node.body)
+            yield from _walk_module_scope(node.orelse)
+        elif isinstance(node, (ast.For, ast.AsyncFor)):
+            yield from _walk_module_scope(node.body)
+            yield from _walk_module_scope(node.orelse)
+        elif isinstance(node, ast.With):
+            yield from _walk_module_scope(node.body)
+        elif isinstance(node, ast.Try):
+            yield from _walk_module_scope(node.body)
+            for handler in node.handlers:
+                yield from _walk_module_scope(handler.body)
+            yield from _walk_module_scope(node.orelse)
+            yield from _walk_module_scope(node.finalbody)
+
+
+def _module_to_thread_aliases(tree) -> set[str]:
+    def merge(left, right):
+        return left & right
+
+    def after(statements, state):
+        state = set(state)
+        for node in statements:
+            if isinstance(node, ast.ImportFrom) and node.module == 'asyncio':
+                state.update(
+                    alias.asname or alias.name
+                    for alias in node.names
+                    if alias.name == 'to_thread'
+                )
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                is_alias = isinstance(value, ast.Name) and value.id in state
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if is_alias:
+                        state.add(target.id)
+                    else:
+                        state.discard(target.id)
+            elif isinstance(node, ast.If):
+                state = merge(after(node.body, state), after(node.orelse, state))
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                state = merge(state, after(node.body, state))
+                state = after(node.orelse, state)
+            elif isinstance(node, ast.With):
+                state = after(node.body, state)
+            elif isinstance(node, ast.Try):
+                body_state = after(node.body, state)
+                paths = [after(node.orelse, body_state)]
+                paths.extend(after(handler.body, state) for handler in node.handlers)
+                merged = paths[0]
+                for path in paths[1:]:
+                    merged = merge(merged, path)
+                state = after(node.finalbody, merged)
+        return state
+
+    return after(tree.body, set())
+
+
 def _module_level_claiming_workers(trees):
     """Find owners per module/class scope, including direct import aliases."""
     scope_functions = {}
     class_base_nodes = {}
     module_trees = dict(trees)
+    module_nodes = {
+        module: list(_walk_module_scope(tree.body)) for module, tree in trees
+    }
     for module, tree in trees:
         scope_functions[(module, None)] = [
-            node for node in tree.body if isinstance(node, ast.FunctionDef)
+            node for node in module_nodes[module] if isinstance(node, ast.FunctionDef)
         ]
-        for node in tree.body:
+        for node in module_nodes[module]:
             if isinstance(node, ast.ClassDef):
                 class_scope = (module, node.name)
                 scope_functions[class_scope] = [
@@ -1464,7 +1550,9 @@ def _module_level_claiming_workers(trees):
 
     claiming = {}
     generators = {}
+    decorators = {}
     for scope, functions in scope_functions.items():
+        decorators[scope] = _claiming_decorator_names(functions)
         claiming[scope], generators[scope] = _claiming_worker_inventory(
             functions,
             seed_claiming=_claiming_decorated_functions(functions),
@@ -1475,16 +1563,12 @@ def _module_level_claiming_workers(trees):
 
     module_aliases = {module: {} for module in module_names}
     imported_classes = {module: {} for module in module_names}
-    to_thread_aliases = {module: set() for module in module_names}
+    to_thread_aliases = {
+        module: _module_to_thread_aliases(tree) for module, tree in trees
+    }
     for module, tree in trees:
-        for node in tree.body:
+        for node in module_nodes[module]:
             if isinstance(node, ast.ImportFrom):
-                if node.level == 0 and node.module == 'asyncio':
-                    to_thread_aliases[module].update(
-                        alias.asname or alias.name
-                        for alias in node.names
-                        if alias.name == 'to_thread'
-                    )
                 direct_source = _resolve_imported_module(
                     module, node, module_names
                 )
@@ -1533,7 +1617,8 @@ def _module_level_claiming_workers(trees):
             scope = (module, None)
             imported_claiming = set(claiming[scope])
             imported_generators = set(generators[scope])
-            for node in tree.body:
+            visible_decorators = set(decorators[scope])
+            for node in module_nodes[module]:
                 if not isinstance(node, ast.ImportFrom) or not node.module:
                     continue
                 source_module = _resolve_imported_module(
@@ -1548,6 +1633,8 @@ def _module_level_claiming_workers(trees):
                         imported_claiming.add(local_name)
                     if alias.name in generators.get(source_scope, set()):
                         imported_generators.add(local_name)
+                    if alias.name in decorators.get(source_scope, set()):
+                        visible_decorators.add(local_name)
             attribute_claiming = {
                 (local_alias, name)
                 for local_alias, source_module in module_aliases[module].items()
@@ -1560,7 +1647,7 @@ def _module_level_claiming_workers(trees):
             }
             while True:
                 aliases_changed = False
-                for node in tree.body:
+                for node in module_nodes[module]:
                     if not isinstance(node, (ast.Assign, ast.AnnAssign)):
                         continue
                     value = node.value
@@ -1596,7 +1683,9 @@ def _module_level_claiming_workers(trees):
                     break
             next_claiming, next_generators = _claiming_worker_inventory(
                 scope_functions[scope],
-                imported_claiming,
+                imported_claiming | _claiming_decorated_functions(
+                    scope_functions[scope], visible_decorators
+                ),
                 imported_generators,
                 attribute_claiming,
                 attribute_generators,
@@ -1605,7 +1694,10 @@ def _module_level_claiming_workers(trees):
                 claiming[scope] = next_claiming
                 generators[scope] = next_generators
                 changed = True
-            for node in tree.body:
+            if visible_decorators != decorators[scope]:
+                decorators[scope] = visible_decorators
+                changed = True
+            for node in module_nodes[module]:
                 if not isinstance(node, ast.ClassDef):
                     continue
                 class_scope = (module, node.name)
@@ -1626,9 +1718,12 @@ def _module_level_claiming_workers(trees):
                 visible_generators = (
                     generators[scope] | inherited_generators
                 ) - local_names
+                decorated_methods = _claiming_decorated_functions(
+                    scope_functions[class_scope], decorators[scope]
+                )
                 all_claiming, all_generators = _claiming_worker_inventory(
                     scope_functions[class_scope],
-                    visible_claiming,
+                    visible_claiming | decorated_methods,
                     visible_generators,
                     attribute_claiming,
                     attribute_generators,
@@ -1717,6 +1812,10 @@ def _class_protocol_claim(
         for method in ('__enter__', '__exit__', '__aenter__', '__aexit__'):
             if method in methods:
                 return scope, method
+        return None
+    if stored_class and isinstance(parent, ast.Call) and parent.func is node:
+        if '__call__' in claiming_by_scope.get(stored_class, set()):
+            return stored_class, '__call__'
         return None
     if not isinstance(parent, ast.Call) or parent.func is not node:
         return None
@@ -2057,6 +2156,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    from asyncio import to_thread as local_offload\n'
         '    await local_offload(_claiming_wrapper)\n'
         '\n'
+        'dispatch = offload\n'
+        'dispatch = dispatcher\n'
+        'async def rebound_imported_to_thread():\n'
+        '    await dispatch(_claiming_wrapper)\n'
+        '\n'
         'async def direct():\n'
         '    _claiming_wrapper()\n'
         '\n'
@@ -2245,6 +2349,16 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    pass\n'
         'async def decorated_handler():\n'
         '    decorated_work()\n'
+        'class CallableService:\n'
+        '    def __call__(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        'async def callable_instance_direct():\n'
+        '    service = CallableService()\n'
+        '    service()\n'
+        'async def callable_instance_offloaded():\n'
+        '    service = CallableService()\n'
+        '    await asyncio.to_thread(service)\n'
     )
     functions = {
         node.name: node
@@ -2269,6 +2383,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('offloaded') == []
     assert module_offenders('imported_to_thread') == []
     assert module_offenders('local_imported_to_thread') == []
+    assert module_offenders('rebound_imported_to_thread'), (
+        'module-level to_thread alias 被普通 dispatcher 重绑定后必须失效'
+    )
     assert module_offenders('direct'), (
         '模块级 claim owner 的同步 wrapper 被协程直调时也必须报出来'
     )
@@ -2394,6 +2511,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('decorated_handler'), (
         '返回 claim-owning wrapper 的 local decorator 必须把 ownership 传给 work'
     )
+    assert module_offenders('callable_instance_direct'), (
+        'stored callable instance 的 claim-owning __call__ 必须被发现'
+    )
+    assert module_offenders('callable_instance_offloaded') == []
     assert module_offenders('safe_attribute_handler') == [], (
         'Safe().owner() 不能因 tail name 与模块 owner 相同而污染 wrapper'
     )
@@ -2553,6 +2674,29 @@ def test_nested_router_imports_preserve_claim_ownership():
         '    from .workers.publish import owner\n'
         '    owner()\n'
     )
+    conditional = ast.parse(
+        'if enabled:\n'
+        '    def conditional_owner():\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        'async def conditional_handler():\n'
+        '    conditional_owner()\n'
+    )
+    decorator_source = ast.parse(
+        'def with_claim(func):\n'
+        '    def wrapped(*args):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            return func(*args)\n'
+        '    return wrapped\n'
+    )
+    decorated_consumer = ast.parse(
+        'from .decorators import with_claim\n'
+        '@with_claim\n'
+        'def decorated_work():\n'
+        '    pass\n'
+        'async def decorated_handler():\n'
+        '    decorated_work()\n'
+    )
     base = ast.parse(
         'class Base:\n'
         '    def worker(self):\n'
@@ -2583,6 +2727,9 @@ def test_nested_router_imports_preserve_claim_ownership():
         ('workers.publish', source),
         ('workers.consumer', consumer),
         ('consumer', local_consumer),
+        ('conditional', conditional),
+        ('decorators', decorator_source),
+        ('decorated_consumer', decorated_consumer),
         ('workers.base', base),
         ('derived', derived),
     ])
@@ -2628,6 +2775,21 @@ def test_nested_router_imports_preserve_claim_ownership():
         derived_functions['imported_class_offloaded'],
         'derived', None, claiming, generators, aliases, import_facts,
     ) == []
+    conditional_handler = next(
+        node for node in conditional.body if isinstance(node, ast.AsyncFunctionDef)
+    )
+    assert _scope_claiming_names_called_on_loop(
+        conditional_handler,
+        'conditional', None, claiming, generators, aliases, import_facts,
+    ), 'module control flow 下定义的 claim owner 必须进入 inventory'
+    decorated_handler = next(
+        node for node in decorated_consumer.body
+        if isinstance(node, ast.AsyncFunctionDef)
+    )
+    assert _scope_claiming_names_called_on_loop(
+        decorated_handler,
+        'decorated_consumer', None, claiming, generators, aliases, import_facts,
+    ), 'imported claim-taking decorator 必须传播到 decorated function'
 
 
 def test_workshop_router_discovery_is_recursive(tmp_path):
@@ -2850,6 +3012,15 @@ def _operation_aliases(
             if right.get(name) == value
         }
 
+    def merge_possible(left, right):
+        merged = dict(left)
+        for name, value in right.items():
+            if name not in merged:
+                merged[name] = value
+            elif merged[name] != value:
+                merged.pop(name)
+        return merged
+
     def after(statements, state):
         state = dict(state)
         for node in statements:
@@ -2883,8 +3054,11 @@ def _operation_aliases(
                         state.pop(target.id, None)
             elif isinstance(node, ast.If):
                 state = merge(after(node.body, state), after(node.orelse, state))
-            elif isinstance(node, (ast.With, ast.For, ast.AsyncFor)):
+            elif isinstance(node, ast.With):
                 state = after(node.body, state)
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                state = merge_possible(state, after(node.body, state))
+                state = after(node.orelse, state)
             elif isinstance(node, ast.Try):
                 paths = [after(node.body, state)]
                 paths.extend(after(handler.body, state) for handler in node.handlers)
@@ -3077,6 +3251,8 @@ def _assigned_names(node) -> set[str]:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
     elif isinstance(node, (ast.For, ast.AsyncFor)):
         targets = [node.target]
+    elif isinstance(node, ast.comprehension):
+        targets = [node.target]
     elif isinstance(node, ast.NamedExpr):
         targets = [node.target]
     return {
@@ -3123,6 +3299,18 @@ def _operation_folder_origins(
 ) -> set[str]:
     folder = _operation_folder_expression(operation, name, parents)
     return _expression_path_origins(folder, func, operation.lineno)
+
+
+def _stays_within_claimed_tree(
+    operation, name: str, parents: dict[int, ast.AST]
+) -> bool:
+    folder = _operation_folder_expression(operation, name, parents)
+    if folder is None:
+        return False
+    return not any(
+        isinstance(node, ast.Attribute) and node.attr in {'parent', 'parents'}
+        for node in ast.walk(folder)
+    )
 
 
 def _unclaimed_folder_operations(
@@ -3271,7 +3459,14 @@ def _unclaimed_folder_operations(
             claim_target_names,
             claim_pairs,
             [
-                (inner.lineno, _assigned_names(inner))
+                (
+                    getattr(
+                        inner,
+                        'lineno',
+                        getattr(getattr(inner, 'target', None), 'lineno', -1),
+                    ),
+                    _assigned_names(inner),
+                )
                 for statement in block.body
                 for inner in ast.walk(statement)
                 if _assigned_names(inner)
@@ -3333,6 +3528,7 @@ def _unclaimed_folder_operations(
             continue
         folder_key = _operation_folder_key(child, name, parents)
         folder_origins = _operation_folder_origins(child, name, parents, func)
+        stays_within_tree = _stays_within_claimed_tree(child, name, parents)
         folder_rule_kinds = _FOLDER_OPERATION_CLAIMS.get(name)
         if (
             name in _CONTENT_PATH_MUTATION_METHODS
@@ -3353,12 +3549,13 @@ def _unclaimed_folder_operations(
                 )
                 or (
                     folder_rule_kinds is not None
+                    and stays_within_tree
                     and bool(folder_origins & target_names)
                     and bool(required_kinds & kinds)
                 )
             )
             and not any(
-                line < child.lineno and names & target_names
+                line <= child.lineno and names & target_names
                 for line, names in rebindings
             )
             for kinds, targets, target_names, pairs, rebindings, scope in claimed_scopes
@@ -3534,6 +3731,16 @@ def test_the_claim_guard_resolves_operation_aliases():
     assert _unclaimed_folder_operations(reassigned, 'publish') == [], (
         'protected operation alias 被普通 callable 重赋值后必须失效'
     )
+    loop_reassigned = ast.parse(
+        'def publish(items):\n'
+        '    callback = _publish_workshop_item\n'
+        '    for item in items:\n'
+        '        callback = harmless\n'
+        '    callback(a, b, c, folder)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(loop_reassigned, 'publish'), (
+        'zero-iteration loop 必须保留进入 loop 前的 protected alias 路径'
+    )
 
 
 def test_the_claim_guard_discovers_content_path_mutations():
@@ -3615,6 +3822,16 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with claim_content_folder(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    try_reassigned_factory = ast.parse(
+        'def publish():\n'
+        '    factory = claim_content_folder\n'
+        '    try:\n'
+        '        factory = nullcontext\n'
+        '    except Exception:\n'
+        '        pass\n'
+        '    with factory(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
 
     assert _unclaimed_folder_operations(fully_guarded, 'preview_cards') == []
     assert _unclaimed_folder_operations(conditionally_guarded, 'preview_cards'), (
@@ -3634,6 +3851,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(parameter_shadow, 'publish'), (
         '同名参数会遮蔽仓库 claim factory，不能被当成真实占用'
+    )
+    assert _unclaimed_folder_operations(try_reassigned_factory, 'publish'), (
+        'claim factory alias 必须在 try 的全部可达路径上一致'
     )
 
 
@@ -3754,6 +3974,17 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
         '    with claim_content_folder(content_folder, purpose=p):\n'
         '        shutil.rmtree(content_folder)\n'
     ).body[0]
+    parent_escape = ast.parse(
+        'def delete(content_folder):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        "        shutil.rmtree(Path(content_folder).parent / 'sibling')\n"
+    ).body[0]
+    comprehension_rebound = ast.parse(
+        'def publish(folder, other_folders):\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        [_publish_workshop_item(a, b, c, folder) '
+        'for folder in other_folders]\n'
+    ).body[0]
 
     assert _unclaimed_folder_operations(matching, 'publish') == []
     assert _unclaimed_folder_operations(wrong_kind, 'publish'), (
@@ -3785,6 +4016,12 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
         generic_wrong_kind_and_folder, 'publish'
     ), 'generic folder operation 也必须同时匹配 claim kind 和 target'
     assert _unclaimed_folder_operations(generic_matching, 'publish') == []
+    assert _unclaimed_folder_operations(parent_escape, 'publish'), (
+        '同源路径经 parent 逃出 claimed tree 后不能继续算被保护'
+    )
+    assert _unclaimed_folder_operations(comprehension_rebound, 'publish'), (
+        'comprehension target 重绑定 claimed folder 后必须失效'
+    )
 
 
 def test_every_folder_consuming_call_sits_inside_a_claim():
