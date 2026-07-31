@@ -65,6 +65,52 @@ Keep multi-process mode for development, independent service supervision, or
 agent-failure isolation. `NEKO_MERGED=0` is the immediate rollback for packaged
 deployments.
 
+## Realtime voice escape hatches
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NEKO_REALTIME_ARBITER_FAIL_OPEN` | unset (off) | Changes what the realtime response arbiter does when a response cannot reach a terminal state. By default it tears the realtime WebSocket down, which the user sees as a disconnect and session rebuild. Set to `1`, `true`, `yes`, or `on` to end only the stuck turn and keep the connection. Read once when a voice session's client is constructed, so a change needs a restart. |
+
+Leave this unset unless you are actually hitting the failure. The default
+exists because the arbiter escalates precisely when its own bookkeeping about
+which response owns the connection has become untrustworthy, and continuing on
+a connection in that state can produce overlapping responses.
+
+The symptom worth setting it for is repeated disconnect-and-rebuild during
+voice conversation, with backend logs carrying:
+
+```
+response arbiter failing closed: <reason> (current=... owner=... queue_depth=...)
+```
+
+That line distinguishes an arbiter-initiated teardown from an upstream
+provider disconnect — absent it, the disconnect came from somewhere else and
+this variable will not help.
+
+### It still tears down sometimes, on purpose
+
+Keeping the connection is only defensible when the transport is still usable
+**and** the arbiter can still tell whose events are whose. When either half
+fails it tears down anyway and logs why:
+
+```
+response arbiter cannot keep the connection (<blocker>); failing closed despite the escape hatch
+```
+
+Seeing that with the variable set is expected behaviour, not a broken switch.
+The blockers are:
+
+| Blocker | Meaning |
+| --- | --- |
+| the queue consumer is suspended inside a transport write | Nothing the arbiter does to its own state unwinds that wait, and closing the transport is what releases it. |
+| a transport write just failed | The connection refused a send moments earlier; on the fatal branch it has already dropped its socket. |
+| the abandoned response has no id to attribute later events by | Its `response.create` reached the provider, so it may still be announced — and without an id that announcement is indistinguishable from the next turn's. |
+| an announced server-VAD response has no id yet | The same, for a response the provider announced but has not yet identified. |
+
+If every escalation in your logs carries one of these, the variable is working
+as designed and the disconnects have a different cause — attach those lines to
+the report rather than assuming the switch had no effect.
+
 ## Storage and local vectors
 
 | Variable | Meaning |

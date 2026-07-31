@@ -457,6 +457,43 @@ async def test_an_id_bearing_abandoned_response_still_fails_open(make_harness):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_create_on_the_wire_without_an_announcement_stands_the_hatch_down(
+    make_harness, caplog
+):
+    # The case that separates the two candidate criteria, and the one the
+    # withdrawn #2592 got backwards.
+    #
+    # Here response.create has reached the provider but response.created has
+    # not come back. Keyed on "did the create go out" this is a blocker — the
+    # provider may still announce this response, and without an id that
+    # announcement is indistinguishable from the next turn's. Keyed on "did
+    # response.created come back" it looks safe, which is exactly wrong: a
+    # request that never started cannot surprise anyone, but one whose create
+    # is already out is the only kind that can.
+    harness = make_harness(fail_open=True)
+    ticket = await harness.arbiter.enqueue(source="native")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    owner = harness.arbiter._response_owner
+    assert owner is not None
+    assert owner.response_send_started is True, "the create reached the wire"
+    assert owner.ticket.started.done() is False, "but nothing came back"
+
+    with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+        raised = await _stick_a_cancel(harness)
+
+    assert isinstance(raised, asyncio.TimeoutError)
+    assert harness.aborted, (
+        "a response whose create is on the wire but unannounced cannot be "
+        "told apart from the next one, so the hatch must stand down"
+    )
+    assert any(
+        "no id to attribute later events by" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_a_request_whose_create_never_went_out_still_fails_open(make_harness):
     # The criterion is "did the create reach the wire", not "did
     # response.created come back". A request still waiting for dispatch has no
