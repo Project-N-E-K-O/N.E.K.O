@@ -25,7 +25,6 @@ import asyncio
 import os
 import json
 import tempfile
-from contextlib import nullcontext
 from datetime import datetime
 from pathlib import Path
 from fastapi import Request
@@ -480,22 +479,31 @@ def _ensure_workshop_card_face_meta(config_mgr, chara_name: str, item: dict) -> 
     return True
 
 
+def _write_claimed_preview_image(
+    content_folder: str,
+    preview_image_path: str,
+    image_bytes: bytes,
+) -> None:
+    """Atomically persist content-folder preview bytes under local ownership."""
+    with claim_partial_writer(content_folder, purpose='上传预览图'):
+        if not os.path.isdir(content_folder):
+            raise _PreviewContentFolderMissing(
+                '内容目录已被清理，请重新开始上传'
+            )
+        atomic_write_bytes(preview_image_path, image_bytes)
+
+
 def _write_preview_image(
     content_folder: str | None,
     preview_image_path: str,
     image_bytes: bytes,
 ) -> None:
-    """Hold local ownership and atomically persist preview bytes in one worker."""
-    claim = (
-        claim_partial_writer(content_folder, purpose='上传预览图')
-        if content_folder
-        else nullcontext()
-    )
-    with claim:
-        if content_folder and not os.path.isdir(content_folder):
-            raise _PreviewContentFolderMissing(
-                '内容目录已被清理，请重新开始上传'
-            )
+    """Persist preview bytes in one worker, claiming content folders only."""
+    if content_folder:
+        _write_claimed_preview_image(
+            content_folder, preview_image_path, image_bytes
+        )
+    else:
         atomic_write_bytes(preview_image_path, image_bytes)
 
 

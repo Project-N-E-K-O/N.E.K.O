@@ -800,6 +800,7 @@ _CLAIM_CALLS = {
     'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
 }
 _WORKER_OFFLOAD_CALLS = {'to_thread', 'run_in_executor', 'submit'}
+_CALLBACK_ITERATORS = {'filter', 'map', 'starmap'}
 _EAGER_ITERATOR_CONSUMERS = {
     'all', 'any', 'dict', 'frozenset', 'list', 'max', 'min', 'set', 'sorted', 'sum', 'tuple',
 }
@@ -811,6 +812,34 @@ def _tail_name(call: ast.Call) -> str | None:
     if isinstance(call.func, ast.Attribute):
         return call.func.attr
     return None
+
+
+def _claim_aliases(func) -> dict[str, str]:
+    """Resolve imports and assignments that rename a claim factory."""
+    aliases = {name: name for name in _CLAIM_CALLS}
+    nodes = list(_walk_own_scope(func))
+    changed = True
+    while changed:
+        changed = False
+        for node in nodes:
+            if isinstance(node, ast.ImportFrom):
+                for imported in node.names:
+                    canonical = aliases.get(imported.name)
+                    local = imported.asname or imported.name
+                    if canonical and aliases.get(local) != canonical:
+                        aliases[local] = canonical
+                        changed = True
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                value_name = _reference_name(value)
+                canonical = aliases.get(value_name or '')
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if canonical:
+                    for target in targets:
+                        if isinstance(target, ast.Name) and aliases.get(target.id) != canonical:
+                            aliases[target.id] = canonical
+                            changed = True
+    return aliases
 
 
 def _eager_definition_nodes(node) -> list[ast.AST]:
@@ -858,13 +887,14 @@ def _claim_calls_in_own_scope(func) -> list:
     text -- would then be reported as a violation. Prune by refusing to
     descend, not by skipping a single node.
     """
+    aliases = _claim_aliases(func)
     found = []
     for node in _walk_own_scope(func):
         if isinstance(node, ast.Lambda):
             continue
         if isinstance(node, ast.Call):
-            name = _tail_name(node)
-            if name in _CLAIM_CALLS:
+            name = aliases.get(_tail_name(node) or '')
+            if name:
                 found.append(node)
     return found
 
@@ -952,11 +982,44 @@ def _resolved_claim_name(
     return None
 
 
-def _generator_expression_escapes(node, parents: dict[int, ast.AST]) -> bool:
-    """A generator is safe only when a known eager consumer drains it here."""
+def _resolved_claim_reference(
+    node,
+    claiming: set[str],
+    attribute_claiming: set[tuple[str, str]],
+    class_scope: bool,
+) -> str | None:
+    """Resolve a callable reference without requiring it to be called here."""
+    if isinstance(node, ast.Name) and node.id in claiming:
+        return node.id
+    if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
+        base = node.value.id
+        if class_scope and base in {'self', 'cls'} and node.attr in claiming:
+            return node.attr
+        if (base, node.attr) in attribute_claiming:
+            return f'{base}.{node.attr}'
+    return None
+
+
+def _callback_claim_name(
+    call,
+    claiming: set[str],
+    attribute_claiming: set[tuple[str, str]],
+    class_scope: bool,
+) -> str | None:
+    if _tail_name(call) not in _CALLBACK_ITERATORS or not call.args:
+        return None
+    return _resolved_claim_reference(
+        call.args[0], claiming, attribute_claiming, class_scope
+    )
+
+
+def _expression_escapes(node, parents: dict[int, ast.AST]) -> bool:
+    """Whether a lazy iterator/context result leaves the current call frame."""
     current = node
     while id(current) in parents:
         parent = parents[id(current)]
+        if isinstance(parent, ast.withitem) and parent.context_expr is current:
+            return False
         if isinstance(parent, ast.Call):
             return not (
                 _tail_name(parent) in _EAGER_ITERATOR_CONSUMERS
@@ -968,6 +1031,11 @@ def _generator_expression_escapes(node, parents: dict[int, ast.AST]) -> bool:
             return True
         current = parent
     return True
+
+
+def _generator_expression_escapes(node, parents: dict[int, ast.AST]) -> bool:
+    """A generator is safe only when a known eager consumer drains it here."""
+    return _expression_escapes(node, parents)
 
 
 def _function_is_generator(func) -> bool:
@@ -1002,18 +1070,32 @@ def _function_defers_claiming_call(
     claiming: set[str],
     attribute_claiming: set[tuple[str, str]],
     class_scope: bool,
+    generator_claiming: set[str] | None = None,
+    attribute_generators: set[tuple[str, str]] | None = None,
 ) -> bool:
     """Whether calling ``func`` only constructs deferred claim-owning work."""
+    generator_claiming = generator_claiming or set()
+    attribute_generators = attribute_generators or set()
     parents = _parent_map(func)
     if func.name in claiming and _function_is_generator(func):
         return True
     for child in _walk_own_scope(func):
         if not isinstance(child, ast.Call):
             continue
-        if not _resolved_claim_name(
+        direct_name = _resolved_claim_name(
             child, claiming, attribute_claiming, class_scope
-        ):
+        )
+        callback_name = _callback_claim_name(
+            child, claiming, attribute_claiming, class_scope
+        )
+        if not direct_name and not callback_name:
             continue
+        if callback_name and _expression_escapes(child, parents):
+            return True
+        if direct_name and _resolved_claim_name(
+            child, generator_claiming, attribute_generators, class_scope
+        ) and _expression_escapes(child, parents):
+            return True
         if _call_is_in_deferred_expression(child, func, parents):
             return True
     return False
@@ -1038,7 +1120,12 @@ def _claiming_worker_inventory(
         node.name
         for node in functions
         if _function_defers_claiming_call(
-            node, claiming, attribute_claiming, class_scope
+            node,
+            claiming,
+            attribute_claiming,
+            class_scope,
+            generator_owners,
+            attribute_generators,
         )
     )
     while True:
@@ -1048,8 +1135,13 @@ def _claiming_worker_inventory(
             if func.name not in claiming
             and any(
                 isinstance(node, ast.Call)
-                and _resolved_claim_name(
-                    node, claiming, attribute_claiming, class_scope
+                and (
+                    _resolved_claim_name(
+                        node, claiming, attribute_claiming, class_scope
+                    )
+                    or _callback_claim_name(
+                        node, claiming, attribute_claiming, class_scope
+                    )
                 )
                 for node in _walk_own_scope(func)
             )
@@ -1062,17 +1154,12 @@ def _claiming_worker_inventory(
             if func.name in wrappers
             and (
                 _function_defers_claiming_call(
-                    func, claiming, attribute_claiming, class_scope
-                )
-                or any(
-                    isinstance(node, ast.Call)
-                    and _resolved_claim_name(
-                        node,
-                        generator_owners,
-                        attribute_generators,
-                        class_scope,
-                    )
-                    for node in _walk_own_scope(func)
+                    func,
+                    claiming,
+                    attribute_claiming,
+                    class_scope,
+                    generator_owners,
+                    attribute_generators,
                 )
             )
         )
@@ -1283,9 +1370,13 @@ def _scope_claiming_names_called_on_loop(
     for node in _walk_own_scope(func):
         if isinstance(node, ast.Name):
             name = node.id
-            scope, resolved_name = local_names.get(
-                name, ((module, None), name)
-            )
+            constructor_scope = (module, name)
+            if '__init__' in claiming_by_scope.get(constructor_scope, set()):
+                scope, resolved_name = constructor_scope, '__init__'
+            else:
+                scope, resolved_name = local_names.get(
+                    name, ((module, None), name)
+                )
         elif isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name):
             name = node.attr
             if node.value.id in {'self', 'cls'} and class_name:
@@ -1418,6 +1509,21 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    for value in (_claiming_worker() for _ in items):\n'
         '        pass\n'
         '\n'
+        'def _eager_callback_wrapper():\n'
+        '    list(map(_claiming_worker, items))\n'
+        '\n'
+        'def _lazy_callback_wrapper():\n'
+        '    return map(_claiming_worker, items)\n'
+        '\n'
+        '@contextmanager\n'
+        'def _context_owner():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        yield\n'
+        '\n'
+        'def _context_worker():\n'
+        '    with _context_owner():\n'
+        '        pass\n'
+        '\n'
         'class Safe:\n'
         '    def _claiming_worker(self):\n'
         '        return 1\n'
@@ -1474,6 +1580,28 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def for_generator_offloaded():\n'
         '    await asyncio.to_thread(_for_generator_wrapper)\n'
         '\n'
+        'async def eager_callback_direct():\n'
+        '    _eager_callback_wrapper()\n'
+        '\n'
+        'async def eager_callback_offloaded():\n'
+        '    await asyncio.to_thread(_eager_callback_wrapper)\n'
+        '\n'
+        'async def lazy_callback_offloaded():\n'
+        '    await asyncio.to_thread(_lazy_callback_wrapper)\n'
+        '\n'
+        'async def context_worker_offloaded():\n'
+        '    await asyncio.to_thread(_context_worker)\n'
+        '\n'
+        'async def aliased_claim_direct():\n'
+        '    from .content_gate import claim_content_folder as claim\n'
+        "    with claim(folder, purpose='x'):\n"
+        '        pass\n'
+        '\n'
+        'async def assigned_claim_direct():\n'
+        '    claim = claim_content_folder\n'
+        "    with claim(folder, purpose='x'):\n"
+        '        pass\n'
+        '\n'
         'async def safe_attribute_handler():\n'
         '    safe_attribute_wrapper()\n'
         '\n'
@@ -1494,6 +1622,17 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         '    async def safe_handler(self):\n'
         '        self.worker()\n'
+        '\n'
+        'class ClaimingWorker:\n'
+        '    def __init__(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        '\n'
+        'async def constructor_direct():\n'
+        '    ClaimingWorker()\n'
+        '\n'
+        'async def constructor_offloaded():\n'
+        '    await asyncio.to_thread(ClaimingWorker)\n'
     )
     functions = {
         node.name: node
@@ -1554,6 +1693,22 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('for_generator_offloaded') == [], (
         '同步 for 会在 worker 内当场耗尽 generator expression，不应误报'
     )
+    assert module_offenders('eager_callback_direct'), (
+        'list(map(owner, ...)) 会当场执行 owner，直调 wrapper 必须报出来'
+    )
+    assert module_offenders('eager_callback_offloaded') == []
+    assert module_offenders('lazy_callback_offloaded'), (
+        'offload 返回惰性 map 并没有在 worker 执行 callback，必须报出来'
+    )
+    assert module_offenders('context_worker_offloaded') == [], (
+        'with 会在 worker 内完整进入并退出 contextmanager generator，不应误报'
+    )
+    assert _claim_calls_in_own_scope(functions['aliased_claim_direct'])
+    assert _claim_calls_in_own_scope(functions['assigned_claim_direct'])
+    assert module_offenders('constructor_direct'), (
+        'claim-owning __init__ 的类在事件循环实例化时必须报出来'
+    )
+    assert module_offenders('constructor_offloaded') == []
     assert module_offenders('safe_attribute_handler') == [], (
         'Safe().owner() 不能因 tail name 与模块 owner 相同而污染 wrapper'
     )
@@ -1766,7 +1921,7 @@ _UNIT_CLAIMS = {
 
 # 通用写 API 只在具体 worker 里入账，避免把无关 metadata 写入当成目录竞态。
 _SCOPED_OPERATIONS = {
-    ('preview_cards', '_write_preview_image'): {'atomic_write_bytes'},
+    ('preview_cards', '_write_claimed_preview_image'): {'atomic_write_bytes'},
 }
 
 # 把工作推迟到别处去跑的原语。哨兵名出现在它们的**实参**里时，「写在 with 里面」
@@ -1881,25 +2036,34 @@ def _unclaimed_folder_operations(
     in which case being inside the ``with`` says nothing about when the work
     actually touches the folder.
     """
-    claim_aliases = {}
+    claim_factories = _claim_aliases(func)
+    claim_contexts = {}
     for node in _walk_own_scope(func):
         if not isinstance(node, (ast.Assign, ast.AnnAssign)):
             continue
         value = node.value
-        expressions = [value]
-        if isinstance(value, ast.IfExp):
-            expressions = [value.body, value.orelse]
-        kinds = {
-            _tail_name(expression)
-            for expression in expressions
-            if isinstance(expression, ast.Call)
-            and _tail_name(expression) in _CLAIM_CALLS
-        }
+        expressions = (
+            [value.body, value.orelse]
+            if isinstance(value, ast.IfExp)
+            else [value]
+        )
+        branch_kinds = [
+            {
+                claim_factories[_tail_name(expression)]
+                for expression in [branch]
+                if isinstance(expression, ast.Call)
+                and _tail_name(expression) in claim_factories
+            }
+            for branch in expressions
+        ]
+        kinds = set.intersection(*branch_kinds) if branch_kinds else set()
+        if branch_kinds and all(branch_kinds):
+            kinds.add('<all-branches-claimed>')
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
         if kinds:
             for target in targets:
                 if isinstance(target, ast.Name):
-                    claim_aliases[target.id] = kinds
+                    claim_contexts[target.id] = kinds
 
     claimed_scopes = []
     for block in _walk_own_scope(func):
@@ -1908,10 +2072,13 @@ def _unclaimed_folder_operations(
         claim_kinds = set()
         for item in block.items:
             context = item.context_expr
-            if isinstance(context, ast.Call) and _tail_name(context) in _CLAIM_CALLS:
-                claim_kinds.add(_tail_name(context))
+            if (
+                isinstance(context, ast.Call)
+                and _tail_name(context) in claim_factories
+            ):
+                claim_kinds.add(claim_factories[_tail_name(context)])
             elif isinstance(context, ast.Name):
-                claim_kinds.update(claim_aliases.get(context.id, set()))
+                claim_kinds.update(claim_contexts.get(context.id, set()))
         if not claim_kinds:
             continue
         claimed_scopes.append((
@@ -2120,17 +2287,29 @@ def test_the_claim_guard_resolves_operation_aliases():
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
-    guarded = ast.parse(
-        'def _write_preview_image():\n'
+    fully_guarded = ast.parse(
+        'def _write_claimed_preview_image():\n'
         '    claim = (\n'
         "        claim_partial_writer(folder, purpose='preview')\n"
-        '        if folder else nullcontext()\n'
+        "        if flag else claim_reference_pair(folder)\n"
+        '    )\n'
+        '    with claim:\n'
+        '        atomic_write_bytes(path, data)\n'
+    ).body[0]
+    conditionally_guarded = ast.parse(
+        'def _write_claimed_preview_image():\n'
+        '    claim = (\n'
+        "        claim_partial_writer(folder, purpose='preview')\n"
+        '        if flag else nullcontext()\n'
         '    )\n'
         '    with claim:\n'
         '        atomic_write_bytes(path, data)\n'
     ).body[0]
 
-    assert _unclaimed_folder_operations(guarded, 'preview_cards') == []
+    assert _unclaimed_folder_operations(fully_guarded, 'preview_cards') == []
+    assert _unclaimed_folder_operations(conditionally_guarded, 'preview_cards'), (
+        '任一可达分支是 nullcontext 时，条件 context alias 不能算完整占用'
+    )
 
 
 def test_the_claim_guard_requires_one_continuous_claim():
