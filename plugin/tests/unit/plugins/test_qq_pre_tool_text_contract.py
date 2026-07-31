@@ -65,3 +65,22 @@ def test_dynamic_xml_keeps_visible_text_before_the_first_message():
     )
 
     assert [block.text for block in blocks] == ["我查一下", "查到了"]
+
+
+def test_dynamic_xml_parses_unescaped_characters_in_pre_tool_text():
+    """The plain prefix is not part of the XML document."""
+    blocks = QQReplyPostprocessNode._parse_blocks(
+        "我看 1 < 2 & 等一下<msg><text>答案</text><emoji>277</emoji></msg>"
+    )
+
+    assert [block.text for block in blocks] == ["我看 1 < 2 & 等一下", "答案"]
+    assert blocks[1].emoji == "277"
+
+
+def test_dynamic_xml_fence_is_not_delivered_as_pre_tool_text():
+    """A recognized XML code fence is formatting, not assistant content."""
+    blocks = QQReplyPostprocessNode._parse_blocks(
+        "```xml\n<msg><text>查到了</text></msg>\n```"
+    )
+
+    assert [block.text for block in blocks] == ["查到了"]

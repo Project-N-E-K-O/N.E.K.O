@@ -354,6 +354,7 @@ class QQReplyGenerationService:
                         history_now,
                         history_before,
                         create_missing_ai_row=generation_completed,
+                        outbound_text="".join(reply_chunks),
                     )
                 appended = list(history_now)[history_before:]
                 user_data["human_row_accepted"] = any(
@@ -507,13 +508,13 @@ class QQReplyGenerationService:
             role == "assistant" and bool(row.get("tool_calls"))
         )
 
-    @classmethod
     def _strip_tool_round_rows(
-        cls,
+        self,
         history: list,
         start_index: int,
         *,
         create_missing_ai_row: bool = False,
+        outbound_text: str = "",
     ) -> int:
         """Fold visible pre-tool text into the final AI row, then remove tool rows.
 
@@ -524,7 +525,7 @@ class QQReplyGenerationService:
         range is then empty and nothing is touched.
         """
         start = max(start_index, 0)
-        pre_tool_text = "".join(
+        persisted_pre_tool_text = "".join(
             str(row.get("content") or "")
             for row in history[start:]
             if (
@@ -534,20 +535,41 @@ class QQReplyGenerationService:
                 and isinstance(row.get("content"), str)
             )
         )
+        final_ai_row = next(
+            (
+                row for row in reversed(history[start:])
+                if getattr(row, "type", "") == "ai"
+            ),
+            None,
+        )
+        final_content = getattr(final_ai_row, "content", None)
+        pre_tool_text = persisted_pre_tool_text
+        if isinstance(outbound_text, str):
+            comparable_outbound = outbound_text.rstrip()
+            if (
+                isinstance(final_content, str)
+                and final_content
+                and comparable_outbound.endswith(final_content)
+            ):
+                pre_tool_text = comparable_outbound[:-len(final_content)]
+            elif final_ai_row is None and create_missing_ai_row:
+                pre_tool_text = outbound_text
+
+        # QQ 的最终投递还会清理 provider-specific thinking 标签；history
+        # 必须对 pre-tool 段应用同一 sanitizer。保留真实出站段尾空白，避免
+        # 英文前缀与最终段在持久化时粘连。
+        sanitize = getattr(self.plugin, "_sanitize_generated_reply", None)
+        if callable(sanitize) and pre_tool_text:
+            trailing_space = pre_tool_text[len(pre_tool_text.rstrip()):]
+            sanitized = str(sanitize(pre_tool_text) or "")
+            pre_tool_text = sanitized + trailing_space if sanitized else ""
+
         # stream_text 不外发纯空白 chunk；相同内容即使进了 provider 的
         # assistant tool-call history，也不能凭空合成一条用户没看到的 AI 行。
         if pre_tool_text.strip():
-            final_ai_row = next(
-                (
-                    row for row in reversed(history[start:])
-                    if getattr(row, "type", "") == "ai"
-                ),
-                None,
-            )
             if final_ai_row is None and create_missing_ai_row:
                 history.append(AIMessage(content=pre_tool_text))
             elif final_ai_row is not None:
-                final_content = getattr(final_ai_row, "content", None)
                 if isinstance(final_content, str):
                     # sentinel 已把最终段与 pre-tool 段切开；即使最终段碰巧
                     # 以同一句开头，也必须按结构再拼一次以匹配实际外发文本。
@@ -555,7 +577,7 @@ class QQReplyGenerationService:
 
         removed = 0
         for index in range(len(history) - 1, start - 1, -1):
-            if cls._is_tool_round_row(history[index]):
+            if self._is_tool_round_row(history[index]):
                 del history[index]
                 removed += 1
         return removed

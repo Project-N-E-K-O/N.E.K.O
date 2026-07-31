@@ -40,6 +40,7 @@ from plugin.plugins.qq_auto_reply.memory_tool_service import (
 from plugin.plugins.qq_auto_reply.reply_generation_service import (
     QQReplyGenerationService,
 )
+from plugin.plugins.qq_auto_reply.prompting import QQAutoReplyPromptingMixin
 
 TOOL_CAPABLE_MODEL = "qwen3.7-plus"
 TOOL_CAPABLE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
@@ -939,6 +940,84 @@ async def test_repeated_pre_tool_prefix_is_preserved_in_history():
     history = client._conversation_history
     assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
     assert history[-1].content == "我查一下我查一下，结果是不剧透"
+
+
+@pytest.mark.asyncio
+async def test_exact_outbound_separator_is_preserved_in_history():
+    """Provider history trimming must not join separate English segments."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append("Let me check. ")
+        result = await client.on_tool_call(_recall_tool_call({"query": "rule"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(),
+                assistant_content="Let me check.",
+            )
+        )
+        client._conversation_history.append(
+            SimpleNamespace(type="ai", content="The answer is 42.")
+        )
+        client.reply_chunks_ref.append("The answer is 42.")
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert result == "Let me check. The answer is 42."
+    assert client._conversation_history[-1].content == result
+
+
+@pytest.mark.asyncio
+async def test_hidden_pre_tool_reasoning_is_not_persisted():
+    """QQ-only hidden tags must be absent from delivery and shared history."""
+    plugin = _tool_plugin()
+    plugin._sanitize_generated_reply = (
+        QQAutoReplyPromptingMixin._sanitize_generated_reply
+    )
+    service = _generation_service(plugin)
+    hidden = "<thinking_reasoning>secret</thinking_reasoning>"
+
+    async def _script(client, message):
+        client.reply_chunks_ref.append(hidden)
+        result = await client.on_tool_call(_recall_tool_call({"query": "rule"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(), assistant_content=hidden,
+            )
+        )
+
+    client = _RecallToolClient(_script)
+    reply_chunks: list = []
+    client.reply_chunks_ref = reply_chunks
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=reply_chunks,
+    )
+    assert plugin._sanitize_generated_reply(result) == ""
+    assert [
+        getattr(row, "type", "") for row in client._conversation_history
+    ] == ["human"]
 
 
 @pytest.mark.asyncio

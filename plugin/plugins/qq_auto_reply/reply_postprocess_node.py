@@ -34,26 +34,39 @@ class QQReplyPostprocessNode:
             block = QQMessageBlock(text=text)
             return [block] if text else []
 
+        # pre-tool 是 XML 文档外的普通文本，必须先切出来；若把它一起交给
+        # ElementTree，模型自然输出的未转义 < / & 会让整个结构降级失败。
+        import re as _re
+        msg_start = _re.search(r"<msg(?:\s|>)", text)
+        if msg_start is None:
+            return [QQMessageBlock(text=text)]
+        leading_raw = text[:msg_start.start()]
+        leading_raw = _re.sub(
+            r"```(?:xml)?\s*$", "", leading_raw, flags=_re.IGNORECASE,
+        )
+        leading_raw = _re.sub(
+            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
+            "",
+            leading_raw,
+            flags=_re.IGNORECASE,
+        )
+        leading_text = leading_raw.strip()
+        xml_text = _re.sub(r"\s*```\s*$", "", text[msg_start.start():])
+
         # XML 解析
         try:
-            root = ET.fromstring(f"<root>{text}</root>")
+            root = ET.fromstring(f"<root>{xml_text}</root>")
         except ET.ParseError:
             # 解析失败 → 回退纯文本（去除 XML 标签）
-            import re as _re
-            clean = _re.sub(r"<[^>]+>", "", text).strip()
-            block = QQMessageBlock(text=clean or text)
-            return [block] if (clean or text) else []
+            clean = _re.sub(r"<[^>]+>", "", xml_text).strip()
+            blocks = []
+            if leading_text:
+                blocks.append(QQMessageBlock(text=leading_text))
+            if clean:
+                blocks.append(QQMessageBlock(text=clean))
+            return blocks or [QQMessageBlock(text=text)]
 
         blocks: list[QQMessageBlock] = []
-        # 模型可在 tool call 前先输出普通 assistant 文本；forced-finalize
-        # 的 XML 会接在其后。ElementTree 把这段放在 root.text，若前面有
-        # <wait> 则放在该元素的 tail，不能只遍历 <msg> 而把它静默丢掉。
-        leading_parts = [root.text or ""]
-        for child in root:
-            if child.tag == "msg":
-                break
-            leading_parts.append(child.tail or "")
-        leading_text = "".join(leading_parts).strip()
         if leading_text:
             blocks.append(QQMessageBlock(text=leading_text))
 
