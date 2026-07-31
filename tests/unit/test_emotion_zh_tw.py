@@ -1329,3 +1329,93 @@ def test_the_two_negation_tables_agree(text):
 ])
 def test_the_wider_negation_vocabulary_does_not_swallow_assertions(text):
     assert _heur(text) == "happy"
+
+
+# --- 上一轮补的否定词自己带来的三处反转 ---
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("senão fico feliz", "happy"),
+    ("senão me sinto feliz", "happy"),
+    ("não fico feliz", None),
+    ("nunca feliz", None),
+])
+def test_an_accented_latin_negation_is_a_word_not_a_substring(text, expected):
+    """The Latin/CJK split was `str.isascii()`, which is not about script.
+
+    An accented Latin negation fell to the substring path and matched inside a
+    longer word, so the sentence lost its emotion entirely. The split is by
+    writing system now: only scripts with no word boundaries to find stay on
+    substring.
+    """
+    assert _heur(text) == expected
+
+
+def test_the_two_negation_paths_partition_by_script():
+    """Structural: no entry may sit on the wrong side of the split.
+
+    Asserted on the derived tuples rather than on behaviour, because a single
+    misrouted entry only shows up on the one word that happens to contain it.
+    """
+    from main_routers.system_router.emotion import (
+        _HEURISTIC_CJK_NEGATION_TOKENS, _HEURISTIC_WORD_NEGATIONS, _UNBOUNDED_SCRIPT_RE,
+    )
+
+    assert not any(_UNBOUNDED_SCRIPT_RE.search(t) for t in _HEURISTIC_WORD_NEGATIONS)
+    assert all(_UNBOUNDED_SCRIPT_RE.search(t) for t in _HEURISTIC_CJK_NEGATION_TOKENS)
+    latin = {t.strip() for t in _HEURISTIC_WORD_NEGATIONS}
+    assert {"não", "jamás", "ningún", "не"} <= latin, "带重音的拉丁词/西里尔词落错边"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("sin duda triste", "sad"),
+    ("sin duda enojado", "angry"),
+    ("sem dúvida triste", "sad"),
+    ("sin ninguna duda triste", "sad"),
+])
+def test_the_fixed_phrase_does_not_veto_the_whole_label(label, expected, confidence):
+    """The other whole-label branch reads a compact string, not tokens.
+
+    Only reachable at the confidence the endpoint passes: with the phrase left
+    in, the remainder glued together scores close enough to the emotion word to
+    veto it. One strip now feeds both branches.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", ["sin duda feliz", "sem dúvida feliz", "sin duda estoy feliz"])
+def test_a_fixed_phrase_containing_a_negation_is_not_a_negation(label, confidence):
+    """"Without doubt" is emphatic agreement, the same family as "no doubt".
+
+    The blocklist that already held that family was read by the heuristic and by
+    the compact path, but not by either of the label parser's ASCII paths.
+    """
+    assert _label(label, confidence) == "happy"
+    assert _heur(label) == "happy"
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label", ["sin estar feliz", "sem estar feliz"])
+def test_the_bare_preposition_still_negates(label, confidence):
+    assert _label(label, confidence) == "neutral"
+    assert _heur(label) is None
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("这个结果难以置信令人开心", "happy"),
+    ("這個結果難以置信令人開心", "happy"),
+    ("这件事没办法解决但我很开心", "happy"),
+    ("难以开心", None),
+    ("無法開心", None),
+    ("並無生氣", None),
+])
+def test_an_inability_negation_does_not_reach_the_next_predicate(text, expected):
+    """Same shape as the emphatic negation: it modifies what follows it.
+
+    In the wide table it cancelled an emotion asserted later in the sentence.
+    These belong in the adjacency-scoped table, which still catches them when
+    they really do sit against the emotion word.
+    """
+    assert _heur(text) == expected

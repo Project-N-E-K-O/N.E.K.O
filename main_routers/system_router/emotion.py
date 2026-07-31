@@ -249,7 +249,14 @@ def _last_clause_cut(head):
 
 
 def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
-    tokens = [token for token in _EMOTION_TOKEN_RE.findall(normalized_text) if token]
+    # Blocklist first, once, for both of the whole-label branches below: `sin
+    # duda feliz` is emphatic agreement and the negation inside that fixed phrase
+    # is not one. The heuristic already read this table; on the label side only
+    # the per-match path did, so the two branches that answer for the whole label
+    # went on treating the phrase as a denial.
+    sanitized_text = _strip_negation_blocklist(normalized_text)
+    sanitized_compact = re.sub(r"[\W_]+", "", sanitized_text, flags=re.UNICODE)
+    tokens = [token for token in _EMOTION_TOKEN_RE.findall(sanitized_text) if token]
     # The two branches below answer for the WHOLE label off a single negation at
     # its front, so they may only speak for a label that *is* one clause. Both
     # read `não triste, feliz` as one run -- the negation dropped and the rest
@@ -274,9 +281,13 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
             return True
 
     for negation in _EMOTION_NEGATION_COMPACT_PREFIXES:
-        if not single_clause or not compact_text.startswith(negation):
+        if not single_clause or not sanitized_compact.startswith(negation):
             continue
-        rest = compact_text[len(negation):]
+        # Same string the `startswith` above tested, not the unstripped one:
+        # slicing one by an offset found in the other mixes two coordinate
+        # spaces. No input distinguishes them on today's tables -- consistency
+        # here is intent, not something a test can hold in place.
+        rest = sanitized_compact[len(negation):]
         if len(negation) <= 2 and negation.isascii():
             # Latin negations this short are syllables as often as words -- `ni`
             # turned `nice happy` into neutral at the confidence the endpoint
@@ -358,7 +369,8 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         # contrast conjunction. The compact path already scopes this way; the
         # ASCII one never did.
         head = normalized_text[:match_start]
-        prefix_tokens = _EMOTION_TOKEN_RE.findall(head[_last_clause_cut(head) + 1:])
+        head = _strip_negation_blocklist(head[_last_clause_cut(head) + 1:])
+        prefix_tokens = _EMOTION_TOKEN_RE.findall(head)
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
 
     # Where each compact character came from, so a clause boundary can be found in
@@ -547,15 +559,27 @@ _HEURISTIC_NEGATION_TOKENS = get_heuristic_negation_tokens_flat()
 # `uno `, so `sino que estoy feliz` came back with no emotion at all. Match those
 # on real boundaries instead and leave the CJK entries on the substring path,
 # where there are no word boundaries to find.
+# The split is by writing system, not by `isascii()`: `não ` and `jamás ` are
+# Latin words that merely carry an accent, and leaving them on the substring path
+# meant `senão fico feliz` found `não ` inside `senão` and lost the emotion.
+# Scripts with no word boundaries to find -- Han, kana, Hangul -- stay on
+# substring, where their entries are morpheme fragments rather than words.
+_UNBOUNDED_SCRIPT_RE = re.compile(
+    r"[぀-ヿ㐀-䶿一-鿿가-힯豈-﫿]"
+)
+_HEURISTIC_WORD_NEGATIONS = tuple(
+    token for token in _HEURISTIC_NEGATION_TOKENS
+    if token.strip() and not _UNBOUNDED_SCRIPT_RE.search(token)
+)
 _HEURISTIC_ASCII_NEGATION_RE = re.compile(
     r"\b(?:%s)\b" % "|".join(
         re.escape(token.strip())
-        for token in sorted(_HEURISTIC_NEGATION_TOKENS, key=len, reverse=True)
-        if token.strip() and token.isascii()
+        for token in sorted(_HEURISTIC_WORD_NEGATIONS, key=len, reverse=True)
     )
 )
 _HEURISTIC_CJK_NEGATION_TOKENS = tuple(
-    token for token in _HEURISTIC_NEGATION_TOKENS if not token.isascii()
+    token for token in _HEURISTIC_NEGATION_TOKENS
+    if _UNBOUNDED_SCRIPT_RE.search(token)
 )
 
 
