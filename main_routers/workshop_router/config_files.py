@@ -103,6 +103,28 @@ async def save_workshop_config_api(config_data: dict):
                     "success": False,
                     "error": f"{key} 必须是绝对路径",
                 }
+            # 正向校验：这个串必须真的能被 os.path 当路径处理。嵌了 NUL 的值能过
+            # isabs（它只看前缀），但之后每一次 os.path.* 都会抛 ValueError —— 而配置
+            # 那时已经写进去了，接口只是「先落盘再报错」，之后所有 workshop 文件操作
+            # 都对着这个毒值抛，直到用户再存一次才好。
+            #
+            # 不逐个字符类去补（NUL、控制字符、超长……）：让 OS 自己判「能不能用」，
+            # 一条规则关掉整类，而不是想到哪个补哪个。
+            try:
+                os.stat(value)
+            except ValueError as exc:
+                # OS 层根本收不下这个串（嵌 NUL 是典型）。注意纯路径函数判不出来：
+                # os.path.isdir 会把 ValueError 吞成 False，normpath / realpath 原样
+                # 返回 —— 只有真正下到系统调用才暴露。不拦的话这个值会被写进配置，
+                # 之后每次 _assert_under_base → os.path.realpath → 实际 IO 都炸，
+                # 直到用户再存一次才好。
+                return {
+                    "success": False,
+                    "error": f"{key} 不是合法路径: {exc}",
+                }
+            except OSError:
+                # 不存在 / 无权限不是格式问题，交给后面的 ensure 去处理。
+                pass
         if 'auto_create_folder' in config_data and not isinstance(
             config_data['auto_create_folder'], bool
         ):

@@ -856,3 +856,38 @@ def test_the_cache_lock_is_created_exactly_once_under_concurrency(tmp_path):
     assert len({id(lock) for lock in seen}) == 1, (
         "并发懒创建造出了多把锁——那这把锁等于不存在"
     )
+
+
+@pytest.mark.asyncio
+async def test_a_path_the_os_cannot_parse_is_rejected_before_saving(monkeypatch):
+    """Validate positively — the value must actually work as a path.
+
+    An embedded NUL passes `isabs` (it only inspects the prefix) but makes
+    every later `os.path.*` raise, and the config is already on disk by then:
+    the endpoint reports failure *after* committing a value that poisons every
+    workshop file operation until the user saves again.
+
+    Checked by asking the OS whether the string is usable rather than by
+    enumerating bad character classes, so the whole class is closed at once.
+    """
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True)
+
+    poisoned = os.path.join(os.sep, "tmp", "workshop\x00x")
+    result = await config_files.save_workshop_config_api({"user_mod_folder": poisoned})
+
+    assert result["success"] is False, "带 NUL 的路径被接受了"
+    assert "不是合法路径" in result["error"]
+    assert saved == [], "校验失败的值不该写盘"
+
+    ok = await config_files.save_workshop_config_api(
+        {"user_mod_folder": os.path.join(os.sep, "tmp", "workshop")}
+    )
+    assert ok["success"] is True
