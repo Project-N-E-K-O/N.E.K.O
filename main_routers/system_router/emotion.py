@@ -297,6 +297,13 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
             # line up (`isn't` against `isnt`).
             if re.sub(r"[\W_]+", "", tokens[0], flags=re.UNICODE) != negation:
                 continue
+            # And what follows has to be an alias outright, not merely close to
+            # one -- the same rule a single CJK character gets. `nada más feliz`
+            # is a superlative comparison, and fuzzy-matching `másfeliz` to the
+            # emotion word read it as the denial of what it asserts.
+            if rest in _EMOTION_COMPACT_ALIAS_LOOKUP:
+                return True
+            continue
         if len(negation) == 1:
             # A single character is as likely to be the first half of a word as a
             # negation, so it only counts when what follows is an alias outright.
@@ -654,9 +661,12 @@ def _has_heuristic_negation_before(text_value, position):
     #      `有什麼好開心的` 命中的是更长的 `好開心`，窗口只剩 `有什麼` —— 那一段
     #      本身就是否定，而剥掉 `什麼` 把它拆散了，短的那个 `開心` 命中被正确压住、
     #      长的这个反而漏过去，整句读成 happy。
-    peeled_window = _strip_degree_adverbs(sanitized)
+    #      窗口末尾的空白要先去掉：情态表是压缩过的（无空格），而窗口是原文切片，
+    #      拉丁语里关键词前那个空格会让 `nada ` 对不上 `nada`。
+    window_tail = sanitized.rstrip()
+    peeled_window = _strip_degree_adverbs(window_tail)
     if any(
-        sanitized.endswith(modal) or peeled_window.endswith(modal)
+        window_tail.endswith(modal) or peeled_window.endswith(modal)
         for modal in _HEURISTIC_MODAL_NEGATIONS
     ):
         return True

@@ -476,11 +476,14 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
     # ⚠️ `并不 / 並不` 不在这里而在下面的情态表：它只否定紧跟着的那个谓语，
     # 放进 14 字符宽窗口会把同一句里后半截的情绪一起灭掉
     # （`我並不討厭而且覺得太棒` 实测整句无情绪）。
-    'zh': ('并非', '不太', '不是很', '不算很', '不那么', '不怎么',
+    'zh': ('不太', '不是很', '不算很', '不那么', '不怎么',
            '没那么', '没怎么', '没什么'),
-    'zh-TW': ('並非', '不太', '不是很', '不算很', '不那麼', '不怎麼',
+    'zh-TW': ('不太', '不是很', '不算很', '不那麼', '不怎麼',
               '沒那麼', '沒怎麼', '沒什麼'),
-    'en': ('not ', ' no ', 'never ', 'neither ', 'nor ', 'without ',
+    # ⚠️ 不收 `without`：与 `sin / sem` 完全同类，是**介词**只否定自己的补语。
+    # `I am without doubt happy` 里被否定的是 `doubt` 不是 `happy`。补语开放，
+    # 加固定短语豁免堵不住（`without doubt` 只是其中一个）。
+    'en': ('not ', ' no ', 'never ', 'neither ', 'nor ',
            "don't", "doesn't", "didn't", "won't",
            "isn't", "aren't", "wasn't", "weren't", "can't", "cannot"),
     'ja': ('ない', 'ません', 'なくて'),
@@ -496,9 +499,9 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
     # 因为补语是开放的。宁可漏掉 `sin estar feliz`（＝主分支上的现状），
     # 也不要把肯定句读成否定。
     'es': ('no ', 'nunca ', 'jamás ', 'jamas ',
-           'ni ', 'tampoco ', 'nada ', 'ninguno ', 'ningún ', 'ningun '),
+           'ni ', 'tampoco ', 'ninguno ', 'ningún ', 'ningun '),
     'pt': ('não ', 'nao ', 'nunca ', 'jamais ',
-           'nem ', 'tampouco ', 'nada ', 'nenhum '),
+           'nem ', 'tampouco ', 'nenhum '),
 }
 
 # 情态复合否定：整词才是否定，且**只有紧贴情绪词时**才是在否定它。
@@ -507,15 +510,20 @@ HEURISTIC_NEGATION_TOKENS_BY_LANG = {
 # 判定方式：剥掉尾部程度副词后要求它压在情绪词前面。
 HEURISTIC_MODAL_NEGATIONS_BY_LANG = {
     'zh': ('不会', '不算', '不再', '未必', '不至于', '算不上', '谈不上', '说不上',
-           '没什么好', '没什么可', '有什么好', '没什么', '有什么', '并不',
+           '没什么好', '没什么可', '有什么好', '没什么', '有什么', '并不', '并非',
            # `难以置信令人开心` 里的 `难以` 修饰的是 `置信` 不是 `开心` —— 与 `并不`
            # 同理，无能力否定只作用在紧跟着的那个谓语上，放宽表会灭掉后面的情绪。
            '无法', '难以', '没办法', '没法', '并无', '毫无', '绝无',
            '不要', '不觉得', '不认为', '没觉得', '没有觉得', '没有在', '没有到'),
     'zh-TW': ('不會', '不算', '不再', '未必', '不至於', '算不上', '談不上', '說不上',
-              '沒什麼好', '沒什麼可', '有什麼好', '沒什麼', '有什麼', '並不',
+              '沒什麼好', '沒什麼可', '有什麼好', '沒什麼', '有什麼', '並不', '並非',
               '無法', '難以', '沒辦法', '沒法', '並無', '毫無', '絕無',
               '不要', '不覺得', '不認為', '沒覺得', '沒有覺得', '沒有在', '沒有到'),
+    # `nada / nenhum` 作「一点也不」时是程度否定，只作用在**紧跟着的形容词**
+    # （`nada feliz`）；隔一个词就换了词性 —— `no hay nada más feliz que...`
+    # 里的 `nada` 是名词「什么都没有」，整句是最高级比较，说的正是很开心。
+    'es': ('nada',),
+    'pt': ('nada',),
 }
 
 # 紧凑否定 token：仅在命中关键词紧邻前若干字符（_HEURISTIC_TIGHT_NEGATION_LOOKBACK）
@@ -731,6 +739,11 @@ EMOTION_NEGATION_PREFIXES_BY_LANG = {
               '沒覺得', '沒有覺得', '沒有在', '沒有到',
               '無法', '難以', '沒辦法', '沒法',
               '不', '沒', '無', '非', '別'),
+    # `nada / nenhum` 放前缀表而不是独立否定词表：这里是**相邻**判定（否定必须整个
+    # 就是第一个词，后面紧跟别名），正好把 `nada feliz`（一点也不开心）和
+    # `nada más feliz que`（最高级比较，说的是很开心）区分开 —— 后者中间隔着 `más`。
+    'es': ('nada',),
+    'pt': ('nada',),
     'ko': ('안', '아니', '못'),
     'ru': ('не', 'нет', 'никогда'),
 }
@@ -754,7 +767,8 @@ EMOTION_KEYWORD_FALSE_FRIENDS_BY_LANG = {
 # 独立否定词：按 token 匹配，不做子串
 EMOTION_NEGATION_WORDS_BY_LANG = {
     # 缩写形式要单列：tokenizer 现在保留撇号，但 `isnt` 这类无撇号写法也收。
-    'en': ('not', 'no', 'never', 'without', 'neither', 'nor',
+    # `without` 与 `sin / sem` 同类，见上面宽回看表的说明。
+    'en': ('not', 'no', 'never', 'neither', 'nor',
            "isn't", "aren't", "wasn't", "weren't", "don't", "doesn't", "didn't",
            "won't", "can't", 'cannot', 'isnt', 'arent', 'wasnt', 'werent', 'dont', 'doesnt', 'didnt',
            'wont', 'cant'),
@@ -763,9 +777,9 @@ EMOTION_NEGATION_WORDS_BY_LANG = {
     # 两边收词口径必须一致，否则同一句话两条管线给相反答案。
     # `sin` / `sem` 同上：介词只否定补语，不收。
     'es': ('no', 'nunca', 'jamás', 'jamas', 'ni', 'tampoco',
-           'nada', 'ninguno', 'ningún', 'ningun'),
+           'ninguno', 'ningún', 'ningun'),
     'pt': ('não', 'nao', 'nunca', 'jamais', 'nem',
-           'nada', 'tampouco', 'nenhum'),
+           'tampouco', 'nenhum'),
     'ko': ('안', '아니', '못', '않', '아니다', '아닌', '아님'),
     'ru': ('не', 'нет', 'никогда'),
 }

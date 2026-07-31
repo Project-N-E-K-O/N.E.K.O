@@ -280,10 +280,17 @@ def test_negation_flattening_preserves_the_previous_vocabulary():
     # rounds deliberately added the English contractions plus the Spanish and
     # Portuguese blocks that were missing entirely.
     assert {
-        "not", "no", "never", "without",
+        "not", "no", "never",
         "안", "아니", "못", "않", "아니다", "아닌", "아님",
         "не", "нет", "никогда",
     } <= set(P.get_emotion_negation_words_flat())
+    # `without` was in this table before the move and is deliberately gone: it is
+    # a preposition that negates its own complement, so it read `I am without
+    # doubt happy` as a denial of the happiness. Its Spanish and Portuguese
+    # equivalents were added and removed again for the same reason.
+    # See test_a_preposition_is_not_a_negation.
+    assert not ({"without", "sin", "sem"} & set(P.get_emotion_negation_words_flat()))
+    assert not ({"sin ", "sem ", "without "} & set(P.get_heuristic_negation_tokens_flat()))
     # The Korean set is what the move had to preserve; the Chinese postposed
     # forms are a later, deliberate addition on top of it.
     korean = set(P.EMOTION_NEGATION_SUFFIXES_BY_LANG["ko"])
@@ -1401,6 +1408,7 @@ def test_a_fixed_phrase_containing_a_negation_is_not_a_negation(label, confidenc
 @pytest.mark.parametrize("confidence", CONFIDENCES)
 @pytest.mark.parametrize("label", [
     "sin miedo y feliz", "sem medo e feliz", "sin miedo feliz", "sin estar feliz",
+    "I am without doubt happy", "without doubt happy", "without being happy",
 ])
 def test_a_preposition_is_not_a_negation(label, confidence):
     """`without` governs its own complement, and nothing here can find it.
@@ -1453,3 +1461,39 @@ def test_an_inability_negation_does_not_reach_the_next_predicate(text, expected)
     they really do sit against the emotion word.
     """
     assert _heur(text) == expected
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("我並非討厭而且覺得太棒", "happy"),
+    ("我并非讨厌而且觉得太棒", "happy"),
+    ("並非開心", None),
+    ("并非开心", None),
+])
+def test_the_other_emphatic_negation_is_predicate_scoped_too(text, expected):
+    """The sibling of the one moved last round, left behind in the wide table.
+
+    Same shape, same fix: it denies the predicate it precedes, so in a
+    14-character window it cancelled an emotion asserted later in the sentence.
+    """
+    assert _heur(text) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("text, label_expected, heuristic_expected", [
+    ("nada feliz", "neutral", None),
+    ("nada triste", "neutral", None),
+    ("nada más feliz", "happy", "happy"),
+    ("no hay nada más feliz que un niño jugando", "happy", "happy"),
+])
+def test_the_degree_negation_is_told_apart_from_the_superlative(
+    text, label_expected, heuristic_expected, confidence
+):
+    """The same four letters are an adverb in one reading and a noun in another.
+
+    Adjacent to the adjective it means "not at all"; one word further away the
+    sentence is a superlative comparison asserting exactly that emotion. Both
+    pipelines tell them apart by requiring adjacency, which is the only signal
+    available without parsing.
+    """
+    assert _label(text, confidence) == label_expected
+    assert _heur(text) == heuristic_expected
