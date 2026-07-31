@@ -86,10 +86,17 @@ async def save_workshop_config_api(config_data: dict):
             # 解析它并报 folder_ready: true，而 get_workshop_path() 原样返回那个相对
             # 串、后续 _assert_under_base 又按服务进程的工作目录解析 —— 两边指向不同
             # 的地方，而我们已经告诉用户「建好了」。宁可让调用方给绝对路径。
+            # 空串是**清除覆盖**的官方写法：get_workshop_path() 用
+            # `if config.get("user_mod_folder"):` 判断，空串 falsy 就回落到
+            # Steam / 缓存 / 默认（utils/config_manager/workshop.py:417）。上一版
+            # 一并拦掉它，等于用户只能设置和替换、再也无法通过接口清除，只能手改
+            # JSON。全空白（"   "）仍然拒 —— 那不是清除，是个会被当成真路径的值。
+            if value == "":
+                continue
             if not value.strip():
                 return {
                     "success": False,
-                    "error": f"{key} 不能是空白",
+                    "error": f"{key} 不能是空白（清除请传空字符串）",
                 }
             if not os.path.isabs(value):
                 return {

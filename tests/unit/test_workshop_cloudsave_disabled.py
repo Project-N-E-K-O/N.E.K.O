@@ -790,3 +790,35 @@ def test_the_cache_compare_and_set_is_atomic():
     assert has_compare and has_assign, (
         "代数比较和缓存赋值必须在同一个 with 里，否则中间可以被一次 save 插入"
     )
+
+
+@pytest.mark.asyncio
+async def test_an_empty_string_clears_the_override(monkeypatch):
+    """`""` is how this merge-style API clears `user_mod_folder`.
+
+    `get_workshop_path()` treats an empty value as "fall through to Steam /
+    cache / default", so rejecting it alongside whitespace leaves users able to
+    set and replace the override but never to clear it without hand-editing
+    the JSON. Whitespace-only stays rejected — that is not a clear, it is a
+    value that would be taken for a real path.
+    """
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        workshop_utils, "load_workshop_config",
+        lambda: {"user_mod_folder": os.path.join(os.sep, "previous")},
+    )
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True)
+
+    result = await config_files.save_workshop_config_api({"user_mod_folder": ""})
+
+    assert result["success"] is True, result.get("error")
+    assert saved and saved[-1]["user_mod_folder"] == "", "清除没有落盘"
+
+    blank = await config_files.save_workshop_config_api({"user_mod_folder": "  "})
+    assert blank["success"] is False, "全空白不该被当成清除"
