@@ -112,6 +112,14 @@ class FactDedupResolver:
     apply_decision delegates to FactStore's save path rather than
     writing the file directly."""
 
+    @staticmethod
+    def _locale_text(batch: list[dict]) -> str:
+        """Return only user-authored fact text for prompt locale detection."""
+        return "\n".join(
+            f"{item.get('candidate_text', '')}\n{item.get('existing_text', '')}"
+            for item in batch
+        )
+
     def __init__(self, fact_store: "FactStore") -> None:
         self._fact_store = fact_store
         self._config_manager = fact_store._config_manager
@@ -516,7 +524,7 @@ class FactDedupResolver:
         prompt = (
             get_fact_dedup_prompt(
                 detect_prompt_language(
-                    pairs_text,
+                    self._locale_text(batch),
                     ui_language=get_global_language_full(),
                 )
             )

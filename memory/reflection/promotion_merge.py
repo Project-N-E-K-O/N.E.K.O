@@ -59,6 +59,18 @@ from ._shared import (
 
 class PromotionMergeMixin:
     @staticmethod
+    def _promotion_locale_text(
+        reflection: dict,
+        persona_pool: list[tuple[str, dict]],
+        reflection_pool: list[dict],
+    ) -> str:
+        """Return raw impression text without IDs, scores, or labels."""
+        texts = [reflection.get('text', '')]
+        texts.extend(entry.get('text', '') for _key, entry in persona_pool)
+        texts.extend(entry.get('text', '') for entry in reflection_pool)
+        return "\n".join(str(text) for text in texts if text)
+
+    @staticmethod
     def _compute_merged_evidence(
         target: dict, reflection: dict,
     ) -> tuple[float, float]:
@@ -363,7 +375,7 @@ class PromotionMergeMixin:
 
         prompt = get_promotion_merge_prompt(
             detect_prompt_language(
-                f"{R.get('text', '')}\n{pool_text}",
+                self._promotion_locale_text(R, persona_pool, reflection_pool),
                 ui_language=get_global_language_full(),
             )
         ).format(

@@ -21,6 +21,8 @@ handler at import time.
 
 import asyncio
 from functools import wraps
+import threading
+import time
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
@@ -37,6 +39,18 @@ from memory.outbox import OP_POST_TURN_SIGNALS
 from . import gates, outbox_infra, runtime, signal_extraction
 from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
+
+
+_locale_order_lock = threading.Lock()
+_last_locale_order = 0
+
+
+def _next_locale_order() -> int:
+    global _last_locale_order
+
+    with _locale_order_lock:
+        _last_locale_order = max(time.time_ns(), _last_locale_order + 1)
+        return _last_locale_order
 
 
 def _with_language_context(func):
@@ -67,7 +81,11 @@ async def _spawn_outbox_post_turn_signals(
     """
     from utils.llm_client import messages_to_dict
 
-    payload = {'messages': messages_to_dict(messages)}
+    locale_order = _next_locale_order()
+    payload = {
+        'messages': messages_to_dict(messages),
+        'locale_order': locale_order,
+    }
     if language:
         # Persist the locale with the work item: after a memory_server restart,
         # replay must not re-resolve from a neutral process locale and switch
@@ -89,7 +107,12 @@ async def _spawn_outbox_post_turn_signals(
             f"{type(e).__name__}: {e}"
         )
         return runtime._spawn_background_task(
-            _run_post_turn_signals(messages, lanlan_name, language=language)
+            _run_post_turn_signals(
+                messages,
+                lanlan_name,
+                language=language,
+                locale_order=locale_order,
+            )
         )
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
@@ -101,6 +124,7 @@ async def _run_post_turn_signals(
     lanlan_name: str,
     *,
     language: str | None = None,
+    locale_order: int | None = None,
 ):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
@@ -141,6 +165,7 @@ async def _run_post_turn_signals(
             signal_extraction._signal_check_record_turn(
                 lanlan_name,
                 language=language,
+                locale_order=locale_order,
             )
     except Exception as e:
         # Best-effort counter bump; a failure here only delays the next
@@ -307,6 +332,7 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
         messages,
         lanlan_name,
         language=payload.get('language'),
+        locale_order=payload.get('locale_order'),
     )
 
 

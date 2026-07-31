@@ -208,6 +208,61 @@ async def test_new_dialog_request_forwards_session_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
+    from app.memory_server import locale_state, routes, runtime
+
+    class Recorded(RuntimeError):
+        pass
+
+    async def load_characters():
+        return {"猫娘": {"Neko": {}}}
+
+    def record(name, language, *, order):
+        assert (name, language) == ("Neko", "zh-TW")
+        assert isinstance(order, int)
+        raise Recorded
+
+    monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(locale_state, "record_character_prompt_locale", record)
+
+    with pytest.raises(Recorded):
+        await routes._new_dialog("Neko", "zh-TW")
+
+
+def test_memory_prompt_locale_detection_ignores_formatter_metadata():
+    from memory.fact_dedup import FactDedupResolver
+    from memory.refine import MemoryRefineEngine
+    from memory.reflection.promotion_merge import PromotionMergeMixin
+    from memory.reflection.synthesis import SynthesisMixin
+    from utils.language_utils import detect_prompt_language
+
+    dedup_text = FactDedupResolver._locale_text([{
+        "candidate_text": "王",
+        "existing_text": "李",
+        "candidate_id": "abcdef1234567890",
+        "existing_id": "fedcba0987654321",
+    }])
+    refine_text = MemoryRefineEngine._cluster_locale_text([{
+        "id": "reflection.abcdef1234567890",
+        "text": "怕貓",
+        "relation_type": "preference",
+        "temporal_scope": "pattern",
+    }])
+    promotion_text = PromotionMergeMixin._promotion_locale_text(
+        {"id": "reflection.abcdef1234567890", "text": "怕貓"},
+        [("master", {"id": "fedcba0987654321", "text": "愛狗"})],
+        [],
+    )
+    synthesis_text = SynthesisMixin._synthesis_locale_text(
+        [{"id": "abcdef1234567890", "text": "怕貓", "importance": 5}],
+        ["愛狗"],
+    )
+
+    for raw_text in (dedup_text, refine_text, promotion_text, synthesis_text):
+        assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
+
+
+@pytest.mark.asyncio
 async def test_pregame_history_request_forwards_session_locale(monkeypatch):
     from main_routers.game_router import pregame
     from utils import internal_http_client
@@ -288,7 +343,11 @@ async def test_external_import_commit_forwards_ui_locale(monkeypatch):
 def test_signal_loop_remembers_latest_session_locale(monkeypatch):
     from app.memory_server import locale_state, signal_extraction
 
-    monkeypatch.setattr(locale_state, "record_character_prompt_locale", lambda _name, language: language)
+    monkeypatch.setattr(
+        locale_state,
+        "record_character_prompt_locale",
+        lambda _name, language, **_kwargs: language,
+    )
     signal_extraction._signal_check_state.clear()
     signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
 
@@ -298,7 +357,11 @@ def test_signal_loop_remembers_latest_session_locale(monkeypatch):
 def test_signal_loop_clears_stale_session_locale(monkeypatch):
     from app.memory_server import locale_state, signal_extraction
 
-    monkeypatch.setattr(locale_state, "record_character_prompt_locale", lambda _name, language: language)
+    monkeypatch.setattr(
+        locale_state,
+        "record_character_prompt_locale",
+        lambda _name, language, **_kwargs: language,
+    )
     signal_extraction._signal_check_state.clear()
     signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
     signal_extraction._signal_check_record_turn("Neko")
@@ -332,6 +395,34 @@ async def test_idle_maintenance_uses_latest_session_locale(monkeypatch, tmp_path
     locale_state.record_character_prompt_locale("Neko", None)
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") is None
+
+
+def test_signal_loop_rejects_stale_locale_worker(monkeypatch, tmp_path):
+    from app.memory_server import locale_state, signal_extraction
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
+    signal_extraction._signal_check_state.clear()
+
+    signal_extraction._signal_check_record_turn(
+        "Neko",
+        language="zh-TW",
+        locale_order=200,
+    )
+    signal_extraction._signal_check_record_turn(
+        "Neko",
+        language="en",
+        locale_order=100,
+    )
+
+    assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
+    locale_state._locale_cache.clear()
+    assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
+
+    # 升级前入队的旧任务没有顺序号，也不能覆盖已有的新状态。
+    signal_extraction._signal_check_record_turn("Neko", language="ja")
+    assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
 
 
 def test_persona_correction_locale_ignores_formatter_labels():

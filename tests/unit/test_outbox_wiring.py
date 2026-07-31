@@ -70,6 +70,7 @@ async def test_spawn_outbox_happy_path_marks_done(tmp_path):
     assert isinstance(payload.get("messages"), list)
     assert len(payload["messages"]) == 2
     assert payload["language"] == "zh-TW"
+    assert isinstance(payload["locale_order"], int)
 
     # Outbox should show no pending ops after success
     pending = await ob.apending_ops("小天")
@@ -106,6 +107,7 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
     assert len(calls) == 1
     _name, payload = calls[0]
     assert "language" not in payload
+    assert isinstance(payload["locale_order"], int)
 
 
 @pytest.mark.asyncio
@@ -123,6 +125,7 @@ async def test_replay_without_recorded_language_falls_back_to_process_locale():
 
     runner.assert_awaited_once()
     assert runner.await_args.kwargs["language"] is None
+    assert runner.await_args.kwargs["locale_order"] is None
 
 
 @pytest.mark.asyncio
@@ -135,6 +138,7 @@ async def test_post_turn_outbox_replay_restores_recorded_language():
     payload = {
         "messages": messages_to_dict([HumanMessage(content="请记住我喜欢草莓")]),
         "language": "zh-CN",
+        "locale_order": 42,
     }
 
     with patch("app.memory_server.post_turn._run_post_turn_signals", runner):
@@ -143,6 +147,7 @@ async def test_post_turn_outbox_replay_restores_recorded_language():
     runner.assert_awaited_once()
     assert runner.await_args.args[1] == "小天"
     assert runner.await_args.kwargs["language"] == "zh-CN"
+    assert runner.await_args.kwargs["locale_order"] == 42
 
 
 @pytest.mark.asyncio

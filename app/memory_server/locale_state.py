@@ -32,7 +32,7 @@ from utils.logger_config import get_module_logger
 
 
 logger = get_module_logger(__name__, "Memory")
-_locale_cache: dict[str, str | None] = {}
+_locale_cache: dict[str, tuple[str | None, int | None]] = {}
 _locale_locks: dict[str, threading.Lock] = {}
 _locale_locks_guard = threading.Lock()
 
@@ -56,18 +56,52 @@ def _get_locale_lock(name: str) -> threading.Lock:
     return _locale_locks[name]
 
 
-def record_character_prompt_locale(name: str, language: str | None) -> str | None:
+def _load_locale_state_unlocked(name: str) -> tuple[str | None, int | None]:
+    if name in _locale_cache:
+        return _locale_cache[name]
+
+    selected = None
+    order = None
+    try:
+        with open(_locale_path(name), encoding="utf-8") as handle:
+            payload = json.load(handle)
+        candidate = payload.get("language") if isinstance(payload, dict) else None
+        if is_supported_language_code(candidate):
+            selected = normalize_language_code(str(candidate), format="full")
+        candidate_order = payload.get("order") if isinstance(payload, dict) else None
+        if isinstance(candidate_order, int) and not isinstance(candidate_order, bool):
+            order = candidate_order
+    except (OSError, json.JSONDecodeError):
+        # A missing or partially-written sidecar is equivalent to no saved locale.
+        pass
+    _locale_cache[name] = (selected, order)
+    return selected, order
+
+
+def record_character_prompt_locale(
+    name: str,
+    language: str | None,
+    *,
+    order: int | None = None,
+) -> str | None:
     """Persist the latest explicit session locale, or clear stale state."""
     selected = None
     if is_supported_language_code(language):
         selected = normalize_language_code(str(language), format="full")
+    selected_order = order if isinstance(order, int) and not isinstance(order, bool) else None
 
     with _get_locale_lock(name):
-        _locale_cache[name] = selected
+        current_language, current_order = _load_locale_state_unlocked(name)
+        if current_order is not None and (
+            selected_order is None or selected_order < current_order
+        ):
+            return current_language
+
+        _locale_cache[name] = (selected, selected_order)
         try:
             atomic_write_json(
                 _locale_path(name),
-                {"language": selected},
+                {"language": selected, "order": selected_order},
                 ensure_ascii=False,
             )
         except Exception as exc:
@@ -82,18 +116,7 @@ def record_character_prompt_locale(name: str, language: str | None) -> str | Non
 def get_character_prompt_locale(name: str) -> str | None:
     """Load the latest explicit session locale, including after restart."""
     with _get_locale_lock(name):
-        if name in _locale_cache:
-            return _locale_cache[name]
-        selected = None
-        try:
-            with open(_locale_path(name), encoding="utf-8") as handle:
-                payload = json.load(handle)
-            candidate = payload.get("language") if isinstance(payload, dict) else None
-            if is_supported_language_code(candidate):
-                selected = normalize_language_code(str(candidate), format="full")
-        except (OSError, json.JSONDecodeError):
-            pass
-        _locale_cache[name] = selected
+        selected, _order = _load_locale_state_unlocked(name)
         return selected
 
 

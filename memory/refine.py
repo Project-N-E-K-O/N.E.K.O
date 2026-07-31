@@ -138,6 +138,11 @@ class MemoryRefineEngine:
     manager. Construct once per refine cron and call refine_persona_pass
     / refine_reflection_pass per character per pass."""
 
+    @staticmethod
+    def _cluster_locale_text(cluster: list[dict]) -> str:
+        """Return raw member text without IDs or formatter metadata."""
+        return "\n".join(str(entry.get('text') or '') for entry in cluster)
+
     def __init__(self, config_manager):
         self._cm = config_manager
         self._service = get_embedding_service()
@@ -430,7 +435,7 @@ class MemoryRefineEngine:
 
         template = get_memory_refine_prompt(
             detect_prompt_language(
-                cluster_text,
+                self._cluster_locale_text(cluster),
                 ui_language=get_global_language_full(),
             )
         )

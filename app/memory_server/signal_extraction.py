@@ -97,12 +97,21 @@ def _signal_check_should_run(name: str, now: datetime) -> bool:
     return False
 
 
-def _signal_check_record_turn(name: str, *, language: str | None = None) -> None:
+def _signal_check_record_turn(
+    name: str,
+    *,
+    language: str | None = None,
+    locale_order: int | None = None,
+) -> None:
     from .locale_state import record_character_prompt_locale
 
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
-    state['language'] = record_character_prompt_locale(name, language)
+    state['language'] = record_character_prompt_locale(
+        name,
+        language,
+        order=locale_order,
+    )
 
 
 def _signal_check_mark_done(name: str, now: datetime) -> None:

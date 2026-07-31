@@ -53,7 +53,7 @@ from utils.cloudsave_runtime import assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
-from . import gates, post_turn, review, runtime
+from . import gates, locale_state, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from .rows import _has_human_messages
 from .runtime import app
@@ -1458,6 +1458,14 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
     except Exception as e:
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
+
+    if is_supported_language_code(language):
+        await asyncio.to_thread(
+            locale_state.record_character_prompt_locale,
+            lanlan_name,
+            language,
+            order=post_turn._next_locale_order(),
+        )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
     # cacheable 机会，记进来反而污染 per_char 分布。
