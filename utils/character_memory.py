@@ -440,6 +440,48 @@ def clear_character_recent_redirects(config_manager, character_name: str) -> Non
         activate_recent_paths(recent_paths)
 
 
+def begin_character_recent_activation(config_manager, character_name: str) -> dict[str, Any]:
+    """Activate a reused character identity while retaining its recent locks."""
+    transaction = begin_character_recent_transaction(config_manager, character_name)
+    recent_paths = transaction["recent_paths"]
+    try:
+        (
+            redirect_snapshot,
+            activation_scope,
+            deletion_snapshot,
+            generation_snapshot,
+        ) = activate_recent_paths(recent_paths)
+        transaction.update({
+            "redirect_snapshot": redirect_snapshot,
+            "activation_scope": activation_scope,
+            "deletion_snapshot": deletion_snapshot,
+            "generation_snapshot": generation_snapshot,
+        })
+        return transaction
+    except BaseException:
+        release_character_recent_transaction(transaction)
+        raise
+
+
+def rollback_character_recent_activation(transaction: dict[str, Any]) -> None:
+    """Restore a reused character identity when publishing its config fails."""
+    recent_paths = transaction.get("recent_paths") or []
+    activation_scope = transaction.get("activation_scope") or set()
+    held_locks = transaction.get("held_locks") or []
+    if not held_locks:
+        held_locks = acquire_recent_file_locks(recent_paths)
+    try:
+        restore_recent_registry_state(
+            list(set(recent_paths) | set(activation_scope)),
+            transaction.get("redirect_snapshot") or {},
+            transaction.get("deletion_snapshot") or set(),
+            transaction.get("generation_snapshot") or {},
+        )
+    finally:
+        transaction["held_locks"] = held_locks
+        release_character_recent_transaction(transaction)
+
+
 def delete_character_memory_storage(
     config_manager,
     character_name: str,

@@ -119,6 +119,52 @@ class _DummyRequest:
         return self._payload
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_add_catgirl_activates_reused_recent_name_before_config_publish(
+    tmp_path, monkeypatch,
+):
+    """A reused recent identity is active before config publication and rolls back on failure."""
+    from utils import recent_file
+    from utils.character_memory import list_character_recent_paths
+
+    reused_name = "Reused"
+    former_target = tmp_path / "Former" / "recent.json"
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+        async def aload_characters(self):
+            return {"猫娘": {}}
+
+        async def asave_characters(self, _characters):
+            for path in list_character_recent_paths(self, reused_name):
+                key = recent_file._lock_key(path)
+                with recent_file._LOCKS_GUARD:
+                    assert recent_file._resolve_key_unlocked(key) == key
+            raise RuntimeError("simulated config publish failure")
+
+    config = _Config()
+    reused_paths = list_character_recent_paths(config, reused_name)
+    recent_file.redirect_recent_paths(reused_paths, former_target)
+    characters_router_module = reload_module("main_routers.characters_router.crud")
+    monkeypatch.setattr(characters_router_module, "get_config_manager", lambda: config)
+    monkeypatch.setattr(
+        characters_router_module, "_get_new_catgirl_default_voice_id", lambda: "voice",
+    )
+
+    with pytest.raises(RuntimeError, match="simulated config publish failure"):
+        await characters_router_module.add_catgirl(_DummyRequest({"档案名": reused_name}))
+
+    with recent_file._LOCKS_GUARD:
+        target_key = recent_file._lock_key(former_target)
+        assert all(
+            recent_file._resolve_key_unlocked(recent_file._lock_key(path)) == target_key
+            for path in reused_paths
+        )
+
+
 class _DummyGetRequest:
     def __init__(self, query_params=None, headers=None):
         self.query_params = query_params or {}
