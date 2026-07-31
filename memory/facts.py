@@ -751,8 +751,11 @@ class FactStore:
             # copy. Reflection/persona archive events can recreate their shard
             # snapshots during a later full replay; restore must still know
             # that every snapshot at or before this point is erased history.
-            self._record_subject_forget_tombstone_locked(
-                lanlan_name, memory_subject, datetime.now().isoformat(),
+            await asyncio.to_thread(
+                self._record_subject_forget_tombstone_locked,
+                lanlan_name,
+                memory_subject,
+                datetime.now().isoformat(),
             )
 
             # Privacy erasure must fail closed.  The normal FTS helper is
