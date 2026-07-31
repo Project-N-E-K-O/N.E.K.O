@@ -1893,6 +1893,27 @@ async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
     assert stats["persona_section_dropped"] is True
     assert harness2.persona == {}
 
+    # Archive sweeps may already have removed every target entry while a
+    # different scope still occupies the shared section. Forget must still
+    # remove the archived subject's display metadata and transfer ownership.
+    archive_leftover = {
+        "display_name": "小明",
+        "facts": [
+            {"id": "p2", "text": "mixed scope", **mixed.as_entry_fields()},
+        ],
+        **target.as_entry_fields(),
+    }
+    harness3 = _Harness({target.persona_section_key: archive_leftover}, [])
+    with patch("memory.persona.facts.atomic_write_json_async", new=AsyncMock()):
+        stats = await harness3.aforget_subject(
+            "Neko", target.as_entry_fields(),
+        )
+    remaining_section = harness3.persona[target.persona_section_key]
+    assert stats["persona_entries"] == 0
+    assert harness3.saved == 1
+    assert "display_name" not in remaining_section
+    assert remaining_section["scope"] == mixed.scope
+
 
 @pytest.mark.asyncio
 async def test_scoped_forget_aborts_on_unreadable_corrections(tmp_path):
@@ -2599,13 +2620,38 @@ async def test_reload_shares_subject_forget_fences_with_old_components():
 
     old_persona = PersonaManager()
     new_persona = PersonaManager()
+    old_persona._personas["Neko"] = {"stale": True}
     old_data_lock = old_persona._get_alock("Neko")
     old_resolve_lock = old_persona._get_resolve_alock("Neko")
-    runtime._share_persona_write_locks(old_persona, new_persona)
+    runtime._share_persona_write_state(old_persona, new_persona)
 
     assert new_persona._get_alock("Neko") is old_data_lock
     assert new_persona._get_resolve_alock("Neko") is old_resolve_lock
     assert new_persona._alocks_guard is old_persona._alocks_guard
+    assert new_persona._personas is old_persona._personas
+    new_persona._personas["Neko"] = {"forgotten": True}
+    assert old_persona._personas["Neko"] == {"forgotten": True}
+
+
+def test_dedup_resolver_is_ready_before_optional_embedding_bootstrap():
+    """Scoped erasure cannot depend on the best-effort vector worker."""
+    import inspect
+
+    from app.memory_server import runtime
+
+    startup = inspect.getsource(
+        runtime.ensure_memory_server_runtime_initialized,
+    )
+    resolver_ready = startup.index(
+        "fact_dedup_resolver = FactDedupResolver(fact_store)"
+    )
+    worker_spawned = startup.index(
+        "_spawn_background_task(_bootstrap_embedding_worker())"
+    )
+    assert resolver_ready < worker_spawned
+    assert "FactDedupResolver(" not in inspect.getsource(
+        runtime._bootstrap_embedding_worker,
+    )
 
 
 @pytest.mark.asyncio

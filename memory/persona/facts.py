@@ -1045,6 +1045,7 @@ class FactsMixin:
         section_key = memory_subject.persona_section_key
         removed_entries = 0
         section_dropped = False
+        section_metadata_changed = False
         corrections_removed = 0
 
         def _correction_matches(correction: object) -> bool:
@@ -1178,8 +1179,7 @@ class FactsMixin:
                             persona.pop(section_key, None)
                             section_dropped = True
                     elif (
-                        removed_entries
-                        and section_subject is not None
+                        section_subject is not None
                         and section_subject.key == memory_subject.key
                         and section_subject.scope == memory_subject.scope
                     ):
@@ -1199,10 +1199,19 @@ class FactsMixin:
                                 break
                         if replacement_subject is not None:
                             section.update(replacement_subject.as_entry_fields())
+                        else:
+                            for field in memory_subject.as_entry_fields():
+                                section.pop(field, None)
                         section.pop('display_name', None)
-                if removed_entries or section_dropped:
+                        section_metadata_changed = True
+                if removed_entries or section_dropped or section_metadata_changed:
                     await self.asave_persona(name, persona)
-        if removed_entries or section_dropped or corrections_removed:
+        if (
+            removed_entries
+            or section_dropped
+            or section_metadata_changed
+            or corrections_removed
+        ):
             logger.info(
                 f"[Persona] {name}: forget "
                 f"{memory_subject.key}/{memory_subject.scope}: "

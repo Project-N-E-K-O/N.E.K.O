@@ -67,15 +67,6 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-try:
-    from memory.embeddings import cosine_similarity
-except ImportError:
-    # See ``embedding_worker`` for context on the fallback path. With a
-    # 0.0-cosine stub the resolver's pending queue stays empty and the
-    # legacy hash + FTS5 dedup is the entire pipeline — same shape as
-    # ``is_available() == False`` in the real module.
-    from memory.embeddings_fallback import cosine_similarity, _warn_once
-    _warn_once(__name__)
 from memory.facts import safe_int_field
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
@@ -453,6 +444,14 @@ class FactDedupResolver:
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
         """  # noqa: DOCSTRING_CJK
+        try:
+            from memory.embeddings import cosine_similarity
+        except ImportError:
+            # Queue management and erasure must remain importable without the
+            # optional embedding stack. Candidate detection alone degrades to
+            # the zero-cosine fallback when vectors are unavailable.
+            from memory.embeddings_fallback import cosine_similarity, _warn_once
+            _warn_once(__name__)
         from memory.scopes import is_legacy_private_entry, subject_from_entry
 
         def _bucket_key(f: dict) -> tuple | None:
