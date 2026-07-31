@@ -133,11 +133,23 @@ class QQSessionBootstrapService:
             async def on_text_delta(text: str, is_first: bool):
                 reply_chunks.append(text)
 
+            async def on_response_discarded(
+                reason: str,
+                attempt: int,
+                max_attempts: int,
+                will_retry: bool,
+                message: str | None,
+            ):
+                # core 已判定当前 attempt 不可投递；只丢弃这一 attempt 已流出
+                # 的分片。后续重试仍经 on_text_delta 写入，合法 pre-tool 不受影响。
+                reply_chunks.clear()
+
             user_session = OmniOfflineClient(
                 base_url=base_url,
                 api_key=api_key,
                 model=model,
                 on_text_delta=on_text_delta,
+                on_response_discarded=on_response_discarded,
                 # 一轮只允许一次召回：与旧的每轮同步召回同预算，也压住
                 # 工具轮的最坏超时（每多一次迭代就多一整段 LLM 流，而这里
                 # 超时的代价是丢弃整个共享群会话）。封顶后 forced-finalize
@@ -182,4 +194,3 @@ class QQSessionBootstrapService:
         except Exception as e:
             self.plugin.logger.error(f"创建回复会话失败: {e}")
             return None
-

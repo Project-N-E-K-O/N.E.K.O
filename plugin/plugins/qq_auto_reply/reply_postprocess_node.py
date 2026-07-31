@@ -42,13 +42,15 @@ class QQReplyPostprocessNode:
             return [QQMessageBlock(text=text)]
         leading_raw = text[:msg_start.start()]
         leading_raw = _re.sub(
-            r"```(?:xml)?\s*$", "", leading_raw, flags=_re.IGNORECASE,
-        )
-        leading_raw = _re.sub(
             r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
             "",
             leading_raw,
             flags=_re.IGNORECASE,
+        )
+        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
+        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
+        leading_raw = _re.sub(
+            r"```(?:xml)?\s*$", "", leading_raw, flags=_re.IGNORECASE,
         )
         leading_text = leading_raw.strip()
         xml_text = _re.sub(r"\s*```\s*$", "", text[msg_start.start():])

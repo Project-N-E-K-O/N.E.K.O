@@ -1,11 +1,15 @@
 import inspect
 from types import SimpleNamespace
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from plugin.plugins.qq_auto_reply import reply_generation_service as reply_module
+from plugin.plugins.qq_auto_reply.pipeline_models import QQMessageBlock
 from plugin.plugins.qq_auto_reply.reply_generation_service import (
     QQReplyGenerationService,
 )
+from plugin.plugins.qq_auto_reply.reply_pipeline import QQReplyPipelineRunner
 from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
     QQReplyPostprocessNode,
 )
@@ -84,3 +88,45 @@ def test_dynamic_xml_fence_is_not_delivered_as_pre_tool_text():
     )
 
     assert [block.text for block in blocks] == ["查到了"]
+
+
+def test_dynamic_xml_wait_inside_fence_is_not_delivered_as_pre_tool_text():
+    """Wait removal must expose and then remove the opening XML fence."""
+    blocks = QQReplyPostprocessNode._parse_blocks(
+        "```xml\n<wait>2</wait><msg><text>查到了</text></msg>\n```"
+    )
+
+    assert [block.text for block in blocks] == ["查到了"]
+
+
+@pytest.mark.asyncio
+async def test_buffer_summary_receives_pre_tool_and_final_text():
+    """The buffered summary input must contain every visible text block."""
+    buffer_service = SimpleNamespace(schedule_reply=AsyncMock())
+    plugin = SimpleNamespace(
+        reply_buffer_service=buffer_service,
+        _build_session_key=lambda **_kwargs: "group:7788",
+        _emit_log=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    blocks = [QQMessageBlock(text="我查一下"), QQMessageBlock(text="查到了")]
+    plan = SimpleNamespace(blocks=blocks, target_type="group", target_id="7788")
+    request = SimpleNamespace(
+        source_kind="incoming",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+        forward_sub_count=0,
+        persist_memory=True,
+    )
+    outcome = SimpleNamespace(
+        raw_reply_text="我查一下<msg><text>查到了</text></msg>",
+        used_fallback=False,
+        used_default_message=False,
+    )
+
+    await runner._run_delivery(plan, request, outcome)
+
+    assert buffer_service.schedule_reply.await_args.kwargs["reply_text"] == (
+        "我查一下\n查到了"
+    )

@@ -1518,6 +1518,16 @@ async def test_bootstrap_rebuilds_stale_route_session(monkeypatch):
     assert created["conversation_route"] == new_route
     assert built and built[-1].base_url == new_route[0]
 
+    # 被 core 判废的 attempt 不得污染下一次重试；成功重试自己的 pre-tool
+    # 仍由同一个 delta 回调原样保留。
+    on_text_delta = built[-1].kwargs["on_text_delta"]
+    on_response_discarded = built[-1].kwargs["on_response_discarded"]
+    await on_text_delta("旧 attempt", True)
+    await on_response_discarded("retry", 1, 3, True, None)
+    await on_text_delta("我查", True)
+    await on_text_delta("一下", False)
+    assert created["reply_chunks"] == ["我查", "一下"]
+
     # 线路一致的下一轮：原样复用，不再重建。
     discard.reset_mock()
     reused = await service.ensure_generation_session(context, "group:7788")
