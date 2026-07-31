@@ -39,7 +39,11 @@ from utils.config_manager import (
     get_workshop_path
 )
 
-def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
+def ensure_workshop_folder_exists(
+    folder_path: Optional[str] = None,
+    *,
+    auto_create: Optional[bool] = None,
+) -> bool:
     """
     Ensure the local mod folder (formerly the Workshop folder) exists, creating it if missing
     
@@ -49,8 +53,10 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
     Returns:
         bool: whether the folder exists or was created successfully
     """
-    # 确定目标文件夹路径
-    config = load_workshop_config()
+    # auto_create 由调用方给定时**不重读配置**：读改写事务里，重读会看到并发事务刚写
+    # 的那份，从而对着别人的策略做决定（Codex P2）；而且把这次重读留在事务的锁里会
+    # 让事件循环上的 get_workshop_path() 跟着一起等（同一个锁传导陷阱）。
+    config = {} if auto_create is not None else load_workshop_config()
     # 使用get_workshop_path()函数获取路径，该函数已更新为优先使用user_mod_folder
     raw_folder = folder_path or get_workshop_path()
     
@@ -72,7 +78,8 @@ def ensure_workshop_folder_exists(folder_path: Optional[str] = None) -> bool:
         return True
     
     # 如果文件夹不存在，检查是否允许自动创建
-    auto_create = config.get("auto_create_folder", True)
+    if auto_create is None:
+        auto_create = config.get("auto_create_folder", True)
     
     # 如果不允许自动创建，明确返回False
     if not auto_create:

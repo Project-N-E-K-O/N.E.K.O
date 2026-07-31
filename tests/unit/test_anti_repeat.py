@@ -650,7 +650,9 @@ def test_the_per_turn_callers_use_the_async_twin():
         "main_logic/core/proactive.py",
     ):
         source = (repo_root / rel).read_text(encoding="utf-8")
-        assert "arecord_output(" in source, f"{rel} 应当调用 async 孪生"
+        assert "stage_output(" in source and "aflush_staged(" in source, (
+            f"{rel} 必须走两段式：内存更新在收尾信号之前，落盘在之后"
+        )
         assert ".record_output(" not in source, (
             f"{rel} 回退到了同步 record_output —— 那会把 fsync 压在会话循环上"
         )

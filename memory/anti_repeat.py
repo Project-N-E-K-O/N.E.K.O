@@ -470,6 +470,39 @@ class AntiRepeatCorpus:
             payload, seq = self._stage_snapshot_unlocked(name)
         return name, payload, seq
 
+    def stage_output(
+        self,
+        name: str,
+        text: str,
+        *,
+        is_proactive: bool = False,
+        now: Optional[float] = None,
+    ) -> Optional[Tuple[str, Dict[str, Any], int]]:
+        """Apply one record in memory now; return a handle to flush later.
+
+        For callers that must satisfy two conflicting orderings at once. The
+        in-memory half has to land BEFORE the turn's terminal signals: the
+        client can send its next message the instant it sees turn-end, and
+        scoring that message against a corpus still missing the reply just
+        committed is how the same line gets said twice. The disk half has to
+        land AFTER them: it is an ``await``, and a cancellation there would
+        otherwise skip the terminal signals entirely, leaving a visible turn
+        with no completion.
+
+        Splitting the two satisfies both — this call takes no await, so it
+        cannot be a cancellation point. Returns None when the text is skipped.
+        """
+        return self._record_in_memory(name, text, is_proactive=is_proactive, now=now)
+
+    async def aflush_staged(
+        self, staged: Optional[Tuple[str, Dict[str, Any], int]],
+    ) -> None:
+        """Write a snapshot staged by ``stage_output`` off the event loop."""
+        if staged is None:
+            return
+        name, payload, seq = staged
+        await asyncio.to_thread(self._flush_snapshot, name, payload, seq)
+
     async def arecord_output(
         self,
         name: str,

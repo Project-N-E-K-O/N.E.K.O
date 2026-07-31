@@ -116,6 +116,17 @@ class WorkshopMixin:
         for candidate in candidates:
             self._cleanup_invalid_workshop_config_file(candidate)
 
+    def _read_workshop_config_file(self):
+        """Read workshop_config.json as-is, without the self-healing rebase."""
+        config_path = self.get_workshop_config_path()
+        try:
+            if not os.path.exists(config_path):
+                return None
+            with open(config_path, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return None
+
     def workshop_config_lock(self):
         """The lock that serializes every read-modify-write of workshop_config.json.
 
@@ -169,8 +180,25 @@ class WorkshopMixin:
         if rebased_config is config:
             return config
 
+        # 走到这里才需要写盘 —— 也只有这里需要锁。锁内**重读一次**再决定：调用方那份
+        # 快照是在锁外读的，直接写回去就可能把并发事务刚提交的配置整份盖掉（正是
+        # POST /config 与 GET /config 之间那个竞态）。重读之后没得可改就什么都不做。
         try:
-            self.save_workshop_config(rebased_config)
+            with self._workshop_config_lock:
+                fresh = self._read_workshop_config_file()
+                if fresh is None:
+                    return rebased_config
+                rebased_fresh = fresh
+                for source_root in candidate_source_roots:
+                    rebased_fresh = rebase_runtime_bound_workshop_config_paths(
+                        rebased_fresh,
+                        source_root=source_root,
+                        target_root=self.app_docs_dir,
+                    )
+                if rebased_fresh is fresh:
+                    return fresh
+                self.save_workshop_config(rebased_fresh)
+                return rebased_fresh
         except Exception as exc:
             logger.warning("保存迁移后的 workshop 配置路径自愈结果失败: %s", exc)
         return rebased_config
@@ -185,14 +213,15 @@ class WorkshopMixin:
         config_path = self.get_workshop_config_path()
         try:
             if os.path.exists(config_path):
-                # 这条路径**不是只读**：_rebase_workshop_config_after_storage_migration
-                # 在存储迁移之后会把自愈结果 save 回去。不进锁的话，一次并发的
-                # GET /config 可以「事务之前读、事务之后写」，把用户刚提交的目录设置
-                # 用自己那份陈旧快照整份盖掉，而 POST 还报 success。
-                with self._workshop_config_lock:
-                    with open(config_path, 'r', encoding='utf-8') as f:
-                        config = json.load(f)
-                    config = self._rebase_workshop_config_after_storage_migration(config)
+                # ⚠️ 这条读路径**不许拿 _workshop_config_lock**。get_workshop_path()
+                # 走的就是这里，而 voice_refs / publish 等 async handler 在事件循环上
+                # 裸调 get_workshop_path()。让它去抢一把 worker 可能正持着（跨 fsync、
+                # 甚至跨网络盘 makedirs）的锁，就等于把整条循环挂在那儿 —— 同一个锁
+                # 传导陷阱在这个 PR 里已经踩过两次。自愈写的串行化由
+                # _rebase_workshop_config_after_storage_migration 自己在锁内完成。
+                with open(config_path, 'r', encoding='utf-8') as f:
+                    config = json.load(f)
+                config = self._rebase_workshop_config_after_storage_migration(config)
                 logger.debug(f"成功加载workshop配置: {config}")
                 return config
             else:

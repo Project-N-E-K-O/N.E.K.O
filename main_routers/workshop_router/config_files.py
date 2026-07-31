@@ -69,7 +69,7 @@ async def save_workshop_config_api(config_data: dict):
         # 导入与get_workshop_config相同路径的函数，保持一致性
         from utils.workshop_utils import load_workshop_config, save_workshop_config, ensure_workshop_folder_exists
 
-        def _apply_config_transaction() -> tuple[dict, bool | None]:
+        def _apply_config_transaction() -> tuple[dict, str, bool]:
             with get_config_manager().workshop_config_lock():
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
                 # 后写的那次会把前一次的字段整份盖掉。
@@ -78,15 +78,26 @@ async def save_workshop_config_api(config_data: dict):
                     if key in config_data:
                         merged[key] = config_data[key]
                 save_workshop_config(merged)
-                folder_ready: bool | None = None
-                if merged.get('auto_create_folder', True):
-                    # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
-                    folder_path = merged.get('user_mod_folder') or merged.get('default_workshop_folder')
-                    if folder_path:
-                        folder_ready = bool(ensure_workshop_folder_exists(folder_path))
-                return merged, folder_ready
+                auto_create = bool(merged.get('auto_create_folder', True))
+                # 优先使用user_mod_folder，如果没有则使用default_workshop_folder
+                folder_path = ''
+                if auto_create:
+                    folder_path = merged.get('user_mod_folder') or merged.get('default_workshop_folder') or ''
+            # ⚠️ 建目录在**锁外**做。它可能是网络盘 / 可移动盘上的 exists + makedirs，
+            # 慢得没有上界；而事件循环上还有 handler 裸调 get_workshop_path()。持着锁
+            # 做这件事就是把整条循环挂在那儿。策略（auto_create + 目标路径）已经在锁内
+            # 定死并显式传进去，所以 ensure 不会重读到别人的配置。
+            return merged, folder_path, auto_create
 
-        workshop_config_data, folder_ready = await asyncio.to_thread(_apply_config_transaction)
+        workshop_config_data, folder_path, auto_create = await asyncio.to_thread(
+            _apply_config_transaction
+        )
+        folder_ready: bool | None = None
+        if auto_create and folder_path:
+            folder_ready = await asyncio.to_thread(
+                ensure_workshop_folder_exists, folder_path, auto_create=True,
+            )
+            folder_ready = bool(folder_ready)
 
         # ensure_workshop_folder_exists 把创建失败（只读盘、权限不足）吞成返回 False。
         # 配置确实存下来了，所以 success 仍然是 True —— 但不能因此告诉用户目录也准备

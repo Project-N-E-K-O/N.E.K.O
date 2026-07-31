@@ -432,30 +432,32 @@ class _LifecycleMixin:
                     logger.exception("prompt_ephemeral on_committed callback failed")
             if content_committed and persist_response:
                 self._conversation_history.append(AIMessage(content=assistant_message))
+            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步，不含 await，
+            # 所以不是取消点），落盘在**之后**。客户端看到 turn end 就可能立刻发下一
+            # 条，那一轮的打分必须已经看得到刚提交的这句；而落盘那个 await 一旦被取消
+            # 就会跳过 on_response_done 里的 TTS 收尾 / turn 结束 / request-id 清理。
+            # 两个要求方向相反，只有拆开才能同时满足。
+            staged_anti_repeat = None
+            if completion_mode == "response" and content_committed and persist_response:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    staged_anti_repeat = get_anti_repeat_corpus().stage_output(
+                        self.lanlan_name, committed_text, is_proactive=False,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] stage reply skipped: %s", _exc)
             if completion_mode == "response":
                 if self.on_response_done:
                     await self.on_response_done()
-                # 防复读 corpus：只录常规 reply（completion_mode == "response"）。
-                # proactive 路径已经在 ``core.finish_proactive_delivery`` 上录，
-                # 这里再录会双写——这两条路径都接得到同一段 assistant 文本。
-                #
-                # ⚠️ 必须排在 on_response_done **之后**。落盘走 async 孪生（同步版
-                # 尾部是 atomic_write_json，含无上界的 fsync，而这条路径每条回复都
-                # 走一次，压在会话循环上就是掐音频），但那个 await 也就成了一个取消
-                # 点：文本已经提交、历史已经写上，此时被取消的话 CancelledError 是
-                # BaseException，下面的 except Exception 接不住，on_response_done
-                # 里的 TTS 收尾 / turn 结束 / request-id 清理就全被跳过 —— 一次
-                # 已提交的回复没有终止信号，比漏录一条防复读语料严重得多。
-                # 排在后面，收尾信号先落地，corpus 只是尽力而为。
-                if content_committed and persist_response:
+                # 只录常规 reply（completion_mode == "response"）。proactive 路径
+                # 已经在 ``core.finish_proactive_delivery`` 上录，这里再录会双写。
+                if staged_anti_repeat is not None:
                     try:
                         from memory.anti_repeat import get_anti_repeat_corpus
-                        await get_anti_repeat_corpus().arecord_output(
-                            self.lanlan_name, committed_text, is_proactive=False,
-                        )
+                        await get_anti_repeat_corpus().aflush_staged(staged_anti_repeat)
                     except Exception as _exc:  # pragma: no cover
                         logger.debug(
-                            "[AntiRepeat] record reply skipped: %s", _exc,
+                            "[AntiRepeat] flush reply skipped: %s", _exc,
                         )
             else:
                 proactive_done_cb = getattr(self, "on_proactive_done", None)

@@ -483,6 +483,28 @@ class ProactiveMixin:
                 # 绝不会为未投递的轮次暂存截图。
                 if hasattr(self.session, "set_proactive_screenshot"):
                     self.session.set_proactive_screenshot(vision_screenshot_b64)
+
+            # 防复读 corpus 拆成两半：内存更新在收尾信号**之前**（同步、无 await，
+            # 所以不是取消点），落盘在之后。用户可能对着主动搭话立刻回一句，那一轮
+            # 打分必须已经看得到刚投递的这段；而落盘那个 await 一旦被取消就会跳过
+            # TTS 收尾和两处 turn end。两个要求方向相反，只有拆开才能同时满足。
+            #
+            # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
+            # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
+            # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
+            # BM25 评分豁免对偶）。
+            staged_anti_repeat = None
+            if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+                try:
+                    from memory.anti_repeat import get_anti_repeat_corpus
+                    staged_anti_repeat = get_anti_repeat_corpus().stage_output(
+                        self.lanlan_name,
+                        full_text,
+                        is_proactive=True,
+                        now=publication_times[0] if publication_times else None,
+                    )
+                except Exception as _exc:  # pragma: no cover
+                    logger.debug("[AntiRepeat] stage proactive skipped: %s", _exc)
                 # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
                 # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
                 # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
@@ -504,28 +526,13 @@ class ProactiveMixin:
                 # Turn-end push is best-effort; the client may have gone away.
                 pass
 
-            # 防复读 corpus 排在**所有收尾信号之后**。落盘走 async 孪生（同步版
-            # 尾部是 atomic_write_json，含无上界 fsync，压在会话循环上就是掐音
-            # 频），但那个 await 也是个取消点：文本此刻已经投递出去了，被取消的
-            # 话 CancelledError 是 BaseException、下面的 except Exception 接不住，
-            # TTS 收尾和两处 turn end 就全被跳过 —— 用户看得见的一轮没有终止信号，
-            # 比漏录一条语料严重得多。与 omni_offline_client/_lifecycle.py 同款处置。
-            #
-            # LLM 给自己的元数据备忘，不算复读对象。素材推送类 channel（推歌）
-            # 的台词天生模板化，录进 corpus 会污染 FG 窗、漂移其它 channel 的
-            # 复读基线，故按 ANTI_REPEAT_EXEMPT_SOURCE_TAGS 豁免（与出口的
-            # BM25 评分豁免对偶）。
-            if source_tag not in ANTI_REPEAT_EXEMPT_SOURCE_TAGS:
+            # 落盘排在所有收尾信号之后（内存更新已经在投递后立刻做了，见上）。
+            if staged_anti_repeat is not None:
                 try:
                     from memory.anti_repeat import get_anti_repeat_corpus
-                    await get_anti_repeat_corpus().arecord_output(
-                        self.lanlan_name,
-                        full_text,
-                        is_proactive=True,
-                        now=publication_times[0] if publication_times else None,
-                    )
+                    await get_anti_repeat_corpus().aflush_staged(staged_anti_repeat)
                 except Exception as _exc:  # pragma: no cover
-                    logger.debug("[AntiRepeat] record proactive skipped: %s", _exc)
+                    logger.debug("[AntiRepeat] flush proactive skipped: %s", _exc)
         # proactive 原文不写 logger（隐私）；本地 print 兜底
         logger.info("[%s] Proactive stream delivered (text_len=%d)", self.lanlan_name, len(full_text or ""))
         print(f"[{self.lanlan_name}] Proactive stream delivered: {(full_text or '')[:40]}…")

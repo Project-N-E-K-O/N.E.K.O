@@ -391,10 +391,12 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     mgr.last_user_engagement_time = None
     mgr.session = MagicMock()
     mgr.session._conversation_history = []
-    # arecord_output 必须是 AsyncMock：调用点 await 它，而 MagicMock 的返回值
-    # 不可 await —— 那会被调用点的 except 吞掉，这条用例就变成永远绿的空断言。
+    # 两段式：stage_output 是同步的（在收尾信号之前），aflush_staged 是 async 的
+    # （在之后）。aflush 必须是 AsyncMock —— 用 MagicMock 的话 await 会抛，被调用点
+    # 的 except 吞掉，这条用例就变成永远绿的空断言。
     corpus = MagicMock()
-    corpus.arecord_output = AsyncMock()
+    corpus.stage_output = MagicMock(return_value=("Test", {"window": []}, 1))
+    corpus.aflush_staged = AsyncMock()
     monkeypatch.setattr(
         anti_repeat,
         "get_anti_repeat_corpus",
@@ -416,12 +418,13 @@ async def test_finish_records_proactive_at_sync_publication_time(monkeypatch):
     )
 
     assert result is True
-    corpus.arecord_output.assert_awaited_once_with(
+    corpus.stage_output.assert_called_once_with(
         "Test",
         "delivered before immediate reply",
         is_proactive=True,
         now=100.0,
     )
+    corpus.aflush_staged.assert_awaited_once()
     corpus.record_output.assert_not_called()
 
 

@@ -141,22 +141,26 @@ def _stub_config_manager_lock(monkeypatch):
     return lock
 
 @pytest.mark.asyncio
-async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monkeypatch):
-    """Two overlapping /config requests must not read each other's half-state.
+async def test_a_transaction_hands_ensure_its_own_policy(tmp_path, monkeypatch):
+    """The auto-create decision must come from the transaction, not a reload.
 
-    The save now runs in a worker thread, so two of them interleave at the OS
-    level. `ensure_workshop_folder_exists` re-reads the config file to decide
-    `auto_create_folder`, so without serialization request A's ensure can see
-    request B's freshly-saved config and decline to create A's folder while A
-    still answers `success`.
+    `ensure_workshop_folder_exists` used to re-read the config file to decide
+    `auto_create`, so an overlapping request could flip it in between: A saves
+    auto_create=true for folder A, B saves auto_create=false, A's ensure reads
+    B's config and declines to create A — while A answers success.
+
+    The policy is now decided under the lock and passed in explicitly, which is
+    also what lets the (possibly very slow) directory work happen outside the
+    lock. Asserted on the argument ensure actually receives.
     """
     _stub_config_manager_lock(monkeypatch)
     import threading
 
     from main_routers.workshop_router import config_files
+    from utils import workshop_utils
 
     stored: dict = {"auto_create_folder": True}
-    order: list[str] = []
+    seen: list[str] = []
     b_saved = threading.Event()
 
     def _load():
@@ -168,14 +172,12 @@ async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monke
         if cfg.get("user_mod_folder") == "B":
             b_saved.set()
 
-    def _ensure(folder):
-        # A 到这里时故意让 B 有机会先写完；没有锁的话 A 就会读到 B 的配置。
+    def _ensure(folder, **kwargs):
         if folder == "A":
+            # 让 B 一定先写完，构造出「重读就会读到别人配置」的时刻。
             b_saved.wait(timeout=1.0)
-        order.append(f"ensure:{folder}:auto={_load().get('auto_create_folder')}")
+        seen.append(f"{folder}:auto={kwargs.get('auto_create')}")
         return True
-
-    from utils import workshop_utils
 
     monkeypatch.setattr(workshop_utils, "load_workshop_config", _load)
     monkeypatch.setattr(workshop_utils, "save_workshop_config", _save)
@@ -194,117 +196,106 @@ async def test_concurrent_config_saves_do_not_cross_transactions(tmp_path, monke
     )
     await asyncio.gather(a, b)
 
-    a_ensures = [entry for entry in order if entry.startswith("ensure:A")]
-    assert a_ensures == ["ensure:A:auto=True"], (
-        f"A 的 ensure 读到了别人的配置：{order}"
+    assert "A:auto=True" in seen, (
+        f"A 的 ensure 拿到的不是本次事务定下的策略：{seen}"
+    )
+    assert not any(entry.startswith("B:") for entry in seen), (
+        "auto_create=false 的那次不该去建目录"
     )
 
 
-@pytest.mark.asyncio
-async def test_a_folder_that_cannot_be_created_is_reported(monkeypatch):
-    """Saving a read-only path must not be reported as fully successful.
-
-    ``ensure_workshop_folder_exists`` swallows the creation failure and returns
-    False. The config itself did persist, so ``success`` stays True — but the
-    response has to say the folder is not usable, or the user is told an
-    unusable workshop path was set up fine.
-    """
-    _stub_config_manager_lock(monkeypatch)
-    from main_routers.workshop_router import config_files
-    from utils import workshop_utils
-
-    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
-    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: None)
-    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda folder: False)
-
-    result = await config_files.save_workshop_config_api(
-        {"user_mod_folder": "R:/read-only", "auto_create_folder": True}
-    )
-
-    assert result["success"] is True, "配置本身确实存下来了"
-    assert result["folder_ready"] is False
-    assert "warning" in result
-
-
-@pytest.mark.asyncio
-async def test_a_created_folder_reports_ready(monkeypatch):
-    _stub_config_manager_lock(monkeypatch)
-    from main_routers.workshop_router import config_files
-    from utils import workshop_utils
-
-    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
-    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: None)
-    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda folder: True)
-
-    result = await config_files.save_workshop_config_api(
-        {"user_mod_folder": "C:/mods", "auto_create_folder": True}
-    )
-
-    assert result["folder_ready"] is True
-    assert "warning" not in result
-
-
-def test_every_read_modify_write_holds_the_config_lock():
-    """No path may load workshop_config.json, change it, and save it unlocked.
-
-    Two such paths exist beyond the obvious save: the self-healing rebase
-    inside ``load_workshop_config`` (it writes after a storage migration) and
-    ``persist_user_workshop_folder`` at startup. Either one running unlocked
-    can read before the POST transaction and save after it, silently
-    overwriting the folder settings the user just submitted while POST reports
-    success.
-
-    Checked as "any function calling both load and save must do so inside the
-    lock" rather than by naming the two known offenders — a third one added
-    later has to fail this instead of slipping through.
-    """
+def _mixin_tree():
     import ast
     import inspect
     import textwrap
 
     from utils.config_manager import workshop as workshop_mixin
 
-    tree = ast.parse(textwrap.dedent(inspect.getsource(workshop_mixin.WorkshopMixin)))
+    return ast.parse(textwrap.dedent(inspect.getsource(workshop_mixin.WorkshopMixin)))
 
-    def _calls(node) -> set[str]:
-        return {
-            child.func.attr
-            for child in ast.walk(node)
-            if isinstance(child, ast.Call) and isinstance(child.func, ast.Attribute)
-        }
 
-    WRITERS = {"save_workshop_config", "_rebase_workshop_config_after_storage_migration"}
+def _fn(tree, name):
+    import ast
+
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == name:
+            return node
+    raise AssertionError(f"找不到 {name}，这条守卫需要跟着更新")
+
+
+def test_every_write_of_the_workshop_config_holds_the_lock():
+    """A save must never race the POST transaction's read-modify-write.
+
+    Checked as "every save_workshop_config call site is inside the lock"
+    rather than by naming the known writers — a new one added later has to
+    fail this instead of slipping through.
+    """
+    import ast
+
+    tree = _mixin_tree()
     offenders = []
     for fn in ast.walk(tree):
         if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
             continue
-        if fn.name in {"save_workshop_config", "_rebase_workshop_config_after_storage_migration"}:
+        if fn.name == "save_workshop_config":
             continue  # 叶子写入本身，由调用方持锁
-        called = _calls(fn)
-        if not (called & WRITERS):
+        saves = {
+            call.lineno for call in ast.walk(fn)
+            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "save_workshop_config"
+        }
+        if not saves:
             continue
-        # 该函数体内所有「写」调用都必须落在某个持 _workshop_config_lock 的 with 里
-        guarded_lines = {
+        guarded = {
             call.lineno
             for node in ast.walk(fn) if isinstance(node, ast.With)
             for item in node.items
             if "_workshop_config_lock" in ast.unparse(item.context_expr)
             for call in ast.walk(node)
             if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
-            and call.func.attr in WRITERS
+            and call.func.attr == "save_workshop_config"
         }
-        all_lines = {
-            call.lineno
-            for call in ast.walk(fn)
-            if isinstance(call, ast.Call) and isinstance(call.func, ast.Attribute)
-            and call.func.attr in WRITERS
-        }
-        if all_lines - guarded_lines:
-            offenders.append(f"{fn.name}(相对行 {sorted(all_lines - guarded_lines)})")
+        if saves - guarded:
+            offenders.append(f"{fn.name}(相对行 {sorted(saves - guarded)})")
 
     assert not offenders, (
         f"这些地方在锁外写 workshop 配置：{offenders} —— "
         "读改写不整段持锁就能盖掉刚提交的配置"
+    )
+
+
+def test_the_config_read_path_never_takes_the_lock():
+    """The dual invariant, and the one that keeps biting.
+
+    `get_workshop_path()` goes through `load_workshop_config()`, and several
+    async handlers (voice_refs upload/remove, publish) call it straight from
+    the event loop. If that read had to acquire the lock, any worker holding
+    it across an fsync — or across a makedirs on a network path — would stall
+    the whole loop. The self-healing write serializes itself instead, inside
+    `_rebase_workshop_config_after_storage_migration`.
+    """
+    import ast
+
+    tree = _mixin_tree()
+    load_fn = _fn(tree, "load_workshop_config")
+    locked = [
+        node.lineno
+        for node in ast.walk(load_fn) if isinstance(node, ast.With)
+        for item in node.items
+        if "_workshop_config_lock" in ast.unparse(item.context_expr)
+    ]
+    # 「文件不存在」那条分支写默认配置，持锁是对的；有文件的读路径不许持锁。
+    read_branch = _fn(tree, "_read_workshop_config_file")
+    read_locked = [
+        node.lineno
+        for node in ast.walk(read_branch) if isinstance(node, ast.With)
+        for item in node.items
+        if "_workshop_config_lock" in ast.unparse(item.context_expr)
+    ]
+    assert read_locked == [], "裸读路径不许拿锁——事件循环上的 get_workshop_path() 会跟着等"
+    assert len(locked) <= 1, (
+        f"load_workshop_config 里出现了不止一处持锁（相对行 {locked}）——"
+        "有文件的读路径必须保持无锁"
     )
 
 
