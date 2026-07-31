@@ -195,6 +195,7 @@ def _persist_locale_state_unlocked(
         try:
             os.remove(staging_path)
         except FileNotFoundError:
+            # Successful os.replace already consumed the staging path.
             pass
         except OSError as exc:
             logger.debug("[PromptLocale] stale staging cleanup failed: %s", exc)
@@ -288,6 +289,7 @@ def _persist_subject_locale_state_unlocked(
         try:
             os.remove(staging_path)
         except FileNotFoundError:
+            # Successful os.replace already consumed the staging path.
             pass
         except OSError as exc:
             logger.debug("[PromptLocale] stale staging cleanup failed: %s", exc)
