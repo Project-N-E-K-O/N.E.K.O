@@ -238,12 +238,29 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
         return root_state, False
 
     try:
-        # 与 set_root_mode 同一把锁：这里也是读—改—写（root_state 是调用方读的）。
-        # 跨进程那把 cloud apply 锁挡不住同进程内的另一个写者。
+        # 与 set_root_mode 同一把锁：这里也是读—改—写，而且 root_state 是**调用方在
+        # 锁外**读的。跨进程那把 cloud apply 锁挡不住同进程内的另一个写者，所以必须
+        # 锁内重读——直接 dict(root_state) 回写会把这期间别人提交的 mode /
+        # current_root / last_known_good_root 整份盖掉（Greptile P1）。
+        #
+        # 锁序固定为 cloud_apply_lock → root_state_transaction，与 cloud_apply_fence
+        # 一致；任何地方都不许反过来。
         with root_state_transaction():
-            recovered_state = dict(root_state)
+            latest_state = config_manager.load_root_state()
+            if not isinstance(latest_state, dict):
+                latest_state = root_state
+
+            # 判定"该不该自愈"也要按锁内这份重来：锁外那次判断到这里之间，别人可能
+            # 已经把它恢复了，或者刚建了一个真的 pending 迁移。
+            latest_mode = str(latest_state.get("mode") or ROOT_MODE_NORMAL)
+            if latest_mode not in WRITE_BLOCKING_MODES:
+                return latest_state, False
+            if _should_preserve_write_blocking_mode(config_manager, latest_state):
+                return latest_state, False
+
+            recovered_state = dict(latest_state)
             recovered_state["mode"] = ROOT_MODE_NORMAL
-            recovered_state["last_migration_result"] = f"recovered_stale_mode:{current_mode}"
+            recovered_state["last_migration_result"] = f"recovered_stale_mode:{latest_mode}"
             config_manager.save_root_state(recovered_state)
             return recovered_state, True
     finally:

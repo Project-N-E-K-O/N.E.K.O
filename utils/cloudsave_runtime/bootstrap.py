@@ -23,6 +23,7 @@ from __future__ import annotations
 from typing import Any
 
 from utils.file_utils import atomic_write_json
+from utils.root_state_lock import root_state_transaction
 
 from ._shared import (
     ROOT_MODE_DEFERRED_INIT,
@@ -164,31 +165,46 @@ def bootstrap_local_cloudsave_environment(config_manager) -> dict[str, Any]:
 
     legacy_import = import_legacy_runtime_root_if_needed(config_manager)
     root_state, recovered_stale_mode = _recover_stale_write_blocking_mode(config_manager, root_state)
-    root_changed = False
-    app_root = str(config_manager.app_docs_dir)
-    if root_state.get("current_root") != app_root:
-        root_state["current_root"] = app_root
-        root_changed = True
-    if not root_state.get("last_known_good_root"):
-        root_state["last_known_good_root"] = app_root
-        root_changed = True
-    if not root_state.get("last_successful_boot_at"):
-        root_state["last_successful_boot_at"] = ""
-        root_changed = True
-    if legacy_import.get("source"):
-        root_state["last_migration_source"] = str(legacy_import["source"])
-        root_state["last_migration_result"] = str(legacy_import.get("result") or "")
-        root_changed = True
-        if legacy_import.get("backup_path"):
-            root_state["last_migration_backup"] = str(legacy_import["backup_path"])
+
+    # 下面这串编辑 + 末尾的 save_root_state 是一次读—改—写，必须整段进锁。
+    #
+    # 锁从这里才开始，故意不往上包：import_legacy_runtime_root_if_needed 可能整目录
+    # 拷贝，_recover_stale_write_blocking_mode 会去拿跨进程的 cloud apply 锁——把
+    # root_state 锁包在它外面会让锁序变成 root_state → cloud_apply，跟
+    # cloud_apply_fence 的方向相反。全仓统一 cloud_apply_lock → root_state_transaction。
+    with root_state_transaction():
+        # 锁内重读：上面 load_root_state 那次到这里之间，storage_location 的变更路由
+        # （现在跑在工作线程上）可能已经提交过一轮，拿旧 pre-image 编辑再存回去会把
+        # 那一轮整份盖掉。
+        latest_state = config_manager.load_root_state()
+        if isinstance(latest_state, dict):
+            root_state = latest_state
+
+        root_changed = False
+        app_root = str(config_manager.app_docs_dir)
+        if root_state.get("current_root") != app_root:
+            root_state["current_root"] = app_root
             root_changed = True
-    elif recovered_stale_mode:
-        root_changed = True
-    elif not root_state.get("last_migration_result"):
-        root_state["last_migration_result"] = str(legacy_import.get("result") or "bootstrap_initialized")
-        root_changed = True
-    if root_changed:
-        config_manager.save_root_state(root_state)
+        if not root_state.get("last_known_good_root"):
+            root_state["last_known_good_root"] = app_root
+            root_changed = True
+        if not root_state.get("last_successful_boot_at"):
+            root_state["last_successful_boot_at"] = ""
+            root_changed = True
+        if legacy_import.get("source"):
+            root_state["last_migration_source"] = str(legacy_import["source"])
+            root_state["last_migration_result"] = str(legacy_import.get("result") or "")
+            root_changed = True
+            if legacy_import.get("backup_path"):
+                root_state["last_migration_backup"] = str(legacy_import["backup_path"])
+                root_changed = True
+        elif recovered_stale_mode:
+            root_changed = True
+        elif not root_state.get("last_migration_result"):
+            root_state["last_migration_result"] = str(legacy_import.get("result") or "bootstrap_initialized")
+            root_changed = True
+        if root_changed:
+            config_manager.save_root_state(root_state)
 
     cloud_state = config_manager.load_cloudsave_local_state()
     cloud_changed = False

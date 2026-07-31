@@ -35,6 +35,7 @@ import sys
 import inspect
 import subprocess
 from collections.abc import Callable
+from contextlib import suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -242,6 +243,15 @@ def _restore_storage_mutation_state(
     The cost is bounded: this only runs when a mutation has already failed, and
     the routes that call it are already about to return an error response.
     """
+    # ⚠️ 空快照绝不能往下走。下面的分支把"没有 migration / policy 键"读作"这两个文件
+    # 本来就不存在"，于是删检查点、unlink 策略文件。而快照一旦真的取到，
+    # _snapshot_storage_mutation_state 必定三个键齐全（值可以是 None）——所以
+    # 「空 dict」只可能意味着快照压根没取成（例如 load_root_state 撞上 I/O 错误），
+    # 这时候没有任何写发生过，回滚只会毁掉本来好好的文件。
+    if not snapshot:
+        logger.warning("skipping storage mutation rollback: snapshot was never taken")
+        return
+
     previous_migration = snapshot.get("migration")
     if isinstance(previous_migration, dict):
         save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
@@ -263,6 +273,29 @@ def _restore_storage_mutation_state(
     previous_root_state = snapshot.get("root_state")
     if isinstance(previous_root_state, dict):
         config_manager.save_root_state(previous_root_state)
+
+
+async def _run_locked_storage_job(job: Callable[[], Any]) -> Any:
+    """Run one storage job in a worker without letting the mutation lock slip.
+
+    ``asyncio.to_thread`` cancellation only cancels the awaiting future — the
+    worker keeps writing. Plain ``await asyncio.to_thread(...)`` therefore lets a
+    client disconnect unwind the route's ``async with _storage_mutation_lock``
+    while the worker is still mid-write, and the next mutation request walks
+    straight into the lock and interleaves with it on the same three files.
+    Before these writes moved off the loop they were uncancellable, so the lock
+    really did cover them; this restores that.
+
+    On cancellation we keep waiting for the worker and only then let the
+    cancellation continue, so the lock is held for the worker's whole lifetime.
+    """
+    task = asyncio.ensure_future(asyncio.to_thread(job))
+    try:
+        return await asyncio.shield(task)
+    except asyncio.CancelledError:
+        with suppress(asyncio.CancelledError):
+            await asyncio.wait({task})
+        raise
 
 
 async def _apply_storage_mutation_writes(
@@ -292,7 +325,7 @@ async def _apply_storage_mutation_writes(
         snapshot_out.update(_snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root))
         return write()
 
-    return await asyncio.to_thread(_job)
+    return await _run_locked_storage_job(_job)
 
 
 async def _release_storage_startup_barrier_or_rollback(
@@ -1379,12 +1412,14 @@ async def _post_storage_location_retained_source_cleanup_locked(
     current_root = normalize_runtime_root(config_manager.app_docs_dir)
     anchor_root = compute_anchor_root(config_manager, current_root=current_root)
     try:
-        await asyncio.to_thread(
-            _cleanup_retained_runtime_root,
-            retained_path,
-            current_root=current_root,
-            anchor_root=anchor_root,
-            target_root=notice.get("target_root") or "",
+        # 这一步 rmtree 保留目录，同样不能在取消时把 _storage_mutation_lock 让出去
+        await _run_locked_storage_job(
+            lambda: _cleanup_retained_runtime_root(
+                retained_path,
+                current_root=current_root,
+                anchor_root=anchor_root,
+                target_root=notice.get("target_root") or "",
+            )
         )
     except Exception as exc:
         response.status_code = 500
@@ -1420,9 +1455,10 @@ async def _post_storage_location_retained_source_cleanup_locked(
                         updated_root_state["last_migration_backup"] = ""
                     config_manager.save_root_state(updated_root_state)
         except Exception:
+            # best-effort：清理本身已经做完了，标记没落上不该把整个请求判失败
             pass
 
-    await asyncio.to_thread(_persist_cleanup_result)
+    await _run_locked_storage_job(_persist_cleanup_result)
 
     return {
         "ok": True,
@@ -1968,7 +2004,7 @@ async def _post_storage_location_restart_locked(
 
     migration_payload = None
     try:
-        migration_payload = await asyncio.to_thread(_schedule_pending_migration)
+        migration_payload = await _run_locked_storage_job(_schedule_pending_migration)
         await _request_app_shutdown(request_app_shutdown)
     except Exception as exc:
         # rollback_state 为空 = 两份 pre-image 还没读到，也就意味着
@@ -1991,6 +2027,7 @@ async def _post_storage_location_restart_locked(
                 if isinstance(previous_root_state, dict):
                     config_manager.save_root_state(previous_root_state)
             except Exception:
+                # 回滚本身失败就只能到此为止：外层已经在返回 500，再抛只会盖掉原因
                 pass
         response.status_code = 500
         return {

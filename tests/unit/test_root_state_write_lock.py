@@ -13,6 +13,7 @@ green" cannot mean "the guard never ran":
    await — and therefore no cancellation point — can be introduced between them.
 """
 import ast
+import asyncio
 import threading
 import time
 from pathlib import Path
@@ -26,7 +27,11 @@ from main_routers import storage_location_router as router_module
 from main_routers.shared_state import init_shared_state
 from utils import root_state_lock
 from utils import storage_location_bootstrap as bootstrap_module
+from utils.cloudsave_runtime import ROOT_MODE_MAINTENANCE_READONLY, ROOT_MODE_NORMAL
+from utils.cloudsave_runtime import fence as fence_module
 from utils.config_manager import ConfigManager
+from utils.storage_migration import get_storage_migration_path, save_storage_migration
+from utils.storage_policy import get_storage_policy_path, save_storage_policy
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
@@ -80,6 +85,16 @@ def _build_client(config_manager) -> TestClient:
     app = FastAPI()
     app.include_router(router_module.router)
     return TestClient(app)
+
+
+def _called_name(call: ast.Call) -> str:
+    """``f(...)`` -> ``"f"``; ``a.b.f(...)`` -> ``"f"``; anything else -> ``""``."""
+    func = call.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
 
 
 def _iter_project_python_files():
@@ -283,7 +298,204 @@ def test_persist_reconcile_opt_in_only_happens_behind_the_mutation_lock():
     )
 
 
-# ── 3. 写序列保持原子（不许被 await 切开） ────────────────────────────
+@pytest.mark.unit
+def test_stale_mode_recovery_keeps_a_concurrent_writers_fields(tmp_path, monkeypatch):
+    """The caller's pre-image is read outside the lock; the write must not use it."""
+    config_manager = _make_real_config_manager(tmp_path)
+    initial = dict(config_manager.build_default_root_state())
+    initial["mode"] = ROOT_MODE_MAINTENANCE_READONLY
+    initial["last_known_good_root"] = "OLD"
+    config_manager.save_root_state(initial)
+
+    # 调用方（bootstrap）在拿锁之前读到的那一份
+    stale_pre_image = config_manager.load_root_state()
+
+    # 另一个写者在"调用方读完"和"自愈写入"之间提交了一轮
+    committed = dict(config_manager.load_root_state())
+    committed["last_known_good_root"] = "NEW"
+    config_manager.save_root_state(committed)
+
+    monkeypatch.setattr(fence_module, "_should_preserve_write_blocking_mode", lambda *_a, **_k: False)
+    monkeypatch.setattr(fence_module, "_process_holds_cloud_apply_lock", lambda: False)
+    monkeypatch.setattr(fence_module, "acquire_cloud_apply_lock", lambda _cm: True)
+    monkeypatch.setattr(fence_module, "release_cloud_apply_lock", lambda _cm: None)
+
+    recovered, did_recover = fence_module._recover_stale_write_blocking_mode(
+        config_manager, stale_pre_image
+    )
+
+    assert did_recover is True
+    assert recovered["mode"] == ROOT_MODE_NORMAL
+    on_disk = config_manager.load_root_state()
+    assert on_disk["mode"] == ROOT_MODE_NORMAL, "自愈没生效"
+    assert on_disk["last_known_good_root"] == "NEW", (
+        "自愈把并发写者已提交的字段盖回了锁外读到的旧值"
+    )
+
+
+@pytest.mark.unit
+def test_cloudsave_bootstrap_keeps_a_write_that_lands_mid_flight(tmp_path, monkeypatch):
+    """Guard the caller too, not just the helper Greptile pointed at.
+
+    ``bootstrap_local_cloudsave_environment`` loads root_state, does a pile of
+    work, then edits and saves it. Fixing only
+    ``_recover_stale_write_blocking_mode`` would have been pointless: this
+    function overwrites with its own stale pre-image two lines later.
+    """
+    from utils.cloudsave_runtime import bootstrap as cloudsave_bootstrap
+
+    config_manager = _make_real_config_manager(tmp_path)
+    base = dict(config_manager.build_default_root_state())
+    base["last_migration_source"] = "OLD"
+    config_manager.save_root_state(base)
+
+    def _commit_midway(cm):
+        # 强制交错：bootstrap 已经读过 root_state、还没写回去，此刻另一个写者提交一轮
+        state = dict(cm.load_root_state())
+        state["last_migration_source"] = "NEW"
+        cm.save_root_state(state)
+        return {
+            "migrated": False,
+            "source": "",
+            "copied_paths": [],
+            "backup_path": "",
+            "repair_reason": "",
+            "result": "",
+        }
+
+    monkeypatch.setattr(
+        cloudsave_bootstrap, "import_legacy_runtime_root_if_needed", _commit_midway
+    )
+
+    cloudsave_bootstrap.bootstrap_local_cloudsave_environment(config_manager)
+
+    assert config_manager.load_root_state()["last_migration_source"] == "NEW", (
+        "bootstrap 用锁外读到的 pre-image 把中途提交的那一轮盖掉了"
+    )
+
+
+@pytest.mark.unit
+def test_every_locked_write_reloads_root_state_inside_the_block():
+    """A transaction that writes must also read *inside* the block.
+
+    Taking the lock only serializes writers. If the value being written was
+    derived from a pre-image loaded before the lock, the write still clobbers
+    whatever another writer committed in between — the lock makes it orderly,
+    not correct. Greptile caught exactly this in
+    ``_recover_stale_write_blocking_mode`` after the first round of this PR.
+
+    Deliberate snapshot restores (``_restore_storage_mutation_state``, the
+    ``/restart`` rollback) are outside this rule by construction: they do not
+    open a transaction at all, they lean on the lock inside ``save_root_state``,
+    and writing a stale pre-image is precisely their job.
+    """
+    reads = {"load_root_state", "get_root_state"}
+    writes = {"save_root_state"}
+    offenders: list[str] = []
+
+    for path in _iter_project_python_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.With):
+                continue
+            opens_transaction = any(
+                isinstance(item.context_expr, ast.Call)
+                and _called_name(item.context_expr) == "root_state_transaction"
+                for item in node.items
+            )
+            if not opens_transaction:
+                continue
+
+            called = {
+                _called_name(child)
+                for child in ast.walk(node)
+                if isinstance(child, ast.Call)
+            }
+            if called & writes and not (called & reads):
+                offenders.append(
+                    f"{path.relative_to(_REPO_ROOT).as_posix()}:{node.lineno}"
+                )
+
+    assert not offenders, (
+        "这些 root_state_transaction 块里写了盘却没在块内重读——写回去的是锁外读到的"
+        "pre-image，会把这期间别人提交的字段整份盖掉：\n  " + "\n  ".join(offenders)
+    )
+
+
+# ── 3. offload 不许把 _storage_mutation_lock 提前让出去 ───────────────
+
+
+@pytest.mark.unit
+async def test_cancelled_storage_job_waits_for_the_worker_before_unwinding():
+    """Cancellation must not hand the mutation lock to the next request mid-write.
+
+    ``asyncio.to_thread`` cancellation only cancels the awaiting future; the
+    worker keeps going. If the await returned immediately, the route's
+    ``async with _storage_mutation_lock`` would unwind while the worker was
+    still writing, and a second mutation could interleave with it. Before these
+    writes moved off the loop they were uncancellable, so this restores what the
+    lock used to guarantee.
+    """
+    started = threading.Event()
+    finished = threading.Event()
+
+    def _job() -> str:
+        started.set()
+        time.sleep(0.3)
+        finished.set()
+        return "done"
+
+    task = asyncio.ensure_future(router_module._run_locked_storage_job(_job))
+    assert await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set(), (
+        "取消让 await 立刻返回了——工作线程还在写，_storage_mutation_lock 已经松开，"
+        "下一个变更请求会跟它在同一批文件上交错"
+    )
+
+
+@pytest.mark.unit
+def test_empty_snapshot_never_deletes_storage_state(tmp_path):
+    """An un-taken snapshot must not be replayed as "these files did not exist".
+
+    ``_restore_storage_mutation_state`` reads a missing ``migration`` / ``policy``
+    key as proof the file was absent and deletes it. A real snapshot always has
+    all three keys, so an empty dict can only mean the snapshot itself failed —
+    in which case no write happened and there is nothing to roll back.
+    """
+    config_manager = _make_real_config_manager(tmp_path)
+    anchor_root = Path(config_manager.anchor_root)
+
+    save_storage_policy(
+        config_manager,
+        selected_root=config_manager.app_docs_dir,
+        anchor_root=anchor_root,
+        selection_source="test",
+    )
+    save_storage_migration(
+        config_manager,
+        {"status": "completed", "source_root": "", "target_root": ""},
+        anchor_root=anchor_root,
+    )
+    policy_path = get_storage_policy_path(config_manager, anchor_root=anchor_root)
+    migration_path = get_storage_migration_path(config_manager, anchor_root=anchor_root)
+    assert policy_path.exists() and migration_path.exists()
+
+    router_module._restore_storage_mutation_state(config_manager, {}, anchor_root=anchor_root)
+
+    assert policy_path.exists(), "空快照回滚把存储策略文件 unlink 了"
+    assert migration_path.exists(), "空快照回滚把迁移检查点删了"
+
+
+# ── 4. 写序列保持原子（不许被 await 切开） ────────────────────────────
 
 
 @pytest.mark.unit
