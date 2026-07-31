@@ -112,6 +112,7 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
         "python-backend-win-*.zip",
         "N.E.K.O_*_win.zip",
         "N.E.K.O_*_win_delta.zip",
+        "N.E.K.O_*_win_delta.bin",
         "N.E.K.O_*_win_manifest.json",
         "N.E.K.O_*_win_manifest.json.sig",
     )
@@ -134,7 +135,14 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     )
     full_nightly = nightly_steps["Create nightly release"]
     assert full_nightly["env"]["REQUESTED_SKIP_SIGNING"] == "${{ inputs.skip_signing }}"
-    assert 'SIGNING_NOTE="unsigned"' in full_nightly["run"]
+    assert (
+        'if [[ "$REQUESTED_SKIP_SIGNING" == "true" || "$GITHUB_EVENT_NAME" == "schedule" ]]; then\n'
+        '  SIGNING_NOTE="unsigned"\n'
+        "else\n"
+        '  SIGNING_NOTE="signed"\n'
+        "fi"
+    ) in full_nightly["run"]
+    assert "This is a **${SIGNING_NOTE}** nightly build" in full_nightly["run"]
     assert "N.E.K.O_*_win.zip" in full_nightly["run"]
     organize_release = nightly_steps["Organize release files"]
     assert '-name "*.zip"' in organize_release["run"]
