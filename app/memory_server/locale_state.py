@@ -179,6 +179,7 @@ def _load_subject_locale_state_unlocked(
                     reserved_order = max(reserved_order or order, order)
                 loaded[key] = (selected, order, reserved_order)
     except (OSError, json.JSONDecodeError):
+        # Missing or partially-written scoped state starts as an empty map.
         pass
     _subject_locale_cache[name] = loaded
     return loaded
