@@ -2610,6 +2610,63 @@ async def test_private_context_uses_receipt_permission_after_promotion():
 
 
 @pytest.mark.asyncio
+async def test_open_platform_bootstrap_promotes_only_first_queued_sender():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    levels: dict[str, str] = {}
+    plugin = SimpleNamespace(
+        _running=True,
+        _qq_settings={"private_participant_memory_enabled": True},
+        permission_mgr=SimpleNamespace(
+            list_users=lambda: list(levels),
+            add_user=lambda user, level, _nickname: levels.__setitem__(
+                user, level,
+            ),
+            get_permission_level=lambda user: levels.get(user, "none"),
+        ),
+        _refresh_admin_qq=MagicMock(),
+        _run_message_handler=AsyncMock(),
+        handler_runtime_service=SimpleNamespace(
+            track_handler_task=MagicMock(),
+        ),
+        logger=MagicMock(),
+    )
+
+    first = {
+        "message_type": "private", "user_id": "1001",
+        "user_nickname": "first",
+    }
+    second = {
+        "message_type": "private", "user_id": "1002",
+        "user_nickname": "second",
+    }
+    queue = [first, second]
+
+    async def _receive_from_queue():
+        if queue:
+            return queue.pop(0)
+        plugin._running = False
+        return None
+
+    plugin.qq_client = SimpleNamespace(
+        needs_attention=False,
+        receive_message=_receive_from_queue,
+    )
+    dispatcher = QQMessageDispatcher(plugin)
+
+    await dispatcher.process_messages()
+    await asyncio.sleep(0)
+
+    assert levels == {"1001": "admin"}
+    assert first["_private_permission_level_at_receipt"] == "admin"
+    assert first["_open_platform_admin_promoted_at_receipt"] is True
+    assert second["_private_permission_level_at_receipt"] == "none"
+    assert "_open_platform_admin_promoted_at_receipt" not in second
+
+
+@pytest.mark.asyncio
 async def test_private_synthetic_flush_propagates_receipt_consent():
     from plugin.plugins.qq_auto_reply.reply_buffer_service import (
         PendingReply,

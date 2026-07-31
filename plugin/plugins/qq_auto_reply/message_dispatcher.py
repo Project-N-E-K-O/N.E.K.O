@@ -134,21 +134,32 @@ class QQMessageDispatcher:
                                 self.plugin, "permission_mgr", None,
                             )
                             if permission_mgr is not None:
-                                permission_at_receipt = (
-                                    permission_mgr.get_permission_level(
-                                        sender_at_receipt
-                                    )
-                                )
-                                # Open-platform bootstrap deterministically
-                                # promotes the first private user in the
-                                # handler; stamp that same identity here.
                                 qq_client = getattr(self.plugin, "qq_client", None)
                                 if (
                                     qq_client is not None
                                     and not qq_client.needs_attention
                                     and not permission_mgr.list_users()
+                                    and sender_at_receipt
                                 ):
-                                    permission_at_receipt = "admin"
+                                    # This receive loop is serial and there is
+                                    # no await in this block: promote before
+                                    # stamping or scheduling the handler, so a
+                                    # second synchronously queued sender sees
+                                    # the first reservation in list_users().
+                                    permission_mgr.add_user(
+                                        sender_at_receipt,
+                                        "admin",
+                                        message.get("user_nickname") or "管理员",
+                                    )
+                                    self.plugin._refresh_admin_qq()
+                                    message[
+                                        "_open_platform_admin_promoted_at_receipt"
+                                    ] = True
+                                permission_at_receipt = (
+                                    permission_mgr.get_permission_level(
+                                        sender_at_receipt
+                                    )
+                                )
                             message["_private_permission_level_at_receipt"] = (
                                 permission_at_receipt
                             )
@@ -278,6 +289,10 @@ class QQMessageDispatcher:
                     message.get("_private_permission_level_at_receipt")
                     if isinstance(message, dict) else None
                 ),
+                open_platform_admin_promoted_at_receipt=bool(
+                    message.get("_open_platform_admin_promoted_at_receipt")
+                    if isinstance(message, dict) else False
+                ),
             )
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
@@ -332,9 +347,18 @@ class QQMessageDispatcher:
         current_message_id: str = "",
         participant_memory_at_receipt: bool | None = None,
         private_permission_level_at_receipt: str | None = None,
+        open_platform_admin_promoted_at_receipt: bool = False,
     ):
         # 开放平台：第一个私聊用户自动成为管理员，之后可在前端配置
-        if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
+        if open_platform_admin_promoted_at_receipt:
+            self.plugin._emit_log(
+                "INFO", f"开放平台自动设置管理员: {sender_id}",
+            )
+            try:
+                await self.plugin.settings_service.persist_business_config()
+            except Exception:
+                pass
+        elif self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
                 self.plugin.permission_mgr.add_user(sender_id, "admin", user_nickname or "管理员")
                 self.plugin._refresh_admin_qq()
