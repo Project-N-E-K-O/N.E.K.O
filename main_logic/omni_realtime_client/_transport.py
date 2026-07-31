@@ -1011,8 +1011,12 @@ class _TransportMixin:
                 call_type="conversation_realtime",
                 source="main_logic/omni_realtime_client",
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            # Accounting is bookkeeping, and it runs on the receive loop. A
+            # tracker that is unavailable, or a provider whose usage payload
+            # has an unexpected shape, must not take the voice session down
+            # with it — the turn itself already happened either way.
+            logger.debug("realtime usage accounting skipped: %s", exc)
 
     def _take_response_transcript(self) -> str:
         """Close the books on what this turn actually said.
