@@ -69,7 +69,6 @@ Schema:
     'last_a_msg_ts': datetime,    # path A 实际处理过的最晚 msg ts (path B 上游边界)
     'last_b_check_ts': datetime,  # ISO cursor for path B window start
     'b_tick_counter': int,        # ticks since last path B trigger
-    'language': str | None,       # latest frontend session locale
     # Liveness counters (in-memory only)：cursor key → 连续失败次数。
     # 成功 mark_done 时清空对应 path 的 counter。重启清零是有意为之的"软兜底"
     # ——重启后再试 MEMORY_LIVENESS_MAX_ATTEMPTS 次再 dead-letter，避免内存
@@ -107,11 +106,17 @@ def _signal_check_record_turn(
 
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
-    state['language'] = record_character_prompt_locale(
+    record_character_prompt_locale(
         name,
         language,
         order=locale_order,
     )
+
+
+async def _run_signal_check_with_character_locale(name: str, operation):
+    from .locale_state import run_with_character_prompt_locale
+
+    return await run_with_character_prompt_locale(name, operation, name)
 
 
 def _signal_check_mark_done(name: str, now: datetime) -> None:
@@ -597,11 +602,10 @@ async def _periodic_signal_extraction_loop():
         now = datetime.now()
 
         async def _signal_check_one(name: str):
-            from utils.language_utils import language_context
-
-            selected = _signal_check_state.get(name, {}).get('language')
-            with language_context(selected):
-                return await _signal_check_one_with_locale(name)
+            return await _run_signal_check_with_character_locale(
+                name,
+                _signal_check_one_with_locale,
+            )
 
         async def _signal_check_one_with_locale(name: str):
             """Stage-1 + Stage-2 + signal dispatch for a single character. Characters are

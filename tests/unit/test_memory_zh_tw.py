@@ -417,33 +417,42 @@ async def test_external_import_commit_forwards_ui_locale(monkeypatch):
     assert forwarded[0]["language"] == "zh-TW"
 
 
-def test_signal_loop_remembers_latest_session_locale(monkeypatch):
+def test_signal_loop_records_latest_session_locale(monkeypatch):
     from app.memory_server import locale_state, signal_extraction
 
+    recorded = []
     monkeypatch.setattr(
         locale_state,
         "record_character_prompt_locale",
-        lambda _name, language, **_kwargs: language,
+        lambda name, language, **kwargs: recorded.append(
+            (name, language, kwargs["order"])
+        ),
     )
     signal_extraction._signal_check_state.clear()
-    signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
+    signal_extraction._signal_check_record_turn(
+        "Neko",
+        language="zh-TW",
+        locale_order=123,
+    )
 
-    assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
+    assert recorded == [("Neko", "zh-TW", 123)]
 
 
-def test_signal_loop_clears_stale_session_locale(monkeypatch):
+def test_signal_loop_records_missing_session_locale(monkeypatch):
     from app.memory_server import locale_state, signal_extraction
 
+    recorded = []
     monkeypatch.setattr(
         locale_state,
         "record_character_prompt_locale",
-        lambda _name, language, **_kwargs: language,
+        lambda name, language, **kwargs: recorded.append(
+            (name, language, kwargs["order"])
+        ),
     )
     signal_extraction._signal_check_state.clear()
-    signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
     signal_extraction._signal_check_record_turn("Neko")
 
-    assert signal_extraction._signal_check_state["Neko"]["language"] is None
+    assert recorded == [("Neko", None, None)]
 
 
 @pytest.mark.asyncio
@@ -474,6 +483,40 @@ async def test_idle_maintenance_uses_latest_session_locale(monkeypatch, tmp_path
     assert locale_state.get_character_prompt_locale("Neko") is None
 
 
+@pytest.mark.asyncio
+async def test_signal_loop_uses_durable_locale_instead_of_stale_cache(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import locale_state, signal_extraction
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    async def operation(name):
+        observed.append((name, get_global_language_full()))
+        return 1
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-TW")
+    locale_state._locale_cache.clear()
+    signal_extraction._signal_check_state["Neko"] = {
+        "turns_since": 1,
+        "last_check_ts": None,
+        "language": "en",
+    }
+
+    result = await signal_extraction._run_signal_check_with_character_locale(
+        "Neko",
+        operation,
+    )
+
+    assert result == 1
+    assert observed == [("Neko", "zh-TW")]
+
+
 def test_signal_loop_rejects_stale_locale_worker(monkeypatch, tmp_path):
     from app.memory_server import locale_state, signal_extraction
 
@@ -493,13 +536,13 @@ def test_signal_loop_rejects_stale_locale_worker(monkeypatch, tmp_path):
         locale_order=100,
     )
 
-    assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
 
     # 升级前入队的旧任务没有顺序号，也不能覆盖已有的新状态。
     signal_extraction._signal_check_record_turn("Neko", language="ja")
-    assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
+    locale_state._locale_cache.clear()
+    assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
 
 
 def test_locale_order_reservation_survives_clock_rollback(monkeypatch, tmp_path):
