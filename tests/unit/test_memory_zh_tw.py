@@ -1033,6 +1033,25 @@ def test_multimodal_locale_detection_accepts_all_prompt_text_part_types():
     assert detect_prompt_language(review_text, ui_language="zh-TW") == "en"
 
 
+def test_summary_locale_detection_uses_prompt_visible_truncation():
+    from types import SimpleNamespace
+
+    from memory.recent import CompressedRecentHistoryManager
+    from utils.language_utils import detect_prompt_language
+
+    traditional = "這是保留在提示詞中的繁體中文內容。" * 120
+    hidden = "english words hidden from the prompt middle " * 500
+    message = SimpleNamespace(content=traditional + hidden + traditional)
+    manager = object.__new__(CompressedRecentHistoryManager)
+
+    visible = manager._render_message_content(message)
+    locale_text = manager._summary_prompt_locale_text([message])
+
+    assert locale_text == visible
+    assert "english words hidden" not in locale_text
+    assert detect_prompt_language(locale_text, ui_language="zh-TW") == "zh-TW"
+
+
 @pytest.mark.asyncio
 async def test_memory_reload_invalidates_prompt_locale_caches(monkeypatch):
     from app.memory_server import locale_state, runtime
@@ -1334,6 +1353,52 @@ def test_legacy_settings_fallback_uses_traditional_labels():
 
     assert rendered == "Neko記得：\n關於Alice：\n- 喜好：貓"
     assert empty == "Neko記得：（暫無紀錄）"
+
+
+@pytest.mark.asyncio
+async def test_get_settings_uses_durable_character_locale(monkeypatch, tmp_path):
+    from app.memory_server import locale_state, routes, runtime
+    from utils.language_utils import get_global_language_full, language_context
+
+    observed = []
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"猫娘": {"Neko": {}}}
+
+    class ReflectionEngine:
+        async def aupdate_suppressions(self, _name):
+            return None
+
+        async def aget_pending_reflections(self, _name):
+            return []
+
+        async def aget_confirmed_reflections(self, _name):
+            return []
+
+    class PersonaManager:
+        async def arender_persona_markdown(self, _name, _pending, _confirmed):
+            observed.append(get_global_language_full())
+            return ""
+
+    class SettingsManager:
+        def get_settings(self, _name):
+            return {"Alice": {"喜好": "貓"}}
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    monkeypatch.setattr(runtime, "_config_manager", ConfigManager())
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(runtime, "persona_manager", PersonaManager())
+    monkeypatch.setattr(runtime, "settings_manager", SettingsManager())
+    locale_state._locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-TW")
+
+    with language_context("zh-CN"):
+        rendered = await routes.get_settings("Neko")
+
+    assert observed == ["zh-TW"]
+    assert rendered == "Neko記得：\n關於Alice：\n- 喜好：貓"
 
 
 @pytest.mark.asyncio

@@ -1426,23 +1426,38 @@ async def get_settings(lanlan_name: str):
         logger.error(f"检查角色配置失败: {e}")
         return f"{lanlan_name}记得{{}}"
 
-    # Render 前刷新 reflection suppress 状态（冷却期过 → 解除），语义对齐
-    # persona render 的 update_suppressions 调用位置
-    try:
-        await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-    except Exception as e:
-        logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-    # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
-    pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-    confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
-    persona_md = await runtime.persona_manager.arender_persona_markdown(
-        lanlan_name, pending_reflections, confirmed_reflections,
+    async def render_settings():
+        # Render 前刷新 reflection suppress 状态（冷却期过 → 解除），语义对齐
+        # persona render 的 update_suppressions 调用位置
+        try:
+            await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
+        except Exception as e:
+            logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
+        # 优先使用 persona markdown 渲染（与 /new_dialog 保持一致），回退到旧 settings 格式
+        pending_reflections = await runtime.reflection_engine.aget_pending_reflections(
+            lanlan_name,
+        )
+        confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(
+            lanlan_name,
+        )
+        persona_md = await runtime.persona_manager.arender_persona_markdown(
+            lanlan_name,
+            pending_reflections,
+            confirmed_reflections,
+        )
+        if persona_md:
+            return persona_md
+        # 兼容回退（自然语言格式）
+        legacy_settings = await asyncio.to_thread(
+            runtime.settings_manager.get_settings,
+            lanlan_name,
+        )
+        return _format_legacy_settings_as_text(legacy_settings, lanlan_name)
+
+    return await locale_state.run_with_character_prompt_locale(
+        lanlan_name,
+        render_settings,
     )
-    if persona_md:
-        return persona_md
-    # 兼容回退（自然语言格式）
-    legacy_settings = await asyncio.to_thread(runtime.settings_manager.get_settings, lanlan_name)
-    return _format_legacy_settings_as_text(legacy_settings, lanlan_name)
 
 
 @app.get("/get_persona/{lanlan_name}")

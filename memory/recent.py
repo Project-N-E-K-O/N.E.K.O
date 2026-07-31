@@ -562,7 +562,17 @@ class CompressedRecentHistoryManager:
         return RECENT_PER_MESSAGE_MAX_TOKENS // 2
 
     def _summary_prompt_locale_text(self, messages):
-        return "\n".join(_message_locale_text(msg) for msg in messages)
+        from utils.tokenize import truncate_head_tail_tokens
+
+        half_cap = self._summary_message_half_cap()
+        return "\n".join(
+            truncate_head_tail_tokens(
+                _message_locale_text(msg),
+                half_cap,
+                half_cap,
+            )
+            for msg in messages
+        )
 
     def _render_messages_to_text(self, messages, lanlan_name):
         """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。
