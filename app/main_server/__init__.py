@@ -1021,15 +1021,19 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
 async def release_storage_startup_barrier(
     *, reason: str = "storage_selection_continue_current_session"
 ) -> dict[str, Any]:
-    await _request_memory_server_continue_startup(reason)
     try:
+        # The continue request has an ambiguous cancellation outcome: memory_server
+        # may have applied it even when this client never receives the response.
+        # Keep the request itself inside the compensation boundary so every failed
+        # exit re-establishes both admission guards before storage state rolls back.
+        await _request_memory_server_continue_startup(reason)
         initialized = await _ensure_main_server_runtime_initialized(reason=reason)
     except BaseException:
-        # Once memory_server has accepted continue-startup, every failed exit from
-        # main initialization must put its admission guard back before the storage
-        # router restores a blocking root_state snapshot.  CancelledError is a
-        # BaseException, so an Exception-only handler leaves initialized memory
-        # writable against the rolled-back storage state.
+        # Once memory_server may have accepted continue-startup, every failed exit
+        # must put its admission guard back before the storage router restores a
+        # blocking root_state snapshot. CancelledError is a BaseException, so an
+        # Exception-only handler leaves initialized memory writable against the
+        # rolled-back storage state.
         _enable_main_storage_limited_mode("runtime_initialization_failed")
 
         # Re-blocking is compensating work, not part of the cancelled request.  A

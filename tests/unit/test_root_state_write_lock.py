@@ -760,7 +760,7 @@ async def test_storage_snapshot_waits_for_cloud_fence_transaction(tmp_path, monk
 
     fence_entered = threading.Event()
     release_fence = threading.Event()
-    fence_errors: list[BaseException] = []
+    fence_errors: list[Exception] = []
 
     def _hold_cloud_fence() -> None:
         try:
@@ -772,7 +772,7 @@ async def test_storage_snapshot_waits_for_cloud_fence_transaction(tmp_path, monk
                 fence_entered.set()
                 if not release_fence.wait(5):
                     raise TimeoutError("test did not release cloud fence")
-        except BaseException as exc:
+        except Exception as exc:
             fence_errors.append(exc)
 
     fence_thread = threading.Thread(target=_hold_cloud_fence)
