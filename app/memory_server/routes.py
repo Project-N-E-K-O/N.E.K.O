@@ -971,11 +971,22 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=422,
             detail="input_history must contain 1..200 messages",
         )
-    speaker_label = (req.speaker_label or "").strip() or None
-    if speaker_label and len(speaker_label) > 64:
+    raw_speaker_label = (req.speaker_label or "").strip() or None
+    if raw_speaker_label and len(raw_speaker_label) > 64:
         raise HTTPException(
             status_code=422,
             detail="speaker_label must contain at most 64 characters",
+        )
+    from memory.facts import FactExtractionFailed, FactStore
+
+    speaker_label = (
+        FactStore.sanitize_speaker_label(raw_speaker_label)
+        if raw_speaker_label else None
+    )
+    if raw_speaker_label and not speaker_label:
+        raise HTTPException(
+            status_code=422,
+            detail="speaker_label must contain non-structural characters",
         )
     # provenance 只认调用方真给的 label（信赖度阶段一：谁说的）。必须在
     # 下面的群 digest 缺省填充**之前**定格——集体描述符不是发言人。trust
@@ -1000,8 +1011,6 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         from config.prompts.prompts_memory import get_group_digest_speaker_label
         from utils.language_utils import get_global_language_full
         speaker_label = get_group_digest_speaker_label(get_global_language_full())
-    from memory.facts import FactExtractionFailed
-
     # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
     # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
     # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去

@@ -28,6 +28,14 @@ class QQMessageDispatcher:
         ):
             return
         async with self._open_platform_bootstrap_lock:
+            # Another queued message from the same first user may have been
+            # receipt-stamped before this dispatcher promoted the winner.  Do
+            # not broaden this to arbitrary later permission changes: only the
+            # admin reserved by this process's bootstrap may inherit that
+            # bootstrap receipt.
+            if getattr(self, "_open_platform_bootstrap_admin_id", None) == sender_id:
+                message["_private_permission_level_at_receipt"] = "admin"
+                return
             if permission_mgr.list_users():
                 return
             permission_mgr.add_user(
@@ -36,6 +44,7 @@ class QQMessageDispatcher:
                 message.get("user_nickname") or "管理员",
             )
             self.plugin._refresh_admin_qq()
+            self._open_platform_bootstrap_admin_id = sender_id
             message["_private_permission_level_at_receipt"] = "admin"
             message["_open_platform_admin_promoted_at_receipt"] = True
 
