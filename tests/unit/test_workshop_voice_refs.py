@@ -170,11 +170,20 @@ def test_every_mutation_lives_in_the_offloaded_unit():
     from main_routers.workshop_router import voice_refs
 
     module = ast.parse(inspect.getsource(voice_refs))
-    by_name = {
-        node.name: node
-        for node in module.body
+    definitions = [
+        node for node in module.body
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
-    }
+    ]
+    # ⚠️ 先查重名再建字典。按名字建字典会静默留下最后一个定义 —— 一个被遮蔽的重复
+    # 实现就此对本守卫隐形，而 Python 同样只跑后一个：改到前一个副本上的修复完全
+    # 不生效，测试却照绿。这个仓库真出过（见 PR #2598 的评审）。
+    names = [node.name for node in definitions]
+    duplicated = sorted({name for name in names if names.count(name) > 1})
+    assert not duplicated, (
+        f"这些函数被定义了不止一次：{duplicated} —— 后一个静默覆盖前一个，"
+        "改到前面那份上的修复不会生效"
+    )
+    by_name = {node.name: node for node in definitions}
 
     def _called_names(node: ast.AST) -> set[str]:
         names = set()
