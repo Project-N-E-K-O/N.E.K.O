@@ -369,18 +369,23 @@ class QQReplyGenerationService:
                      if getattr(row, "type", "") == "ai"),
                     None,
                 )
-                if not user_data.get("memory_enabled"):
-                    # 未授权边界在 finally 记：异常/空回复的 human 行也已
-                    # 进历史，只在成功路径记会漏（超时路径会话随后被弃，
-                    # 多记无害）。私聊轮同样记（去掉此前的 is_group 限定）：
-                    # participant 结算分支拿它当 digest 起点地板，OFF 时代
-                    # 的私聊行在开关翻 ON 后绝不回溯入库；legacy admin 路径
-                    # 不读该字段，多记无害。
-                    user_data["nonconsent_history_end"] = len(
-                        getattr(user_session, "_conversation_history", []) or []
-                    )
+                self._stamp_nonconsent_boundary(user_data, user_session)
 
             return "".join(reply_chunks)
+
+    @staticmethod
+    def _stamp_nonconsent_boundary(user_data: dict, user_session: Any) -> None:
+        """未授权边界在生成轮 finally 记（调用点在 run_primary_session_call）。
+
+        异常/空回复的 human 行也已进历史，只在成功路径记会漏（超时路径
+        会话随后被弃，多记无害）。私聊轮同样记（此前限定 is_group）：
+        participant 结算分支拿它当 digest 起点地板，OFF 时代的私聊行在
+        开关翻 ON 后绝不回溯入库；legacy admin 路径不读该字段，多记无害。
+        """  # noqa: DOCSTRING_CJK
+        if not user_data.get("memory_enabled"):
+            user_data["nonconsent_history_end"] = len(
+                getattr(user_session, "_conversation_history", []) or []
+            )
 
     def _arm_recall_tool(
         self,
