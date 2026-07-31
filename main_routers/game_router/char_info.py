@@ -22,7 +22,11 @@ from ._shared import logger
 
 from typing import Any, Dict
 from ..shared_state import get_config_manager, get_session_manager
-from utils.language_utils import get_global_language, normalize_language_code, is_supported_language_code
+from utils.language_utils import (
+    get_global_language_full,
+    is_supported_language_code,
+    normalize_language_code,
+)
 
 
 def _extract_request_language_full(data: Any) -> str | None:
@@ -95,7 +99,7 @@ def _resolve_game_prompt_language(
          ``data`` hits it too.
       2. ``mgr.user_language`` — the session ground truth synced by the websocket
          greeting_check.
-      3. ``get_global_language()`` — process-level cache, final fallback.
+      3. ``get_global_language_full()`` — process-level cache, final fallback.
 
     Layer 1 covers a hole beyond PR #1150: in a Steam=zh / system=en environment,
     ``mgr.user_language`` gets overwritten by the (wrong, 'en') global cache at
@@ -104,16 +108,31 @@ def _resolve_game_prompt_language(
     Making the request body's i18n truth the top-priority source, combined with
     the self-healing write-back, closes this race.
     """
-    request_lang = _absorb_request_language(data, lanlan_name)
-    if request_lang:
-        return request_lang
+    return (
+        normalize_language_code(
+            _resolve_game_prompt_locale(lanlan_name, data),
+            format="short",
+        )
+        or "en"
+    )
+
+
+def _resolve_game_prompt_locale(
+    lanlan_name: str | None = None,
+    data: Any = None,
+) -> str:
+    """Resolve the full locale while preserving variants such as zh-TW."""
+    request_locale = _extract_request_language_full(data)
+    if request_locale:
+        _absorb_request_language(data, lanlan_name)
+        return request_locale
     try:
         name = str(lanlan_name or "").strip()
         session_manager = get_session_manager()
         manager = session_manager.get(name) if name and hasattr(session_manager, "get") else None
         language = getattr(manager, "user_language", None)
         if language:
-            return normalize_language_code(str(language), format="short") or "en"
+            return normalize_language_code(str(language), format="full") or "en"
     except Exception:
         logger.debug(
             "🎮 赛后归档语言解析失败，使用默认 prompt 语言: lanlan=%s",
@@ -122,7 +141,10 @@ def _resolve_game_prompt_language(
         )
 
     try:
-        return normalize_language_code(get_global_language(), format="short") or "en"
+        return normalize_language_code(
+            get_global_language_full(),
+            format="full",
+        ) or "en"
     except Exception:
         return "en"
 
@@ -141,6 +163,14 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
             if lanlan_name:
                 info.setdefault("lanlan_name", str(lanlan_name or "").strip())
             info.setdefault("user_language", _resolve_game_prompt_language(info.get("lanlan_name")))
+            info.setdefault(
+                "user_language_full",
+                normalize_language_code(
+                    str(info.get("user_language") or ""),
+                    format="full",
+                )
+                or _resolve_game_prompt_locale(info.get("lanlan_name")),
+            )
             return info
         raise
     characters = config_manager.load_characters()
@@ -167,6 +197,7 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
     # 获取小游戏主模型配置；默认跟随文本对话模型，用户可在 API 设置中独立覆盖。
     conversation_config = config_manager.get_model_api_config('game_main')
 
+    prompt_locale = _resolve_game_prompt_locale(current_name)
     return {
         'lanlan_name': current_name,
         'master_name': master_name,
@@ -176,7 +207,8 @@ def _get_character_info(lanlan_name: str | None = None) -> Dict[str, Any]:
         'api_type': conversation_config.get('api_type', ''),
         'provider_type': conversation_config.get('provider_type', ''),
         'api_key': conversation_config.get('api_key', ''),
-        'user_language': _resolve_game_prompt_language(current_name),
+        'user_language': normalize_language_code(prompt_locale, format="short") or "en",
+        'user_language_full': prompt_locale,
     }
 
 

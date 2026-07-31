@@ -10,7 +10,7 @@ from config.prompts.prompts_sys import (
     get_context_summary_ready,
 )
 from main_logic.core import apply_role_placeholders
-from utils.language_utils import get_global_language
+from utils.language_utils import get_global_language, get_global_language_full
 from .pipeline_models import QQInstructionBundle
 from .prompt_fragment_templates import (
     ACCOUNTS_PROMPT_SECTION,
@@ -256,7 +256,7 @@ class QQSessionInstructionService:
         except Exception:
             normalize_language_code = None
 
-        user_language = get_global_language()
+        user_language = get_global_language_full()
         short_language = (
             normalize_language_code(user_language, format="short")
             if normalize_language_code else user_language

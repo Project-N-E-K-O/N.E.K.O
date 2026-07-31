@@ -106,12 +106,31 @@ def test_badminton_removed_modes_are_not_public_or_scored():
 
 
 @pytest.mark.unit
+def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
+    manager = SimpleNamespace(user_language="zh-TW")
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_global_language_full",
+        lambda: "zh-CN",
+    )
+
+    assert gr_char_info._resolve_game_prompt_locale("Lan") == "zh-TW"
+    assert gr_char_info._resolve_game_prompt_language("Lan") == "zh"
+
+
+@pytest.mark.unit
 @pytest.mark.asyncio
 async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     _gr_patch_all(monkeypatch, "get_session_manager", lambda: {})
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["neko_initiated"] is False
+        assert kwargs["prompt_locale"] == "zh-TW"
         return gr_pregame._default_badminton_pregame_context(mode="duel"), "lightweight", ""
 
     _gr_patch_all(monkeypatch, "_build_badminton_pregame_context", fake_pregame_context)
@@ -119,7 +138,12 @@ async def test_badminton_route_start_accepts_direct_debug_session(monkeypatch):
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
             "badminton",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "debug-badminton", "mode": "duel"}),
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "debug-badminton",
+                "mode": "duel",
+                "i18n_language": "zh-TW",
+            }),
         )
 
         assert result["ok"] is True
@@ -139,6 +163,7 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
 
     async def fake_pregame_context(**kwargs):
         assert kwargs["game_type"] == "soccer"
+        assert kwargs["prompt_locale"] == "zh-TW"
         return gr_pregame._default_soccer_pregame_context(initial_difficulty="lv2"), "lightweight", ""
 
     _gr_patch_all(monkeypatch, "_build_soccer_pregame_context", fake_pregame_context)
@@ -146,7 +171,11 @@ async def test_soccer_route_start_auto_enables_session_debug_log(monkeypatch):
     with reset_game_route_state():
         result = await gr_runtime.game_route_start(
             "soccer",
-            _FakeRequest({"lanlan_name": "Lan", "session_id": "soccer-auto-log"}),
+            _FakeRequest({
+                "lanlan_name": "Lan",
+                "session_id": "soccer-auto-log",
+                "i18n_language": "zh-TW",
+            }),
         )
 
     assert result["ok"] is True
@@ -2333,7 +2362,8 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
         "base_url": "http://fake",
         "api_type": "local",
         "api_key": "key",
-        "user_language": "zh-TW",
+        "user_language": "zh",
+        "user_language_full": "zh-TW",
     })
 
     async def fake_fetch(_lanlan_name, *, language=None):

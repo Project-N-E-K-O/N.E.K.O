@@ -1246,6 +1246,7 @@ async def test_scoped_read_refreshes_reflection_suppressions():
     )
     req = SimpleNamespace(
         subjects=[SimpleNamespace(to_domain=lambda: subject)],
+        language=None,
     )
     with patch.object(routes.runtime, "reflection_engine", engine, create=True),          patch.object(routes.runtime, "persona_manager", persona, create=True):
         await routes.get_scoped_context("Neko", req)
@@ -11228,6 +11229,61 @@ async def test_session_instructions_build_executes_end_to_end():
     )
     assert "9900" in bundle.system_prompt
     assert "9900" in bundle.cross_session_section
+
+
+@pytest.mark.parametrize(
+    ("is_group", "group_id"),
+    [(False, None), (True, "7788")],
+)
+@pytest.mark.asyncio
+async def test_session_instructions_forward_full_locale_to_memory(
+    monkeypatch,
+    is_group,
+    group_id,
+):
+    from plugin.plugins.qq_auto_reply import session_instruction_service as module
+
+    monkeypatch.setattr(module, "get_global_language", lambda: "zh")
+    monkeypatch.setattr(module, "get_global_language_full", lambda: "zh-TW")
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        _emit_log=lambda *a, **k: None,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+            "allow_cross_group_context": False,
+        },
+        _user_sessions={},
+        i18n=_default_i18n(),
+        memory_bridge=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda *a, **k: None,
+            get_user_title=lambda *a, **k: "",
+        ),
+        qq_client=SimpleNamespace(needs_attention=False),
+        fatigue_service=None,
+        session_runtime_service=SimpleNamespace(),
+    )
+    service = module.QQSessionInstructionService(plugin)
+    service._build_core_memory_section = AsyncMock(return_value="")
+
+    await service.build_session_instructions(
+        her_name="Neko",
+        master_name="Master",
+        character_prompt="persona",
+        character_card_fields={},
+        permission_level="admin",
+        sender_id="2046",
+        user_title="member",
+        is_group=is_group,
+        group_id=group_id,
+        use_memory_context=True,
+    )
+
+    assert (
+        service._build_core_memory_section.await_args.kwargs["locale"]
+        == "zh-TW"
+    )
 
 
 @pytest.mark.asyncio

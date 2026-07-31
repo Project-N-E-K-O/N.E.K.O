@@ -501,11 +501,16 @@ async def _build_soccer_pregame_context(
     lanlan_name: str,
     neko_initiated: bool,
     neko_invite_text: str,
+    prompt_locale: str | None = None,
 ) -> tuple[dict, str, str]:
     char_info = _get_character_info(lanlan_name)
     recent_history, history_error = await _fetch_recent_history_for_pregame(
         lanlan_name,
-        language=char_info.get("user_language"),
+        language=(
+            prompt_locale
+            or char_info.get("user_language_full")
+            or char_info.get("user_language")
+        ),
     )
     _log_game_debug_material(
         "pregame_recent_history",
@@ -562,12 +567,17 @@ async def _build_badminton_pregame_context(
     neko_initiated: bool,
     neko_invite_text: str,
     mode: str = "spectator",
+    prompt_locale: str | None = None,
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_badminton_mode(mode)
     char_info = _get_character_info(lanlan_name)
     recent_history, history_error = await _fetch_recent_history_for_pregame(
         lanlan_name,
-        language=char_info.get("user_language"),
+        language=(
+            prompt_locale
+            or char_info.get("user_language_full")
+            or char_info.get("user_language")
+        ),
     )
     _log_game_debug_material(
         "pregame_recent_history",
