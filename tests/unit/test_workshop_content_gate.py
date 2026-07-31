@@ -1317,6 +1317,35 @@ def _module_level_claiming_workers(trees):
                 for local_alias, source_module in module_aliases[module].items()
                 for name in generators.get((source_module, None), set())
             }
+            while True:
+                aliases_changed = False
+                for node in tree.body:
+                    if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+                        continue
+                    value = node.value
+                    targets = (
+                        node.targets if isinstance(node, ast.Assign) else [node.target]
+                    )
+                    resolved_claim = _resolved_claim_reference(
+                        value, imported_claiming, attribute_claiming, False
+                    )
+                    resolved_generator = _resolved_claim_reference(
+                        value, imported_generators, attribute_generators, False
+                    )
+                    for target in targets:
+                        if not isinstance(target, ast.Name):
+                            continue
+                        if resolved_claim and target.id not in imported_claiming:
+                            imported_claiming.add(target.id)
+                            aliases_changed = True
+                        if (
+                            resolved_generator
+                            and target.id not in imported_generators
+                        ):
+                            imported_generators.add(target.id)
+                            aliases_changed = True
+                if not aliases_changed:
+                    break
             next_claiming, next_generators = _claiming_worker_inventory(
                 scope_functions[scope],
                 imported_claiming,
@@ -1330,6 +1359,35 @@ def _module_level_claiming_workers(trees):
                 changed = True
         if not changed:
             return claiming, generators, module_aliases
+
+
+def _class_protocol_claim(
+    node,
+    module: str,
+    claiming_by_scope,
+    parents: dict[int, ast.AST],
+) -> tuple[tuple[str, str], str] | None:
+    """Resolve implicit constructor/context protocol calls for a class name."""
+    if not isinstance(node, ast.Name):
+        return None
+    scope = (module, node.id)
+    methods = claiming_by_scope.get(scope, set())
+    if '__init__' in methods:
+        return scope, '__init__'
+    parent = parents.get(id(node))
+    if not isinstance(parent, ast.Call) or parent.func is not node:
+        return None
+    current = parent
+    while id(current) in parents:
+        current = parents[id(current)]
+        if isinstance(current, ast.withitem):
+            for method in ('__enter__', '__exit__', '__aenter__', '__aexit__'):
+                if method in methods:
+                    return scope, method
+            return None
+        if isinstance(current, (ast.Call, ast.Lambda, ast.GeneratorExp)):
+            return None
+    return None
 
 
 def _scope_claiming_names_called_on_loop(
@@ -1370,9 +1428,11 @@ def _scope_claiming_names_called_on_loop(
     for node in _walk_own_scope(func):
         if isinstance(node, ast.Name):
             name = node.id
-            constructor_scope = (module, name)
-            if '__init__' in claiming_by_scope.get(constructor_scope, set()):
-                scope, resolved_name = constructor_scope, '__init__'
+            protocol_claim = _class_protocol_claim(
+                node, module, claiming_by_scope, parents
+            )
+            if protocol_claim:
+                scope, resolved_name = protocol_claim
             else:
                 scope, resolved_name = local_names.get(
                     name, ((module, None), name)
@@ -1633,6 +1693,18 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'async def constructor_offloaded():\n'
         '    await asyncio.to_thread(ClaimingWorker)\n'
+        '\n'
+        'class ContextGuard:\n'
+        '    def __enter__(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        '        return self\n'
+        '    def __exit__(self, *args):\n'
+        '        pass\n'
+        '\n'
+        'async def context_protocol_direct():\n'
+        '    with ContextGuard():\n'
+        '        pass\n'
     )
     functions = {
         node.name: node
@@ -1709,6 +1781,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'claim-owning __init__ 的类在事件循环实例化时必须报出来'
     )
     assert module_offenders('constructor_offloaded') == []
+    assert module_offenders('context_protocol_direct'), (
+        'with Guard() 隐式调用 claim-owning __enter__ 时必须报出来'
+    )
     assert module_offenders('safe_attribute_handler') == [], (
         'Safe().owner() 不能因 tail name 与模块 owner 相同而污染 wrapper'
     )
@@ -1721,6 +1796,7 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     consumer = ast.parse(
         'from .source import owner as imported_owner\n'
         'from . import source as workers\n'
+        'assigned_owner = imported_owner\n'
         'async def imported_direct():\n'
         '    imported_owner()\n'
         'async def imported_offloaded():\n'
@@ -1729,6 +1805,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    workers.owner()\n'
         'async def qualified_offloaded():\n'
         '    await asyncio.to_thread(workers.owner)\n'
+        'async def assigned_direct():\n'
+        '    assigned_owner()\n'
+        'async def assigned_offloaded():\n'
+        '    await asyncio.to_thread(assigned_owner)\n'
         'async def local_import_direct():\n'
         '    from .source import owner as local_owner\n'
         '    local_owner()\n'
@@ -1790,6 +1870,14 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         imported_claiming,
         imported_generators,
         imported_aliases,
+    ) == []
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['assigned_direct'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
+    ), '模块级 assignment alias 必须继承 claim owner 身份'
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['assigned_offloaded'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
     ) == []
     assert _scope_claiming_names_called_on_loop(
         imported_functions['local_import_direct'],
@@ -1887,6 +1975,18 @@ _MUST_BE_CLAIMED = {
 _PACKAGE_WIDE_OPERATIONS = {
     '_publish_workshop_item',
     '_cleanup_workshop_voice_reference',
+}
+
+_PACKAGE_OPERATION_CLAIMS = {
+    '_publish_workshop_item': {'claim_content_folder'},
+    '_cleanup_workshop_voice_reference': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
+}
+
+_PACKAGE_OPERATION_FOLDER_ARGS = {
+    '_publish_workshop_item': 3,
+    '_cleanup_workshop_voice_reference': 0,
 }
 
 # 这些名字过于通用，不能全模块扫描；但在指定 worker 单元里，它们正是内容目录的
@@ -2025,6 +2125,32 @@ def _operation_nodes(
     return found
 
 
+def _path_expression_key(node) -> str:
+    while (
+        isinstance(node, ast.Call)
+        and _tail_name(node) in {'Path', 'str'}
+        and len(node.args) == 1
+        and not node.keywords
+    ):
+        node = node.args[0]
+    return ast.dump(node, include_attributes=False)
+
+
+def _operation_folder_key(
+    operation, name: str, parents: dict[int, ast.AST]
+) -> str | None:
+    index = _PACKAGE_OPERATION_FOLDER_ARGS.get(name)
+    parent = parents.get(id(operation))
+    if (
+        index is None
+        or not isinstance(parent, ast.Call)
+        or parent.func is not operation
+        or len(parent.args) <= index
+    ):
+        return None
+    return _path_expression_key(parent.args[index])
+
+
 def _unclaimed_folder_operations(
     func, short: str, aliases: dict[str, str] | None = None
 ) -> list:
@@ -2056,20 +2182,34 @@ def _unclaimed_folder_operations(
             }
             for branch in expressions
         ]
+        branch_targets = [
+            {_path_expression_key(branch.args[0])}
+            if isinstance(branch, ast.Call)
+            and _tail_name(branch) in claim_factories
+            and branch.args
+            else set()
+            for branch in expressions
+        ]
         kinds = set.intersection(*branch_kinds) if branch_kinds else set()
+        folder_targets = (
+            set.intersection(*branch_targets) if branch_targets else set()
+        )
         if branch_kinds and all(branch_kinds):
             kinds.add('<all-branches-claimed>')
-        targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+        assignment_targets = (
+            node.targets if isinstance(node, ast.Assign) else [node.target]
+        )
         if kinds:
-            for target in targets:
+            for target in assignment_targets:
                 if isinstance(target, ast.Name):
-                    claim_contexts[target.id] = kinds
+                    claim_contexts[target.id] = (kinds, folder_targets)
 
     claimed_scopes = []
     for block in _walk_own_scope(func):
         if not isinstance(block, ast.With):
             continue
         claim_kinds = set()
+        claim_targets = set()
         for item in block.items:
             context = item.context_expr
             if (
@@ -2077,12 +2217,19 @@ def _unclaimed_folder_operations(
                 and _tail_name(context) in claim_factories
             ):
                 claim_kinds.add(claim_factories[_tail_name(context)])
+                if context.args:
+                    claim_targets.add(_path_expression_key(context.args[0]))
             elif isinstance(context, ast.Name):
-                claim_kinds.update(claim_contexts.get(context.id, set()))
+                alias_kinds, alias_targets = claim_contexts.get(
+                    context.id, (set(), set())
+                )
+                claim_kinds.update(alias_kinds)
+                claim_targets.update(alias_targets)
         if not claim_kinds:
             continue
         claimed_scopes.append((
             claim_kinds,
+            claim_targets,
             {
                 id(inner)
                 for statement in block.body
@@ -2137,7 +2284,16 @@ def _unclaimed_folder_operations(
     for child, name in operations:
         if id(child) in deferred_nodes:
             offenders.append((short, func.name, child.lineno, name, '交给别处延后跑'))
-        elif not any(id(child) in scope for _, scope in claimed_scopes):
+            continue
+        required_kinds = _PACKAGE_OPERATION_CLAIMS.get(name)
+        folder_key = _operation_folder_key(child, name, parents)
+        protected = any(
+            id(child) in scope
+            and (not required_kinds or bool(kinds & required_kinds))
+            and (folder_key is None or folder_key in targets)
+            for kinds, targets, scope in claimed_scopes
+        )
+        if not protected:
             offenders.append((short, func.name, child.lineno, name, '未占用'))
 
     unit_key, unit_inventory = _inventory_for_function(
@@ -2158,7 +2314,7 @@ def _unclaimed_folder_operations(
         required_claim = _UNIT_CLAIMS[unit_key]
         if unit_ids and not any(
             required_claim in kinds and unit_ids <= scope
-            for kinds, scope in claimed_scopes
+            for kinds, _, scope in claimed_scopes
         ):
             offenders.append((
                 short,
@@ -2361,6 +2517,32 @@ def test_the_claim_guard_requires_one_continuous_claim():
         item[3] == 'continuous-claim'
         for item in _unclaimed_folder_operations(wrong_kind, 'publish')
     ), '删整个目录必须拿独占 claim_content_folder，共享 pair claim 不够'
+
+
+def test_package_operations_require_the_matching_claim_kind_and_folder():
+    matching = ast.parse(
+        'def publish():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    wrong_kind = ast.parse(
+        'def publish():\n'
+        '    with claim_partial_writer(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    wrong_folder = ast.parse(
+        'def publish():\n'
+        '    with claim_content_folder(first_folder, purpose=p):\n'
+        '        _publish_workshop_item(a, b, c, second_folder)\n'
+    ).body[0]
+
+    assert _unclaimed_folder_operations(matching, 'publish') == []
+    assert _unclaimed_folder_operations(wrong_kind, 'publish'), (
+        'package-wide publish 必须由独占 claim_content_folder 保护'
+    )
+    assert _unclaimed_folder_operations(wrong_folder, 'publish'), (
+        'claim 必须保护 package-wide operation 实际接收的同一目录'
+    )
 
 
 def test_every_folder_consuming_call_sits_inside_a_claim():
