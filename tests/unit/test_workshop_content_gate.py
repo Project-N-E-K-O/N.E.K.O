@@ -30,6 +30,7 @@ from contextlib import asynccontextmanager
 import inspect
 import json
 import os
+from pathlib import Path
 import threading
 import time
 
@@ -826,6 +827,17 @@ def _contains_node(root, target) -> bool:
     return any(node is target for node in ast.walk(root))
 
 
+def _is_invoked_inside(node, root, parents: dict[int, ast.AST]) -> bool:
+    """Whether evaluating ``root`` calls the callable referenced by ``node``."""
+    current = node
+    while current is not root and id(current) in parents:
+        parent = parents[id(current)]
+        if isinstance(parent, ast.Call):
+            return parent.func is current
+        current = parent
+    return False
+
+
 def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
     current = node
     while id(current) in parents:
@@ -834,8 +846,11 @@ def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
             callable_arg = _worker_callable(current)
             if callable_arg is node:
                 return True
-            if isinstance(callable_arg, ast.Lambda) and _contains_node(callable_arg.body, node):
-                return True
+            if (
+                isinstance(callable_arg, ast.Lambda)
+                and _contains_node(callable_arg.body, node)
+            ):
+                return _is_invoked_inside(node, callable_arg.body, parents)
             if (
                 isinstance(callable_arg, ast.Call)
                 and _tail_name(callable_arg) == 'partial'
@@ -1034,6 +1049,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def lambda_body():\n'
         '    await asyncio.to_thread(lambda: _claiming_worker())\n'
         '\n'
+        'async def lambda_returns_owner():\n'
+        '    await asyncio.to_thread(lambda: _claiming_worker)\n'
+        '\n'
         'async def eager_lambda_default():\n'
         '    await asyncio.to_thread(lambda ignored=_claiming_worker(): None)\n'
         '\n'
@@ -1077,6 +1095,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         functions['lambda_body'], claiming, generators
     ) == []
     assert _claiming_names_called_on_loop(
+        functions['lambda_returns_owner'], claiming, generators
+    ), 'offload lambda 只返回 owner 时并没有在 worker 执行它，必须报出来'
+    assert _claiming_names_called_on_loop(
         functions['eager_lambda_default'], claiming, generators
     ), 'lambda 默认值在 offload 前求值，里面的 claim owner 必须报出来'
     assert _claiming_names_called_on_loop(
@@ -1101,15 +1122,15 @@ def test_no_claim_is_ever_taken_on_the_event_loop():
     folder would quietly go free the moment a client disconnected -- with the
     worker still writing into it.
     """
-    from main_routers.workshop_router import preview_cards, voice_manifest, voice_refs
-
-    modules = (publish, voice_refs, preview_cards, voice_manifest, content_gate)
-    trees = [(module, ast.parse(inspect.getsource(module))) for module in modules]
+    package_dir = Path(content_gate.__file__).resolve().parent
+    trees = [
+        (path.stem, ast.parse(path.read_text(encoding='utf-8')))
+        for path in sorted(package_dir.glob('*.py'))
+    ]
     claiming_workers, generator_workers = _module_level_claiming_workers(trees)
 
     offenders = []
-    for module, tree in trees:
-        short = module.__name__.rsplit('.', 1)[-1]
+    for short, tree in trees:
         for node in ast.walk(tree):
             if not isinstance(node, ast.AsyncFunctionDef):
                 continue
