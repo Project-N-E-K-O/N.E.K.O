@@ -910,7 +910,7 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                     state = paths[0]
                     for path in paths[1:]:
                         state = merge(state, path)
-            elif isinstance(node, (ast.For, ast.AsyncFor)):
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
                 state = merge(state, after(node.body, state))
                 state = after(node.orelse, state)
             elif isinstance(node, ast.With):
@@ -1006,24 +1006,27 @@ def _claim_calls_in_own_scope(func) -> list:
     descend, not by skipping a single node.
     """
     found = []
-    stack = list(ast.iter_child_nodes(func))
+    stack = [(func, node) for node in ast.iter_child_nodes(func)]
     while stack:
-        node = stack.pop()
+        parent, node = stack.pop()
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-            stack.extend(_eager_definition_nodes(node))
+            stack.extend((node, child) for child in _eager_definition_nodes(node))
             continue
         if isinstance(node, ast.Lambda):
             # Defaults are evaluated when the lambda is created; its body is a
             # deferred nested scope and must be attributed when it is invoked.
-            stack.extend(node.args.defaults)
-            stack.extend(default for default in node.args.kw_defaults if default)
+            eager = list(node.args.defaults)
+            eager.extend(default for default in node.args.kw_defaults if default)
+            if isinstance(parent, ast.Call) and parent.func is node:
+                eager.append(node.body)
+            stack.extend((node, child) for child in eager)
             continue
         if isinstance(node, ast.Call):
             aliases = _claim_aliases(func, node.lineno)
             name = _resolved_claim_factory(node, aliases)
             if name:
                 found.append(node)
-        stack.extend(ast.iter_child_nodes(node))
+        stack.extend((node, child) for child in ast.iter_child_nodes(node))
     return found
 
 
@@ -1153,6 +1156,18 @@ def _known_to_thread_names(
                     names = after(containing, names)
                 else:
                     names = after(node.body, names) & after(node.orelse, names)
+            elif isinstance(node, ast.Match):
+                paths = [after(case.body, names) for case in node.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in node.cases
+                )
+                if not exhaustive:
+                    paths.append(names)
+                if paths:
+                    names = set.intersection(*paths)
             elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
                 names &= after(node.body, names)
                 names = after(node.orelse, names)
@@ -2622,6 +2637,12 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    for item in items:\n'
         '        dispatch = dispatcher\n'
         '    await dispatch(_claiming_worker)\n'
+        'async def match_to_thread_alias(value):\n'
+        '    dispatch = offload\n'
+        '    match value:\n'
+        '        case _:\n'
+        '            dispatch = dispatcher\n'
+        '    await dispatch(_claiming_worker)\n'
         'async def local_alias_offloaded():\n'
         '    callback = _claiming_worker\n'
         '    await asyncio.to_thread(callback)\n'
@@ -2640,6 +2661,8 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def eager_lambda_default_claim():\n'
         '    worker = lambda guard=claim_content_folder(folder): guard\n'
         '    await asyncio.to_thread(worker)\n'
+        'async def immediate_lambda_claim():\n'
+        '    (lambda: claim_content_folder(folder))()\n'
         'async def conditional_local_alias():\n'
         '    callback = _claiming_worker\n'
         '    if flag:\n'
@@ -2857,6 +2880,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('loop_to_thread_alias'), (
         'local to_thread alias 必须合并 loop 的 zero/nonzero iteration paths'
     )
+    assert module_offenders('match_to_thread_alias'), (
+        'local to_thread alias 必须合并 match 的全部可达 case'
+    )
     assert module_offenders('local_alias_offloaded') == []
     assert module_offenders('local_alias_direct'), (
         'local callable alias 直调仍必须继承 claim owner 身份'
@@ -2870,6 +2896,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     )
     assert _claim_calls_in_own_scope(functions['eager_lambda_default_claim']), (
         'lambda default 在 handler 中立即求值，里面的 claim 仍必须报出'
+    )
+    assert _claim_calls_in_own_scope(functions['immediate_lambda_claim']), (
+        '立即调用的 lambda body 会在 event loop 执行，里面的 claim 必须报出'
     )
     assert module_offenders('conditional_local_alias'), (
         '任一 conditional path 仍指向 claim owner 时，local alias 直调必须报出'
@@ -3333,6 +3362,8 @@ _CONTENT_PATH_MUTATION_METHODS = {
 }
 
 _OS_CONTENT_PATH_MUTATION_ARGS = {
+    'mkdir': ((0, 'path'),),
+    'makedirs': ((0, 'name'),),
     'remove': ((0, 'path'),),
     'unlink': ((0, 'path'),),
     'rmdir': ((0, 'path'),),
@@ -3363,6 +3394,12 @@ _FOLDER_OPERATION_CLAIMS = {
     'copytree': {'claim_content_folder'},
     'move': {'claim_content_folder'},
     'remove': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
+    'mkdir': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
+    'makedirs': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
     _OPEN_WRITE_OPERATION: {
@@ -3476,6 +3513,8 @@ def _operation_name(node) -> str | None:
 
 def _known_operation_names() -> set[str]:
     names = set(_PACKAGE_WIDE_OPERATIONS) | set(_MUST_BE_CLAIMED)
+    names |= set(_OS_CONTENT_PATH_MUTATION_ARGS)
+    names |= set(_CONTENT_PATH_MUTATION_METHODS)
     for inventory in _UNIT_OPERATIONS.values():
         names.update(inventory)
     return names
@@ -3537,9 +3576,23 @@ def _operation_aliases(
                 state = merge(after(node.body, state), after(node.orelse, state))
             elif isinstance(node, ast.With):
                 state = after(node.body, state)
-            elif isinstance(node, (ast.For, ast.AsyncFor)):
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
                 state = merge_possible(state, after(node.body, state))
                 state = after(node.orelse, state)
+            elif isinstance(node, ast.Match):
+                paths = [after(case.body, state) for case in node.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in node.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                if paths:
+                    state = paths[0]
+                    for path in paths[1:]:
+                        state = merge(state, path)
             elif isinstance(node, ast.Try):
                 paths = [after(node.body, state)]
                 paths.extend(after(handler.body, state) for handler in node.handlers)
@@ -3645,8 +3698,11 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                     state = paths[0]
                     for path in paths[1:]:
                         state = merge(state, path)
-            elif isinstance(statement, (ast.With, ast.For, ast.AsyncFor)):
+            elif isinstance(statement, ast.With):
+                state = after(statement.body, state)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
                 state = merge(state, after(statement.body, state))
+                state = after(statement.orelse, state)
             elif isinstance(statement, ast.Try):
                 paths = [after(statement.body, state)]
                 paths.extend(after(handler.body, state) for handler in statement.handlers)
@@ -3695,6 +3751,9 @@ def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
         ):
             continue
         origins = _expression_path_origins(node.func.value, func, node.lineno)
+        if node.func.attr == 'replace' and len(node.args) > 1:
+            # ``str.replace(old, new[, count])`` is not ``Path.replace(target)``.
+            continue
         if any(_looks_like_content_folder(name) for name in origins):
             found.append((node.func, node.func.attr))
     return found
@@ -4018,11 +4077,85 @@ def _stays_within_claimed_tree(
         or (
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
-            and '..' in node.value.replace('\\', '/').split('/')
+            and (
+                '..' in node.value.replace('\\', '/').split('/')
+                or node.value.startswith(('/', '\\'))
+                or (
+                    len(node.value) >= 3
+                    and node.value[1] == ':'
+                    and node.value[2] in {'/', '\\'}
+                )
+            )
         )
         for folder in folders
         for node in ast.walk(folder)
     )
+
+
+def _static_path_shape(node) -> tuple[str, tuple[str, ...]] | None:
+    """Best-effort root plus literal suffix for directional claim checks."""
+    if isinstance(node, ast.Name):
+        return node.id, ()
+    if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+        base = _static_path_shape(node.left)
+        if base and isinstance(node.right, ast.Constant) and isinstance(
+            node.right.value, str
+        ):
+            return base[0], base[1] + (node.right.value,)
+        return None
+    if isinstance(node, ast.Call) and _tail_name(node) in {'Path', 'str', 'join'}:
+        if not node.args:
+            return None
+        base = _static_path_shape(node.args[0])
+        if base is None:
+            return None
+        suffix = list(base[1])
+        for component in node.args[1:]:
+            if not isinstance(component, ast.Constant) or not isinstance(
+                component.value, str
+            ):
+                return None
+            suffix.append(component.value)
+        return base[0], tuple(suffix)
+    return None
+
+
+def _paths_fit_claim(
+    operation_folders: list[ast.AST], claim_shapes: set[tuple[str, tuple[str, ...]]]
+) -> bool:
+    operation_shapes = {
+        shape
+        for folder in operation_folders
+        if (shape := _static_path_shape(folder)) is not None
+        and _looks_like_content_folder(shape[0])
+    }
+    comparable_claims = {
+        shape for shape in claim_shapes if _looks_like_content_folder(shape[0])
+    }
+    if not operation_shapes or not comparable_claims:
+        return True
+    return all(
+        any(
+            claim_root == operation_root
+            and operation_suffix[:len(claim_suffix)] == claim_suffix
+            for claim_root, claim_suffix in comparable_claims
+        )
+        for operation_root, operation_suffix in operation_shapes
+    )
+
+
+def _mutates_claim_root(
+    name: str,
+    operation_folders: list[ast.AST],
+    claim_shapes: set[tuple[str, tuple[str, ...]]],
+) -> bool:
+    if name not in {'rmtree', 'rmdir', 'rename', 'replace', 'move'}:
+        return False
+    operation_shapes = {
+        shape for folder in operation_folders
+        if (shape := _static_path_shape(folder)) is not None
+    }
+    return bool(operation_shapes & claim_shapes)
 
 
 def _unclaimed_folder_operations(
@@ -4077,12 +4210,15 @@ def _unclaimed_folder_operations(
             for branch in expressions
         ]
         branch_pairs = []
+        branch_shapes = []
         for branch in expressions:
             aliases = _claim_aliases(func, branch.lineno)
             kind = _resolved_claim_factory(branch, aliases)
             folder = _claim_folder_expression(branch) if kind else None
             key = _path_expression_key(folder) if folder is not None else None
             branch_pairs.append({(kind, key)} if kind and key is not None else set())
+            shape = _static_path_shape(folder) if folder is not None else None
+            branch_shapes.append({shape} if kind and shape is not None else set())
         kinds = set.intersection(*branch_kinds) if branch_kinds else set()
         folder_targets = (
             set.intersection(*branch_targets) if branch_targets else set()
@@ -4095,10 +4231,11 @@ def _unclaimed_folder_operations(
             set.union(*branch_target_roots) if branch_target_roots else set()
         )
         pairs = set.intersection(*branch_pairs) if branch_pairs else set()
+        shapes = set().union(*branch_shapes) if branch_shapes else set()
         if branch_kinds and all(branch_kinds):
             kinds.add('<all-branches-claimed>')
         return (
-            kinds, folder_targets, target_names, target_roots, pairs
+            kinds, folder_targets, target_names, target_roots, pairs, shapes
         ) if kinds else None
 
     def merge_claim_states(left, right):
@@ -4163,6 +4300,7 @@ def _unclaimed_folder_operations(
         claim_target_names = set()
         claim_target_roots = set()
         claim_pairs = set()
+        claim_shapes = set()
         claim_contexts = claim_states_by_with.get(id(block), {})
         for item in block.items:
             context = item.context_expr
@@ -4177,6 +4315,9 @@ def _unclaimed_folder_operations(
                     if key is not None:
                         claim_targets.add(key)
                         claim_pairs.add((claim_kind, key))
+                    shape = _static_path_shape(folder)
+                    if shape is not None:
+                        claim_shapes.add(shape)
                     claim_target_names.update(
                         _path_expression_names(folder)
                         | _expression_path_origins(folder, func, context.lineno)
@@ -4193,14 +4334,16 @@ def _unclaimed_folder_operations(
                     alias_target_names,
                     alias_target_roots,
                     alias_pairs,
+                    alias_shapes,
                 ) = claim_contexts.get(
-                    context.id, (set(), set(), set(), set(), set())
+                    context.id, (set(), set(), set(), set(), set(), set())
                 )
                 claim_kinds.update(alias_kinds)
                 claim_targets.update(alias_targets)
                 claim_target_names.update(alias_target_names)
                 claim_target_roots.update(alias_target_roots)
                 claim_pairs.update(alias_pairs)
+                claim_shapes.update(alias_shapes)
         if not claim_kinds:
             continue
         claimed_scopes.append((
@@ -4209,6 +4352,7 @@ def _unclaimed_folder_operations(
             claim_target_names,
             claim_target_roots,
             claim_pairs,
+            claim_shapes,
             [
                 (
                     getattr(
@@ -4291,6 +4435,7 @@ def _unclaimed_folder_operations(
         folder_argument_origin_sets = _operation_folder_argument_origin_sets(
             child, name, parents, func
         )
+        operation_folders = _operation_folder_expressions(child, name, parents)
         content_folder_argument_origin_sets = [
             origins
             for origins in folder_argument_origin_sets
@@ -4345,6 +4490,13 @@ def _unclaimed_folder_operations(
                         for origins in content_folder_argument_origin_sets
                     )
                     and bool(required_kinds & kinds)
+                    and _paths_fit_claim(operation_folders, claim_shapes)
+                    and (
+                        not _mutates_claim_root(
+                            name, operation_folders, claim_shapes
+                        )
+                        or 'claim_content_folder' in kinds
+                    )
                 )
             )
             and not any(
@@ -4352,7 +4504,14 @@ def _unclaimed_folder_operations(
                 for line, names in rebindings
             )
             for (
-                kinds, targets, target_names, target_roots, pairs, rebindings, scope
+                kinds,
+                targets,
+                target_names,
+                target_roots,
+                pairs,
+                claim_shapes,
+                rebindings,
+                scope,
             ) in claimed_scopes
         )
         if not protected:
@@ -4390,7 +4549,7 @@ def _unclaimed_folder_operations(
             required_claim in kinds
             and unit_ids <= scope
             and (not unit_folder_names or bool(unit_folder_names & target_names))
-            for kinds, _, target_names, _, _, _, scope in claimed_scopes
+            for kinds, _, target_names, _, _, _, _, scope in claimed_scopes
         ):
             offenders.append((
                 short,
@@ -4625,12 +4784,27 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '            target = content_folder\n'
         '    shutil.rmtree(target)\n'
         '\n'
+        'def while_target(content_folder, other, flag):\n'
+        '    target = other\n'
+        '    while flag:\n'
+        '        target = content_folder\n'
+        '        break\n'
+        '    shutil.rmtree(target)\n'
+        '\n'
         'def os_mutations(content_folder, other_content_folder):\n'
+        "    os.mkdir(os.path.join(content_folder, 'generated'))\n"
+        "    os.makedirs(os.path.join(content_folder, 'nested'))\n"
         "    os.remove(os.path.join(content_folder, 'manifest.json'))\n"
         "    os.unlink(os.path.join(content_folder, 'voice.wav'))\n"
         '    os.rmdir(content_folder)\n'
         '    os.rename(content_folder, other_content_folder)\n'
         '    os.replace(content_folder, other_content_folder)\n'
+        '\n'
+        'def aliased_os_mutations(content_folder):\n'
+        '    remove_dir = os.rmdir\n'
+        '    remove_file = os.unlink\n'
+        '    remove_dir(content_folder)\n'
+        "    remove_file(os.path.join(content_folder, 'voice.wav'))\n"
         '\n'
         'def copy_source(content_folder, dst):\n'
         '    shutil.copytree(content_folder, dst)\n'
@@ -4665,6 +4839,33 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "    open(config_path, 'w')\n"
         "    config_path.open('a')\n"
         '    os.open(config_path, os.O_CREAT | os.O_WRONLY)\n'
+        '\n'
+        'def harmless_string_replace(content_folder):\n'
+        "    return content_folder.replace('\\\\', '/')\n"
+        '\n'
+        'def partial_root_delete(content_folder):\n'
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        '        os.rmdir(content_folder)\n'
+        '\n'
+        'def partial_child_delete(content_folder):\n'
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        "        os.rmdir(os.path.join(content_folder, 'child'))\n"
+        '\n'
+        'def absolute_escape(content_folder):\n'
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        "        Path(content_folder, '/tmp/out').write_text(data)\n"
+        '\n'
+        'def descendant_claim(content_folder):\n'
+        "    with claim_content_folder(Path(content_folder) / 'child', purpose=p):\n"
+        '        shutil.rmtree(content_folder)\n'
+        '\n'
+        'def sibling_claim(content_folder):\n'
+        "    with claim_content_folder(Path(content_folder) / 'child', purpose=p):\n"
+        "        shutil.rmtree(Path(content_folder) / 'sibling')\n"
+        '\n'
+        'def ancestor_claim(content_folder):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        "        shutil.rmtree(Path(content_folder) / 'child')\n"
     )
     functions = {node.name: node for node in tree.body}
 
@@ -4693,13 +4894,22 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['match_target'], 'new_router'
     ), 'match case 中绑定的 target 也必须继承 content-folder origin'
+    assert _unclaimed_folder_operations(
+        functions['while_target'], 'new_router'
+    ), 'while body 中绑定的 target 也必须保留 content-folder origin'
     os_offenders = _unclaimed_folder_operations(
         functions['os_mutations'], 'new_router'
     )
     assert {
         item[3] for item in os_offenders
-    } >= {'remove', 'unlink', 'rmdir', 'rename', 'replace'}, (
+    } >= {'mkdir', 'makedirs', 'remove', 'unlink', 'rmdir', 'rename', 'replace'}, (
         'os-level content-path mutations 必须全部进入 repository-wide guard'
+    )
+    aliased_os_offenders = _unclaimed_folder_operations(
+        functions['aliased_os_mutations'], 'new_router'
+    )
+    assert {item[3] for item in aliased_os_offenders} >= {'rmdir', 'unlink'}, (
+        'generic os mutation aliases 也必须保留 operation identity'
     )
     assert _unclaimed_folder_operations(
         functions['copy_source'], 'new_router'
@@ -4726,6 +4936,25 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['unrelated_open_writes'], 'new_router'
     ) == [], '与 content folder 无关的 open writers 不应被 package-wide guard 误报'
+    assert _unclaimed_folder_operations(
+        functions['harmless_string_replace'], 'new_router'
+    ) == [], 'str.replace 不应被当成 Path.replace 文件系统 mutation'
+    assert _unclaimed_folder_operations(
+        functions['partial_root_delete'], 'new_router'
+    ), 'shared claim 不能保护删除 content-folder root 的操作'
+    assert _unclaimed_folder_operations(
+        functions['partial_child_delete'], 'new_router'
+    ) == [], 'shared claim 仍应覆盖 content-folder 内部的 child mutation'
+    assert _unclaimed_folder_operations(
+        functions['absolute_escape'], 'new_router'
+    ), 'absolute path segment 覆盖 claimed prefix 时必须视为逃逸'
+    for name in ('descendant_claim', 'sibling_claim'):
+        assert _unclaimed_folder_operations(functions[name], 'new_router'), (
+            f'{name} 的 claim 不覆盖 parent 或 sibling mutation'
+        )
+    assert _unclaimed_folder_operations(
+        functions['ancestor_claim'], 'new_router'
+    ) == [], 'ancestor folder claim 应覆盖其 descendant mutation'
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
@@ -4840,6 +5069,15 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with factory(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    while_reassigned_factory = ast.parse(
+        'def publish(flag):\n'
+        '    factory = claim_content_folder\n'
+        '    while flag:\n'
+        '        factory = nullcontext\n'
+        '        break\n'
+        '    with factory(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     loop_reassigned_contexts = [
         ast.parse(source).body[0]
         for source in (
@@ -4904,6 +5142,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(loop_reassigned_factory, 'publish'), (
         'claim factory alias 必须合并 zero/nonzero loop 路径'
+    )
+    assert _unclaimed_folder_operations(while_reassigned_factory, 'publish'), (
+        'claim factory alias 必须合并 while 的 zero/nonzero 路径'
     )
     for loop_reassigned_context in loop_reassigned_contexts:
         assert _unclaimed_folder_operations(loop_reassigned_context, 'publish'), (
