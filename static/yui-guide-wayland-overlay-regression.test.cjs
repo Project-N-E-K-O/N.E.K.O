@@ -63,7 +63,7 @@ result = getYuiGuideChatSpotlightSourceRect(
   );
 });
 
-test('capsule target keeps its registered body rect instead of shifting toward its text anchor', () => {
+test('Niri capsule target keeps its body rect while standard Wayland preserves text alignment', () => {
   const functionSource = extractFunction(
     targetSource,
     'getYuiGuideChatSpotlightSourceRect',
@@ -83,20 +83,41 @@ test('capsule target keeps its registered body rect instead of shifting toward i
   vm.runInNewContext(
     `${shouldAlignSource}
 ${functionSource}
-capsuleShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText('capsule-input', '');
-plainCapsuleShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText('input', 'plain-capsule');
-capsuleResult = getYuiGuideChatSpotlightSourceRect(
+niriShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText(
   'capsule-input',
   '',
-  { left: 100, top: 10, width: 400, height: 60 }
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: true }
+);
+waylandShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText(
+  'capsule-input',
+  '',
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: false }
+);
+plainCapsuleShouldAlign = shouldAlignYuiGuideChatSpotlightToCapsuleText('input', 'plain-capsule', null);
+niriResult = getYuiGuideChatSpotlightSourceRect(
+  'capsule-input',
+  '',
+  { left: 100, top: 10, width: 400, height: 60 },
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: true }
+);
+waylandResult = getYuiGuideChatSpotlightSourceRect(
+  'capsule-input',
+  '',
+  { left: 100, top: 10, width: 400, height: 60 },
+  { waylandWorkAreaCarrier: true, niriWaylandRuntime: false }
 );`,
     context,
   );
-  assert.equal(context.capsuleShouldAlign, false);
+  assert.equal(context.niriShouldAlign, false);
+  assert.equal(context.waylandShouldAlign, true);
   assert.equal(context.plainCapsuleShouldAlign, true);
   assert.deepEqual(
-    JSON.parse(JSON.stringify(context.capsuleResult.rect)),
+    JSON.parse(JSON.stringify(context.niriResult.rect)),
     { left: 100, top: 10, width: 400, height: 60 },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(context.waylandResult.rect)),
+    { left: 130, top: 10, width: 400, height: 60 },
   );
 });
 

@@ -5534,7 +5534,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
 
 
 @pytest.mark.frontend
-def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_on_wayland_and_x11(mock_page: Page):
+def test_externalized_chat_capsule_input_spotlight_scopes_text_alignment_away_from_niri(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -5542,11 +5542,13 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_on_way
             window.localStorage.setItem('yuiGuidePcOverlayRunId', 'test-run');
             window.__externalChatOverlayUpdates = [];
             window.__waylandWorkAreaCarrier = true;
+            window.__niriWaylandRuntime = true;
             window.nekoTutorialOverlay = {
                 getWindowMetricsSync: () => ({
                     bounds: { x: 100, y: 50, width: 1200, height: 800 },
                     contentBounds: { x: 100, y: 50, width: 1200, height: 800 },
                     waylandWorkAreaCarrier: window.__waylandWorkAreaCarrier,
+                    niriWaylandRuntime: window.__niriWaylandRuntime,
                     zoomFactor: 1,
                 }),
                 update: (payload) => {
@@ -5594,28 +5596,37 @@ def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_on_way
             const timestamp = Date.now();
             sendSpotlight(timestamp);
             await new Promise((resolve) => setTimeout(resolve, 160));
+            const niriUpdates = (window.__externalChatOverlayUpdates || [])
+                .filter((entry) => entry.payload && entry.payload.spotlights);
+            const niriSpotlight = niriUpdates[niriUpdates.length - 1].payload.spotlights[0];
+
+            window.__niriWaylandRuntime = false;
+            sendSpotlight(timestamp + 1);
+            await new Promise((resolve) => setTimeout(resolve, 160));
             const waylandUpdates = (window.__externalChatOverlayUpdates || [])
                 .filter((entry) => entry.payload && entry.payload.spotlights);
             const waylandSpotlight = waylandUpdates[waylandUpdates.length - 1].payload.spotlights[0];
 
             window.__waylandWorkAreaCarrier = false;
-            sendSpotlight(timestamp + 1);
+            sendSpotlight(timestamp + 2);
             await new Promise((resolve) => setTimeout(resolve, 160));
             const x11Updates = (window.__externalChatOverlayUpdates || [])
                 .filter((entry) => entry.payload && entry.payload.spotlights);
             const x11Spotlight = x11Updates[x11Updates.length - 1].payload.spotlights[0];
-            return { waylandSpotlight, x11Spotlight };
+            return { niriSpotlight, waylandSpotlight, x11Spotlight };
         }
         """
     )
 
     assert result
-    assert result["waylandSpotlight"]["id"] == "external-chat-capsule-input"
-    assert result["waylandSpotlight"]["x"] == 692
+    assert result["niriSpotlight"]["id"] == "external-chat-capsule-input"
+    assert result["niriSpotlight"]["x"] == 692
+    assert result["niriSpotlight"]["width"] == 446
+    assert result["waylandSpotlight"]["x"] == 722
     assert result["waylandSpotlight"]["width"] == 446
     assert result["x11Spotlight"]["x"] == 692
     assert result["x11Spotlight"]["width"] == 446
-    assert result["waylandSpotlight"] == result["x11Spotlight"]
+    assert result["niriSpotlight"] == result["x11Spotlight"]
 
 
 @pytest.mark.frontend

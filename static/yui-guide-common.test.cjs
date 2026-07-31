@@ -1258,19 +1258,19 @@ test('interpage consumes common tutorial geometry before chat bridge scripts run
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\)/);
     assert.match(appInterpageSource, /getYuiGuideChatTargetShape\(kind\) === 'circle'/);
     const shouldAlignFunctionStart = appInterpageSource.indexOf(
-        'function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant)'
+        'function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics)'
     );
     const sourceRectFunctionStart = appInterpageSource.indexOf(
-        'function getYuiGuideChatSpotlightSourceRect(kind, variant, rect)'
+        'function getYuiGuideChatSpotlightSourceRect(kind, variant, rect, metrics)'
     );
     assert.notEqual(shouldAlignFunctionStart, -1);
     assert.notEqual(sourceRectFunctionStart, -1);
     const shouldAlignFunction = getBalancedBlockFrom(appInterpageSource, shouldAlignFunctionStart);
     const sourceRectFunction = getBalancedBlockFrom(appInterpageSource, sourceRectFunctionStart);
-    // 修改原因：普通 input 保留旧 plain-capsule 文字对齐；capsule-input 已有 registry
-    // capsuleBody 作为完整几何真值，所有平台都不得再按文字起点平移。
-    assert.match(shouldAlignFunction, /return kind === 'input' && variant === 'plain-capsule';/);
-    assert.doesNotMatch(shouldAlignFunction, /capsule-input|waylandWorkAreaCarrier/);
+    // 修改原因：Niri 的 capsuleBody 使用已提交布局坐标，不再叠加文字起点平移；
+    // 标准 Wayland 和普通 input + plain-capsule 保留既有视觉契约。
+    assert.match(shouldAlignFunction, /metrics\.waylandWorkAreaCarrier === true/);
+    assert.match(shouldAlignFunction, /metrics\.niriWaylandRuntime !== true/);
     assert.match(sourceRectFunction, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
     assert.match(sourceRectFunction, /width:\s*rect\.width/);
     assert.doesNotMatch(sourceRectFunction, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
