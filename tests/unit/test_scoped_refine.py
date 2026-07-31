@@ -469,6 +469,42 @@ async def test_refine_pass_failure_calls_failure_fn():
 
 
 @pytest.mark.asyncio
+async def test_refine_pass_locale_resolver_failure_does_not_bump_attempts():
+    engine = _engine()
+    va, vb = _vec_pair()
+    entries = [
+        _r_entry(f"a{i}", f"文本{i}", GROUP_A, va if i % 2 else vb)
+        for i in range(8)
+    ]
+    failures = []
+
+    async def _apply(*_args):
+        return 1
+
+    async def _failure(_bucket, _cluster, cluster_hash):
+        failures.append(cluster_hash)
+
+    async def _broken_locale(_subject):
+        raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid")
+
+    with patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=_make_llm([])),
+    ):
+        result = await engine.refine_pass(
+            gather_scoped_refine_buckets({}, entries),
+            apply_fn=_apply,
+            scope_label="t",
+            failure_fn=_failure,
+            prompt_locale_resolver=_broken_locale,
+        )
+
+    assert result["resolved"] == 1
+    assert result["failed"] == 0
+    assert failures == []
+
+
+@pytest.mark.asyncio
 async def test_refine_pass_all_rejected_actions_count_as_failure():
     """codex P2: a syntactically valid list whose every action is rejected
     by the apply layer must count as a cluster failure (refine_attempts
@@ -1096,7 +1132,7 @@ def test_scoped_refine_prompt_locales_and_placeholders():
         # 水印分隔符全 locale 保持简体（既有约定）。
         assert "======以下为记忆群组======" in tmpl, lang
         assert "======以上为记忆群组======" in tmpl, lang
-        # merge 单件套：本体四件套的другие action 不得进 lite prompt。
+        # merge 单件套：本体四件套的其他 action 不得进 lite prompt。
         assert '"action": "merge"' in tmpl, lang
         assert '"split"' not in tmpl, lang
 

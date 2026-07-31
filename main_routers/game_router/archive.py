@@ -167,7 +167,7 @@ def _archive_prompt_language(archive: dict) -> str:
         return normalize_language_code(language, format="full") or language
     lanlan_name = str(archive.get("lanlan_name") or "").strip()
     if not lanlan_name:
-        return ""
+        return get_global_language_full()
     try:
         session_manager = get_session_manager()
         manager = session_manager.get(lanlan_name) if hasattr(session_manager, "get") else None
@@ -176,11 +176,11 @@ def _archive_prompt_language(archive: dict) -> str:
             return normalize_language_code(language, format="full") or language
     except Exception:
         logger.debug("赛后归档语言解析失败，使用默认 prompt 语言", exc_info=True)
-    return ""
+    return get_global_language_full()
 
 
 def _archive_memory_language(archive: dict) -> str:
-    return _archive_prompt_language(archive) or get_global_language_full()
+    return _archive_prompt_language(archive)
 
 
 def _build_game_archive_memory_text(archive: dict) -> str:

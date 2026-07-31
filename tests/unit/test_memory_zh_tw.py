@@ -149,7 +149,6 @@ def test_summary_prompt_uses_request_scoped_traditional_locale():
 
 @pytest.mark.asyncio
 async def test_compressed_memo_wrapper_keeps_traditional_locale():
-    from config.prompts.prompts_sys import MEMORY_MEMO_WITH_SUMMARY
     from memory.recent import CompressedRecentHistoryManager
     from utils.language_utils import language_context
     from utils.llm_client import HumanMessage
@@ -178,10 +177,6 @@ async def test_compressed_memo_wrapper_keeps_traditional_locale():
 
     assert summary == "使用者喜歡貓。"
     assert memo.content == "先前對話的備忘錄：使用者喜歡貓。"
-    mutant = dict(MEMORY_MEMO_WITH_SUMMARY)
-    mutant.pop("zh-TW")
-    with pytest.raises(AssertionError):
-        assert "zh-TW" in mutant
 
 
 @pytest.mark.asyncio
@@ -310,10 +305,6 @@ def test_traditional_global_holiday_names_have_mutation_guard(
         if (entry_month, entry_day) == (month, day)
     )
     assert names["zh-TW"] == expected
-    mutant = dict(names)
-    mutant.pop("zh-TW")
-    with pytest.raises(AssertionError):
-        assert "zh-TW" in mutant
 
 
 def test_builtin_recall_schema_uses_session_traditional_locale(monkeypatch):
@@ -1190,11 +1181,14 @@ def test_prompt_locale_cache_invalidation_rejects_inflight_stale_load(
     started = threading.Event()
     release = threading.Event()
     load_count = 0
+    target_thread_id = None
     original_load = locale_state.json.load
 
     def delayed_load(handle):
         nonlocal load_count
         loaded = original_load(handle)
+        if threading.get_ident() != target_thread_id:
+            return loaded
         load_count += 1
         if load_count == 1:
             started.set()
@@ -1202,10 +1196,17 @@ def test_prompt_locale_cache_invalidation_rejects_inflight_stale_load(
         return loaded
 
     monkeypatch.setattr(locale_state.json, "load", delayed_load)
+
     def getter():
+        nonlocal target_thread_id
+        target_thread_id = threading.get_ident()
         if scoped:
             return locale_state.get_subject_prompt_locale(name, subject)
         return locale_state.get_character_prompt_locale(name)
+
+    with open(locale_path, encoding="utf-8") as handle:
+        assert locale_state.json.load(handle) == payload("en")
+    assert load_count == 0
 
     with ThreadPoolExecutor(max_workers=1) as pool:
         future = pool.submit(getter)
@@ -1216,6 +1217,22 @@ def test_prompt_locale_cache_invalidation_rejects_inflight_stale_load(
         assert future.result(timeout=5) == "zh-TW"
 
     assert load_count == 2
+
+
+def test_game_archive_prompt_language_falls_back_to_global_locale(monkeypatch):
+    from main_routers.game_router import archive
+    from utils.language_utils import language_context
+
+    class SessionManager:
+        @staticmethod
+        def get(_name):
+            return None
+
+    monkeypatch.setattr(archive, "get_session_manager", SessionManager)
+
+    with language_context("en"):
+        assert archive._archive_prompt_language({}) == "en"
+        assert archive._archive_prompt_language({"lanlan_name": "Neko"}) == "en"
 
 
 @pytest.mark.asyncio

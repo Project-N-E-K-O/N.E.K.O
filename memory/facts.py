@@ -753,7 +753,7 @@ class FactStore:
     def _restore_subject_facts(
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
-    ) -> int:
+    ) -> int | None:
         """Move a subject's ``subject_archived_at`` rows back into facts.json.
 
         Inverse of `_archive_subject_facts`; absorbed-archived rows (no

@@ -76,6 +76,7 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
 
     fake_engine = MagicMock()
     fake_engine.synthesize_reflections = AsyncMock(return_value=[])
+    fake_engine.synthesize_scoped_reflections = AsyncMock(return_value=[])
 
     fake_cm = MagicMock()
     fake_cm.aload_characters = AsyncMock(return_value={
@@ -98,6 +99,7 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
 
     # 每个 catgirl 各被调一次
     assert fake_engine.synthesize_reflections.await_count == 3
+    assert fake_engine.synthesize_scoped_reflections.await_count == 3
     called_names = {call.args[0] for call in fake_engine.synthesize_reflections.await_args_list}
     assert called_names == {'悠怡', '喵酱', '小八'}
 
@@ -116,6 +118,7 @@ async def test_reflection_synthesis_loop_uses_character_prompt_locale():
 
     fake_engine = MagicMock()
     fake_engine.synthesize_reflections = AsyncMock(side_effect=synthesize)
+    fake_engine.synthesize_scoped_reflections = AsyncMock(return_value=[])
     fake_cm = MagicMock()
     fake_cm.aload_characters = AsyncMock(return_value={
         '猫娘': {'悠怡': {}}
@@ -138,6 +141,9 @@ async def test_reflection_synthesis_loop_uses_character_prompt_locale():
             await memory_server._periodic_reflection_synthesis_loop()
 
     assert observed == [('悠怡', 'zh-TW')]
+    scoped_kwargs = fake_engine.synthesize_scoped_reflections.await_args.kwargs
+    assert scoped_kwargs["max_subjects"] == 1
+    assert scoped_kwargs["subject_locale_resolver"] is not None
 
 
 @pytest.mark.unit

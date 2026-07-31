@@ -299,11 +299,17 @@ class ScopedLiteRefineEngine:
             result['served'] = bucket.marker
             cluster_failed = False
             try:
-                prompt_locale = (
-                    await prompt_locale_resolver(bucket.subject)
-                    if prompt_locale_resolver is not None
-                    else None
-                )
+                prompt_locale = None
+                if prompt_locale_resolver is not None:
+                    try:
+                        prompt_locale = await prompt_locale_resolver(
+                            bucket.subject
+                        )
+                    except Exception as locale_error:  # noqa: BLE001
+                        logger.warning(
+                            f"[ScopedRefine] {scope_label} prompt locale "
+                            f"解析失败，使用默认语言: {locale_error}"
+                        )
                 locale_scope = (
                     language_context(prompt_locale)
                     if prompt_locale

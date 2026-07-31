@@ -459,8 +459,6 @@ async def test_aresolve_uses_scoped_batch_prompt_locale(tmp_path):
     await resolver.aenqueue_candidates("小天", [{
         "candidate_id": "c1",
         "existing_id": "e1",
-        "candidate_text": cand["text"],
-        "existing_text": existing["text"],
         "entity": "master",
         "subject_key": subject.key,
         "scope": subject.scope,
