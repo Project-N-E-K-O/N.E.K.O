@@ -11,6 +11,29 @@ class QQReplyPostprocessNode:
         self.plugin = plugin
 
     @staticmethod
+    def _split_dynamic_xml(text: str) -> tuple[str, str] | None:
+        """Separate literal assistant text from the dynamic XML document."""
+        import re as _re
+
+        msg_start = _re.search(r"<msg(?:\s|>)", text)
+        if msg_start is None:
+            return None
+        leading_raw = text[:msg_start.start()]
+        leading_raw = _re.sub(
+            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
+            "",
+            leading_raw,
+            flags=_re.IGNORECASE,
+        )
+        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
+        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
+        leading_raw = _re.sub(
+            r"```(?:xml)?\s*$", "", leading_raw, flags=_re.IGNORECASE,
+        )
+        xml_text = _re.sub(r"\s*```\s*$", "", text[msg_start.start():])
+        return leading_raw.strip(), xml_text
+
+    @staticmethod
     def _parse_blocks(raw_text: str) -> list[QQMessageBlock]:
         """KiraAI-style `<msg>` 块解析器。将 LLM 输出解析为消息块列表。
 
@@ -37,23 +60,10 @@ class QQReplyPostprocessNode:
         # pre-tool 是 XML 文档外的普通文本，必须先切出来；若把它一起交给
         # ElementTree，模型自然输出的未转义 < / & 会让整个结构降级失败。
         import re as _re
-        msg_start = _re.search(r"<msg(?:\s|>)", text)
-        if msg_start is None:
+        dynamic_parts = QQReplyPostprocessNode._split_dynamic_xml(text)
+        if dynamic_parts is None:
             return [QQMessageBlock(text=text)]
-        leading_raw = text[:msg_start.start()]
-        leading_raw = _re.sub(
-            r"<wait>\s*\d+(?:\.\d+)?\s*</wait>",
-            "",
-            leading_raw,
-            flags=_re.IGNORECASE,
-        )
-        # wait 可位于 opening fence 与首个 msg 之间；先拿掉 wait，fence
-        # 才会重新成为前缀末尾，避免把 ```xml 当作可见 pre-tool 文本。
-        leading_raw = _re.sub(
-            r"```(?:xml)?\s*$", "", leading_raw, flags=_re.IGNORECASE,
-        )
-        leading_text = leading_raw.strip()
-        xml_text = _re.sub(r"\s*```\s*$", "", text[msg_start.start():])
+        leading_text, xml_text = dynamic_parts
 
         # XML 解析
         try:
@@ -247,13 +257,26 @@ class QQReplyPostprocessNode:
             if wm:
                 # 保留 raw_reply_text 中的 <wait> 标签（不清理），让 buffer 能读到
                 pass  # raw_reply_text 未被 sanitize 处理，保留原始标签
+            dynamic_parts = self._split_dynamic_xml(reply_text)
+            parse_failed = False
+            if dynamic_parts is not None:
+                try:
+                    ET.fromstring(f"<root>{dynamic_parts[1]}</root>")
+                except ET.ParseError:
+                    parse_failed = True
             blocks = self._parse_blocks(reply_text)
-            # 如果解析失败（只得到一个纯文本块且原文字含 XML 标签），尝试 LLM 修复
-            if len(blocks) == 1 and blocks[0].text and ("<msg>" in reply_text or "</msg>" in reply_text):
-                repaired = await self._repair_xml(reply_text)
+            # 解析失败必须显式进入修复；带 pre-tool 时 fallback 会产生两个
+            # 纯文本块，不能再用 len(blocks) == 1 猜测解析状态。
+            if parse_failed and dynamic_parts is not None:
+                leading_text, broken_xml = dynamic_parts
+                repaired = await self._repair_xml(broken_xml)
                 if repaired:
-                    blocks = self._parse_blocks(repaired)
-                    if blocks:
+                    repaired_blocks = self._parse_blocks(repaired)
+                    if repaired_blocks:
+                        blocks = (
+                            [QQMessageBlock(text=leading_text)]
+                            if leading_text else []
+                        ) + repaired_blocks
                         reply_text = repaired
             # 构建人类可读的 reply_text（首个块的文本）
             first_text = blocks[0].text if blocks else ""

@@ -130,3 +130,29 @@ async def test_buffer_summary_receives_pre_tool_and_final_text():
     assert buffer_service.schedule_reply.await_args.kwargs["reply_text"] == (
         "我查一下\n查到了"
     )
+
+
+@pytest.mark.asyncio
+async def test_prefixed_malformed_xml_still_uses_repair():
+    """A literal prefix must not hide malformed XML from the repair path."""
+    plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _sanitize_generated_reply=lambda text: text,
+        _emit_log=MagicMock(),
+    )
+    node = QQReplyPostprocessNode(plugin)
+    node._repair_xml = AsyncMock(
+        return_value="<msg><sticker>5</sticker></msg>"
+    )
+
+    outcome = await node.finalize(
+        SimpleNamespace(ephemeral_session=False),
+        SimpleNamespace(
+            reply_text="我查一下<msg><sticker>5</msg>",
+            used_fallback=False,
+        ),
+    )
+
+    node._repair_xml.assert_awaited_once_with("<msg><sticker>5</msg>")
+    assert [block.text for block in outcome.blocks] == ["我查一下", ""]
+    assert outcome.blocks[1].sticker == "5"
