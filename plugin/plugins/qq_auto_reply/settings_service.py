@@ -359,6 +359,25 @@ class QQSettingsService:
                     ):
                         ud.pop("pending_disable_settle", None)
                         ud.pop("participant_opt_out_cutoff", None)
+                # A receipt-authorized turn may have created and primed its
+                # participant session while the failed OFF save was awaiting
+                # disk I/O.  It has no transition marker, but priming observed
+                # the temporary live OFF state and left memory_enabled=False.
+                # Restore only current participant sessions; post-OFF turns
+                # are stamped with mode=None, while older pending settlements
+                # must remain frozen until their original cutoff is handled.
+                for ud in list(
+                    getattr(self.plugin, "_user_sessions", {}).values()
+                ):
+                    if (
+                        ud.get("is_group")
+                        or ud.get("private_memory_mode") != "participant"
+                        or ud.get("pending_disable_settle")
+                        or ud.get("pending_permission_discard")
+                        or ud.get("pending_identity_discard")
+                    ):
+                        continue
+                    ud["memory_enabled"] = True
             self.plugin._emit_log(
                 "WARNING",
                 "私聊成员记忆开关变更未能写盘，已回滚运行时策略",

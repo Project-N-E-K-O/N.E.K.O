@@ -1333,19 +1333,29 @@ def test_participant_rollback_restores_flag_and_unstamps():
 
     stamped = {
         "is_group": False, "private_memory_mode": "participant",
+        "memory_enabled": False,
         "pending_disable_settle": True, "participant_opt_out_cutoff": 3,
         "session": SimpleNamespace(_conversation_history=[]),
     }
     consumed = {
         "is_group": False, "private_memory_mode": "participant",
+        "memory_enabled": False,
         "session": SimpleNamespace(_conversation_history=[]),
     }
     older = {
         "is_group": False, "private_memory_mode": "participant",
+        "memory_enabled": False,
         "pending_disable_settle": True, "participant_opt_out_cutoff": 1,
         "session": SimpleNamespace(_conversation_history=[]),
     }
-    plugin = _settings_plugin({"a": stamped, "b": consumed, "c": older})
+    post_off = {
+        "is_group": False, "private_memory_mode": None,
+        "memory_enabled": False,
+        "session": SimpleNamespace(_conversation_history=[]),
+    }
+    plugin = _settings_plugin({
+        "a": stamped, "b": consumed, "c": older, "d": post_off,
+    })
     plugin._qq_settings["private_participant_memory_enabled"] = False
     service = QQSettingsService(plugin)
 
@@ -1361,8 +1371,12 @@ def test_participant_rollback_restores_flag_and_unstamps():
     assert "pending_disable_settle" not in stamped
     assert "participant_opt_out_cutoff" not in stamped
     assert "pending_disable_settle" not in consumed
+    assert stamped["memory_enabled"] is True
+    assert consumed["memory_enabled"] is True
     assert older["pending_disable_settle"] is True
     assert older["participant_opt_out_cutoff"] == 1
+    assert older["memory_enabled"] is False
+    assert post_off["memory_enabled"] is False
 
 
 def test_participant_key_is_deferred_on_open_and_immediate_on_close():
@@ -2075,7 +2089,7 @@ async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
 
     target = MemorySubject.participant("qq", "1001")
     reflections = [
-        {"id": "r1", "text": "t", "status": "confirmed",
+        {"id": 0, "text": "t", "status": "confirmed",
          **target.as_entry_fields()},
         {"id": "r2", "text": "merged one", "status": "merged",
          **target.as_entry_fields()},
@@ -2092,7 +2106,7 @@ async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
             self._lock = asyncio.Lock()
             self._config_manager = MagicMock()
             self.surfaced = [
-                {"reflection_id": "r1", "text": "t", "feedback": None},
+                {"reflection_id": 0, "text": "t", "feedback": None},
                 {"reflection_id": "r3", "text": "keep", "feedback": None},
             ]
             surfaced_path.write_text(
@@ -2555,6 +2569,7 @@ async def test_scoped_forget_waits_for_subject_restore_transaction():
 @pytest.mark.asyncio
 async def test_reload_shares_subject_forget_fences_with_old_components():
     from app.memory_server import runtime
+    from memory.persona import PersonaManager
     from memory.reflection import ReflectionEngine
 
     old_store = FactStore(time_indexed_memory=None)
@@ -2581,6 +2596,16 @@ async def test_reload_shares_subject_forget_fences_with_old_components():
 
     assert old_reflection._subject_forget_epoch("Neko", subject) != old_epoch
     assert old_reflection._subject_forget_is_active("Neko", subject)
+
+    old_persona = PersonaManager()
+    new_persona = PersonaManager()
+    old_data_lock = old_persona._get_alock("Neko")
+    old_resolve_lock = old_persona._get_resolve_alock("Neko")
+    runtime._share_persona_write_locks(old_persona, new_persona)
+
+    assert new_persona._get_alock("Neko") is old_data_lock
+    assert new_persona._get_resolve_alock("Neko") is old_resolve_lock
+    assert new_persona._alocks_guard is old_persona._alocks_guard
 
 
 @pytest.mark.asyncio

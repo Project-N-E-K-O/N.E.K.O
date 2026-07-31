@@ -208,6 +208,15 @@ def _share_subject_forget_state(old_component, new_component) -> None:
             setattr(new_component, attr, getattr(old_component, attr))
 
 
+def _share_persona_write_locks(old_component, new_component) -> None:
+    """Keep persona writes serialized across a component hot reload."""
+    if old_component is None:
+        return
+    for attr in ("_alocks", "_resolve_alocks", "_alocks_guard"):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
 def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     """Defer cleanup of the old TimeIndexedMemory until process shutdown, so concurrent requests in the switchover window don't hit a released handle."""
     if manager is None:
@@ -254,6 +263,7 @@ async def reload_memory_components():
             # the swap.
             _share_subject_forget_state(fact_store, new_facts)
             _share_subject_forget_state(reflection_engine, new_reflection)
+            _share_persona_write_locks(persona_manager, new_persona)
             new_cursor_store = CursorStore()
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)

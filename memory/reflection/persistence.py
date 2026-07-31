@@ -419,7 +419,8 @@ class PersistenceMixin:
                 if isinstance(r, dict) and entry_matches_subject(r, memory_subject)
             ]
             removed_ids = {
-                r.get('id') for r in removed if isinstance(r, dict) and r.get('id')
+                r.get('id') for r in removed
+                if isinstance(r, dict) and r.get('id') is not None
             }
             surfaced_removed = 0
             surfaced_path = self._surfaced_path(name)
@@ -443,7 +444,7 @@ class PersistenceMixin:
 
             surfaced_ids = {
                 s.get('reflection_id') for s in surfaced
-                if isinstance(s, dict) and s.get('reflection_id')
+                if isinstance(s, dict) and s.get('reflection_id') is not None
             }
             unresolved_surfaced_ids = surfaced_ids - removed_ids
             archive_dir_getter = getattr(

@@ -283,22 +283,14 @@ class QQReplyGenerationService:
 
             restore_session_prompt = self._apply_turn_memory_context(
                 user_session, turn_system_prompt, turn_recalled_text,
-                # 私聊会话的 prompt 是建会话时烙进去的：跨群授权打开时建的
-                # 那条里带着别的群/联系人的清单，opt-out 之后本轮虽然构建了
-                # 剥离版，不换上去 stream_text 用的还是旧的；而新 context 的
-                # cross_session_section 已被剥空，两道 consent 闸也看不出
-                # 依赖。开关关着时私聊也强制换。
+                # 私聊 participant 会话的 prompt 也是建会话时烙进去的：
+                # 当前轮召回为空不代表旧 prompt 里没有 scoped memory。
+                # 每轮都换成刚构建的 prompt，才能让生成内容与本轮依赖快照
+                # 对齐；restore 保证持久会话仍保留创建时的原始 system 行。
                 always_refresh=(
                     context.is_group
                     or bool(getattr(context, "cross_session_section", ""))
-                    or (
-                        user_data.get("private_memory_mode") == "participant"
-                        and not bool(
-                            (getattr(self.plugin, "_qq_settings", {}) or {}).get(
-                                "private_participant_memory_enabled", False,
-                            )
-                        )
-                    )
+                    or user_data.get("private_memory_mode") == "participant"
                     or not bool(
                         (getattr(self.plugin, "_qq_settings", {}) or {}).get(
                             "allow_cross_group_context", False,
