@@ -1302,12 +1302,20 @@ class _TransportMixin:
         its own terminal, which rotates.
         """
 
-        if response_id is not None and self._current_response_id != response_id:
+        tracked_id = self._current_response_id
+        # Compared as text on both sides. The arbiter normalises ids through
+        # `_event_response_id` (`str(...)`), while this side stores whatever
+        # the JSON carried — so a provider using a numeric id made every
+        # comparison here false ("123" != 123) and the release silently
+        # finalized and quarantined nothing, on every turn.
+        if response_id is not None and (
+            tracked_id is None or str(tracked_id) != str(response_id)
+        ):
             logger.info(
                 "Arbiter released %s but this turn is tracking %s; leaving it "
                 "alone",
                 response_id,
-                self._current_response_id,
+                tracked_id,
             )
             return
         if not self._is_responding and self._current_response_id is None:
@@ -1354,6 +1362,16 @@ class _TransportMixin:
             )
             self._current_response_id = None
             self._current_item_id = None
+            # The per-response output accounting belongs to the dead turn as
+            # well, and nothing else will clear it: `response.created` resets
+            # the transcript buffers but not `_image_sent_this_turn` or
+            # `_audio_delta_count`, so a successor would spend its whole
+            # duration withholding its own visual context and counting the
+            # previous turn's audio. Safe here because reaching this line
+            # means the tracked id still named the abandoned response — the
+            # successor has not announced itself yet, so it has produced no
+            # output of its own to erase.
+            self._reset_per_turn_output_state()
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
         # Captured before the reset, which is what clears the buffer: a stalled

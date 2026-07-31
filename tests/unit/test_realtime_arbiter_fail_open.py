@@ -2267,9 +2267,14 @@ async def test_a_barge_in_before_the_release_is_not_adopted_as_its_own_turn():
         "clearing the interruption suppression is what lets the abandoned "
         "response's id-less deltas through under the new turn's speech id"
     )
-    assert client._image_sent_this_turn is True, (
-        "per-turn state belongs to whoever owns the turn now; the successor's "
-        "own terminal clears it"
+    assert client._image_sent_this_turn is False, (
+        "per-response output accounting belongs to the DEAD turn, and nothing "
+        "else clears it — response.created resets the transcript buffers but "
+        "not this, so a successor would withhold its own visual context for "
+        "its whole duration"
+    )
+    assert client._audio_delta_count == 0, (
+        "and would count the previous turn's audio as its own"
     )
     assert client._recent_responses == [], (
         "and the repetition check must not run either — its host callback "
@@ -2492,3 +2497,47 @@ async def test_a_quarantined_response_cannot_run_its_tool_afterwards():
         "an abandoned response's tool call must not run under the turn that "
         "replaced it"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_numeric_response_id_still_matches_the_released_one():
+    # Codex P2. The arbiter normalises ids through _event_response_id
+    # (`str(...)`); this side stores whatever the JSON carried. So on a
+    # provider that numbers its responses, every comparison here was false
+    # ("123" != 123) and the release silently finalized nothing and
+    # quarantined nothing — on every single turn, not as a race.
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = _free_client(on_response_done=_on_done)
+    _begin_response(client, 123)  # what json.loads gives for a numeric id
+    assert client._current_response_id == 123
+
+    await client._on_arbiter_stuck_release("abandoned", "123")
+
+    assert done_calls == ["done"], (
+        "the arbiter's stringified id names the same response the host is "
+        "tracking"
+    )
+    assert client._current_response_id is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_genuinely_different_id_is_still_rejected():
+    # The dual: normalising must not turn the guard into "always match".
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = _free_client(on_response_done=_on_done)
+    _begin_response(client, 456)
+
+    await client._on_arbiter_stuck_release("abandoned", "123")
+
+    assert done_calls == [], "a different response is not this release's to end"
+    assert client._current_response_id == 456
