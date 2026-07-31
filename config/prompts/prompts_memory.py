@@ -1785,8 +1785,30 @@ Retorne um array JSON com **exatamente um objeto por segmento**, na ordem dos n�
 }
 
 
+# Visible replacement inserted when a single group-memory message is shortened
+# for the batch-extraction prompt. Keep this prompt-facing text alongside the
+# rest of the backend locale dictionaries.
+SCOPED_BATCH_MIDDLE_OMISSION_MARKER = {
+    "zh": "…[中段因长度限制已省略]…",
+    "zh-TW": "…[中段因長度限制已省略]…",
+    "en": "…[middle omitted for length]…",
+    "ja": "…[長さ制限により中間部分を省略]…",
+    "ko": "…[길이 제한으로 중간 부분 생략]…",
+    "ru": "…[середина опущена из-за ограничения длины]…",
+    "es": "…[parte central omitida por límite de longitud]…",
+    "pt": "…[parte central omitida por limite de tamanho]…",
+}
+
+
 def get_fact_extraction_batch_prompt(lang: str = "zh") -> str:
     return _localized_fact_extraction_prompt(FACT_EXTRACTION_BATCH_PROMPT, lang)
+
+
+def get_scoped_batch_middle_omission_marker(lang: str = "zh") -> str:
+    return _loc(
+        SCOPED_BATCH_MIDDLE_OMISSION_MARKER,
+        _normalize_memory_prompt_lang(lang),
+    )
 
 
 # ---------- fact_extraction_ai_aware_prompt → i18n dict ----------

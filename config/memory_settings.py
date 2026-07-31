@@ -208,6 +208,14 @@ SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
 # 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
 # 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
 SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+# 每条消息进入批抽取 prompt 前的正文上限。与 recent 压缩的单条口径一致：
+# 500 token，超限时保留头尾、用 locale 对应的可见标记替换中段。
+SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS = 500
+# 整批只给消息正文 8000 token。仅做单条 500 token 闸时，200 条仍可能达到
+# 100k token，足以超过部分 summary 模型上下文并拖过插件侧 30s 超时。总闸
+# 超限时按“剩余预算 / 剩余消息数”公平分配；短消息按原文计费，省下的额度
+# 继续给后面的消息，避免按请求顺序贪心导致尾段完全拿不到正文。
+SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS = 8000
 # 段首标记里那截一次性 token 的字节数（token_hex → 2 倍长度的十六进制）。
 # 它防的是"群成员在自己的消息里伪造 [SEGMENT n | speaker: 别人]"：批模板
 # 恰恰告诉模型段首就是归属依据，伪造成功 = 把自己的内容写进别人的 subject

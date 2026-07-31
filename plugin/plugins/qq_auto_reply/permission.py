@@ -11,6 +11,8 @@ class PermissionManager:
     """权限管理器"""
 
     VALID_LEVELS = {"admin", "trusted", "normal"}
+    NICKNAME_MAX_CHARS = 64
+    _NICKNAME_FORBIDDEN_CHARS = frozenset("[]|")
 
     def __init__(self, trusted_users: List[Dict[str, Any]] = None):
         """
@@ -120,10 +122,19 @@ class PermissionManager:
     def set_nickname(self, qq_number: str, nickname: str):
         """设置用户昵称"""
         qq_str = self._normalize_qq(qq_number)
-        if qq_str in self._users:
-            self._users[qq_str]["nickname"] = str(nickname or "").strip()
-            return True
-        return False
+        raw = str(nickname or "")
+        normalized = raw.strip()
+        if qq_str not in self._users:
+            return False
+        if len(normalized) > self.NICKNAME_MAX_CHARS:
+            return False
+        if any(
+            char in self._NICKNAME_FORBIDDEN_CHARS or not char.isprintable()
+            for char in raw
+        ):
+            return False
+        self._users[qq_str]["nickname"] = normalized
+        return True
 
     def find_users_by_nickname(self, nickname: str) -> List[Dict[str, Any]]:
         """按配置昵称查找用户（精确匹配）"""

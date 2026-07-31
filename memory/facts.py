@@ -41,6 +41,8 @@ from config import (
     EXTERNAL_IMPORT_DAILY_MAX_CONCURRENCY,
     EXTERNAL_IMPORT_DAILY_MAX_FILES,
     MEMORY_SCHEMA_VERSION_CURRENT,
+    SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS,
+    SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
     SCOPED_BATCH_SEGMENT_NONCE_BYTES,
 )
 from memory.temporal import (
@@ -50,6 +52,7 @@ from memory.temporal import (
 from config.prompts.prompts_memory import (
     get_fact_extraction_batch_prompt,
     get_fact_extraction_prompt,
+    get_scoped_batch_middle_omission_marker,
     get_signal_detection_prompt,
 )
 from memory.evidence import evidence_score
@@ -644,7 +647,79 @@ class FactStore:
         return ' '.join(text.split())[:64].strip()
 
     @classmethod
-    def _format_speaker_segments(cls, segments: list[dict], *, nonce: str) -> str:
+    def _cap_speaker_message_bodies(
+        cls,
+        segments: list[dict],
+        *,
+        omission_marker: str,
+    ) -> list[list[str]]:
+        """Apply per-message and whole-batch token budgets to prompt text.
+
+        Short messages are returned byte-for-byte unchanged. Long messages
+        keep both ends, and an over-budget batch shares its remaining content
+        budget fairly so late segments cannot be starved by earlier ones.
+        """
+        from utils.tokenize import count_tokens, truncate_head_tail_tokens
+
+        raw_by_segment: list[list[str]] = []
+        flat_raw: list[str] = []
+        for segment in segments:
+            segment_bodies = []
+            for msg in segment.get('messages') or []:
+                body = cls._SEGMENT_MARKER_LITERAL.sub(
+                    '［SEGMENT',
+                    cls._flatten_message_content(getattr(msg, 'content', '')),
+                )
+                segment_bodies.append(body)
+                flat_raw.append(body)
+            raw_by_segment.append(segment_bodies)
+
+        def _clip(body: str, budget: int) -> str:
+            head = budget // 2
+            return truncate_head_tail_tokens(
+                body,
+                head,
+                budget - head,
+                separator=omission_marker,
+            )
+
+        individually_capped = [
+            _clip(body, SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS)
+            for body in flat_raw
+        ]
+        if (
+            sum(count_tokens(body) for body in individually_capped)
+            <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
+        ):
+            final_flat = individually_capped
+        else:
+            final_flat = []
+            remaining_budget = SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
+            for index, body in enumerate(flat_raw):
+                remaining_messages = len(flat_raw) - index
+                fair_share = remaining_budget // remaining_messages
+                message_budget = min(
+                    SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
+                    fair_share,
+                )
+                clipped = _clip(body, message_budget)
+                final_flat.append(clipped)
+                remaining_budget -= count_tokens(clipped)
+
+        final_iter = iter(final_flat)
+        return [
+            [next(final_iter) for _ in segment_bodies]
+            for segment_bodies in raw_by_segment
+        ]
+
+    @classmethod
+    def _format_speaker_segments(
+        cls,
+        segments: list[dict],
+        *,
+        nonce: str,
+        lang: str = "en",
+    ) -> str:
         """Render multi-speaker segments for the batch extraction prompt.
 
         段首标记 ``[SEGMENT n:nonce | speaker: label]`` 是 locale 无关的固定
@@ -672,15 +747,19 @@ class FactStore:
 
         nonce 只用于渲染侧的边界防伪，**不要求模型原样回吐**（归属输出仍是
         段号整数）——让模型复述 token 只会凭空增加它出错的面。"""  # noqa: DOCSTRING_CJK
+        omission_marker = get_scoped_batch_middle_omission_marker(lang)
+        capped_bodies = cls._cap_speaker_message_bodies(
+            segments,
+            omission_marker=omission_marker,
+        )
         blocks = []
-        for index, segment in enumerate(segments, start=1):
+        for index, (segment, message_bodies) in enumerate(
+            zip(segments, capped_bodies),
+            start=1,
+        ):
             label = cls.sanitize_speaker_label(segment.get('speaker_label'))
             lines = [f"[SEGMENT {index}:{nonce} | speaker: {label}]"]
-            for msg in segment.get('messages') or []:
-                body = cls._SEGMENT_MARKER_LITERAL.sub(
-                    '［SEGMENT',
-                    cls._flatten_message_content(getattr(msg, 'content', '')),
-                )
+            for body in message_bodies:
                 body_lines = body.splitlines() or ['']
                 lines.append(f"{label} | {body_lines[0]}")
                 # 续行只冠短标记：同一条消息的后续行，发言人显然没变。
@@ -860,13 +939,18 @@ class FactStore:
         二次替换（后者尤其重要——那等于让攻击者把 nonce 印进自己的正文）。"""  # noqa: DOCSTRING_CJK
         # 一次性段边界 token：攻击者的消息在它生成之前就写死了，猜不到。
         nonce = secrets.token_hex(SCOPED_BATCH_SEGMENT_NONCE_BYTES)
+        lang = get_global_language_full()
         prompt = (
-            get_fact_extraction_batch_prompt(get_global_language_full())
+            get_fact_extraction_batch_prompt(lang)
             .replace('{LANLAN_NAME}', lanlan_name)
             .replace('{SEGMENT_NONCE}', nonce)
             .replace(
                 '{SEGMENTS}',
-                self._format_speaker_segments(segments, nonce=nonce),
+                self._format_speaker_segments(
+                    segments,
+                    nonce=nonce,
+                    lang=lang,
+                ),
             )
         )
         extracted = await self._allm_call_with_retries(
