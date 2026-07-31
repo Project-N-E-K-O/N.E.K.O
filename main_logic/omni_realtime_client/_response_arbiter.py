@@ -1092,14 +1092,33 @@ class RealtimeResponseArbiter:
             # while a live server response is being tracked, and to arm the
             # staleness timer that eventually retires one.
             self._release_lane_if_clear()
-            logger.warning(
-                "response arbiter failing open, transport kept: %s "
-                "(current=%s owner=%s queue_depth=%d)",
-                reason,
-                current.source if current is not None else None,
-                released_owner.source if released_owner is not None else None,
-                self._queue.qsize(),
-            )
+            if current is None and released_owner is None:
+                # cancel_current()'s unowned branch escalates over a
+                # server-initiated response the arbiter never owned, so there
+                # was no lifecycle here to release: the transport survives but
+                # nothing was given up, and the lane is still held by whatever
+                # server response ids are tracked. Saying "failing open" here
+                # reads as though a turn was dropped and the lane reopened,
+                # which sent people looking for the wrong thing.
+                logger.warning(
+                    "response arbiter kept the transport but had no lifecycle "
+                    "to release: %s (lane held by server response ids: %s, "
+                    "queue_depth=%d); the lane reopens when their terminal "
+                    "events arrive, or after %.0fs if none do",
+                    reason,
+                    ", ".join(self._server_response_ids) or "none",
+                    self._queue.qsize(),
+                    self._server_response_max_age,
+                )
+            else:
+                logger.warning(
+                    "response arbiter failing open, transport kept: %s "
+                    "(current=%s owner=%s queue_depth=%d)",
+                    reason,
+                    current.source if current is not None else None,
+                    released_owner.source if released_owner is not None else None,
+                    self._queue.qsize(),
+                )
 
     async def _tear_down_transport(self, reason: str) -> None:
         # This is the only chokepoint through which the arbiter tears down the

@@ -1040,6 +1040,59 @@ async def test_an_id_less_orphan_response_stands_the_hatch_down(make_harness, ca
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_a_release_with_nothing_to_release_says_so(make_harness, caplog):
+    # Codex P2 on this PR, partially accepted. cancel_current()'s unowned
+    # branch escalates over a server response the arbiter never owned, so the
+    # release gives nothing up and the lane stays held by that response's id.
+    # The generic line claims a turn was dropped and the lane reopened, which
+    # is the opposite of what happened — and it is the line #2561 points field
+    # reports at, so a wrong reading here costs a diagnosis.
+    #
+    # The finding's actual proposal (retire the id so the lane reopens) is
+    # declined: test_the_release_keeps_the_lane_closed_under_a_live_server_response
+    # pins the opposite, because the response may still be streaming.
+    harness = make_harness(fail_open=True)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "srv-1"}}
+    )
+    assert harness.arbiter._response_owner is None
+
+    with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+        raised = await _stick_a_cancel(harness)
+
+    assert isinstance(raised, asyncio.TimeoutError)
+    assert harness.aborted == [], "the transport is kept"
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("had no lifecycle to release" in message for message in messages), (
+        "a release that released nothing must not report a dropped turn"
+    )
+    assert any("srv-1" in message for message in messages), (
+        "and must name what is actually holding the lane"
+    )
+    assert not any(
+        "failing open, transport kept" in message for message in messages
+    ), "the two cases must not be reported with the same wording"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_release_that_gave_up_a_turn_still_says_that(make_harness, caplog):
+    # The dual: when there really was a lifecycle to release, the wording
+    # #2561 established stays exactly as it was.
+    harness = make_harness(fail_open=True)
+    await harness.own_a_live_response("resp-owned")
+
+    with caplog.at_level(logging.WARNING, logger=ARBITER_LOGGER):
+        raised = await _stick_a_cancel(harness)
+
+    assert isinstance(raised, asyncio.TimeoutError)
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("failing open, transport kept" in message for message in messages)
+    assert not any("had no lifecycle to release" in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_an_id_bearing_orphan_response_still_fails_open(make_harness):
     # The dual: the same unowned server response, but identified. Its later
     # events are attributable, so the hatch applies and the lane stays closed
