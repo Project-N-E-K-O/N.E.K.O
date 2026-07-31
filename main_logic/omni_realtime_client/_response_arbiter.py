@@ -112,6 +112,10 @@ class _QueuedResponse:
         default_factory=asyncio.Event,
         compare=False,
     )
+    # Set once this request's lifecycle has been escalated over. Several
+    # callers can be waiting on the same stuck request, and each of their
+    # timeouts fires independently; only the first escalation is meaningful.
+    escalated: bool = field(default=False, compare=False)
 
 
 class RealtimeResponseArbiter:
@@ -300,7 +304,10 @@ class RealtimeResponseArbiter:
         try:
             await asyncio.wait_for(asyncio.shield(current.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
-            await self._fail_closed("response cancellation terminal event timed out")
+            await self._fail_closed(
+                "response cancellation terminal event timed out",
+                observed=current,
+            )
             raise original_timeout
 
     async def cancel_ticket(
@@ -341,7 +348,9 @@ class RealtimeResponseArbiter:
         try:
             await asyncio.wait_for(asyncio.shield(queued.completed), timeout)
         except asyncio.TimeoutError as original_timeout:
-            await self._fail_closed("targeted response cancellation timed out")
+            await self._fail_closed(
+                "targeted response cancellation timed out", observed=queued
+            )
             raise original_timeout
         return True
 
@@ -837,7 +846,56 @@ class RealtimeResponseArbiter:
                 queued.completed.set_result(None)
             self._queue.task_done()
 
-    async def _fail_closed(self, reason: str) -> None:
+    async def _fail_closed(
+        self,
+        reason: str,
+        *,
+        observed: _QueuedResponse | None = None,
+    ) -> None:
+        """Tear the transport down over a lifecycle that cannot terminate.
+
+        ``observed`` is the request whose failure the caller actually watched.
+        Escalation is scoped to it, and happens at most once:
+
+        - **Not current any more** — every caller here waited on one specific
+          request, and by the time its timeout fires the arbiter may already
+          have moved on: the stuck lifecycle completed, the worker selected
+          the next queued item, and ``_current``/``_response_owner`` now name
+          a perfectly healthy turn. Acting on "whatever is current" would tear
+          down that healthy turn instead.
+        - **Already escalated** — several callers can be waiting on the same
+          stuck request and their timeouts fire independently. Only the first
+          escalation is meaningful; repeating it would repeat every effect it
+          has, which for anything beyond a transport teardown means doing it
+          twice to the same turn.
+
+        Callers with nothing to name (an unowned server response) pass
+        nothing and keep the unscoped behaviour.
+        """
+
+        if observed is not None:
+            if observed.escalated:
+                logger.debug(
+                    "skipping duplicate escalation for %s (%s)",
+                    observed.source,
+                    reason,
+                )
+                return
+            if (
+                observed is not self._current
+                and observed is not self._response_owner
+            ):
+                logger.debug(
+                    "skipping stale escalation for %s (%s): that lifecycle is "
+                    "no longer current",
+                    observed.source,
+                    reason,
+                )
+                return
+            observed.escalated = True
+        await self._fail_closed_unscoped(reason)
+
+    async def _fail_closed_unscoped(self, reason: str) -> None:
         # This is the only chokepoint through which the arbiter tears down the
         # transport, and to the rest of the system the result is
         # indistinguishable from a provider-side disconnect (the receive loop
@@ -952,7 +1010,9 @@ class RealtimeResponseArbiter:
                 return_when=asyncio.FIRST_COMPLETED,
             )
             if not done:
-                await self._fail_closed("realtime response idle wait timed out")
+                await self._fail_closed(
+                    "realtime response idle wait timed out", observed=queued
+                )
                 raise asyncio.TimeoutError("realtime response idle wait timed out")
         finally:
             for waiter in waiters:
@@ -1054,7 +1114,8 @@ class RealtimeResponseArbiter:
                     if not queued.terminal.done():
                         queued.terminal.cancel()
                     await self._fail_closed(
-                        "interrupted response could not reach a terminal state"
+                        "interrupted response could not reach a terminal state",
+                        observed=queued,
                     )
                 raise RuntimeError("response dispatch interrupted")
             if not queued.ticket.sent.done():
@@ -1148,6 +1209,7 @@ class RealtimeResponseArbiter:
             if queued.terminal is not None and not queued.terminal.done():
                 queued.terminal.cancel()
             await self._fail_closed(
-                "response lifecycle could not reach a terminal state"
+                "response lifecycle could not reach a terminal state",
+                observed=queued,
             )
         raise original_timeout
