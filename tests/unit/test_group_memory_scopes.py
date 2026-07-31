@@ -2558,6 +2558,92 @@ async def test_flat_fact_own_schema_fields_are_not_stray_text(tmp_path):
     assert results[0]["created"][0].get("event_start_at")
 
 
+@pytest.mark.asyncio
+async def test_flat_fact_with_an_unread_text_field_fails_the_segment(tmp_path):
+    """扁平事实**旁边**还挂着没人读的文字：本段仍要 failed。
+
+    ``{"segment": 1, "text": "A", "note": "B"}`` 里 persist 只读 text，
+    ``note`` 那截内容没有任何人消费——段照报 ok 的话，调用方 pop 掉桶，
+    B 就此消失。这与"扁平事实自己的 schema 字段不算旁挂文字"是**两回事**：
+    前者没人读，后者被 persist 读走（Codex 在两轮 review 里各指了一头，
+    两头都要成立）。"""  # noqa: DOCSTRING_CJK
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {
+                "segment": 1, "text": "Alice 喜欢猫", "importance": 7,
+                "note": "Bob 的生日是 3 月 5 日",
+            },
+            {"segment": 2, "facts": []},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["a"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["b"]),
+    ]
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [r["status"] for r in results] == ["failed", "ok"], (
+        "没人读的旁挂文字被当成已消费，段照报 ok——那截内容会随 pop 消失"
+    )
+    # 认得出的那条仍照常落盘。
+    assert [f["text"] for f in results[0]["created"]] == ["Alice 喜欢猫"]
+
+
+def test_persisted_fact_fields_matches_what_persist_actually_reads():
+    """``_PERSISTED_FACT_FIELDS`` 必须与 persist 真正读的键一致。
+
+    这个清单是手写的，而写陈旧的后果很实在：persist 以后多读一个字段、
+    这里忘了加，**每一条带那个字段的事实都会被误判成 failed、桶被无休止
+    重抽**。所以不用眼睛核对——直接 AST 扫 ``_apersist_new_facts_locked``
+    里对 ``fact`` 的取键，反查这份清单。
+
+    只要求"persist 读的 ⊆ 清单"：清单里多列一个（persist 还没读但语义上
+    属于事实字段）只会让守卫略松，不会误判。"""  # noqa: DOCSTRING_CJK
+    import ast
+    import inspect
+
+    import memory.facts as facts_module
+
+    tree = ast.parse(inspect.getsource(facts_module))
+    target = next(
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_apersist_new_facts_locked"
+    )
+    read_keys: set[str] = set()
+    for node in ast.walk(target):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "get"
+            and isinstance(node.func.value, ast.Name)
+            and node.func.value.id == "fact"
+            and node.args
+            and isinstance(node.args[0], ast.Constant)
+        ):
+            read_keys.add(node.args[0].value)
+        if (
+            isinstance(node, ast.Subscript)
+            and isinstance(node.value, ast.Name)
+            and node.value.id == "fact"
+            and isinstance(node.slice, ast.Constant)
+        ):
+            read_keys.add(node.slice.value)
+
+    assert read_keys, "AST 没扫到任何取键——扫描逻辑漂了，这条守卫已失效"
+    missing = read_keys - FactStore._PERSISTED_FACT_FIELDS
+    assert not missing, (
+        f"persist 新读了 {sorted(missing)} 但 _PERSISTED_FACT_FIELDS 没跟上："
+        f"带这些字段的事实会被当成「没人读的旁挂文字」，段永远判 failed"
+    )
+
+
 def test_carries_unused_text_separates_empty_shells_from_wrapped_content():
     """`dropped`（空壳）与 `suspect`（看不懂但有内容）的分界单元契约。"""  # noqa: DOCSTRING_CJK
     f = FactStore._carries_unused_text

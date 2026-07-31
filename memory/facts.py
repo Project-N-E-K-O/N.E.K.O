@@ -903,6 +903,19 @@ class FactStore:
             return None
         return seg - 1
 
+    # 一条 LLM 事实里真正会被 :meth:`_apersist_new_facts_locked` 读走的键。
+    # 只有这一处用它：段对象被整个收作事实时，判断"还剩什么没人读"。
+    #
+    # ⚠️ 手写清单会随 fact schema 演进变陈旧，而陈旧的后果是**每一条带新
+    # 字段的事实都被误判成 failed、桶被无休止重抽**。所以它由
+    # test_persisted_fact_fields_matches_what_persist_actually_reads 用 AST
+    # 扫 _apersist_new_facts_locked 反查兜底——加了字段忘了更新这里，那条
+    # 测试会红，而不是等着线上打转。
+    _PERSISTED_FACT_FIELDS = frozenset({
+        'text', 'importance', 'entity', 'source', 'event_when',
+        '_external_import',
+    })
+
     @staticmethod
     def _as_fact_entry(entry) -> dict | None:
         """Normalize one ``facts[]`` element into a persistable fact, or None.
@@ -988,21 +1001,26 @@ class FactStore:
             else:
                 dropped += 1
         own_fact = cls._as_fact_entry(item)
+        # 段对象上还剩什么没人读？剩下的键里若攥着文字，说明这个形状我们
+        # 没读懂，别把它当成"本段的结论"——那会让调用方 pop 掉桶，那截
+        # 文字就此消失。
+        #
+        # 排除集分两种情形，判据是"这次到底消费掉了什么"：
+        # - item 被整个收作事实 → persist 会读走 _PERSISTED_FACT_FIELDS 那
+        #   一组（event_when 里的 "day"、entity 的 "master" 都是被消费的，
+        #   算成旁挂文字会让每条带时间线索的扁平事实都误判 failed）；但
+        #   **它读不到的键仍然没人读**，比如 {"text": "...", "note": "..."}
+        #   里的 note——那截内容确实会随着 pop 一起消失，仍要判 suspect。
+        # - item 读不成事实 → 连 text 都没被消费（{"text": ["Alice 养猫"]}
+        #   这种内容裹在非字符串里），一个都不能排除。
+        consumed = ('segment', 'facts')
         if own_fact is not None:
             kept.append(own_fact)
-        elif cls._carries_unused_text({
+            consumed = (*consumed, *cls._PERSISTED_FACT_FIELDS)
+        if cls._carries_unused_text({
             key: value for key, value in item.items()
-            if key not in ('segment', 'facts')
+            if key not in consumed
         }):
-            # 段对象没能当成事实读下来，可它剩下的键里还攥着文字：这个形状
-            # 我们没读懂，别把它当成"本段的结论"。
-            #
-            # ⚠️ 只在读不下来时查。item 被收作事实时整个 dict 原样交给
-            # persist（认不得的键那边直接忽略），**没有任何东西是"被丢弃
-            # 的"**——这个检查的前提在那条分支上根本不成立。照查的话，
-            # event_when 里的 "day"、entity 的 "master" 都会被当成没读懂的
-            # 旁挂文字，于是每一条带时间线索或实体标注的扁平事实都判成
-            # failed，调用方永远重抽同一个桶（Codex P2）。
             suspect += 1
         return index, kept, dropped, suspect
 
