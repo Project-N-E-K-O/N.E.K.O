@@ -566,6 +566,61 @@ async def test_periodic_promotion_uses_durable_character_locale(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_idle_history_tasks_use_durable_character_locale(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import evidence_loops, locale_state, review, runtime
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    class RecentHistoryManager:
+        async def update_history(
+            self,
+            messages,
+            name,
+            *,
+            detailed,
+            on_compress_done,
+        ):
+            observed.append((
+                "compress",
+                messages,
+                name,
+                detailed,
+                on_compress_done,
+                get_global_language_full(),
+            ))
+
+    async def maybe_spawn_review(name):
+        observed.append(("review", name, get_global_language_full()))
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    monkeypatch.setattr(runtime, "recent_history_manager", RecentHistoryManager())
+    monkeypatch.setattr(review, "maybe_spawn_review", maybe_spawn_review)
+    locale_state._locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-TW")
+    locale_state._locale_cache.clear()
+
+    await evidence_loops._compress_recent_history("Neko")
+    await evidence_loops._spawn_review_with_character_language("Neko")
+
+    assert observed == [
+        (
+            "compress",
+            [],
+            "Neko",
+            True,
+            review._on_compress_done,
+            "zh-TW",
+        ),
+        ("review", "Neko", "zh-TW"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_persona_fusion_detects_locale_from_candidate_body(monkeypatch):
     from memory.persona import fusion
     from utils.language_utils import language_context
@@ -729,6 +784,155 @@ async def test_periodic_rebuttal_uses_durable_character_locale(monkeypatch, tmp_
     assert observed == [
         ("Neko", [{"id": "r1"}], ["我不同意"], "zh-TW"),
     ]
+
+
+@pytest.mark.asyncio
+async def test_reflect_endpoint_uses_durable_character_locale(monkeypatch, tmp_path):
+    from app.memory_server import gates, locale_state, routes, runtime
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    class ReflectionEngine:
+        async def reflect(self, name):
+            observed.append(("reflect", name, get_global_language_full()))
+            return {"created": 1}
+
+        async def aauto_promote_stale(self, name):
+            observed.append(("promote", name, get_global_language_full()))
+
+    async def powerful_enabled():
+        return True
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", powerful_enabled)
+    monkeypatch.setattr(
+        runtime,
+        "_spawn_background_task",
+        lambda coroutine: coroutine.close(),
+    )
+    locale_state._locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-TW")
+    locale_state._locale_cache.clear()
+
+    result = await routes.api_reflect("Neko")
+    await routes._safe_auto_promote("Neko")
+
+    assert result["reflection"] == {"created": 1}
+    assert observed == [
+        ("reflect", "Neko", "zh-TW"),
+        ("promote", "Neko", "zh-TW"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_bootstraps_forward_full_locale(monkeypatch):
+    import httpx
+
+    from plugin.plugins.bilibili_dm import BiliDMPlugin
+    from plugin.plugins.wechat_integration import WechatIntegrationPlugin
+    from utils import language_utils
+
+    calls = []
+
+    class Response:
+        is_success = True
+        text = "memory"
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    class Logger:
+        def info(self, *_args):
+            return None
+
+        def warning(self, *_args):
+            return None
+
+    class Harness:
+        logger = Logger()
+
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: Client())
+    monkeypatch.setattr(language_utils, "get_global_language", lambda: "zh")
+    monkeypatch.setattr(
+        language_utils,
+        "get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    await BiliDMPlugin._build_session_instructions(
+        Harness(),
+        "Neko",
+        "Master",
+        "character",
+        {},
+        "admin",
+        "123",
+        "Master",
+    )
+    assert await WechatIntegrationPlugin._fetch_memory_context("Neko") == "memory"
+
+    assert [kwargs["params"] for _url, kwargs in calls] == [
+        {"language": "zh-TW"},
+        {"language": "zh-TW"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_plugin_memory_query_forwards_full_locale(monkeypatch):
+    from plugin.server.application.messages import memory_query_service
+
+    calls = []
+
+    class Response:
+        @staticmethod
+        def raise_for_status():
+            return None
+
+        @staticmethod
+        def json():
+            return {"items": []}
+
+    class Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return None
+
+        async def get(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    monkeypatch.setattr(
+        memory_query_service.httpx,
+        "AsyncClient",
+        lambda **_kwargs: Client(),
+    )
+    monkeypatch.setattr(
+        memory_query_service,
+        "get_global_language_full",
+        lambda: "zh-TW",
+    )
+
+    result = await memory_query_service.MemoryQueryService().query_memory(
+        lanlan_name="Neko",
+        query="喜歡貓",
+        timeout=5,
+    )
+
+    assert result == {"result": {"items": []}}
+    assert calls[0][1]["params"] == {"language": "zh-TW"}
 
 
 def test_persona_correction_locale_ignores_formatter_labels():

@@ -72,6 +72,21 @@ async def _auto_promote_character(name: str, powerful: bool):
     return await _run_with_character_language(name, operation)
 
 
+async def _compress_recent_history(name: str):
+    return await run_with_character_prompt_locale(
+        name,
+        runtime.recent_history_manager.update_history,
+        [],
+        name,
+        detailed=True,
+        on_compress_done=review._on_compress_done,
+    )
+
+
+async def _spawn_review_with_character_language(name: str):
+    return await _run_with_character_language(name, review.maybe_spawn_review)
+
+
 async def _check_feedback_for_confirmed(
     name: str,
     confirmed: list[dict],
@@ -485,7 +500,7 @@ async def _periodic_idle_maintenance_loop():
                         )
                         try:
                             # 传空消息列表仅触发压缩逻辑
-                            await runtime.recent_history_manager.update_history([], name, detailed=True, on_compress_done=review._on_compress_done)
+                            await _compress_recent_history(name)
                             logger.info(f"[IdleMaint] {name}: 历史记录压缩完成")
                         except Exception as e:
                             logger.warning(f"[IdleMaint] {name}: 历史记录压缩失败: {e}")
@@ -551,7 +566,7 @@ async def _periodic_idle_maintenance_loop():
                     if not gates._is_idle():
                         break
                     try:
-                        await review.maybe_spawn_review(name)
+                        await _spawn_review_with_character_language(name)
                     except Exception as e:
                         logger.warning(f"[IdleMaint] {name}: 记忆整理启动失败: {e}")
 

@@ -7,6 +7,7 @@ import httpx
 
 from plugin.logging_config import get_logger
 from plugin.server.domain.errors import ServerDomainError
+from utils.language_utils import get_global_language_full
 
 logger = get_logger("server.application.messages.memory_query")
 
@@ -63,7 +64,10 @@ class MemoryQueryService:
                 query=normalized_query,
             )
             async with httpx.AsyncClient(timeout=normalized_timeout, proxy=None, trust_env=False) as client:
-                response = await client.get(url)
+                response = await client.get(
+                    url,
+                    params={"language": get_global_language_full()},
+                )
                 response.raise_for_status()
                 result = response.json()
             return {"result": result}

@@ -1120,7 +1120,10 @@ class BiliDMPlugin(NekoPluginBase):
     ) -> str:
         """构建 AI 会话系统提示词"""
         from config.prompts.prompts_sys import SESSION_INIT_PROMPT
-        from utils.language_utils import get_global_language
+        from utils.language_utils import (
+            get_global_language,
+            get_global_language_full,
+        )
 
         try:
             from utils.i18n_utils import normalize_language_code
@@ -1154,7 +1157,8 @@ class BiliDMPlugin(NekoPluginBase):
                     timeout=5.0, proxy=None, trust_env=False
                 ) as client:
                     response = await client.get(
-                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                        f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
+                        params={"language": get_global_language_full()},
                     )
                     if response.is_success:
                         memory_context = response.text.strip()

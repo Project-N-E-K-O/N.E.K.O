@@ -732,9 +732,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
         try:
             import httpx
             from config import MEMORY_SERVER_PORT
+            from utils.language_utils import get_global_language_full
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.get(
-                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}"
+                    f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
+                    params={"language": get_global_language_full()},
                 )
                 if response.is_success:
                     memory = response.text.strip()

@@ -440,7 +440,11 @@ async def api_reflect(lanlan_name: str):
     # 计数无功能影响。
     runtime._spawn_background_task(_safe_auto_promote(lanlan_name))
     try:
-        reflection_result = await runtime.reflection_engine.reflect(lanlan_name)
+        reflection_result = await locale_state.run_with_character_prompt_locale(
+            lanlan_name,
+            runtime.reflection_engine.reflect,
+            lanlan_name,
+        )
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: reflect 失败: {e}")
     return {
@@ -457,9 +461,14 @@ async def _safe_auto_promote(lanlan_name: str) -> None:
     """
     try:
         if await gates._ais_powerful_memory_enabled():
-            await runtime.reflection_engine.aauto_promote_stale(lanlan_name)
+            operation = runtime.reflection_engine.aauto_promote_stale
         else:
-            await runtime.reflection_engine.aauto_promote_time_driven(lanlan_name)
+            operation = runtime.reflection_engine.aauto_promote_time_driven
+        await locale_state.run_with_character_prompt_locale(
+            lanlan_name,
+            operation,
+            lanlan_name,
+        )
     except Exception as e:
         logger.debug(f"[ReflectAPI] {lanlan_name}: 后台 auto_promote 失败: {e}")
 
