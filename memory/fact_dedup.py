@@ -344,6 +344,27 @@ class FactDedupResolver:
                     and entry_matches_subject(row, memory_subject)
                 )
             }
+            archive_path = self._fact_store._facts_archive_path(name)
+            if await asyncio.to_thread(os.path.exists, archive_path):
+                try:
+                    archive_data = await read_json_async(archive_path)
+                except (json.JSONDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts_archive unreadable during dedup forget: {exc}"
+                    ) from exc
+                if not isinstance(archive_data, list):
+                    raise RuntimeError(
+                        "facts_archive is not a list during dedup forget"
+                    )
+                subject_fact_ids.update(
+                    row.get('id')
+                    for row in archive_data
+                    if (
+                        isinstance(row, dict)
+                        and row.get('id')
+                        and entry_matches_subject(row, memory_subject)
+                    )
+                )
 
             def _matches(item: object) -> bool:
                 if not isinstance(item, dict):

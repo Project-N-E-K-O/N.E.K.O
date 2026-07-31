@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Optional
 
 from .feedback_classifier import QQFeedbackClassifier
@@ -9,6 +10,34 @@ from .pipeline_models import QQReplyRequest
 class QQMessageDispatcher:
     def __init__(self, plugin: Any):
         self.plugin = plugin
+        self._open_platform_bootstrap_lock = asyncio.Lock()
+
+    async def _maybe_reserve_open_platform_admin(
+        self, message: dict[str, Any],
+    ) -> None:
+        if message.get("message_type") != "private":
+            return
+        qq_client = getattr(self.plugin, "qq_client", None)
+        permission_mgr = getattr(self.plugin, "permission_mgr", None)
+        sender_id = str(message.get("user_id") or "").strip()
+        if (
+            qq_client is None
+            or qq_client.needs_attention
+            or permission_mgr is None
+            or not sender_id
+        ):
+            return
+        async with self._open_platform_bootstrap_lock:
+            if permission_mgr.list_users():
+                return
+            permission_mgr.add_user(
+                sender_id,
+                "admin",
+                message.get("user_nickname") or "管理员",
+            )
+            self.plugin._refresh_admin_qq()
+            message["_private_permission_level_at_receipt"] = "admin"
+            message["_open_platform_admin_promoted_at_receipt"] = True
 
     def _resolve_poke_nickname(self, user_id: str, raw_msg: dict[str, Any]) -> str:
         """从戳一戳事件中获取用户昵称"""
@@ -134,27 +163,6 @@ class QQMessageDispatcher:
                                 self.plugin, "permission_mgr", None,
                             )
                             if permission_mgr is not None:
-                                qq_client = getattr(self.plugin, "qq_client", None)
-                                if (
-                                    qq_client is not None
-                                    and not qq_client.needs_attention
-                                    and not permission_mgr.list_users()
-                                    and sender_at_receipt
-                                ):
-                                    # This receive loop is serial and there is
-                                    # no await in this block: promote before
-                                    # stamping or scheduling the handler, so a
-                                    # second synchronously queued sender sees
-                                    # the first reservation in list_users().
-                                    permission_mgr.add_user(
-                                        sender_at_receipt,
-                                        "admin",
-                                        message.get("user_nickname") or "管理员",
-                                    )
-                                    self.plugin._refresh_admin_qq()
-                                    message[
-                                        "_open_platform_admin_promoted_at_receipt"
-                                    ] = True
                                 permission_at_receipt = (
                                     permission_mgr.get_permission_level(
                                         sender_at_receipt
@@ -253,6 +261,10 @@ class QQMessageDispatcher:
         if raw_content and QQFeedbackClassifier.is_blacklisted(raw_content, label_defs):
             self.plugin._emit_log("INFO", f"黑名单过滤: text={raw_content[:40]}")
             return
+        # Open-platform bootstrap is serialized here, after all private-message
+        # eligibility filters but before backlog/context work.  A filtered
+        # first sender must never acquire owner-memory privileges.
+        await self._maybe_reserve_open_platform_admin(message)
         await self.plugin._record_backlog_message(message)
         if str(message.get("message_type") or "").strip() == "group" and getattr(self.plugin, "attention_service", None):
             if self.plugin.qq_client and self.plugin.qq_client.needs_attention:
@@ -357,6 +369,9 @@ class QQMessageDispatcher:
             try:
                 await self.plugin.settings_service.persist_business_config()
             except Exception:
+                # The in-memory reservation already protects this process;
+                # startup persistence remains best-effort, matching the
+                # pre-existing fallback path below.
                 pass
         elif self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():

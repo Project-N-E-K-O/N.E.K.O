@@ -2617,8 +2617,7 @@ async def test_open_platform_bootstrap_promotes_only_first_queued_sender():
 
     levels: dict[str, str] = {}
     plugin = SimpleNamespace(
-        _running=True,
-        _qq_settings={"private_participant_memory_enabled": True},
+        _qq_settings={"backlog_labels": []},
         permission_mgr=SimpleNamespace(
             list_users=lambda: list(levels),
             add_user=lambda user, level, _nickname: levels.__setitem__(
@@ -2627,43 +2626,88 @@ async def test_open_platform_bootstrap_promotes_only_first_queued_sender():
             get_permission_level=lambda user: levels.get(user, "none"),
         ),
         _refresh_admin_qq=MagicMock(),
-        _run_message_handler=AsyncMock(),
-        handler_runtime_service=SimpleNamespace(
-            track_handler_task=MagicMock(),
-        ),
-        logger=MagicMock(),
+        _record_backlog_message=AsyncMock(),
+        _emit_log=MagicMock(),
+        _sanitize_message_text=lambda text, **_kwargs: text,
+        _build_session_key=lambda **kwargs: f"private:{kwargs['sender_id']}",
+        _user_sessions={},
+        attention_service=None,
+        fatigue_service=None,
     )
 
     first = {
         "message_type": "private", "user_id": "1001",
-        "user_nickname": "first",
+        "user_nickname": "first", "content": "hello",
+        "_private_permission_level_at_receipt": "none",
     }
     second = {
         "message_type": "private", "user_id": "1002",
-        "user_nickname": "second",
+        "user_nickname": "second", "content": "hello",
+        "_private_permission_level_at_receipt": "none",
     }
-    queue = [first, second]
-
-    async def _receive_from_queue():
-        if queue:
-            return queue.pop(0)
-        plugin._running = False
-        return None
-
     plugin.qq_client = SimpleNamespace(
         needs_attention=False,
-        receive_message=_receive_from_queue,
     )
     dispatcher = QQMessageDispatcher(plugin)
+    dispatcher.handle_private_message = AsyncMock()
 
-    await dispatcher.process_messages()
-    await asyncio.sleep(0)
+    await asyncio.gather(
+        dispatcher.handle_message(first),
+        dispatcher.handle_message(second),
+    )
 
     assert levels == {"1001": "admin"}
     assert first["_private_permission_level_at_receipt"] == "admin"
     assert first["_open_platform_admin_promoted_at_receipt"] is True
     assert second["_private_permission_level_at_receipt"] == "none"
     assert "_open_platform_admin_promoted_at_receipt" not in second
+
+
+@pytest.mark.asyncio
+async def test_open_platform_bootstrap_skips_blacklisted_first_sender():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    levels: dict[str, str] = {}
+    plugin = SimpleNamespace(
+        _qq_settings={"backlog_labels": [{
+            "id": "ignore", "priority": -1, "keywords": ["blocked"],
+        }]},
+        permission_mgr=SimpleNamespace(
+            list_users=lambda: list(levels),
+            add_user=lambda user, level, _nickname: levels.__setitem__(
+                user, level,
+            ),
+            get_permission_level=lambda user: levels.get(user, "none"),
+        ),
+        _refresh_admin_qq=MagicMock(),
+        _record_backlog_message=AsyncMock(),
+        _emit_log=MagicMock(),
+        _sanitize_message_text=lambda text, **_kwargs: text,
+        _build_session_key=lambda **kwargs: f"private:{kwargs['sender_id']}",
+        _user_sessions={},
+        attention_service=None,
+        fatigue_service=None,
+        qq_client=SimpleNamespace(needs_attention=False),
+    )
+    dispatcher = QQMessageDispatcher(plugin)
+    dispatcher.handle_private_message = AsyncMock()
+    blocked = {
+        "message_type": "private", "user_id": "1001",
+        "content": "blocked", "_private_permission_level_at_receipt": "none",
+    }
+    accepted = {
+        "message_type": "private", "user_id": "1002",
+        "content": "hello", "_private_permission_level_at_receipt": "none",
+    }
+
+    await dispatcher.handle_message(blocked)
+    await dispatcher.handle_message(accepted)
+
+    assert levels == {"1002": "admin"}
+    assert "_open_platform_admin_promoted_at_receipt" not in blocked
+    assert accepted["_open_platform_admin_promoted_at_receipt"] is True
 
 
 @pytest.mark.asyncio
