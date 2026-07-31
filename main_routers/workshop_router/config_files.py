@@ -74,13 +74,34 @@ async def save_workshop_config_api(config_data: dict):
         # 已经被写坏了，后续 get_workshop_path() 会把这个对象原样返回，凡是拿它去
         # os.path.join() 的 workshop 调用全部失败，直到用户手工修好。
         for key in ('default_workshop_folder', 'user_mod_folder'):
-            if key in config_data and not isinstance(config_data[key], str):
+            if key not in config_data:
+                continue
+            value = config_data[key]
+            if not isinstance(value, str):
                 return {
                     "success": False,
                     "error": f"{key} 必须是字符串路径",
                 }
+            # 相对路径直接拒，不做「猜一个 base 再normalize」。ensure 会按用户主目录
+            # 解析它并报 folder_ready: true，而 get_workshop_path() 原样返回那个相对
+            # 串、后续 _assert_under_base 又按服务进程的工作目录解析 —— 两边指向不同
+            # 的地方，而我们已经告诉用户「建好了」。宁可让调用方给绝对路径。
+            if value.strip() and not os.path.isabs(value):
+                return {
+                    "success": False,
+                    "error": f"{key} 必须是绝对路径",
+                }
+        if 'auto_create_folder' in config_data and not isinstance(
+            config_data['auto_create_folder'], bool
+        ):
+            # 字符串 "false" 是 truthy —— 不拦就会在用户明确说「别建」的时候建目录，
+            # 而且把这个畸形值留在盘上。
+            return {
+                "success": False,
+                "error": "auto_create_folder 必须是布尔值",
+            }
 
-        def _apply_config_transaction() -> tuple[dict, str, bool]:
+        def _apply_config_transaction() -> tuple[dict, bool | None]:
             with get_config_manager().workshop_config_lock():
                 # 读也放进锁里：不然两个请求各自读到同一份旧配置、各写各的合并结果，
                 # 后写的那次会把前一次的字段整份盖掉。
@@ -94,21 +115,27 @@ async def save_workshop_config_api(config_data: dict):
                 folder_path = ''
                 if auto_create:
                     folder_path = merged.get('user_mod_folder') or merged.get('default_workshop_folder') or ''
-            # ⚠️ 建目录在**锁外**做。它可能是网络盘 / 可移动盘上的 exists + makedirs，
-            # 慢得没有上界；而事件循环上还有 handler 裸调 get_workshop_path()。持着锁
-            # 做这件事就是把整条循环挂在那儿。策略（auto_create + 目标路径）已经在锁内
-            # 定死并显式传进去，所以 ensure 不会重读到别人的配置。
-            return merged, folder_path, auto_create
+            # ⚠️ 建目录在**锁外、但仍在同一个 worker 里**做。
+            #
+            # 锁外：它可能是网络盘 / 可移动盘上的 exists + makedirs，慢得没有上界；
+            # 而事件循环上还有 handler 裸调 get_workshop_path()，持锁做这件事就是把
+            # 整条循环挂在那儿。策略（auto_create + 目标路径）已经在锁内定死并显式
+            # 传进去，所以 ensure 不会重读到别人的配置。
+            #
+            # 同一个 worker：拆成两次 to_thread 的话，取消会落在两者之间 ——
+            # asyncio.to_thread 不会停掉已经开跑的 worker，但 CancelledError 会让
+            # handler 再也走不到第二次调用，于是「配置写了、目录没建」。请求超时和
+            # 应用关闭都会走到这条路径。
+            folder_ready = None
+            if auto_create and folder_path:
+                folder_ready = bool(
+                    ensure_workshop_folder_exists(folder_path, auto_create=True)
+                )
+            return merged, folder_ready
 
-        workshop_config_data, folder_path, auto_create = await asyncio.to_thread(
+        workshop_config_data, folder_ready = await asyncio.to_thread(
             _apply_config_transaction
         )
-        folder_ready: bool | None = None
-        if auto_create and folder_path:
-            folder_ready = await asyncio.to_thread(
-                ensure_workshop_folder_exists, folder_path, auto_create=True,
-            )
-            folder_ready = bool(folder_ready)
 
         # ensure_workshop_folder_exists 把创建失败（只读盘、权限不足）吞成返回 False。
         # 配置确实存下来了，所以 success 仍然是 True —— 但不能因此告诉用户目录也准备

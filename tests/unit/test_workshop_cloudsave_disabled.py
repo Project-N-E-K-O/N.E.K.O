@@ -1,4 +1,5 @@
 import asyncio
+import os
 
 import pytest
 
@@ -169,14 +170,14 @@ async def test_a_transaction_hands_ensure_its_own_policy(tmp_path, monkeypatch):
     def _save(cfg):
         stored.clear()
         stored.update(cfg)
-        if cfg.get("user_mod_folder") == "B":
+        if str(cfg.get("user_mod_folder", "")).endswith("B"):
             b_saved.set()
 
     def _ensure(folder, **kwargs):
-        if folder == "A":
+        if folder.endswith("A"):
             # 让 B 一定先写完，构造出「重读就会读到别人配置」的时刻。
             b_saved.wait(timeout=1.0)
-        seen.append(f"{folder}:auto={kwargs.get('auto_create')}")
+        seen.append(f"{os.path.basename(folder)}:auto={kwargs.get('auto_create')}")
         return True
 
     monkeypatch.setattr(workshop_utils, "load_workshop_config", _load)
@@ -185,13 +186,13 @@ async def test_a_transaction_hands_ensure_its_own_policy(tmp_path, monkeypatch):
 
     a = asyncio.create_task(
         config_files.save_workshop_config_api(
-            {"user_mod_folder": "A", "auto_create_folder": True}
+            {"user_mod_folder": os.path.join(os.sep, "tmp", "A"), "auto_create_folder": True}
         )
     )
     await asyncio.sleep(0)
     b = asyncio.create_task(
         config_files.save_workshop_config_api(
-            {"user_mod_folder": "B", "auto_create_folder": False}
+            {"user_mod_folder": os.path.join(os.sep, "tmp", "B"), "auto_create_folder": False}
         )
     )
     await asyncio.gather(a, b)
@@ -362,9 +363,9 @@ async def test_a_non_string_folder_value_is_rejected_before_it_is_persisted(monk
 
     assert saved == [], "校验失败的请求不该写盘"
 
-    ok = await config_files.save_workshop_config_api({"user_mod_folder": "C:/mods"})
+    ok = await config_files.save_workshop_config_api({"user_mod_folder": os.path.join(os.sep, "mods")})
     assert ok["success"] is True
-    assert saved and saved[-1]["user_mod_folder"] == "C:/mods"
+    assert saved and saved[-1]["user_mod_folder"] == os.path.join(os.sep, "mods")
 
 
 @pytest.mark.asyncio
@@ -407,3 +408,81 @@ async def test_the_self_healing_write_is_skipped_on_the_event_loop(monkeypatch, 
 
     assert rebased["user_mod_folder"] == "rebased", "调用方仍然要拿到修正后的路径"
     assert cm.saves == [], "在事件循环上不许落盘——那会去抢 worker 可能持着的锁"
+
+
+@pytest.mark.asyncio
+async def test_a_relative_folder_is_rejected(monkeypatch):
+    """A relative path resolves differently in every consumer; refuse it.
+
+    `ensure_workshop_folder_exists` resolves it against the user's home and can
+    report ready, while `get_workshop_path()` hands the raw string to
+    `_assert_under_base`, which resolves it against the server's working
+    directory. Two different places, and we already told the user it was ready.
+    """
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True)
+
+    result = await config_files.save_workshop_config_api({"user_mod_folder": "mods"})
+    assert result["success"] is False
+    assert "绝对路径" in result["error"]
+    assert saved == []
+
+
+@pytest.mark.asyncio
+async def test_a_non_boolean_auto_create_is_rejected(monkeypatch):
+    """`"false"` is a truthy string; taking it at face value creates folders."""
+    _stub_config_manager_lock(monkeypatch)
+
+    from main_routers.workshop_router import config_files
+    from utils import workshop_utils
+
+    saved: list[dict] = []
+    monkeypatch.setattr(workshop_utils, "load_workshop_config", lambda: {})
+    monkeypatch.setattr(workshop_utils, "save_workshop_config", lambda cfg: saved.append(cfg))
+    monkeypatch.setattr(workshop_utils, "ensure_workshop_folder_exists", lambda f, **kw: True)
+
+    result = await config_files.save_workshop_config_api({"auto_create_folder": "false"})
+    assert result["success"] is False
+    assert "布尔" in result["error"]
+    assert saved == []
+
+
+def test_the_save_and_the_folder_creation_share_one_worker_job():
+    """Cancellation must not be able to land between them.
+
+    `asyncio.to_thread` does not stop a worker that already started, but the
+    handler stops at the await — so a second `to_thread` for the directory work
+    would simply never run, leaving an auto-create configuration persisted with
+    its directory missing. Both side effects live in one job.
+    """
+    import ast
+    import inspect
+    import textwrap
+
+    from main_routers.workshop_router import config_files
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(config_files.save_workshop_config_api))
+    )
+    to_thread_calls = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "to_thread"
+    ]
+    assert len(to_thread_calls) == 1, (
+        f"保存与建目录必须在同一个 worker job 里，现在有 {len(to_thread_calls)} 次 to_thread"
+    )
+    inner = _fn(tree, "_apply_config_transaction")
+    called = {
+        c.func.id for c in ast.walk(inner)
+        if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
+    }
+    assert {"save_workshop_config", "ensure_workshop_folder_exists"} <= called

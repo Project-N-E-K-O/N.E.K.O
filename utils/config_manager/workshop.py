@@ -21,7 +21,11 @@ root path resolution.
 import json
 import os
 
-from utils.file_utils import atomic_write_json, running_on_event_loop
+from utils.file_utils import (
+    atomic_write_json,
+    read_json_tolerating_replace,
+    running_on_event_loop,
+)
 
 from ._shared import logger
 
@@ -122,8 +126,7 @@ class WorkshopMixin:
         try:
             if not os.path.exists(config_path):
                 return None
-            with open(config_path, 'r', encoding='utf-8') as f:
-                return json.load(f)
+            return read_json_tolerating_replace(config_path)
         except Exception:
             return None
 
@@ -229,8 +232,11 @@ class WorkshopMixin:
                 # 甚至跨网络盘 makedirs）的锁，就等于把整条循环挂在那儿 —— 同一个锁
                 # 传导陷阱在这个 PR 里已经踩过两次。自愈写的串行化由
                 # _rebase_workshop_config_after_storage_migration 自己在锁内完成。
-                with open(config_path, 'r', encoding='utf-8') as f:
-                    config = json.load(f)
+                # ⚠️ 容忍 os.replace 的读：落盘现在跑在 worker 上，Windows 上并发
+                # open() 会撞到 replace 中间吃 PermissionError。下面那个 except 会把
+                # 它当成「配置读不出来」而退回默认配置 —— 于是 upload / publish 拿着
+                # 默认的工坊根目录去干活，而用户的配置明明好好的。
+                config = read_json_tolerating_replace(config_path)
                 config = self._rebase_workshop_config_after_storage_migration(config)
                 logger.debug(f"成功加载workshop配置: {config}")
                 return config
@@ -238,8 +244,7 @@ class WorkshopMixin:
                 # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
                 with self._workshop_config_lock:
                     if os.path.exists(config_path):
-                        with open(config_path, 'r', encoding='utf-8') as f:
-                            config = json.load(f)
+                        config = read_json_tolerating_replace(config_path)
                         config = self._rebase_workshop_config_after_storage_migration(config)
                         logger.debug(f"成功加载workshop配置: {config}")
                         return config

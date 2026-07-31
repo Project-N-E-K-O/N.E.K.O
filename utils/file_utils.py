@@ -700,6 +700,32 @@ def atomic_write_json(
     atomic_write_text(path, content, encoding=encoding)
 
 
+def read_json_tolerating_replace(
+    path: str | os.PathLike[str],
+    *,
+    encoding: str = "utf-8",
+) -> Any:
+    """``read_json`` that rides out a concurrent ``os.replace`` on Windows.
+
+    The write side already backs off when the target is busy; this is the same
+    window seen from the reader. Without it a caller that swallows exceptions
+    turns a transient sharing violation into "the file is unreadable" and falls
+    back to defaults, which is far worse than waiting a few milliseconds.
+
+    Only the Windows "target is busy" codes are retried, the budget is the same
+    bounded one as the write side, and the final attempt re-raises the real
+    error rather than a wrapped one.
+    """
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            return read_json(path, encoding=encoding)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+        time.sleep(delay)
+    return read_json(path, encoding=encoding)
+
+
 def read_json(path: str | os.PathLike[str], *, encoding: str = "utf-8") -> Any:
     with open(path, "r", encoding=encoding) as f:
         return json.load(f)
