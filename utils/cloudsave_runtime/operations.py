@@ -33,8 +33,8 @@ from utils.recent_file import (
     acquire_recent_file_locks,
     clear_recent_deletions,
     clear_recent_redirects,
+    fence_recent_deletions_and_clear_redirects,
     get_recent_pending_unlocked,
-    mark_recent_deleted,
     read_recent_text_unlocked,
     recent_file_access,
     recent_file_locks,
@@ -462,6 +462,7 @@ def import_cloudsave_character_unit(
             "held_locks": held_locks,
             "recent_paths": [recent_target],
         }
+        ownership_transferred = False
         try:
             redirect_snapshot = clear_recent_redirects([recent_target])
             deletion_snapshot = snapshot_recent_deletions([recent_target])
@@ -510,24 +511,27 @@ def import_cloudsave_character_unit(
                 "redirect_snapshot": redirect_snapshot,
                 "deletion_snapshot": deletion_snapshot,
             })
-        except BaseException:
-            release_recent_file_locks(held_locks)
-            recent_transaction["held_locks"] = []
-            raise
-        if not retain_recent_locks:
-            release_recent_file_locks(held_locks)
-            recent_transaction["held_locks"] = []
+            if not retain_recent_locks:
+                release_recent_file_locks(held_locks)
+                recent_transaction["held_locks"] = []
 
-        detail = build_cloudsave_character_detail(config_manager, character_name)
-        result = {
-            "character_name": character_name,
-            "applied_at_utc": apply_time,
-            "detail": detail,
-            "backup_path": str(backup_root),
-        }
-        if retain_recent_locks:
-            result["_recent_import_transaction"] = recent_transaction
-        return result
+            detail = build_cloudsave_character_detail(config_manager, character_name)
+            result = {
+                "character_name": character_name,
+                "applied_at_utc": apply_time,
+                "detail": detail,
+                "backup_path": str(backup_root),
+            }
+            if retain_recent_locks:
+                result["_recent_import_transaction"] = recent_transaction
+                ownership_transferred = True
+            return result
+        finally:
+            if not ownership_transferred:
+                retained_locks = recent_transaction.get("held_locks") or []
+                if retained_locks:
+                    recent_transaction["held_locks"] = []
+                    release_recent_file_locks(retained_locks)
 
 
 def finalize_cloudsave_character_import(result: dict[str, Any]) -> None:
@@ -573,10 +577,18 @@ def _managed_target_relative_path(config_manager, target_path: Path) -> Path:
     normalized_target = Path(target_path).expanduser().resolve(strict=False)
     runtime_root = Path(config_manager.app_docs_dir).expanduser().resolve(strict=False)
     anchor_root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir)).expanduser().resolve(strict=False)
+    project_memory_root = Path(config_manager.project_memory_dir).expanduser().resolve(strict=False)
 
-    candidate_roots = [("runtime", runtime_root)]
-    if anchor_root != runtime_root:
-        candidate_roots.append(("anchor", anchor_root))
+    candidate_roots = []
+    seen_roots: set[Path] = set()
+    for scope, root in (
+        ("runtime", runtime_root),
+        ("anchor", anchor_root),
+        ("project_memory", project_memory_root),
+    ):
+        if root not in seen_roots:
+            candidate_roots.append((scope, root))
+            seen_roots.add(root)
     candidate_roots.sort(key=lambda item: len(item[1].parts), reverse=True)
 
     for scope, root in candidate_roots:
@@ -602,6 +614,8 @@ def _resolve_managed_target_path(config_manager, relative_path: str) -> Path:
     suffix = Path(*parts.parts[1:]) if len(parts.parts) > 1 else Path()
     if scope == "anchor":
         root = Path(getattr(config_manager, "anchor_root", config_manager.app_docs_dir))
+    elif scope == "project_memory":
+        root = Path(config_manager.project_memory_dir)
     elif scope == "runtime":
         root = Path(config_manager.app_docs_dir)
     else:
@@ -1356,8 +1370,20 @@ def import_local_cloudsave_snapshot(
         )
         recent_targets.update(directory / "recent.json" for directory in delete_dir_targets)
         with recent_file_locks(list(recent_targets)):
+            deleted_recent_paths = [
+                directory / "recent.json" for directory in delete_dir_targets
+            ]
+            (
+                deleted_redirects,
+                deletion_scope,
+                deleted_deletion_snapshot,
+            ) = fence_recent_deletions_and_clear_redirects(deleted_recent_paths)
             redirect_snapshot = clear_recent_redirects(list(recent_targets))
-            deletion_snapshot = snapshot_recent_deletions(list(recent_targets))
+            redirect_snapshot.update(deleted_redirects)
+            deletion_snapshot = (
+                snapshot_recent_deletions(list(recent_targets)) - deletion_scope
+            ) | deleted_deletion_snapshot
+            deletion_restore_scope = set(recent_targets) | deletion_scope
             imported_recent_paths = {
                 Path(config_manager.memory_dir) / character_name / "recent.json"
                 for character_name in imported_character_names
@@ -1409,10 +1435,6 @@ def import_local_cloudsave_snapshot(
 
                 for recent_path in recent_targets:
                     set_recent_pending_unlocked(recent_path, [])
-                mark_recent_deleted([
-                    directory / "recent.json" for directory in delete_dir_targets
-                ])
-
                 return {
                     "manifest_fingerprint": computed_fingerprint,
                     "applied_character_count": len(imported_character_names),
@@ -1443,6 +1465,6 @@ def import_local_cloudsave_snapshot(
                         set_recent_pending_unlocked(recent_path, messages)
                     restore_recent_redirects(redirect_snapshot)
                     restore_recent_deletions(
-                        list(recent_targets), deletion_snapshot,
+                        list(deletion_restore_scope), deletion_snapshot,
                     )
                 raise

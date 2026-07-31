@@ -24,9 +24,9 @@ from utils.recent_file import (
     acquire_recent_file_locks,
     clear_recent_deletions,
     clear_recent_redirects,
+    fence_recent_deletions_and_clear_redirects,
     get_recent_pending_unlocked,
     read_recent_text_unlocked,
-    mark_recent_deleted,
     recent_file_lock,
     redirect_recent_paths,
     release_recent_file_locks,
@@ -436,8 +436,9 @@ def delete_character_memory_storage(
         config_manager, character_name,
     )
     recent_candidates = transaction["recent_paths"]
-    redirect_snapshot = clear_recent_redirects(recent_candidates)
-    deletion_snapshot = snapshot_recent_deletions(recent_candidates)
+    redirect_snapshot, deletion_scope, deletion_snapshot = (
+        fence_recent_deletions_and_clear_redirects(recent_candidates)
+    )
     pending_snapshot: dict[Path, list[Any]] = {}
     try:
         pending_snapshot = {
@@ -454,11 +455,11 @@ def delete_character_memory_storage(
 
         for recent_path in recent_candidates:
             set_recent_pending_unlocked(recent_path, [])
-        mark_recent_deleted(recent_candidates)
         transaction.update({
             "pending_snapshot": pending_snapshot,
             "redirect_snapshot": redirect_snapshot,
             "deletion_snapshot": deletion_snapshot,
+            "deletion_scope": deletion_scope,
         })
         if not keep_recent_locks:
             release_character_recent_transaction(transaction)
@@ -467,7 +468,7 @@ def delete_character_memory_storage(
         return removed_paths
     except BaseException:
         restore_recent_redirects(redirect_snapshot)
-        restore_recent_deletions(recent_candidates, deletion_snapshot)
+        restore_recent_deletions(list(deletion_scope), deletion_snapshot)
         for path, messages in pending_snapshot.items():
             set_recent_pending_unlocked(path, messages)
         if not keep_recent_locks:
@@ -483,15 +484,16 @@ def finalize_character_recent_delete(result: dict[str, Any]) -> None:
 def rollback_character_recent_delete(result: dict[str, Any]) -> None:
     """Restore pending state and redirects after a delete transaction rolls back."""
     recent_paths = result.get("recent_paths") or []
+    deletion_scope = result.get("deletion_scope") or recent_paths
     held_locks = result.get("held_locks") or []
     if not held_locks:
         held_locks = acquire_recent_file_locks(recent_paths)
         result["held_locks"] = held_locks
     try:
-        clear_recent_redirects(recent_paths)
+        clear_recent_redirects(list(deletion_scope))
         restore_recent_redirects(result.get("redirect_snapshot") or {})
         restore_recent_deletions(
-            recent_paths, result.get("deletion_snapshot") or set(),
+            list(deletion_scope), result.get("deletion_snapshot") or set(),
         )
         for path, messages in (result.get("pending_snapshot") or {}).items():
             set_recent_pending_unlocked(path, messages)

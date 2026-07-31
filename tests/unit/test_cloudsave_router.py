@@ -4,6 +4,7 @@ import sys
 import json
 import re
 import shutil
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -1425,3 +1426,52 @@ async def test_download_after_force_memory_released():
         call_args = release_mock.call_args
         assert call_args[0][0] == "小满"
         assert "强制" in call_args[1]["reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_worker_wait_keeps_event_loop_responsive():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    started = threading.Event()
+    release = threading.Event()
+
+    def _worker():
+        started.set()
+        assert release.wait(3)
+        return "done"
+
+    operation = asyncio.create_task(
+        cloudsave_router_module._await_thread_call_to_completion(_worker),
+    )
+    assert await asyncio.to_thread(started.wait, 3)
+    asyncio.get_running_loop().call_later(0.02, release.set)
+
+    result, cancelled = await asyncio.wait_for(operation, 1)
+
+    assert result == "done"
+    assert cancelled is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_worker_wait_recovers_result_after_cancellation():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    started = threading.Event()
+    release = threading.Event()
+
+    def _worker():
+        started.set()
+        assert release.wait(3)
+        return {"_recent_import_transaction": {"held_locks": []}}
+
+    operation = asyncio.create_task(
+        cloudsave_router_module._await_thread_call_to_completion(_worker),
+    )
+    assert await asyncio.to_thread(started.wait, 3)
+    operation.cancel()
+    release.set()
+
+    result, cancelled = await asyncio.wait_for(operation, 1)
+
+    assert result["_recent_import_transaction"] == {"held_locks": []}
+    assert cancelled is True

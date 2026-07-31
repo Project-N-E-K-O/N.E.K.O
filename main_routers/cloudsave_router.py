@@ -27,6 +27,7 @@ enforced by ``scripts/check_api_trailing_slash.py``.
 
 import asyncio
 import logging
+from contextlib import suppress
 
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
@@ -58,6 +59,18 @@ from utils.cloudsave_runtime import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/cloudsave", tags=["cloudsave"])
+
+
+async def _await_thread_call_to_completion(func, *args, **kwargs):
+    """Return a worker result and whether cancellation arrived while it ran."""
+    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
 
 
 CLOUDSAVE_ERROR_I18N_KEYS = {
@@ -532,7 +545,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
             )
 
     try:
-        result = import_cloudsave_character_unit(
+        result, cancelled = await _await_thread_call_to_completion(
+            import_cloudsave_character_unit,
             config_manager,
             name,
             overwrite=overwrite,
@@ -556,6 +570,10 @@ async def post_cloudsave_character_download(name: str, request: Request):
             status_code=500,
             character_name=name,
         )
+
+    if cancelled:
+        finalize_cloudsave_character_import(result)
+        raise asyncio.CancelledError
 
     backup_path = str(result.get("backup_path") or "")
     try:

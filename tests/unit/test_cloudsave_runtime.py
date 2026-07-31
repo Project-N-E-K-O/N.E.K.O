@@ -148,6 +148,23 @@ def test_managed_target_relative_path_prefers_nested_anchor_root(tmp_path):
     assert _managed_target_relative_path(cm, target_path) == Path("anchor/state/storage_policy.json")
 
 
+@pytest.mark.unit
+def test_managed_target_round_trip_supports_project_memory_root(tmp_path):
+    from utils.cloudsave_runtime import (
+        _managed_target_relative_path,
+        _resolve_managed_target_path,
+    )
+
+    cm = _make_config_manager(tmp_path / "runtime")
+    cm.project_memory_dir = tmp_path / "checkout" / "memory" / "store"
+    target_path = cm.project_memory_dir / "Old" / "recent.json"
+
+    relative_path = _managed_target_relative_path(cm, target_path)
+
+    assert relative_path == Path("project_memory/Old/recent.json")
+    assert _resolve_managed_target_path(cm, str(relative_path)) == target_path.resolve(strict=False)
+
+
 def _add_runtime_character(cm, character_name: str, *, recent_text: str) -> None:
     from utils.config_manager import set_reserved
 
@@ -2647,6 +2664,44 @@ def test_single_import_retains_recent_lock_through_external_rollback(tmp_path):
     assert not writer.is_alive()
     assert writer_entered.is_set()
     assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+
+
+@pytest.mark.unit
+def test_single_import_releases_retained_lock_when_detail_build_fails(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+    )
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    export_cloudsave_character_unit(source_cm, character_name)
+    _write_runtime_state(target_cm, character_name=character_name)
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+
+    with patch(
+        "utils.cloudsave_runtime.operations.build_cloudsave_character_detail",
+        side_effect=RuntimeError("detail failed"),
+    ), pytest.raises(RuntimeError, match="detail failed"):
+        import_cloudsave_character_unit(
+            target_cm, character_name, overwrite=True, retain_recent_locks=True,
+        )
+
+    acquired = threading.Event()
+
+    def _acquire_after_failure():
+        with recent_file.recent_file_access(target_recent):
+            acquired.set()
+
+    worker = threading.Thread(target=_acquire_after_failure)
+    worker.start()
+    worker.join(3)
+    assert acquired.is_set()
+    assert not worker.is_alive()
 
 
 @pytest.mark.unit

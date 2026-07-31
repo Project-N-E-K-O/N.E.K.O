@@ -42,6 +42,7 @@ __all__ = [
     "acquire_recent_file_locks",
     "clear_recent_deletions",
     "clear_recent_redirects",
+    "fence_recent_deletions_and_clear_redirects",
     "get_recent_pending",
     "get_recent_pending_unlocked",
     "recent_file_lock",
@@ -290,6 +291,20 @@ def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
         remove_keys = _redirect_keys_touching_unlocked(keys)
         removed = {key: _REDIRECTS.pop(key) for key in remove_keys}
     return removed
+
+
+def fence_recent_deletions_and_clear_redirects(
+    paths: list[Any],
+) -> tuple[dict[str, str], set[str], set[str]]:
+    """Atomically fence deleted targets and every alias that resolves to them."""
+    keys = {_lock_key(path) for path in paths}
+    with _LOCKS_GUARD:
+        redirect_keys = _redirect_keys_touching_unlocked(keys)
+        deletion_scope = keys | redirect_keys
+        deletion_snapshot = deletion_scope & _DELETED
+        _DELETED.update(deletion_scope)
+        redirects = {key: _REDIRECTS.pop(key) for key in redirect_keys}
+    return redirects, deletion_scope, deletion_snapshot
 
 
 def restore_recent_redirects(redirects: dict[str, str]) -> None:

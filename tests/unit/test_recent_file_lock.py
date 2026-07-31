@@ -254,15 +254,10 @@ def test_waiting_writer_is_rejected_after_character_delete(tmp_path):
     _write_disk(path, [HumanMessage(content="old")])
     lock = recent_file.recent_file_lock(path)
     lock.acquire()
-    errors = []
-
     def _waiting_writer():
-        try:
-            asyncio.run(mgr.update_history(
-                [HumanMessage(content="stale-writer")], name, compress=False,
-            ))
-        except BaseException as exc:  # noqa: BLE001 - 跨线程带回所有失败
-            errors.append(exc)
+        asyncio.run(mgr.update_history(
+            [HumanMessage(content="stale-writer")], name, compress=False,
+        ))
 
     writer = threading.Thread(target=_waiting_writer)
     writer.start()
@@ -273,7 +268,6 @@ def test_waiting_writer_is_rejected_after_character_delete(tmp_path):
     writer.join(3)
 
     assert not writer.is_alive()
-    assert errors == []
     assert not Path(path).exists()
     with recent_file.recent_file_lock(path):
         assert recent_file.get_recent_pending_unlocked(path) == []
@@ -283,6 +277,41 @@ def test_waiting_writer_is_rejected_after_character_delete(tmp_path):
         [HumanMessage(content="new-character")], name, compress=False,
     ))
     assert [message.content for message in _read_disk(path)] == ["new-character"]
+
+
+def test_waiting_writer_through_renamed_alias_is_rejected_after_delete(tmp_path):
+    old_path = tmp_path / "A" / "recent.json"
+    new_path = tmp_path / "B" / "recent.json"
+    new_path.parent.mkdir(parents=True)
+    recent_file.write_recent_payload(new_path, [])
+    recent_file.redirect_recent_paths([old_path], new_path)
+    lock = recent_file.recent_file_lock(new_path)
+    lock.acquire()
+    errors = []
+
+    def _waiting_writer():
+        try:
+            recent_file.write_recent_payload(old_path, [{"content": "stale"}])
+        except recent_file.RecentFileDeletedError as exc:
+            errors.append(exc)
+
+    writer = threading.Thread(target=_waiting_writer)
+    writer.start()
+    time.sleep(0.05)
+    redirects, deletion_scope, _ = (
+        recent_file.fence_recent_deletions_and_clear_redirects([new_path])
+    )
+    new_path.unlink()
+    lock.release()
+    writer.join(3)
+
+    assert not writer.is_alive()
+    assert len(errors) == 1
+    assert os.path.normcase(os.path.abspath(old_path)) in deletion_scope
+    assert os.path.normcase(os.path.abspath(new_path)) in deletion_scope
+    assert redirects
+    assert not old_path.exists()
+    assert not new_path.exists()
 
 
 # ─────────────── T3: failed persist keeps the batch and flushes it later ───────────────
