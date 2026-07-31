@@ -1,0 +1,79 @@
+name: Random Order Tests
+
+# 用随机 seed 跑一遍 tests/unit，专门抓用例之间的顺序依赖。
+#
+# 为什么单独开一个定时 job，而不是让 PR CI 直接随机跑：随机顺序本身就是一个 flake
+# 源——同一个 commit 两次跑可能一红一绿，而红的原因跟这个 PR 的改动毫无关系。
+# unit-tests.yml 因此在 pytest.ini 里钉死 seed 保持确定性，把"持续找新的顺序依赖"
+# 这件事挪到这里：它不是任何 PR 的必需检查，红了是一条独立信号，不挡任何人合并。
+#
+# 失败怎么办：日志头部会打印 `Using --randomly-seed=<N>`，拿那个数字本地复现
+#   uv run pytest tests/unit -q --randomly-seed=<N>
+# 顺序依赖的典型形态是"产品代码里的进程级可变全局被前一条用例写脏"，修法通常是给
+# 那个模块加一条 autouse fixture 做前后清理（见 tests/unit/test_music_router.py 的
+# _reset_music_proxy_cache）。
+on:
+  schedule:
+    # 18:37 UTC ≈ 次日 02:37 北京时间。错开整点，避开 GitHub 定时任务高峰。
+    - cron: '37 18 * * *'
+  workflow_dispatch:
+    inputs:
+      seed:
+        description: 'pytest-randomly seed（留空 = 随机取一个）'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: random-order-tests-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  random-order-pytest:
+    name: Unit pytest, random order (Windows)
+    # 与 unit-tests.yml 同平台：换平台会引入与顺序无关的差异，那样红了没法判断
+    # 是顺序依赖还是平台差异。
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Install pyclipper (in-tree rapidocr fork)
+        # 与 unit-tests.yml 同一个理由和同一个 pin：那边不装这个 wheel 会让
+        # deps/rapidocr_pillow 的四条用例 skip 掉，这边同样需要它们真的跑。
+        run: uv pip install pyclipper==1.4.0
+
+      - name: Run unit test suite in a random order
+        shell: pwsh
+        env:
+          # 经 env 传，不要在 run: 里直接 ${{ inputs.seed }} 插值——
+          # workflow_dispatch 的输入是外部可控字符串，插值等于让它参与拼脚本。
+          SEED_INPUT: ${{ inputs.seed }}
+        # pytest.ini 的 addopts 里钉着 --randomly-seed=<固定值>，命令行上再给一次
+        # 会覆盖它（同名选项后者生效）。不要改成 `-p no:randomly` 去关插件——插件
+        # 被屏蔽后 addopts 里的 --randomly-seed 会变成无法识别的参数直接报错。
+        run: |
+          $seed = $env:SEED_INPUT
+          if ([string]::IsNullOrWhiteSpace($seed)) {
+            $seed = Get-Random -Minimum 1 -Maximum 2147483647
+          }
+          elseif ($seed -notmatch '^\d+$') {
+            throw "seed 必须是十进制整数，收到: $seed"
+          }
+          Write-Host "randomly-seed = $seed"
+          uv run pytest tests/unit -q --randomly-seed=$seed
