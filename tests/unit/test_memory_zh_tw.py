@@ -276,7 +276,7 @@ async def test_external_import_commit_forwards_ui_locale(monkeypatch):
         lambda _payload: ("Neko", analysis),
     )
     monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *_a, **_k: None)
-    monkeypatch.setattr(config_manager, "get_config_manager", lambda: object())
+    monkeypatch.setattr(config_manager, "get_config_manager", object)
     monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
 
     result = await memory_router.commit_external_memory_import(Request())
