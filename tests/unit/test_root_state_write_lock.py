@@ -97,20 +97,77 @@ def _called_name(call: ast.Call) -> str:
     return ""
 
 
+def _own_nodes(scope: ast.AST):
+    """Descendants of ``scope`` excluding anything inside a nested function.
+
+    Nested defs are their own scope — a closure's re-read does not make its
+    enclosing route safe, and vice versa.
+    """
+    for child in ast.iter_child_nodes(scope):
+        if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef, ast.Lambda)):
+            continue
+        yield child
+        yield from _own_nodes(child)
+
+
+def _is_root_state_write(call: ast.Call) -> bool:
+    return _called_name(call) == "save_root_state"
+
+
+def _is_root_state_read(call: ast.Call) -> bool:
+    name = _called_name(call)
+    if name in {"load_root_state", "get_root_state"}:
+        return True
+    # 间接读，例如 self._load_json_file(self.root_state_path, default_value={})。
+    # 只认名字里带 load/read 的，免得把 _save_local_state_json_file(self.root_state_path…)
+    # 也算成读。
+    lowered = name.lower()
+    if "load" not in lowered and "read" not in lowered:
+        return False
+    operands = list(call.args) + [keyword.value for keyword in call.keywords]
+    return any(
+        isinstance(operand, ast.Attribute) and operand.attr == "root_state_path"
+        for operand in operands
+    )
+
+
+_SKIP_DIRS = {
+    ".git", ".venv", "node_modules", "__pycache__", "tests", "build", "dist",
+    ".claude", ".codex-tmp", "frontend", "deps", "docs",
+}
+
+# 这三条 AST 护栏靠 _iter_project_python_files 供料，扫不到文件就等于全绿。
+# 主仓库当前有 1000+ 个在扫描范围内的 .py，取一个远低于它、又远高于 0 的下界。
+_MIN_SCANNED_FILES = 200
+
+
 def _iter_project_python_files():
     """Every non-test project .py file, discovered rather than listed.
 
     A hardcoded list would only ever cover the call sites that existed when it
     was written; the whole point of these guards is to catch the next one.
+
+    ⚠️ The skip list is matched against the path **relative to the repo root**,
+    never the absolute path. Matching the absolute path made every one of these
+    guards scan zero files when the checkout itself lives under a directory
+    named in the list — which is exactly what happened in a
+    ``.claude/worktrees/...`` worktree: locally vacuous, green in CI (whose
+    checkout path has no such component), so nothing ever reported it.
     """
-    skip_parts = {
-        ".git", ".venv", "node_modules", "__pycache__", "tests", "build", "dist",
-        ".claude", ".codex-tmp", "frontend", "deps", "docs",
-    }
     for path in _REPO_ROOT.rglob("*.py"):
-        if any(part in skip_parts for part in path.parts):
+        if any(part in _SKIP_DIRS for part in path.relative_to(_REPO_ROOT).parts):
             continue
         yield path
+
+
+def _project_python_files() -> list[Path]:
+    """``_iter_project_python_files`` plus the "did we actually scan anything" check."""
+    paths = list(_iter_project_python_files())
+    assert len(paths) >= _MIN_SCANNED_FILES, (
+        f"只扫到 {len(paths)} 个文件（下界 {_MIN_SCANNED_FILES}）——发现逻辑坏了，"
+        "下面所有 AST 护栏都会假绿"
+    )
+    return paths
 
 
 # ── 1. 写者拿锁 / 读者不拿锁（对偶） ──────────────────────────────────
@@ -262,7 +319,7 @@ def test_persist_reconcile_opt_in_only_happens_behind_the_mutation_lock():
     "this call holds the lock".
     """
     offenders: list[str] = []
-    for path in _iter_project_python_files():
+    for path in _project_python_files():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
@@ -389,11 +446,9 @@ def test_every_locked_write_reloads_root_state_inside_the_block():
     open a transaction at all, they lean on the lock inside ``save_root_state``,
     and writing a stale pre-image is precisely their job.
     """
-    reads = {"load_root_state", "get_root_state"}
-    writes = {"save_root_state"}
     offenders: list[str] = []
 
-    for path in _iter_project_python_files():
+    for path in _project_python_files():
         try:
             tree = ast.parse(path.read_text(encoding="utf-8"))
         except (SyntaxError, UnicodeDecodeError):
@@ -410,12 +465,12 @@ def test_every_locked_write_reloads_root_state_inside_the_block():
             if not opens_transaction:
                 continue
 
-            called = {
-                _called_name(child)
-                for child in ast.walk(node)
-                if isinstance(child, ast.Call)
-            }
-            if called & writes and not (called & reads):
+            # 用同一对 shape 谓词，别退回按名字比对：storage_roots 那处的读是
+            # self._load_json_file(self.root_state_path, ...)，名字对不上但确实是读。
+            calls = [child for child in ast.walk(node) if isinstance(child, ast.Call)]
+            if any(_is_root_state_write(c) for c in calls) and not any(
+                _is_root_state_read(c) for c in calls
+            ):
                 offenders.append(
                     f"{path.relative_to(_REPO_ROOT).as_posix()}:{node.lineno}"
                 )
@@ -423,6 +478,188 @@ def test_every_locked_write_reloads_root_state_inside_the_block():
     assert not offenders, (
         "这些 root_state_transaction 块里写了盘却没在块内重读——写回去的是锁外读到的"
         "pre-image，会把这期间别人提交的字段整份盖掉：\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.unit
+def test_read_modify_write_of_root_state_happens_inside_one_transaction():
+    """A function that both reads and writes root_state must do both under the lock.
+
+    The sibling guard above only inspects code already inside a transaction, so a
+    site that never opens one is invisible to it — which is exactly how
+    ``_persist_selected_root_unavailable_recovery_state`` slipped through (it read
+    the file directly, then called ``save_root_state``, whose internal lock covers
+    only the write). This rule keys on shape, not on a list of names:
+
+    * reads-and-writes  -> both must sit in one ``root_state_transaction()`` block
+    * writes only       -> a snapshot restore / a create-if-missing default; the
+                           stale pre-image *is* the payload, so there is nothing
+                           to re-read and nothing to guard
+    * reads only        -> harmless
+    """
+    offenders: list[str] = []
+
+    for path in _project_python_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+
+            own = list(_own_nodes(node))
+            calls = [n for n in own if isinstance(n, ast.Call)]
+            if not any(_is_root_state_write(c) for c in calls):
+                continue
+            if not any(_is_root_state_read(c) for c in calls):
+                continue
+
+            guarded = False
+            for block in own:
+                if not isinstance(block, ast.With):
+                    continue
+                if not any(
+                    isinstance(item.context_expr, ast.Call)
+                    and _called_name(item.context_expr) == "root_state_transaction"
+                    for item in block.items
+                ):
+                    continue
+                inner = [n for n in _own_nodes(block) if isinstance(n, ast.Call)]
+                if any(_is_root_state_read(c) for c in inner) and any(
+                    _is_root_state_write(c) for c in inner
+                ):
+                    guarded = True
+                    break
+
+            if not guarded:
+                offenders.append(
+                    f"{path.relative_to(_REPO_ROOT).as_posix()}:{node.lineno} {node.name}()"
+                )
+
+    assert not offenders, (
+        "这些函数既读又写 root_state，但读和写没有落在同一个 root_state_transaction() "
+        "块里——锁只包住写的话，另一个写者提交的字段会被这份 pre-image 盖掉：\n  "
+        + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.unit
+def test_startup_marker_keeps_its_eligibility_check_in_the_writing_scope():
+    """Offloading the write must not leave its precondition behind on the loop.
+
+    ``should_write_root_mode_normal_after_startup`` decides whether the startup
+    marker may be written. While that decision and the write sat next to each
+    other on the event loop they were indivisible; putting the write in a worker
+    inserted an await between them, so a storage mutation worker could commit
+    ``ROOT_MODE_MAINTENANCE_READONLY`` in the gap and get stomped back to normal.
+
+    The rule is shape-based: a ``set_root_mode`` call whose own scope lacks the
+    check while an *enclosing* scope has it means the check got left behind.
+    Sites that simply do not use the check (launcher paths) are untouched.
+    """
+    check = "should_write_root_mode_normal_after_startup"
+    offenders: list[str] = []
+
+    for path in _project_python_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        def _walk(scope: ast.AST, outer_has_check: bool) -> None:
+            own_calls = [n for n in _own_nodes(scope) if isinstance(n, ast.Call)]
+            names = {_called_name(c) for c in own_calls}
+            has_check = check in names
+            if "set_root_mode" in names and not has_check and outer_has_check:
+                offenders.append(
+                    f"{path.relative_to(_REPO_ROOT).as_posix()}:{scope.lineno} "
+                    f"{getattr(scope, 'name', '<module>')}()"
+                )
+            for node in ast.walk(scope):
+                if node is scope:
+                    continue
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    _walk(node, outer_has_check or has_check)
+
+        for top in ast.iter_child_nodes(tree):
+            if isinstance(top, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                _walk(top, False)
+            elif isinstance(top, ast.ClassDef):
+                for member in ast.iter_child_nodes(top):
+                    if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                        _walk(member, False)
+
+    assert not offenders, (
+        "这些作用域写了启动成功标记，但判定留在了外层作用域——中间隔着 await，"
+        "判定和写就不再是不可分割的一步：\n  " + "\n  ".join(offenders)
+    )
+
+
+@pytest.mark.unit
+def test_rollback_on_exception_also_rolls_back_on_cancellation():
+    """If a try bothers to roll back, it must roll back on cancellation too.
+
+    ``CancelledError`` is a ``BaseException``, so ``except Exception`` does not
+    see it. Any async ``try`` that undoes its work in an ``except Exception``
+    handler therefore has a hole: a client disconnect skips exactly the cleanup
+    the handler exists for. Scoped to async bodies — synchronous code cannot be
+    cancelled this way.
+    """
+    rollback_calls = {
+        "_restore_storage_mutation_state",
+        "save_root_state",
+        "save_storage_migration",
+        "delete_storage_migration",
+    }
+    offenders: list[str] = []
+
+    for path in _project_python_files():
+        try:
+            tree = ast.parse(path.read_text(encoding="utf-8"))
+        except (SyntaxError, UnicodeDecodeError):
+            continue
+
+        for scope in ast.walk(tree):
+            if not isinstance(scope, ast.AsyncFunctionDef):
+                continue
+            # 回滚 handler 内部那些 best-effort 的 try/except 不算：它们已经在异常
+            # 处理里了，再要求它们处理取消既没有意义也无处可退。
+            inside_handler = {
+                nested
+                for node in ast.walk(scope)
+                if isinstance(node, ast.ExceptHandler)
+                for nested in ast.walk(node)
+                if isinstance(nested, ast.Try)
+            }
+            for node in _own_nodes(scope):
+                if not isinstance(node, ast.Try) or node in inside_handler:
+                    continue
+                rolls_back = any(
+                    _called_name(c) in rollback_calls
+                    for handler in node.handlers
+                    for c in ast.walk(handler)
+                    if isinstance(c, ast.Call)
+                )
+                if not rolls_back:
+                    continue
+                # CancelledError 显式接，或者干脆接 BaseException——两者都能兜住取消。
+                handles_cancel = any(
+                    "CancelledError" in ast.dump(handler.type)
+                    or "BaseException" in ast.dump(handler.type)
+                    for handler in node.handlers
+                    if handler.type is not None
+                )
+                if not handles_cancel:
+                    offenders.append(
+                        f"{path.relative_to(_REPO_ROOT).as_posix()}:{node.lineno} in {scope.name}()"
+                    )
+
+    assert not offenders, (
+        "这些 async try 在 except 里做了回滚，却没有处理 CancelledError——"
+        "它是 BaseException，except Exception 接不住，客户端断连就正好跳过回滚：\n  "
+        + "\n  ".join(offenders)
     )
 
 

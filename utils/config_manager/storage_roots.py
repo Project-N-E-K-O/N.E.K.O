@@ -296,14 +296,22 @@ class StorageRootsMixin:
         return str(self.committed_selected_root) in self.__class__._selected_root_unavailable_recovery_override_roots
 
     def _persist_selected_root_unavailable_recovery_state(self):
-        state: dict = {}
-        try:
-            loaded = self._load_json_file(self.root_state_path, default_value={})
-            if isinstance(loaded, dict):
-                state = loaded
-        except Exception:
-            state = {}
-        self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
+        # 读—改—写整段进锁，而且读必须在锁内。
+        #
+        # "跑在 __init__ 里所以是单线程"不成立：受限启动期 storage_location_router
+        # 会临时构造一个兜底 ConfigManager（get_runtime_config_manager(APP_NAME,
+        # migrate=False)），而那一刻变更路由的写序列已经在工作线程上跑了。拿锁外读到
+        # 的 pre-image 去存，会把它刚提交的 mode / current_root / 迁移字段整份盖掉。
+        with root_state_transaction():
+            state: dict = {}
+            try:
+                loaded = self._load_json_file(self.root_state_path, default_value={})
+                if isinstance(loaded, dict):
+                    state = loaded
+            except Exception:
+                # 读不出来就按空状态重建恢复态——这条路径本来就是给"root 不可用"兜底的
+                state = {}
+            self.save_root_state(self._build_selected_root_unavailable_recovery_state(state))
     
     def _log(self, msg):
         """Print debug info only in the main process"""

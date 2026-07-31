@@ -345,7 +345,11 @@ async def _release_storage_startup_barrier_or_rollback(
 ) -> None:
     try:
         await _release_storage_startup_barrier_if_needed(reason=reason)
-    except Exception:
+    except BaseException:
+        # BaseException 而不是 Exception：客户端断连时这里收到的是 CancelledError，
+        # 只接 Exception 就会正好跳过这段回滚——而"写已落盘、屏障没解除"恰恰是最需要
+        # 回滚的那个状态。下面无条件 raise，所以 KeyboardInterrupt / SystemExit 的
+        # 语义不变。
         try:
             # 这一处**刻意**留在事件循环上。_restore_storage_mutation_state 的最后
             # 一步是 config_manager.save_root_state()，而 root_state 还有另一个写者：
@@ -1932,6 +1936,17 @@ async def _post_storage_location_restart_locked(
                 write=_rebind_to_selected_root,
             )
             await _request_app_shutdown(request_app_shutdown)
+        except asyncio.CancelledError:
+            # 取消也必须回滚。工作线程已经跑完（_run_locked_storage_job 保证了这点），
+            # 也就是说检查点 / 策略 / maintenance_readonly 都已经落盘，而
+            # _request_app_shutdown 没发出去——留着就是把应用钉死在受限态，用户看到
+            # 一个永远不重启的"正在迁移"。
+            # CancelledError 是 BaseException，下面的 except Exception 接不住，所以
+            # 必须单列。回滚本身是同步的，不会再被取消。
+            if state_snapshot:
+                with suppress(Exception):
+                    _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)
+            raise
         except Exception as exc:
             try:
                 # 与 _release_storage_startup_barrier_or_rollback 那处同因同治：回滚
@@ -2014,6 +2029,21 @@ async def _post_storage_location_restart_locked(
     try:
         migration_payload = await _run_locked_storage_job(_schedule_pending_migration)
         await _request_app_shutdown(request_app_shutdown)
+    except asyncio.CancelledError:
+        # 同上：写已落盘、shutdown 没发出去，不回滚就会留下一个没人执行的待迁移
+        # 检查点 + maintenance_readonly。rollback_state 为空 = 什么都还没写。
+        if rollback_state:
+            previous_root_state = rollback_state.get("root_state")
+            previous_migration_payload = rollback_state.get("migration")
+            with suppress(Exception):
+                if isinstance(previous_migration_payload, dict):
+                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)
+                else:
+                    delete_storage_migration(config_manager, anchor_root=anchor_root)
+            with suppress(Exception):
+                if isinstance(previous_root_state, dict):
+                    config_manager.save_root_state(previous_root_state)
+        raise
     except Exception as exc:
         # rollback_state 为空 = 两份 pre-image 还没读到，也就意味着
         # create_pending_storage_migration 一行都还没跑，没有东西需要回滚。这时候

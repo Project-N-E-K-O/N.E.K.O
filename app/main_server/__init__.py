@@ -118,6 +118,7 @@ from utils.cloudsave_runtime import (
     should_write_root_mode_normal_after_startup,
 )
 from utils.config_manager import get_config_manager, get_reserved  # noqa
+from utils.root_state_lock import root_state_transaction
 from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 
 # 将日志初始化提前，确保导入阶段异常也能落盘
@@ -929,24 +930,43 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                         "跳过 ROOT_MODE_NORMAL 写入：root_state 缺失或读取失败"
                     )
             elif should_write_root_mode_normal_after_startup(current_root_state):
+                # 挪进工作线程有两个理由，缺一不可：
+                # 1) set_root_mode 是同步落盘（mkstemp + fsync + os.replace）；
+                # 2) 它拿 root_state 的写者锁，而 storage_location 那几条变更路由
+                #    现在在工作线程里持同一把锁。受限启动期存储页跟这段是可以
+                #    重叠的，留在循环上就等于把工作线程那次 fsync（撞上 Windows
+                #    占用还要加最多 155ms 退避）接回循环。同一把锁的所有入口要么
+                #    都在工作线程，要么都不在。
+                #
+                # ⚠️ 上面那次 should_write_root_mode_normal_after_startup 判定是在
+                # 循环上做的，跟这次落盘之间隔了一个 await。job 排队期间，存储变更
+                # 路由的工作线程完全可能刚提交 ROOT_MODE_MAINTENANCE_READONLY（用户
+                # 正在发起重启迁移）——那时无脑写 NORMAL 就是把它的受限态踩掉。
+                # 所以判定跟着写一起进锁内重做一遍，恢复"检查和写不可分割"这条原本
+                # 靠"同在循环线程"隐式成立的性质。
+                def _mark_startup_successful() -> bool:
+                    with root_state_transaction():
+                        state = _config_manager.load_root_state()
+                        if not isinstance(state, dict):
+                            return False
+                        if not should_write_root_mode_normal_after_startup(state):
+                            return False
+                        set_root_mode(
+                            _config_manager,
+                            ROOT_MODE_NORMAL,
+                            current_root=str(_config_manager.app_docs_dir),
+                            last_known_good_root=str(_config_manager.app_docs_dir),
+                            last_successful_boot_at=datetime.now(timezone.utc)
+                            .isoformat()
+                            .replace("+00:00", "Z"),
+                        )
+                        return True
+
                 try:
-                    # 挪进工作线程有两个理由，缺一不可：
-                    # 1) set_root_mode 是同步落盘（mkstemp + fsync + os.replace）；
-                    # 2) 它拿 root_state 的写者锁，而 storage_location 那几条变更路由
-                    #    现在在工作线程里持同一把锁。受限启动期存储页跟这段是可以
-                    #    重叠的，留在循环上就等于把工作线程那次 fsync（撞上 Windows
-                    #    占用还要加最多 155ms 退避）接回循环。同一把锁的所有入口要么
-                    #    都在工作线程，要么都不在。
-                    await asyncio.to_thread(
-                        set_root_mode,
-                        _config_manager,
-                        ROOT_MODE_NORMAL,
-                        current_root=str(_config_manager.app_docs_dir),
-                        last_known_good_root=str(_config_manager.app_docs_dir),
-                        last_successful_boot_at=datetime.now(timezone.utc)
-                        .isoformat()
-                        .replace("+00:00", "Z"),
-                    )
+                    if not await asyncio.to_thread(_mark_startup_successful):
+                        logger.info(
+                            "跳过 ROOT_MODE_NORMAL 写入：落盘前 root_state 已被改成阻断态"
+                        )
                 except Exception as e:
                     logger.error(
                         "写入 main_server 启动成功标记失败，启动不会标记为成功: %s", e
