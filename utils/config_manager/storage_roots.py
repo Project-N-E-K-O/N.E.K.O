@@ -30,6 +30,7 @@ from pathlib import Path
 
 from config import APP_NAME, CONFIG_FILES
 from utils.file_utils import atomic_write_json
+from utils.root_state_lock import root_state_transaction
 
 from ._shared import LocalStateDirectoryError, logger
 
@@ -995,9 +996,11 @@ class StorageRootsMixin:
 
     def save_root_state(self, data):
         """Save root_state."""
-        if not self.ensure_local_state_directory():
-            self._raise_local_state_directory_error("saving root_state")
-        self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
+        # 注意 load_root_state 故意不拿这把锁，理由见 utils/root_state_lock.py。
+        with root_state_transaction():
+            if not self.ensure_local_state_directory():
+                self._raise_local_state_directory_error("saving root_state")
+            self._save_local_state_json_file(self.root_state_path, data, "saving root_state")
 
     def load_cloudsave_local_state(self, default_value=None):
         """Load cloudsave_local_state; returns a default with a stable field structure when missing."""

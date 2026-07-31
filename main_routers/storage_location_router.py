@@ -34,6 +34,7 @@ import shutil
 import sys
 import inspect
 import subprocess
+from collections.abc import Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -81,34 +82,38 @@ from utils.storage_policy import (
     validate_selected_root,
 )
 from utils.config_manager import get_config_manager as get_runtime_config_manager
+from utils.root_state_lock import root_state_transaction
 
 router = APIRouter(prefix="/api/storage/location", tags=["storage_location"])
 logger = logging.getLogger(__name__)
 _storage_mutation_lock = asyncio.Lock()
 
-# _STORAGE_MUTATION_STAYS_ON_LOOP
+# _STORAGE_MUTATION_OFFLOAD_CONTRACT
 #
-# 本文件里所有写存储状态的调用**刻意**留在事件循环上（各处 noqa: ASYNC_BLOCK 指向
-# 这里）。落盘本身是同步的、带无上界的 fsync，按理该挪进 to_thread —— 但这里有两条
-# 独立的理由压过它，任缺其一都会造成比循环卡顿严重得多的后果。
+# 这个文件的存储状态写序列**已经挪进工作线程**（#2598 之前写的
+# _STORAGE_MUTATION_STAYS_ON_LOOP 说明作废）。#2598 当时列的两条阻塞理由不是被无视
+# 了，是被逐条解掉的，改动前请先确认它们仍然成立：
 #
-# 一、这些写是**取消原子**的序列，而它们之间今天一个 await 都没有。
-#     典型形状：delete_storage_migration → save_storage_policy → set_root_mode。
-#     任何一处插进 await，请求超时或应用关闭产生的 CancelledError 就能落在中间：
-#     恢复检查点已删、策略已写，而 root mode 还是旧值。CancelledError 是
-#     BaseException，外层 `except Exception` 接不住，也就没人回滚 —— 用户会得到
-#     一个「恢复闸自相矛盾」的盘上状态。
+# 一、取消原子性 —— 靠"整条序列进同一个 to_thread job"保住。
+#     delete_storage_migration → save_storage_policy → set_root_mode 之间依旧一个
+#     await 都没有：它们现在同在一个同步闭包里，由 _apply_storage_mutation_writes /
+#     _run_locked_storage_job 送进 worker。to_thread 被取消时线程照样跑完，所以序列
+#     不会被切成两半。守卫：tests/unit/test_root_state_write_lock.py 的
+#     test_storage_write_primitives_never_sit_directly_in_an_async_body。
 #
-# 二、root_state 有一个**不在锁里**的写者。
-#     build_storage_location_bootstrap_payload → _reconcile_legacy_cleanup_pending_
-#     root_state（utils/storage/location_bootstrap.py:191）会 save_root_state，它挂在
-#     GET /bootstrap、/status、/diagnostics、/retained-source 和 POST /exit 上，这些
-#     都不在 _storage_mutation_lock 覆盖下。今天让「GET 侧 reconcile」和「变更路由的
-#     写」互斥的不是锁，是**它们都跑在同一条事件循环线程上**。把任何一个 root_state
-#     写者挪进 worker，前端存储页每 500ms 的 /status 轮询就能把它整份盖掉。
+#     另外 _run_locked_storage_job 在取消时会**循环等到 worker 结束**再放
+#     CancelledError 出去，否则 _storage_mutation_lock 会在工作线程还在写的时候松开，
+#     下一个变更请求就能跟它交错。
 #
-# 真正的收口是给 root_state 一把真锁，并让 GET 路由别在读路径上写盘。在那之前，
-# 这个文件宁可让罕见的存储变更请求同步落盘。
+# 二、root_state 的无锁写者 —— 已经不存在了。
+#     build_storage_location_bootstrap_payload 现在默认 persist_reconcile=False，
+#     GET /bootstrap、/status、/diagnostics、/retained-source、POST /exit 全是纯读；
+#     只有已经拿着 _storage_mutation_lock 的 *_locked 路由才 opt-in 落盘。另外
+#     root_state 有了真锁（utils/root_state_lock.py），读—改—写整段进锁、锁内重读。
+#
+# 仍然刻意留在循环上的只有**回滚**（_restore_storage_mutation_state 及
+# /restart 的两处内联回滚）：它们全在 except handler 里，await 会让回滚自己变成取消
+# 点，而 CancelledError 是 BaseException，外层 except Exception 接不住。
 
 
 class StorageLocationSelectionRequest(BaseModel):
@@ -224,6 +229,19 @@ def _restore_storage_mutation_state(
     *,
     anchor_root: Path,
 ) -> None:
+    """Roll three storage state files back to a snapshot. Stays synchronous.
+
+    This one deliberately does NOT move to a worker thread even though the other
+    write sequences in this module did. Every caller is an ``except`` handler, and
+    the whole point is that the rollback runs to completion; awaiting inside an
+    except handler makes it a cancellation point, and ``CancelledError`` is a
+    ``BaseException`` that the surrounding ``except Exception`` cannot catch — a
+    client disconnect during the rollback would leave the three files
+    half-reverted with nothing to finish the job.
+
+    The cost is bounded: this only runs when a mutation has already failed, and
+    the routes that call it are already about to return an error response.
+    """
     previous_migration = snapshot.get("migration")
     if isinstance(previous_migration, dict):
         save_storage_migration(config_manager, previous_migration, anchor_root=anchor_root)
@@ -245,6 +263,36 @@ def _restore_storage_mutation_state(
     previous_root_state = snapshot.get("root_state")
     if isinstance(previous_root_state, dict):
         config_manager.save_root_state(previous_root_state)
+
+
+async def _apply_storage_mutation_writes(
+    config_manager,
+    *,
+    anchor_root: Path,
+    snapshot_out: dict[str, Any],
+    write: Callable[[], Any],
+) -> Any:
+    """Take the rollback snapshot and run one storage-state write sequence off the loop.
+
+    Snapshot and writes go into a single worker job on purpose. The sequences
+    these routes run — ``delete_storage_migration`` → ``save_storage_policy`` →
+    ``set_root_mode`` — have no await between them today, and that is load
+    bearing: an await in the middle is a cancellation point that can leave the
+    migration checkpoint deleted while root mode still says maintenance. One job
+    keeps the sequence indivisible from the caller's point of view, because a
+    cancelled ``to_thread`` still lets the worker run to completion.
+
+    ``snapshot_out`` is filled in place rather than returned so the rollback
+    snapshot survives a write that fails halfway through; returning it would
+    lose it on exactly the path that needs it.
+    """
+
+    def _job() -> Any:
+        snapshot_out.clear()
+        snapshot_out.update(_snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root))
+        return write()
+
+    return await asyncio.to_thread(_job)
 
 
 async def _release_storage_startup_barrier_or_rollback(
@@ -274,7 +322,7 @@ async def _release_storage_startup_barrier_or_rollback(
             #
             # 正确的收口是给 root_state 一把真锁、并让 GET 路由别在读路径上写盘，那是
             # 独立的一份工作。在那之前，宁可让这条罕见的回滚路径同步落盘。
-            _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 末步 save_root_state 与无锁 GET 路由的 root_state 读改写互斥，只靠「同在循环线程」保证
+            _restore_storage_mutation_state(config_manager, snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚必须跑完，await 会让它自己变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
         except Exception:
             logger.exception(
                 "failed to rollback storage mutation state after startup barrier release failed",
@@ -1025,11 +1073,17 @@ def _build_completed_migration_notice(
     *,
     bootstrap_payload: dict[str, Any] | None = None,
     require_existing_retained_root: bool = False,
+    persist_reconcile: bool = False,
 ) -> dict[str, Any]:
+    # persist_reconcile 只有已经拿着 _storage_mutation_lock 的调用方能传 True，
+    # 见 build_storage_location_bootstrap_payload 的说明。
     bootstrap = (
         bootstrap_payload
         if isinstance(bootstrap_payload, dict)
-        else build_storage_location_bootstrap_payload(config_manager)
+        else build_storage_location_bootstrap_payload(
+            config_manager,
+            persist_reconcile=persist_reconcile,
+        )
     )
     migration_payload = bootstrap.get("migration") if isinstance(bootstrap.get("migration"), dict) else {}
     if str(migration_payload.get("status") or "").strip() != STORAGE_MIGRATION_STATUS_COMPLETED:
@@ -1301,6 +1355,7 @@ async def _post_storage_location_retained_source_cleanup_locked(
     notice = _build_completed_migration_notice(
         config_manager,
         require_existing_retained_root=True,
+        persist_reconcile=True,
     )
     if notice.get("completed") is not True:
         response.status_code = 404
@@ -1339,26 +1394,35 @@ async def _post_storage_location_retained_source_cleanup_locked(
             "error": f"清理旧数据保留目录失败: {exc}",
         }
 
-    migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
-    if isinstance(migration_payload, dict):
-        updated_payload = dict(migration_payload)
-        updated_payload["backup_root"] = ""
-        updated_payload["retained_source_root"] = ""
-        updated_payload["retained_source_mode"] = "cleaned"
-        updated_payload["updated_at"] = _utc_now_iso()
-        updated_payload["cleanup_completed_at"] = _utc_now_iso()
-        save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
+    def _persist_cleanup_result() -> None:
+        # 迁移检查点和 root_state 两次落盘放同一个 job：中间插一个 await 就能造出
+        # "检查点已标记 cleaned、root_state 还挂着 legacy_cleanup_pending" 的窗口，
+        # 而这个窗口正好会被存储页那条 1200ms 的轮询看到。
+        migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root) or {}
+        if isinstance(migration_payload, dict):
+            updated_payload = dict(migration_payload)
+            updated_payload["backup_root"] = ""
+            updated_payload["retained_source_root"] = ""
+            updated_payload["retained_source_mode"] = "cleaned"
+            updated_payload["updated_at"] = _utc_now_iso()
+            updated_payload["cleanup_completed_at"] = _utc_now_iso()
+            save_storage_migration(config_manager, updated_payload, anchor_root=anchor_root)
 
-    try:
-        root_state = config_manager.load_root_state()
-        if isinstance(root_state, dict):
-            updated_root_state = dict(root_state)
-            updated_root_state["legacy_cleanup_pending"] = False
-            if paths_equal(updated_root_state.get("last_migration_backup") or "", expected_retained_root):
-                updated_root_state["last_migration_backup"] = ""
-            config_manager.save_root_state(updated_root_state)
-    except Exception:
-        pass
+        # root_state 这一半保持 best-effort（与改动前一致）：清理已经真的做完了，
+        # 标记没落上不该把整个请求判失败。
+        try:
+            with root_state_transaction():
+                root_state = config_manager.load_root_state()
+                if isinstance(root_state, dict):
+                    updated_root_state = dict(root_state)
+                    updated_root_state["legacy_cleanup_pending"] = False
+                    if paths_equal(updated_root_state.get("last_migration_backup") or "", expected_retained_root):
+                        updated_root_state["last_migration_backup"] = ""
+                    config_manager.save_root_state(updated_root_state)
+        except Exception:
+            pass
+
+    await asyncio.to_thread(_persist_cleanup_result)
 
     return {
         "ok": True,
@@ -1405,7 +1469,10 @@ async def _post_storage_location_select_locked(
             "error": exc.message,
         }
 
-    blocking_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+    blocking_bootstrap = build_storage_location_bootstrap_payload(
+        config_manager,
+        persist_reconcile=True,
+    )
     selected_root_missing_recovery = _is_selected_root_missing_recovery(
         config_manager,
         current_root=current_root,
@@ -1442,23 +1509,29 @@ async def _post_storage_location_select_locked(
                         "error": "当前存储状态仍需恢复或迁移，暂时不能继续当前会话。",
                     }
 
-                state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-                delete_storage_migration(config_manager, anchor_root=anchor_root)
-                # 整个 _post_storage_location_select_locked 都跑在 _storage_mutation_lock 里，
-                # 下面紧跟着的 set_root_mode / 解除启动闸也已经是 await，多一个让出点不改变
-                # 「失败即整体回滚 state_snapshot」的语义。
-                policy_payload = save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
+                def _recover_from_failed_migration() -> dict[str, Any]:
+                    delete_storage_migration(config_manager, anchor_root=anchor_root)
+                    recovered_policy = save_storage_policy(
+                        config_manager,
+                        selected_root=current_root,
+                        selection_source=payload.selection_source,
+                        anchor_root=anchor_root,
+                    )
+                    set_root_mode(
+                        config_manager,
+                        ROOT_MODE_NORMAL,
+                        current_root=str(current_root),
+                        last_known_good_root=str(current_root),
+                        last_migration_result=f"recovered:failed_migration:{migration_payload.get('error_code') or 'unknown'}",
+                    )
+                    return recovered_policy
+
+                state_snapshot: dict[str, Any] = {}
+                policy_payload = await _apply_storage_mutation_writes(
                     config_manager,
-                    selected_root=current_root,
-                    selection_source=payload.selection_source,
                     anchor_root=anchor_root,
-                )
-                set_root_mode(
-                    config_manager,
-                    ROOT_MODE_NORMAL,
-                    current_root=str(current_root),
-                    last_known_good_root=str(current_root),
-                    last_migration_result=f"recovered:failed_migration:{migration_payload.get('error_code') or 'unknown'}",
+                    snapshot_out=state_snapshot,
+                    write=_recover_from_failed_migration,
                 )
                 try:
                     await _release_storage_startup_barrier_or_rollback(
@@ -1481,19 +1554,28 @@ async def _post_storage_location_select_locked(
                     "selection_source": policy_payload["selection_source"],
                 }
 
-            state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-            policy_payload = save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
+            def _recover_from_unavailable_selected_root() -> dict[str, Any]:
+                recovered_policy = save_storage_policy(
+                    config_manager,
+                    selected_root=current_root,
+                    selection_source=payload.selection_source,
+                    anchor_root=anchor_root,
+                )
+                set_root_mode(
+                    config_manager,
+                    ROOT_MODE_NORMAL,
+                    current_root=str(current_root),
+                    last_known_good_root=str(current_root),
+                    last_migration_result=f"recovered:selected_root_unavailable:{committed_selected_root}",
+                )
+                return recovered_policy
+
+            state_snapshot = {}
+            policy_payload = await _apply_storage_mutation_writes(
                 config_manager,
-                selected_root=current_root,
-                selection_source=payload.selection_source,
                 anchor_root=anchor_root,
-            )
-            set_root_mode(
-                config_manager,
-                ROOT_MODE_NORMAL,
-                current_root=str(current_root),
-                last_known_good_root=str(current_root),
-                last_migration_result=f"recovered:selected_root_unavailable:{committed_selected_root}",
+                snapshot_out=state_snapshot,
+                write=_recover_from_unavailable_selected_root,
             )
             try:
                 await _release_storage_startup_barrier_or_rollback(
@@ -1515,12 +1597,20 @@ async def _post_storage_location_select_locked(
                 "selected_root": str(current_root),
                 "selection_source": policy_payload["selection_source"],
             }
-        state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-        policy_payload = save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
+        def _persist_current_root_selection() -> dict[str, Any]:
+            return save_storage_policy(
+                config_manager,
+                selected_root=current_root,
+                selection_source=payload.selection_source,
+                anchor_root=anchor_root,
+            )
+
+        state_snapshot = {}
+        policy_payload = await _apply_storage_mutation_writes(
             config_manager,
-            selected_root=current_root,
-            selection_source=payload.selection_source,
             anchor_root=anchor_root,
+            snapshot_out=state_snapshot,
+            write=_persist_current_root_selection,
         )
         try:
             await _release_storage_startup_barrier_or_rollback(
@@ -1720,7 +1810,10 @@ async def _post_storage_location_restart_locked(
             "error": "当前实例暂时无法执行受控关闭，请稍后重试。",
         }
 
-    blocking_bootstrap = build_storage_location_bootstrap_payload(config_manager)
+    blocking_bootstrap = build_storage_location_bootstrap_payload(
+        config_manager,
+        persist_reconcile=True,
+    )
     if bool(blocking_bootstrap.get("migration_pending")):
         response.status_code = 409
         return {
@@ -1771,12 +1864,9 @@ async def _post_storage_location_restart_locked(
                 **restart_preflight,
             }
 
-        state_snapshot = _snapshot_storage_mutation_state(config_manager, anchor_root=anchor_root)
-        try:
+        def _rebind_to_selected_root() -> None:
             delete_storage_migration(config_manager, anchor_root=anchor_root)
-            # 同样在 _storage_mutation_lock 里；这一段本来就以 await _request_app_shutdown
-            # 收尾，多出来的让出点仍被同一个 try/except 的 state_snapshot 回滚覆盖。
-            save_storage_policy(  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
+            save_storage_policy(
                 config_manager,
                 selected_root=normalized_selected_root,
                 selection_source=payload.selection_source,
@@ -1788,13 +1878,21 @@ async def _post_storage_location_restart_locked(
                 last_migration_source=str(normalized_selected_root),
                 last_migration_result=f"restart_rebind:{normalized_selected_root}",
             )
+
+        state_snapshot = {}
+        try:
+            await _apply_storage_mutation_writes(
+                config_manager,
+                anchor_root=anchor_root,
+                snapshot_out=state_snapshot,
+                write=_rebind_to_selected_root,
+            )
             await _request_app_shutdown(request_app_shutdown)
         except Exception as exc:
             try:
-                # 与 _release_storage_startup_barrier_or_rollback 里那处同因同治：
-                # 这个 helper 末步 save_root_state，而无锁的 GET 路由也在事件循环上
-                # 读改写同一份 root_state，两者今天只靠「同在循环线程」互斥。详见那处注释。
-                _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 同上：root_state 读改写的互斥依赖「同在循环线程」
+                # 与 _release_storage_startup_barrier_or_rollback 那处同因同治：回滚
+                # 必须跑完，挪成 await 就会让它自己变成取消点。
+                _restore_storage_mutation_state(config_manager, state_snapshot, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 回滚不能变成取消点，见 _STORAGE_MUTATION_OFFLOAD_CONTRACT
             except Exception:
                 logger.exception(
                     "failed to rollback storage mutation state after restart scheduling failed",
@@ -1839,40 +1937,61 @@ async def _post_storage_location_restart_locked(
             **restart_preflight,
         }
 
-    previous_root_state = config_manager.load_root_state()
-    previous_migration_payload = load_storage_migration(config_manager, anchor_root=anchor_root)
-    migration_payload = create_pending_storage_migration(
-        config_manager,
-        source_root=current_root,
-        target_root=normalized_selected_root,
-        selection_source=payload.selection_source,
-        anchor_root=anchor_root,
-        confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
-    )
+    # 回滚要用的两份 pre-image 与两次写同在一个 job 里：create_pending_storage_migration
+    # 落检查点、set_root_mode 切 maintenance，中间一旦有 await，取消就能停在
+    # "检查点已建、root mode 还是 normal" 上——启动时会当成一次凭空出现的待迁移。
+    rollback_state: dict[str, Any] = {}
 
-    try:
+    def _schedule_pending_migration() -> dict[str, Any]:
+        # 两份 pre-image 都读到之后再一起记进 rollback_state，这样
+        # "rollback_state 非空" 就等价于 "两份都在手上"。分两次记的话，第二次读
+        # 抛异常会留下 migration 键缺失，回滚分支就会把一份本来就存在的检查点删掉。
+        previous_root_state = config_manager.load_root_state()
+        previous_migration = load_storage_migration(config_manager, anchor_root=anchor_root)
+        rollback_state["root_state"] = previous_root_state
+        rollback_state["migration"] = previous_migration
+        pending_payload = create_pending_storage_migration(
+            config_manager,
+            source_root=current_root,
+            target_root=normalized_selected_root,
+            selection_source=payload.selection_source,
+            anchor_root=anchor_root,
+            confirmed_existing_target_content=bool(payload.confirm_existing_target_content),
+        )
         set_root_mode(
             config_manager,
             ROOT_MODE_MAINTENANCE_READONLY,
             last_migration_source=str(current_root),
             last_migration_result=f"restart_pending:{normalized_selected_root}",
         )
+        return pending_payload
+
+    migration_payload = None
+    try:
+        migration_payload = await asyncio.to_thread(_schedule_pending_migration)
         await _request_app_shutdown(request_app_shutdown)
     except Exception as exc:
-        try:
-            if isinstance(previous_migration_payload, dict):
-                save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)  # noqa: ASYNC_BLOCK — 见 _STORAGE_MUTATION_STAYS_ON_LOOP
-            else:
-                delete_storage_migration(config_manager, anchor_root=anchor_root)
-        except Exception:
+        # rollback_state 为空 = 两份 pre-image 还没读到，也就意味着
+        # create_pending_storage_migration 一行都还没跑，没有东西需要回滚。这时候
+        # 走下面的分支反而会把一份本来就在盘上的检查点删掉。
+        if rollback_state:
+            previous_root_state = rollback_state.get("root_state")
+            previous_migration_payload = rollback_state.get("migration")
             try:
-                delete_storage_migration(config_manager, anchor_root=anchor_root)
+                if isinstance(previous_migration_payload, dict):
+                    save_storage_migration(config_manager, previous_migration_payload, anchor_root=anchor_root)
+                else:
+                    delete_storage_migration(config_manager, anchor_root=anchor_root)
+            except Exception:
+                try:
+                    delete_storage_migration(config_manager, anchor_root=anchor_root)
+                except Exception:
+                    pass
+            try:
+                if isinstance(previous_root_state, dict):
+                    config_manager.save_root_state(previous_root_state)
             except Exception:
                 pass
-        try:
-            config_manager.save_root_state(previous_root_state)
-        except Exception:
-            pass
         response.status_code = 500
         return {
             "ok": False,

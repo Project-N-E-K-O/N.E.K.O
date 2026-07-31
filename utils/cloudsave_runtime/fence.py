@@ -34,6 +34,7 @@ from typing import Any
 # ``cloud_apply_fence`` must see that patch, so the helper is resolved
 # through the facade at call time instead of via this module's globals.
 from utils import cloudsave_runtime as _facade
+from utils.root_state_lock import root_state_transaction
 
 from ._shared import (
     MaintenanceModeError,
@@ -69,13 +70,16 @@ def should_write_root_mode_normal_after_startup(root_state: dict[str, Any] | Non
 
 
 def set_root_mode(config_manager, mode: str, **updates: Any) -> dict[str, Any]:
-    state = get_root_state(config_manager)
-    state["mode"] = str(mode or ROOT_MODE_NORMAL)
-    for key, value in updates.items():
-        if value is not None:
-            state[key] = value
-    config_manager.save_root_state(state)
-    return state
+    # 读—改—写整段进锁：只让最后那次 save 原子是不够的，两个写者各自读到同一份
+    # pre-image 时，后写的那个会把先写的字段整份盖掉。
+    with root_state_transaction():
+        state = get_root_state(config_manager)
+        state["mode"] = str(mode or ROOT_MODE_NORMAL)
+        for key, value in updates.items():
+            if value is not None:
+                state[key] = value
+        config_manager.save_root_state(state)
+        return state
 
 
 def is_write_fence_active(config_manager) -> bool:
@@ -234,11 +238,14 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
         return root_state, False
 
     try:
-        recovered_state = dict(root_state)
-        recovered_state["mode"] = ROOT_MODE_NORMAL
-        recovered_state["last_migration_result"] = f"recovered_stale_mode:{current_mode}"
-        config_manager.save_root_state(recovered_state)
-        return recovered_state, True
+        # 与 set_root_mode 同一把锁：这里也是读—改—写（root_state 是调用方读的）。
+        # 跨进程那把 cloud apply 锁挡不住同进程内的另一个写者。
+        with root_state_transaction():
+            recovered_state = dict(root_state)
+            recovered_state["mode"] = ROOT_MODE_NORMAL
+            recovered_state["last_migration_result"] = f"recovered_stale_mode:{current_mode}"
+            config_manager.save_root_state(recovered_state)
+            return recovered_state, True
     finally:
         release_cloud_apply_lock(config_manager)
 

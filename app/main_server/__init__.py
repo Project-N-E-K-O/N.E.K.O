@@ -930,7 +930,15 @@ async def _ensure_main_server_runtime_initialized(*, reason: str) -> bool:
                     )
             elif should_write_root_mode_normal_after_startup(current_root_state):
                 try:
-                    set_root_mode(
+                    # 挪进工作线程有两个理由，缺一不可：
+                    # 1) set_root_mode 是同步落盘（mkstemp + fsync + os.replace）；
+                    # 2) 它拿 root_state 的写者锁，而 storage_location 那几条变更路由
+                    #    现在在工作线程里持同一把锁。受限启动期存储页跟这段是可以
+                    #    重叠的，留在循环上就等于把工作线程那次 fsync（撞上 Windows
+                    #    占用还要加最多 155ms 退避）接回循环。同一把锁的所有入口要么
+                    #    都在工作线程，要么都不在。
+                    await asyncio.to_thread(
+                        set_root_mode,
                         _config_manager,
                         ROOT_MODE_NORMAL,
                         current_root=str(_config_manager.app_docs_dir),
