@@ -1331,6 +1331,29 @@ def test_review_unreadable_current_returns_failed_exactly(tmp_path, monkeypatch)
     assert result == ('failed', None)
 
 
+def test_review_rejects_reused_identity_with_same_snapshot(tmp_path):
+    """A review admitted for an old identity must not patch reused bytes."""
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+    admission_generation = recent_file.capture_recent_generation(path)
+    setattr(mgr, "_get_review_llm", lambda: _ReviewLLM(_review_corrected()))
+
+    recent_file.activate_recent_paths([path])
+    _write_disk(path, snapshot)
+
+    result = asyncio.run(mgr.review_history(
+        name,
+        snapshot=list(snapshot),
+        expected_generation=admission_generation,
+    ))
+
+    assert result == ('failed', None)
+    assert [message.content for message in _read_disk(path)] == [
+        message.content for message in snapshot
+    ]
+
+
 # ─────────────── T10: review commit is one atomic RMW ───────────────
 
 

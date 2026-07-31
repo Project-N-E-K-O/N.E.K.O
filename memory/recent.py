@@ -1265,7 +1265,7 @@ class CompressedRecentHistoryManager:
         except recent_file.RecentFileDeletedError:
             return []
 
-    async def aget_recent_history(self, lanlan_name):
+    async def aget_recent_history(self, lanlan_name, *, include_admission=False):
         file_path, admission_generation = self._capture_recent_operation_admission(
             lanlan_name,
         )
@@ -1276,14 +1276,17 @@ class CompressedRecentHistoryManager:
             logger.error(f"获取角色配置失败: {e}")
 
         try:
-            return await asyncio.to_thread(
+            history = await asyncio.to_thread(
                 self._read_history_locked,
                 file_path,
                 lanlan_name,
                 admission_generation,
             )
         except recent_file.RecentFileDeletedError:
-            return []
+            history = []
+        if include_admission:
+            return history, admission_generation
+        return history
 
     def _commit_review_locked(
         self, file_path, lanlan_name, snapshot, corrected_messages,
@@ -1362,7 +1365,13 @@ class CompressedRecentHistoryManager:
             )
             return ('patched', new_fingerprint, detail)
 
-    async def review_history(self, lanlan_name, snapshot=None, cancel_event=None):
+    async def review_history(
+        self,
+        lanlan_name,
+        snapshot=None,
+        cancel_event=None,
+        expected_generation=None,
+    ):
         """
         Review the history, finding and fixing contradictions, redundancy,
         logical confusion, or repetition.
@@ -1395,9 +1404,13 @@ class CompressedRecentHistoryManager:
               ('white', None) — cutoff failed to match in the current history; batch dropped
               ('failed', None) — LLM failure / cancelled / empty history / malformed response
         """
-        file_path, admission_generation = self._capture_recent_operation_admission(
-            lanlan_name,
-        )
+        if expected_generation is None:
+            file_path, admission_generation = self._capture_recent_operation_admission(
+                lanlan_name,
+            )
+        else:
+            file_path = expected_generation[0]
+            admission_generation = expected_generation
 
         # 检查是否被取消
         if cancel_event and cancel_event.is_set():

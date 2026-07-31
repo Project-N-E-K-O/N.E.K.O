@@ -128,7 +128,9 @@ async def _drive_review_gate(
     memory_server, name: str, history: list, token_count=None
 ) -> None:
     fake_manager = MagicMock()
-    fake_manager.aget_recent_history = AsyncMock(return_value=history)
+    fake_manager.aget_recent_history = AsyncMock(
+        return_value=(history, ("review-test-recent.json", 0)),
+    )
     fake_manager.review_history = AsyncMock(return_value=("white", None))
 
     with (

@@ -162,7 +162,9 @@ async def test_run_review_failed_save_failure_counts_once():
 async def _drive_spawn(memory_server, name, history):
     """跑 maybe_spawn_review，gate 1-5 全开（patch 掉），只测 Gate 6。"""
     fake_mgr = MagicMock()
-    fake_mgr.aget_recent_history = AsyncMock(return_value=history)
+    fake_mgr.aget_recent_history = AsyncMock(
+        return_value=(history, ("review-test-recent.json", 0)),
+    )
     # 被 spawn 的后台 task 真跑起来时会调 review_history——给个安全返回
     fake_mgr.review_history = AsyncMock(return_value=("white", None))
 
@@ -171,6 +173,37 @@ async def _drive_spawn(memory_server, name, history):
          patch.object(memory_server.review, "_count_new_user_msgs_since_last_review", return_value=999), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server.maybe_spawn_review(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_spawn_passes_snapshot_admission_generation():
+    """The background review must retain the identity token from its snapshot read."""
+    from app import memory_server
+
+    name = "测试角色review-generation"
+    history = _history(12)
+    memory_server.correction_tasks.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
+
+    admission_generation = ("review-test-recent.json", 0)
+    fake_mgr = MagicMock()
+    fake_mgr.aget_recent_history = AsyncMock(
+        return_value=(history, admission_generation),
+    )
+    fake_mgr.review_history = AsyncMock(return_value=("white", None))
+
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
+         patch.object(memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True)), \
+         patch.object(memory_server.review, "_count_new_user_msgs_since_last_review", return_value=999), \
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
+        await memory_server.maybe_spawn_review(name)
+        await memory_server.correction_tasks[name]
+
+    assert fake_mgr.review_history.await_args.kwargs["expected_generation"] == admission_generation
+    memory_server.correction_tasks.pop(name, None)
+    memory_server.correction_cancel_flags.pop(name, None)
+    memory_server.gates._maint_state.pop(name, None)
 
 
 @pytest.mark.unit

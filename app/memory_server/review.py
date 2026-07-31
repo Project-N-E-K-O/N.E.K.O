@@ -149,7 +149,11 @@ async def maybe_spawn_review(name: str) -> None:
             return
         # 拉 history（gate 3/5 + 后续做 snapshot 都需要）
         try:
-            history = await runtime.recent_history_manager.aget_recent_history(name)
+            history, admission_generation = (
+                await runtime.recent_history_manager.aget_recent_history(
+                    name, include_admission=True,
+                )
+            )
         except Exception as e:
             logger.debug(f"[Review/spawn] {name}: 拉 history 失败: {e}")
             return
@@ -266,7 +270,11 @@ async def maybe_spawn_review(name: str) -> None:
         snapshot = list(history)  # 浅拷贝即可，消息对象不可变
         # 把 cancel_event 显式传给后台 task（不再依靠 finally 时再从 dict 拿），
         # 这样 task 自己持有的 event 引用不会被并发的新 spawn 覆盖。
-        task = asyncio.create_task(_run_review_in_background(name, snapshot, cancel_event))
+        task = asyncio.create_task(
+            _run_review_in_background(
+                name, snapshot, cancel_event, admission_generation,
+            )
+        )
         correction_tasks[name] = task
 
 
@@ -674,7 +682,10 @@ def _mutate_review_white(state: dict) -> tuple[bool, None]:
 
 
 async def _run_review_in_background(
-    lanlan_name: str, snapshot: list, cancel_event: asyncio.Event,
+    lanlan_name: str,
+    snapshot: list,
+    cancel_event: asyncio.Event,
+    admission_generation=None,
 ):
     """Run review_history in the background, with cancellation support.
 
@@ -714,7 +725,10 @@ async def _run_review_in_background(
         # 会正常冒泡到外层 CancelledError 分支。
         try:
             result = await runtime.recent_history_manager.review_history(
-                lanlan_name, snapshot, cancel_event=cancel_event,
+                lanlan_name,
+                snapshot,
+                cancel_event=cancel_event,
+                expected_generation=admission_generation,
             )
         except Exception as e:
             logger.error(f"❌ {lanlan_name} 的 review_history 抛异常，按失败处理: {e}")
