@@ -99,6 +99,8 @@ Web 主页面与 NEKO-PC 的 Pet renderer 页面运行同一套页面内 Cat Min
 
 桌面壳不持有 Cat Mind 运行状态，不维护五维、短时意图、cooldown、pending/active action 或 return episode，不运行 selector，也不发 action request。它只把真实桌面事实提交为 observation，并提供窗口、坐标与命中安全；后续计分、选择、request、runner 结果和 return 摘要仍由 Pet renderer 内的同一条 Cat Mind 链处理。
 
+桌面窗口感知只覆盖真实小猫形态的 CAT1 阶段：小猫已经出现并且当前 tier 为 CAT1 时启动正式 sensing session；进入 CAT2/CAT3、return commit、切换为呼吸球、猫容器失败或页面卸载时停止；从 CAT2/CAT3 重新回到 CAT1 时建立新 session。普通模型形态、呼吸球形态、CAT2 和 CAT3 都不启动窗口感知。这里复用的是 CAT1 生命周期，不是 Cat Mind 的 30 秒自主时钟。正式窗口事实只转换为 CAT1 的 `desktop_occlusion_or_layer_change` observation，不直接修改五维、选择动作或移动猫。
+
 ### 4.5 后端
 
 后端只接收 allowlist 后的短结构化摘要，把枚举映射为服务端持有的自然语言 scene，再走独立的 `cat_greeting_check`。摘要只在本次调用中使用，不写数据库、长期 memory 或角色设定。
@@ -344,6 +346,7 @@ URL 参数优先于全局变量和 localStorage，方便单次排查后用 `0` �
 | 猫形态本地文字接收、request 去重、哈气彩蛋选择与 observation 提交 | `static/app/app-react-chat-window/cat-local-chat.js` |
 | 普通猫叫与哈气彩蛋词元 | `static/app/app-react-chat-window/cat-local-chat-lexicon.js` |
 | debug 面板 | `static/app/app-cat-mind-debug.js` |
+| Electron CAT1 桌面窗口 observation 适配 | `static/app/app-desktop-window-sensing.js` |
 | avatar 只读毛线 observation adapter | `static/avatar/avatar-ui-buttons/idle-cat-mind-observations.js` |
 | renderer adapter 与 CAT1/CAT2/CAT3 runner | `static/avatar/avatar-ui-buttons/` 的拆分脚本 |
 | 自动 goodbye 与 return 附件消费 | `static/app/app-auto-goodbye.js` |
