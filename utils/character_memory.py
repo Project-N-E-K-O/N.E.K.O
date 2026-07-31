@@ -20,6 +20,8 @@ from pathlib import Path
 from typing import Any
 
 from utils.recent_file import (
+    clear_recent_pending,
+    move_recent_pending,
     read_recent_text_unlocked,
     recent_file_lock,
     write_recent_payload_unlocked,
@@ -235,6 +237,14 @@ def rewrite_recent_file_character_name(recent_path: Path, old_name: str, new_nam
 
 def rename_character_memory_storage(config_manager, old_name: str, new_name: str) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
+    pending_sources = [
+        base_dir / old_name / "recent.json"
+        for base_dir in iter_character_memory_roots(config_manager)
+    ]
+    pending_sources.extend(
+        base_dir / f"recent_{old_name}.json"
+        for base_dir in iter_character_memory_roots(config_manager)
+    )
     changed = False
 
     for base_dir in iter_character_memory_roots(config_manager):
@@ -257,6 +267,10 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
         new_name,
     ) or changed
 
+    target_recent = runtime_target_dir / "recent.json"
+    for source_recent in pending_sources:
+        move_recent_pending(source_recent, target_recent)
+
     return {
         "changed": changed,
         "runtime_dir": runtime_target_dir,
@@ -265,6 +279,14 @@ def rename_character_memory_storage(config_manager, old_name: str, new_name: str
 
 
 def delete_character_memory_storage(config_manager, character_name: str) -> list[Path]:
+    recent_candidates = [
+        candidate
+        for base_dir in iter_character_memory_roots(config_manager)
+        for candidate in (
+            base_dir / character_name / "recent.json",
+            base_dir / f"recent_{character_name}.json",
+        )
+    ]
     removed_paths: list[Path] = []
     for entry_path in list_character_memory_paths(config_manager, character_name):
         if entry_path.is_dir():
@@ -272,5 +294,8 @@ def delete_character_memory_storage(config_manager, character_name: str) -> list
         else:
             entry_path.unlink()
         removed_paths.append(entry_path)
+
+    for recent_path in recent_candidates:
+        clear_recent_pending(recent_path)
 
     return removed_paths

@@ -37,9 +37,14 @@ from typing import Any
 from utils.file_utils import atomic_write_json
 
 __all__ = [
+    "clear_recent_pending",
+    "get_recent_pending",
+    "get_recent_pending_unlocked",
+    "move_recent_pending",
     "recent_file_lock",
     "read_recent_text",
     "read_recent_text_unlocked",
+    "set_recent_pending_unlocked",
     "write_recent_payload",
     "write_recent_payload_unlocked",
 ]
@@ -70,6 +75,8 @@ __all__ = [
 # 「嵌套 RMW 的内层落盘把外层改了一半的状态写进磁盘」这类真 bug。
 _LOCKS: dict[str, threading.Lock] = {}
 _LOCKS_GUARD = threading.Lock()
+_PENDING: dict[str, list[Any]] = {}
+_PENDING_GUARD = threading.Lock()
 
 
 def _lock_key(path: Any) -> str:
@@ -90,6 +97,50 @@ def recent_file_lock(path: Any) -> threading.Lock:
             lock = threading.Lock()
             _LOCKS[key] = lock
     return lock
+
+
+def get_recent_pending_unlocked(path: Any) -> list[Any]:
+    """Return a copy of the unpersisted batch while the path lock is held."""
+    with _PENDING_GUARD:
+        return list(_PENDING.get(_lock_key(path), ()))
+
+
+def get_recent_pending(path: Any) -> list[Any]:
+    """Return a copy of the unpersisted batch under the path lock."""
+    with recent_file_lock(path):
+        return get_recent_pending_unlocked(path)
+
+
+def set_recent_pending_unlocked(path: Any, messages: list[Any]) -> None:
+    """Replace the unpersisted batch while the path lock is held."""
+    key = _lock_key(path)
+    with _PENDING_GUARD:
+        if messages:
+            _PENDING[key] = list(messages)
+        else:
+            _PENDING.pop(key, None)
+
+
+def clear_recent_pending(path: Any) -> None:
+    """Discard unpersisted messages after an authoritative delete."""
+    with recent_file_lock(path):
+        set_recent_pending_unlocked(path, [])
+
+
+def move_recent_pending(source_path: Any, target_path: Any) -> None:
+    """Move unpersisted messages when a character recent file is renamed."""
+    source_key = _lock_key(source_path)
+    target_key = _lock_key(target_path)
+    if source_key == target_key:
+        return
+    ordered = sorted(
+        ((source_key, recent_file_lock(source_path)), (target_key, recent_file_lock(target_path))),
+        key=lambda item: item[0],
+    )
+    with ordered[0][1], ordered[1][1], _PENDING_GUARD:
+        source_pending = _PENDING.pop(source_key, None)
+        if source_pending:
+            _PENDING[target_key] = list(_PENDING.get(target_key, ())) + source_pending
 
 
 def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:
@@ -119,6 +170,7 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
 
 
 def write_recent_payload(path: Any, payload: Any) -> None:
-    """Serialize and atomically replace the file under the file lock."""
+    """Authoritatively replace the file and invalidate older pending messages."""
     with recent_file_lock(path):
         write_recent_payload_unlocked(path, payload)
+        set_recent_pending_unlocked(path, [])

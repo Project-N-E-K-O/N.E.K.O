@@ -238,15 +238,6 @@ RECENT_PENDING_MAX_ITEMS = 64
 
 
 class CompressedRecentHistoryManager:
-    # 类级默认：测试和部分构造路径用 object.__new__ 绕过 __init__，只在 __init__
-    # 里赋值会让那些实例一访问就 AttributeError。
-    #
-    # 语义 = 本实例 append 过、但确认**没有**落到盘上的消息（按顺序）。
-    # 为什么是实例级而锁是模块级：reload 后新实例的 user_histories 是空的，它要是
-    # 继承一个进程级脏账本，就会拒绝从磁盘加载 → 历史读成空 → 下次落盘把空写回
-    # 磁盘，比原 bug 更糟。一句话：锁跟着文件走，pending 跟着内存走。
-    _pending: dict[str, list] | None = None
-
     def __init__(
         self,
         max_history_length: int = RECENT_HISTORY_MAX_ITEMS,
@@ -259,7 +250,6 @@ class CompressedRecentHistoryManager:
         self.compress_threshold = compress_threshold      # >此值才触发压缩
         self.log_file_path = recent_log
         self.name_mapping = name_mapping
-        self._pending = {}
         # 这里**不**预加载。两个构造点（memory_server.runtime 首启 + reload）都是
         # async 函数、都跑在事件循环线程上：既不该在那儿等别的写者的文件临界区，
         # 也不该在那儿对 N 个角色各做一次多 MB 的阻塞读。
@@ -269,19 +259,11 @@ class CompressedRecentHistoryManager:
 
     # ── 未落盘批次账本 ────────────────────────────────────────────────
     def _pending_batches(self, lanlan_name: str) -> list:
-        """Return the messages this instance appended but could not persist."""
-        pending = self._pending
-        if not pending:
-            return []
-        return pending.get(lanlan_name, [])
+        """Return messages that could not be persisted to this character's file."""
+        return recent_file.get_recent_pending(self._ensure_path_for_character(lanlan_name))
 
     def _set_pending_batches(self, lanlan_name: str, messages: list) -> None:
-        """Record (or clear) the unpersisted messages of one character."""
-        if self._pending is None:
-            self._pending = {}
-        if not messages:
-            self._pending.pop(lanlan_name, None)
-            return
+        """Record (or clear) unpersisted messages while the file lock is held."""
         cap = max(2 * self.compress_threshold, RECENT_PENDING_MAX_ITEMS)
         if len(messages) > cap:
             logger.warning(
@@ -289,7 +271,9 @@ class CompressedRecentHistoryManager:
                 f"丢弃最旧 {len(messages) - cap} 条"
             )
             messages = messages[-cap:]
-        self._pending[lanlan_name] = messages
+        recent_file.set_recent_pending_unlocked(
+            self._ensure_path_for_character(lanlan_name), messages,
+        )
 
     def _get_default_path(self, lanlan_name: str) -> str:
         """Single place for the default path, avoiding duplicated code."""
@@ -477,7 +461,7 @@ class CompressedRecentHistoryManager:
         """
         with recent_file.recent_file_lock(file_path):
             status, history = self._load_history_unlocked(file_path, lanlan_name)
-            pending = self._pending_batches(lanlan_name)
+            pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
                 # 读不到盘上内容 ≠ 盘上是空的。这里一写就是拿这批新消息覆盖掉
                 # 整段读不出来的历史（重构前的 `except Exception: return []`
@@ -1034,15 +1018,11 @@ class CompressedRecentHistoryManager:
         logger.info(f"[RecentHistory] {lanlan_name} 硬上限裁剪期间历史持续变化，跳过本轮")
 
     async def merge_backup_memo(self, lanlan_name, snapshot, memo):
-        """后台压缩成功后，把 memo 合并回当前 history（快照对齐）。
+        """Merge a background compression memo when its disk snapshot still matches.
 
-        用 snapshot 的 fingerprint 在当前 history 里定位那批积压：仍整批连续在
-        头部（capacity==len(snapshot) 且批头在 index 0）→ 替换成 [memo] + 这期间
-        新增的对话，落盘，返回 'merged'；否则（已被主路径压掉 / 被 /new_dialog
-        清空 / 头部已变）→ 丢弃返回 'moot'。
-
-        磁盘 current 的重读、定位、splice 与落盘在同一个文件临界区；调用方的
-        settle lock 只负责 memory_server 业务顺序，不再承担文件 RMW 正确性。
+        The disk re-read, snapshot match, splice, and write form one file critical
+        section. A changed or cleared head makes the result moot instead of
+        resurrecting stale content.
         """
         file_path = self._ensure_path_for_character(lanlan_name)
         current = await asyncio.to_thread(

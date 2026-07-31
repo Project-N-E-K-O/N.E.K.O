@@ -44,8 +44,10 @@ def _reset_recent_file_locks():
     a leaked/held lock from one test out of the next one.
     """
     recent_file._LOCKS.clear()
+    recent_file._PENDING.clear()
     yield
     recent_file._LOCKS.clear()
+    recent_file._PENDING.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -447,26 +449,75 @@ def test_two_manager_instances_serialise_writes(tmp_path, monkeypatch):
         f"新旧实例的写都必须在盘上，实际 {contents}"
 
 
-# ─────────────── T8: pending must not survive a reload ───────────────
+# ─────────────── T8: pending survives reload but not authoritative replacement ───────────────
 
 
-def test_fresh_manager_after_reload_ignores_previous_instance_pending(tmp_path, monkeypatch):
-    """A pending batch belongs to the instance, never to the process."""
+def test_fresh_manager_after_reload_flushes_previous_pending(tmp_path, monkeypatch):
+    """A fresh manager must retain the per-file unpersisted batch."""
     mgr1, name, path = _make_manager(tmp_path)
     _write_disk(path, [HumanMessage(content="A")])
 
     def _boom(*a, **k):
         raise OSError("simulated disk failure")
 
+    real_atomic_write = recent_file.atomic_write_json
     monkeypatch.setattr(recent_file, "atomic_write_json", _boom)
     asyncio.run(mgr1.update_history([HumanMessage(content="B")], name, compress=False))
     assert [m.content for m in mgr1._pending_batches(name)] == ["B"]
 
     mgr2, _, _ = _make_manager(tmp_path, path=path)
-    assert mgr2._pending_batches(name) == [], "新实例不得继承上一个实例的未落盘账本"
+    assert [m.content for m in mgr2._pending_batches(name)] == ["B"]
 
-    history = asyncio.run(mgr2.aget_recent_history(name))
-    assert [m.content for m in history] == ["A"], "新实例必须读到磁盘上的真实内容"
+    monkeypatch.setattr(recent_file, "atomic_write_json", real_atomic_write)
+    asyncio.run(mgr2.update_history([HumanMessage(content="C")], name, compress=False))
+    assert [m.content for m in _read_disk(path)] == ["A", "B", "C"]
+
+
+def test_authoritative_replace_discards_previous_pending(tmp_path, monkeypatch):
+    """A user replacement must not resurrect an older failed append."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="A")])
+
+    def _boom(*a, **k):
+        raise OSError("simulated disk failure")
+
+    real_atomic_write = recent_file.atomic_write_json
+    monkeypatch.setattr(recent_file, "atomic_write_json", _boom)
+    asyncio.run(mgr.update_history([HumanMessage(content="stale")], name, compress=False))
+    assert [m.content for m in mgr._pending_batches(name)] == ["stale"]
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", real_atomic_write)
+    recent_file.write_recent_payload(
+        path, messages_to_dict([HumanMessage(content="replacement")]),
+    )
+    asyncio.run(mgr.update_history([HumanMessage(content="new")], name, compress=False))
+    assert [m.content for m in _read_disk(path)] == ["replacement", "new"]
+
+
+def test_character_rename_moves_pending_to_new_recent_path(tmp_path):
+    """Renaming storage must keep an unpersisted batch attached to the file."""
+    from utils.character_memory import rename_character_memory_storage
+
+    old_path = tmp_path / "Old" / "recent.json"
+    old_path.parent.mkdir()
+    _write_disk(str(old_path), [HumanMessage(content="disk")])
+    with recent_file.recent_file_lock(old_path):
+        recent_file.set_recent_pending_unlocked(
+            old_path, [HumanMessage(content="pending")],
+        )
+
+    class _RenameConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    rename_character_memory_storage(_RenameConfig(), "Old", "New")
+    new_path = tmp_path / "New" / "recent.json"
+    assert recent_file.get_recent_pending(old_path) == []
+    assert [m.content for m in recent_file.get_recent_pending(new_path)] == ["pending"]
+
+    mgr, name, _ = _make_manager(tmp_path, "New", path=str(new_path))
+    asyncio.run(mgr.update_history([HumanMessage(content="next")], name, compress=False))
+    assert [m.content for m in _read_disk(str(new_path))] == ["disk", "pending", "next"]
 
 
 # ─────────────── T9: review persist failure must report exactly ('failed', None) ───────────────
