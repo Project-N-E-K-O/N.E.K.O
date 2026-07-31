@@ -1056,13 +1056,25 @@ class _TransportMixin:
         because both can block on the same frontend socket and a new turn can
         start between them.
 
-        ``on_sid_rotate`` is never bounded, on purpose:
-        ``rotate_speech_id_for_response_done`` clears
-        ``_tts_done_queued_for_turn`` and ``_tts_done_pending_until_ready``
-        and only THEN takes the session lock, so cancelling it at that lock
-        leaves the host half-rotated — the flags say a fresh turn, the speech
-        id still says the old one. A skipped rotation is recoverable by the
-        next turn's terminal; a half-applied one is not.
+        ``on_sid_rotate`` gets no step bound of its own, because it is the
+        last step — there is nothing behind it for a slow hook to starve. That
+        is NOT the same as being uncancellable, and an earlier version of this
+        comment claimed it was: the arbiter bounds the whole notification, so
+        the rotation can still be cancelled at its only await, taking the
+        session lock. Today that leaves the host half-rotated — the TTS flags
+        say a fresh turn while the speech id still says the old one — because
+        ``rotate_speech_id_for_response_done`` writes those flags before it
+        takes the lock.
+
+        Measured, that state is repaired by the next turn's terminal, which
+        rotates unconditionally; it is not the permanent silence the earlier
+        comment described. It also is not this path's to fix: the rotation has
+        two other callers that are cancelled just as ordinarily and with no
+        escape hatch involved
+        ([_responses.py](main_logic/omni_realtime_client/_responses.py) and
+        [proactive.py](main_logic/core/proactive.py), both inside
+        fire-and-forget tasks), so making the rotation all-or-nothing belongs
+        in the rotation itself. Tracked separately.
 
         ``on_sid_rotate`` is conditional because providers WITH server VAD
         rotate the speech id from ``speech_stopped`` instead; firing here too
