@@ -14,6 +14,11 @@ from main_routers.workshop_router.content_gate import (
 from main_routers.workshop_router import publish
 
 
+def _raise_inside(claim):
+    with claim:
+        raise RuntimeError('boom')
+
+
 def test_exclusive_claim_rejects_another_exclusive_claim(tmp_path):
     with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
         with pytest.raises(ContentFolderBusy, match='正在发布'):
@@ -43,20 +48,20 @@ def test_reference_writers_remain_shared(tmp_path):
 
 def test_claim_releases_after_exception(tmp_path):
     with pytest.raises(RuntimeError, match='boom'):
-        with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
-            raise RuntimeError('boom')
+        _raise_inside(
+            claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE)
+        )
 
-    with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
-        pass
+    with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE) as token:
+        assert token is None
 
 
 def test_reference_claim_releases_after_exception(tmp_path):
     with pytest.raises(RuntimeError, match='boom'):
-        with claim_reference_pair(str(tmp_path)):
-            raise RuntimeError('boom')
+        _raise_inside(claim_reference_pair(str(tmp_path)))
 
-    with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE):
-        pass
+    with claim_content_folder(str(tmp_path), purpose=PUBLISH_PURPOSE) as token:
+        assert token is None
 
 
 def test_claim_key_collapses_relative_aliases(tmp_path, monkeypatch):

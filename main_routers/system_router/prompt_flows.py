@@ -39,14 +39,31 @@ _SEVEN_DAY_SUBMIT_LOCK = asyncio.Lock()
 _AUTOSTART_SUBMIT_LOCK = asyncio.Lock()
 
 
+def _consume_detached_operation_result(task: asyncio.Task) -> None:
+    """Retrieve a detached operation's exception after its waiter is cancelled."""
+    if not task.cancelled():
+        task.exception()
+
+
 async def _run_serialized_in_worker(lock: asyncio.Lock, func, /, *args, **kwargs):
     """Queue one state-family operation before it consumes an executor worker."""
     # The sync helpers also serialize on a threading.RLock. Submitting every
     # concurrent request first would make all waiters occupy default-executor
     # slots while only one can progress. asyncio.Lock suspends waiters without
     # blocking the event loop; the worker is allocated only to the active call.
-    async with lock:
-        return await asyncio.to_thread(func, *args, **kwargs)
+    async def _run_owned_operation():
+        async with lock:
+            return await asyncio.to_thread(func, *args, **kwargs)
+
+    # The child owns both queue position and submit-lock lifetime. Shielding it
+    # lets a cancelled HTTP waiter leave promptly without releasing the lock
+    # while its non-cancellable worker thread is still running.
+    operation = asyncio.create_task(_run_owned_operation())
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        operation.add_done_callback(_consume_detached_operation_result)
+        raise
 
 
 @router.get("/seven-day-tutorial/state")

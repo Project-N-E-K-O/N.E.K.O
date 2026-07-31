@@ -74,6 +74,51 @@ async def test_serialization_happens_before_an_executor_worker_is_allocated(
     assert max_active == 1
 
 
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_waiter_does_not_release_the_submit_lock_early(
+    monkeypatch,
+):
+    """Cancellation cannot let a retry allocate a worker behind live work."""
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+    second_entered = asyncio.Event()
+    submissions = 0
+
+    async def _fake_to_thread(func, *args, **kwargs):
+        nonlocal submissions
+        submissions += 1
+        if submissions == 1:
+            first_entered.set()
+            await release_first.wait()
+        else:
+            second_entered.set()
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(system_router_module.asyncio, "to_thread", _fake_to_thread)
+    lock = asyncio.Lock()
+    first = asyncio.create_task(
+        system_router_module._run_serialized_in_worker(lock, lambda: "first")
+    )
+    await asyncio.wait_for(first_entered.wait(), timeout=1)
+
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+
+    second = asyncio.create_task(
+        system_router_module._run_serialized_in_worker(lock, lambda: "second")
+    )
+    await asyncio.sleep(0)
+    assert submissions == 1
+    assert not second_entered.is_set()
+
+    release_first.set()
+    await asyncio.wait_for(second_entered.wait(), timeout=1)
+    assert await second == "second"
+    assert submissions == 2
+
+
 @pytest.fixture
 def prompt_flow_client(tmp_path, monkeypatch):
     config = DummyConfig(tmp_path)

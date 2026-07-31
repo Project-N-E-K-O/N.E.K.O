@@ -655,10 +655,33 @@ async def test_apreload_reads_without_holding_the_data_lock(tmp_path, monkeypatc
     if acquired:
         lock.release()
     release.set()
-    await preload
+    assert await preload is None
 
     assert acquired, "the worker held the data lock while performing disk I/O"
     assert store._cache["妮可"] == []
+
+
+@pytest.mark.asyncio
+async def test_apreload_caches_empty_window_after_disk_lookup_failure(
+    tmp_path, monkeypatch
+):
+    """A failed warmup must not make the event loop retry the same disk read."""
+    store = _build_store(tmp_path)
+    calls = 0
+
+    def _failed_read(_name):
+        nonlocal calls
+        calls += 1
+        raise OSError("memory root unavailable")
+
+    monkeypatch.setattr(store, "_read_window_from_disk", _failed_read)
+
+    await store.apreload("妮可")
+    staged = store.stage_output("妮可", LONG_TIGER, now=1.0)
+
+    assert store._cache["妮可"]
+    assert staged is not None
+    assert calls == 1, "stage_output retried disk I/O synchronously after warmup failed"
 
 
 def test_the_per_turn_callers_use_the_async_twin():

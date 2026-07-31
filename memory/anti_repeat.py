@@ -415,7 +415,19 @@ class AntiRepeatCorpus:
         with self._get_lock(name):
             if name in self._cache:
                 return
-        window = await asyncio.to_thread(self._read_window_from_disk, name)
+        try:
+            window = await asyncio.to_thread(self._read_window_from_disk, name)
+        except Exception as exc:
+            # Do not let a failed off-loop warmup send the same slow/unavailable
+            # path lookup back through _load_unlocked on the event loop. An
+            # empty cached window is the safe degraded state for this process;
+            # later records still populate and persist it normally.
+            logger.warning(
+                "[AntiRepeat] preload failed for %s, starting empty: %s",
+                name,
+                exc,
+            )
+            window = []
         with self._get_lock(name):
             self._cache.setdefault(name, window)
 
