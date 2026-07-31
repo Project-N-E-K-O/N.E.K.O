@@ -38,6 +38,7 @@ import pytest
 from tests.atomic_read import read_text_tolerating_replace
 
 from main_routers.workshop_router.voice_manifest import (
+    WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY,
     WORKSHOP_VOICE_MANIFEST_NAME,
     resolve_voice_reference_serialized,
 )
@@ -63,7 +64,12 @@ def test_voice_refs_has_exactly_one_swap_implementation():
 def _seed_existing_reference(folder, audio_name: str = "voice_sample.mp3") -> None:
     (folder / audio_name).write_bytes(b"old-audio")
     (folder / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
-        json.dumps({"version": 1, "reference_audio": audio_name, "prefix": "old"}),
+        json.dumps({
+            "version": 1,
+            "reference_audio": audio_name,
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: audio_name,
+            "prefix": "old",
+        }),
         encoding="utf-8",
     )
 
@@ -553,13 +559,13 @@ def test_the_lock_key_resolves_symlinks(tmp_path):
 
 
 def test_only_the_previously_referenced_audio_is_deleted(tmp_path):
-    """Ownership is proven by the manifest, never guessed from the filename.
+    """Ownership needs the private marker, never a guessed filename shape.
 
     A content folder is the user's own publish directory. Matching by name
     shape — even the exact `voice_sample_<12 hex>.<ext>` this feature
     generates — is still probability: a user file that happens to fit the
-    shape gets silently deleted. The one file this module can prove it owns is
-    the one the outgoing manifest pointed at.
+    shape gets silently deleted. The marker is written only when this route
+    commits a generated file and must agree with the live reference.
     """
     from main_routers.workshop_router import voice_refs
 
@@ -571,6 +577,7 @@ def test_only_the_previously_referenced_audio_is_deleted(tmp_path):
         json.dumps({
             "version": 1,
             "reference_audio": "voice_sample_aaaaaaaaaaaa.mp3",
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: "voice_sample_aaaaaaaaaaaa.mp3",
             "prefix": "old",
         }),
         encoding="utf-8",
@@ -581,7 +588,12 @@ def test_only_the_previously_referenced_audio_is_deleted(tmp_path):
         str(tmp_path / "voice_sample_bbbbbbbbbbbb.wav"),
         b"new-audio",
         str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
-        {"version": 1, "reference_audio": "voice_sample_bbbbbbbbbbbb.wav", "prefix": "new"},
+        {
+            "version": 1,
+            "reference_audio": "voice_sample_bbbbbbbbbbbb.wav",
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: "voice_sample_bbbbbbbbbbbb.wav",
+            "prefix": "new",
+        },
     )
 
     remaining = sorted(p.name for p in tmp_path.iterdir())
@@ -592,6 +604,64 @@ def test_only_the_previously_referenced_audio_is_deleted(tmp_path):
         "voice_sample_cccccccccccc.wav",
         "voice_sample_theme.mp3",
     ], f"删了不属于自己的文件，或者没删掉上一份引用：{remaining}"
+
+
+def test_an_unmanaged_root_audio_reference_is_never_deleted(tmp_path):
+    """A valid playback reference is not automatically an ownership claim."""
+    from main_routers.workshop_router import voice_refs
+
+    user_audio = tmp_path / "personal_recording.mp3"
+    user_audio.write_bytes(b"user-owned")
+    (tmp_path / WORKSHOP_VOICE_MANIFEST_NAME).write_text(
+        json.dumps({
+            "version": 1,
+            "reference_audio": user_audio.name,
+            "prefix": "imported",
+        }),
+        encoding="utf-8",
+    )
+
+    assert voice_refs._current_reference_audio_path(str(tmp_path)) is None
+
+    new_name = "voice_sample_bbbbbbbbbbbb.wav"
+    voice_refs._replace_voice_reference(
+        str(tmp_path),
+        str(tmp_path / new_name),
+        b"new-audio",
+        str(tmp_path / WORKSHOP_VOICE_MANIFEST_NAME),
+        {
+            "version": 1,
+            "reference_audio": new_name,
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: new_name,
+            "prefix": "new",
+        },
+    )
+
+    assert user_audio.read_bytes() == b"user-owned"
+
+
+def test_explicit_remove_preserves_audio_without_the_managed_marker(tmp_path):
+    """Removing an imported manifest must detach, not delete, the user asset."""
+    from main_routers.workshop_router.voice_manifest import (
+        _cleanup_workshop_voice_reference,
+    )
+
+    user_audio = tmp_path / "personal_recording.wav"
+    user_audio.write_bytes(b"user-owned")
+    manifest_path = tmp_path / WORKSHOP_VOICE_MANIFEST_NAME
+    manifest_path.write_text(
+        json.dumps({
+            "version": 1,
+            "reference_audio": user_audio.name,
+            "prefix": "imported",
+        }),
+        encoding="utf-8",
+    )
+
+    _cleanup_workshop_voice_reference(str(tmp_path))
+
+    assert user_audio.read_bytes() == b"user-owned"
+    assert not manifest_path.exists()
 
 
 def test_nothing_is_deleted_when_no_manifest_claims_anything(tmp_path):

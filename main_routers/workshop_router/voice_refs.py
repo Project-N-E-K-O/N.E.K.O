@@ -27,6 +27,7 @@ from .voice_manifest import (
     WORKSHOP_REFERENCE_AUDIO_EXTENSIONS,
     WORKSHOP_REFERENCE_LANGUAGES,
     WORKSHOP_REFERENCE_PROVIDER_HINTS,
+    WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY,
     WORKSHOP_VOICE_MANIFEST_NAME,
     _cleanup_workshop_voice_reference,
     _normalize_workshop_voice_manifest,
@@ -66,6 +67,11 @@ def _current_reference_audio_path(content_folder: str) -> str | None:
         return None
     reference = manifest.get('reference_audio') if isinstance(manifest, dict) else None
     if not isinstance(reference, str) or not reference:
+        return None
+    if manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY) != reference:
+        # A manifest is valid input for playback/publishing, but it is not by
+        # itself proof that this process created (and therefore owns) the file.
+        # Imported and hand-edited manifests commonly point at user assets.
         return None
     # manifest 里写的不一定是音频。手改或畸形的 manifest 指向同目录的 preview.png
     # 这类资产时，下面那次 os.remove 就会把用户的工坊素材删掉 —— 扩展名不对就当它
@@ -232,6 +238,7 @@ async def upload_reference_audio(request: Request):
         manifest = _normalize_workshop_voice_manifest({
             'version': 1,
             'reference_audio': reference_audio_name,
+            WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY: reference_audio_name,
             'prefix': prefix,
             'ref_language': ref_language,
             'display_name': display_name,

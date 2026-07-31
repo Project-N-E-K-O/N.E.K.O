@@ -30,6 +30,9 @@ import threading
 WORKSHOP_VOICE_MANIFEST_NAME = 'voice_manifest.json'
 
 
+WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY = '_neko_managed_reference_audio'
+
+
 WORKSHOP_REFERENCE_AUDIO_EXTENSIONS = {'.mp3', '.wav'}
 
 
@@ -90,7 +93,7 @@ def _normalize_workshop_voice_manifest(raw_manifest: dict, *, default_prefix: st
     except (TypeError, ValueError):
         version = 1
 
-    return {
+    normalized = {
         'version': version,
         'reference_audio': reference_audio,
         'prefix': prefix,
@@ -98,6 +101,16 @@ def _normalize_workshop_voice_manifest(raw_manifest: dict, *, default_prefix: st
         'display_name': display_name,
         'provider_hint': provider_hint,
     }
+    # This private marker is ownership metadata, not merely a second spelling
+    # of reference_audio. Only upload-reference-audio writes it. Cleanup may
+    # delete an audio file only when the marker and live reference agree, so a
+    # hand-edited/imported manifest cannot claim an unrelated user-owned file.
+    managed_reference = str(
+        raw_manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY, '') or ''
+    ).strip()
+    if managed_reference == reference_audio:
+        normalized[WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY] = managed_reference
+    return normalized
 
 
 # 按内容目录串行化「整对替换」与「读取整对」。写侧两次上传的 swap 跑在不同 worker
@@ -184,8 +197,14 @@ def _cleanup_workshop_voice_reference(content_folder: str) -> None:
         voice_ref = None
 
     if voice_ref:
+        manifest = voice_ref.get('manifest') or {}
         audio_path = voice_ref.get('audio_path')
-        if audio_path and os.path.exists(audio_path):
+        managed_audio = manifest.get(WORKSHOP_MANAGED_REFERENCE_AUDIO_KEY)
+        if (
+            managed_audio == manifest.get('reference_audio')
+            and audio_path
+            and os.path.exists(audio_path)
+        ):
             try:
                 os.remove(audio_path)
             except OSError as e:

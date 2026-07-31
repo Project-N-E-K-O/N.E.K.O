@@ -104,7 +104,7 @@ async def test_cancelled_waiter_does_not_release_the_submit_lock_early(
 
     first.cancel()
     with pytest.raises(asyncio.CancelledError):
-        await first
+        _ = await first
 
     second = asyncio.create_task(
         system_router_module._run_serialized_in_worker(lock, lambda: "second")
