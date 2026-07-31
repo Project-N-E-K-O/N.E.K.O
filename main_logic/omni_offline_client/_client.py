@@ -203,15 +203,6 @@ class OmniOfflineClient(_ToolingMixin, _GenaiMixin, _StreamingMixin, _MediaMixin
         # the wire-format snapshots are rebuilt from it on each request so
         # callers can mutate the list (register/unregister) between turns.
         self.on_tool_call: Optional[OnToolCallCallback] = on_tool_call
-        # Fires once per LLM iteration that turns out to be a tool round —
-        # BEFORE any handler runs, and also on rounds where every collected
-        # call gets dropped (nameless streaming fragments) so zero handler
-        # invocations happen. Buffering callers (the QQ plugin accumulates
-        # deltas and sends one message at the end) hook this to discard
-        # pre-tool text ("let me check…"): anchoring that hygiene on the
-        # handler alone misses the zero-call rounds. Streaming callers
-        # (main program) don't need it — their text is already on screen.
-        self.on_tool_round_start: Optional[Callable[[], Awaitable[None]]] = None
         self._tool_definitions: List[ToolDefinition] = list(tool_definitions or [])
         self.max_tool_iterations = max(1, int(max_tool_iterations))
         self._use_genai_sdk = _should_use_genai_sdk(self.model, self.base_url)

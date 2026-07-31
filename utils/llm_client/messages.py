@@ -142,14 +142,6 @@ class LLMStreamChunk:
     # in the thinking mode must be passed back to the API."。tool 循环靠累积此
     # 字段把它写回 assistant 历史。
     reasoning_content: str | None = None
-    # ``OmniOfflineClient`` tool-loop sentinel：``_astream_*_with_tools`` 在
-    # 把当前 tool 轮（assistant tool_calls + tool result）inline 写进 history
-    # 后会 yield 一个 ``LLMStreamChunk(content="", tool_round_persisted=True)``。
-    # ``stream_text`` 看到就把 final-segment buffer 清掉，避免之后
-    # ``_conversation_history.append(AIMessage(content=...))`` 把 pre-tool
-    # 文本第二次写进 history（pre-tool 文本已经在 ``assistant.tool_calls.content``
-    # 里了）。
-    tool_round_persisted: bool = False
 
 @dataclass
 class ToolCallAggregate:
