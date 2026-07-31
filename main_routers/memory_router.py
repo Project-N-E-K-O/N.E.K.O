@@ -326,6 +326,13 @@ def _recent_browser_fingerprint(content: str) -> str:
     return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
+def _recent_browser_identity_token(path: Path) -> str:
+    """Return an opaque token binding an editor snapshot to one path identity."""
+    key, generation = capture_recent_generation(path)
+    material = f"{key}\0{generation}".encode("utf-8")
+    return hashlib.sha256(material).hexdigest()
+
+
 def _read_recent_browser_text_unlocked(path: Path) -> str:
     """Build one editable disk-plus-pending snapshot while its lock is held."""
     content = read_recent_text_unlocked(path)
@@ -350,28 +357,46 @@ def _read_recent_browser_text(path: Path) -> str:
         return _read_recent_browser_text_unlocked(resolved_path)
 
 
+def _read_recent_browser_snapshot(path: Path) -> tuple[str, str]:
+    """Read editable content and its opaque identity while holding one lock."""
+    with recent_file_access(path) as resolved_path:
+        return (
+            _read_recent_browser_text_unlocked(resolved_path),
+            _recent_browser_identity_token(Path(resolved_path)),
+        )
+
+
 def _write_recent_browser_payload(
     path: Path,
     payload: list[dict],
     *,
     expected_fingerprint: str | None,
+    expected_identity_token: str | None,
     expected_generation: tuple[str, int],
-) -> tuple[bool, str]:
+) -> tuple[bool, str, str]:
     """Replace a browser snapshot unless disk or pending state changed since read."""
     with recent_file_access(
         path, expected_generation=expected_generation,
     ) as resolved_path:
+        current_identity_token = _recent_browser_identity_token(Path(resolved_path))
         current_text = _read_recent_browser_text_unlocked(resolved_path)
         current_fingerprint = _recent_browser_fingerprint(current_text)
         if (
+            expected_identity_token is not None
+            and expected_identity_token != current_identity_token
+        ) or (
             expected_fingerprint is not None
             and expected_fingerprint != current_fingerprint
         ):
-            return False, current_fingerprint
+            return False, current_fingerprint, current_identity_token
         write_recent_payload_unlocked(resolved_path, payload)
         set_recent_pending_unlocked(resolved_path, [])
         saved_text = json.dumps(payload, ensure_ascii=False, indent=2)
-        return True, _recent_browser_fingerprint(saved_text)
+        return (
+            True,
+            _recent_browser_fingerprint(saved_text),
+            current_identity_token,
+        )
 
 
 @router.get('/recent_files')
@@ -413,7 +438,9 @@ async def get_recent_file(filename: str):
     # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
     # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
     try:
-        content = await asyncio.to_thread(_read_recent_browser_text, resolved_path)
+        content, identity_token = await asyncio.to_thread(
+            _read_recent_browser_snapshot, resolved_path,
+        )
     except RecentFileDeletedError:
         return JSONResponse(
             {"success": False, "error": "文件不存在"},
@@ -422,6 +449,7 @@ async def get_recent_file(filename: str):
     return {
         "content": content,
         "fingerprint": _recent_browser_fingerprint(content),
+        "identity_token": identity_token,
     }
 
 
@@ -431,6 +459,7 @@ async def save_recent_file(request: Request):
     filename = data.get('filename')
     chat = data.get('chat')
     snapshot_fingerprint = data.get('fingerprint')
+    snapshot_identity_token = data.get('identity_token')
     
     # Validate filename
     is_valid, error_msg = validate_recent_filename(filename)
@@ -447,6 +476,16 @@ async def save_recent_file(request: Request):
         return JSONResponse(
             {"success": False, "error": "文件快照指纹格式不合法"},
             status_code=400,
+        )
+    if snapshot_identity_token is not None and not isinstance(snapshot_identity_token, str):
+        return JSONResponse(
+            {"success": False, "error": "文件身份令牌格式不合法"},
+            status_code=400,
+        )
+    if snapshot_fingerprint is not None and snapshot_identity_token is None:
+        return JSONResponse(
+            {"success": False, "error": "文件身份令牌缺失，请重新加载后再保存"},
+            status_code=409,
         )
     
     from utils.config_manager import get_config_manager
@@ -495,11 +534,12 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        saved, saved_fingerprint = await asyncio.to_thread(
+        saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
             _write_recent_browser_payload,
             resolved_path,
             arr,
             expected_fingerprint=snapshot_fingerprint,
+            expected_identity_token=snapshot_identity_token,
             expected_generation=admission_generation,
         )
         if not saved:
@@ -509,6 +549,7 @@ async def save_recent_file(request: Request):
                     "code": "RECENT_FILE_CONFLICT",
                     "error": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
                     "fingerprint": saved_fingerprint,
+                    "identity_token": saved_identity_token,
                 },
                 status_code=409,
             )
@@ -534,6 +575,7 @@ async def save_recent_file(request: Request):
             "need_refresh": True,
             "catgirl_name": catgirl_name,
             "fingerprint": saved_fingerprint,
+            "identity_token": saved_identity_token,
         }
     except MaintenanceModeError:
         raise

@@ -59,6 +59,32 @@ async def test_release_character_drains_old_identity_review_and_backup_tasks():
     assert name not in memory_server.review.compress_backup_tasks
     assert name not in memory_server.review.compress_backup_task_generations
     fake_time_manager.dispose_engine.assert_called_once_with(name)
+    memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_release_blocks_review_respawn_until_published_identity_reload():
+    from app import memory_server
+
+    name = "改名发布窗口角色"
+    fake_mgr = MagicMock()
+    fake_mgr.aget_recent_history = AsyncMock(return_value=([], ("path", 0)))
+
+    await memory_server.review.cancel_character_derived_tasks(name)
+    with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), patch.object(
+        memory_server.gates, "_ais_review_enabled", AsyncMock(return_value=True),
+    ):
+        await memory_server.review.maybe_spawn_review(name)
+        fake_mgr.aget_recent_history.assert_not_awaited()
+
+        await memory_server.review.reconcile_character_derived_task_admission({name})
+        await memory_server.review.maybe_spawn_review(name)
+        fake_mgr.aget_recent_history.assert_awaited_once_with(
+            name, include_admission=True,
+        )
+
+    memory_server.review._retired_derived_task_names.discard(name)
 
 
 @pytest.mark.unit

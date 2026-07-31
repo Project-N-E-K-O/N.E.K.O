@@ -273,6 +273,15 @@ async def reload_memory_components():
 
             if old_time_manager is not None and old_time_manager is not new_time:
                 _defer_time_manager_cleanup(old_time_manager)
+
+            # /release_character 会在改名/删除发布前退休旧名的派生任务入口。
+            # 只有 reload 真正读到某个名字仍在 characters.json（回滚或后续复用）
+            # 才重新开放；成功改名后的旧名在这段窗口里不能被 /process 重生。
+            from . import review
+
+            characters = await asyncio.to_thread(_config_manager.load_characters)
+            active_names = set((characters.get("猫娘") or {}).keys())
+            await review.reconcile_character_derived_task_admission(active_names)
             
             logger.info("[MemoryServer] ✅ 记忆组件配置重新加载完成")
             return True

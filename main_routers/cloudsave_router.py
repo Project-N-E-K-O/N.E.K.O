@@ -463,48 +463,64 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     }
 
 
+async def _rollback_failed_character_download(
+    config_manager, name: str, result: dict, exc: BaseException,
+):
+    """Roll back one applied character download and report the reload failure."""
+    backup_path = str(result.get("backup_path") or "")
+    rollback_attempted = False
+    rollback_error = ""
+    rollback_notify_ok = False
+    try:
+        if backup_path:
+            rollback_attempted = True
+            try:
+                restore_cloudsave_operation_backup(
+                    config_manager, backup_path, recent_locks_held=True,
+                )
+            finally:
+                # 磁盘恢复失败也必须撤销导入期 recent identity；否则
+                # finally 释放文件锁后会把半提交的 redirect/generation 暴露出去。
+                rollback_cloudsave_character_import_registry(result)
+            initialize_character_data = get_initialize_character_data()
+            await initialize_character_data()
+            rollback_notify_ok = await notify_memory_server_reload(
+                reason=f"云存档下载回滚: {name}",
+            )
+            if not rollback_notify_ok:
+                rollback_error = "notify_memory_server_reload returned False"
+    except Exception as rollback_exc:
+        rollback_error = str(rollback_exc)
+    return _cloudsave_error_response(
+        "LOCAL_RELOAD_FAILED_ROLLED_BACK",
+        f"The download was applied, but local reload failed: {exc}",
+        status_code=500,
+        character_name=name,
+        message_params={"message": str(exc)},
+        extra={
+            "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
+            "rollback_error": rollback_error,
+        },
+    )
+
+
 async def _complete_cloudsave_character_download(config_manager, name: str, result: dict):
     """Reload an applied import or roll it back, then release its retained lock."""
-    backup_path = str(result.get("backup_path") or "")
     try:
         try:
             reload_ok, reload_error = await _reload_after_character_download(name)
             if not reload_ok:
                 raise RuntimeError(reload_error or "reload failed")
+        except asyncio.CancelledError as exc:
+            # completion task 本身也可能被 shutdown 直接 cancel；此时仍须在
+            # retained recent locks 下把磁盘和 registry 回滚完，再传播取消。
+            await _rollback_failed_character_download(
+                config_manager, name, result, exc,
+            )
+            raise
         except Exception as exc:
-            rollback_attempted = False
-            rollback_error = ""
-            rollback_notify_ok = False
-            try:
-                if backup_path:
-                    rollback_attempted = True
-                    try:
-                        restore_cloudsave_operation_backup(
-                            config_manager, backup_path, recent_locks_held=True,
-                        )
-                    finally:
-                        # 磁盘恢复失败也必须撤销导入期 recent identity；否则
-                        # finally 释放文件锁后会把半提交的 redirect/generation 暴露出去。
-                        rollback_cloudsave_character_import_registry(result)
-                    initialize_character_data = get_initialize_character_data()
-                    await initialize_character_data()
-                    rollback_notify_ok = await notify_memory_server_reload(
-                        reason=f"云存档下载回滚: {name}",
-                    )
-                    if not rollback_notify_ok:
-                        rollback_error = "notify_memory_server_reload returned False"
-            except Exception as rollback_exc:
-                rollback_error = str(rollback_exc)
-            return _cloudsave_error_response(
-                "LOCAL_RELOAD_FAILED_ROLLED_BACK",
-                f"The download was applied, but local reload failed: {exc}",
-                status_code=500,
-                character_name=name,
-                message_params={"message": str(exc)},
-                extra={
-                    "rolled_back": rollback_attempted and rollback_error == "" and rollback_notify_ok,
-                    "rollback_error": rollback_error,
-                },
+            return await _rollback_failed_character_download(
+                config_manager, name, result, exc,
             )
         return None
     finally:

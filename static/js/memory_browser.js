@@ -4,6 +4,7 @@
     const PARENT_ORIGIN = window.location.origin;
     let currentMemoryFile = null;
     let currentMemoryFingerprint = null;
+    let currentMemoryIdentityToken = null;
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
@@ -1852,6 +1853,7 @@
 
     function renderMemoryBrowserLimitedState(state) {
         currentMemoryFile = null;
+        currentMemoryIdentityToken = null;
         currentCatName = '';
         chatData = [];
         memoryFileRequestId++;
@@ -3281,6 +3283,7 @@
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
         currentMemoryFingerprint = null;
+        currentMemoryIdentityToken = null;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         setMemoryDirty(false);
         dismissSaveStatus(true);
@@ -3314,6 +3317,9 @@
             }
             currentMemoryFingerprint = typeof data.fingerprint === 'string'
                 ? data.fingerprint
+                : null;
+            currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                ? data.identity_token
                 : null;
             if (data.content) {
                 let arr = [];
@@ -3379,13 +3385,17 @@
                 body: JSON.stringify({
                     filename: currentMemoryFile,
                     chat: chatData,
-                    fingerprint: currentMemoryFingerprint
+                    fingerprint: currentMemoryFingerprint,
+                    identity_token: currentMemoryIdentityToken
                 })
             });
             const data = await resp.json();
             if (data.success) {
                 currentMemoryFingerprint = typeof data.fingerprint === 'string'
                     ? data.fingerprint
+                    : null;
+                currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                    ? data.identity_token
                     : null;
                 setMemoryDirty(false);
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);

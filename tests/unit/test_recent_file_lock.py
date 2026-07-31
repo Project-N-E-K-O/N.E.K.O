@@ -2030,7 +2030,7 @@ async def test_recent_file_route_maps_deleted_identity_to_not_found(
         raise recent_file.RecentFileDeletedError("deleted during read")
 
     monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
-    monkeypatch.setattr(memory_router, "_read_recent_browser_text", _raise_deleted)
+    monkeypatch.setattr(memory_router, "_read_recent_browser_snapshot", _raise_deleted)
 
     response = await memory_router.get_recent_file("recent_Role.json")
 
@@ -2087,17 +2087,21 @@ def test_recent_browser_stale_save_preserves_new_pending_batch(tmp_path):
     generation = recent_file.capture_recent_generation(recent_path)
     loaded_text = memory_router._read_recent_browser_text(recent_path)
     loaded_fingerprint = memory_router._recent_browser_fingerprint(loaded_text)
+    loaded_identity = memory_router._recent_browser_identity_token(recent_path)
 
     with recent_file.recent_file_access(recent_path) as resolved_path:
         recent_file.set_recent_pending_unlocked(
             resolved_path, [HumanMessage(content="arrived-after-read")],
         )
 
-    saved, current_fingerprint = memory_router._write_recent_browser_payload(
+    saved, current_fingerprint, _current_identity = (
+        memory_router._write_recent_browser_payload(
         recent_path,
         [{"type": "human", "data": {"content": "stale-editor"}}],
         expected_fingerprint=loaded_fingerprint,
+        expected_identity_token=loaded_identity,
         expected_generation=generation,
+        )
     )
 
     assert saved is False
@@ -2131,6 +2135,7 @@ async def test_recent_file_route_rejects_stale_browser_snapshot(tmp_path, monkey
                 "filename": "recent_Role.json",
                 "chat": [{"role": "human", "text": "stale-editor"}],
                 "fingerprint": loaded["fingerprint"],
+                "identity_token": loaded["identity_token"],
             }
 
     monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
@@ -2177,6 +2182,7 @@ async def test_recent_file_route_saves_the_resolved_legacy_layout(
                 "filename": "recent_Role.json",
                 "chat": [{"role": "human", "text": "edited"}],
                 "fingerprint": loaded["fingerprint"],
+                "identity_token": loaded["identity_token"],
             }
 
     monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
@@ -2189,3 +2195,40 @@ async def test_recent_file_route_saves_the_resolved_legacy_layout(
     assert not (runtime_root / "Role" / "recent.json").exists()
     saved = json.loads(legacy_path.read_text(encoding="utf-8"))
     assert saved[0]["data"]["content"] == "edited"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_file_route_rejects_same_bytes_from_a_new_identity(
+    tmp_path, monkeypatch,
+):
+    from main_routers import memory_router
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    recent_file.write_recent_payload(recent_path, [])
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [{"role": "human", "text": "stale-editor"}],
+                "fingerprint": loaded["fingerprint"],
+                "identity_token": loaded["identity_token"],
+            }
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *a, **k: None)
+    loaded = await memory_router.get_recent_file("recent_Role.json")
+    recent_file.activate_recent_paths([recent_path])
+
+    response = await memory_router.save_recent_file(_Request())
+
+    assert response.status_code == 409
+    assert json.loads(response.body)["code"] == "RECENT_FILE_CONFLICT"
+    assert json.loads(recent_path.read_text(encoding="utf-8")) == []

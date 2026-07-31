@@ -1084,7 +1084,6 @@ async def test_download_restore_failure_still_rolls_back_recent_registry():
         "backup_path": "backup-path",
         "_recent_import_transaction": {"held_locks": []},
     }
-
     with patch.object(
         cloudsave_router_module,
         "_reload_after_character_download",
@@ -1108,6 +1107,63 @@ async def test_download_restore_failure_still_rolls_back_recent_registry():
     assert response.status_code == 500
     assert payload["rollback_error"] == "disk restore failed"
     assert payload["rolled_back"] is False
+    rollback_registry.assert_called_once_with(result)
+    finalize_import.assert_called_once_with(result)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_directly_cancelled_download_completion_rolls_back_before_release():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    reload_started = asyncio.Event()
+    config_manager = object()
+    result = {
+        "backup_path": "backup-path",
+        "_recent_import_transaction": {"held_locks": []},
+    }
+
+    async def _blocked_reload(_name):
+        reload_started.set()
+        await asyncio.Event().wait()
+
+    async def _noop_init():
+        return None
+
+    with patch.object(
+        cloudsave_router_module,
+        "_reload_after_character_download",
+        side_effect=_blocked_reload,
+    ), patch.object(
+        cloudsave_router_module,
+        "restore_cloudsave_operation_backup",
+    ) as restore_backup, patch.object(
+        cloudsave_router_module,
+        "rollback_cloudsave_character_import_registry",
+    ) as rollback_registry, patch.object(
+        cloudsave_router_module,
+        "get_initialize_character_data",
+        return_value=_noop_init,
+    ), patch.object(
+        cloudsave_router_module,
+        "notify_memory_server_reload",
+        AsyncMock(return_value=True),
+    ), patch.object(
+        cloudsave_router_module,
+        "finalize_cloudsave_character_import",
+    ) as finalize_import:
+        task = asyncio.create_task(
+            cloudsave_router_module._complete_cloudsave_character_download(
+                config_manager, "小满", result,
+            )
+        )
+        await asyncio.wait_for(reload_started.wait(), timeout=3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    restore_backup.assert_called_once_with(
+        config_manager, "backup-path", recent_locks_held=True,
+    )
     rollback_registry.assert_called_once_with(result)
     finalize_import.assert_called_once_with(result)
 

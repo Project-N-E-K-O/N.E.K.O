@@ -53,9 +53,10 @@ correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 # 多入口同时进 gate 检查会有 in-flight check → spawn 之间的 await 窗口；用 per-name lock
 # 串行化 gate+spawn 这一段，确保同名角色至多一个 review 在跑。
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
+_retired_derived_task_names: set[str] = set()
 
 
-async def cancel_character_derived_tasks(lanlan_name: str) -> int:
+async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
     """Cancel and drain review/compression tasks derived from one character identity."""
     cancel_event = correction_cancel_flags.get(lanlan_name)
     if cancel_event is not None:
@@ -140,6 +141,22 @@ def _get_review_spawn_lock(name: str) -> asyncio.Lock:
     return lock
 
 
+async def cancel_character_derived_tasks(lanlan_name: str) -> int:
+    """Retire derived-task admission, then cancel and drain existing work."""
+    async with _get_review_spawn_lock(lanlan_name):
+        _retired_derived_task_names.add(lanlan_name)
+        return await _cancel_character_derived_tasks_unlocked(lanlan_name)
+
+
+async def reconcile_character_derived_task_admission(
+    active_names: set[str],
+) -> None:
+    """Re-enable a retired name only after reload observes a published identity."""
+    for name in sorted(_retired_derived_task_names.intersection(active_names)):
+        async with _get_review_spawn_lock(name):
+            _retired_derived_task_names.discard(name)
+
+
 def _count_new_user_msgs_since_last_review(name: str, current_history: list) -> float:
     """Count the user msgs in history since the last review cutoff.
 
@@ -175,6 +192,8 @@ async def maybe_spawn_review(name: str) -> None:
     5. user msgs accumulated since the last review cutoff < ``MIN_NEW_MSGS_FOR_REVIEW``
     """
     async with _get_review_spawn_lock(name):
+        if name in _retired_derived_task_names:
+            return
         # Gate 1: in-flight
         existing = correction_tasks.get(name)
         if existing is not None and not existing.done():
@@ -639,6 +658,8 @@ async def _on_compress_done(
     LLM — it may be invoked while _get_settle_lock is held (/renew, /settle)
     and must not block."""
     if not _generation_is_current(admission_generation):
+        return
+    if lanlan_name in _retired_derived_task_names:
         return
     if ok:
         task = compress_backup_tasks.get(lanlan_name)
