@@ -194,6 +194,11 @@ async def test_concurrent_post_turn_tasks_keep_their_recorded_language():
             "_signal_check_record_turn",
             MagicMock(),
         ),
+        patch.object(
+            memory_server.signal_extraction,
+            "_signal_check_persist_locale",
+            MagicMock(),
+        ),
         patch.object(memory_server.runtime, "fact_store", fact_store),
         patch.object(memory_server.runtime, "reflection_engine", reflection_engine),
     ):

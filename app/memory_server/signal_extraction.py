@@ -104,6 +104,19 @@ def _signal_check_record_turn(
 ) -> None:
     state = _signal_check_state.setdefault(name, {'turns_since': 0, 'last_check_ts': None})
     state['turns_since'] = int(state.get('turns_since', 0) or 0) + 1
+    _signal_check_persist_locale(
+        name,
+        language=language,
+        locale_order=locale_order,
+    )
+
+
+def _signal_check_persist_locale(
+    name: str,
+    *,
+    language: str | None = None,
+    locale_order: int | None = None,
+) -> None:
     from utils.language_utils import is_supported_language_code
 
     if not is_supported_language_code(language):

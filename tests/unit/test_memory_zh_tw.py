@@ -1343,13 +1343,17 @@ def test_signal_loop_missing_locale_preserves_durable_session_locale(
 
 
 @pytest.mark.asyncio
-async def test_post_turn_locale_persistence_runs_off_event_loop(monkeypatch):
+async def test_post_turn_counter_stays_on_loop_and_locale_persistence_offloads(
+    monkeypatch,
+):
     from app.memory_server import gates, post_turn, signal_extraction
     from utils.llm_client import HumanMessage
 
     calls = []
+    events = []
 
     async def fake_to_thread(function, *args, **kwargs):
+        assert events == ["counter"]
         calls.append((function, args, kwargs))
         return function(*args, **kwargs)
 
@@ -1363,7 +1367,12 @@ async def test_post_turn_locale_persistence_runs_off_event_loop(monkeypatch):
     monkeypatch.setattr(
         signal_extraction,
         "_signal_check_record_turn",
-        lambda *_args, **_kwargs: None,
+        lambda *_args, **_kwargs: events.append("counter"),
+    )
+    monkeypatch.setattr(
+        signal_extraction,
+        "_signal_check_persist_locale",
+        lambda *_args, **_kwargs: events.append("locale"),
     )
     monkeypatch.setattr(gates, "_ais_powerful_memory_enabled", stop_after_locale)
 
@@ -1377,11 +1386,12 @@ async def test_post_turn_locale_persistence_runs_off_event_loop(monkeypatch):
 
     assert calls == [
         (
-            signal_extraction._signal_check_record_turn,
+            signal_extraction._signal_check_persist_locale,
             ("Neko",),
             {"language": "zh-TW", "locale_order": 123},
         ),
     ]
+    assert events == ["counter", "locale"]
 
 
 @pytest.mark.asyncio
