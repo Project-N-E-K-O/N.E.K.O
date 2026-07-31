@@ -2,10 +2,46 @@ import asyncio
 import errno
 import json
 import os
+from unittest.mock import patch
 
 import pytest
 
 from utils.cloudsave_runtime import CLOUDSAVE_DISABLED_ENV
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_unsubscribe_cancellation_waits_for_started_commit():
+    from main_routers.workshop_router import unsubscribe as unsubscribe_module
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+    committed = asyncio.Event()
+
+    async def _transaction(_request, commit_started):
+        commit_started.set()
+        started.set()
+        await release.wait()
+        committed.set()
+        return {"success": True}
+
+    with patch.object(
+        unsubscribe_module,
+        "_unsubscribe_workshop_item",
+        side_effect=_transaction,
+    ):
+        operation = asyncio.create_task(
+            unsubscribe_module.unsubscribe_workshop_item(object()),
+        )
+        await started.wait()
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+
+    assert committed.is_set()
 
 
 class _ForbiddenTombstoneConfig:

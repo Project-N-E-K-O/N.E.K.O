@@ -1479,6 +1479,52 @@ async def test_cloudsave_worker_wait_recovers_result_after_cancellation():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cancelled_upload_finishes_worker_before_propagating_cancel():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    event_loop_thread = threading.get_ident()
+
+    def _export(*args, **kwargs):
+        assert threading.get_ident() != event_loop_thread
+        started.set()
+        assert release.wait(3)
+        finished.set()
+        return {"detail": {}}
+
+    with patch.object(
+        cloudsave_router_module,
+        "get_config_manager",
+        return_value=object(),
+    ), patch.object(
+        cloudsave_router_module,
+        "is_cloudsave_provider_available",
+        return_value=True,
+    ), patch.object(
+        cloudsave_router_module,
+        "export_cloudsave_character_unit",
+        side_effect=_export,
+    ):
+        operation = asyncio.create_task(
+            cloudsave_router_module.post_cloudsave_character_upload(
+                "小满",
+                _DummyRequest({"overwrite": True}),
+            ),
+        )
+        assert await asyncio.to_thread(started.wait, 3)
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+
+    assert finished.is_set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_download_keeps_cloud_fence_through_reload_and_lock_finalize():
     from utils.cloudsave_runtime import (
         MaintenanceModeError,

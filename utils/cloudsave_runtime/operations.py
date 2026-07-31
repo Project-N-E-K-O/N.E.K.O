@@ -1383,22 +1383,26 @@ def import_local_cloudsave_snapshot(
             deleted_recent_paths = [
                 directory / "recent.json" for directory in delete_dir_targets
             ]
+            imported_recent_paths = {
+                Path(config_manager.memory_dir) / character_name / "recent.json"
+                for character_name in imported_character_names
+            }
             (
                 deleted_redirects,
                 deletion_scope,
                 deleted_deletion_snapshot,
             ) = fence_recent_deletions_and_clear_redirects(deleted_recent_paths)
-            redirect_snapshot = clear_recent_redirects(list(recent_targets))
-            redirect_snapshot.update(deleted_redirects)
-            deletion_snapshot = (
-                snapshot_recent_deletions(list(recent_targets)) - deletion_scope
-            ) | deleted_deletion_snapshot
-            deletion_restore_scope = set(recent_targets) | deletion_scope
-            imported_recent_paths = {
-                Path(config_manager.memory_dir) / character_name / "recent.json"
-                for character_name in imported_character_names
-            }
-            clear_recent_deletions(list(imported_recent_paths))
+            (
+                active_redirects,
+                activation_scope,
+                active_deletion_snapshot,
+            ) = activate_recent_paths(list(imported_recent_paths))
+            redirect_snapshot = dict(deleted_redirects)
+            redirect_snapshot.update(active_redirects)
+            deletion_snapshot = deleted_deletion_snapshot | (
+                active_deletion_snapshot - deletion_scope
+            )
+            registry_restore_scope = deletion_scope | activation_scope
             pending_snapshot = {
                 recent_path: get_recent_pending_unlocked(recent_path)
                 for recent_path in recent_targets
@@ -1473,8 +1477,9 @@ def import_local_cloudsave_snapshot(
                 finally:
                     for recent_path, messages in pending_snapshot.items():
                         set_recent_pending_unlocked(recent_path, messages)
-                    restore_recent_redirects(redirect_snapshot)
-                    restore_recent_deletions(
-                        list(deletion_restore_scope), deletion_snapshot,
+                    restore_recent_registry_state(
+                        list(registry_restore_scope),
+                        redirect_snapshot,
+                        deletion_snapshot,
                     )
                 raise

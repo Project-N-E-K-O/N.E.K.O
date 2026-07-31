@@ -1105,6 +1105,63 @@ def test_local_cloudsave_import_locks_recent_before_rollback_backup(tmp_path):
     assert writer_entered.is_set()
 
 
+@pytest.mark.unit
+def test_local_cloudsave_import_rejects_writer_waiting_before_activation(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils import cloudsave_runtime, recent_file
+    from utils.cloudsave_runtime import operations
+
+    _write_runtime_state(cm, character_name="B")
+    cloudsave_runtime.export_local_cloudsave_snapshot(cm)
+    current_path = Path(cm.memory_dir) / "B" / "recent.json"
+    cloud_payload = json.loads(current_path.read_text(encoding="utf-8"))
+    atomic_write_json(current_path, [{"content": "local-before-import"}])
+
+    writer_attempting = threading.Event()
+    writer_errors = []
+    writer = None
+    real_access = recent_file.recent_file_access
+    real_activate = operations.activate_recent_paths
+
+    @contextlib.contextmanager
+    def _probe_access(path):
+        if threading.current_thread() is writer:
+            writer_attempting.set()
+        with real_access(path) as resolved_path:
+            yield resolved_path
+
+    def _write_stale_batch():
+        try:
+            recent_file.write_recent_payload(
+                current_path,
+                [{"content": "stale-writer"}],
+            )
+        except Exception as exc:
+            writer_errors.append(exc)
+
+    def _activate_with_waiting_writer(paths):
+        nonlocal writer
+        writer = threading.Thread(target=_write_stale_batch)
+        writer.start()
+        assert writer_attempting.wait(3)
+        return real_activate(paths)
+
+    with patch.object(recent_file, "recent_file_access", _probe_access), patch.object(
+        operations,
+        "activate_recent_paths",
+        side_effect=_activate_with_waiting_writer,
+    ):
+        cloudsave_runtime.import_local_cloudsave_snapshot(cm)
+
+    assert writer is not None
+    writer.join(3)
+    assert not writer.is_alive()
+    assert len(writer_errors) == 1
+    assert isinstance(writer_errors[0], recent_file.RecentFileDeletedError)
+    assert json.loads(current_path.read_text(encoding="utf-8")) == cloud_payload
+
+
 def _tamper_manifest_with_memory_key(cm, hostile_key: str, placement_relative_path: str) -> None:
     placement_path = cm.cloudsave_dir / placement_relative_path
     placement_path.parent.mkdir(parents=True, exist_ok=True)

@@ -424,7 +424,12 @@ async def post_cloudsave_character_upload(name: str, request: Request):
     overwrite = overwrite_val
 
     try:
-        result = export_cloudsave_character_unit(config_manager, name, overwrite=overwrite)
+        result, export_cancelled = await _await_thread_call_to_completion(
+            export_cloudsave_character_unit,
+            config_manager,
+            name,
+            overwrite=overwrite,
+        )
     except MaintenanceModeError as exc:
         return _maintenance_mode_error_response(exc, character_name=name)
     except CloudsaveOperationError as exc:
@@ -442,6 +447,9 @@ async def post_cloudsave_character_upload(name: str, request: Request):
             status_code=500,
             character_name=name,
         )
+
+    if export_cancelled:
+        raise asyncio.CancelledError
 
     return {
         "success": True,

@@ -26,6 +26,7 @@ import os
 import json
 import asyncio
 import threading
+from contextlib import suppress
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from ..shared_state import ensure_steamworks as get_steamworks, get_config_manager
@@ -188,6 +189,28 @@ def _resolve_workshop_item_install_path(steamworks, item_id: int) -> str | None:
 
 @router.post('/unsubscribe')
 async def unsubscribe_workshop_item(request: Request):
+    """Protect a started local unsubscribe transaction from request cancellation."""
+    commit_started = asyncio.Event()
+    operation = asyncio.create_task(
+        _unsubscribe_workshop_item(request, commit_started),
+    )
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        if not commit_started.is_set():
+            operation.cancel()
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        if commit_started.is_set():
+            operation.result()
+        else:
+            with suppress(asyncio.CancelledError):
+                operation.result()
+        raise
+
+
+async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.Event):
     """
     Unsubscribe from a Steam Workshop item.
     Accepts a POST request containing the item ID.
@@ -516,6 +539,9 @@ async def unsubscribe_workshop_item(request: Request):
             recent_delete_transactions: list[dict] = []
             catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
             target_item_id_str = str(item_id_int)
+            # 从首个不可逆的 memory 删除起，外层会完成本地提交与 Steam 请求，
+            # 再把请求取消传播给调用方，避免丢失 recent 删除事务 token。
+            commit_started.set()
             for name in candidate_names:
                 if not name:
                     continue
