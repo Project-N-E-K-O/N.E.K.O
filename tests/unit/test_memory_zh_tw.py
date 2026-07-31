@@ -814,6 +814,70 @@ def test_review_locale_detection_ignores_ascii_speaker_labels():
     assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
 
 
+def test_multimodal_locale_detection_uses_text_parts_only():
+    from types import SimpleNamespace
+
+    from memory.recent import (
+        CompressedRecentHistoryManager,
+        _review_prompt_locale_text,
+    )
+    from utils.language_utils import detect_prompt_language
+
+    content = [
+        {"type": "text", "text": "好"},
+        {
+            "type": "image_url",
+            "image_url": {"url": "data:image/png;base64," + "A" * 400},
+        },
+    ]
+    message = SimpleNamespace(content=content)
+    manager = object.__new__(CompressedRecentHistoryManager)
+
+    review_text = _review_prompt_locale_text([{"content": content}])
+    summary_text = manager._summary_prompt_locale_text([message])
+
+    assert review_text == "好"
+    assert summary_text == "好"
+    assert "|image_url|" in manager._render_message_content(message)
+    assert detect_prompt_language(review_text, ui_language="zh-TW") == "zh-TW"
+    assert detect_prompt_language(summary_text, ui_language="zh-TW") == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_memory_reload_invalidates_prompt_locale_caches(monkeypatch):
+    from app.memory_server import locale_state, runtime
+
+    locale_state._locale_cache["Neko"] = ("zh-CN", 1, 1)
+    locale_state._subject_locale_cache["Neko"] = {
+        "group": ("zh-CN", 1, 1),
+    }
+    invalidations = []
+    original_invalidate = locale_state.invalidate_prompt_locale_caches
+
+    def invalidate():
+        invalidations.append(True)
+        original_invalidate()
+
+    def stop_after_invalidation():
+        raise RuntimeError("stop after locale cache invalidation")
+
+    monkeypatch.setattr(
+        locale_state,
+        "invalidate_prompt_locale_caches",
+        invalidate,
+    )
+    monkeypatch.setattr(
+        runtime,
+        "CompressedRecentHistoryManager",
+        stop_after_invalidation,
+    )
+
+    assert await runtime.reload_memory_components() is False
+    assert invalidations == [True]
+    assert locale_state._locale_cache == {}
+    assert locale_state._subject_locale_cache == {}
+
+
 @pytest.mark.asyncio
 async def test_pregame_history_request_forwards_session_locale(monkeypatch):
     from main_routers.game_router import pregame

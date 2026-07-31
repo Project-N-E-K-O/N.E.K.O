@@ -82,9 +82,35 @@ def _review_message_content(message) -> str:
     return str(content)
 
 
+def _message_locale_text(message) -> str:
+    if isinstance(message, dict):
+        content = message.get('content', '')
+        if 'content' not in message and isinstance(message.get('data'), dict):
+            content = message['data'].get('content', '')
+    elif hasattr(message, 'content'):
+        content = message.content
+    else:
+        return ''
+    if isinstance(content, str):
+        return content
+    if not isinstance(content, list):
+        return ''
+    parts = []
+    for item in content:
+        if not isinstance(item, dict):
+            if isinstance(item, str):
+                parts.append(item)
+            continue
+        item_type = item.get('type')
+        text = item.get('text')
+        if item_type in (None, 'text') and isinstance(text, str):
+            parts.append(text)
+    return '\n'.join(parts)
+
+
 def _review_prompt_locale_text(messages: list) -> str:
     """Return raw message content without speaker labels."""
-    return '\n\n'.join(_review_message_content(message) for message in messages)
+    return '\n\n'.join(_message_locale_text(message) for message in messages)
 
 
 async def review_context_token_count(messages: list) -> int:
@@ -535,7 +561,7 @@ class CompressedRecentHistoryManager:
         return RECENT_PER_MESSAGE_MAX_TOKENS // 2
 
     def _summary_prompt_locale_text(self, messages):
-        return "\n".join(self._render_message_content(msg) for msg in messages)
+        return "\n".join(_message_locale_text(msg) for msg in messages)
 
     def _render_messages_to_text(self, messages, lanlan_name):
         """把消息列表渲染成喂给摘要 LLM 的文本：每条做头尾保留截断 + role 前缀。

@@ -42,6 +42,12 @@ _locale_locks: dict[str, threading.Lock] = {}
 _locale_locks_guard = threading.Lock()
 
 
+def invalidate_prompt_locale_caches() -> None:
+    """Force the next locale lookup to reload both durable sidecars."""
+    _locale_cache.clear()
+    _subject_locale_cache.clear()
+
+
 def _locale_path(name: str) -> str:
     from memory import ensure_character_dir
     from utils.config_manager import get_config_manager

@@ -65,7 +65,7 @@ from utils.storage_location_bootstrap import get_storage_startup_blocking_reason
 from utils.asgi_body_limit import InboundBodySizeLimitMiddleware
 from utils.host_origin_guard import HostOriginGuardMiddleware
 
-from . import gates
+from . import gates, locale_state
 from ._shared import logger, validate_lanlan_name
 
 
@@ -223,6 +223,7 @@ async def reload_memory_components():
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
         try:
+            locale_state.invalidate_prompt_locale_caches()
             # 先创建所有新实例
             new_recent = CompressedRecentHistoryManager()
             new_settings = ImportantSettingsManager()
