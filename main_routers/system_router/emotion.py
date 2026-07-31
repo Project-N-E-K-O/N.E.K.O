@@ -449,9 +449,10 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         """Whether nothing was dropped between the alias and the marker.
 
         compact_text has the punctuation removed, so a marker one clause later
-        looks adjacent: `我很開心，不下去了` would read as denying the happiness
-        that the first clause asserts.
+        looks adjacent, and the denial in that clause would be read as denying
+        the emotion the first clause asserts.
         """
+        # 例：`我很開心，不下去了` —— `不下去` 属于后一小句。
         if position <= 0 or position >= len(compact_origin):
             return True
         return compact_origin[position] == compact_origin[position - 1] + 1
