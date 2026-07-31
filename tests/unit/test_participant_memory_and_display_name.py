@@ -81,7 +81,7 @@ async def test_display_name_cannot_forge_markup_in_persona_metadata():
 @pytest.mark.asyncio
 async def test_display_name_never_creates_a_persona_section():
     """为存名字而建空 section 会让每个说过话的成员在 persona.json 里留
-    空壳（渲染/晋升/refine 全要空转它们）——section 只能由晋升创建。"""
+    空壳（渲染/晋升/refine 全要空转它们）——section 只能由晋升创建。"""  # noqa: DOCSTRING_CJK
     subject = MemorySubject.group_participant("qq", "7788", "1001")
     manager = _DisplayNamePersona({})
 
@@ -97,7 +97,7 @@ async def test_display_name_never_creates_a_persona_section():
 @pytest.mark.asyncio
 async def test_display_name_scope_mismatch_is_fail_closed():
     """section key 不含 scope：同 key 可能住着另一个隔离域的数据，给别人
-    的 section 盖自己的名字 = 跨域改元数据。"""
+    的 section 盖自己的名字 = 跨域改元数据。"""  # noqa: DOCSTRING_CJK
     subject = MemorySubject.group_chat("qq", "7788")
     other_scope = MemorySubject.create(
         "group_chat", "qq:7788", scope="custom:scope",
@@ -116,7 +116,7 @@ async def test_display_name_scope_mismatch_is_fail_closed():
 @pytest.mark.asyncio
 async def test_display_name_all_structural_is_dropped_not_cleared():
     """整条名字都是结构字符 → 中和后为空：按"没有名字"丢弃，且不清掉已
-    盖上的旧名（名字暂时拿不到时旧名比裸 id 有用）。"""
+    盖上的旧名（名字暂时拿不到时旧名比裸 id 有用）。"""  # noqa: DOCSTRING_CJK
     subject = MemorySubject.group_chat("qq", "7788")
     section = {
         "facts": [{"text": "x"}],
@@ -161,7 +161,7 @@ async def test_scoped_facts_route_rejects_oversized_display_name():
 @pytest.mark.asyncio
 async def test_scoped_facts_route_stamps_sanitized_display_name():
     """写入成功后名字（中和过）打到 persona section；写入本身不因
-    display_name 刷新失败而失败。"""
+    display_name 刷新失败而失败。"""  # noqa: DOCSTRING_CJK
     from app.memory_server import routes as memory_routes
     from app.memory_server.routes import (
         ScopedFactInput,
@@ -207,7 +207,7 @@ async def test_scoped_facts_route_stamps_sanitized_display_name():
 @pytest.mark.asyncio
 async def test_scoped_history_segments_stamp_only_ok_segments():
     """批段路径：只有模型给出结论（ok）的段刷新显示名；failed 段整桶保留
-    重试，下次照样带名字来。"""
+    重试，下次照样带名字来。"""  # noqa: DOCSTRING_CJK
     from app.memory_server import routes as memory_routes
     from app.memory_server.routes import ScopedHistoryRequest
 
@@ -254,7 +254,7 @@ async def test_scoped_history_segments_stamp_only_ok_segments():
 
 def test_scoped_header_renders_display_name_with_stable_id():
     """有名字 → 名字+稳定 id 同标题（名字可变可重复，id 才能与消息头/
-    存储对得上）；无名字/未知 kind → 原有回退形态一字不变。"""
+    存储对得上）；无名字/未知 kind → 原有回退形态一字不变。"""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         get_scoped_persona_section_header,
     )
@@ -278,7 +278,7 @@ def test_scoped_header_renders_display_name_with_stable_id():
 
 def test_scoped_header_language_tables_cover_all_kinds_and_langs():
     """named 表与既有表同语言覆盖同 kind 覆盖：漏一门语言，那门语言的
-    用户一开显示名就掉回英文。"""
+    用户一开显示名就掉回英文。"""  # noqa: DOCSTRING_CJK
     from config.prompts.prompts_memory import (
         SCOPED_PERSONA_SECTION_HEADER,
         SCOPED_PERSONA_SECTION_HEADER_NAMED,
@@ -297,7 +297,7 @@ def test_scoped_header_language_tables_cover_all_kinds_and_langs():
 def test_render_sanitizes_hand_edited_display_name():
     """渲染是唯一把 display_name 拼进 prompt 的地方，而 persona.json 可被
     手改：塞进换行/段首标记的名字必须在渲染侧被第二层中和（#2605 的双侧
-    中和模式）。"""
+    中和模式）。"""  # noqa: DOCSTRING_CJK
     from memory.persona.rendering import RenderingMixin
 
     subject = MemorySubject.group_chat("qq", "7788")
@@ -341,7 +341,7 @@ def test_render_sanitizes_hand_edited_display_name():
 async def test_single_shape_trust_rides_with_label_only():
     """单发形状的 speaker_trust 与批段同一组 provenance 字段；trust 挂在
     label 上——群 digest（无 label）即便误传 trust 也必须丢弃，集体描述符
-    不是发言人。"""
+    不是发言人。"""  # noqa: DOCSTRING_CJK
     from app.memory_server import routes as memory_routes
     from app.memory_server.routes import ScopedHistoryRequest
 
@@ -434,7 +434,7 @@ async def test_group_name_refresh_rebuilds_and_keeps_on_failure():
 @pytest.mark.asyncio
 async def test_group_digest_carries_display_name_when_known():
     """群 digest 结算：拿得到群名带 display_name；拿不到时**不带该参数**
-    （调用形状与升级前逐字节一致，这是存量 mock 断言锁死的契约）。"""
+    （调用形状与升级前逐字节一致，这是存量 mock 断言锁死的契约）。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
@@ -510,7 +510,7 @@ def _participant_plugin(*, switch_on=True, bridge=None):
 def test_participant_recall_resolver_is_fail_closed():
     """resolver 是三条读路径共用的 subject 组装：返回 [] 表示无授权域，
     bridge 对 [] 直接空结果——**任何情况下都不返回 None**（None = legacy
-    私聊主人语料）。"""
+    私聊主人语料）。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.memory_tool_service import (
         resolve_participant_recall_subjects,
     )
@@ -537,7 +537,7 @@ async def test_recall_tool_participant_turn_never_reaches_legacy_corpus():
     """攻击者视角：非 admin 好友的轮次一旦让 recall_memory 落到
     subjects=None，主人的私聊记忆就会被读给陌生人。逐个踢掉 fail-closed
     的支点（空 sender / 合成轮 / 开关关闭），断言要么带 participant
-    subject 发出、要么一行都不读——**绝不发 None**。"""
+    subject 发出、要么一行都不读——**绝不发 None**。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.memory_tool_service import (
         QQMemoryToolService,
     )
@@ -598,7 +598,7 @@ async def test_recall_tool_participant_turn_never_reaches_legacy_corpus():
 
 @pytest.mark.asyncio
 async def test_recall_tool_participant_post_read_revocation_drops_result():
-    """读后复检：opt-out 落在 HTTP 飞行期间时，已读回的数据也不交给模型。"""
+    """读后复检：opt-out 落在 HTTP 飞行期间时，已读回的数据也不交给模型。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.memory_tool_service import (
         QQMemoryToolService,
     )
@@ -631,7 +631,7 @@ async def test_recall_tool_participant_post_read_revocation_drops_result():
 @pytest.mark.asyncio
 async def test_recall_tool_admin_private_keeps_legacy_none():
     """admin 私聊照旧走 legacy（subjects 字段整个缺席）：participant 改造
-    不许动主人自己的召回。"""
+    不许动主人自己的召回。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.memory_tool_service import (
         QQMemoryToolService,
     )
@@ -702,7 +702,7 @@ def _participant_session_plugin(history, *, switch_on=True, nickname="小明"):
 async def test_participant_finalize_settles_scoped_never_legacy_process():
     """participant 会话的 finalize 必须走 scoped 单发（label 带可追溯后缀
     + trust 与群成员同形 + display_name），legacy /process、/settle 一次
-    都不能碰——那是主人的语料。"""
+    都不能碰——那是主人的语料。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -735,7 +735,7 @@ async def test_participant_finalize_settles_scoped_never_legacy_process():
 @pytest.mark.asyncio
 async def test_participant_finalize_missing_sender_fails_closed():
     """防御性 fail-closed：没有 sender 就没有合法写入目标——宁可丢弃缓冲
-    也不能把它写进任何别的语料域（legacy /process 是最近的悬崖）。"""
+    也不能把它写进任何别的语料域（legacy /process 是最近的悬崖）。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -758,7 +758,7 @@ async def test_participant_finalize_missing_sender_fails_closed():
 @pytest.mark.asyncio
 async def test_participant_finalize_honors_cutoff_and_floor_exemption():
     """opt-out cutoff 截断 + nonconsent floor 的 cutoff 豁免（对偶群分支）：
-    cutoff 之后记下的未授权边界属于下一时代，不得吞掉本窗口的已授权前缀。"""
+    cutoff 之后记下的未授权边界属于下一时代，不得吞掉本窗口的已授权前缀。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -790,7 +790,7 @@ async def test_participant_finalize_honors_cutoff_and_floor_exemption():
 @pytest.mark.asyncio
 async def test_participant_cache_delta_never_posts_legacy_cache():
     """participant 会话在 per-turn /cache 钩子上必须是纯调度点：一条消息
-    都不进 legacy /cache；积压过线时催后台 scoped drain。"""
+    都不进 legacy /cache；积压过线时催后台 scoped drain。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
@@ -840,7 +840,7 @@ def test_prompt_builder_private_policy_follows_participant_switch():
 def test_prime_gates_participant_and_demoted_legacy_sessions():
     """prime 的私聊门控三形态：participant 会话跟实时开关走；legacy 会话
     被降权后 fail-closed 停写（绝不把非 admin 的发言并进主人语料）；
-    中途开闸的无章会话补 participant 章。"""
+    中途开闸的无章会话补 participant 章。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_runtime_service import (
         QQSessionRuntimeService,
     )
@@ -908,7 +908,7 @@ def _settings_plugin(sessions):
 def test_participant_off_transition_stamps_cutoff_once():
     """OFF 盖章：cutoff = 转变时刻的历史长度 + pending 章；已有未消费
     disable 章时保留更早的界（对偶群版，覆写会打歪 floor 豁免判据）。
-    群会话与 legacy 会话不参与。"""
+    群会话与 legacy 会话不参与。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     participant = {
@@ -950,7 +950,7 @@ def test_participant_off_transition_stamps_cutoff_once():
 def test_participant_on_transition_pushes_nonconsent_floor():
     """ON 盖章：OFF 时代可能有未 stamp 的尾行（nonconsent 边界只在生成轮
     finally 记）——floor 推到转变时刻即闭合；带未消费 disable 章的会话
-    不动（旧时代结算先行）。"""
+    不动（旧时代结算先行）。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     off_era = {
@@ -983,7 +983,7 @@ def test_participant_on_transition_pushes_nonconsent_floor():
 async def test_participant_disable_settle_consumes_or_keeps_marks():
     """OFF 结算任务：成功 → 结算到 cutoff、弹 pending 章、flag 归 False；
     失败 → 保留章与 cutoff 交 discard/关机兜底（cutoff 围栏保证无论谁
-    最终结算，入库的只有 opt-out 之前的前缀）。"""
+    最终结算，入库的只有 opt-out 之前的前缀）。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     async def _run_locked(key, coro_factory):
@@ -1032,7 +1032,7 @@ async def test_participant_disable_settle_consumes_or_keeps_marks():
 
 def test_participant_rollback_restores_flag_and_unstamps():
     """ON→OFF 保存失败：恢复运行时策略并撤掉尚未被结算消费的章；OFF→ON
-    方向被延迟发布扣着，失败时根本没发布过、无会话状态可回滚。"""
+    方向被延迟发布扣着，失败时根本没发布过、无会话状态可回滚。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
 
     stamped = {
@@ -1064,7 +1064,7 @@ def test_participant_rollback_restores_flag_and_unstamps():
 def test_participant_key_is_deferred_on_open_and_immediate_on_close():
     """第 4 个 consent 键遵守同一不对称：开必须等写盘成功（延迟发布），
     关立即生效。用白名单循环的行为直接验证——漏进白名单的键会立即发布，
-    写盘失败窗口内的轮次就会在"从未成功保存的授权"下入库。"""
+    写盘失败窗口内的轮次就会在"从未成功保存的授权"下入库。"""  # noqa: DOCSTRING_CJK
     import inspect
 
     from plugin.plugins.qq_auto_reply import settings_service as module
@@ -1100,7 +1100,7 @@ class _ForgetFactStore(FactStore):
 @pytest.mark.asyncio
 async def test_scoped_forget_erases_exactly_one_domain(tmp_path):
     """删除面 = 精确 (key, scope)：另一个 subject、legacy 无戳语料、
-    同 key 不同 scope 的条目一根毫毛都不能动。"""
+    同 key 不同 scope 的条目一根毫毛都不能动。"""  # noqa: DOCSTRING_CJK
     target = MemorySubject.participant("qq", "1001")
     other = MemorySubject.participant("qq", "1002")
     same_key_other_scope = MemorySubject.create(
@@ -1143,7 +1143,7 @@ async def test_scoped_forget_erases_exactly_one_domain(tmp_path):
 async def test_scoped_forget_persona_drops_section_and_corrections():
     """persona 侧：条目删净后 section 整段删（连 display_name）；混居其它
     scope 时 section 保留；pending corrections 里的 subject 条目一并清，
-    否则 resolve 会把已删文本写回（回流）。"""
+    否则 resolve 会把已删文本写回（回流）。"""  # noqa: DOCSTRING_CJK
     from memory.persona.facts import FactsMixin
 
     target = MemorySubject.participant("qq", "1001")
@@ -1231,7 +1231,7 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
 async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
     """reflection 侧不走 asave_reflections：它的归档合并会把磁盘上
     merged / promote_blocked 的条目并回主文件，删除被静默 undo。直写后
-    这些状态的 subject 条目必须真的消失；surfaced 引用一并清。"""
+    这些状态的 subject 条目必须真的消失；surfaced 引用一并清。"""  # noqa: DOCSTRING_CJK
     from memory.reflection.persistence import PersistenceMixin
 
     target = MemorySubject.participant("qq", "1001")
@@ -1314,7 +1314,7 @@ async def test_scoped_forget_route_wires_all_three_stores():
 
 def test_participant_ui_key_exists_in_every_locale_bundle():
     """9 个 i18n bundle 都要有新开关的文案（插件 i18n 不进
-    check_i18n_sync，覆盖由本守卫兜底——对齐既有群记忆 key 的守卫）。"""
+    check_i18n_sync，覆盖由本守卫兜底——对齐既有群记忆 key 的守卫）。"""  # noqa: DOCSTRING_CJK
     from pathlib import Path
 
     i18n_dir = (
@@ -1358,7 +1358,7 @@ def _read_path_plugin(*, switch_on=True):
 async def test_bootstrap_section_participant_never_fetches_legacy():
     """核心记忆段三分支：participant 轮走 scoped bootstrap（subjects=
     [participant]），legacy fetch_bootstrap_memory（主人的私聊 persona）
-    一次都不能碰；sender 空时 resolver 返回 []、bridge 直接空串。"""
+    一次都不能碰；sender 空时 resolver 返回 []、bridge 直接空串。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_instruction_service import (
         QQSessionInstructionService,
     )
@@ -1416,7 +1416,7 @@ async def test_bootstrap_section_participant_never_fetches_legacy():
 
 @pytest.mark.asyncio
 async def test_bootstrap_section_participant_post_fetch_revocation():
-    """读后复检：opt-out 落在 fetch 飞行期间时丢弃已读回的数据。"""
+    """读后复检：opt-out 落在 fetch 飞行期间时丢弃已读回的数据。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_instruction_service import (
         QQSessionInstructionService,
     )
@@ -1444,7 +1444,7 @@ async def test_bootstrap_section_participant_post_fetch_revocation():
 @pytest.mark.asyncio
 async def test_fallback_recall_participant_subjects_and_recheck():
     """回落召回（不支持 tool call 的线路）：participant 轮 subjects=
-    [participant]；读后开关撤销时整段丢弃。admin 私聊仍 subjects=None。"""
+    [participant]；读后开关撤销时整段丢弃。admin 私聊仍 subjects=None。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.reply_context_node import (
         QQReplyContextNode,
     )
@@ -1493,7 +1493,7 @@ async def test_fallback_recall_participant_subjects_and_recheck():
 @pytest.mark.asyncio
 async def test_participant_mentions_bind_to_delivery_and_fail_closed():
     """mention 计数（防重复 suppression 的输入）：participant 轮按对方
-    subject 记；合成轮/空 sender/开关关闭/会话停写时一概不记。"""
+    subject 记；合成轮/空 sender/开关关闭/会话停写时一概不记。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -1538,7 +1538,7 @@ async def test_participant_mentions_bind_to_delivery_and_fail_closed():
 
 def test_consent_snapshot_and_sanitize_cover_participant_turns():
     """生成时刻的授权依赖记账 + 生成前撤除：participant 轮的 prompt 依赖
-    该开关，撤销时 scoped 召回与 bootstrap 段一起撤。"""
+    该开关，撤销时 scoped 召回与 bootstrap 段一起撤。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -1583,7 +1583,7 @@ def test_consent_snapshot_and_sanitize_cover_participant_turns():
 
 def test_nonconsent_boundary_stamps_private_turns_too():
     """未授权边界的生产侧：私聊轮同样要盖（此前限定群轮）——floor 的三个
-    消费点（finalize/实时排空/ON 盖章）都指望它挡住 OFF 时代的行。"""
+    消费点（finalize/实时排空/ON 盖章）都指望它挡住 OFF 时代的行。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.reply_generation_service import (
         QQReplyGenerationService,
     )
@@ -1608,7 +1608,7 @@ def test_nonconsent_boundary_stamps_private_turns_too():
 async def test_member_flush_segments_carry_bare_display_name():
     """成员段的调用点断言（不只测 display_name_from_label 谓词）：段里
     display_name = 剥掉后缀的昵称本体；label 退化成纯 id 的成员段不带
-    display_name 键。"""
+    display_name 键。"""  # noqa: DOCSTRING_CJK
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
