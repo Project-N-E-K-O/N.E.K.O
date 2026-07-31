@@ -254,7 +254,10 @@ def clear_recent_redirects(paths: list[Any]) -> dict[str, str]:
 def restore_recent_redirects(redirects: dict[str, str]) -> None:
     """Restore redirects removed by a transaction that subsequently rolled back."""
     with _LOCKS_GUARD:
-        _REDIRECTS.update(redirects)
+        _REDIRECTS.update({
+            _lock_key(source): _lock_key(target)
+            for source, target in redirects.items()
+        })
 
 
 def read_recent_text_unlocked(path: Any, *, encoding: str = "utf-8") -> str:

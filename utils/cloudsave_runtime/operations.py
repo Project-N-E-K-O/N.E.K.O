@@ -20,6 +20,7 @@ Split out of the former monolithic ``utils/cloudsave_runtime.py``.
 
 from __future__ import annotations
 
+import json
 import shutil
 from contextlib import nullcontext
 from copy import deepcopy
@@ -30,6 +31,8 @@ from utils.file_utils import atomic_write_json
 from utils.recent_file import (
     clear_recent_redirects,
     get_recent_pending_unlocked,
+    read_recent_text_unlocked,
+    recent_file_access,
     recent_file_locks,
     restore_recent_redirects,
     set_recent_pending_unlocked,
@@ -108,6 +111,41 @@ def _assert_single_character_name_safe(character_name: str, *, context: str) -> 
         ) from exc
 
 
+def _recent_pending_payload(messages: list[Any]) -> list[Any]:
+    if not messages:
+        return []
+    if all(isinstance(message, dict) for message in messages):
+        return deepcopy(messages)
+    from utils.llm_client import messages_to_dict
+    return messages_to_dict(messages)
+
+
+def _stage_recent_memory_file(
+    stage_root: Path,
+    relative_path: str,
+    source_path: Path,
+) -> Path | None:
+    """Stage one locked recent snapshot, including accepted pending turns."""
+    with recent_file_access(source_path) as resolved_path:
+        pending = get_recent_pending_unlocked(resolved_path)
+        resolved_source = Path(resolved_path)
+        if not resolved_source.is_file():
+            if not pending:
+                return None
+            disk_payload: list[Any] = []
+        elif not pending:
+            return _stage_memory_file(stage_root, relative_path, resolved_source)
+        else:
+            disk_payload = json.loads(read_recent_text_unlocked(resolved_source))
+            if not isinstance(disk_payload, list):
+                raise ValueError(f"recent history is not a list: {resolved_source}")
+        return _stage_json_file(
+            stage_root,
+            relative_path,
+            disk_payload + _recent_pending_payload(pending),
+        )
+
+
 def export_cloudsave_character_unit(config_manager, character_name: str, *, overwrite: bool = False) -> dict[str, Any]:
     if is_cloudsave_disabled():
         _raise_cloudsave_disabled("single_character_upload", character_name=character_name)
@@ -184,10 +222,16 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
         staged_memory_relative_paths: set[str] = set()
         for filename in MANAGED_MEMORY_FILENAMES:
             source_path = character_memory_dir / filename
-            if not source_path.is_file():
-                continue
             relative_path = f"memory/{character_name}/{filename}"
-            staged_entries[relative_path] = _stage_memory_file(stage_root, relative_path, source_path)
+            if filename == "recent.json":
+                staged_path = _stage_recent_memory_file(stage_root, relative_path, source_path)
+                if staged_path is None:
+                    continue
+                staged_entries[relative_path] = staged_path
+            else:
+                if not source_path.is_file():
+                    continue
+                staged_entries[relative_path] = _stage_memory_file(stage_root, relative_path, source_path)
             staged_memory_relative_paths.add(relative_path)
 
         single_character_entries, meta_payload = _stage_single_character_cloudsave_entries(
@@ -200,6 +244,11 @@ def export_cloudsave_character_unit(config_manager, character_name: str, *, over
             exported_at=exported_at,
             client_id=str(cloud_state.get("client_id", "")),
             device_id=str(manifest.get("device_id", "")),
+            memory_stage_overrides={
+                filename: staged_entries[f"memory/{character_name}/{filename}"]
+                for filename in MANAGED_MEMORY_FILENAMES
+                if f"memory/{character_name}/{filename}" in staged_entries
+            },
         )
         staged_entries.update(single_character_entries)
 
@@ -393,26 +442,46 @@ def import_cloudsave_character_unit(
         backup_targets = set(runtime_targets) | delete_file_targets
         if backup_before_overwrite or not local_exists:
             backup_targets.add(target_memory_dir)
-        backup_records = _snapshot_existing_targets(config_manager, backup_root, backup_targets)
-        _write_operation_backup_metadata(
-            config_manager,
-            backup_root,
-            operation="character_download",
-            character_name=character_name,
-            backup_records=backup_records,
-        )
+        recent_target = target_memory_dir / "recent.json"
+        with recent_file_locks([recent_target]):
+            redirect_snapshot = clear_recent_redirects([recent_target])
+            pending_snapshot = {
+                recent_target: get_recent_pending_unlocked(recent_target),
+            }
+            backup_records: list[dict[str, Any]] = []
+            try:
+                # 锁覆盖 rollback snapshot、apply/delete 与内部 rollback，关闭
+                # fence 前已启动 writer 的 copy/apply 窗口。
+                backup_records = _snapshot_existing_targets(
+                    config_manager, backup_root, backup_targets,
+                )
+                _write_operation_backup_metadata(
+                    config_manager,
+                    backup_root,
+                    operation="character_download",
+                    character_name=character_name,
+                    backup_records=backup_records,
+                    recent_pending=pending_snapshot,
+                    recent_redirects=redirect_snapshot,
+                )
 
-        try:
-            for target_path, staged_path in runtime_targets.items():
-                _facade._apply_runtime_file(staged_path, target_path)
+                for target_path, staged_path in runtime_targets.items():
+                    _facade._apply_runtime_file(staged_path, target_path)
 
-            for target_path in sorted(delete_file_targets):
-                if target_path.exists():
-                    target_path.unlink()
-                    _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
-        except Exception:
-            _restore_backup_records(backup_records)
-            raise
+                for target_path in sorted(delete_file_targets):
+                    if target_path.exists():
+                        target_path.unlink()
+                        _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
+            except Exception:
+                try:
+                    _restore_backup_records(backup_records)
+                finally:
+                    set_recent_pending_unlocked(
+                        recent_target, pending_snapshot[recent_target],
+                    )
+                    restore_recent_redirects(redirect_snapshot)
+                raise
+            set_recent_pending_unlocked(recent_target, [])
 
         detail = build_cloudsave_character_detail(config_manager, character_name)
         return {
@@ -441,10 +510,15 @@ def _collect_memory_stage_entries(
                 stage=f"stage_memory:{character_name}:{filename}",
             )
             source_path = character_dir / filename
-            if not source_path.is_file():
-                continue
             relative_path = f"memory/{character_name}/{filename}"
-            staged_entries[relative_path] = _stage_memory_file(stage_root, relative_path, source_path)
+            if filename == "recent.json":
+                staged_path = _stage_recent_memory_file(stage_root, relative_path, source_path)
+                if staged_path is not None:
+                    staged_entries[relative_path] = staged_path
+            elif source_path.is_file():
+                staged_entries[relative_path] = _stage_memory_file(
+                    stage_root, relative_path, source_path,
+                )
     return staged_entries
 
 
@@ -547,9 +621,11 @@ def _write_operation_backup_metadata(
     operation: str,
     character_name: str,
     backup_records: list[dict[str, Any]],
+    recent_pending: dict[Path, list[Any]] | None = None,
+    recent_redirects: dict[str, str] | None = None,
 ) -> Path:
     payload = {
-        "schema_version": 1,
+        "schema_version": 2 if recent_pending is not None else 1,
         "operation": operation,
         "character_name": character_name,
         "targets": [
@@ -561,6 +637,29 @@ def _write_operation_backup_metadata(
             for record in backup_records
         ],
     }
+    if recent_pending is not None:
+        payload["recent_state"] = {
+            "pending": [
+                {
+                    "relative_path": str(
+                        _managed_target_relative_path(config_manager, Path(path))
+                    ).replace("\\", "/"),
+                    "messages": _recent_pending_payload(messages),
+                }
+                for path, messages in recent_pending.items()
+            ],
+            "redirects": [
+                {
+                    "source_relative_path": str(
+                        _managed_target_relative_path(config_manager, Path(source))
+                    ).replace("\\", "/"),
+                    "target_relative_path": str(
+                        _managed_target_relative_path(config_manager, Path(target))
+                    ).replace("\\", "/"),
+                }
+                for source, target in (recent_redirects or {}).items()
+            ],
+        }
     metadata_path = backup_root / "_operation.json"
     atomic_write_json(metadata_path, payload, ensure_ascii=False, indent=2)
     return metadata_path
@@ -588,7 +687,56 @@ def restore_cloudsave_operation_backup(config_manager, backup_root: str | Path) 
                 "is_dir": bool(target.get("is_dir", False)),
             }
         )
-    _restore_backup_records(backup_records)
+    recent_state = metadata.get("recent_state")
+    if not isinstance(recent_state, dict):
+        _restore_backup_records(backup_records)
+        return
+
+    from utils.llm_client import messages_from_dict
+
+    pending_snapshot: dict[Path, list[Any]] = {}
+    for entry in recent_state.get("pending") or []:
+        if not isinstance(entry, dict):
+            continue
+        relative_path = str(entry.get("relative_path") or "")
+        messages = entry.get("messages")
+        if not relative_path or not isinstance(messages, list):
+            continue
+        pending_snapshot[_resolve_managed_target_path(config_manager, relative_path)] = (
+            messages_from_dict(messages)
+        )
+
+    redirect_snapshot: dict[str, str] = {}
+    for entry in recent_state.get("redirects") or []:
+        if not isinstance(entry, dict):
+            continue
+        source_relative_path = str(entry.get("source_relative_path") or "")
+        target_relative_path = str(entry.get("target_relative_path") or "")
+        if not source_relative_path or not target_relative_path:
+            continue
+        source_path = _resolve_managed_target_path(config_manager, source_relative_path)
+        target_path = _resolve_managed_target_path(config_manager, target_relative_path)
+        redirect_snapshot[str(source_path)] = str(target_path)
+
+    recent_paths = set(pending_snapshot)
+    recent_paths.update(Path(path) for path in redirect_snapshot)
+    recent_paths.update(Path(path) for path in redirect_snapshot.values())
+    with recent_file_locks(list(recent_paths)):
+        current_redirects = clear_recent_redirects(list(recent_paths))
+        current_pending = {
+            path: get_recent_pending_unlocked(path)
+            for path in recent_paths
+        }
+        try:
+            _restore_backup_records(backup_records)
+            for path in recent_paths:
+                set_recent_pending_unlocked(path, pending_snapshot.get(path, []))
+            restore_recent_redirects(redirect_snapshot)
+        except Exception:
+            for path, messages in current_pending.items():
+                set_recent_pending_unlocked(path, messages)
+            restore_recent_redirects(current_redirects)
+            raise
 
 
 def _rebuild_cloudsave_manifest_from_disk(
@@ -805,6 +953,14 @@ def export_local_cloudsave_snapshot(
                 ),
             ),
         }
+        memory_stage_entries = _collect_memory_stage_entries(
+            config_manager,
+            stage_root,
+            character_names,
+            deadline_monotonic=deadline_monotonic,
+            operation="export",
+        )
+        staged_entries.update(memory_stage_entries)
         manifest = ensure_cloudsave_manifest(config_manager)
         manifest_device_id = str(manifest.get("device_id", ""))
         for name, binding_payload in binding_payloads.items():
@@ -828,17 +984,13 @@ def export_local_cloudsave_snapshot(
                 exported_at=exported_at,
                 client_id=str(cloud_state.get("client_id", "")),
                 device_id=manifest_device_id,
+                memory_stage_overrides={
+                    filename: memory_stage_entries[f"memory/{name}/{filename}"]
+                    for filename in MANAGED_MEMORY_FILENAMES
+                    if f"memory/{name}/{filename}" in memory_stage_entries
+                },
             )
             staged_entries.update(single_character_entries)
-        staged_entries.update(
-            _collect_memory_stage_entries(
-                config_manager,
-                stage_root,
-                character_names,
-                deadline_monotonic=deadline_monotonic,
-                operation="export",
-            )
-        )
 
         _assert_deadline_not_exceeded(
             deadline_monotonic,

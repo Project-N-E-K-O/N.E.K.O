@@ -348,6 +348,37 @@ def test_unreadable_file_never_writes_and_never_wipes(tmp_path, monkeypatch):
     assert [m.content for m in mgr._pending_batches(name)] == ["C"]
 
 
+def test_unreadable_reads_keep_process_pending_visible_without_duplicates(tmp_path, monkeypatch):
+    mgr, name, path = _make_manager(tmp_path)
+    fresh_mgr, _, _ = _make_manager(tmp_path, path=path)
+    _write_disk(path, [HumanMessage(content="disk")])
+
+    def _write_failed(*args, **kwargs):
+        raise PermissionError("simulated write failure")
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", _write_failed)
+    asyncio.run(mgr.update_history([HumanMessage(content="pending-1")], name, compress=False))
+
+    def _unreadable(*args, **kwargs):
+        raise PermissionError("simulated read failure")
+
+    monkeypatch.setattr(recent_file, "read_recent_text_unlocked", _unreadable)
+    assert [m.content for m in asyncio.run(mgr.aget_recent_history(name))] == [
+        "disk", "pending-1",
+    ]
+    assert [m.content for m in asyncio.run(fresh_mgr.aget_recent_history(name))] == [
+        "pending-1",
+    ]
+
+    asyncio.run(mgr.update_history([HumanMessage(content="pending-2")], name, compress=False))
+    assert [m.content for m in asyncio.run(mgr.aget_recent_history(name))] == [
+        "disk", "pending-1", "pending-2",
+    ]
+    assert [m.content for m in asyncio.run(fresh_mgr.aget_recent_history(name))] == [
+        "pending-1", "pending-2",
+    ]
+
+
 # ─────────────── T5: the invariant the no-dedup design rests on ───────────────
 
 

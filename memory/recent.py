@@ -256,6 +256,10 @@ class CompressedRecentHistoryManager:
         # 副产品是「视图未知」（name 不在 dict 里）和「已知为空」（值是 []）从此
         # 是两个可区分的状态——落盘失败的合并逻辑依赖这个区分。
         self.user_histories = {}
+        # user_histories 是给调用方看的可见视图，可能已包含 process-wide pending。
+        # 单独记录尾部 pending 的长度，读盘失败时才能精确替换它，而不是靠内容去重
+        # （用户连续发送相同消息是合法的）。
+        self._cached_pending_counts = {}
 
     # ── 未落盘批次账本 ────────────────────────────────────────────────
     def _pending_batches(self, lanlan_name: str) -> list:
@@ -342,19 +346,39 @@ class CompressedRecentHistoryManager:
             logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，本轮视为读不到（不覆盖）")
             return (RECENT_READ_UNREADABLE, [])
 
+    def _cache_history_view(self, lanlan_name, disk_history, pending=()) -> list:
+        """Cache and return a visible disk-plus-pending history view."""
+        visible = list(disk_history) + list(pending)
+        self.user_histories[lanlan_name] = visible
+        pending_counts = getattr(self, "_cached_pending_counts", None)
+        if pending_counts is None:
+            pending_counts = self._cached_pending_counts = {}
+        pending_counts[lanlan_name] = len(pending)
+        return visible
+
+    def _cached_disk_history(self, lanlan_name) -> list:
+        """Return the cached disk base without any pending tail already shown."""
+        cached = list(self.user_histories.get(lanlan_name, ()))
+        pending_count = getattr(self, "_cached_pending_counts", {}).get(lanlan_name, 0)
+        if pending_count:
+            return cached[:-pending_count]
+        return cached
+
     def _read_history_locked(self, file_path, lanlan_name) -> list:
         """Read one character's history under the file lock. Run me in a worker thread."""
         with recent_file.recent_file_access(file_path) as file_path:
             status, history = self._load_history_unlocked(file_path, lanlan_name)
+            pending = recent_file.get_recent_pending_unlocked(file_path)
             if status == RECENT_READ_UNREADABLE:
                 # 读失败绝不能被当成「历史是空的」——一旦写进 user_histories，下一次
-                # 落盘就会拿这批新消息覆盖整段读不出来的历史。保持既有视图不动。
-                return self.user_histories.get(lanlan_name, [])
+                # 落盘就会拿这批新消息覆盖整段读不出来的历史。磁盘基线保持既有缓存，
+                # 但 process-wide pending 仍是 prompt 必须看见的已接受消息。
+                return self._cache_history_view(
+                    lanlan_name, self._cached_disk_history(lanlan_name), pending,
+                )
             # 写失败留下的 process-wide pending 也是当前可见历史的一部分。无论
             # recent.json 尚未创建还是仍停在旧版本，普通读取都不能把它从内存视图抹掉。
-            history = history + recent_file.get_recent_pending_unlocked(file_path)
-            self.user_histories[lanlan_name] = history
-            return history
+            return self._cache_history_view(lanlan_name, history, pending)
 
     def _commit_hard_cap_locked(
         self, file_path, lanlan_name, expected_history, new_history,
@@ -376,7 +400,7 @@ class CompressedRecentHistoryManager:
                     exc_info=True,
                 )
                 return 'failed'
-            self.user_histories[lanlan_name] = new_history
+            self._cache_history_view(lanlan_name, new_history)
             return 'committed'
 
     def _merge_backup_memo_locked(
@@ -407,7 +431,7 @@ class CompressedRecentHistoryManager:
                     exc_info=True,
                 )
                 return ('failed', len(current), len(current))
-            self.user_histories[lanlan_name] = new_history
+            self._cache_history_view(lanlan_name, new_history)
             return ('merged', len(current), len(new_history))
 
 
@@ -469,14 +493,18 @@ class CompressedRecentHistoryManager:
                 # 读不到盘上内容 ≠ 盘上是空的。这里一写就是拿这批新消息覆盖掉
                 # 整段读不出来的历史（重构前的 `except Exception: return []`
                 # 正是这么丢的）。所以本轮完全不写盘。
-                self._set_pending_batches(
-                    lanlan_name, list(pending) + list(new_messages), file_path,
-                )
+                updated_pending = list(pending) + list(new_messages)
+                self._set_pending_batches(lanlan_name, updated_pending, file_path)
                 logger.warning(
                     f"[RecentHistory] {lanlan_name} 历史文件读取失败，本轮不落盘，"
                     f"{len(new_messages)} 条新消息暂存内存等下次补写"
                 )
-                return (self.user_histories.get(lanlan_name, []), False)
+                return (
+                    self._cache_history_view(
+                        lanlan_name, self._cached_disk_history(lanlan_name), updated_pending,
+                    ),
+                    False,
+                )
 
             merged = list(history) + list(pending) + list(new_messages)
             try:
@@ -487,15 +515,17 @@ class CompressedRecentHistoryManager:
                 # 落盘失败 ⟹ 目标文件未被替换（atomic_write_text 里
                 # _replace_with_busy_retry 是最后一条语句），所以把整批挂回
                 # pending 不会造成二次落地，不需要任何去重启发式。
-                self.user_histories[lanlan_name] = merged
                 self._set_pending_batches(
                     lanlan_name, list(pending) + list(new_messages), file_path,
+                )
+                self._cache_history_view(
+                    lanlan_name, history, list(pending) + list(new_messages),
                 )
                 logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
                 return (merged, False)
 
             self._set_pending_batches(lanlan_name, [], file_path)
-            self.user_histories[lanlan_name] = merged
+            self._cache_history_view(lanlan_name, merged)
             return (merged, True)
 
     def _splice_compressed_locked(self, file_path, lanlan_name, snapshot, memo) -> str:
@@ -535,7 +565,7 @@ class CompressedRecentHistoryManager:
             except Exception as e:
                 logger.error(f"[RecentHistory] {lanlan_name} 压缩结果落盘失败: {e}", exc_info=True)
                 return 'failed'
-            self.user_histories[lanlan_name] = new_history
+            self._cache_history_view(lanlan_name, new_history)
             return 'merged'
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
@@ -1209,7 +1239,7 @@ class CompressedRecentHistoryManager:
             recent_file.write_recent_payload_unlocked(
                 file_path, messages_to_dict(new_history),
             )
-            self.user_histories[lanlan_name] = new_history
+            self._cache_history_view(lanlan_name, new_history)
 
             # ── Issue #3 修复：基于 patched 后的 new_history 算新 fingerprint ──
             # patched 区在 new_history 里的范围是 [patched_start, patched_end]：

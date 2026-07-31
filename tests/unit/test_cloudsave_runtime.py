@@ -2509,6 +2509,102 @@ def test_import_rolls_back_runtime_on_apply_failure(tmp_path):
 
 
 @pytest.mark.unit
+def test_single_character_import_commits_and_restores_recent_runtime_state(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        import_cloudsave_character_unit,
+        restore_cloudsave_operation_backup,
+    )
+    from utils.llm_client import HumanMessage
+
+    source_cm = _make_config_manager(tmp_path / "source")
+    target_cm = _make_config_manager(tmp_path / "target")
+    character_name = "云端角色"
+    _write_runtime_state(source_cm, character_name=character_name)
+    source_recent = Path(source_cm.memory_dir) / character_name / "recent.json"
+    atomic_write_json(
+        source_recent,
+        [{"role": "user", "content": "cloud"}],
+        ensure_ascii=False,
+        indent=2,
+    )
+    export_cloudsave_character_unit(source_cm, character_name)
+
+    _write_runtime_state(target_cm, character_name=character_name)
+    target_recent = Path(target_cm.memory_dir) / character_name / "recent.json"
+    redirected_recent = Path(target_cm.memory_dir) / "redirect-target" / "recent.json"
+    recent_file.redirect_recent_paths([target_recent], redirected_recent)
+    with recent_file.recent_file_locks([target_recent]):
+        recent_file.set_recent_pending_unlocked(
+            target_recent, [HumanMessage(content="pending-before-import")],
+        )
+
+    shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
+    result = import_cloudsave_character_unit(target_cm, character_name, overwrite=True)
+
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "cloud"
+    with recent_file.recent_file_locks([target_recent]):
+        assert recent_file.get_recent_pending_unlocked(target_recent) == []
+    target_key = recent_file._lock_key(target_recent)
+    redirected_key = recent_file._lock_key(redirected_recent)
+    assert recent_file._resolve_key_unlocked(target_key) == target_key
+
+    restore_cloudsave_operation_backup(target_cm, result["backup_path"])
+
+    assert json.loads(target_recent.read_text(encoding="utf-8"))[0]["content"] == "你好"
+    with recent_file.recent_file_locks([target_recent]):
+        restored_pending = recent_file.get_recent_pending_unlocked(target_recent)
+    assert [message.content for message in restored_pending] == ["pending-before-import"]
+    assert recent_file._resolve_key_unlocked(target_key) == redirected_key
+
+
+@pytest.mark.unit
+def test_cloud_exports_include_pending_recent_without_mutating_local_state(tmp_path):
+    from utils import recent_file
+    from utils.cloudsave_runtime import (
+        export_cloudsave_character_unit,
+        export_local_cloudsave_snapshot,
+    )
+    from utils.llm_client import HumanMessage
+
+    cm = _make_config_manager(tmp_path)
+    character_name = "小满"
+    _write_runtime_state(cm, character_name=character_name)
+    recent_path = Path(cm.memory_dir) / character_name / "recent.json"
+    disk_before = recent_path.read_bytes()
+    with recent_file.recent_file_locks([recent_path]):
+        recent_file.set_recent_pending_unlocked(
+            recent_path, [HumanMessage(content="pending-export")],
+        )
+
+    export_cloudsave_character_unit(cm, character_name)
+    for relative_path in (
+        Path("memory") / character_name / "recent.json",
+        Path("characters") / character_name / "memory" / "recent.json",
+    ):
+        payload = json.loads((cm.cloudsave_dir / relative_path).read_text(encoding="utf-8"))
+        assert [item.get("data", item)["content"] for item in payload] == [
+            "你好", "pending-export",
+        ]
+
+    export_local_cloudsave_snapshot(cm)
+    for relative_path in (
+        Path("memory") / character_name / "recent.json",
+        Path("characters") / character_name / "memory" / "recent.json",
+    ):
+        payload = json.loads((cm.cloudsave_dir / relative_path).read_text(encoding="utf-8"))
+        assert [item.get("data", item)["content"] for item in payload] == [
+            "你好", "pending-export",
+        ]
+
+    assert recent_path.read_bytes() == disk_before
+    with recent_file.recent_file_locks([recent_path]):
+        pending = recent_file.get_recent_pending_unlocked(recent_path)
+    assert [message.content for message in pending] == ["pending-export"]
+
+
+@pytest.mark.unit
 def test_standard_data_candidates_on_unix_platforms(tmp_path):
     from utils.config_manager import ConfigManager
 
