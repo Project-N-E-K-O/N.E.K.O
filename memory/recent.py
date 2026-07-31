@@ -789,7 +789,7 @@ class CompressedRecentHistoryManager:
         from config.prompts.prompts_sys import _loc, MEMORY_MEMO_WITH_SUMMARY
         memo_text = _loc(
             MEMORY_MEMO_WITH_SUMMARY,
-            get_global_language_full(),
+            lang,
         ).format(summary=summary)
         return SystemMessage(content=memo_text), summary
 

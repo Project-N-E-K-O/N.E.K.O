@@ -175,6 +175,37 @@ async def test_daily_extraction_keeps_request_locale(wire):
 
 
 @pytest.mark.asyncio
+async def test_external_import_persists_explicit_request_locale(
+    wire,
+    monkeypatch,
+):
+    recorded = []
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda name: 73,
+    )
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "record_character_prompt_locale",
+        lambda name, language, *, order: recorded.append(
+            (name, language, order)
+        ),
+    )
+    wire(_FakePersonaManager({
+        "master": {"added": 1, "skipped": 0, "fused": True},
+        "neko": {"added": 1, "skipped": 0, "fused": True},
+    }))
+
+    result = await routes_mod.import_external_markdown(
+        _request(language="zh-TW")
+    )
+
+    assert result["status"] == "success"
+    assert recorded == [("Neko", "zh-TW", 73)]
+
+
+@pytest.mark.asyncio
 async def test_persona_all_too_large_returns_413(wire):
     wire(_FakePersonaManager({
         "master": ExternalMemoryImportTooLargeError("master too large"),

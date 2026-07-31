@@ -36,7 +36,10 @@ from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
 
 from . import gates, review, runtime
-from .locale_state import run_with_character_prompt_locale
+from .locale_state import (
+    aget_subject_prompt_locale,
+    run_with_character_prompt_locale,
+)
 from ._shared import logger
 from .gates import (
     IDLE_CHECK_INTERVAL,
@@ -61,6 +64,37 @@ REBUTTAL_SQL_ROW_LIMIT = 200
 async def _run_with_character_language(name: str, operation):
     """Run one async maintenance operation with the latest session locale."""
     return await run_with_character_prompt_locale(name, operation, name)
+
+
+async def _get_batch_subject_prompt_locale(name: str, subject):
+    """Return a scoped locale override; legacy batches keep character context."""
+    if subject is None:
+        return None
+    return await aget_subject_prompt_locale(name, subject)
+
+
+async def _resolve_fact_dedup_with_language(name: str):
+    async def operation(character_name: str):
+        return await runtime.fact_dedup_resolver.aresolve(
+            character_name,
+            prompt_locale_resolver=lambda subject: (
+                _get_batch_subject_prompt_locale(character_name, subject)
+            ),
+        )
+
+    return await _run_with_character_language(name, operation)
+
+
+async def _resolve_persona_corrections_with_language(name: str):
+    async def operation(character_name: str):
+        return await runtime.persona_manager.resolve_corrections(
+            character_name,
+            prompt_locale_resolver=lambda subject: (
+                _get_batch_subject_prompt_locale(character_name, subject)
+            ),
+        )
+
+    return await _run_with_character_language(name, operation)
 
 
 async def _auto_promote_character(name: str, powerful: bool):
@@ -524,10 +558,7 @@ async def _periodic_idle_maintenance_loop():
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_dedup)} 对未处理的 fact 候选去重，触发 LLM 审视"
                                 )
-                                resolved = await _run_with_character_language(
-                                    name,
-                                    runtime.fact_dedup_resolver.aresolve,
-                                )
+                                resolved = await _resolve_fact_dedup_with_language(name)
                                 if resolved:
                                     logger.info(
                                         f"[IdleMaint] {name}: 完成 {resolved} 对 fact 去重决策"
@@ -550,10 +581,7 @@ async def _periodic_idle_maintenance_loop():
                                 logger.info(
                                     f"[IdleMaint] {name}: 发现 {len(pending_corrections)} 条未处理的 persona 矛盾，触发审视"
                                 )
-                                resolved = await _run_with_character_language(
-                                    name,
-                                    runtime.persona_manager.resolve_corrections,
-                                )
+                                resolved = await _resolve_persona_corrections_with_language(name)
                                 if resolved:
                                     logger.info(f"[IdleMaint] {name}: 审视了 {resolved} 条 persona 矛盾")
                         except Exception as e:

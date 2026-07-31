@@ -51,7 +51,11 @@ from ._shared import (
 )
 
 
-def _detect_correction_prompt_language(pairs: list[tuple[int, dict]]) -> str:
+def _detect_correction_prompt_language(
+    pairs: list[tuple[int, dict]],
+    *,
+    ui_language: str | None = None,
+) -> str:
     """Detect the prompt locale from correction values, excluding UI labels."""
     from utils.language_utils import detect_prompt_language, get_global_language_full
 
@@ -61,7 +65,7 @@ def _detect_correction_prompt_language(pairs: list[tuple[int, dict]]) -> str:
     )
     return detect_prompt_language(
         raw_text,
-        ui_language=get_global_language_full(),
+        ui_language=ui_language or get_global_language_full(),
     )
 
 
@@ -166,7 +170,12 @@ class CorrectionsMixin:
             return []
         return []
 
-    async def resolve_corrections(self, name: str) -> int:
+    async def resolve_corrections(
+        self,
+        name: str,
+        *,
+        prompt_locale_resolver=None,
+    ) -> int:
         """Batch-review the contradiction queue with the correction model (single LLM call).
 
         Merges all pending corrections into one prompt for the correction model;
@@ -259,6 +268,26 @@ class CorrectionsMixin:
                     break
             if not pairs:
                 return 0
+            prompt_ui_language = None
+            if prompt_locale_resolver is not None and batch_domain != '__legacy__':
+                from memory.scopes import MemoryScopeError, MemorySubject
+
+                section_key, subject_scope = batch_domain
+                subject_key = section_key[len(SCOPED_PERSONA_PREFIX):]
+                subject_kind, separator, subject_id = subject_key.partition(':')
+                if separator:
+                    try:
+                        batch_subject = MemorySubject.create(
+                            subject_kind,
+                            subject_id,
+                            scope=subject_scope,
+                        )
+                    except MemoryScopeError:
+                        batch_subject = None
+                    if batch_subject is not None:
+                        prompt_ui_language = await prompt_locale_resolver(
+                            batch_subject
+                        )
             # 仅允许"本批送进 prompt"的全局 index 被消费 —— LLM 偶尔会回写
             # 没在这一批 prompt 里的合法全局 index（比如 hallucinate 出未来批
             # 的 idx），不防的话会误改未送审的 corrections，导致队列数据被
@@ -270,7 +299,10 @@ class CorrectionsMixin:
                 for i, item in pairs
             )
             prompt = get_persona_correction_prompt(
-                _detect_correction_prompt_language(pairs)
+                _detect_correction_prompt_language(
+                    pairs,
+                    ui_language=prompt_ui_language,
+                )
             ).format(pairs=batch_text, count=len(pairs))
 
             # ── LLM (锁外) ──

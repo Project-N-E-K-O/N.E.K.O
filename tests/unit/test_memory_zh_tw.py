@@ -184,6 +184,49 @@ async def test_compressed_memo_wrapper_keeps_traditional_locale():
         assert "zh-TW" in mutant
 
 
+@pytest.mark.asyncio
+async def test_compressed_memo_wrapper_follows_detected_prompt_locale():
+    from memory.recent import CompressedRecentHistoryManager
+    from utils.language_utils import language_context
+    from utils.llm_client import HumanMessage
+
+    manager = object.__new__(CompressedRecentHistoryManager)
+    manager.name_mapping = {"human": "Alice"}
+
+    async def invoke(_prompt):
+        return "The user enjoys quiet afternoons."
+
+    async def read_anchor(_name):
+        return None
+
+    async def write_anchor(_name):
+        return None
+
+    manager._invoke_summary_llm = invoke
+    manager._aread_last_past_block_update_at = read_anchor
+    manager._awrite_last_past_block_update_at = write_anchor
+
+    with language_context("zh-TW"):
+        memo, summary = await manager.compress_history(
+            [HumanMessage(content="I enjoy quiet afternoons at home.")],
+            "Neko",
+        )
+
+    assert summary == "The user enjoys quiet afternoons."
+    assert memo.content == (
+        "Memo from prior conversations: The user enjoys quiet afternoons."
+    )
+
+
+def test_traditional_stale_summary_hint_uses_traditional_delimiters():
+    hint = prompts_memory.get_summary_stale_hint("zh-TW", 24)
+
+    assert "======以下為時間衰減提醒======" in hint
+    assert "======以上為時間衰減提醒======" in hint
+    assert "以下为時間衰減提醒" not in hint
+    assert "以上为時間衰減提醒" not in hint
+
+
 def test_persona_renderer_localizes_all_traditional_headers():
     from memory.persona.manager import PersonaManager
     from utils.language_utils import language_context
@@ -991,6 +1034,59 @@ async def test_idle_maintenance_uses_latest_session_locale(monkeypatch, tmp_path
     locale_state.record_character_prompt_locale("Neko", None)
     locale_state._locale_cache.clear()
     assert locale_state.get_character_prompt_locale("Neko") is None
+
+
+@pytest.mark.asyncio
+async def test_scoped_maintenance_resolvers_receive_subject_locale(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import evidence_loops, locale_state, runtime
+    from memory.scopes import MemorySubject
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    observed = []
+
+    class DedupResolver:
+        async def aresolve(self, name, *, prompt_locale_resolver):
+            observed.append((
+                "dedup",
+                name,
+                await prompt_locale_resolver(subject),
+            ))
+            return 1
+
+    class PersonaManager:
+        async def resolve_corrections(self, name, *, prompt_locale_resolver):
+            observed.append((
+                "correction",
+                name,
+                await prompt_locale_resolver(subject),
+            ))
+            return 1
+
+    locale_path = tmp_path / "prompt_locale.json"
+    subject_locale_path = tmp_path / "prompt_locale_subjects.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(subject_locale_path),
+    )
+    monkeypatch.setattr(runtime, "fact_dedup_resolver", DedupResolver())
+    monkeypatch.setattr(runtime, "persona_manager", PersonaManager())
+    locale_state._locale_cache.clear()
+    locale_state._subject_locale_cache.clear()
+    locale_state.record_character_prompt_locale("Neko", "zh-CN")
+    locale_state.record_subject_prompt_locale("Neko", subject, "zh-TW")
+
+    await evidence_loops._resolve_fact_dedup_with_language("Neko")
+    await evidence_loops._resolve_persona_corrections_with_language("Neko")
+
+    assert observed == [
+        ("dedup", "Neko", "zh-TW"),
+        ("correction", "Neko", "zh-TW"),
+    ]
 
 
 @pytest.mark.asyncio

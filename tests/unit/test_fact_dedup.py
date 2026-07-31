@@ -446,6 +446,50 @@ async def test_aresolve_keep_both_leaves_facts_untouched(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_aresolve_uses_scoped_batch_prompt_locale(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    subject = MemorySubject.group_chat("qq", "7788")
+    cand = _fact("c1", "好", embedding=[1.0, 0.0])
+    existing = _fact("e1", "嗯", embedding=[0.99, 0.05])
+    cand.update(subject.as_entry_fields())
+    existing.update(subject.as_entry_fields())
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1",
+        "existing_id": "e1",
+        "candidate_text": cand["text"],
+        "existing_text": existing["text"],
+        "entity": "master",
+        "subject_key": subject.key,
+        "scope": subject.scope,
+        "cosine": 0.99,
+    }])
+    observed_subjects = []
+
+    async def resolve_locale(actual_subject):
+        observed_subjects.append(actual_subject)
+        return "zh-TW"
+
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch(
+        "utils.llm_client.create_chat_llm_async",
+        AsyncMock(return_value=fake_llm),
+    ), patch(
+        "config.prompts.prompts_memory.get_fact_dedup_prompt",
+        return_value="{PAIRS}",
+    ) as get_prompt:
+        await resolver.aresolve(
+            "小天",
+            prompt_locale_resolver=resolve_locale,
+        )
+
+    assert observed_subjects == [subject]
+    get_prompt.assert_called_once_with("zh-TW")
+
+
+@pytest.mark.asyncio
 async def test_aresolve_reciprocal_pair_does_not_delete_both(tmp_path):
     """Codex PR-957 P1: if the LLM emits reciprocal decisions on the
     same two facts (merge for (c1,e1) AND replace for (e1,c1)) in one

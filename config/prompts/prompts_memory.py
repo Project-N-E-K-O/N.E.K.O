@@ -3053,11 +3053,11 @@ SUMMARY_STALE_HINT = {
 [格式硬约束] 主体段与"较久前"段之间，必须用单独一行 `---`（三个英文连字符）作分界，前后各空一行。整段 summary 里只能出现这一处 `---`；如果没有过时内容需要写"较久前"段，则**不要**输出 `---`。
 本提醒只影响本次 summary 生成，不进入长期记忆。
 ======以上为时间衰减提醒======""",
-    "zh-TW": """======以下为時間衰減提醒======
+    "zh-TW": """======以下為時間衰減提醒======
 距上次記憶壓縮已過去 {GAP} 小時。請在 summary 中，把已過時的內容（已結束的事件、已變化的狀態、不再相關的近況）單獨放到 summary 文末的「較久前」段落，用「X 時間前曾經……」的中性敘事；目前仍持續或重要的內容保留在 summary 主體。
 [格式硬性要求] 主體段與「較久前」段之間，必須用單獨一行 `---`（三個英文連字號）作分界，前後各空一行。整段 summary 裡只能出現這一處 `---`；如果沒有過時內容需要寫「較久前」段，則**不要**輸出 `---`。
 本提醒只影響本次 summary 生成，不進入長期記憶。
-======以上为時間衰減提醒======""",
+======以上為時間衰減提醒======""",
     "en": """======Below is time decay notice======
 {GAP} hours have passed since the last memory compression. In the summary, move clearly outdated content (ended events, changed states, no-longer-relevant updates) into a separate "older" paragraph at the end of the summary using neutral narration like "some time ago, X used to...". Keep currently ongoing or important content in the summary body.
 [Format constraint] Between the main body and the "older" paragraph, you MUST insert a single line containing only `---` (three ASCII hyphens), surrounded by blank lines above and below. This `---` may appear at most once in the entire summary; if there is no outdated content to write an "older" paragraph for, do NOT emit `---`.

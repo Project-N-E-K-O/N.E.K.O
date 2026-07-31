@@ -187,12 +187,26 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 },
             })
 
+    explicit_language = None
+    if is_supported_language_code(request.language):
+        explicit_language = normalize_language_code(request.language, format='full')
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_character_prompt_locale_order,
+            name,
+        )
+        await asyncio.to_thread(
+            locale_state.record_character_prompt_locale,
+            name,
+            explicit_language,
+            order=locale_order,
+        )
+
     # ── persona 阶段：按 entity 并发 LLM 融合（不降级纯追加，见端点 docstring）──
     # 并发安全：afuse_external_facts 的 Phase 1/3 持同一把角色锁串行读写、且各
     # entity 只改写自己的 section（CAS 校验的也是本 entity 的指纹集合），慢的
     # Phase 2（LLM）不持锁——两个 entity 真正并行的只有 LLM 往返，落盘互斥。
     persona_entities = list(persona_candidates_by_entity.items())
-    memory_language = _activate_request_language(request.language)
+    memory_language = explicit_language or _activate_request_language(request.language)
     with language_context(memory_language):
         fusion_outcomes = await asyncio.gather(
             *(
