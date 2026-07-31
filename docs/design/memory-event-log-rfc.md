@@ -191,6 +191,16 @@ policy. Operators should not assume deployed journals are automatically compacte
   final write, because that writer already parked it at the journal end. Replaying
   an already-applied event is harmless for the same reason a missing sentinel
   triggers a full replay: handlers carry full snapshots and are idempotent.
+- That "end of the file" is a snapshot, and writers keep appending past it. An
+  event landing after the snapshot is absent from the range being replayed, while
+  the stale payloads queued ahead of it are not: replaying those pushes older
+  values over the view that writer just saved, and the sentinel now parked on its
+  id means no later boot replays it back. So the frozen pass re-probes from its
+  own last-applied position each time it drains, and only returns once a probe
+  comes back empty. The probe count is bounded (`_MAX_FROZEN_RESCANS`) so that
+  unbroken write traffic ends the round instead of stalling startup; hitting the
+  bound is logged, because whatever is left unreplayed sits behind the sentinel
+  and no later boot picks it up.
 - **Known limitation, not fixed here.** Advancing the sentinel to the journal end
   asserts that every earlier event was applied, and `record_and_save` never checks
   that. Whenever an unapplied tail is on disk — replay paused on an unregistered

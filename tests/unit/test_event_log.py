@@ -1036,6 +1036,143 @@ async def test_reconciler_rescans_in_journal_order_after_a_sentinel_conflict(tmp
 
 
 @pytest.mark.asyncio
+async def test_frozen_rescan_picks_up_events_that_land_after_its_snapshot(tmp_path):
+    """A writer arriving after the rescan's snapshot must not be overwritten."""
+    # 上一条用例钉的是「冲突之后改为重扫」。这条钉的是重扫本身的边界：它读到的
+    # 「日志末尾」是一次快照，而写者还在往后追加。
+    #
+    # 时序（每一步都由 patch 掉的 aread_since 精确制造）：
+    #   1. 崩溃遗留 r1/r2/r3 三条 repair 没应用；
+    #   2. reconciler 读初始尾巴时，写者 A 提交 r2="live" 并把哨兵抢到自己那条
+    #      → 第一次 CAS 就冲突，哨兵冻结、改为重扫；
+    #   3. **重扫取快照的那一刻**，写者 B 提交 r3="live2"，它的事件排在快照之后；
+    #   4. 快照里排在前面的陈旧 e3（r3="repair"）被重放，把 B 刚写好的值盖掉。
+    #
+    # 此时哨兵停在 B 那条上，下次开机 read_since 从它**之后**开始读，B 的事件
+    # 不会被重放回来纠正 —— 丢的不是这一轮的进度，是用户刚产生的内容，永久性的。
+    # 所以扫完一轮必须再朝末尾探一次，直到探不到新东西。
+    from memory.event_log import EVT_REFLECTION_STATE_CHANGED
+
+    log, rec = _fresh_reconciler(str(tmp_path))
+    view_path = os.path.join(str(tmp_path), "小天", "view.json")
+    os.makedirs(os.path.dirname(view_path), exist_ok=True)
+
+    def _write_view(data: dict) -> None:
+        with open(view_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    def _read_view() -> dict:
+        with open(view_path, encoding="utf-8") as f:
+            return json.load(f)
+
+    _write_view({"r1": "old", "r2": "old", "r3": "old"})
+    for rid in ("r1", "r2", "r3"):
+        log.append("小天", EVT_REFLECTION_STATE_CHANGED, {"rid": rid, "to": "repair"})
+
+    applied_calls: list[tuple[str, str]] = []
+
+    def handler(name, payload):
+        applied_calls.append((payload["rid"], payload["to"]))
+        data = _read_view()
+        if data.get(payload["rid"]) == payload["to"]:
+            return False
+        data[payload["rid"]] = payload["to"]
+        _write_view(data)
+        return True
+
+    rec.register(EVT_REFLECTION_STATE_CHANGED, handler)
+
+    real_aread_since = log.aread_since
+    written: dict[str, str] = {}
+    # 只在前两次读之后各插一个写者：第 1 次制造冲突，第 2 次（重扫取快照）制造
+    # 「快照之后才落地」。之后的探测读不再插，否则这一轮永远收不了尾。
+    pending_writers = [("A", "r2", "live"), ("B", "r3", "live2")]
+
+    async def _tail_then_writer(name, after_event_id):
+        # 先取尾巴再写：返回的这份**不含**紧接着落地的那条，正是要复现的形状。
+        tail = await real_aread_since(name, after_event_id)
+        if pending_writers:
+            who, rid, to = pending_writers.pop(0)
+            snapshot = _read_view()
+            snapshot[rid] = to
+            written[who] = log.record_and_save(
+                name, EVT_REFLECTION_STATE_CHANGED, {"rid": rid, "to": to},
+                sync_load_view=lambda n, s=snapshot: dict(s),
+                sync_mutate_view=lambda v: None,
+                sync_save_view=lambda n, v: _write_view(v),
+            )
+        return tail
+
+    with patch.object(log, "aread_since", _tail_then_writer):
+        await rec.areconcile("小天")
+
+    final = _read_view()
+    assert final["r3"] == "live2", (
+        "写者 B 的事件在重扫取完快照之后才落地，快照里排在它前面的陈旧事件把它"
+        "盖掉了；而哨兵此刻停在 B 那条上，下次开机不会重放它 —— 静默永久丢失"
+    )
+    assert final["r2"] == "live", "写者 A 的值也不许被陈旧事件盖掉"
+    assert final["r1"] == "repair", "崩溃遗留的修复不许被丢"
+    # 机制断言：B 那条是在快照重放**之后**补扫回来的，不是碰巧混在中间。
+    assert applied_calls == [
+        ("r1", "repair"), ("r2", "repair"), ("r3", "repair"),
+        ("r2", "live"), ("r3", "live2"),
+    ], f"重放顺序不对: {applied_calls}"
+    assert log.read_sentinel("小天") == written["B"], "哨兵被写回了旧位置"
+
+
+@pytest.mark.asyncio
+async def test_frozen_rescan_stops_after_a_bounded_number_of_probes(tmp_path):
+    """Endless appends must end the round loudly, not spin the boot forever."""
+    # 补扫是「探到没有新东西为止」，那就必须有个头：写入一直不停时启动不能卡死。
+    # 停下来是有代价的（剩下那些位于哨兵之前，下次开机也不会自动补上），所以这条
+    # 同时钉住「必须报出来」——静悄悄地截断会让人以为 reconcile 干净地跑完了。
+    import asyncio
+
+    from memory.event_log import EVT_REFLECTION_STATE_CHANGED
+    from memory import event_log as event_log_module
+
+    log, rec = _fresh_reconciler(str(tmp_path))
+    view_path = os.path.join(str(tmp_path), "小天", "view.json")
+    os.makedirs(os.path.dirname(view_path), exist_ok=True)
+
+    def _write_view(data: dict) -> None:
+        with open(view_path, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+
+    _write_view({})
+    log.append("小天", EVT_REFLECTION_STATE_CHANGED, {"rid": "r0", "to": "repair"})
+    rec.register(EVT_REFLECTION_STATE_CHANGED, lambda name, payload: True)
+
+    real_aread_since = log.aread_since
+    reads = {"n": 0}
+
+    async def _tail_then_endless_writer(name, after_event_id):
+        tail = await real_aread_since(name, after_event_id)
+        reads["n"] += 1
+        # 每一次读之后都追加，永不停歇。
+        log.record_and_save(
+            name, EVT_REFLECTION_STATE_CHANGED, {"rid": f"w{reads['n']}", "to": "live"},
+            sync_load_view=lambda n: {},
+            sync_mutate_view=lambda v: None,
+            sync_save_view=lambda n, v: _write_view(v),
+        )
+        return tail
+
+    with patch.object(log, "aread_since", _tail_then_endless_writer), \
+            patch.object(event_log_module.logger, "warning") as warn:
+        await asyncio.wait_for(rec.areconcile("小天"), timeout=20)
+
+    assert reads["n"] <= event_log_module._MAX_FROZEN_RESCANS + 3, (
+        f"补扫没有上界，读了 {reads['n']} 次"
+    )
+    messages = [str(c.args[0]) for c in warn.call_args_list]
+    assert any("停止重扫" in m and "不会自动补上" in m for m in messages), (
+        f"截断了却没报出来: {messages}"
+    )
+
+
+@pytest.mark.asyncio
 async def test_reconciler_never_rewinds_a_sentinel_onto_an_unhandled_event(tmp_path):
     """Regression: a rewound sentinel can wedge a character's replay forever.
 

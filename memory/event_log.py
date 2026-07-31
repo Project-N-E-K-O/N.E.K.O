@@ -730,6 +730,12 @@ class EventLog:
 
 # ── Reconciler scaffolding (RFC §3.5) ─────────────────────────────────────
 
+# 哨兵冻结之后每扫完一轮就再朝日志末尾探一次，这是探的次数上限。只有「上一轮扫描
+# 期间又有写者落地」才会消耗一次，所以正常启动一次都用不到；给 8 次是为了让写入
+# 停下来的那一刻能收尾，同时不至于在持续写入下让启动永远卡在这里。
+_MAX_FROZEN_RESCANS = 8
+
+
 class Reconciler:
     """Applies event-log tail onto views on startup.
 
@@ -806,8 +812,14 @@ class Reconciler:
             other writer's events to the tail, and one of them without a
             registered handler would wedge every future boot. Nothing needs
             to be written at the end either — the other writer already
-            parked the sentinel at the journal end, which is where this
-            round now stops.
+            parked the sentinel at the journal end.
+            That end is a snapshot, so the frozen pass re-probes for newly
+            appended events every time it drains, up to _MAX_FROZEN_RESCANS
+            times. An event landing after the snapshot is not in the tail,
+            yet the stale payloads queued ahead of it still are: replaying
+            those would push older values over the view it just wrote, and
+            with the sentinel now parked on its id no later boot replays it
+            back.
           - the sentinel write failed (IO). The handler already persisted;
             only the progress marker is behind, so the event replays
             idempotently next boot. Logged as such, not as a handler fault.
@@ -828,8 +840,35 @@ class Reconciler:
         # 一旦发现哨兵已经不归本轮 replay 管，就冻结哨兵，同时把待办重新从日志里
         # 取一遍（见下面 except 分支）：手上这份尾巴已经陈旧，不能照原样应用。
         sentinel_frozen = False
+        # 冻结之后哨兵不再前进，于是「重扫到日志末尾」这句话里的「末尾」是一次快照，
+        # 而写者还在往后追加。快照之后落地的那条事件不在手上这份 tail 里，可它前面
+        # 的陈旧 payload 却还在等着被重放 —— 重放下去就是拿旧值盖掉它刚写好的 view，
+        # 而哨兵此刻停在**它**的 id 上，下次开机 read_since 从它之后开始读，那条事件
+        # 不会被重放回来纠正。丢的不是这一轮的进度，是那个写者的内容，永久性的。
+        # 所以扫完一轮要再朝末尾探一次，直到探不到新东西为止。
+        rescans_left = _MAX_FROZEN_RESCANS
         i = 0
-        while i < len(tail):
+        while True:
+            if i >= len(tail):
+                if not sentinel_frozen:
+                    return applied_count
+                extra = await self._event_log.aread_since(name, expected_sentinel)
+                if not extra:
+                    return applied_count
+                if rescans_left <= 0:
+                    # 写入一直不停时必须有个头，否则这一轮永远收不了尾、启动卡死。
+                    # 停下来是有代价的（剩下那些在哨兵前面，下次开机也不会重放），
+                    # 所以报出来，而不是静悄悄地截断。
+                    logger.warning(
+                        f"[Reconciler] {name}: 哨兵冻结后连续 {_MAX_FROZEN_RESCANS} 轮"
+                        f"都有新事件追加，停止重扫；仍有 {len(extra)} 条未重放且位于"
+                        f"哨兵之前，下次开机不会自动补上"
+                    )
+                    return applied_count
+                rescans_left -= 1
+                tail = extra
+                i = 0
+                continue
             event = tail[i]
             event_type = event.get('type')
             event_id = event.get('event_id')
@@ -906,4 +945,3 @@ class Reconciler:
                     f"保留 sentinel 在上一条位置，下次重试"
                 )
                 return applied_count
-        return applied_count
