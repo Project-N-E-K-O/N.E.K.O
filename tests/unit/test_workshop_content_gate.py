@@ -768,6 +768,11 @@ def _walk_own_scope(func):
         node = stack.pop()
         yield node
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            # The body runs later, but decorators and defaults run now, while
+            # the enclosing function is defining this nested helper.
+            stack.extend(node.decorator_list)
+            stack.extend(node.args.defaults)
+            stack.extend(default for default in node.args.kw_defaults if default)
             continue
         stack.extend(ast.iter_child_nodes(node))
 
@@ -798,6 +803,10 @@ def _parent_map(func) -> dict[int, ast.AST]:
     parents = {}
     for node in _walk_own_scope(func):
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            eager = list(node.decorator_list) + list(node.args.defaults)
+            eager.extend(default for default in node.args.kw_defaults if default)
+            for child in eager:
+                parents[id(child)] = node
             continue
         for child in ast.iter_child_nodes(node):
             parents[id(child)] = node
@@ -876,12 +885,15 @@ def _claiming_names_called_on_loop(func, claiming_names: set[str]) -> list:
 
 def _module_level_claiming_workers(trees) -> set[str]:
     """Find direct claim owners and synchronous wrappers around them."""
-    functions = [
-        node
-        for _, tree in trees
-        for node in tree.body
-        if isinstance(node, ast.FunctionDef)
-    ]
+    functions = []
+    for _, tree in trees:
+        stack = list(tree.body)
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.FunctionDef):
+                functions.append(node)
+            elif isinstance(node, ast.ClassDef):
+                stack.extend(node.body)
     claiming = {
         node.name for node in functions if _claim_calls_in_own_scope(node)
     }
@@ -968,8 +980,32 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '\n'
         'async def eager_lambda_default():\n'
         '    await asyncio.to_thread(lambda ignored=_claiming_worker(): None)\n'
+        '\n'
+        'async def eager_nested_default():\n'
+        '    def helper(ignored=_claiming_worker()):\n'
+        '        pass\n'
+        '\n'
+        'async def eager_nested_decorator():\n'
+        '    @_claiming_worker()\n'
+        '    def helper():\n'
+        '        pass\n'
+        '\n'
+        'class Service:\n'
+        '    def worker(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        '\n'
+        '    def wrapper(self):\n'
+        '        return self.worker()\n'
+        '\n'
+        '    async def handler(self):\n'
+        '        self.wrapper()\n'
     )
-    functions = {node.name: node for node in tree.body}
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
     claiming = _module_level_claiming_workers([('synthetic', tree)])
 
     assert _claiming_names_called_on_loop(
@@ -984,6 +1020,15 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert _claiming_names_called_on_loop(
         functions['eager_lambda_default'], claiming
     ), 'lambda 默认值在 offload 前求值，里面的 claim owner 必须报出来'
+    assert _claiming_names_called_on_loop(
+        functions['eager_nested_default'], claiming
+    ), 'nested def 默认值在定义 helper 时求值，里面的 claim owner 必须报出来'
+    assert _claiming_names_called_on_loop(
+        functions['eager_nested_decorator'], claiming
+    ), 'nested def decorator 在定义 helper 时求值，里面的 claim owner 必须报出来'
+    assert _claiming_names_called_on_loop(
+        functions['handler'], claiming
+    ), 'class method claim owner 的同步 wrapper 被 async method 直调时必须报出来'
 
 
 def test_no_claim_is_ever_taken_on_the_event_loop():
@@ -1070,7 +1115,8 @@ _SCOPED_OPERATIONS = {
 # 上传会在占用放开之后才真正发生，正是这条守卫要防的那个竞态，而按词法包含判定
 # 它是绿的。所以这种形状一律算越界，不看它嵌在哪儿。
 _DEFERRAL_CALLS = {
-    'to_thread', 'run_in_executor', 'submit', 'create_task', 'ensure_future', 'partial',
+    'to_thread', 'run_in_executor', 'submit', 'map', 'Thread',
+    'create_task', 'ensure_future', 'partial',
 }
 
 # 结构性豁免：那个目录是它自己刚 mkdir 出来的，路径还没返回给任何人，不可能有第二
@@ -1127,9 +1173,9 @@ def _unclaimed_folder_operations(func, short: str) -> list:
             continue
         claim_kinds = set()
         for item in block.items:
-            for node in ast.walk(item.context_expr):
-                if isinstance(node, ast.Call) and _tail_name(node) in _CLAIM_CALLS:
-                    claim_kinds.add(_tail_name(node))
+            context = item.context_expr
+            if isinstance(context, ast.Call) and _tail_name(context) in _CLAIM_CALLS:
+                claim_kinds.add(_tail_name(context))
         if not claim_kinds:
             continue
         claimed_scopes.append((
@@ -1153,6 +1199,15 @@ def _unclaimed_folder_operations(func, short: str) -> list:
     for node in _walk_own_scope(func):
         if isinstance(node, ast.Lambda):
             deferred_nodes.update(id(child) for child in ast.walk(node.body))
+        elif isinstance(node, ast.GeneratorExp):
+            deferred_nodes.update(id(child) for child in ast.walk(node.elt))
+            for index, comprehension in enumerate(node.generators):
+                if index:
+                    deferred_nodes.update(
+                        id(child) for child in ast.walk(comprehension.iter)
+                    )
+                for condition in comprehension.ifs:
+                    deferred_nodes.update(id(child) for child in ast.walk(condition))
 
     parents = _parent_map(func)
     for operation, _ in _operation_nodes(func, short):
@@ -1243,6 +1298,18 @@ def test_the_claim_guard_sees_through_deferred_work():
         '        callback = _publish_workshop_item\n'
         '    callback(folder)\n'
         '\n'
+        'def thread_target():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        threading.Thread(target=_publish_workshop_item, args=(folder,)).start()\n'
+        '\n'
+        'def mapped():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        executor.map(_publish_workshop_item, folders)\n'
+        '\n'
+        'def generated():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        return (_publish_workshop_item(folder) for _ in items)\n'
+        '\n'
         'def direct():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        _publish_workshop_item(folder)\n'
@@ -1260,6 +1327,15 @@ def test_the_claim_guard_sees_through_deferred_work():
     )
     assert _unclaimed_folder_operations(functions['stored_reference'], 'publish'), (
         '存在 claim 里的普通 callable 引用也可能逃逸，必须被报出来'
+    )
+    assert _unclaimed_folder_operations(functions['thread_target'], 'publish'), (
+        'Thread target 会在别的线程延后运行，必须被报出来'
+    )
+    assert _unclaimed_folder_operations(functions['mapped'], 'publish'), (
+        'executor.map 的 callable 会延后运行，必须被报出来'
+    )
+    assert _unclaimed_folder_operations(functions['generated'], 'publish'), (
+        'generator expression 的 body 会在迭代时才运行，必须被报出来'
     )
     assert _unclaimed_folder_operations(functions['direct'], 'publish') == [], (
         '直接在占用里同步跑完是合法的，守卫不该报它'
@@ -1293,6 +1369,12 @@ def test_the_claim_guard_requires_one_continuous_claim():
         '    ):\n'
         '        _publish_workshop_item(folder)\n'
     ).body[0]
+    wrapped_claim = ast.parse(
+        'def _preflight_and_publish():\n'
+        '    with nullcontext(claim_content_folder(folder, purpose=p)):\n'
+        '        resolve_voice_reference_serialized(folder)\n'
+        '        _publish_workshop_item(folder)\n'
+    ).body[0]
 
     assert any(
         item[3] == 'continuous-claim'
@@ -1301,6 +1383,9 @@ def test_the_claim_guard_requires_one_continuous_claim():
     assert _unclaimed_folder_operations(continuous, 'publish') == []
     assert _unclaimed_folder_operations(eager_header, 'publish'), (
         'with 头部在进入 claim 前求值，里面的目录操作必须报出来'
+    )
+    assert _unclaimed_folder_operations(wrapped_claim, 'publish'), (
+        'claim 只作为参数传给别的 context manager 时并没有被进入，必须报出来'
     )
     assert any(
         item[3] == 'continuous-claim'
