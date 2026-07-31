@@ -51,8 +51,11 @@ async def _run_serialized_in_worker(lock: asyncio.Lock, func, /, *args, **kwargs
     # concurrent request first would make all waiters occupy default-executor
     # slots while only one can progress. asyncio.Lock suspends waiters without
     # blocking the event loop; the worker is allocated only to the active call.
+    submitted = asyncio.Event()
+
     async def _run_owned_operation():
         async with lock:
+            submitted.set()
             return await asyncio.to_thread(func, *args, **kwargs)
 
     # The child owns both queue position and submit-lock lifetime. Shielding it
@@ -62,6 +65,15 @@ async def _run_serialized_in_worker(lock: asyncio.Lock, func, /, *args, **kwargs
     try:
         return await asyncio.shield(operation)
     except asyncio.CancelledError:
+        # 但只有「worker 已经在跑」才值得保住。还排在锁上的那些没有任何不可取消的
+        # 东西，留着它们只会在客户端早就走了之后再去做一次陈旧的读/写；前面一次慢
+        # 文件操作 + 客户端反复超时重试，就能攒出一条无界队列挡住还活着的请求。
+        #
+        # 这个判断是原子的：submitted.set() 和它后面那个 await 之间没有让出点，所以
+        # 此刻子任务要么挂在 `async with lock`（没 set，取消安全），要么挂在
+        # to_thread（已 set，取消会提前放锁 —— 正是 shield 要防的）。不存在中间态。
+        if not submitted.is_set():
+            operation.cancel()
         operation.add_done_callback(_consume_detached_operation_result)
         raise
 
