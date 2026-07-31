@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any
 
 from utils.file_utils import atomic_write_json
+from utils.recent_file import recent_file_locks, set_recent_pending_unlocked
 
 # Late-bound package reference: tests monkeypatch attributes such as
 # ``utils.cloudsave_runtime._atomic_copy_file`` and ``_apply_runtime_file``
@@ -1101,37 +1102,51 @@ def import_local_cloudsave_snapshot(
             operation="import",
             stage="apply_runtime",
         )
-        try:
-            for target_path, staged_path in runtime_targets.items():
-                _facade._apply_runtime_file(staged_path, target_path)
+        recent_targets = {
+            target_path
+            for target_path in set(runtime_targets) | delete_file_targets
+            if target_path.name == "recent.json"
+        }
+        recent_targets.update(
+            Path(config_manager.memory_dir) / character_name / "recent.json"
+            for character_name in imported_character_names
+        )
+        recent_targets.update(directory / "recent.json" for directory in delete_dir_targets)
+        with recent_file_locks(list(recent_targets)):
+            try:
+                for target_path, staged_path in runtime_targets.items():
+                    _facade._apply_runtime_file(staged_path, target_path)
 
-            for target_path in sorted(delete_file_targets):
-                if target_path.exists():
-                    target_path.unlink()
-                    _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
-
-            for target_path in sorted(delete_dir_targets, key=lambda path: len(path.parts), reverse=True):
-                if target_path.exists():
-                    shutil.rmtree(target_path)
-
-            return {
-                "manifest_fingerprint": computed_fingerprint,
-                "applied_character_count": len(imported_character_names),
-                "name_audit": name_audit,
-            }
-        except Exception:
-            for record in sorted(backup_records, key=lambda item: len(item["target"].parts), reverse=True):
-                target_path = record["target"]
-                if target_path.exists():
-                    if target_path.is_dir():
-                        shutil.rmtree(target_path, ignore_errors=True)
-                    else:
+                for target_path in sorted(delete_file_targets):
+                    if target_path.exists():
                         target_path.unlink()
-                backup_path = record["backup"]
-                if backup_path is None or not backup_path.exists():
-                    continue
-                if record["is_dir"]:
-                    shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
-                else:
-                    _facade._apply_runtime_file(backup_path, target_path)
-            raise
+                        _cleanup_empty_parent_dirs(target_path, Path(config_manager.memory_dir))
+
+                for target_path in sorted(delete_dir_targets, key=lambda path: len(path.parts), reverse=True):
+                    if target_path.exists():
+                        shutil.rmtree(target_path)
+
+                for recent_path in recent_targets:
+                    set_recent_pending_unlocked(recent_path, [])
+
+                return {
+                    "manifest_fingerprint": computed_fingerprint,
+                    "applied_character_count": len(imported_character_names),
+                    "name_audit": name_audit,
+                }
+            except Exception:
+                for record in sorted(backup_records, key=lambda item: len(item["target"].parts), reverse=True):
+                    target_path = record["target"]
+                    if target_path.exists():
+                        if target_path.is_dir():
+                            shutil.rmtree(target_path, ignore_errors=True)
+                        else:
+                            target_path.unlink()
+                    backup_path = record["backup"]
+                    if backup_path is None or not backup_path.exists():
+                        continue
+                    if record["is_dir"]:
+                        shutil.copytree(backup_path, target_path, dirs_exist_ok=True)
+                    else:
+                        _facade._apply_runtime_file(backup_path, target_path)
+                raise

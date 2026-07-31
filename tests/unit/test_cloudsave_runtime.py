@@ -961,6 +961,7 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     cm = _make_config_manager(tmp_path)
 
     from utils.cloudsave_runtime import export_local_cloudsave_snapshot, import_local_cloudsave_snapshot
+    from utils import recent_file
 
     expected_characters = _write_runtime_state(cm)
 
@@ -994,6 +995,10 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
         import shutil
         shutil.rmtree(cm.memory_dir)
 
+    restored_recent = Path(cm.memory_dir) / "小满" / "recent.json"
+    with recent_file.recent_file_lock(restored_recent):
+        recent_file.set_recent_pending_unlocked(restored_recent, ["stale-before-cloud-import"])
+
     import_result = import_local_cloudsave_snapshot(cm)
 
     assert import_result["applied_character_count"] == 1
@@ -1004,9 +1009,9 @@ def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     assert "__global_conversation__" in preferences
     assert "noiseReductionEnabled" in preferences
 
-    restored_recent = Path(cm.memory_dir) / "小满" / "recent.json"
     restored_db = Path(cm.memory_dir) / "小满" / "time_indexed.db"
     assert restored_recent.is_file()
+    assert recent_file.get_recent_pending(restored_recent) == []
     assert restored_db.read_bytes() == b"sqlite-placeholder"
 
     cloud_state = cm.load_cloudsave_local_state()

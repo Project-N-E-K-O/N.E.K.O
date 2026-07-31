@@ -503,7 +503,7 @@ def test_character_rename_moves_pending_to_new_recent_path(tmp_path):
     _write_disk(str(old_path), [HumanMessage(content="disk")])
     with recent_file.recent_file_lock(old_path):
         recent_file.set_recent_pending_unlocked(
-            old_path, [HumanMessage(content="pending")],
+            old_path, [HumanMessage(content="Old说：pending")],
         )
 
     class _RenameConfig:
@@ -513,11 +513,70 @@ def test_character_rename_moves_pending_to_new_recent_path(tmp_path):
     rename_character_memory_storage(_RenameConfig(), "Old", "New")
     new_path = tmp_path / "New" / "recent.json"
     assert recent_file.get_recent_pending(old_path) == []
-    assert [m.content for m in recent_file.get_recent_pending(new_path)] == ["pending"]
+    assert [m.content for m in recent_file.get_recent_pending(new_path)] == ["New说：pending"]
 
     mgr, name, _ = _make_manager(tmp_path, "New", path=str(new_path))
     asyncio.run(mgr.update_history([HumanMessage(content="next")], name, compress=False))
-    assert [m.content for m in _read_disk(str(new_path))] == ["disk", "pending", "next"]
+    assert [m.content for m in _read_disk(str(new_path))] == ["disk", "New说：pending", "next"]
+
+
+def test_character_rename_pending_snapshot_restores_on_rollback(tmp_path):
+    """A larger rename transaction can restore the exact pre-move pending state."""
+    from utils.character_memory import rename_character_memory_storage
+
+    old_path = tmp_path / "Old" / "recent.json"
+    old_path.parent.mkdir()
+    _write_disk(str(old_path), [HumanMessage(content="disk")])
+    original = HumanMessage(content="Old说：pending")
+    with recent_file.recent_file_lock(old_path):
+        recent_file.set_recent_pending_unlocked(old_path, [original])
+
+    class _RenameConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    result = rename_character_memory_storage(_RenameConfig(), "Old", "New")
+    recent_file.restore_recent_pending_snapshot(result["_recent_pending_snapshot"])
+
+    new_path = tmp_path / "New" / "recent.json"
+    assert [m.content for m in recent_file.get_recent_pending(old_path)] == ["Old说：pending"]
+    assert recent_file.get_recent_pending(new_path) == []
+
+
+def test_character_rename_holds_recent_locks_across_physical_move(tmp_path, monkeypatch):
+    """The directory move and pending migration form one recent-file transaction."""
+    import utils.character_memory as character_memory
+
+    old_path = tmp_path / "Old" / "recent.json"
+    old_path.parent.mkdir()
+    _write_disk(str(old_path), [HumanMessage(content="disk")])
+
+    class _RenameConfig:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    entered = threading.Event()
+    release = threading.Event()
+    real_merge = character_memory._merge_directories
+
+    def _blocking_merge(source, target):
+        if source == old_path.parent:
+            entered.set()
+            assert release.wait(3)
+        return real_merge(source, target)
+
+    monkeypatch.setattr(character_memory, "_merge_directories", _blocking_merge)
+    worker = threading.Thread(
+        target=character_memory.rename_character_memory_storage,
+        args=(_RenameConfig(), "Old", "New"),
+    )
+    worker.start()
+    assert entered.wait(3)
+    lock = recent_file.recent_file_lock(old_path)
+    assert lock.acquire(timeout=0.05) is False
+    release.set()
+    worker.join(3)
+    assert not worker.is_alive()
 
 
 # ─────────────── T9: review persist failure must report exactly ('failed', None) ───────────────

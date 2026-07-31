@@ -16,14 +16,17 @@ from __future__ import annotations
 
 import json
 import shutil
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from utils.recent_file import (
     clear_recent_pending,
-    move_recent_pending,
+    get_recent_pending_unlocked,
     read_recent_text_unlocked,
     recent_file_lock,
+    recent_file_locks,
+    set_recent_pending_unlocked,
     write_recent_payload_unlocked,
 )
 
@@ -187,21 +190,67 @@ def _rewrite_recent_message_character_name(item: dict[str, Any], old_name: str, 
                 nested_data[field] = new_name
                 changed = True
 
-        content = nested_data.get("content")
-        if isinstance(content, str):
-            for pattern in (
-                f"{old_name}说：",
-                f"{old_name}说:",
-                f"{old_name}:",
-                f"{old_name}->",
-                f"[{old_name}]",
-                f"{old_name} | ",
-            ):
-                if pattern in content:
-                    content = content.replace(pattern, pattern.replace(old_name, new_name))
-                    changed = True
+        content, content_changed = _rewrite_recent_content_character_name(
+            nested_data.get("content"), old_name, new_name,
+        )
+        if content_changed:
             nested_data["content"] = content
+            changed = True
 
+    return changed
+
+
+def _rewrite_recent_content_character_name(content: Any, old_name: str, new_name: str) -> tuple[Any, bool]:
+    if not isinstance(content, str):
+        return content, False
+    changed = False
+    for pattern in (
+        f"{old_name}说：",
+        f"{old_name}说:",
+        f"{old_name}:",
+        f"{old_name}->",
+        f"[{old_name}]",
+        f"{old_name} | ",
+    ):
+        if pattern in content:
+            content = content.replace(pattern, pattern.replace(old_name, new_name))
+            changed = True
+    return content, changed
+
+
+def _rewrite_pending_message_character_name(message: Any, old_name: str, new_name: str) -> Any:
+    rewritten = deepcopy(message)
+    if isinstance(rewritten, dict):
+        _rewrite_recent_message_character_name(rewritten, old_name, new_name)
+        return rewritten
+    for field in MESSAGE_NAME_FIELDS:
+        if getattr(rewritten, field, None) == old_name:
+            setattr(rewritten, field, new_name)
+    content, changed = _rewrite_recent_content_character_name(
+        getattr(rewritten, "content", None), old_name, new_name,
+    )
+    if changed:
+        setattr(rewritten, "content", content)
+    return rewritten
+
+
+def _rewrite_recent_file_character_name_unlocked(
+    recent_path: Path, old_name: str, new_name: str,
+) -> bool:
+    if old_name == new_name or not recent_path.is_file():
+        return False
+    try:
+        payload = json.loads(read_recent_text_unlocked(recent_path))
+    except Exception:
+        return False
+    if not isinstance(payload, list):
+        return False
+    changed = False
+    for item in payload:
+        if isinstance(item, dict):
+            changed = _rewrite_recent_message_character_name(item, old_name, new_name) or changed
+    if changed:
+        write_recent_payload_unlocked(recent_path, payload)
     return changed
 
 
@@ -211,70 +260,64 @@ def rewrite_recent_file_character_name(recent_path: Path, old_name: str, new_nam
     Read and write live in one critical section so a concurrent memory_server
     writer cannot land between them and lose its own append.
     """
-    if old_name == new_name or not recent_path.is_file():
-        return False
-
     with recent_file_lock(recent_path):
-        try:
-            payload = json.loads(read_recent_text_unlocked(recent_path))
-        except Exception:
-            return False
-
-        if not isinstance(payload, list):
-            return False
-
-        changed = False
-        for item in payload:
-            if not isinstance(item, dict):
-                continue
-            changed = _rewrite_recent_message_character_name(item, old_name, new_name) or changed
-
-        if changed:
-            write_recent_payload_unlocked(recent_path, payload)
-
-    return changed
+        return _rewrite_recent_file_character_name_unlocked(recent_path, old_name, new_name)
 
 
 def rename_character_memory_storage(config_manager, old_name: str, new_name: str) -> dict[str, Any]:
     runtime_target_dir = get_runtime_character_memory_dir(config_manager, new_name)
+    roots = iter_character_memory_roots(config_manager)
     pending_sources = [
         base_dir / old_name / "recent.json"
-        for base_dir in iter_character_memory_roots(config_manager)
+        for base_dir in roots
     ]
     pending_sources.extend(
         base_dir / f"recent_{old_name}.json"
-        for base_dir in iter_character_memory_roots(config_manager)
+        for base_dir in roots
     )
-    changed = False
+    target_recent = runtime_target_dir / "recent.json"
+    recent_paths = list(dict.fromkeys([*pending_sources, target_recent]))
+    with recent_file_locks(recent_paths):
+        pending_snapshot = {
+            path: deepcopy(get_recent_pending_unlocked(path))
+            for path in recent_paths
+        }
+        changed = False
+        for base_dir in roots:
+            changed = _merge_directories(base_dir / old_name, runtime_target_dir) or changed
 
-    for base_dir in iter_character_memory_roots(config_manager):
-        changed = _merge_directories(base_dir / old_name, runtime_target_dir) or changed
-
-        for legacy_name, target_name in LEGACY_CHARACTER_MEMORY_FILE_MAP.items():
-            source_path = base_dir / legacy_name.format(name=old_name)
-            target_path = runtime_target_dir / target_name
-            changed = _move_path(source_path, target_path) or changed
-
-        for legacy_name in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
-            source_path = base_dir / legacy_name.format(name=old_name)
-            if source_path.exists():
-                target_path = runtime_target_dir / "semantic_memory_legacy"
+            for legacy_name, target_name in LEGACY_CHARACTER_MEMORY_FILE_MAP.items():
+                source_path = base_dir / legacy_name.format(name=old_name)
+                target_path = runtime_target_dir / target_name
                 changed = _move_path(source_path, target_path) or changed
 
-    changed = rewrite_recent_file_character_name(
-        runtime_target_dir / "recent.json",
-        old_name,
-        new_name,
-    ) or changed
+            for legacy_name in LEGACY_CHARACTER_MEMORY_EXTRA_ENTRIES:
+                source_path = base_dir / legacy_name.format(name=old_name)
+                if source_path.exists():
+                    target_path = runtime_target_dir / "semantic_memory_legacy"
+                    changed = _move_path(source_path, target_path) or changed
 
-    target_recent = runtime_target_dir / "recent.json"
-    for source_recent in pending_sources:
-        move_recent_pending(source_recent, target_recent)
+        changed = _rewrite_recent_file_character_name_unlocked(
+            target_recent, old_name, new_name,
+        ) or changed
+
+        target_pending = get_recent_pending_unlocked(target_recent)
+        for source_recent in pending_sources:
+            if source_recent == target_recent:
+                continue
+            source_pending = get_recent_pending_unlocked(source_recent)
+            set_recent_pending_unlocked(source_recent, [])
+            target_pending.extend(
+                _rewrite_pending_message_character_name(message, old_name, new_name)
+                for message in source_pending
+            )
+        set_recent_pending_unlocked(target_recent, target_pending)
 
     return {
         "changed": changed,
         "runtime_dir": runtime_target_dir,
         "exists_after": runtime_target_dir.exists(),
+        "_recent_pending_snapshot": pending_snapshot,
     }
 
 

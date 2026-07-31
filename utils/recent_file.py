@@ -32,7 +32,8 @@ from __future__ import annotations
 
 import os
 import threading
-from typing import Any
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 from utils.file_utils import atomic_write_json
 
@@ -42,9 +43,11 @@ __all__ = [
     "get_recent_pending_unlocked",
     "move_recent_pending",
     "recent_file_lock",
+    "recent_file_locks",
     "read_recent_text",
     "read_recent_text_unlocked",
     "set_recent_pending_unlocked",
+    "restore_recent_pending_snapshot",
     "write_recent_payload",
     "write_recent_payload_unlocked",
 ]
@@ -99,6 +102,20 @@ def recent_file_lock(path: Any) -> threading.Lock:
     return lock
 
 
+@contextmanager
+def recent_file_locks(paths: list[Any]) -> Iterator[None]:
+    """Hold several recent-file locks in stable key order."""
+    keyed_paths = {_lock_key(path): path for path in paths}
+    locks = [recent_file_lock(keyed_paths[key]) for key in sorted(keyed_paths)]
+    for lock in locks:
+        lock.acquire()
+    try:
+        yield
+    finally:
+        for lock in reversed(locks):
+            lock.release()
+
+
 def get_recent_pending_unlocked(path: Any) -> list[Any]:
     """Return a copy of the unpersisted batch while the path lock is held."""
     with _PENDING_GUARD:
@@ -125,6 +142,13 @@ def clear_recent_pending(path: Any) -> None:
     """Discard unpersisted messages after an authoritative delete."""
     with recent_file_lock(path):
         set_recent_pending_unlocked(path, [])
+
+
+def restore_recent_pending_snapshot(snapshot: dict[Any, list[Any]]) -> None:
+    """Restore exact per-path pending state after a larger transaction rolls back."""
+    with recent_file_locks(list(snapshot)):
+        for path, messages in snapshot.items():
+            set_recent_pending_unlocked(path, messages)
 
 
 def move_recent_pending(source_path: Any, target_path: Any) -> None:

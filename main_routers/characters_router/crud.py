@@ -62,7 +62,7 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.recent_file import write_recent_payload
+from utils.recent_file import restore_recent_pending_snapshot, write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -410,6 +410,7 @@ async def _rollback_character_operation(
     characters_snapshot: dict,
     memory_snapshot_records,
     tombstone_snapshot: dict | None = None,
+    recent_pending_snapshot: dict | None = None,
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
@@ -427,6 +428,14 @@ async def _rollback_character_operation(
         )
     except Exception as exc:
         rollback_errors.append(f"characters restore failed: {exc}")
+
+    if recent_pending_snapshot is not None:
+        try:
+            await asyncio.to_thread(
+                restore_recent_pending_snapshot, recent_pending_snapshot,
+            )
+        except Exception as exc:
+            rollback_errors.append(f"recent pending restore failed: {exc}")
 
     if tombstone_snapshot is not None:
         try:
@@ -599,6 +608,7 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_targets.append(old_meta)
     memory_targets.append(new_meta)
     memory_server_reloaded = False
+    recent_pending_snapshot = None
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
         memory_snapshot_records = await asyncio.to_thread(
@@ -607,9 +617,10 @@ async def rename_catgirl(old_name: str, request: Request):
         try:
             # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
             # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
-            await asyncio.to_thread(
+            memory_rename_result = await asyncio.to_thread(
                 rename_character_memory_storage, _config_manager, old_name, new_name,
             )
+            recent_pending_snapshot = memory_rename_result.get("_recent_pending_snapshot")
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)
@@ -652,6 +663,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     _config_manager,
                     characters_snapshot=characters_snapshot,
                     memory_snapshot_records=memory_snapshot_records,
+                    recent_pending_snapshot=recent_pending_snapshot,
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -675,6 +687,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
+                recent_pending_snapshot=recent_pending_snapshot,
                 reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
             )
             if rollback_error:
@@ -685,6 +698,7 @@ async def rename_catgirl(old_name: str, request: Request):
                 _config_manager,
                 characters_snapshot=characters_snapshot,
                 memory_snapshot_records=memory_snapshot_records,
+                recent_pending_snapshot=recent_pending_snapshot,
                 reason=f"角色重命名回滚: {old_name} -> {new_name}",
             )
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
