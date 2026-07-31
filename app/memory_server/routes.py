@@ -820,6 +820,7 @@ class ScopedHistoryRequest(BaseModel):
     # shipped in the same deployment), but the legacy shape stays anyway —
     # the group-digest paths keep using it unchanged.
     segments: list[ScopedHistorySegment] | None = None
+    language: str | None = None
 
 
 class ScopedContextRequest(BaseModel):
@@ -901,6 +902,11 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
 @app.post("/internal/memory/{lanlan_name}/scoped_history")
 async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     """Extract scoped facts from a bounded group-chat digest/history batch."""
+    with language_context(_activate_request_language(req.language)):
+        return await _process_scoped_history(lanlan_name, req)
+
+
+async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     lanlan_name = validate_lanlan_name(lanlan_name)
     if runtime.fact_store is None:
         raise HTTPException(

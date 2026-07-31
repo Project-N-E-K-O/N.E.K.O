@@ -289,12 +289,15 @@ class QQMemoryBridge:
         speaker_label: str | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
+        from utils.language_utils import get_global_language_full
+
         # speaker_label 只在单发言人批次（成员 bucket）传：提取 prompt 用它
         # 替代私聊主人名渲染 user 轮，避免成员发言被抽成"关于主人"的事实。
         # 群 digest 不传——内容里每条消息已带发言人头。
         payload: dict[str, Any] = {
             "input_history": json.dumps(messages, ensure_ascii=False),
             "subject": subject,
+            "language": get_global_language_full(),
         }
         if speaker_label:
             payload["speaker_label"] = speaker_label
@@ -320,6 +323,8 @@ class QQMemoryBridge:
         'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
         发言人。服务端一次抽取后按段分派，响应体按请求顺序逐段报
         ok/failed，调用方只 pop 成功段的 bucket。"""
+        from utils.language_utils import get_global_language_full
+
         payload_segments: list[dict[str, Any]] = []
         for segment in segments:
             wire: dict[str, Any] = {
@@ -336,7 +341,10 @@ class QQMemoryBridge:
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
-            json={"segments": payload_segments},
+            json={
+                "segments": payload_segments,
+                "language": get_global_language_full(),
+            },
             timeout=timeout,
         )
         response.raise_for_status()

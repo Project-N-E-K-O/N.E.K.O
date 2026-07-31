@@ -316,8 +316,36 @@ async def test_scoped_context_activates_request_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_scoped_history_activates_request_locale(monkeypatch):
+    from app.memory_server import routes
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    async def process(name, req):
+        observed.append((name, req.language, get_global_language_full()))
+        return {"status": "ok"}
+
+    monkeypatch.setattr(routes, "_process_scoped_history", process)
+    request = routes.ScopedHistoryRequest(
+        input_history="[]",
+        subject={
+            "subject_kind": "group_chat",
+            "subject_id": "qq:7788",
+        },
+        language="zh-TW",
+    )
+
+    assert await routes.process_scoped_history("Neko", request) == {
+        "status": "ok",
+    }
+    assert observed == [("Neko", "zh-TW", "zh-TW")]
+
+
+@pytest.mark.asyncio
 async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
     from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+    from utils import language_utils
 
     calls = []
 
@@ -326,6 +354,9 @@ async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
 
         def raise_for_status(self):
             return None
+
+        def json(self):
+            return {"status": "ok"}
 
     class Client:
         async def get(self, _url, **kwargs):
@@ -337,6 +368,11 @@ async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
             return Response()
 
     monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(Client))
+    monkeypatch.setattr(
+        language_utils,
+        "get_global_language_full",
+        lambda: "zh-TW",
+    )
     bridge = QQMemoryBridge(object())
     await bridge.fetch_bootstrap_memory("Neko", language="zh-TW")
     await bridge.fetch_scoped_bootstrap_memory(
@@ -347,9 +383,30 @@ async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
         }],
         language="zh-TW",
     )
+    await bridge.post_scoped_memory_history(
+        "Neko",
+        [{"role": "user", "content": "喜歡貓"}],
+        subject={
+            "subject_kind": "group_chat",
+            "subject_id": "qq:7788",
+        },
+    )
+    await bridge.post_scoped_memory_history_batch(
+        "Neko",
+        [{
+            "messages": [{"role": "user", "content": "喜歡貓"}],
+            "subject": {
+                "subject_kind": "group_participant",
+                "subject_id": "qq:7788:1001",
+            },
+            "speaker_label": "Alice",
+        }],
+    )
 
     assert calls[0][1]["params"] == {"language": "zh-TW"}
     assert calls[1][1]["json"]["language"] == "zh-TW"
+    assert calls[2][1]["json"]["language"] == "zh-TW"
+    assert calls[3][1]["json"]["language"] == "zh-TW"
 
 
 def test_memory_prompt_locale_detection_ignores_formatter_metadata():
