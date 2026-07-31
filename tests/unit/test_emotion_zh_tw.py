@@ -1553,8 +1553,9 @@ def test_a_keyword_formed_across_a_compound_boundary_is_not_one(text):
     """Neither half is an emotion word; the keyword only exists in the seam.
 
     Substring matching has no notion of a word boundary, so the left-hand word
-    has to be removed before scoring. `困難` + `過程` floats a `難過` between them.
+    has to be removed before scoring.
     """
+    # 具体例子：`困難` + `過程` 的接缝里浮出一个 `難過`。
     assert _heur(text) is None
 
 
