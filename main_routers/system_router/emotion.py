@@ -286,7 +286,9 @@ def _last_clause_cut(head):
     return cut
 
 
-def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+def _has_negated_emotion_phrase(
+    normalized_text, compact_text, fuzzy_compact_cutoff, is_contiguous=None
+):
     # Blocklist first, once, for both of the whole-label branches below: `sin
     # duda feliz` is emphatic agreement and the negation inside that fixed phrase
     # is not one. The heuristic already read this table; on the label side only
@@ -360,6 +362,14 @@ def _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cut
         # the label as the emotion it actually denies.
         marker_index = compact_text.find(negation)
         while marker_index > 0:
+            # The same original-text contiguity rule the per-match scan uses:
+            # punctuation is gone from compact_text, so a marker that opens the
+            # next clause looks attached to the alias ending this one.
+            if (
+                is_contiguous is not None and not is_contiguous(marker_index)
+            ) or not _suffix_negates_at(compact_text, marker_index, negation):
+                marker_index = compact_text.find(negation, marker_index + 1)
+                continue
             head = compact_text[:marker_index]
             # This branch answers for the ENTIRE label, so it may only fire when
             # nothing follows the marker: `我難過不起來但很開心` denies the first
@@ -404,7 +414,29 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
     fuzzy_alias_cutoff = 0.74 if high_confidence else 0.9
     fuzzy_compact_cutoff = 0.72 if high_confidence else 0.88
 
-    if _has_negated_emotion_phrase(normalized_text, compact_text, fuzzy_compact_cutoff):
+    # Where each compact character came from, so a clause boundary can be found in
+    # the original text. compact_text has the punctuation removed, which is what
+    # made `不是，非常开心` look contiguous.
+    compact_origin = [
+        index for index, char in enumerate(emotion_text)
+        if not _NON_WORD_RE.match(char)
+    ]
+
+    def _suffix_is_contiguous(position):
+        """Whether nothing was dropped between the alias and the marker.
+
+        compact_text has the punctuation removed, so a marker one clause later
+        looks adjacent, and the denial in that clause would be read as denying
+        the emotion the first clause asserts.
+        """
+        # 例：`開心，不下去了` —— `不下去` 属于后一小句。
+        if position <= 0 or position >= len(compact_origin):
+            return True
+        return compact_origin[position] == compact_origin[position - 1] + 1
+
+    if _has_negated_emotion_phrase(
+        normalized_text, compact_text, fuzzy_compact_cutoff, _suffix_is_contiguous
+    ):
         return "neutral"
 
     def _is_negated_ascii_match(match_start):
@@ -418,14 +450,6 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         head = _strip_negation_blocklist(head[_last_clause_cut(head) + 1:])
         prefix_tokens = _EMOTION_TOKEN_RE.findall(head)
         return any(token in _EMOTION_NEGATION_WORDS for token in prefix_tokens[-3:])
-
-    # Where each compact character came from, so a clause boundary can be found in
-    # the original text. compact_text has the punctuation removed, which is what
-    # made `不是，非常开心` look contiguous.
-    compact_origin = [
-        index for index, char in enumerate(emotion_text)
-        if not _NON_WORD_RE.match(char)
-    ]
 
     def _current_clause(match_start):
         """The compact text before `match_start` that shares its clause.
@@ -444,18 +468,6 @@ def _normalize_emotion_label(raw_emotion, raw_confidence=None):
         # delimiter belongs to a different clause.
         kept = sum(1 for origin in compact_origin[:match_start] if origin > cut)
         return prefix[len(prefix) - min(len(prefix), kept):]
-
-    def _suffix_is_contiguous(position):
-        """Whether nothing was dropped between the alias and the marker.
-
-        compact_text has the punctuation removed, so a marker one clause later
-        looks adjacent, and the denial in that clause would be read as denying
-        the emotion the first clause asserts.
-        """
-        # 例：`我很開心，不下去了` —— `不下去` 属于后一小句。
-        if position <= 0 or position >= len(compact_origin):
-            return True
-        return compact_origin[position] == compact_origin[position - 1] + 1
 
     def _is_negated_compact_match(match_start):
         # The blocklist goes first, before anything measures this window: `別` is

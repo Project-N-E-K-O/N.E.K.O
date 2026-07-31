@@ -1740,3 +1740,69 @@ def test_an_empty_token_set_never_matches():
     assert not _word_boundary_regex(()).search("")
     assert _word_boundary_regex(("not",)).search("I am not happy")
     assert not _word_boundary_regex(("not",)).search("I am nothing")
+
+
+@pytest.mark.parametrize("text", [
+    "他氣得直跺腳", "他气得直跺脚", "那個學生氣得直跺腳", "那个学生气得直跺脚",
+    "氣得說不出話", "他氣壞了", "他氣瘋了", "很氣憤", "他脾氣壞",
+])
+def test_the_anger_verb_family_scores(text):
+    """The table had three of these and not the most common one.
+
+    A sentence built on it looked as if it worked, because the seam between the
+    subject and the verb happened to spell the noun that was in the table. Once
+    the seam filter removed the subject the accident stopped, which is how the
+    real gap surfaced -- it was there on main too, for any subject.
+    """
+    assert _heur(text) == "angry"
+
+
+@pytest.mark.parametrize("text", [
+    "他說話語氣得體", "語氣得體", "口氣得罪人", "空氣壞了", "天氣得看情況", "這口氣得忍著",
+])
+def test_the_new_anger_verbs_do_not_fire_across_a_seam(text):
+    """Adding them moved the seam to the other side, so those left-hand words
+    join the filter. Each passed the mirror check -- none of their first
+    characters can carry the verb on its own."""
+    assert _heur(text) is None
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("開心，不下去了", "happy"),
+    ("開心，不了解", "happy"),
+    ("難過，不起來", "sad"),
+    ("開心不下去", "neutral"),
+    ("開心不起來", "neutral"),
+    ("我笑不起來，其實真的開心不起來", "neutral"),
+    ("我難過不起來但很開心", "happy"),
+])
+def test_the_whole_label_veto_also_checks_the_original_text(label, expected, confidence):
+    """The prepass answers for the entire label and returns before the per-match
+    scan runs, so the contiguity rule has to be applied there too.
+
+    A bare alias followed by a comma and a marker was the reachable case: the
+    head matched exactly, so the veto fired at any confidence. The last three
+    show the rule does not cost the cases that genuinely are denials, including
+    the one whose denial is in a later clause.
+    """
+    assert _label(label, confidence) == expected
+
+
+@pytest.mark.parametrize("confidence", CONFIDENCES)
+@pytest.mark.parametrize("label, expected", [
+    ("悲しいないし", "sad"),
+    ("嬉しいないし", "happy"),
+    ("悲しいないしは", "sad"),
+    ("開心不了解", "happy"),
+    ("難過不了了之", "sad"),
+])
+def test_the_whole_label_veto_also_honours_the_suffix_exceptions(label, expected, confidence):
+    """Reachable only when the exception word ends the label.
+
+    With anything after it the veto is already held off by the check for a later
+    alias, which is why the sentence-shaped cases pass either way. A label that
+    stops at the conjunction has nothing after it, so this branch has to know the
+    exceptions itself.
+    """
+    assert _label(label, confidence) == expected
