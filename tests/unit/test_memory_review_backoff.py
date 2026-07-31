@@ -14,6 +14,7 @@ import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from utils import recent_file
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -163,7 +164,10 @@ async def _drive_spawn(memory_server, name, history):
     """跑 maybe_spawn_review，gate 1-5 全开（patch 掉），只测 Gate 6。"""
     fake_mgr = MagicMock()
     fake_mgr.aget_recent_history = AsyncMock(
-        return_value=(history, ("review-test-recent.json", 0)),
+        return_value=(
+            history,
+            recent_file.capture_recent_generation("review-test-recent.json"),
+        ),
     )
     # 被 spawn 的后台 task 真跑起来时会调 review_history——给个安全返回
     fake_mgr.review_history = AsyncMock(return_value=("white", None))
@@ -173,6 +177,10 @@ async def _drive_spawn(memory_server, name, history):
          patch.object(memory_server.review, "_count_new_user_msgs_since_last_review", return_value=999), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server.maybe_spawn_review(name)
+        task = memory_server.correction_tasks.get(name)
+        if task is not None:
+            await task
+    return fake_mgr
 
 
 @pytest.mark.unit
@@ -295,20 +303,13 @@ async def test_gate6_resets_and_spawns_when_input_changed():
         "review_fail_fp": [{"type": "human", "content": "完全不同的旧输入"}],
     }
 
-    await _drive_spawn(memory_server, name, history)
+    fake_mgr = await _drive_spawn(memory_server, name, history)
 
     # 输入已变 → 复位计数
     assert memory_server.gates._maint_state[name]["review_fail_attempts"] == 0
-    # 并且确实 spawn 了（correction_tasks 落了一个 task）
-    task = memory_server.correction_tasks.get(name)
-    assert task is not None
-    # 清理后台 task
-    task.cancel()
-    try:
-        await task
-    except asyncio.CancelledError:
-        # 预期内：上面刚 task.cancel()，await 必然抛 CancelledError，吞掉即可
-        pass
+    # 并且后台路径确实跑到了 review_history，而不是只创建后立刻取消 task。
+    fake_mgr.review_history.assert_awaited_once()
+    assert name not in memory_server.correction_tasks
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
 

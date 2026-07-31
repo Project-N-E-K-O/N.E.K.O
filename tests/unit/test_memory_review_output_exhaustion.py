@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from utils import recent_file
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -129,7 +130,10 @@ async def _drive_review_gate(
 ) -> None:
     fake_manager = MagicMock()
     fake_manager.aget_recent_history = AsyncMock(
-        return_value=(history, ("review-test-recent.json", 0)),
+        return_value=(
+            history,
+            recent_file.capture_recent_generation("review-test-recent.json"),
+        ),
     )
     fake_manager.review_history = AsyncMock(return_value=("white", None))
 
@@ -152,6 +156,10 @@ async def _drive_review_gate(
         ),
     ):
         await memory_server.maybe_spawn_review(name)
+        task = memory_server.correction_tasks.get(name)
+        if task is not None:
+            await task
+    return fake_manager
 
 
 @pytest.mark.unit
@@ -173,17 +181,12 @@ async def test_output_exhaustion_gate_waits_for_context_to_shrink():
     await _drive_review_gate(memory_server, name, _history(14))
     assert name not in memory_server.correction_tasks
 
-    await _drive_review_gate(memory_server, name, _history(8))
+    fake_manager = await _drive_review_gate(memory_server, name, _history(8))
     state = memory_server.gates._maint_state[name]
     assert state["review_output_exhaustion_attempts"] == 0
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
-
-    task = memory_server.correction_tasks.get(name)
-    assert task is not None
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    fake_manager.review_history.assert_awaited_once()
 
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
