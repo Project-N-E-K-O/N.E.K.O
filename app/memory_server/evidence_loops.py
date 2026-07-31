@@ -34,9 +34,9 @@ from config import (
 )
 from memory.cursors import CURSOR_REBUTTAL_CHECKED_UNTIL
 from memory.event_log import EVIDENCE_SOURCE_MIGRATION_SEED
-from utils.language_utils import language_context
 
-from . import gates, review, runtime, signal_extraction
+from . import gates, review, runtime
+from .locale_state import run_with_character_prompt_locale
 from ._shared import logger
 from .gates import (
     IDLE_CHECK_INTERVAL,
@@ -60,9 +60,7 @@ REBUTTAL_SQL_ROW_LIMIT = 200
 
 async def _run_with_character_language(name: str, operation):
     """Run one async maintenance operation with the latest session locale."""
-    state = signal_extraction._signal_check_state.get(name, {})
-    with language_context(state.get("language")):
-        return await operation(name)
+    return await run_with_character_prompt_locale(name, operation, name)
 
 
 async def _resolve_rebuttal_start_time(name: str, now: datetime):

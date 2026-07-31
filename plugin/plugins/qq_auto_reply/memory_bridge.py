@@ -132,6 +132,9 @@ class QQMemoryBridge:
             request_payload["time"] = normalized_time
         if subjects is not None:
             request_payload["subjects"] = subjects
+        from utils.language_utils import get_global_language_full
+
+        request_payload["language"] = get_global_language_full()
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/query_memory/{her_name}",

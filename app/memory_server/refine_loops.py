@@ -27,6 +27,7 @@ from config import (
 
 from . import gates, runtime
 from ._shared import logger
+from .locale_state import run_with_character_prompt_locale
 from .gates import (
     _INITIAL_DELAY_PERSONA_REFINE,
     _INITIAL_DELAY_REFLECTION_REFINE,
@@ -136,7 +137,11 @@ async def _periodic_persona_refine_loop():
             continue
         for name in catgirl_names:
             try:
-                await _run_persona_refine_for_character(name)
+                await run_with_character_prompt_locale(
+                    name,
+                    _run_persona_refine_for_character,
+                    name,
+                )
             except Exception as e:
                 logger.warning(f"[PersonaRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -248,7 +253,11 @@ async def _periodic_reflection_refine_loop():
             continue
         for name in catgirl_names:
             try:
-                await _run_reflection_refine_for_character(name)
+                await run_with_character_prompt_locale(
+                    name,
+                    _run_reflection_refine_for_character,
+                    name,
+                )
             except Exception as e:
                 logger.warning(f"[ReflectionRefine] {name} cron 异常: {e}")
         await asyncio.sleep(interval)
@@ -303,7 +312,11 @@ async def _periodic_reflection_synthesis_loop():
             try:
                 results = []
                 try:
-                    results += await runtime.reflection_engine.synthesize_reflections(name)
+                    results += await run_with_character_prompt_locale(
+                        name,
+                        runtime.reflection_engine.synthesize_reflections,
+                        name,
+                    )
                 except Exception as legacy_error:
                     # 两遍隔离：legacy 侧的持久失败（例如手改出的无 id
                     # 事实让 sorted(f['id']) 抛错）不得饿死 scoped 侧——
@@ -318,7 +331,12 @@ async def _periodic_reflection_synthesis_loop():
                     runtime.reflection_engine, 'synthesize_scoped_reflections', None,
                 )
                 if callable(scoped_synth):
-                    results += await scoped_synth(name, max_subjects=1)
+                    results += await run_with_character_prompt_locale(
+                        name,
+                        scoped_synth,
+                        name,
+                        max_subjects=1,
+                    )
                 if results:
                     logger.info(
                         f"[ReflectionSynth] {name}: 合成 {len(results)} 条新 reflection"

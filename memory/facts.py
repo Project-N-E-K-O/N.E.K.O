@@ -1961,8 +1961,22 @@ class FactStore:
         if not budgeted_observations:
             return []
         obs_text = "\n".join(line for _, line in budgeted_observations)
+        locale_text = "\n".join(
+            truncate_to_tokens(
+                f.get('text', '') or '',
+                EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+            )
+            for f in new_facts
+        )
+        locale_text += "\n" + "\n".join(
+            truncate_to_tokens(
+                observation.get('text', '') or '',
+                EVIDENCE_PER_OBSERVATION_MAX_TOKENS,
+            )
+            for observation, _ in budgeted_observations
+        )
         prompt_lang = detect_prompt_language(
-            f"{new_facts_text}\n{obs_text}",
+            locale_text,
             ui_language=get_global_language_full(),
         )
         prompt = get_signal_detection_prompt(prompt_lang) \

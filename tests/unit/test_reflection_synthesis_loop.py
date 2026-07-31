@@ -104,6 +104,44 @@ async def test_reflection_synthesis_loop_calls_synthesize_for_each_character():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_reflection_synthesis_loop_uses_character_prompt_locale():
+    from app import memory_server
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    async def synthesize(name):
+        observed.append((name, get_global_language_full()))
+        return []
+
+    fake_engine = MagicMock()
+    fake_engine.synthesize_reflections = AsyncMock(side_effect=synthesize)
+    fake_cm = MagicMock()
+    fake_cm.aload_characters = AsyncMock(return_value={
+        '猫娘': {'悠怡': {}}
+    })
+    sleep_calls = []
+
+    async def fake_sleep(seconds):
+        sleep_calls.append(seconds)
+        if len(sleep_calls) >= 2:
+            raise asyncio.CancelledError
+
+    with patch.object(memory_server.runtime, "reflection_engine", fake_engine), \
+         patch.object(memory_server.runtime, "_config_manager", fake_cm), \
+         patch(
+             "app.memory_server.locale_state.get_character_prompt_locale",
+             return_value="zh-TW",
+         ), \
+         patch("app.memory_server.refine_loops.asyncio.sleep", new=fake_sleep):
+        with pytest.raises(asyncio.CancelledError):
+            await memory_server._periodic_reflection_synthesis_loop()
+
+    assert observed == [('悠怡', 'zh-TW')]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_reflection_synthesis_loop_single_character_failure_does_not_abort_others():
     """悠怡 synthesize 抛异常，喵酱 / 小八 仍然各被调一次。"""
     from app import memory_server

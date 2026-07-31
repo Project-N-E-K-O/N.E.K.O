@@ -285,18 +285,20 @@ async def test_external_import_commit_forwards_ui_locale(monkeypatch):
     assert forwarded[0]["language"] == "zh-TW"
 
 
-def test_signal_loop_remembers_latest_session_locale():
-    from app.memory_server import signal_extraction
+def test_signal_loop_remembers_latest_session_locale(monkeypatch):
+    from app.memory_server import locale_state, signal_extraction
 
+    monkeypatch.setattr(locale_state, "record_character_prompt_locale", lambda _name, language: language)
     signal_extraction._signal_check_state.clear()
     signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
 
     assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
 
 
-def test_signal_loop_clears_stale_session_locale():
-    from app.memory_server import signal_extraction
+def test_signal_loop_clears_stale_session_locale(monkeypatch):
+    from app.memory_server import locale_state, signal_extraction
 
+    monkeypatch.setattr(locale_state, "record_character_prompt_locale", lambda _name, language: language)
     signal_extraction._signal_check_state.clear()
     signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
     signal_extraction._signal_check_record_turn("Neko")
@@ -305,8 +307,8 @@ def test_signal_loop_clears_stale_session_locale():
 
 
 @pytest.mark.asyncio
-async def test_idle_maintenance_uses_latest_session_locale():
-    from app.memory_server import evidence_loops, signal_extraction
+async def test_idle_maintenance_uses_latest_session_locale(monkeypatch, tmp_path):
+    from app.memory_server import evidence_loops, locale_state, signal_extraction
     from utils.language_utils import get_global_language_full
 
     observed = []
@@ -315,13 +317,21 @@ async def test_idle_maintenance_uses_latest_session_locale():
         observed.append((name, get_global_language_full()))
         return 1
 
-    signal_extraction._signal_check_state.clear()
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
     signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
+    signal_extraction._signal_check_state.clear()
+    locale_state._locale_cache.clear()
 
     result = await evidence_loops._run_with_character_language("Neko", operation)
 
     assert result == 1
     assert observed == [("Neko", "zh-TW")]
+
+    locale_state.record_character_prompt_locale("Neko", None)
+    locale_state._locale_cache.clear()
+    assert locale_state.get_character_prompt_locale("Neko") is None
 
 
 def test_persona_correction_locale_ignores_formatter_labels():
