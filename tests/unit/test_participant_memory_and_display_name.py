@@ -1659,3 +1659,47 @@ async def test_member_flush_segments_carry_bare_display_name():
     }
     assert by_sender["1001"]["display_name"] == "Alice"
     assert "display_name" not in by_sender["1002"]
+
+
+def test_publish_opt_in_flips_switch_and_stamps_floor():
+    """The ON half of deferred publishing, end to end: publishing after a
+    successful disk write must flip the switch AND push the nonconsent
+    floor on OFF-era sessions. The whitelist test only proves the key is
+    withheld; this proves the withheld key actually takes effect."""
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    off_session = {
+        "is_group": False, "private_memory_mode": "participant",
+        "memory_enabled": False, "nonconsent_history_end": 0,
+        "session": SimpleNamespace(_conversation_history=[1, 2]),
+    }
+    plugin = _settings_plugin({"a": off_session})
+    plugin._qq_settings = {
+        "private_participant_memory_enabled": False,
+        "group_memory_enabled": False,
+        "group_member_memory_enabled": False,
+    }
+    service = QQSettingsService(plugin)
+
+    service._publish_consent_opt_ins(
+        {"private_participant_memory_enabled": True},
+    )
+
+    assert plugin._qq_settings["private_participant_memory_enabled"] is True
+    assert off_session["nonconsent_history_end"] == 2
+
+
+def test_nonconsent_stamp_is_wired_into_generation_finally():
+    """Call-site guard: after extracting _stamp_nonconsent_boundary into a
+    testable method, "the method is right but nobody calls it" becomes the
+    new failure mode - pin the call site in the generation finally block."""
+    import inspect
+
+    from plugin.plugins.qq_auto_reply.reply_generation_service import (
+        QQReplyGenerationService,
+    )
+
+    source = inspect.getsource(
+        QQReplyGenerationService._run_session_generation,
+    )
+    assert "_stamp_nonconsent_boundary(" in source
