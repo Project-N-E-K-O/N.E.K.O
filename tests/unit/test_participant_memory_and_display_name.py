@@ -113,6 +113,30 @@ async def test_display_name_scope_mismatch_is_fail_closed():
     assert "display_name" not in section
 
 
+def test_scope_handoff_clears_previous_display_name():
+    from memory.persona.facts import FactsMixin
+
+    old_scope = MemorySubject.create(
+        "participant", "qq:1001", scope="scope:old",
+    )
+    new_scope = MemorySubject.create(
+        "participant", "qq:1001", scope="scope:new",
+    )
+    section = {
+        "facts": [{"id": "old", **old_scope.as_entry_fields()}],
+        "display_name": "Old Alias",
+        **old_scope.as_entry_fields(),
+    }
+    persona = {old_scope.persona_section_key: section}
+
+    FactsMixin._get_section_facts(
+        SimpleNamespace(), persona, "participant", subject=new_scope,
+    )
+
+    assert "display_name" not in section
+    assert section["scope"] == new_scope.scope
+
+
 @pytest.mark.asyncio
 async def test_display_name_all_structural_is_dropped_not_cleared():
     """整条名字都是结构字符 → 中和后为空：按"没有名字"丢弃，且不清掉已
@@ -1760,6 +1784,43 @@ async def test_scoped_forget_route_wires_all_three_stores():
         assert forgotten.subject_id == "qq:1001"
 
 
+@pytest.mark.asyncio
+async def test_scoped_forget_waits_for_runtime_reload_barrier():
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedForgetRequest
+
+    barrier = asyncio.Lock()
+    await barrier.acquire()
+    store = MagicMock()
+    store.abegin_subject_forget = AsyncMock()
+    store.aforget_subject = AsyncMock(return_value={})
+    store.aend_subject_forget = AsyncMock()
+    reflection = MagicMock()
+    reflection.abegin_subject_forget = AsyncMock()
+    reflection.aforget_subject = AsyncMock(return_value={})
+    reflection.aend_subject_forget = AsyncMock()
+    persona = MagicMock()
+    persona.aforget_subject = AsyncMock(return_value={})
+
+    with patch.object(memory_routes.runtime, "_reload_lock", barrier), \
+            patch.object(memory_routes.runtime, "fact_store", store), \
+            patch.object(memory_routes.runtime, "fact_dedup_resolver", None), \
+            patch.object(memory_routes.runtime, "reflection_engine", reflection), \
+            patch.object(memory_routes.runtime, "persona_manager", persona):
+        task = asyncio.create_task(memory_routes.forget_scoped_subject(
+            "Neko",
+            ScopedForgetRequest(subject={
+                "subject_kind": "participant", "subject_id": "qq:1001",
+            }),
+        ))
+        await asyncio.sleep(0)
+        store.abegin_subject_forget.assert_not_awaited()
+        barrier.release()
+        await task
+
+    store.abegin_subject_forget.assert_awaited_once()
+
+
 def test_participant_ui_key_exists_in_every_locale_bundle():
     """9 个 i18n bundle 都要有新开关的文案（插件 i18n 不进
     check_i18n_sync，覆盖由本守卫兜底——对齐既有群记忆 key 的守卫）。"""  # noqa: DOCSTRING_CJK
@@ -2239,6 +2300,7 @@ async def test_failed_participant_permission_settlement_retains_session():
     await service.invalidate_private_session("1001")
 
     assert plugin._user_sessions["private:1001"] is user_data
+    assert user_data["pending_permission_discard"] is True
     session.close.assert_not_awaited()
 
 

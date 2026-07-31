@@ -7791,6 +7791,23 @@ async def test_login_change_bootstrap_keeps_session_when_discard_fails():
     assert result is None
     assert plugin._user_sessions["group:7788"] is existing
 
+    # A permission-change settlement failure also preserves the only history
+    # copy, but unlike a login mismatch it must not handle even one new turn
+    # in its frozen participant/admin mode.
+    existing.pop("pending_identity_discard", None)
+    existing["her_name"] = "新角色"
+    existing["login_self_id"] = "new"
+    existing["pending_permission_discard"] = True
+    result = await service.ensure_generation_session(
+        SimpleNamespace(
+            ephemeral_session=False, login_self_id="new", her_name="新角色",
+        ),
+        "group:7788",
+    )
+    assert plugin.session_runtime_service.discard_session.await_count == 4
+    assert result is None
+    assert plugin._user_sessions["group:7788"] is existing
+
 
 @pytest.mark.asyncio
 async def test_memory_transitions_settle_members_before_group_invalidate():
@@ -12647,6 +12664,9 @@ async def test_region_wait_covers_every_session_rebuild_trigger(monkeypatch):
         ("login identity changed", {**reusable, "login_self_id": "20000"}),
         ("character switched", {**reusable, "her_name": "旧角色"}),
         ("settle retry pending", {**reusable, "pending_identity_discard": True}),
+        ("permission retry pending", {
+            **reusable, "pending_permission_discard": True,
+        }),
         ("no session yet", None),
     ):
         plugin._user_sessions = {} if entry is None else {"group:7788": entry}

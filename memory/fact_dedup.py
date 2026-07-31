@@ -248,6 +248,9 @@ class FactDedupResolver:
                 if (
                     key in existing_keys
                     or None in key
+                    or self._fact_store._subject_forget_fields_are_active(
+                        name, p.get('subject_key'), p.get('scope'),
+                    )
                     or (
                         (
                             p.get('subject_key') is not None

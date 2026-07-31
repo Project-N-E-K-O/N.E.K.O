@@ -369,7 +369,23 @@ async def test_scoped_forget_purges_pending_text_and_rejects_stale_enqueue(
         "pending_dedup": 1,
     }
     pending = await resolver.aload_pending("小天")
-    assert [item["candidate_text"] for item in pending] == ["keep one"]
+    assert any(
+        item.get("candidate_id") == "o1"
+        and item.get("candidate_text") == "keep one"
+        for item in pending if isinstance(item, dict)
+    )
+    assert not any(
+        item.get("subject_key") == target.key
+        and item.get("scope") == target.scope
+        for item in pending if isinstance(item, dict)
+    )
+
+    # The route's fact tombstone is already open while queue purge and fact
+    # deletion are separate awaits. A stale embedding sweep entering in that
+    # exact gap must be rejected even though both fact ids are still live.
+    await fs.abegin_subject_forget("小天", target)
+    assert await resolver.aenqueue_candidates("小天", [target_pair]) == 0
+    await fs.aend_subject_forget("小天", target)
 
     with patch("memory.facts.assert_cloudsave_writable"):
         await fs.aforget_subject("小天", target)

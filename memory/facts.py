@@ -283,6 +283,15 @@ class FactStore:
             and self._subject_forget_key(name, subject) in active
         )
 
+    def _subject_forget_fields_are_active(
+        self, name: str, subject_key: object, scope: object,
+    ) -> bool:
+        """Check a queue row's stamped isolation fields against tombstones."""
+        if not isinstance(subject_key, str) or not isinstance(scope, str):
+            return False
+        active = getattr(self, '_active_subject_forgets', None)
+        return bool(active and (name, subject_key, scope) in active)
+
     async def abegin_subject_forget(self, name: str, subject) -> None:
         """Open a fact-write tombstone for the complete scoped-forget route."""
         memory_subject = coerce_subject(subject)

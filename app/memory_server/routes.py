@@ -1297,6 +1297,10 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     stats: dict = {}
     fact_forget_started = False
     reflection_forget_started = False
+    # Component references are atomically replaced under this lock. Keep the
+    # same generation alive until every tombstone is closed, otherwise reload
+    # can split one forget transaction across old and new managers.
+    await runtime._reload_lock.acquire()
     try:
         # Bracket the whole multi-store transaction on both write paths.
         # Fact extraction and reflection synthesis release their locks during
@@ -1329,17 +1333,20 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         ) from exc
     finally:
         try:
-            if reflection_forget_started:
-                await runtime.reflection_engine.aend_subject_forget(
-                    lanlan_name, subject,
-                )
+            try:
+                if reflection_forget_started:
+                    await runtime.reflection_engine.aend_subject_forget(
+                        lanlan_name, subject,
+                    )
+            finally:
+                # Never strand the fact-write tombstone if the independent
+                # reflection close encounters an unexpected failure.
+                if fact_forget_started:
+                    await runtime.fact_store.aend_subject_forget(
+                        lanlan_name, subject,
+                    )
         finally:
-            # Never strand the fact-write tombstone if the independent
-            # reflection closing bump encounters an unexpected failure.
-            if fact_forget_started:
-                await runtime.fact_store.aend_subject_forget(
-                    lanlan_name, subject,
-                )
+            runtime._reload_lock.release()
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),

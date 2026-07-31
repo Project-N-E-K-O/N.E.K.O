@@ -1945,6 +1945,7 @@ class QQSessionMemoryService:
                     self.plugin.logger.warning(
                         f"参与者私聊结算失败，保留会话等待重试（{session_key}）"
                     )
+                    user_data["pending_permission_discard"] = True
                     return
 
             user_data = self.plugin._user_sessions.pop(session_key, None)

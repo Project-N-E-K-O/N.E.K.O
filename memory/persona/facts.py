@@ -928,6 +928,17 @@ class FactsMixin:
     def _get_section_facts(self, persona: dict, entity: str, *, subject=None) -> list:
         if subject is not None:
             section = persona.setdefault(subject.persona_section_key, {})
+            from memory.scopes import persona_subject_from_section
+
+            previous_subject = persona_subject_from_section(
+                subject.persona_section_key, section,
+            )
+            if previous_subject != subject:
+                # The section key omits scope. When promotion hands the
+                # section to another scope of the same subject, its old
+                # human-readable name is isolation metadata and must not
+                # follow the ownership change.
+                section.pop('display_name', None)
             section.update(subject.as_entry_fields())
             section.setdefault('entity', subject.kind)
             return section.setdefault('facts', [])
