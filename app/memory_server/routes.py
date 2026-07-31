@@ -1280,8 +1280,8 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
     pending corrections 一次清干净——此前四个 scoped 端点只进不出，
     建档没有任何撤回路径。精确匹配 (key, scope)：legacy 无戳语料与其它
     scope 永不落入删除面。幂等：重复调用报 0。部分失败以 500 暴露，
-    重试安全（已删的不会复活）。归档分片（reflection/persona shards）
-    刻意不清：不进任何渲染/召回读路径，属事件溯源留底。
+    重试安全（已删的不会复活）。reflection/persona 归档分片作为事件溯源
+    留底；持久化 forget 水位确保其即使被事件重放重建，也不能再被 restore。
     """  # noqa: DOCSTRING_CJK
     lanlan_name = validate_lanlan_name(lanlan_name)
     if (

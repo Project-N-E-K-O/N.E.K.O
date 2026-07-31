@@ -829,6 +829,32 @@ async def test_restore_roundtrip_all_three_stores(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_does_not_revive_snapshots_preceding_scoped_forget(tmp_path):
+    """A persistent forget cutoff must outlive replay-recreated shard copies."""
+    _, fs, pm, re, _, _ = _install(str(tmp_path))
+    await _seed_two_subjects(fs, pm, re)
+    await asweep_scoped_subject_archive("小天", **_sweep_kwargs(fs, pm, re))
+
+    # This mirrors scoped_forget after the subject has already gone stale:
+    # facts archive rows are purged, while event-sourced shard snapshots stay.
+    await fs.aforget_subject("小天", SUBJ_STALE)
+    await re.aforget_subject("小天", SUBJ_STALE)
+    await pm.aforget_subject("小天", SUBJ_STALE)
+
+    result = await arestore_scoped_subject(
+        "小天", SUBJ_STALE,
+        fact_store=fs, persona_manager=pm, reflection_engine=re,
+    )
+    assert result == {'facts': 0, 'reflections': 0, 'persona_entries': 0}
+    assert not any(
+        row.get('id') == 'rs1'
+        for row in await re._aload_reflections_full("小天")
+    )
+    persona = await pm.aensure_persona("小天")
+    assert SUBJ_STALE.persona_section_key not in persona
+
+
+@pytest.mark.asyncio
 async def test_restore_picks_newest_snapshot_across_shards(tmp_path):
     """codex P2: after archive → restore → archive cycles the same entry id
     can sit in multiple shards. Same-day shard suffixes are random uuid8,

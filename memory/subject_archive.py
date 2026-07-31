@@ -339,6 +339,7 @@ async def asweep_scoped_subject_archive(
 
 async def _ascan_shards_for_subject(
     archive_dir: str, subject: MemorySubject, *, require_archived_status: bool,
+    archived_after_iso: str | None = None,
 ) -> dict[str, dict]:
     """Collect shard entries stamped with this subject, newest shard last.
 
@@ -371,6 +372,11 @@ async def _ascan_shards_for_subject(
                 continue
             if not entry.get('archived_at'):
                 continue
+            if (
+                archived_after_iso is not None
+                and str(entry.get('archived_at')) <= archived_after_iso
+            ):
+                continue
             if not entry_matches_subject(entry, subject):
                 continue
             # 同 id 多分片副本（archive→restore→archive 循环）：按
@@ -388,6 +394,7 @@ async def _ascan_shards_for_subject(
 
 async def _arestore_subject_reflections(
     name: str, subject: MemorySubject, reflection_engine, now_iso: str,
+    archived_after_iso: str | None = None,
 ) -> int:
     from memory.event_log import EVT_REFLECTION_STATE_CHANGED
     from utils.cloudsave_runtime import assert_cloudsave_writable
@@ -401,6 +408,7 @@ async def _arestore_subject_reflections(
     archive_dir = reflection_engine._reflections_archive_dir(name)
     candidates = await _ascan_shards_for_subject(
         archive_dir, subject, require_archived_status=True,
+        archived_after_iso=archived_after_iso,
     )
     if not candidates:
         return 0
@@ -458,6 +466,7 @@ async def _arestore_subject_reflections(
 
 async def _arestore_subject_persona_entries(
     name: str, subject: MemorySubject, persona_manager, now_iso: str,
+    archived_after_iso: str | None = None,
 ) -> int:
     from memory.event_log import EVT_PERSONA_FACT_ADDED
 
@@ -469,6 +478,7 @@ async def _arestore_subject_persona_entries(
     archive_dir = persona_manager._persona_archive_dir(name)
     candidates = await _ascan_shards_for_subject(
         archive_dir, subject, require_archived_status=False,
+        archived_after_iso=archived_after_iso,
     )
     if not candidates:
         return 0
@@ -540,8 +550,12 @@ async def arestore_scoped_subject(
         now = datetime.now()
     now_iso = now.isoformat()
 
+    forgotten_at = await fact_store.asubject_forget_cutoff(
+        name, memory_subject,
+    )
+
     facts_restored = await fact_store.arestore_subject_facts(
-        name, memory_subject, now_iso,
+        name, memory_subject, now_iso, forgotten_at,
     )
     if facts_restored is None:
         # 与归档侧对称的中止语义：facts_archive.json 损坏时不再继续恢复
@@ -559,10 +573,10 @@ async def arestore_scoped_subject(
             'aborted': True,
         }
     reflections_restored = await _arestore_subject_reflections(
-        name, memory_subject, reflection_engine, now_iso,
+        name, memory_subject, reflection_engine, now_iso, forgotten_at,
     )
     persona_restored = await _arestore_subject_persona_entries(
-        name, memory_subject, persona_manager, now_iso,
+        name, memory_subject, persona_manager, now_iso, forgotten_at,
     )
     logger.info(
         f"[SubjectArchive] {name}: 恢复 subject "

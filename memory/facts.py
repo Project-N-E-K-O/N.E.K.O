@@ -747,6 +747,14 @@ class FactStore:
                 ]
                 removed_archive = len(removed_from_archive)
 
+            # Persist the privacy boundary before deleting any recoverable
+            # copy. Reflection/persona archive events can recreate their shard
+            # snapshots during a later full replay; restore must still know
+            # that every snapshot at or before this point is erased history.
+            self._record_subject_forget_tombstone_locked(
+                lanlan_name, memory_subject, datetime.now().isoformat(),
+            )
+
             # Privacy erasure must fail closed.  The normal FTS helper is
             # deliberately best-effort, so request strict propagation here
             # while the authoritative JSON rows still preserve every id for
@@ -804,6 +812,61 @@ class FactStore:
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
+
+    def _subject_forget_tombstones_path(self, name: str) -> str:
+        return os.path.join(
+            os.path.dirname(self._facts_path(name)),
+            'subject_forget_tombstones.json',
+        )
+
+    def _load_subject_forget_tombstones_strict(self, name: str) -> list[dict]:
+        """Load persistent scoped-forget cutoffs without best-effort fallback."""
+        path = self._subject_forget_tombstones_path(name)
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, encoding='utf-8') as fh:
+                rows = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            raise RuntimeError(
+                f"subject forget tombstones unreadable: {exc}"
+            ) from exc
+        if not isinstance(rows, list):
+            raise RuntimeError("subject forget tombstones are not a list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _record_subject_forget_tombstone_locked(
+        self, name: str, subject: MemorySubject, forgotten_at: str,
+    ) -> None:
+        """Persist the latest erasure cutoff while the fact lock is held."""
+        rows = self._load_subject_forget_tombstones_strict(name)
+        kept = [row for row in rows if not entry_matches_subject(row, subject)]
+        kept.append({**subject.as_entry_fields(), 'forgotten_at': forgotten_at})
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/subject_forget_tombstones.json",
+        )
+        atomic_write_json(
+            self._subject_forget_tombstones_path(name), kept,
+            indent=2, ensure_ascii=False,
+        )
+
+    def subject_forget_cutoff(
+        self, name: str, subject: MemorySubject,
+    ) -> str | None:
+        """Return the latest persistent erasure cutoff for one exact scope."""
+        cutoffs = [
+            str(row.get('forgotten_at') or '')
+            for row in self._load_subject_forget_tombstones_strict(name)
+            if entry_matches_subject(row, subject) and row.get('forgotten_at')
+        ]
+        return max(cutoffs, default=None)
+
+    async def asubject_forget_cutoff(
+        self, name: str, subject: MemorySubject,
+    ) -> str | None:
+        return await asyncio.to_thread(self.subject_forget_cutoff, name, subject)
 
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
@@ -1023,6 +1086,7 @@ class FactStore:
     def _restore_subject_facts(
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
+        archived_after_iso: str | None = None,
     ) -> int:
         """Move a subject's ``subject_archived_at`` rows back into facts.json.
 
@@ -1073,6 +1137,10 @@ class FactStore:
                 return (
                     isinstance(f, dict)
                     and f.get('subject_archived_at')
+                    and (
+                        archived_after_iso is None
+                        or str(f.get('subject_archived_at')) > archived_after_iso
+                    )
                     and entry_matches_subject(f, subject)
                 )
 
@@ -1115,9 +1183,11 @@ class FactStore:
     async def arestore_subject_facts(
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
+        archived_after_iso: str | None = None,
     ) -> int | None:
         return await asyncio.to_thread(
             self._restore_subject_facts, name, subject, restored_at_iso,
+            archived_after_iso,
         )
 
     # ── extraction ───────────────────────────────────────────────────
