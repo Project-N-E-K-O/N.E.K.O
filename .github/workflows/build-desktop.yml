@@ -1143,6 +1143,13 @@ jobs:
             SIGNING_NOTE="Signed"
           fi
           if gh release view nightly >/dev/null 2>&1; then
+            while IFS= read -r asset; do
+              case "$asset" in
+                python-backend-win-*.zip|N.E.K.O_*_win.zip|N.E.K.O_*_win_delta.bin|N.E.K.O_*_win_manifest.json|N.E.K.O_*_win_manifest.json.sig)
+                  gh release delete-asset nightly "$asset" --yes
+                  ;;
+              esac
+            done < <(gh release view nightly --json assets --jq '.assets[].name')
             gh release upload nightly release/* --clobber
           else
             gh release create nightly release/* \

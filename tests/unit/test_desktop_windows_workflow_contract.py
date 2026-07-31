@@ -104,6 +104,17 @@ def test_reusable_build_honors_signing_inputs_and_distribution_wrapper() -> None
     windows_nightly = nightly_steps["Create or update Windows nightly release"]
     assert windows_nightly["if"] == "${{ inputs.windows_only }}"
     assert "gh release upload nightly release/* --clobber" in windows_nightly["run"]
+    expected_windows_assets = (
+        "python-backend-win-*.zip",
+        "N.E.K.O_*_win.zip",
+        "N.E.K.O_*_win_delta.bin",
+        "N.E.K.O_*_win_manifest.json",
+        "N.E.K.O_*_win_manifest.json.sig",
+    )
+    assert all(pattern in windows_nightly["run"] for pattern in expected_windows_assets)
+    assert windows_nightly["run"].index("gh release delete-asset nightly") < (
+        windows_nightly["run"].index("gh release upload nightly")
+    )
     assert windows_nightly["env"]["REQUESTED_SKIP_SIGNING"] == (
         "${{ inputs.skip_signing }}"
     )
@@ -222,6 +233,12 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     assert "Get-FileHash -LiteralPath $Path -Algorithm SHA256" in script
     assert "Portable manifest is missing its signature asset" in script
     assert "Portable signature has no matching manifest" in script
+    assert "function Assert-PortableManifestSignature" in script
+    assert "verifyPortableManifestSignature" in script
+    assert "Unable to determine whether OSS object exists" in script
+    assert "NoSuchKey" in script
+    assert "PSObject.Properties['digest']" in script
+    assert "GitHub Release asset content differs from staged asset" in script
     assert "Refusing to overwrite immutable OSS object" in script
     assert "--max-time', '1800'" in script
     assert "Invoke-UpdateMirrorSync" in script
@@ -234,12 +251,31 @@ def test_local_asset_publish_uses_staged_build_output_without_downloading_releas
     assert "NEKO_UPDATE_ADMIN_TOKEN" in script
 
     staged_hashes = script.index("$assetHashes[$asset.Name] = Get-Sha256")
+    signature_check = script.index(
+        "Assert-PortableManifestSignature -VerifierPath $ManifestVerifierPath"
+    )
+    release_fetch = script.index(
+        '$releaseJson = ((& gh api "repos/$Repository/releases/tags/$Tag")'
+    )
+    github_digest = script.index('$expectedDigest = "sha256:$($assetHashes[$asset.Name])"')
+    latest_release = script.index('$latestTag = ((& gh api "repos/$Repository/releases/latest"')
     object_check = script.index("if (Test-OssObjectExists -ObjectUrl $objectUrl)")
     upload = script.index("Invoke-Checked -FilePath ossutil -Arguments @('cp', $asset.FullName")
     cdn_download = script.index("Invoke-Checked -FilePath curl.exe -Arguments @(")
     cdn_hash = script.index("if ((Get-Sha256 -Path $downloadedAsset)")
     sync = script.rindex("Invoke-UpdateMirrorSync -Endpoint $endpoint")
-    assert staged_hashes < object_check < upload < cdn_download < cdn_hash < sync
+    assert (
+        staged_hashes
+        < signature_check
+        < release_fetch
+        < github_digest
+        < latest_release
+        < object_check
+        < upload
+        < cdn_download
+        < cdn_hash
+        < sync
+    )
 
 
 def test_portable_manifest_signing_is_required_for_nightly_and_local_stable_builds() -> None:

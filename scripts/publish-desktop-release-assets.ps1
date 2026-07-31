@@ -6,6 +6,8 @@ param(
 
     [string]$AssetsDirectory = '',
 
+    [string]$ManifestVerifierPath = '',
+
     [Parameter(Mandatory = $true)]
     [ValidatePattern('^oss://[^/]+/releases/?$')]
     [string]$OssReleaseRoot,
@@ -60,8 +62,33 @@ function Get-Sha256 {
 
 function Test-OssObjectExists {
     param([Parameter(Mandatory = $true)] [string]$ObjectUrl)
-    $null = & ossutil stat $ObjectUrl 2>$null
-    return $LASTEXITCODE -eq 0
+    $output = @(& ossutil stat $ObjectUrl 2>&1)
+    $exitCode = $LASTEXITCODE
+    if ($exitCode -eq 0) {
+        return $true
+    }
+    $message = ($output | ForEach-Object { $_.ToString() }) -join "`n"
+    if ($message -match '(?i)(NoSuchKey|Status(?:\s*Code)?\s*[:=]?\s*404|\bHTTP\S*\s+404\b)') {
+        return $false
+    }
+    throw "Unable to determine whether OSS object exists (exit $exitCode): $message"
+}
+
+function Assert-PortableManifestSignature {
+    param(
+        [Parameter(Mandatory = $true)] [string]$VerifierPath,
+        [Parameter(Mandatory = $true)] [string]$ManifestPath,
+        [Parameter(Mandatory = $true)] [string]$SignaturePath
+    )
+    $nodeScript = @'
+const fs = require('node:fs');
+const { verifyPortableManifestSignature } = require(process.argv[1]);
+verifyPortableManifestSignature(
+  fs.readFileSync(process.argv[2]),
+  fs.readFileSync(process.argv[3]),
+);
+'@
+    Invoke-Checked -FilePath node -Arguments @('-e', $nodeScript, $VerifierPath, $ManifestPath, $SignaturePath)
 }
 
 function Invoke-UpdateMirrorSync {
@@ -91,7 +118,7 @@ function Invoke-UpdateMirrorSync {
     }
 }
 
-foreach ($command in @('gh', 'ossutil', 'curl.exe')) {
+foreach ($command in @('gh', 'ossutil', 'curl.exe', 'node')) {
     if (-not (Get-Command $command -ErrorAction SilentlyContinue)) {
         throw "Required local command was not found: $command"
     }
@@ -100,6 +127,11 @@ $adminToken = [Environment]::GetEnvironmentVariable('NEKO_UPDATE_ADMIN_TOKEN')
 if ([string]::IsNullOrWhiteSpace($adminToken)) {
     throw 'NEKO_UPDATE_ADMIN_TOKEN is required to register the verified mirror'
 }
+if ([string]::IsNullOrWhiteSpace($ManifestVerifierPath)) {
+    $workspaceRoot = Split-Path -Parent (Split-Path -Parent $PSScriptRoot)
+    $ManifestVerifierPath = Join-Path $workspaceRoot 'N.E.K.O.-PC/src/main/portable-update.js'
+}
+$ManifestVerifierPath = (Resolve-Path -LiteralPath $ManifestVerifierPath).Path
 
 $version = $Tag.Substring(1)
 if ([string]::IsNullOrWhiteSpace($AssetsDirectory)) {
@@ -134,15 +166,36 @@ foreach ($signature in @($assets | Where-Object { $_.Name.EndsWith('.sig', [Syst
         throw "Portable signature has no matching manifest: $($signature.Name)"
     }
 }
+foreach ($manifest in @($assets | Where-Object { $_.Name.EndsWith('_manifest.json', [System.StringComparison]::Ordinal) })) {
+    $signature = Join-Path $manifest.DirectoryName "$($manifest.Name).sig"
+    Assert-PortableManifestSignature -VerifierPath $ManifestVerifierPath -ManifestPath $manifest.FullName -SignaturePath $signature
+}
 
-$remoteAssetNames = @(& gh release view $Tag '--repo' $Repository '--json' 'assets' '--jq' '.assets[].name')
+$releaseJson = ((& gh api "repos/$Repository/releases/tags/$Tag") | Out-String)
 if ($LASTEXITCODE -ne 0) {
     throw "Unable to read GitHub Release $Tag"
 }
+$remoteRelease = $releaseJson | ConvertFrom-Json
+$remoteAssets = @($remoteRelease.assets)
+$remoteAssetNames = @($remoteAssets | ForEach-Object { $_.name })
 $differences = Compare-Object -ReferenceObject @($remoteAssetNames | Sort-Object) -DifferenceObject @($assets.Name | Sort-Object)
 if ($differences) {
     $formatted = $differences | ForEach-Object { "$($_.SideIndicator) $($_.InputObject)" }
     throw "Local staged assets must exactly match GitHub Release assets:`n$($formatted -join "`n")"
+}
+foreach ($asset in $assets) {
+    $remoteAsset = @($remoteAssets | Where-Object { $_.name -eq $asset.Name })
+    if ($remoteAsset.Count -ne 1) {
+        throw "Expected exactly one GitHub Release asset named $($asset.Name)"
+    }
+    $digestProperty = $remoteAsset[0].PSObject.Properties['digest']
+    if ($null -eq $digestProperty -or [string]::IsNullOrWhiteSpace([string]$digestProperty.Value)) {
+        throw "GitHub Release asset does not provide a SHA-256 digest: $($asset.Name)"
+    }
+    $expectedDigest = "sha256:$($assetHashes[$asset.Name])"
+    if ([string]$digestProperty.Value -ne $expectedDigest) {
+        throw "GitHub Release asset content differs from staged asset: $($asset.Name)"
+    }
 }
 
 $latestTag = ((& gh api "repos/$Repository/releases/latest" '--jq' '.tag_name') | Out-String).Trim()
