@@ -484,10 +484,8 @@ class AudioProcessor:
             self._rnnoise_ema = ema_state
         return output
     
-    def _reset_internal_state(self) -> None:
-        """Reset RNNoise internal state without full reinitialization."""
-        self._frame_buffer.fill(0)
-        self._frame_buffer_size = 0
+    def _clear_rnnoise_evidence(self) -> None:
+        """Clear per-chunk evidence and the cross-chunk EMA accumulator."""
         self._last_speech_prob = 0.0
         self._rnnoise_frame_count = 0
         self._rnnoise_peak = None
@@ -495,6 +493,12 @@ class AudioProcessor:
         self._rnnoise_last = None
         self._rnnoise_ema = None
         self._rnnoise_ema_state = None
+
+    def _reset_internal_state(self) -> None:
+        """Reset RNNoise internal state without full reinitialization."""
+        self._frame_buffer.fill(0)
+        self._frame_buffer_size = 0
+        self._clear_rnnoise_evidence()
         # Reset AGC gain state
         self._agc_gain = 1.0
         # Reset denoiser GRU hidden states (do not reinitialize)
@@ -634,6 +638,7 @@ class AudioProcessor:
                 self._frame_buffer.fill(0)
             self._frame_buffer_size = 0
             self._agc_gain = 1.0
+            self._clear_rnnoise_evidence()
         logger.info(f"🎤 Noise reduction {'enabled' if enabled else 'disabled'}")
     
     def set_agc_enabled(self, enabled: bool) -> None:
