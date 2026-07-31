@@ -21,8 +21,9 @@ from typing import Any
 
 import pytest
 
-from memory.recent import CompressedRecentHistoryManager
+from memory.recent import CompressedRecentHistoryManager, _compute_review_capacity
 from utils import recent_file
+from utils.cloudsave_runtime import MaintenanceModeError
 from utils.llm_client import (
     AIMessage,
     HumanMessage,
@@ -844,6 +845,158 @@ def test_enforce_hard_cap_tokenizes_outside_the_lock(tmp_path, monkeypatch):
     assert len(_read_disk(path)) < len(history), "裁剪结果必须落盘"
 
 
+def test_compression_splice_repeated_anchor_keeps_uncompressed_tail(tmp_path):
+    """A repeated K-message anchor must not redirect CS-2 into appended data."""
+    mgr, name, path = _make_manager(tmp_path)
+    snapshot = [HumanMessage(content="same") for _ in range(3)]
+    uncompressed_tail = [AIMessage(content=f"tail-{i}") for i in range(3)]
+    appended = [HumanMessage(content="same") for _ in range(3)]
+    _write_disk(path, snapshot + uncompressed_tail + appended)
+
+    status = mgr._splice_compressed_locked(
+        path, name, snapshot, SystemMessage(content="memo"),
+    )
+
+    assert status == "merged"
+    assert [m.content for m in _read_disk(path)] == [
+        "memo", "tail-0", "tail-1", "tail-2", "same", "same", "same",
+    ]
+
+
+def test_review_anchor_rejects_same_prefix_with_different_full_content():
+    """The 50-character display prefix is not sufficient proof of identity."""
+    prefix = "x" * 50
+    snapshot = [
+        SystemMessage(content="old memo"),
+        HumanMessage(content=prefix + "old-1"),
+        AIMessage(content=prefix + "old-2"),
+        HumanMessage(content=prefix + "old-3"),
+    ]
+    current = [
+        SystemMessage(content="new memo"),
+        HumanMessage(content=prefix + "new-1"),
+        AIMessage(content=prefix + "new-2"),
+        HumanMessage(content=prefix + "new-3"),
+    ]
+
+    assert _compute_review_capacity(snapshot, current) == (0, None)
+
+
+def test_splice_write_failure_notifies_compression_failure(tmp_path, monkeypatch):
+    """A failed CS-2 commit must not clear backup-compression backoff as success."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content=f"m{i}") for i in range(7)])
+
+    async def _compress(*args, **kwargs):
+        return (SystemMessage(content="memo"), "memo")
+
+    setattr(mgr, "compress_history", _compress)
+    monkeypatch.setattr(mgr, "_splice_compressed_locked", lambda *args: "failed")
+    observed = []
+
+    async def _callback(_name, _snapshot, ok, _detailed):
+        observed.append(ok)
+
+    asyncio.run(mgr.update_history(
+        [HumanMessage(content="new")], name, on_compress_done=_callback,
+    ))
+
+    assert observed == [False]
+
+
+def test_merge_backup_memo_rereads_after_fence_before_write(tmp_path, monkeypatch):
+    """A batch appended while the cloudsave fence is checked must survive merge."""
+    mgr, name, path = _make_manager(tmp_path)
+    writer, _, _ = _make_manager(tmp_path, path=path)
+    batch = [HumanMessage(content=f"old-{i}") for i in range(4)]
+    _write_disk(path, batch)
+    entered = threading.Event()
+    release = threading.Event()
+
+    def _blocking_fence(*args, **kwargs):
+        entered.set()
+        assert release.wait(3)
+
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", _blocking_fence)
+
+    async def _go():
+        task = asyncio.create_task(
+            mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")),
+        )
+        assert await asyncio.to_thread(entered.wait, 3)
+        await asyncio.to_thread(
+            writer._append_and_persist_locked,
+            path,
+            name,
+            [HumanMessage(content="append-during-merge")],
+        )
+        release.set()
+        return await task
+
+    assert asyncio.run(_go()) == "merged"
+    assert [m.content for m in _read_disk(path)] == ["memo", "append-during-merge"]
+
+
+def test_hard_cap_retries_when_disk_changes_before_commit(tmp_path, monkeypatch):
+    """Hard-cap trimming must not overwrite a batch appended after tokenization."""
+    mgr, name, path = _make_manager(tmp_path)
+    writer, _, _ = _make_manager(tmp_path, path=path)
+    history = [HumanMessage(content=f"old-{i} with enough text" * 10) for i in range(8)]
+    _write_disk(path, history)
+    entered = threading.Event()
+    release = threading.Event()
+    fence_calls = 0
+    fence_guard = threading.Lock()
+
+    def _blocking_first_fence(*args, **kwargs):
+        nonlocal fence_calls
+        with fence_guard:
+            fence_calls += 1
+            first = fence_calls == 1
+        if first:
+            entered.set()
+            assert release.wait(3)
+
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", _blocking_first_fence)
+    monkeypatch.setattr("memory.recent.RECENT_HARD_CAP_TOKENS", 20)
+
+    async def _go():
+        task = asyncio.create_task(mgr.enforce_hard_cap(name))
+        assert await asyncio.to_thread(entered.wait, 3)
+        await asyncio.to_thread(
+            writer._append_and_persist_locked,
+            path,
+            name,
+            [HumanMessage(content="append-during-trim")],
+        )
+        release.set()
+        await task
+
+    asyncio.run(_go())
+    assert _read_disk(path)[-1].content == "append-during-trim"
+
+
+def test_reset_maintenance_error_still_reaches_update_caller(tmp_path, monkeypatch):
+    """The reset fence keeps the pre-lock MaintenanceModeError contract."""
+    mgr, name, path = _make_manager(tmp_path)
+    Path(path).write_text("{broken", encoding="utf-8")
+    calls = 0
+
+    def _fence(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise MaintenanceModeError(
+                "maintenance_readonly", operation="reset", target="recent.json",
+            )
+
+    monkeypatch.setattr("memory.recent.assert_cloudsave_writable", _fence)
+
+    with pytest.raises(MaintenanceModeError):
+        asyncio.run(mgr.update_history([HumanMessage(content="new")], name, compress=False))
+    assert Path(path).read_text(encoding="utf-8") == "{broken"
+
+
 # ─────────────── lock identity ───────────────
 
 
@@ -856,6 +1009,13 @@ def test_lock_is_keyed_by_file_not_by_name(tmp_path):
     assert a is b is c
     other = recent_file.recent_file_lock(str(tmp_path / "other.json"))
     assert other is not a
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows path identity is case-insensitive")
+def test_lock_key_normalizes_windows_path_case(tmp_path):
+    """Case aliases of one Windows path must share the same lock."""
+    target = str(tmp_path / "Recent.JSON")
+    assert recent_file.recent_file_lock(target) is recent_file.recent_file_lock(target.swapcase())
 
 
 def test_lock_registry_is_thread_safe(tmp_path):

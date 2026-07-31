@@ -19,6 +19,7 @@ import re
 import json
 import os
 import asyncio
+import hashlib
 import logging
 
 from config.prompts.prompts_memory import (
@@ -99,14 +100,12 @@ def _review_response_hit_output_limit(response) -> bool:
         return False
 
 
-def _msg_fingerprint(m) -> tuple[str, str]:
-    """Normalize a message into a (type, content_prefix) tuple for fingerprint comparison.
+def _msg_identity(m) -> tuple[str, str]:
+    """Normalize a message into its full type/content identity.
 
     Supports message objects (HumanMessage/AIMessage/...) and dicts (persisted
     fingerprints). When content is a list (multimodal), it is joined into a
-    string. Content is truncated to the first
-    REVIEW_FINGERPRINT_CONTENT_PREFIX characters — stable across restarts as
-    long as the user doesn't rewrite existing message content.
+    string.
     """
     if isinstance(m, dict):
         t = m.get('type', '') or ''
@@ -124,7 +123,18 @@ def _msg_fingerprint(m) -> tuple[str, str]:
         c = ' '.join(parts)
     elif not isinstance(c, str):
         c = str(c)
-    return (str(t), c[:REVIEW_FINGERPRINT_CONTENT_PREFIX])
+    return (str(t), c)
+
+
+def _msg_fingerprint(m) -> tuple[str, str]:
+    """Return the legacy type/content-prefix fingerprint tuple."""
+    t, c = _msg_identity(m)
+    return (t, c[:REVIEW_FINGERPRINT_CONTENT_PREFIX])
+
+
+def _msg_content_sha256(m) -> str:
+    """Return a stable digest of the normalized full message content."""
+    return hashlib.sha256(_msg_identity(m)[1].encode("utf-8")).hexdigest()
 
 
 def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[dict]:
@@ -135,27 +145,41 @@ def build_review_fingerprint(snapshot, k: int = REVIEW_FINGERPRINT_K) -> list[di
     out = []
     for m in tail:
         t, c = _msg_fingerprint(m)
-        out.append({'type': t, 'content': c})
+        out.append({
+            'type': t,
+            'content': c,
+            'content_sha256': _msg_content_sha256(m),
+        })
     return out
 
 
 def _find_fingerprint_position(current: list, fingerprint: list[dict]) -> int | None:
-    """Find, in current, the last run of K consecutive messages matching the fingerprint.
+    """Find the unique run of K consecutive messages matching the fingerprint.
 
     Returns the index in current of the fingerprint's last element (i.e. the
-    cutoff); None when not found. Searches from the tail backwards, taking the
-    rearmost (most recent) of multiple candidates.
+    cutoff); None when not found or ambiguous. New fingerprints include a full
+    content digest; legacy persisted fingerprints fall back to their prefix.
     """
     if not current or not fingerprint:
         return None
     k = len(fingerprint)
     if len(current) < k:
         return None
-    fp_norm = [(fp['type'], fp['content']) for fp in fingerprint]
-    for i in range(len(current) - k, -1, -1):
-        if all(_msg_fingerprint(current[i + j]) == fp_norm[j] for j in range(k)):
-            return i + k - 1
-    return None
+    def _matches(message, fp: dict) -> bool:
+        msg_type, content_prefix = _msg_fingerprint(message)
+        if msg_type != fp.get('type', '') or content_prefix != fp.get('content', ''):
+            return False
+        digest = fp.get('content_sha256')
+        return digest is None or _msg_content_sha256(message) == digest
+
+    match = None
+    for i in range(len(current) - k + 1):
+        if all(_matches(current[i + j], fingerprint[j]) for j in range(k)):
+            if match is not None:
+                # 多个候选时宁可白做，也不能把 review/压缩结果切进错误区间。
+                return None
+            match = i + k - 1
+    return match
 
 
 def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | None]:
@@ -171,6 +195,11 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
     """
     if not snapshot or not current:
         return (0, None)
+    if (
+        len(current) >= len(snapshot)
+        and all(_msg_identity(current[i]) == _msg_identity(snapshot[i]) for i in range(len(snapshot)))
+    ):
+        return (len(snapshot), len(snapshot) - 1)
     anchor = build_review_fingerprint(snapshot, REVIEW_FINGERPRINT_K)
     cutoff_idx = _find_fingerprint_position(current, anchor)
     if cutoff_idx is None:
@@ -179,7 +208,7 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
     capacity = 0
     s_idx = len(snapshot) - 1
     c_idx = cutoff_idx
-    while s_idx >= 0 and c_idx >= 0 and _msg_fingerprint(current[c_idx]) == _msg_fingerprint(snapshot[s_idx]):
+    while s_idx >= 0 and c_idx >= 0 and _msg_identity(current[c_idx]) == _msg_identity(snapshot[s_idx]):
         capacity += 1
         s_idx -= 1
         c_idx -= 1
@@ -333,17 +362,66 @@ class CompressedRecentHistoryManager:
         """Read one character's history under the file lock. Run me in a worker thread."""
         with recent_file.recent_file_lock(file_path):
             status, history = self._load_history_unlocked(file_path, lanlan_name)
-        if status == RECENT_READ_UNREADABLE:
-            # 读失败绝不能被当成「历史是空的」——一旦写进 user_histories，下一次
-            # 落盘就会拿这批新消息覆盖整段读不出来的历史。保持既有视图不动。
-            return self.user_histories.get(lanlan_name, [])
-        self.user_histories[lanlan_name] = history
-        return history
+            if status == RECENT_READ_UNREADABLE:
+                # 读失败绝不能被当成「历史是空的」——一旦写进 user_histories，下一次
+                # 落盘就会拿这批新消息覆盖整段读不出来的历史。保持既有视图不动。
+                return self.user_histories.get(lanlan_name, [])
+            self.user_histories[lanlan_name] = history
+            return history
 
-    def _persist_history_locked(self, file_path, history) -> None:
-        """Serialize + atomically replace under the file lock. Run me in a worker thread."""
+    def _commit_hard_cap_locked(
+        self, file_path, lanlan_name, expected_history, new_history,
+    ) -> str:
+        """Persist a precomputed trim only if the locked disk snapshot is unchanged."""
         with recent_file.recent_file_lock(file_path):
-            recent_file.write_recent_payload_unlocked(file_path, messages_to_dict(history))
+            status, current = self._load_history_unlocked(file_path, lanlan_name)
+            if status == RECENT_READ_UNREADABLE:
+                return 'failed'
+            if messages_to_dict(current) != messages_to_dict(expected_history):
+                return 'stale'
+            try:
+                recent_file.write_recent_payload_unlocked(
+                    file_path, messages_to_dict(new_history),
+                )
+            except Exception as e:
+                logger.error(
+                    f"[RecentHistory] {lanlan_name} 硬上限裁剪落盘失败: {e}",
+                    exc_info=True,
+                )
+                return 'failed'
+            self.user_histories[lanlan_name] = new_history
+            return 'committed'
+
+    def _merge_backup_memo_locked(
+        self, file_path, lanlan_name, snapshot, memo,
+    ) -> tuple[str, int, int]:
+        """Re-read, locate, merge and persist a backup memo in one critical section."""
+        with recent_file.recent_file_lock(file_path):
+            read_status, current = self._load_history_unlocked(file_path, lanlan_name)
+            if read_status == RECENT_READ_UNREADABLE:
+                return ('failed', 0, 0)
+            if not current or not snapshot:
+                return ('moot', len(current), len(current))
+            capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+            if (
+                cutoff_idx is None
+                or capacity != len(snapshot)
+                or (cutoff_idx - capacity + 1) != 0
+            ):
+                return ('moot', len(current), len(current))
+            new_history = [memo] + current[cutoff_idx + 1:]
+            try:
+                recent_file.write_recent_payload_unlocked(
+                    file_path, messages_to_dict(new_history),
+                )
+            except Exception as e:
+                logger.error(
+                    f"[RecentHistory] {lanlan_name} 后台压缩合并落盘失败: {e}",
+                    exc_info=True,
+                )
+                return ('failed', len(current), len(current))
+            self.user_histories[lanlan_name] = new_history
+            return ('merged', len(current), len(new_history))
 
 
     def _get_llm(self):
@@ -429,7 +507,7 @@ class CompressedRecentHistoryManager:
             self.user_histories[lanlan_name] = merged
             return (merged, True)
 
-    def _splice_compressed_locked(self, file_path, lanlan_name, snapshot, memo) -> bool:
+    def _splice_compressed_locked(self, file_path, lanlan_name, snapshot, memo) -> str:
         """Replace the compressed head with ``memo`` and persist, as one critical section.
 
         Re-reads the file inside the lock. The compression LLM ran for seconds to
@@ -441,12 +519,12 @@ class CompressedRecentHistoryManager:
             status, current = self._load_history_unlocked(file_path, lanlan_name)
             if status == RECENT_READ_UNREADABLE:
                 logger.warning(f"[RecentHistory] {lanlan_name} 压缩结果合并时读盘失败，放弃本轮合并")
-                return False
+                return 'failed'
             if not current:
                 # 被 /new_dialog 清空 / 被用户在 UI 上清掉：把 memo 塞回去等于
                 # 复活已删内容。与 merge_backup_memo 的 'moot' 同一判断。
                 logger.info(f"[RecentHistory] {lanlan_name} 压缩期间历史已被清空，丢弃本轮摘要")
-                return False
+                return 'moot'
             capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
             if (
                 cutoff_idx is not None
@@ -455,19 +533,19 @@ class CompressedRecentHistoryManager:
             ):
                 new_history = [memo] + current[cutoff_idx + 1:]
             else:
-                # 指纹失配（磁盘被带外改过 / 头部已变）→ 退回重构前那条按条数的
-                # 切片。它现在算在**锁内刚读到的**磁盘内容上，而不是几十秒前的
-                # 内存视图，所以严格好于重构前。
-                new_history = [memo] + current[-self.max_history_length + 1:]
+                # 不能证明 snapshot 仍是 current 的完整头部时必须 fail closed。
+                # 按条数 fallback 会在短指纹碰撞时把未参与压缩的尾部一起切掉。
+                logger.info(f"[RecentHistory] {lanlan_name} 压缩锚点失配，丢弃本轮摘要")
+                return 'moot'
             try:
                 recent_file.write_recent_payload_unlocked(
                     file_path, messages_to_dict(new_history),
                 )
             except Exception as e:
                 logger.error(f"[RecentHistory] {lanlan_name} 压缩结果落盘失败: {e}", exc_info=True)
-                return False
+                return 'failed'
             self.user_histories[lanlan_name] = new_history
-            return True
+            return 'merged'
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
         try:
@@ -526,12 +604,20 @@ class CompressedRecentHistoryManager:
                     await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, False, detailed)
                 else:
                     # CS-2：读盘 + 定位 + splice + 落盘，一个临界区。
-                    await asyncio.to_thread(
+                    splice_status = await asyncio.to_thread(
                         self._splice_compressed_locked,
                         file_path, lanlan_name, snapshot, compressed_result[0],
                     )
-                    # 主路径成功 → 通知上层 cancel 在跑的后台压缩（兜底不再需要）。
-                    await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, True, detailed)
+                    # merged / moot 都不需要再跑同一份后台摘要；只有读写失败才触发兜底。
+                    await self._notify_compress_done(
+                        on_compress_done,
+                        lanlan_name,
+                        snapshot,
+                        splice_status != 'failed',
+                        detailed,
+                    )
+        except MaintenanceModeError:
+            raise
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
 
@@ -877,13 +963,6 @@ class CompressedRecentHistoryManager:
         while preserving the first memo, when present, and at least the latest
         max_history_length entries.
         """
-        history = self.user_histories.get(lanlan_name, [])
-        if not history:
-            return
-        # 不用条数提前断言"不可能超上限"——几条超长原文就能顶破 token 上限。
-        # 统一交给下面按真实 token 算的 _trim 决定（_trim 内仍保证至少留近期
-        # max_history_length 条，丢不动就不丢）。
-
         from utils.tokenize import count_tokens
 
         def _raw_tokens(msgs):
@@ -902,7 +981,7 @@ class CompressedRecentHistoryManager:
                 total += count_tokens(c)
             return total
 
-        def _trim():
+        def _trim(history):
             if _raw_tokens(history) <= RECENT_HARD_CAP_TOKENS:
                 return None  # 未超，不动
             # 首条若是备忘录（已压缩的长期记忆）则保留，只丢正文里最旧的原文。
@@ -919,32 +998,40 @@ class CompressedRecentHistoryManager:
             kept.reverse()
             return head + kept
 
-        new_history = await asyncio.to_thread(_trim)
-        if new_history is not None and len(new_history) < len(history):
-            dropped = len(history) - len(new_history)
-            logger.warning(
-                f"[RecentHistory] {lanlan_name} 历史超硬上限 {RECENT_HARD_CAP_TOKENS} token，"
-                f"丢弃最旧 {dropped} 条未压缩原文以保证有界"
+        file_path = self._ensure_path_for_character(lanlan_name)
+        # tokenize 始终在锁外；提交时用完整磁盘快照做 CAS。若期间有新批次，重读后
+        # 最多再算一次，绝不拿 stale 结果覆盖并发 append。
+        for _ in range(2):
+            history = await asyncio.to_thread(
+                self._read_history_locked, file_path, lanlan_name,
             )
-            self.user_histories[lanlan_name] = new_history
-            # 自包含落盘：本方法现在由后台 task / 回调调用（update_history 之外），
-            # 不能再依赖 update_history 的后续落盘。
-            try:
-                await asyncio.to_thread(
-                    assert_cloudsave_writable,
-                    self._config_manager, operation="save",
-                    target=f"memory/{lanlan_name}/recent.json",
+            if not history:
+                return
+            new_history = await asyncio.to_thread(_trim, list(history))
+            if new_history is None or len(new_history) >= len(history):
+                return
+            await asyncio.to_thread(
+                assert_cloudsave_writable,
+                self._config_manager, operation="save",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
+            commit_status = await asyncio.to_thread(
+                self._commit_hard_cap_locked,
+                file_path,
+                lanlan_name,
+                history,
+                new_history,
+            )
+            if commit_status == 'committed':
+                dropped = len(history) - len(new_history)
+                logger.warning(
+                    f"[RecentHistory] {lanlan_name} 历史超硬上限 {RECENT_HARD_CAP_TOKENS} token，"
+                    f"丢弃最旧 {dropped} 条未压缩原文以保证有界"
                 )
-                file_path = self._ensure_path_for_character(lanlan_name)
-                # 只有落盘进临界区。上面的 _trim 要把整段历史 tokenize 两遍
-                # （多 MB CJK 是百毫秒~秒级），拖进一把同时挡着 /cache 的锁不值。
-                await asyncio.to_thread(
-                    self._persist_history_locked, file_path, new_history,
-                )
-            except MaintenanceModeError:
-                raise
-            except Exception as e:
-                logger.error(f"[RecentHistory] {lanlan_name} 硬上限裁剪落盘失败: {e}", exc_info=True)
+                return
+            if commit_status == 'failed':
+                return
+        logger.info(f"[RecentHistory] {lanlan_name} 硬上限裁剪期间历史持续变化，跳过本轮")
 
     async def merge_backup_memo(self, lanlan_name, snapshot, memo):
         """后台压缩成功后，把 memo 合并回当前 history（快照对齐）。
@@ -954,37 +1041,40 @@ class CompressedRecentHistoryManager:
         新增的对话，落盘，返回 'merged'；否则（已被主路径压掉 / 被 /new_dialog
         清空 / 头部已变）→ 丢弃返回 'moot'。
 
-        读 current 到写 new_history 之间全是同步代码（_compute_review_capacity
-        同步），asyncio 单线程下原子；落盘走文件锁临界区。调用方（memory_server）
-        应在 _get_settle_lock 内调用，串行化对该角色的写。
+        磁盘 current 的重读、定位、splice 与落盘在同一个文件临界区；调用方的
+        settle lock 只负责 memory_server 业务顺序，不再承担文件 RMW 正确性。
         """
-        current = self.user_histories.get(lanlan_name, [])
+        file_path = self._ensure_path_for_character(lanlan_name)
+        current = await asyncio.to_thread(
+            self._read_history_locked, file_path, lanlan_name,
+        )
         if not current or not snapshot:
             return 'moot'
         capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
         if cutoff_idx is None or capacity != len(snapshot) or (cutoff_idx - capacity + 1) != 0:
             return 'moot'
-        new_history = [memo] + current[cutoff_idx + 1:]
-        self.user_histories[lanlan_name] = new_history
         try:
             await asyncio.to_thread(
                 assert_cloudsave_writable,
                 self._config_manager, operation="save",
                 target=f"memory/{lanlan_name}/recent.json",
             )
-            file_path = self._ensure_path_for_character(lanlan_name)
-            await asyncio.to_thread(
-                self._persist_history_locked, file_path, new_history,
+            status, before_count, after_count = await asyncio.to_thread(
+                self._merge_backup_memo_locked,
+                file_path,
+                lanlan_name,
+                snapshot,
+                memo,
             )
         except MaintenanceModeError:
             raise
         except Exception as e:
-            # 落盘失败 → 内存与磁盘不一致（下次 update_history reload 会回滚内存），
-            # 报 'failed' 让上层 bump 退避、不清计数，而不是谎报 'merged'。
             logger.error(f"[RecentHistory] {lanlan_name} 后台压缩合并落盘失败: {e}", exc_info=True)
             return 'failed'
+        if status != 'merged':
+            return status
         logger.info(
-            f"[RecentHistory] {lanlan_name} 后台压缩合并完成：history {len(current)}→{len(new_history)}"
+            f"[RecentHistory] {lanlan_name} 后台压缩合并完成：history {before_count}→{after_count}"
         )
         return 'merged'
 
