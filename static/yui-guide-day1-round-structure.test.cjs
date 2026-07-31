@@ -263,10 +263,10 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   assert.match(targetGeometryRegistrySource, /'chat-capsule-input': Object\.freeze\(\{[\s\S]*externalKind: 'capsule-input'[\s\S]*data-compact-geometry-part="capsuleBody"/);
   assert.match(appInterpageSource, /getYuiGuideChatTargetRegistryEntryByExternalKind\(kind\)[\s\S]*entry\.localSelectors\.some/);
   const shouldAlignStart = appInterpageSource.indexOf(
-    'function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics)'
+    'function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant)'
   );
   const sourceRectStart = appInterpageSource.indexOf(
-    'function getYuiGuideChatSpotlightSourceRect(kind, variant, rect, metrics)'
+    'function getYuiGuideChatSpotlightSourceRect(kind, variant, rect)'
   );
   const spotlightUpdateStart = appInterpageSource.indexOf(
     'function updateYuiGuideChatSpotlight(kind, pcOverlayRunId)'
@@ -277,14 +277,15 @@ test('Day1 return control cursor moves to the capsule primary target before the 
   const shouldAlignBlock = getBalancedBlockFrom(appInterpageSource, shouldAlignStart);
   const sourceRectBlock = getBalancedBlockFrom(appInterpageSource, sourceRectStart);
   const spotlightUpdateBlock = getBalancedBlockFrom(appInterpageSource, spotlightUpdateStart);
-  // 修改原因：胶囊目标只在桌面宿主明确声明 Wayland work-area carrier 时平移；
-  // 平移后仍保留完整宽度，与 macOS 视觉契约一致。
-  assert.match(shouldAlignBlock, /metrics\.waylandWorkAreaCarrier === true/);
+  // 修改原因：registry 已将 capsule-input 解析到完整 capsuleBody，不能再用文字锚点
+  // 二次平移；只有旧的 input + plain-capsule 视觉形态保留文字对齐。
+  assert.match(shouldAlignBlock, /return kind === 'input' && variant === 'plain-capsule';/);
+  assert.doesNotMatch(shouldAlignBlock, /capsule-input|waylandWorkAreaCarrier/);
   assert.match(sourceRectBlock, /anchorOffsetX \* YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO/);
   assert.match(sourceRectBlock, /width:\s*rect\.width/);
   assert.doesNotMatch(sourceRectBlock, /sourceRect\.width = Math\.max\(1, rect\.left \+ rect\.width - sourceRect\.left\)/);
   assert.match(spotlightUpdateBlock, /var pcOverlayAvailable = isYuiGuidePcOverlayAvailable\(\);/);
-  assert.match(spotlightUpdateBlock, /var sourceRectInfo = rect\s*\?\s*getYuiGuideChatSpotlightSourceRect\(kind, yuiGuideChatSpotlightVariant, rect, pcWindowMetrics\)\s*:\s*null;/);
+  assert.match(spotlightUpdateBlock, /var sourceRectInfo = rect\s*\?\s*getYuiGuideChatSpotlightSourceRect\(kind, yuiGuideChatSpotlightVariant, rect\)\s*:\s*null;/);
   assert.match(spotlightUpdateBlock, /sendYuiGuidePcOverlayPatch\(\{ spotlights: pcRects \}, false, patchOptions\);/);
   assert.doesNotMatch(appInterpageSource, /function renderYuiGuideChatSpotlight/);
   assert.doesNotMatch(appInterpageSource, /function isYuiGuideInputLikeChatTarget/);

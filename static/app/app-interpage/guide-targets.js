@@ -61,13 +61,8 @@
         return entry && entry.shape ? entry.shape : 'rounded-rect';
     }
 
-    function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics) {
-        if (kind === 'input' && variant === 'plain-capsule') {
-            return true;
-        }
-        return kind === 'capsule-input'
-            && !!metrics
-            && metrics.waylandWorkAreaCarrier === true;
+    function shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant) {
+        return kind === 'input' && variant === 'plain-capsule';
     }
 
     var YUI_GUIDE_CHAT_CAPSULE_TEXT_ALIGNMENT_RATIO = 0.6;
@@ -127,14 +122,14 @@
         };
     }
 
-    function getYuiGuideChatSpotlightSourceRect(kind, variant, rect, metrics) {
+    function getYuiGuideChatSpotlightSourceRect(kind, variant, rect) {
         var sourceRect = {
             left: rect.left,
             top: rect.top,
             width: rect.width,
             height: rect.height
         };
-        if (shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant, metrics)) {
+        if (shouldAlignYuiGuideChatSpotlightToCapsuleText(kind, variant)) {
             var anchor = getYuiGuideChatCapsuleTextAnchor();
             var anchorRect = anchor && anchor.rect;
             if (
@@ -649,7 +644,7 @@
             ? target.getBoundingClientRect()
             : null;
         var sourceRectInfo = rect
-            ? getYuiGuideChatSpotlightSourceRect(kind, I.yuiGuideChatSpotlightVariant, rect, pcWindowMetrics)
+            ? getYuiGuideChatSpotlightSourceRect(kind, I.yuiGuideChatSpotlightVariant, rect)
             : null;
         var sourceRect = sourceRectInfo ? sourceRectInfo.rect : rect;
 

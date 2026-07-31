@@ -5534,7 +5534,7 @@ def test_externalized_chat_capsule_spotlight_keeps_last_rect_when_target_tempora
 
 
 @pytest.mark.frontend
-def test_externalized_chat_capsule_input_spotlight_aligns_only_for_wayland_workarea_carrier(mock_page: Page):
+def test_externalized_chat_capsule_input_spotlight_uses_capsule_body_rect_on_wayland_and_x11(mock_page: Page):
     _bootstrap_page(
         mock_page,
         setup_js="""
@@ -5611,11 +5611,11 @@ def test_externalized_chat_capsule_input_spotlight_aligns_only_for_wayland_worka
 
     assert result
     assert result["waylandSpotlight"]["id"] == "external-chat-capsule-input"
-    assert result["waylandSpotlight"]["x"] == 722
+    assert result["waylandSpotlight"]["x"] == 692
     assert result["waylandSpotlight"]["width"] == 446
     assert result["x11Spotlight"]["x"] == 692
     assert result["x11Spotlight"]["width"] == 446
-    assert result["waylandSpotlight"]["width"] == result["x11Spotlight"]["width"]
+    assert result["waylandSpotlight"] == result["x11Spotlight"]
 
 
 @pytest.mark.frontend
