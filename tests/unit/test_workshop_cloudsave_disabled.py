@@ -1,4 +1,5 @@
 import asyncio
+import json
 import os
 
 import pytest
@@ -486,3 +487,78 @@ def test_the_save_and_the_folder_creation_share_one_worker_job():
         if isinstance(c, ast.Call) and isinstance(c.func, ast.Name)
     }
     assert {"save_workshop_config", "ensure_workshop_folder_exists"} <= called
+
+
+@pytest.mark.asyncio
+async def test_a_transient_read_failure_falls_back_to_the_last_good_config(tmp_path, monkeypatch):
+    """A Windows sharing violation must not silently swap in the default root.
+
+    Persistence runs in a worker now, so an event-loop read can land mid
+    `os.replace`. The loop is not allowed to back off (that would stall it), so
+    the read raises — and returning defaults there would hand `upload` and
+    `publish` the default workshop root while the user's config is perfectly
+    fine on disk.
+    """
+    from utils.config_manager import workshop as workshop_mixin
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text(
+        json.dumps({"user_mod_folder": "/user/mods", "auto_create_folder": True}),
+        encoding="utf-8",
+    )
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        def __init__(self):
+            import threading
+
+            self._workshop_config_lock = threading.RLock()
+            self.workshop_dir = tmp_path / "default"
+
+        def get_workshop_config_path(self):
+            return config_path
+
+        def _rebase_workshop_config_after_storage_migration(self, config):
+            return config
+
+    cm = _CM()
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+
+    busy = PermissionError(13, "Access is denied")
+    busy.winerror = 32
+    monkeypatch.setattr(
+        workshop_mixin, "read_json_tolerating_replace",
+        lambda *a, **kw: (_ for _ in ()).throw(busy),
+    )
+
+    fallback = cm.load_workshop_config()
+    assert fallback["user_mod_folder"] == "/user/mods", (
+        "瞬时读失败退回了默认配置——upload/publish 会拿着默认工坊根目录干活"
+    )
+
+
+def test_the_replace_tolerant_read_never_sleeps_on_the_event_loop():
+    """Same rule as the write side: no backoff on the loop, ever."""
+    import ast
+    import inspect
+    import textwrap
+
+    from utils import file_utils
+
+    tree = ast.parse(
+        textwrap.dedent(inspect.getsource(file_utils.read_json_tolerating_replace))
+    )
+    guards = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+        and node.func.id == "running_on_event_loop"
+    ]
+    sleeps = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "sleep"
+    ]
+    assert sleeps, "这条守卫是冲着退避去的，没有 sleep 就该更新它"
+    assert guards, (
+        "读重试没有事件循环守卫 —— get_workshop_path() 这类同步读就挂在 async "
+        "handler 上，会在循环上睡满退避预算"
+    )

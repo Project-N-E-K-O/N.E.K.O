@@ -722,6 +722,12 @@ def read_json_tolerating_replace(
         except OSError as exc:
             if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
                 raise
+            # 与写入侧同一条铁律：绝不在事件循环上 sleep。读路径尤其容易踩 ——
+            # get_workshop_path() 这类同步读就挂在 async handler 上。上环调用者
+            # 拿到的是「第一次就抛」，由调用方决定怎么降级（见
+            # ConfigManager.load_workshop_config 的 last-known-good 回落）。
+            if running_on_event_loop():
+                raise
         time.sleep(delay)
     return read_json(path, encoding=encoding)
 

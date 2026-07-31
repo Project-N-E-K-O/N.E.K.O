@@ -35,6 +35,7 @@ from .voice_manifest import (
 )
 
 import os
+import re
 import asyncio
 import uuid
 import tempfile
@@ -101,17 +102,26 @@ def _replace_voice_reference(
         _sweep_unreferenced_audio(content_folder, keep=audio_path)
 
 
+# 只认自己生成的名字，不认「叫得像」的。内容目录是用户自己的目录，里面完全可能有
+# 一个他自己放的 voice_sample_demo.mp3 —— 按前缀扫就会把它删掉。所以匹配写死成
+# 这次上传生成的形状（voice_sample_<12 位 hex>.<ext>）加上历史遗留的裸
+# voice_sample.<ext>。跟 file_utils 里 tmp 用所有权标记而不是猜形状是同一条原则：
+# 可证明的所有权，不是概率论。
+_GENERATED_REFERENCE_AUDIO_RE = re.compile(r'^voice_sample(_[0-9a-f]{12})?$')
+
+
 def _sweep_unreferenced_audio(content_folder: str, *, keep: str) -> None:
-    """Delete reference-audio files that no manifest points at any more."""
+    """Delete reference-audio files this module generated and no longer references."""
     keep_real = os.path.normcase(os.path.abspath(keep))
     try:
         entries = os.listdir(content_folder)
     except OSError:
         return
     for name in entries:
-        if not name.startswith('voice_sample'):
+        stem, ext = os.path.splitext(name)
+        if not _GENERATED_REFERENCE_AUDIO_RE.match(stem):
             continue
-        if os.path.splitext(name)[1].lower() not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
+        if ext.lower() not in WORKSHOP_REFERENCE_AUDIO_EXTENSIONS:
             continue
         candidate = os.path.join(content_folder, name)
         if os.path.normcase(os.path.abspath(candidate)) == keep_real:

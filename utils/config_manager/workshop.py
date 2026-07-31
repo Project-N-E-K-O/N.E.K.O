@@ -239,6 +239,7 @@ class WorkshopMixin:
                 config = read_json_tolerating_replace(config_path)
                 config = self._rebase_workshop_config_after_storage_migration(config)
                 logger.debug(f"成功加载workshop配置: {config}")
+                self._last_good_workshop_config = dict(config)
                 return config
             else:
                 # 配置不存在时直接返回默认值，避免只读查询链路隐式写入配置文件。
@@ -256,6 +257,15 @@ class WorkshopMixin:
                     logger.debug(f"workshop配置不存在，返回默认配置: {default_config}")
                     return default_config
         except Exception as e:
+            # ⚠️ 先看有没有「上一次成功读到的」。落盘现在跑在 worker 上，Windows 上
+            # 事件循环里的一次读可能正撞在 os.replace 中间；而循环上不许退避重试
+            # （见 read_json_tolerating_replace），于是这里会收到一个瞬时的
+            # PermissionError。直接退回默认配置的话，upload / publish 就拿着默认的
+            # 工坊根目录去干活，而用户的配置明明好好的 —— 静默换根目录比报错糟得多。
+            last_good = getattr(self, "_last_good_workshop_config", None)
+            if last_good is not None:
+                logger.warning("加载workshop配置失败，沿用上一次成功读到的配置: %s", e)
+                return dict(last_good)
             error_msg = f"加载workshop配置失败: {e}"
             logger.error(error_msg)
             print(error_msg)
