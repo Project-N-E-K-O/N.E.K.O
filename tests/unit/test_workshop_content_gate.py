@@ -663,11 +663,24 @@ async def test_deleting_the_temp_folder_during_a_publish_answers_409(export_fold
     assert export_folder.exists(), '发布还在跑的时候把内容目录删掉了'
 
 
+async def test_deleting_the_temp_folder_during_a_reference_swap_answers_409(export_folder):
+    """Cleanup needs an exclusive claim; pair writers are shared with each other."""
+    (export_folder / 'keep.txt').write_text('x', encoding='utf-8')
+
+    with claim_reference_pair(str(export_folder)):
+        response = await publish.cleanup_temp_folder(
+            _JsonRequest({'temp_folder': str(export_folder)})
+        )
+
+    assert response.status_code == 409
+    assert export_folder.exists(), '参考语音还在改写时把整个内容目录删掉了'
+
+
 async def test_publishing_during_a_publish_answers_409(export_folder, monkeypatch):
     """Exercise the public handler, including its exception ordering."""
     (export_folder / 'content.txt').write_text('payload', encoding='utf-8')
-    monkeypatch.setattr(publish, 'get_steamworks', lambda: object())
-    monkeypatch.setattr(publish, '_is_workshop_publish_native_crash_risk', lambda: False)
+    monkeypatch.setattr(publish, 'get_steamworks', object)
+    monkeypatch.setattr(publish, '_is_workshop_publish_native_crash_risk', bool)
 
     with claim_content_folder(str(export_folder), purpose=PUBLISH_PURPOSE):
         response = await publish.publish_to_workshop(_JsonRequest({
@@ -735,16 +748,6 @@ def _walk_own_scope(func):
         stack.extend(ast.iter_child_nodes(node))
 
 
-def _referenced_names(node) -> set:
-    names = set()
-    for child in ast.walk(node):
-        if isinstance(child, ast.Name):
-            names.add(child.id)
-        elif isinstance(child, ast.Attribute):
-            names.add(child.attr)
-    return names
-
-
 def _claim_calls_in_own_scope(func) -> list:
     """Claim calls whose *nearest enclosing function* is ``func`` itself.
 
@@ -777,12 +780,34 @@ def _parent_map(func) -> dict[int, ast.AST]:
     return parents
 
 
+def _worker_callable(call: ast.Call):
+    """Return the expression an offload API will invoke in the worker."""
+    index = 1 if _tail_name(call) == 'run_in_executor' else 0
+    return call.args[index] if len(call.args) > index else None
+
+
+def _contains_node(root, target) -> bool:
+    return any(node is target for node in ast.walk(root))
+
+
 def _is_deferred_reference(node, parents: dict[int, ast.AST], stop) -> bool:
     current = node
     while id(current) in parents:
         current = parents[id(current)]
         if isinstance(current, ast.Call) and _tail_name(current) in _WORKER_OFFLOAD_CALLS:
-            return True
+            callable_arg = _worker_callable(current)
+            if callable_arg is node:
+                return True
+            if isinstance(callable_arg, ast.Lambda) and _contains_node(callable_arg, node):
+                return True
+            if (
+                isinstance(callable_arg, ast.Call)
+                and _tail_name(callable_arg) == 'partial'
+                and callable_arg.args
+                and callable_arg.args[0] is node
+            ):
+                return True
+            return False
         if current is stop:
             break
     return False
@@ -823,6 +848,12 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
         '            pass\n'
         '    await asyncio.to_thread(_unit)\n'
         '\n'
+        'async def eager_helper():\n'
+        '    def _unit():\n'
+        '        with claim_reference_pair(folder):\n'
+        '            pass\n'
+        '    await asyncio.to_thread(_unit())\n'
+        '\n'
         'async def direct_helper():\n'
         '    def _unit():\n'
         '        with claim_reference_pair(folder):\n'
@@ -839,6 +870,9 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
         '嵌套的同步 worker 里拿占用是合法的，守卫不该报它'
     )
     assert _claiming_helpers_called_on_loop(functions['handler']) == []
+    assert _claiming_helpers_called_on_loop(functions['eager_helper']), (
+        '`to_thread(_unit())` 会先在事件循环调用 helper，不能算 offload'
+    )
     assert _claiming_helpers_called_on_loop(functions['direct_helper']), (
         '带 claim 的嵌套 helper 被直接调用时仍在事件循环上，必须报出来'
     )
@@ -900,6 +934,13 @@ _UNIT_OPERATIONS = {
     ('publish', '_delete_content_folder'): {'rmtree'},
 }
 
+_UNIT_CLAIMS = {
+    ('publish', '_preflight_and_publish'): 'claim_content_folder',
+    ('voice_refs', '_replace_voice_reference'): 'claim_reference_pair',
+    ('voice_refs', '_remove_voice_reference'): 'claim_reference_pair',
+    ('publish', '_delete_content_folder'): 'claim_content_folder',
+}
+
 # 已知欠账也用函数专属名字入账。`open`/`write` 不能全模块扫描，但在这个路由里正是
 # 那次未校验路径、未占用、还直接跑在事件循环上的 preview 写入。
 _SCOPED_OPERATIONS = {
@@ -925,10 +966,11 @@ _ALLOWED_UNCLAIMED = {('publish', 'prepare_workshop_upload')}
 # 要拿占用得先把这次写挪进 worker 单元。那是独立一个 PR 的事。删掉这一条之前先确认
 # 那边真的修好了。
 _KNOWN_GAPS = {
-    # 两条 preview 归一化分支各有一次同形状的 copy2；第三次会成为新 offender。
-    ('publish', 'publish_to_workshop', 'copy2'): 2,
-    ('preview_cards', 'upload_preview_image', 'open'): 1,
-    ('preview_cards', 'upload_preview_image', 'write'): 1,
+    # 绑定到具体源码位置，而不是同函数同名操作的数量；旧点被修、新点冒出来不能互换。
+    ('publish', 'publish_to_workshop', 596, 'copy2'),
+    ('publish', 'publish_to_workshop', 620, 'copy2'),
+    ('preview_cards', 'upload_preview_image', 538, 'open'),
+    ('preview_cards', 'upload_preview_image', 539, 'write'),
 }
 
 
@@ -965,12 +1007,14 @@ def _unclaimed_folder_operations(func, short: str) -> list:
     for block in _walk_own_scope(func):
         if not isinstance(block, ast.With):
             continue
-        if not any(
-            _referenced_names(item.context_expr) & _CLAIM_CALLS
-            for item in block.items
-        ):
+        claim_kinds = set()
+        for item in block.items:
+            for node in ast.walk(item.context_expr):
+                if isinstance(node, ast.Call) and _tail_name(node) in _CLAIM_CALLS:
+                    claim_kinds.add(_tail_name(node))
+        if not claim_kinds:
             continue
-        claimed_scopes.append({id(inner) for inner in ast.walk(block)})
+        claimed_scopes.append((claim_kinds, {id(inner) for inner in ast.walk(block)}))
 
     deferred_nodes = set()
     for call in _walk_own_scope(func):
@@ -981,13 +1025,16 @@ def _unclaimed_folder_operations(func, short: str) -> list:
             continue
         for arg in list(call.args) + [kw.value for kw in call.keywords]:
             deferred_nodes.update(id(node) for node in ast.walk(arg))
+    for node in _walk_own_scope(func):
+        if isinstance(node, ast.Lambda):
+            deferred_nodes.update(id(child) for child in ast.walk(node.body))
 
     offenders = []
     operations = _operation_nodes(func, short)
     for child, name in operations:
         if id(child) in deferred_nodes:
             offenders.append((short, func.name, child.lineno, name, '交给别处延后跑'))
-        elif not any(id(child) in scope for scope in claimed_scopes):
+        elif not any(id(child) in scope for _, scope in claimed_scopes):
             offenders.append((short, func.name, child.lineno, name, '未占用'))
 
     unit_names = _UNIT_OPERATIONS.get((short, func.name))
@@ -997,8 +1044,18 @@ def _unclaimed_folder_operations(func, short: str) -> list:
         if missing:
             offenders.append((short, func.name, func.lineno, ','.join(sorted(missing)), '清单操作消失'))
         unit_ids = {id(node) for node, name in operations if name in unit_names}
-        if unit_ids and not any(unit_ids <= scope for scope in claimed_scopes):
-            offenders.append((short, func.name, func.lineno, 'continuous-claim', '没有一把连续占用覆盖整个单元'))
+        required_claim = _UNIT_CLAIMS[(short, func.name)]
+        if unit_ids and not any(
+            required_claim in kinds and unit_ids <= scope
+            for kinds, scope in claimed_scopes
+        ):
+            offenders.append((
+                short,
+                func.name,
+                func.lineno,
+                'continuous-claim',
+                f'没有一把 {required_claim} 连续占用覆盖整个单元',
+            ))
     return offenders
 
 
@@ -1008,15 +1065,10 @@ def _format_offender(offender) -> str:
 
 
 def _consume_known_gaps(offenders: list) -> list:
-    remaining = list(offenders)
-    for (short, func, operation), expected in _KNOWN_GAPS.items():
-        matches = [
-            item for item in remaining
-            if item[0] == short and item[1] == func and item[3] == operation
-        ]
-        for item in matches[:expected]:
-            remaining.remove(item)
-    return remaining
+    return [
+        item for item in offenders
+        if (item[0], item[1], item[2], item[3]) not in _KNOWN_GAPS
+    ]
 
 
 def test_the_claim_guard_sees_through_deferred_work():
@@ -1036,6 +1088,11 @@ def test_the_claim_guard_sees_through_deferred_work():
         '    with claim_content_folder(folder, purpose=p):\n'
         '        executor.submit(lambda: _publish_workshop_item(folder))\n'
         '\n'
+        'def stored_lambda():\n'
+        '    with claim_content_folder(folder, purpose=p):\n'
+        '        callback = lambda: _publish_workshop_item(folder)\n'
+        '    callback()\n'
+        '\n'
         'def direct():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        _publish_workshop_item(folder)\n'
@@ -1047,6 +1104,9 @@ def test_the_claim_guard_sees_through_deferred_work():
     )
     assert _unclaimed_folder_operations(functions['deferred_lambda'], 'publish'), (
         '藏在 deferred lambda 里的上传也必须被报出来'
+    )
+    assert _unclaimed_folder_operations(functions['stored_lambda'], 'publish'), (
+        '存在 claim 里、离开后才调用的 lambda body 也必须被报出来'
     )
     assert _unclaimed_folder_operations(functions['direct'], 'publish') == [], (
         '直接在占用里同步跑完是合法的，守卫不该报它'
@@ -1068,12 +1128,21 @@ def test_the_claim_guard_requires_one_continuous_claim():
         '        resolve_voice_reference_serialized(folder)\n'
         '        _publish_workshop_item(folder)\n'
     ).body[0]
+    wrong_kind = ast.parse(
+        'def _delete_content_folder():\n'
+        '    with claim_reference_pair(folder):\n'
+        '        shutil.rmtree(folder)\n'
+    ).body[0]
 
     assert any(
         item[3] == 'continuous-claim'
         for item in _unclaimed_folder_operations(split, 'publish')
     ), 'preflight 和 upload 分成两把占用时，中间的窗口必须被报出来'
     assert _unclaimed_folder_operations(continuous, 'publish') == []
+    assert any(
+        item[3] == 'continuous-claim'
+        for item in _unclaimed_folder_operations(wrong_kind, 'publish')
+    ), '删整个目录必须拿独占 claim_content_folder，共享 pair claim 不够'
 
 
 def test_every_folder_consuming_call_sits_inside_a_claim():
@@ -1121,7 +1190,7 @@ def test_the_known_gaps_are_still_gaps():
         'voice_refs': voice_refs,
         'preview_cards': preview_cards,
     }
-    for (short, name, operation), expected in sorted(_KNOWN_GAPS.items()):
+    for short, name, line, operation in sorted(_KNOWN_GAPS):
         tree = ast.parse(inspect.getsource(modules[short]))
         target = next(
             node for node in ast.walk(tree)
@@ -1129,9 +1198,9 @@ def test_the_known_gaps_are_still_gaps():
         )
         matching = [
             item for item in _unclaimed_folder_operations(target, short)
-            if item[3] == operation
+            if item[2] == line and item[3] == operation
         ]
-        assert len(matching) == expected, (
-            f'{short}.{name} 预期恰有 {expected} 个未占用的 {operation}，'
-            f'现在是 {len(matching)}；重新审视并更新 _KNOWN_GAPS'
+        assert len(matching) == 1, (
+            f'{short}.{name}:{line} 的已知 {operation} 欠账已漂移；'
+            '重新审视具体调用点并更新 _KNOWN_GAPS'
         )
