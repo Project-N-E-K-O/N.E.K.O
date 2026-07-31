@@ -208,7 +208,16 @@ class QQReplyBufferService:
         p = self._pending.get(session_key)
         return p is not None and (p.task is None or not p.task.done())
 
-    def pre_buffer(self, session_key: str, message_text: str, sender_id: str, is_group: bool, group_id: str) -> bool:
+    def pre_buffer(
+        self,
+        session_key: str,
+        message_text: str,
+        sender_id: str,
+        is_group: bool,
+        group_id: str,
+        *,
+        participant_memory_at_receipt: bool | None = None,
+    ) -> bool:
         """消息到达时调用（LLM 生成前）：创建/追加缓冲，返回 True 表示跳过 pipeline。"""
         now = time.time()
         existing = self._pending.get(session_key)
@@ -217,6 +226,12 @@ class QQReplyBufferService:
             # 已有缓冲 → 追加
             self._supersede(existing)
             existing.buffered_texts.append(message_text)
+            # 私聊第二条起会在这里直接 return，不再构造 QQReplyRequest，也
+            # 不会经过 schedule_reply(consented=...)。必须在接收边界把 OFF
+            # 章并进同一个 pending，否则 OFF→ON 后 synthetic flush 会把这条
+            # 输入误当成已授权。
+            if not is_group and participant_memory_at_receipt is False:
+                existing.has_nonconsent_input = True
             existing.message_count += 1
             n = existing.message_count
             if n <= 2:       extra = random.uniform(6.0, 10.0)
@@ -240,6 +255,8 @@ class QQReplyBufferService:
             group_id=group_id,
         )
         pending.task = None  # 尚未启动等待（等 schedule_reply 来启动）
+        if not is_group and participant_memory_at_receipt is False:
+            pending.has_nonconsent_input = True
         self._pending[session_key] = pending
         return False  # 首次消息，走 pipeline
 

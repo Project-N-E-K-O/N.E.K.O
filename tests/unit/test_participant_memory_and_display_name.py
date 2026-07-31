@@ -1162,7 +1162,86 @@ async def test_scoped_forget_erases_exactly_one_domain(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_scoped_forget_persona_drops_section_and_corrections():
+async def test_scoped_forget_validates_archive_before_active_delete(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    facts = [{"id": "f1", "text": "target", **target.as_entry_fields()}]
+    archive_path = tmp_path / "facts_archive.json"
+    archive_path.write_text("{broken", encoding="utf-8")
+    store = _ForgetFactStore(facts, archive_path)
+
+    with pytest.raises(RuntimeError, match="facts_archive unreadable"):
+        await store.aforget_subject("Neko", target)
+
+    assert [fact["id"] for fact in store._facts["Neko"]] == ["f1"]
+    assert store.saves == 0
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_fences_inflight_fact_extraction(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    archive_path = tmp_path / "missing-archive.json"
+    store = _ForgetFactStore([], archive_path)
+    extraction_started = asyncio.Event()
+    release_extraction = asyncio.Event()
+
+    async def _extract(*args, **kwargs):
+        extraction_started.set()
+        await release_extraction.wait()
+        return [{"text": "stale", "importance": 8}]
+
+    store._allm_extract_facts = _extract
+    task = asyncio.create_task(
+        store.extract_facts(
+            [{"role": "user", "content": "remember me"}],
+            "Neko",
+            subject=target,
+            fail_closed=True,
+        )
+    )
+    await extraction_started.wait()
+    await store.aforget_subject("Neko", target)
+    release_extraction.set()
+
+    assert await task == []
+    assert store._facts["Neko"] == []
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_fences_only_target_inflight_batch_segment(tmp_path):
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    store = _ForgetFactStore([], tmp_path / "missing-archive.json")
+    extraction_started = asyncio.Event()
+    release_extraction = asyncio.Event()
+
+    async def _extract_batch(*args, **kwargs):
+        extraction_started.set()
+        await release_extraction.wait()
+        return [
+            {"segment": 1, "text": "stale target", "importance": 8},
+            {"segment": 2, "text": "keep other", "importance": 8},
+        ]
+
+    store._allm_extract_facts_batch = _extract_batch
+    segments = [
+        {"messages": ["a"], "subject": target},
+        {"messages": ["b"], "subject": other},
+    ]
+    task = asyncio.create_task(store.extract_facts_batch(segments, "Neko"))
+    await extraction_started.wait()
+    await store.aforget_subject("Neko", target)
+    release_extraction.set()
+
+    results = await task
+    assert results[0]["created"] == []
+    assert [fact["text"] for fact in results[1]["created"]] == ["keep other"]
+    assert [fact["subject_id"] for fact in store._facts["Neko"]] == [
+        other.subject_id,
+    ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_persona_drops_section_and_corrections(tmp_path):
     """persona 侧：条目删净后 section 整段删（连 display_name）；混居其它
     scope 时 section 保留；pending corrections 里的 subject 条目一并清，
     否则 resolve 会把已删文本写回（回流）。"""  # noqa: DOCSTRING_CJK
@@ -1178,12 +1257,20 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
             self.persona = persona
             self.corrections = corrections
             self._lock = asyncio.Lock()
+            self._resolve_lock = asyncio.Lock()
             self._config_manager = MagicMock()
             self.saved = 0
             self.corrections_written: list | None = None
+            self.corrections_path = tmp_path / f"corrections-{id(self)}.json"
+            self.corrections_path.write_text(
+                json.dumps(corrections), encoding="utf-8",
+            )
 
         def _get_alock(self, name):
             return self._lock
+
+        def _get_resolve_alock(self, name):
+            return self._resolve_lock
 
         async def _aensure_persona_locked(self, name):
             return self.persona
@@ -1195,7 +1282,7 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
             return list(self.corrections)
 
         def _corrections_path(self, name):
-            return "corrections.json"
+            return str(self.corrections_path)
 
     section = {
         "display_name": "小明",
@@ -1209,6 +1296,10 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
     corrections = [
         {"old_text": "t", "new_text": "t2", "entity": "participant",
          **target.as_entry_fields()},
+        # Legacy scoped queue rows encoded ownership only in entity. Forget
+        # must normalize them exactly like resolve_corrections does.
+        {"old_text": "legacy t", "new_text": "legacy t2",
+         "entity": target.persona_section_key},
         {"old_text": "keep", "new_text": "keep2", "entity": "master"},
     ]
     harness = _Harness(persona, corrections)
@@ -1227,7 +1318,7 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
     # 混居 section：本 scope 条目删掉、section 保留
     assert stats["persona_entries"] == 1
     assert stats["persona_section_dropped"] is False
-    assert stats["corrections"] == 1
+    assert stats["corrections"] == 2
     assert target.persona_section_key in persona
     assert [e["id"] for e in section["facts"]] == ["p2"]
     assert "display_name" not in section
@@ -1252,6 +1343,52 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_aborts_on_unreadable_corrections(tmp_path):
+    from memory.persona.facts import FactsMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    persona = {
+        target.persona_section_key: {
+            "facts": [{"id": "p1", "text": "target", **target.as_entry_fields()}],
+            **target.as_entry_fields(),
+        }
+    }
+    corrections_path = tmp_path / "persona_corrections.json"
+    corrections_path.write_text("{broken", encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = FactsMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._resolve_lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+            self.saved = 0
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _get_resolve_alock(self, name):
+            return self._resolve_lock
+
+        def _corrections_path(self, name):
+            return str(corrections_path)
+
+        async def _aensure_persona_locked(self, name):
+            return persona
+
+        async def asave_persona(self, name, value):
+            self.saved += 1
+
+    harness = _Harness()
+    with pytest.raises(RuntimeError, match="corrections unreadable"):
+        await harness.aforget_subject("Neko", target)
+
+    assert persona[target.persona_section_key]["facts"][0]["id"] == "p1"
+    assert harness.saved == 0
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
     """reflection 侧不走 asave_reflections：它的归档合并会把磁盘上
     merged / promote_blocked 的条目并回主文件，删除被静默 undo。直写后
@@ -1268,6 +1405,7 @@ async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
     ]
     path = tmp_path / "reflections.json"
     path.write_text(json.dumps(reflections), encoding="utf-8")
+    surfaced_path = tmp_path / "surfaced.json"
 
     class _Harness:
         aforget_subject = PersistenceMixin.aforget_subject
@@ -1279,6 +1417,9 @@ async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
                 {"reflection_id": "r1", "text": "t", "feedback": None},
                 {"reflection_id": "r3", "text": "keep", "feedback": None},
             ]
+            surfaced_path.write_text(
+                json.dumps(self.surfaced), encoding="utf-8",
+            )
             self.surfaced_saved: list | None = None
 
         def _get_alock(self, name):
@@ -1287,11 +1428,15 @@ async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
         def _reflections_path(self, name):
             return str(path)
 
+        def _surfaced_path(self, name):
+            return str(surfaced_path)
+
         async def aload_surfaced(self, name):
             return list(self.surfaced)
 
         async def asave_surfaced(self, name, surfaced):
             self.surfaced_saved = surfaced
+            surfaced_path.write_text(json.dumps(surfaced), encoding="utf-8")
 
     harness = _Harness()
     with patch("memory.reflection.persistence.assert_cloudsave_writable"):
@@ -1316,6 +1461,7 @@ async def test_scoped_forget_reflection_retry_keeps_ids_after_partial_failure(
         {"id": "r1", "text": "target", **target.as_entry_fields()},
         {"id": "r2", "text": "keep"},
     ]), encoding="utf-8")
+    surfaced_path = tmp_path / "surfaced.json"
 
     class _Harness:
         aforget_subject = PersistenceMixin.aforget_subject
@@ -1327,6 +1473,9 @@ async def test_scoped_forget_reflection_retry_keeps_ids_after_partial_failure(
                 {"reflection_id": "r1", "text": "target"},
                 {"reflection_id": "r2", "text": "keep"},
             ]
+            surfaced_path.write_text(
+                json.dumps(self.surfaced), encoding="utf-8",
+            )
 
         def _get_alock(self, name):
             return self._lock
@@ -1334,11 +1483,15 @@ async def test_scoped_forget_reflection_retry_keeps_ids_after_partial_failure(
         def _reflections_path(self, name):
             return str(path)
 
+        def _surfaced_path(self, name):
+            return str(surfaced_path)
+
         async def aload_surfaced(self, name):
             return list(self.surfaced)
 
         async def asave_surfaced(self, name, surfaced):
             self.surfaced = list(surfaced)
+            surfaced_path.write_text(json.dumps(surfaced), encoding="utf-8")
 
     harness = _Harness()
     with patch("memory.reflection.persistence.assert_cloudsave_writable"), \
@@ -1360,6 +1513,43 @@ async def test_scoped_forget_reflection_retry_keeps_ids_after_partial_failure(
     assert [r["id"] for r in json.loads(path.read_text(encoding="utf-8"))] == [
         "r2",
     ]
+
+
+@pytest.mark.asyncio
+async def test_scoped_forget_aborts_on_unreadable_surfaced_state(tmp_path):
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    path = tmp_path / "reflections.json"
+    path.write_text(json.dumps([
+        {"id": "r1", "text": "target", **target.as_entry_fields()},
+    ]), encoding="utf-8")
+    surfaced_path = tmp_path / "surfaced.json"
+    surfaced_path.write_text("{broken", encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = PersistenceMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _reflections_path(self, name):
+            return str(path)
+
+        def _surfaced_path(self, name):
+            return str(surfaced_path)
+
+        async def asave_surfaced(self, name, surfaced):
+            raise AssertionError("must fail before surfaced save")
+
+    with pytest.raises(RuntimeError, match="surfaced state unreadable"):
+        await _Harness().aforget_subject("Neko", target)
+
+    assert json.loads(path.read_text(encoding="utf-8"))[0]["id"] == "r1"
 
 
 @pytest.mark.asyncio
@@ -1938,3 +2128,77 @@ def test_nonconsent_stamp_is_wired_into_generation_finally():
         QQReplyGenerationService._run_session_generation,
     )
     assert "_stamp_nonconsent_boundary(" in source
+
+
+@pytest.mark.asyncio
+async def test_private_prebuffer_carries_receipt_nonconsent_into_pending():
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        QQReplyBufferService,
+    )
+
+    plugin = SimpleNamespace(_emit_log=lambda *args, **kwargs: None)
+    service = QQReplyBufferService(plugin)
+    assert service.pre_buffer(
+        "private:1001",
+        "first",
+        "1001",
+        False,
+        "",
+        participant_memory_at_receipt=True,
+    ) is False
+    assert service.pre_buffer(
+        "private:1001",
+        "second while off",
+        "1001",
+        False,
+        "",
+        participant_memory_at_receipt=False,
+    ) is True
+
+    pending = service._pending["private:1001"]
+    assert pending.has_nonconsent_input is True
+    assert service._participant_memory_at_receipt(pending) is False
+    pending.task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await pending.task
+
+
+@pytest.mark.asyncio
+async def test_participant_discard_retries_pending_optout_with_flag_restored():
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+
+    seen_enabled: list[bool] = []
+    user_data = {
+        "is_group": False,
+        "private_memory_mode": "participant",
+        "memory_enabled": False,
+        "pending_disable_settle": True,
+        "session": SimpleNamespace(close=AsyncMock()),
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={"private:1001": user_data},
+        logger=MagicMock(),
+    )
+    plugin._has_pending_session_settlement = lambda key: False
+
+    async def _finalize(session_key, reason):
+        seen_enabled.append(
+            plugin._user_sessions[session_key]["memory_enabled"]
+        )
+        return False
+
+    plugin.session_memory_service = SimpleNamespace(
+        finalize_user_memory_session=_finalize,
+    )
+    runtime = QQSessionRuntimeService.__new__(QQSessionRuntimeService)
+    runtime.plugin = plugin
+
+    assert await runtime.discard_session(
+        "private:1001", reason="identity_changed",
+    ) is False
+    assert seen_enabled == [True]
+    assert plugin._user_sessions["private:1001"] is user_data
+    assert user_data["memory_enabled"] is False
+    assert user_data["pending_disable_settle"] is True

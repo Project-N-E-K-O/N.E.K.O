@@ -155,9 +155,9 @@ class QQSessionRuntimeService:
         # discard 入口统一受益；ephemeral（memory_enabled falsy）自然跳过；
         # finalize 成功会自己弹出会话，下面的 pop 变成无害 no-op。
         # pending_disable_settle 也算：OFF 盖章后新轮 prime 会按实时配置把
-        # flag 打成 False，但 cutoff 前的已授权缓冲还在等排队的 OFF 结算——
-        # 此刻 pop+close 会销毁唯一副本。放行后 finalize 因 flag False 返回
-        # False，走下面的保留分支，会话留给转变任务按 cutoff 结算。
+        # flag 打成 False，但 cutoff 前的已授权缓冲还在等排队的 OFF 结算。
+        # discard 必须像关机兜底一样临时恢复 flag，让本次重试真正进入
+        # finalizer；只保留 marker 却仍以 False 调用会永远 early-return。
         # 在途的延迟回复必须先定局：会话被销毁后 buffer 任务仍可能成功
         # 送出回复，而 _clear_undelivered_marks 已无 user_data 可更新——
         # 参与者真收到的回复会永久缺席 scoped 记忆。这里取消它（与
@@ -183,6 +183,12 @@ class QQSessionRuntimeService:
         if peek and (
             peek.get("memory_enabled") or peek.get("pending_disable_settle")
         ):
+            restore_disabled = bool(
+                peek.get("pending_disable_settle")
+                and not peek.get("memory_enabled")
+            )
+            if restore_disabled:
+                peek["memory_enabled"] = True
             try:
                 finalized = await self.plugin.session_memory_service.finalize_user_memory_session(
                     session_key, reason=f"discard:{reason}",
@@ -191,6 +197,10 @@ class QQSessionRuntimeService:
                 self.plugin.logger.error(
                     f"[{reason}] 丢弃前群记忆结算失败 ({session_key}): {exc}"
                 )
+            finally:
+                survivor = self.plugin._user_sessions.get(session_key)
+                if restore_disabled and survivor is not None:
+                    survivor["memory_enabled"] = False
             if not finalized and session_key in self.plugin._user_sessions:
                 # 结算失败（memory server 不可用等）：不弹出——弹出即销毁
                 # 缓冲唯一副本。保留会话让下一轮 sweep/discard 重试结算；

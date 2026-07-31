@@ -17,7 +17,9 @@
 from __future__ import annotations
 
 
+import asyncio
 import hashlib
+import json
 
 
 import os
@@ -30,7 +32,7 @@ from datetime import datetime
 
 from utils.cloudsave_runtime import assert_cloudsave_writable
 
-from utils.file_utils import atomic_write_json_async
+from utils.file_utils import atomic_write_json_async, read_json_async
 
 
 from memory.stop_names import (
@@ -995,9 +997,13 @@ class FactsMixin:
         归档分片不清（不进渲染/召回读路径，事件留底）。
         """  # noqa: DOCSTRING_CJK
         from memory.scopes import (
+            SCOPED_PERSONA_PREFIX,
+            MemoryScopeError,
+            MemorySubject,
             coerce_subject,
             entry_matches_subject,
             persona_subject_from_section,
+            subject_from_entry,
         )
         memory_subject = coerce_subject(subject)
         if memory_subject is None:
@@ -1005,77 +1011,129 @@ class FactsMixin:
         section_key = memory_subject.persona_section_key
         removed_entries = 0
         section_dropped = False
-        async with self._get_alock(name):
-            persona = await self._aensure_persona_locked(name)
-            section = persona.get(section_key)
-            if isinstance(section, dict):
-                entries = section.get('facts')
-                if isinstance(entries, list):
-                    kept = [
-                        e for e in entries
-                        if not (
-                            isinstance(e, dict)
-                            and entry_matches_subject(e, memory_subject)
+        corrections_removed = 0
+
+        def _correction_matches(correction: object) -> bool:
+            if not isinstance(correction, dict):
+                return False
+            if entry_matches_subject(correction, memory_subject):
+                return True
+            # Older scoped queue rows can be unstamped and carry their owner
+            # only in entity="@subject/<kind>:<id>". Mirror the resolver's
+            # normalization exactly so forget cannot leave a reflow source.
+            entity_raw = correction.get('entity')
+            entity = entity_raw.strip() if isinstance(entity_raw, str) else ''
+            if not entity.startswith(SCOPED_PERSONA_PREFIX):
+                return False
+            correction_subject = subject_from_entry(correction)
+            if correction_subject is None:
+                section_key_body = entity[len(SCOPED_PERSONA_PREFIX):]
+                kind, _, subject_id = section_key_body.partition(':')
+                try:
+                    correction_subject = MemorySubject.create(
+                        kind,
+                        subject_id,
+                        scope=correction.get('scope') or section_key_body,
+                    )
+                except MemoryScopeError:
+                    return False
+            return (
+                correction_subject.key == memory_subject.key
+                and correction_subject.scope == memory_subject.scope
+            )
+
+        # Same lock order as resolve_corrections (resolve → data): a forget
+        # waits for any already-copied LLM batch to finish applying, then removes
+        # both its result and queue source before reporting success.
+        async with self._get_resolve_alock(name):
+            async with self._get_alock(name):
+                # Erasure must inspect the queue strictly *before* mutating
+                # persona. The normal reader intentionally maps corruption to
+                # [], which would allow a retained correction to recreate the
+                # forgotten entry later.
+                corrections_path = self._corrections_path(name)
+                corrections: list = []
+                if await asyncio.to_thread(os.path.exists, corrections_path):
+                    try:
+                        corrections_data = await read_json_async(corrections_path)
+                    except (json.JSONDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            f"persona corrections unreadable during forget: {exc}"
+                        ) from exc
+                    if not isinstance(corrections_data, list):
+                        raise RuntimeError(
+                            "persona corrections are not a list during forget"
                         )
-                    ]
-                    removed_entries = len(entries) - len(kept)
-                    entries[:] = kept
-                section_subject = persona_subject_from_section(
-                    section_key, section,
-                )
-                if not section.get('facts'):
-                    if (
-                        section_subject is not None
+                    corrections = corrections_data
+
+                # corrections 清理留在同一把角色锁内：
+                # _aqueue_correction_locked 也在这把锁下写同一个文件，锁外
+                # 读改写会与并发入队互相覆盖。先写 queue；若 persona 落盘
+                # 随后失败，重试仍能从 persona 本体识别目标，反向顺序则可能
+                # 留下已经失去来源映射的回流条目。
+                kept_corrections = [
+                    c for c in corrections if not _correction_matches(c)
+                ]
+                corrections_removed = len(corrections) - len(kept_corrections)
+                if corrections_removed:
+                    assert_cloudsave_writable(
+                        self._config_manager,
+                        operation="save",
+                        target=f"memory/{name}/persona_corrections.json",
+                    )
+                    await atomic_write_json_async(
+                        corrections_path, kept_corrections,
+                        indent=2, ensure_ascii=False,
+                    )
+
+                persona = await self._aensure_persona_locked(name)
+                section = persona.get(section_key)
+                if isinstance(section, dict):
+                    entries = section.get('facts')
+                    if isinstance(entries, list):
+                        kept = [
+                            e for e in entries
+                            if not (
+                                isinstance(e, dict)
+                                and entry_matches_subject(e, memory_subject)
+                            )
+                        ]
+                        removed_entries = len(entries) - len(kept)
+                        entries[:] = kept
+                    section_subject = persona_subject_from_section(
+                        section_key, section,
+                    )
+                    if not section.get('facts'):
+                        if (
+                            section_subject is not None
+                            and section_subject.key == memory_subject.key
+                            and section_subject.scope == memory_subject.scope
+                        ):
+                            persona.pop(section_key, None)
+                            section_dropped = True
+                    elif (
+                        removed_entries
+                        and section_subject is not None
                         and section_subject.key == memory_subject.key
                         and section_subject.scope == memory_subject.scope
                     ):
-                        persona.pop(section_key, None)
-                        section_dropped = True
-                elif (
-                    removed_entries
-                    and section_subject is not None
-                    and section_subject.key == memory_subject.key
-                    and section_subject.scope == memory_subject.scope
-                ):
-                    # This key deliberately omits scope. If another scope
-                    # survives, retaining the forgotten scope's metadata
-                    # leaks its display_name into the surviving section and
-                    # prevents that scope from refreshing the name.
-                    replacement_subject = next(
-                        (
-                            persona_subject_from_section(section_key, entry)
-                            for entry in section.get('facts') or []
-                            if isinstance(entry, dict)
-                        ),
-                        None,
-                    )
-                    if replacement_subject is not None:
-                        section.update(replacement_subject.as_entry_fields())
-                    section.pop('display_name', None)
-            if removed_entries or section_dropped:
-                await self.asave_persona(name, persona)
-            # corrections 清理留在同一把角色锁内：_aqueue_correction_locked
-            # 也在这把锁下写同一个文件，锁外读改写会与并发入队互相覆盖。
-            corrections_removed = 0
-            corrections = await self.aload_pending_corrections(name)
-            kept_corrections = [
-                c for c in corrections
-                if not (
-                    isinstance(c, dict)
-                    and entry_matches_subject(c, memory_subject)
-                )
-            ]
-            corrections_removed = len(corrections) - len(kept_corrections)
-            if corrections_removed:
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{name}/persona_corrections.json",
-                )
-                await atomic_write_json_async(
-                    self._corrections_path(name), kept_corrections,
-                    indent=2, ensure_ascii=False,
-                )
+                        # This key deliberately omits scope. If another scope
+                        # survives, retaining the forgotten scope's metadata
+                        # leaks its display_name into the surviving section and
+                        # prevents that scope from refreshing the name.
+                        replacement_subject = next(
+                            (
+                                persona_subject_from_section(section_key, entry)
+                                for entry in section.get('facts') or []
+                                if isinstance(entry, dict)
+                            ),
+                            None,
+                        )
+                        if replacement_subject is not None:
+                            section.update(replacement_subject.as_entry_fields())
+                        section.pop('display_name', None)
+                if removed_entries or section_dropped:
+                    await self.asave_persona(name, persona)
         if removed_entries or section_dropped or corrections_removed:
             logger.info(
                 f"[Persona] {name}: forget "

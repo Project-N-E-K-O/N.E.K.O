@@ -306,7 +306,14 @@ class QQMessageDispatcher:
         # LLM 生成前预缓冲：如果已有等待中的回复，跳过 pipeline
         if getattr(self.plugin, "reply_buffer_service", None):
             session_key = self.plugin._build_session_key(sender_id=sender_id, is_group=False)
-            if self.plugin.reply_buffer_service.pre_buffer(session_key, message_text, sender_id, False, ""):
+            if self.plugin.reply_buffer_service.pre_buffer(
+                session_key,
+                message_text,
+                sender_id,
+                False,
+                "",
+                participant_memory_at_receipt=participant_memory_at_receipt,
+            ):
                 return
         self.plugin._emit_log("INFO", f"私聊 pipeline 开始: from={sender_id} text={message_text[:40]}")
         request = QQReplyRequest(

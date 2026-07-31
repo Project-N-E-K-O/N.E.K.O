@@ -7715,8 +7715,8 @@ async def test_discard_session_salvages_group_buffers_first():
 
     # A queued OFF settlement (pending_disable_settle) protects the buffers
     # even when a later turn primed memory_enabled=False from the live
-    # setting: the salvage path must run, and — finalize declining on the
-    # False flag — keep the session for the transition task to settle.
+    # setting: discard temporarily restores the flag so finalize can really
+    # retry; a failed retry keeps the session for a later attempt.
     plugin.session_memory_service = SimpleNamespace(
         finalize_user_memory_session=_finalize_fail,
     )

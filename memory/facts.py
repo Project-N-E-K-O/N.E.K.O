@@ -225,6 +225,10 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
         self._persist_alocks: dict[str, asyncio.Lock] = {}
+        # Per-character, per-subject erase generations. Scoped extraction
+        # captures one before its LLM call and rechecks it under the persistence
+        # lock, so an in-flight pre-forget request cannot recreate erased facts.
+        self._subject_forget_generations: dict[tuple[str, str, str], int] = {}
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -241,6 +245,27 @@ class FactStore:
                 if name not in self._persist_alocks:
                     self._persist_alocks[name] = asyncio.Lock()
         return self._persist_alocks[name]
+
+    def _subject_forget_generation(
+        self, name: str, subject: MemorySubject,
+    ) -> int:
+        generations = getattr(self, '_subject_forget_generations', None)
+        if generations is None:
+            # Some focused tests construct FactStore via __new__.
+            generations = {}
+            self._subject_forget_generations = generations
+        return generations.get((name, subject.key, subject.scope), 0)
+
+    def _bump_subject_forget_generation(
+        self, name: str, subject: MemorySubject,
+    ) -> int:
+        generations = getattr(self, '_subject_forget_generations', None)
+        if generations is None:
+            generations = {}
+            self._subject_forget_generations = generations
+        key = (name, subject.key, subject.scope)
+        generations[key] = generations.get(key, 0) + 1
+        return generations[key]
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -543,16 +568,80 @@ class FactStore:
         removed_active = 0
         removed_archive = 0
         async with self._get_persist_alock(lanlan_name):
+            # Fence every scoped extraction that captured the previous
+            # generation before this critical section.
+            self._bump_subject_forget_generation(lanlan_name, memory_subject)
             await self.aload_facts(lanlan_name)
             facts = self._facts.get(lanlan_name, [])
             removed = [
                 f for f in facts
                 if isinstance(f, dict) and entry_matches_subject(f, memory_subject)
             ]
+
+            # Strictly inspect and prepare the archive before changing active
+            # facts. Otherwise a corrupt/transiently unreadable archive raises
+            # only after facts.json has already been durably deleted, yielding
+            # a permanent partial forget.
+            archive_path = self._facts_archive_path(lanlan_name)
+            archived: list = []
+            archive_exists = await asyncio.to_thread(
+                os.path.exists, archive_path,
+            )
+            kept_archive: list = []
+            if archive_exists:
+                def _read_archive() -> object:
+                    with open(archive_path, encoding='utf-8') as f:
+                        return json.load(f)
+
+                try:
+                    archived = await asyncio.to_thread(_read_archive)
+                except (json.JSONDecodeError, OSError) as exc:
+                    # 归档损坏时明确失败：静默跳过会让"已删干净"的响应
+                    # 掩盖一份仍可被 BM25 召回的副本。
+                    raise RuntimeError(
+                        f"facts_archive unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(archived, list):
+                    raise RuntimeError(
+                        "facts_archive is not a list during forget"
+                    )
+                kept_archive = [
+                    f for f in archived
+                    if not (
+                        isinstance(f, dict)
+                        and entry_matches_subject(f, memory_subject)
+                    )
+                ]
+                removed_archive = len(archived) - len(kept_archive)
+
+            # Archive first: if the later active write fails, facts.json still
+            # contains enough subject-stamped rows for a retry. The reverse
+            # order is the irrecoverable half-commit reported by Greptile.
+            if removed_archive:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{lanlan_name}/facts_archive.json",
+                )
+                await asyncio.to_thread(
+                    atomic_write_json, archive_path, kept_archive,
+                    indent=2, ensure_ascii=False,
+                )
+
             if removed:
                 removed_active = len(removed)
                 removed_identities = {id(f) for f in removed}
-                facts[:] = [f for f in facts if id(f) not in removed_identities]
+                previous_facts = list(facts)
+                facts[:] = [
+                    f for f in facts if id(f) not in removed_identities
+                ]
+                try:
+                    await self.asave_facts(lanlan_name)
+                except Exception:
+                    # Keep the in-memory cache aligned with the unchanged
+                    # active file so the retry can still find the subject.
+                    facts[:] = previous_facts
+                    raise
                 if self._time_indexed is not None:
                     for fact in removed:
                         fact_id = fact.get('id')
@@ -567,40 +656,6 @@ class FactStore:
                                 f"[FactStore] {lanlan_name}: forget 清 FTS 索引"
                                 f"失败（残留 id 只影响空命中）: {exc}"
                             )
-                await self.asave_facts(lanlan_name)
-            archive_path = self._facts_archive_path(lanlan_name)
-            if await asyncio.to_thread(os.path.exists, archive_path):
-                def _read_archive() -> object:
-                    with open(archive_path, encoding='utf-8') as f:
-                        return json.load(f)
-
-                try:
-                    archived = await asyncio.to_thread(_read_archive)
-                except (json.JSONDecodeError, OSError) as exc:
-                    # 归档损坏时明确失败：静默跳过会让"已删干净"的响应
-                    # 掩盖一份仍可被 BM25 召回的副本。
-                    raise RuntimeError(
-                        f"facts_archive unreadable during forget: {exc}"
-                    ) from exc
-                if isinstance(archived, list):
-                    kept = [
-                        f for f in archived
-                        if not (
-                            isinstance(f, dict)
-                            and entry_matches_subject(f, memory_subject)
-                        )
-                    ]
-                    removed_archive = len(archived) - len(kept)
-                    if removed_archive:
-                        assert_cloudsave_writable(
-                            self._config_manager,
-                            operation="save",
-                            target=f"memory/{lanlan_name}/facts_archive.json",
-                        )
-                        await asyncio.to_thread(
-                            atomic_write_json, archive_path, kept,
-                            indent=2, ensure_ascii=False,
-                        )
         if removed_active or removed_archive:
             logger.info(
                 f"[FactStore] {lanlan_name}: forget "
@@ -1284,6 +1339,15 @@ class FactStore:
             )
             return [{'status': 'ok', 'created': created, 'dropped': 0}]
 
+        segment_generations = [
+            (
+                self._subject_forget_generation(lanlan_name, memory_subject)
+                if (memory_subject := coerce_subject(segment.get('subject')))
+                is not None
+                else None
+            )
+            for segment in segments
+        ]
         extracted = await self._allm_extract_facts_batch(lanlan_name, segments)
         if extracted is None:
             raise FactExtractionFailed(
@@ -1359,6 +1423,9 @@ class FactStore:
                         segment_facts,
                         subject=segment.get('subject'),
                         speaker_provenance=self._speaker_provenance_of(segment),
+                        expected_subject_generation=(
+                            segment_generations[position - 1]
+                        ),
                     )
                 except Exception as exc:
                     logger.error(
@@ -1412,8 +1479,23 @@ class FactStore:
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
+        expected_subject_generation: int | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
+            memory_subject = coerce_subject(subject)
+            if (
+                memory_subject is not None
+                and expected_subject_generation is not None
+                and self._subject_forget_generation(
+                    lanlan_name, memory_subject,
+                ) != expected_subject_generation
+            ):
+                logger.info(
+                    f"[FactStore] {lanlan_name}: 丢弃撤回期间完成的 scoped "
+                    f"fact extraction ({memory_subject.key}/"
+                    f"{memory_subject.scope})"
+                )
+                return []
             return await self._apersist_new_facts_locked(
                 lanlan_name,
                 extracted,
@@ -2327,6 +2409,11 @@ class FactStore:
         那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
         决定是否给本参数。
         """  # noqa: DOCSTRING_CJK
+        memory_subject = coerce_subject(subject)
+        expected_subject_generation = (
+            self._subject_forget_generation(lanlan_name, memory_subject)
+            if memory_subject is not None else None
+        )
         extracted = await self._allm_extract_facts(
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
@@ -2359,6 +2446,7 @@ class FactStore:
         return await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
+            expected_subject_generation=expected_subject_generation,
         )
 
     # ── external import state (sidecar) ──────────────────────────────

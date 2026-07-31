@@ -362,7 +362,24 @@ class PersistenceMixin:
             }
             surfaced_removed = 0
             if removed_ids:
-                surfaced = await self.aload_surfaced(name)
+                # Erasure cannot use the best-effort reader: treating a corrupt
+                # or transiently unreadable sidecar as [] would delete the
+                # source reflections and permanently lose the IDs needed to
+                # find their copied surfaced text on retry.
+                surfaced_path = self._surfaced_path(name)
+                surfaced: list = []
+                if await asyncio.to_thread(os.path.exists, surfaced_path):
+                    try:
+                        surfaced_data = await read_json_async(surfaced_path)
+                    except (json.JSONDecodeError, OSError) as exc:
+                        raise RuntimeError(
+                            f"surfaced state unreadable during forget: {exc}"
+                        ) from exc
+                    if not isinstance(surfaced_data, list):
+                        raise RuntimeError(
+                            "surfaced state is not a list during forget"
+                        )
+                    surfaced = surfaced_data
                 kept_surfaced = [
                     s for s in surfaced
                     if not (
