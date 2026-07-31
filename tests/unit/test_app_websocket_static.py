@@ -1539,8 +1539,12 @@ def test_settings_cas_conflict_rebuilds_body_from_winning_asr_decision_harness()
           const resetPriorDecision = {
             writeId: Date.now() + 1000,
             writerId: 'server-before-reset',
-            value: true,
+            value: false,
           };
+          assert(
+            resetPriorDecision.value !== true,
+            'the pre-reset ASR decision must differ from the enabled reset default'
+          );
           const reset = makeContext(false, {
             success: true,
             settings: {},
