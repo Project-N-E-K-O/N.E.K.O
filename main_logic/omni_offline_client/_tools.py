@@ -390,6 +390,9 @@ class _ToolingMixin:
         # 跨迭代累计真正执行过的 tool call 数：0 与非 0 在封顶日志里是两种
         # 性质（"进了 tool 分支但全是无名分片" vs 正常耗尽预算）。
         executed_tool_calls = 0
+        # 是否因"零执行轮且已经流过文本"提前跳出循环（与 genai 路径对偶）：
+        # 封顶日志据此别谎称迭代被耗尽。
+        zero_exec_break = False
         for tool_iter in range(self.max_tool_iterations):
             deltas_per_chunk: list = []
             finish_reason: Optional[str] = None
@@ -517,6 +520,16 @@ class _ToolingMixin:
                     # 发了会让这段文本既不在 tool_calls 行、又被 final
                     # AIMessage 跳过，从历史里彻底消失。
                     yield _LLMStreamChunk(content="", tool_round_persisted=True)
+                elif streamed_text_buffer:
+                    # 零执行轮：messages 一个字都没变，重来一轮不会有新信息，
+                    # 只会让模型把同样的 pre-tool 文本再流一遍给用户。已经流
+                    # 过文本就跳出循环去 forced-finalize（forced-finalize 与
+                    # 封顶日志都保留，被砍掉的只是没有意义的重试）；什么都
+                    # 没流出去的零执行轮仍允许再试一轮——重试没有用户可见
+                    # 代价，而 provider 抖动确实可能下一轮就正常。与 genai
+                    # 路径对偶。
+                    zero_exec_break = True
+                    break
                 continue
             return
         if executed_tool_calls == 0:
@@ -524,10 +537,20 @@ class _ToolingMixin:
             # 始终没带 name，collect_tool_calls 全部丢弃）：这是最值得排查的
             # 形态，不能伪装成普通封顶日志。
             logger.warning(
-                "OmniOfflineClient: tool iteration cap %d reached with 0 executed "
-                "tool calls (provider streamed nameless tool_call fragments); "
-                "forcing final answer without tools",
-                self.max_tool_iterations,
+                "OmniOfflineClient: %s with 0 executed tool calls (provider "
+                "streamed nameless tool_call fragments); forcing final answer "
+                "without tools",
+                "zero-execution round after streaming text" if zero_exec_break
+                else f"tool iteration cap {self.max_tool_iterations} reached",
+            )
+        elif zero_exec_break:
+            # 前面几轮真的执行过 tool，最后一轮零执行且已流过文本：循环没被
+            # 耗尽，别打成 runaway 封顶（与 genai 路径对偶）。
+            logger.warning(
+                "OmniOfflineClient: zero-execution round after streaming text "
+                "(provider streamed nameless tool_call fragments) with %d "
+                "executed tool calls so far; forcing final answer without tools",
+                executed_tool_calls,
             )
         elif self.max_tool_iterations == 1:
             # cap=1 是调用方的设计内单轮预算（QQ 插件：一轮一召回）：一次

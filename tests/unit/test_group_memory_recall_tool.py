@@ -1458,6 +1458,77 @@ async def test_resolver_appends_recent_other_speakers():
 
 
 @pytest.mark.asyncio
+async def test_recent_speaker_scan_window_seed_and_synthetic_field():
+    """三条读侧不变量一起钉：扫描窗口真的用满、去重种子是当前发言人、
+    合成事件按**字段**识别。
+
+    这三条此前都只有"恰好也通过"的覆盖：
+    - 扫描窗口：夹具无视 limit 直接返回整条 timeline，把
+      GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT 改成 3 照样全绿；
+    - 去重种子：当前发言人在旧夹具里排在第 4 新，``seen = set()``
+      还没轮到它就已经凑够 3 人；
+    - 合成事件：旧夹具里带 synthetic_source 字段的两行 message_id 都是
+      "welcome_" 开头，被 legacy 前缀兜底完全掩护。
+
+    这里让当前发言人霸占最新的一大段、真正的另外三人退到窗口深处、并放
+    一条**不带 welcome_ 前缀**的合成行在最新处。"""  # noqa: DOCSTRING_CJK
+    from config import GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT
+
+    plugin = _tool_plugin()
+    # backlog 升序（旧→新）。
+    timeline = [
+        {"sender_id": "9003", "message_id": "m1", "timestamp": 1},
+        {"sender_id": "9004", "message_id": "m2", "timestamp": 2},
+        {"sender_id": "9007", "message_id": "m3", "timestamp": 3},
+    ]
+    # 当前发言人连发，把另外三人挤到窗口深处（活跃群里最常见的形态）。
+    # 整条 timeline 正好 = 扫描窗口：窗口开满才够得着那三个人，窗口被改小
+    # 就只剩当前发言人自己刷屏。
+    filler = GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT - len(timeline) - 1
+    assert filler > 3, "夹具得比 limit-1 更长，否则窗口大小没有可观测后果"
+    timeline += [
+        {"sender_id": "2046", "message_id": f"m{4 + i}", "timestamp": 4 + i}
+        for i in range(filler)
+    ]
+    # 最新一条是合成事件（入群通知），但 message_id 不带 "welcome_" 前缀
+    # ——只有读 synthetic_source 字段的分支能挡住它。
+    timeline.append({
+        "sender_id": "9009", "message_id": "notice_7788_9009",
+        "timestamp": GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT,
+        "synthetic_source": "group_join_notice",
+    })
+    assert len(timeline) == GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT
+
+    async def _recent(group_id, *, limit):
+        # 真 backlog 按 limit 只返回最近的 N 条；夹具必须同样守约，否则
+        # "窗口开多大"这件事在测试里根本没有可观测后果。
+        assert limit == GROUP_RECALL_RECENT_SPEAKER_SCAN_LIMIT
+        return timeline[-limit:]
+
+    plugin.backlog_store = SimpleNamespace(
+        get_recent_group_messages=AsyncMock(side_effect=_recent),
+    )
+    subjects, used_member = await resolve_group_recall_subjects(
+        plugin, group_id="7788", memory_sender_id="2046",
+    )
+    assert used_member is True
+    assert subjects == [
+        QQMemoryBridge.group_subject("7788"),
+        QQMemoryBridge.group_participant_subject("7788", "2046"),
+        QQMemoryBridge.group_participant_subject("7788", "9007"),
+        QQMemoryBridge.group_participant_subject("7788", "9004"),
+        QQMemoryBridge.group_participant_subject("7788", "9003"),
+    ]
+    assert [s["subject_id"] for s in subjects].count("qq:7788:2046") == 1, (
+        "当前发言人没进去重种子，被最近发言人名单又带进来一次"
+    )
+    assert not any(s["subject_id"].endswith(":9009") for s in subjects), (
+        "带 synthetic_source 字段但 message_id 不含 welcome_ 前缀的合成行"
+        "占了最近发言人槽位"
+    )
+
+
+@pytest.mark.asyncio
 async def test_record_message_persists_synthetic_source():
     """resolver 的合成事件过滤读的是 backlog 行上的 synthetic_source——
     这条测试钉住写入侧真的把 pipeline 的 _synthetic_source 落了盘，否则

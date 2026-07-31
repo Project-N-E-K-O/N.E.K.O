@@ -851,6 +851,11 @@ class QQSessionMemoryService:
                         buckets=orphan_retry["snapshot"],
                         labels=orphan_retry["labels"],
                         require_consent=True,
+                        # 同 opt-out 结算：这是末次重试，失败就"就此丢失"
+                        # （下面那条 error 日志说的正是这个）。而且这些桶
+                        # 已经作为一批失败过一次——再打一次同样的包，一次
+                        # 传输抖动就能连着抹掉同样的 8 个人。
+                        isolate_segments=True,
                     )
                 except Exception as exc:
                     self.plugin.logger.error(
@@ -868,7 +873,7 @@ class QQSessionMemoryService:
     async def _flush_member_buckets(
         self, user_data: dict[str, Any], *, group_id: str, her_name: str,
         reason: str, buckets: dict | None = None, labels: dict | None = None,
-        require_consent: bool = False,
+        require_consent: bool = False, isolate_segments: bool = False,
     ) -> list[str]:
         """Flush member buckets in packed batches (semaphore 4).
 
@@ -878,6 +883,12 @@ class QQSessionMemoryService:
         与逐成员时代同一份"成功即弹、失败保留"契约，只是粒度从每人一次
         请求变成每批一次。抽取调用数从 O(发言人数) 降到 O(总消息数/批容
         量)；最坏（每桶都接近硬顶）退化回一桶一批，与旧形态同形。
+
+        ``isolate_segments``: 一桶一请求，放弃打包省下的那几次 LLM 调用。
+        只有 **失败即永久丢弃** 的调用方该开它——那里"整批一起失败"意味着
+        一次传输抖动同时抹掉 ≤8 个人（打包前是 1 个）。有重试的路径不用开：
+        整批失败只是让这 8 个人晚一轮，代价与 1 个人晚一轮同量级，而打包
+        省下的调用是每次 sweep 都在省的。
 
         Serial 8x30s used to hold the session lock ~4 min, exhausting the
         global message semaphore and never fitting the host shutdown kill
@@ -968,6 +979,18 @@ class QQSessionMemoryService:
                         isinstance(segment_result, dict)
                         and segment_result.get("status") == "ok"
                     ):
+                        try:
+                            dropped = int(segment_result.get("dropped") or 0)
+                        except (TypeError, ValueError):
+                            dropped = 0
+                        if dropped:
+                            # 服务端丢的是**不承载内容**的垃圾条目（归属由
+                            # 段对象给定），所以照样 pop；记一行是为了让
+                            # "模型输出在变脏"在插件日志里留痕。
+                            self.plugin.logger.info(
+                                f"[{reason}] 群 {group_id} 成员 {sender_id} "
+                                f"本次抽取丢弃了 {dropped} 条无内容条目"
+                            )
                         member_buckets.pop(sender_id, None)
                         # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
                         # 群会让 label 映射无限增长，而参与者名额是按 bucket
@@ -986,7 +1009,9 @@ class QQSessionMemoryService:
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
         self._enter_member_flush(user_data)
-        batches = self._pack_member_batches(member_buckets)
+        batches = self._pack_member_batches(
+            member_buckets, isolate_segments=isolate_segments,
+        )
         if not batches:
             self._finish_member_flush_generation(user_data)
             return []
@@ -999,8 +1024,13 @@ class QQSessionMemoryService:
             self._finish_member_flush_generation(user_data)
 
     @staticmethod
-    def _pack_member_batches(member_buckets: dict) -> list[list[str]]:
+    def _pack_member_batches(
+        member_buckets: dict, *, isolate_segments: bool = False,
+    ) -> list[list[str]]:
         """Greedy-pack sender buckets into batches of sender ids.
+
+        ``isolate_segments`` 把每批压到一段（= 打包前的形态），给"失败即
+        永久丢弃"的调用方用。
 
         每批：段数 ≤ SCOPED_HISTORY_BATCH_MAX_SEGMENTS、消息总量 ≤
         SCOPED_HISTORY_BATCH_MAX_MESSAGES（服务端同口径校验）。单桶硬顶
@@ -1015,6 +1045,9 @@ class QQSessionMemoryService:
             SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
         )
 
+        max_segments = (
+            1 if isolate_segments else SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+        )
         batches: list[list[str]] = []
         current: list[str] = []
         current_messages = 0
@@ -1024,7 +1057,7 @@ class QQSessionMemoryService:
             count = len(messages)
             if current and (
                 current_messages + count > SCOPED_HISTORY_BATCH_MAX_MESSAGES
-                or len(current) >= SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+                or len(current) >= max_segments
             ):
                 batches.append(current)
                 current = []
@@ -1148,6 +1181,14 @@ class QQSessionMemoryService:
                         reason="member_memory_disabled",
                         buckets=snapshot,
                         labels=current.get("pending_settle_labels") or {},
+                        # 这条路径**没有下一轮**：失败的桶按 opt-out 语义
+                        # 当场永久丢弃。打包让一次传输抖动的爆炸半径从
+                        # 1 个成员涨到整批（≤8），而它省下的那几次 LLM
+                        # 调用只在这个罕见的用户主动转变上省一次。一桶
+                        # 一请求把半径还原成打包前的样子；最坏用时
+                        # （2 波 × 30s = 60s）正是 SETTLE_JOIN_TIMEOUT_
+                        # LONG_SECONDS 当初按逐成员形态推出来的那个数。
+                        isolate_segments=True,
                     )
                     if failed:
                         self.plugin.logger.error(

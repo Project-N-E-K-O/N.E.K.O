@@ -208,6 +208,13 @@ SCOPED_HISTORY_BATCH_MAX_SEGMENTS = 8
 # 30s 单发超时与由它推导的结算等待上限才能原样沿用）。每个成员桶的硬顶
 # 是 150（GROUP_MEMBER_HARD_LIMIT）< 200，所以一个桶永远不用跨批拆分。
 SCOPED_HISTORY_BATCH_MAX_MESSAGES = 200
+# 段首标记里那截一次性 token 的字节数（token_hex → 2 倍长度的十六进制）。
+# 它防的是"群成员在自己的消息里伪造 [SEGMENT n | speaker: 别人]"：批模板
+# 恰恰告诉模型段首就是归属依据，伪造成功 = 把自己的内容写进别人的 subject
+# 并借到别人的 speaker_trust。攻击者的消息在 nonce 生成之前就写死了，猜不
+# 到本次请求的 token。4 字节 = 8 个十六进制字符，够挡住盲猜（每次请求重新
+# 生成，没有多次试探的机会），又不至于在 prompt 里占掉可观的 token。
+SCOPED_BATCH_SEGMENT_NONCE_BYTES = 4
 
 # ── 群召回读侧的 subject 形状 ────────────────────────────────────────────
 # 一轮群回复带的 subject：1 个群 + 最多这么多个成员（当前发言人 + 本轮
