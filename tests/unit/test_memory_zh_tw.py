@@ -214,3 +214,13 @@ def test_signal_loop_remembers_latest_session_locale():
     signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
 
     assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
+
+
+def test_signal_loop_clears_stale_session_locale():
+    from app.memory_server import signal_extraction
+
+    signal_extraction._signal_check_state.clear()
+    signal_extraction._signal_check_record_turn("Neko", language="zh-TW")
+    signal_extraction._signal_check_record_turn("Neko")
+
+    assert signal_extraction._signal_check_state["Neko"]["language"] is None
