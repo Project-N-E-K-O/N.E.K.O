@@ -700,6 +700,40 @@ async def test_cancelled_storage_job_waits_for_the_worker_before_unwinding():
 
 
 @pytest.mark.unit
+async def test_repeatedly_cancelled_storage_job_still_waits_for_the_worker():
+    """One suppressed cancellation is not enough.
+
+    A request cancellation followed by a server-shutdown cancellation lands the
+    second ``CancelledError`` on the handler's own await. Suppressing a single
+    one and unwinding would release the mutation lock with the worker still
+    writing — the exact hole this helper exists to close.
+    """
+    started = threading.Event()
+    finished = threading.Event()
+
+    def _job() -> str:
+        started.set()
+        time.sleep(0.4)
+        finished.set()
+        return "done"
+
+    task = asyncio.ensure_future(router_module._run_locked_storage_job(_job))
+    assert await asyncio.get_running_loop().run_in_executor(None, started.wait, 5)
+
+    task.cancel()
+    # 让 handler 真的跑到"等 worker"那一步，第二次取消才打得中
+    await asyncio.sleep(0.05)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert finished.is_set(), (
+        "第二次取消让 await 提前返回了——worker 还在写，锁已经松开"
+    )
+
+
+@pytest.mark.unit
 def test_empty_snapshot_never_deletes_storage_state(tmp_path):
     """An un-taken snapshot must not be replayed as "these files did not exist".
 

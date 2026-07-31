@@ -293,8 +293,14 @@ async def _run_locked_storage_job(job: Callable[[], Any]) -> Any:
     try:
         return await asyncio.shield(task)
     except asyncio.CancelledError:
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait({task})
+        # 循环等到 worker 真的结束，而不是"suppress 一次就走"。第二次 cancel（典型
+        # 组合：请求先被取消，紧接着服务器关闭又取消一次）会让下面这个 await 再抛一
+        # 次；只 suppress 一次的话就会在 worker 还在写的时候把 _storage_mutation_lock
+        # 让出去，等于这段防护白做。worker 是一次有界的落盘（最坏再加 155ms 退避），
+        # 所以这个循环一定会停。
+        while not task.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({task})
         # 取回异常再走人：没人 retrieve 的话 asyncio 会在 GC 时打
         # "Task exception was never retrieved"，把一次落盘失败变成一条谁也对不上的
         # 日志。这里只是消费掉它——取消已经发生，原来的 CancelledError 才是要传出去的。
