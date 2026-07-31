@@ -185,6 +185,7 @@ async def test_run_backup_compress_merges_and_clears_backoff():
     from app import memory_server
     name = "测试角色C"
     snapshot = _history(6)
+    admission_generation = ("C:/memory/recent.json", 7)
     memory_server.gates._maint_state[name] = {"compress_backup_fail_attempts": 2}
 
     fake_mgr = MagicMock()
@@ -192,8 +193,15 @@ async def test_run_backup_compress_merges_and_clears_backoff():
     fake_mgr.merge_backup_memo = AsyncMock(return_value="merged")
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
          patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
-        await memory_server._run_backup_compress(name, snapshot, False)
+        await memory_server._run_backup_compress(
+            name, snapshot, False, admission_generation,
+        )
 
-    fake_mgr.merge_backup_memo.assert_awaited_once()  # 成功 → 合并写回
+    fake_mgr.merge_backup_memo.assert_awaited_once_with(
+        name,
+        snapshot,
+        SystemMessage(content="memo"),
+        expected_generation=admission_generation,
+    )
     assert not memory_server.gates._maint_state[name].get("compress_backup_fail_attempts")  # 退避清零
     memory_server.gates._maint_state.pop(name, None)

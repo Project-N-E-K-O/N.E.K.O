@@ -656,7 +656,14 @@ class CompressedRecentHistoryManager:
                     # ⚠️ 这个回调**必须**留在所有临界区之外：dead-letter 分支会同步
                     # 调 enforce_hard_cap，那条路径要拿同一把文件锁，而 threading.Lock
                     # 不可重入 —— 挪进任何一个临界区就是 worker 线程上的无超时死锁。
-                    await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, False, detailed)
+                    await self._notify_compress_done(
+                        on_compress_done,
+                        lanlan_name,
+                        snapshot,
+                        False,
+                        detailed,
+                        admission_generation,
+                    )
                 else:
                     # CS-2：读盘 + 定位 + splice + 落盘，一个临界区。
                     splice_status = await asyncio.to_thread(
@@ -671,6 +678,7 @@ class CompressedRecentHistoryManager:
                         snapshot,
                         splice_status != 'failed',
                         detailed,
+                        admission_generation,
                     )
         except MaintenanceModeError:
             raise
@@ -998,7 +1006,9 @@ class CompressedRecentHistoryManager:
         memo_text = _loc(MEMORY_MEMO_WITH_SUMMARY, get_global_language()).format(summary=summary)
         return SystemMessage(content=memo_text), summary
 
-    async def _notify_compress_done(self, callback, lanlan_name, snapshot, ok, detailed):
+    async def _notify_compress_done(
+        self, callback, lanlan_name, snapshot, ok, detailed, admission_generation,
+    ):
         """Invoke the best-effort compression callback without blocking the main flow.
 
         memory_server injects the callback: ok=False starts background
@@ -1007,7 +1017,13 @@ class CompressedRecentHistoryManager:
         if callback is None:
             return
         try:
-            await callback(lanlan_name, snapshot, ok, detailed)
+            await callback(
+                lanlan_name,
+                snapshot,
+                ok,
+                detailed,
+                admission_generation,
+            )
         except Exception as e:
             logger.debug(f"[RecentHistory] {lanlan_name} on_compress_done({ok}) 回调异常: {e}")
 
@@ -1101,16 +1117,22 @@ class CompressedRecentHistoryManager:
                 return
         logger.info(f"[RecentHistory] {lanlan_name} 硬上限裁剪期间历史持续变化，跳过本轮")
 
-    async def merge_backup_memo(self, lanlan_name, snapshot, memo):
+    async def merge_backup_memo(
+        self, lanlan_name, snapshot, memo, expected_generation=None,
+    ):
         """Merge a background compression memo when its disk snapshot still matches.
 
         The disk re-read, snapshot match, splice, and write form one file critical
         section. A changed or cleared head makes the result moot instead of
         resurrecting stale content.
         """
-        file_path, admission_generation = self._capture_recent_operation_admission(
-            lanlan_name,
-        )
+        if expected_generation is None:
+            file_path, admission_generation = self._capture_recent_operation_admission(
+                lanlan_name,
+            )
+        else:
+            file_path = expected_generation[0]
+            admission_generation = expected_generation
         try:
             current = await asyncio.to_thread(
                 self._read_history_locked,
@@ -1139,6 +1161,8 @@ class CompressedRecentHistoryManager:
                 memo,
                 admission_generation,
             )
+        except recent_file.RecentFileDeletedError:
+            return 'moot'
         except MaintenanceModeError:
             raise
         except Exception as e:

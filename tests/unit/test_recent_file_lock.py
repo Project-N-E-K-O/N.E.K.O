@@ -706,8 +706,9 @@ def test_compress_callback_runs_with_no_file_lock_held(tmp_path, monkeypatch):
 
     setattr(mgr, "compress_history", _failed_compress)
 
-    async def _callback(lanlan_name, snapshot, ok, detailed):
+    async def _callback(lanlan_name, snapshot, ok, detailed, admission_generation):
         observed["ok"] = ok
+        observed["admission_generation"] = admission_generation
         observed["locked"] = recent_file.recent_file_lock(path).locked()
         # 真的走一遍 dead-letter 分支做的事：拿同一把锁写盘。
         await mgr.enforce_hard_cap(lanlan_name)
@@ -730,6 +731,7 @@ def test_compress_callback_runs_with_no_file_lock_held(tmp_path, monkeypatch):
     asyncio.run(_go())
 
     assert observed.get("ok") is False, "压缩失败必须以 ok=False 回调"
+    assert observed.get("admission_generation") == recent_file.capture_recent_generation(path)
     assert observed.get("locked") is False, "回调运行时不得持有文件锁"
     # 裁剪真的落了盘 —— 证明它确实拿到了锁并写成功，不是静默 no-op。
     assert len(_read_disk(path)) < 9
@@ -1675,7 +1677,7 @@ def test_splice_write_failure_notifies_compression_failure(tmp_path, monkeypatch
     monkeypatch.setattr(mgr, "_splice_compressed_locked", lambda *args: "failed")
     observed = []
 
-    async def _callback(_name, _snapshot, ok, _detailed):
+    async def _callback(_name, _snapshot, ok, _detailed, _admission_generation):
         observed.append(ok)
 
     asyncio.run(mgr.update_history(
@@ -1716,6 +1718,29 @@ def test_merge_backup_memo_rereads_after_fence_before_write(tmp_path, monkeypatc
 
     assert asyncio.run(_go()) == "merged"
     assert [m.content for m in _read_disk(path)] == ["memo", "append-during-merge"]
+
+
+def test_backup_memo_rejects_reused_identity_with_same_snapshot(tmp_path):
+    """A memo computed for an old identity must not merge into reused bytes."""
+    mgr, name, path = _make_manager(tmp_path)
+    batch = [HumanMessage(content=f"old-{i}") for i in range(4)]
+    _write_disk(path, batch)
+    admission_generation = recent_file.capture_recent_generation(path)
+
+    recent_file.activate_recent_paths([path])
+    _write_disk(path, batch)
+
+    status = asyncio.run(mgr.merge_backup_memo(
+        name,
+        list(batch),
+        SystemMessage(content="stale-memo"),
+        expected_generation=admission_generation,
+    ))
+
+    assert status == "moot"
+    assert [message.content for message in _read_disk(path)] == [
+        message.content for message in batch
+    ]
 
 
 def test_hard_cap_retries_when_disk_changes_before_commit(tmp_path, monkeypatch):

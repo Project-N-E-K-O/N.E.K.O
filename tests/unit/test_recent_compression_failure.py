@@ -275,7 +275,7 @@ def test_update_history_callback_ok_false_on_failure(tmp_path):
 
     calls = []
 
-    async def _cb(ln, snap, ok, detailed):
+    async def _cb(ln, snap, ok, detailed, admission_generation):
         calls.append((ln, ok))
 
     _run(mgr.update_history([HumanMessage(content="new")], name, on_compress_done=_cb))
@@ -293,7 +293,7 @@ def test_update_history_callback_ok_true_on_success(tmp_path):
 
     calls = []
 
-    async def _cb(ln, snap, ok, detailed):
+    async def _cb(ln, snap, ok, detailed, admission_generation):
         calls.append((ln, ok))
 
     _run(mgr.update_history([HumanMessage(content="new")], name, on_compress_done=_cb))

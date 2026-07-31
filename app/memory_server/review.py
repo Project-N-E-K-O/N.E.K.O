@@ -435,7 +435,9 @@ def _mutate_reset_compress_backup_backoff(
     return True, 'proceed'
 
 
-async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool):
+async def _run_backup_compress(
+    lanlan_name: str, snapshot: list, detailed: bool, admission_generation=None,
+):
     """Run best-effort background compression and merge the result under lock."""
     try:
         # 1) 压缩（锁外）。compress_history 内部按输入大小自动分段，避免输入过大超时。
@@ -457,7 +459,12 @@ async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool)
         # 2) 合并写回（锁内，快）。merge_backup_memo 用 fingerprint 对齐，积压已被
         #    主路径压掉 / 被清空就返回 'moot' 丢弃（白做）。
         async with runtime._get_settle_lock(lanlan_name):
-            status = await runtime.recent_history_manager.merge_backup_memo(lanlan_name, snapshot, result[0])
+            status = await runtime.recent_history_manager.merge_backup_memo(
+                lanlan_name,
+                snapshot,
+                result[0],
+                expected_generation=admission_generation,
+            )
         if status == 'failed':
             # 合并落盘失败 → 没真正写成功，bump 退避（不清），下次再试。
             attempts = await _record_compress_backup_failure(lanlan_name, snapshot)
@@ -476,7 +483,13 @@ async def _run_backup_compress(lanlan_name: str, snapshot: list, detailed: bool)
             compress_backup_tasks.pop(lanlan_name, None)
 
 
-async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed: bool):
+async def _on_compress_done(
+    lanlan_name: str,
+    snapshot: list,
+    ok: bool,
+    detailed: bool,
+    admission_generation=None,
+):
     """Compression-finished callback for update_history (injected into recent.py).
 
     ok=True (main-path compression succeeded) → cancel any running backup task +
@@ -533,7 +546,14 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
             # 线程上的无超时永久死锁（threading.Lock 不可重入）。
             await runtime.recent_history_manager.enforce_hard_cap(lanlan_name)
             return
-    task = runtime._spawn_background_task(_run_backup_compress(lanlan_name, list(snapshot), detailed))
+    task = runtime._spawn_background_task(
+        _run_backup_compress(
+            lanlan_name,
+            list(snapshot),
+            detailed,
+            admission_generation,
+        )
+    )
     compress_backup_tasks[lanlan_name] = task
     logger.info(f"[CompressBackup] {lanlan_name} 主路径压缩失败，已起后台兜底压缩任务")
 
