@@ -1368,8 +1368,20 @@ class RealtimeResponseArbiter:
                     "response dispatch interrupted by pending server VAD response"
                 )
             if queued.interrupted:
-                await self._worker_send({"type": "response.cancel"})
+                # Same shape as ``_cancel_after_timeout`` below, and for the
+                # same reason: with the send outside the try, a transport that
+                # refused this cancel raised straight past the escalation, so
+                # the connection that had just failed a write was never torn
+                # down. ``_worker_send``'s finally has already lowered the
+                # in-flight flag by then, which is why the failure has to be
+                # remembered rather than re-read.
+                cancel_write_failed = False
                 try:
+                    try:
+                        await self._worker_send({"type": "response.cancel"})
+                    except Exception:
+                        cancel_write_failed = True
+                        raise
                     await asyncio.wait_for(
                         asyncio.shield(queued.terminal), queued.cancel_timeout
                     )
@@ -1379,6 +1391,7 @@ class RealtimeResponseArbiter:
                     await self._escalate(
                         "interrupted response could not reach a terminal state",
                         observed=queued,
+                        transport_write_failed=cancel_write_failed,
                     )
                 raise RuntimeError("response dispatch interrupted")
             if not queued.ticket.sent.done():

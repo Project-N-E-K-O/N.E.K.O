@@ -87,10 +87,14 @@ class _Harness:
 
     async def _send(self, event: dict) -> None:
         self.sent.append(event)
-        if self.send_behaviour == "stall" and event.get("type") == "response.create":
+        if event.get("type") == "response.create" and self.send_behaviour in (
+            "stall",
+            "stall_refuse_cancel",
+        ):
             await self.gate.wait()
-        if self.send_behaviour == "refuse_cancel" and (
-            event.get("type") == "response.cancel"
+        if event.get("type") == "response.cancel" and self.send_behaviour in (
+            "refuse_cancel",
+            "stall_refuse_cancel",
         ):
             raise RuntimeError("1006 abnormal close")
 
@@ -117,6 +121,17 @@ class _StallingHarness(_Harness):
 
 class _CancelRefusingHarness(_Harness):
     send_behaviour = "refuse_cancel"
+
+
+class _StallThenRefuseCancelHarness(_Harness):
+    """Stalls the create, then refuses the cancel that follows it.
+
+    The only way to reach ``_process``'s interrupted branch: the interrupt has
+    to land while the ``response.create`` send is still in flight, so the
+    worker returns from that send and finds the request already cancelled.
+    """
+
+    send_behaviour = "stall_refuse_cancel"
 
 
 @pytest.fixture
@@ -2314,3 +2329,108 @@ async def test_response_created_records_the_epoch_its_turn_began_in():
         "and the response records which epoch it began in, which is what a "
         "release compares against instead of the live value"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_interrupted_response_whose_cancel_write_fails_tears_down(
+    make_harness, caplog
+):
+    # CodeRabbit, and the same shape _cancel_after_timeout already handles a
+    # hundred lines below: the interrupted branch sent its response.cancel
+    # OUTSIDE the try, so a transport that refused the write raised straight
+    # past the escalation and the connection that had just failed a write was
+    # never torn down.
+    #
+    # Reaching that branch needs the interrupt to land while the create send
+    # is still in flight, which is what the stalling harness arranges.
+    harness = make_harness(_StallThenRefuseCancelHarness, fail_open=True)
+    ticket = await harness.arbiter.enqueue(source="native")
+    await _settle()
+    assert not ticket.sent.done(), "the worker must be parked in the create send"
+
+    caplog.set_level(logging.WARNING, logger=ARBITER_LOGGER)
+    cancelling = asyncio.create_task(harness.arbiter.cancel_current(timeout=0.2))
+    await _settle()
+    harness.gate.set()
+    # Whether the caller sees an error is not the point here — this path
+    # resolves `completed` as the worker unwinds — so tolerate either.
+    try:
+        await asyncio.wait_for(cancelling, timeout=2)
+    except Exception:  # noqa: BLE001 - the escalation is what is asserted
+        pass
+    await _settle()
+
+    # Assert WHICH escalation, not merely that one happened: other routes
+    # (the cancel timeout, the started-timeout backstop) escalate on this
+    # sequence too, so `aborted` being non-empty says nothing about the branch
+    # under test. An earlier version of this test asserted exactly that and
+    # passed with the fix reverted.
+    assert "interrupted response could not reach a terminal state" in harness.aborted, (
+        "a cancel the transport refused must reach THIS branch's escalation"
+    )
+    # And that it carried the write failure, which is what makes it fail
+    # CLOSED even with the hatch on: nothing the arbiter does to its own state
+    # fixes a socket that will not take a send.
+    assert any(
+        "a transport write just failed" in record.getMessage()
+        for record in caplog.records
+    ), "and report the refused write as the blocker"
+    assert harness.arbiter._connection_available is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_turn_starting_during_the_repetition_step_keeps_its_recovery():
+    # Codex P2. The entry gate covers a turn that started BEFORE the release.
+    # The repetition step is awaited through wait_for, which yields before its
+    # body runs — so a successor can start inside that yield, and the recovery
+    # callback would then apply a dead turn's remedy to the live one: the host
+    # clears focus state, resets the emotion scorer and warns the user.
+    recoveries: list[str] = []
+
+    async def _on_repetition() -> None:
+        recoveries.append("recovered")
+
+    client = _free_client(on_repetition_detected=_on_repetition)
+    client._repetition_threshold = 0.5
+    client._recent_responses = ["一样的话", "一样的话"]
+    _begin_response(client, "resp-1")
+    client._current_response_transcript = "一样的话"
+    client._audio_delta_count = 1
+
+    async def _successor_starts() -> None:
+        # Runs on the first yield, which is the one wait_for takes.
+        client._turn_epoch += 1
+
+    asyncio.get_running_loop().create_task(_successor_starts())
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert recoveries == [], (
+        "the recovery belongs to the turn that repeated itself, not to "
+        "whichever turn is live when the check finally runs"
+    )
+    assert client._last_response_transcript == "一样的话", (
+        "the text itself is still recorded — only the remedy is withheld"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_undisturbed_repetition_still_triggers_its_recovery():
+    # The dual: nothing intervenes, so the recovery fires as it always has.
+    recoveries: list[str] = []
+
+    async def _on_repetition() -> None:
+        recoveries.append("recovered")
+
+    client = _free_client(on_repetition_detected=_on_repetition)
+    client._repetition_threshold = 0.5
+    client._recent_responses = ["一样的话", "一样的话"]
+    _begin_response(client, "resp-1")
+    client._current_response_transcript = "一样的话"
+    client._audio_delta_count = 1
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert recoveries == ["recovered"]

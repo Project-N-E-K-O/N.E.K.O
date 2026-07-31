@@ -911,7 +911,9 @@ class _TransportMixin:
             logger.error(f"Error streaming image: {e}")
             raise e
 
-    async def _check_repetition(self, response: str) -> bool:
+    async def _check_repetition(
+        self, response: str, should_recover: Callable[[], bool] | None = None
+    ) -> bool:
         """
         Check whether the reply is highly repetitive of recent replies.
         Returns True and triggers the callback if 3 consecutive turns are highly repetitive.
@@ -937,6 +939,18 @@ class _TransportMixin:
             self._recent_responses.clear()
 
             # 触发回调
+            if should_recover is not None and not should_recover():
+                # Recording history is about the text this turn produced and
+                # lands nowhere else. The RECOVERY is not: the host clears the
+                # focus state, resets the emotion scorer and warns the user, so
+                # firing it once a new turn has started applies a dead turn's
+                # remedy to a live one. Checked here rather than at the caller
+                # because ``wait_for`` yields before this body runs.
+                logger.info(
+                    "repetition detected on a turn that is no longer current; "
+                    "recording it but skipping the recovery"
+                )
+                return True
             if self.on_repetition_detected:
                 await self.on_repetition_detected()
 
@@ -1073,7 +1087,9 @@ class _TransportMixin:
             )
         return transcript
 
-    async def _record_response_repetition(self, transcript: str) -> None:
+    async def _record_response_repetition(
+        self, transcript: str, should_recover: Callable[[], bool] | None = None
+    ) -> None:
         """Add what this turn said to the repetition history.
 
         Ending a turn has to do this on EVERY path, not just the terminal one.
@@ -1087,7 +1103,7 @@ class _TransportMixin:
         """
 
         if transcript:
-            await self._check_repetition(transcript)
+            await self._check_repetition(transcript, should_recover)
 
     def _take_pending_output_transcript(self) -> tuple[str, bool] | None:
         """Decide what the fallback flush owes the host, and settle the state.
@@ -1338,7 +1354,7 @@ class _TransportMixin:
         # the fallback transcript flush.
         try:
             await asyncio.wait_for(
-                self._record_response_repetition(pending_response),
+                self._record_response_repetition(pending_response, _still_ours),
                 _STUCK_RELEASE_STEP_TIMEOUT,
             )
         except asyncio.CancelledError:
