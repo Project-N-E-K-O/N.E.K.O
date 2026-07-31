@@ -915,6 +915,14 @@ class RealtimeResponseArbiter:
                 observed.terminal is not None
                 and observed.terminal.done()
                 and not observed.terminal.cancelled()
+                # Completed WITH A RESULT. notify_error finishes this same
+                # future with set_exception when the provider reports a
+                # correlated error — during the cancel grace period, that is
+                # the ordinary way a stuck lifecycle ends — and an error is
+                # not an arrival. Treating it as one skipped the recovery
+                # entirely: no teardown, no release, and the lane left owned
+                # until some later timeout noticed.
+                and observed.terminal.exception() is None
             ):
                 # Its terminal actually arrived while this caller's timeout was
                 # firing. ``notify_response_terminal`` clears

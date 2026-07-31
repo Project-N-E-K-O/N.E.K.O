@@ -2165,3 +2165,27 @@ async def test_an_undisturbed_release_still_flushes_its_trailing_transcript():
     await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
 
     assert transcripts == [("旧轮没送出的半句", True)]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reconnecting_forgets_which_responses_were_already_billed():
+    # Codex P2, self-inflicted by the previous commit. Response ids are scoped
+    # to a connection, and connect() reuses the same client object across
+    # sessions — so a provider that restarts its numbering after a reconnect
+    # would have the new session's first turns suppressed as already-billed
+    # duplicates. This cache belongs with the other per-connection state
+    # connect() clears before it reaches the provider branch.
+    client = _free_client()
+    client._usage_recorded_ids = ["resp-1", "resp-2"]
+
+    try:
+        await client.connect(instructions="", native_audio=False)
+    except Exception:
+        # There is no provider to reach; the reset happens before any of that.
+        pass
+
+    assert client._usage_recorded_ids == [], (
+        "usage deduplication is scoped to one connection, like the tool-call "
+        "flood window it sits beside"
+    )

@@ -238,3 +238,62 @@ async def test_two_concurrent_cancellers_cost_only_the_stuck_turn(harness):
     assert len(harness.aborted) == 1, (
         f"a second canceller must not escalate again: {harness.aborted}"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_that_failed_is_not_mistaken_for_one_that_arrived(harness):
+    # The guard above says "its terminal actually arrived". But notify_error
+    # finishes that SAME future with set_exception when the provider reports a
+    # correlated error — during the cancel grace period that is the ordinary
+    # way a stuck lifecycle ends — and an error is not an arrival. Treating it
+    # as one skipped the recovery outright: no teardown, no release, and the
+    # lane left owned until some later timeout noticed.
+    ticket = await harness.arbiter.enqueue(source="turn-a")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-a"}}
+    )
+    observed = harness.arbiter._response_owner
+    assert observed is not None
+
+    harness.arbiter.notify_error(None, "response_already_active")
+    assert observed.terminal is not None and observed.terminal.done()
+    assert observed.terminal.exception() is not None, (
+        "notify_error finishes the terminal future with an exception"
+    )
+
+    await harness.arbiter._escalate("terminal never arrived", observed=observed)
+
+    assert harness.aborted == ["terminal never arrived"], (
+        "a lifecycle whose terminal FAILED is stuck, not finished"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_terminal_that_arrived_with_a_result_still_suppresses_escalation(
+    harness,
+):
+    # The dual, and the case the guard exists for: notify_response_terminal
+    # completes the future with a RESULT, and escalating then would end an
+    # already-completed turn a second time.
+    ticket = await harness.arbiter.enqueue(source="turn-a")
+    await asyncio.wait_for(ticket.sent, timeout=1)
+    harness.arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-a"}}
+    )
+    observed = harness.arbiter._current
+    assert observed is not None
+
+    harness.arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-a"}}
+    )
+    assert observed.terminal is not None and observed.terminal.done()
+    assert observed.terminal.exception() is None
+
+    await harness.arbiter._escalate("racing escalation", observed=observed)
+
+    assert harness.aborted == []
+    assert harness.arbiter._connection_available is True
+    await asyncio.wait_for(ticket.done, timeout=1)

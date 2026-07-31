@@ -108,6 +108,12 @@ class _TransportMixin:
         # provider branch so it covers both Gemini and the WS providers.
         self._recent_tool_call_times = []
 
+        # Same reason, same lifetime: response ids are scoped to a connection,
+        # so a provider that restarts its numbering (or simply reuses an id)
+        # after a reconnect would otherwise have the new session's first turns
+        # suppressed as already-billed duplicates.
+        self._usage_recorded_ids = []
+
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
         if self._audio_processor is None:
