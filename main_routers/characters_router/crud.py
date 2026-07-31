@@ -62,7 +62,7 @@ from utils.config_manager import (
     set_reserved,
 )
 from utils.voice_config import read_legacy_voice_id
-from utils.file_utils import atomic_write_json_async
+from utils.recent_file import write_recent_payload
 from utils.language_utils import normalize_language_code
 from utils.new_character_greeting_state import (
     mark_pending as mark_new_character_greeting_pending,
@@ -148,7 +148,9 @@ async def _clear_character_recent_history(config_manager, character_name: str) -
         target=f"memory/{character_name}/recent.json",
     )
     await asyncio.to_thread(recent_path.parent.mkdir, parents=True, exist_ok=True)
-    await atomic_write_json_async(recent_path, [], ensure_ascii=False, indent=2)
+    # 走 utils.recent_file 的 per-path 锁：merged 单进程下 memory_server 的写者
+    # 就在同一个进程里，裸 atomic_write_json_async 会绕过互斥。
+    await asyncio.to_thread(write_recent_payload, recent_path, [])
 
 
 def _normalize_prompt_synced_field_value(value):
@@ -603,7 +605,11 @@ async def rename_catgirl(old_name: str, request: Request):
             _snapshot_existing_paths, memory_targets, Path(temp_dir)
         )
         try:
-            rename_character_memory_storage(_config_manager, old_name, new_name)
+            # to_thread：改名路径里的 recent.json 读写要拿文件锁，不能在事件
+            # 循环线程上取（对偶见 main_routers/memory_router.py 的同一调用）。
+            await asyncio.to_thread(
+                rename_character_memory_storage, _config_manager, old_name, new_name,
+            )
 
             # 重命名角色真源
             characters['猫娘'][new_name] = characters['猫娘'].pop(old_name)

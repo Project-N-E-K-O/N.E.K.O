@@ -188,15 +188,36 @@ def _compute_review_capacity(snapshot: list, current: list) -> tuple[int, int | 
 
 # Setup logger
 from utils.file_utils import (
-    atomic_write_json,
     atomic_write_json_async,
     read_json_async,
     robust_json_loads,
 )
+from utils import recent_file
 from utils.logger_config import setup_logging
 logger, log_config = setup_logging(service_name="Memory", log_level=logging.INFO)
 
+# ── recent.json 读态三分 ──────────────────────────────────────────────
+# 关键区分：「读不出来」不是「盘上是空的」。重构前两者都被折叠成 []，于是一次
+# 瞬时读失败就会让下一次落盘拿这批新消息覆盖掉整段历史。
+RECENT_READ_OK = 'ok'
+RECENT_READ_MISSING = 'missing'
+RECENT_READ_UNREADABLE = 'unreadable'
+
+# 磁盘长期不可写时，未落盘批次的条数上界。超了丢最旧的：降级形态是「内存里
+# 留住最近 N 条」，仍严格好于重构前的「立刻把这批丢掉」。
+RECENT_PENDING_MAX_ITEMS = 64
+
+
 class CompressedRecentHistoryManager:
+    # 类级默认：测试和部分构造路径用 object.__new__ 绕过 __init__，只在 __init__
+    # 里赋值会让那些实例一访问就 AttributeError。
+    #
+    # 语义 = 本实例 append 过、但确认**没有**落到盘上的消息（按顺序）。
+    # 为什么是实例级而锁是模块级：reload 后新实例的 user_histories 是空的，它要是
+    # 继承一个进程级脏账本，就会拒绝从磁盘加载 → 历史读成空 → 下次落盘把空写回
+    # 磁盘，比原 bug 更糟。一句话：锁跟着文件走，pending 跟着内存走。
+    _pending: dict[str, list] | None = None
+
     def __init__(
         self,
         max_history_length: int = RECENT_HISTORY_MAX_ITEMS,
@@ -209,12 +230,37 @@ class CompressedRecentHistoryManager:
         self.compress_threshold = compress_threshold      # >此值才触发压缩
         self.log_file_path = recent_log
         self.name_mapping = name_mapping
+        self._pending = {}
+        # 这里**不**预加载。两个构造点（memory_server.runtime 首启 + reload）都是
+        # async 函数、都跑在事件循环线程上：既不该在那儿等别的写者的文件临界区，
+        # 也不该在那儿对 N 个角色各做一次多 MB 的阻塞读。
+        # 副产品是「视图未知」（name 不在 dict 里）和「已知为空」（值是 []）从此
+        # 是两个可区分的状态——落盘失败的合并逻辑依赖这个区分。
         self.user_histories = {}
-        for ln in self.log_file_path:
-            if os.path.exists(self.log_file_path[ln]):
-                self.user_histories[ln] = self._load_history_from_file(self.log_file_path[ln], ln)
-            else:
-                self.user_histories[ln] = []
+
+    # ── 未落盘批次账本 ────────────────────────────────────────────────
+    def _pending_batches(self, lanlan_name: str) -> list:
+        """Return the messages this instance appended but could not persist."""
+        pending = self._pending
+        if not pending:
+            return []
+        return pending.get(lanlan_name, [])
+
+    def _set_pending_batches(self, lanlan_name: str, messages: list) -> None:
+        """Record (or clear) the unpersisted messages of one character."""
+        if self._pending is None:
+            self._pending = {}
+        if not messages:
+            self._pending.pop(lanlan_name, None)
+            return
+        cap = max(2 * self.compress_threshold, RECENT_PENDING_MAX_ITEMS)
+        if len(messages) > cap:
+            logger.warning(
+                f"[RecentHistory] {lanlan_name} 未落盘消息已达上界 {cap} 条，"
+                f"丢弃最旧 {len(messages) - cap} 条"
+            )
+            messages = messages[-cap:]
+        self._pending[lanlan_name] = messages
 
     def _get_default_path(self, lanlan_name: str) -> str:
         """Single place for the default path, avoiding duplicated code."""
@@ -228,84 +274,78 @@ class CompressedRecentHistoryManager:
             logger.info(f"[RecentHistory] 角色 '{lanlan_name}' 不在配置中，使用默认路径")
         return self.log_file_path[lanlan_name]
 
-    def _reset_history_file(self, file_path, lanlan_name, reason):
-        """Reset the recent file to a valid empty JSON array when it is corrupted or empty."""
+    def _reset_history_file_unlocked(self, file_path, lanlan_name, reason):
+        """Reset a corrupt/empty recent file to ``[]``.
+
+        The caller MUST already hold ``recent_file.recent_file_lock(file_path)``:
+        this is reached from inside the locked read path and ``threading.Lock``
+        is not reentrant. Naming follows ``event_log._write_line_unlocked``.
+        """
         try:
             assert_cloudsave_writable(
                 self._config_manager,
                 operation="reset",
                 target=f"memory/{lanlan_name}/recent.json",
             )
-            os.makedirs(os.path.dirname(file_path), exist_ok=True)
-            atomic_write_json(file_path, [], indent=2, ensure_ascii=False)
+            recent_file.write_recent_payload_unlocked(file_path, [])
             logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
         except MaintenanceModeError:
             raise
         except Exception as reset_error:
             logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
 
-    async def _areset_history_file(self, file_path, lanlan_name, reason):
-        try:
-            await asyncio.to_thread(
-                assert_cloudsave_writable,
-                self._config_manager,
-                operation="reset",
-                target=f"memory/{lanlan_name}/recent.json",
-            )
-            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
-            await atomic_write_json_async(file_path, [], indent=2, ensure_ascii=False)
-            logger.warning(f"[RecentHistory] {lanlan_name} 的历史记录文件无效（{reason}），已重置为空列表: {file_path}")
-        except MaintenanceModeError:
-            raise
-        except Exception as reset_error:
-            logger.error(f"[RecentHistory] 重置 {lanlan_name} 的历史记录文件失败: {reset_error}", exc_info=True)
+    def _load_history_unlocked(self, file_path, lanlan_name) -> tuple[str, list]:
+        """Read and parse the recent file. The caller MUST already hold the file lock.
 
-    def _load_history_from_file(self, file_path, lanlan_name):
-        """Safely read the recent file, auto-resetting on an empty file or invalid JSON."""
+        Returns ``(status, history)``:
+          ``(RECENT_READ_OK, [...])``       parsed successfully;
+          ``(RECENT_READ_MISSING, [])``     the file is absent, or it was empty /
+              corrupt and has been reset — empty is the truth here;
+          ``(RECENT_READ_UNREADABLE, [])``  the bytes could not be read or
+              decoded. This is NOT an empty history; callers must not persist
+              anything on top of it.
+        """
+        if not os.path.exists(file_path):
+            return (RECENT_READ_MISSING, [])
         try:
-            with open(file_path, encoding='utf-8') as f:
-                raw_content = f.read()
+            raw_content = recent_file.read_recent_text_unlocked(file_path)
 
             if not raw_content.strip():
-                self._reset_history_file(file_path, lanlan_name, "文件为空")
-                return []
+                self._reset_history_file_unlocked(file_path, lanlan_name, "文件为空")
+                return (RECENT_READ_MISSING, [])
 
             file_content = json.loads(raw_content)
             if not isinstance(file_content, list):
-                self._reset_history_file(file_path, lanlan_name, "JSON 根节点不是列表")
-                return []
+                self._reset_history_file_unlocked(file_path, lanlan_name, "JSON 根节点不是列表")
+                return (RECENT_READ_MISSING, [])
 
-            return messages_from_dict(file_content)
+            return (RECENT_READ_OK, messages_from_dict(file_content))
         except json.JSONDecodeError as e:
-            self._reset_history_file(file_path, lanlan_name, f"JSON 解析失败: {e}")
-            return []
+            # 与重构前一致：这个 handler 里 reset 抛出的 MaintenanceModeError 会
+            # 直接冒泡（下面的 except Exception 是兄弟分支，接不到）。
+            self._reset_history_file_unlocked(file_path, lanlan_name, f"JSON 解析失败: {e}")
+            return (RECENT_READ_MISSING, [])
         except Exception as e:
-            logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
-            return []
+            logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，本轮视为读不到（不覆盖）")
+            return (RECENT_READ_UNREADABLE, [])
 
-    async def _aload_history_from_file(self, file_path, lanlan_name):
-        try:
-            raw_content = await asyncio.to_thread(self._read_text, file_path)
-            if not raw_content.strip():
-                await self._areset_history_file(file_path, lanlan_name, "文件为空")
-                return []
-            file_content = await asyncio.to_thread(json.loads, raw_content)
-            if not isinstance(file_content, list):
-                await self._areset_history_file(file_path, lanlan_name, "JSON 根节点不是列表")
-                return []
-            return await asyncio.to_thread(messages_from_dict, file_content)
-        except json.JSONDecodeError as e:
-            await self._areset_history_file(file_path, lanlan_name, f"JSON 解析失败: {e}")
-            return []
-        except Exception as e:
-            logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，使用空列表")
-            return []
+    def _read_history_locked(self, file_path, lanlan_name) -> list:
+        """Read one character's history under the file lock. Run me in a worker thread."""
+        with recent_file.recent_file_lock(file_path):
+            status, history = self._load_history_unlocked(file_path, lanlan_name)
+        if status == RECENT_READ_UNREADABLE:
+            # 读失败绝不能被当成「历史是空的」——一旦写进 user_histories，下一次
+            # 落盘就会拿这批新消息覆盖整段读不出来的历史。保持既有视图不动。
+            return self.user_histories.get(lanlan_name, [])
+        self.user_histories[lanlan_name] = history
+        return history
 
-    @staticmethod
-    def _read_text(file_path: str) -> str:
-        with open(file_path, encoding='utf-8') as f:
-            return f.read()
-    
+    def _persist_history_locked(self, file_path, history) -> None:
+        """Serialize + atomically replace under the file lock. Run me in a worker thread."""
+        with recent_file.recent_file_lock(file_path):
+            recent_file.write_recent_payload_unlocked(file_path, messages_to_dict(history))
+
+
     def _get_llm(self):
         """Fetch the LLM instance dynamically to support config hot-reload.
 
@@ -349,6 +389,86 @@ class CompressedRecentHistoryManager:
             provider_type=api_config.get('provider_type'),
         )
 
+    def _append_and_persist_locked(self, file_path, lanlan_name, new_messages) -> tuple[list, bool]:
+        """Read → merge unpersisted batches → append → persist, as one critical section.
+
+        Returns ``(history, persisted)``. ``persisted`` is False when the batch
+        only made it into memory; those messages are recorded in ``_pending`` so
+        that the next call re-attaches them instead of letting the on-disk copy
+        silently win.
+        """
+        with recent_file.recent_file_lock(file_path):
+            status, history = self._load_history_unlocked(file_path, lanlan_name)
+            pending = self._pending_batches(lanlan_name)
+            if status == RECENT_READ_UNREADABLE:
+                # 读不到盘上内容 ≠ 盘上是空的。这里一写就是拿这批新消息覆盖掉
+                # 整段读不出来的历史（重构前的 `except Exception: return []`
+                # 正是这么丢的）。所以本轮完全不写盘。
+                self._set_pending_batches(lanlan_name, list(pending) + list(new_messages))
+                logger.warning(
+                    f"[RecentHistory] {lanlan_name} 历史文件读取失败，本轮不落盘，"
+                    f"{len(new_messages)} 条新消息暂存内存等下次补写"
+                )
+                return (self.user_histories.get(lanlan_name, []), False)
+
+            merged = list(history) + list(pending) + list(new_messages)
+            try:
+                recent_file.write_recent_payload_unlocked(
+                    file_path, messages_to_dict(merged),
+                )
+            except Exception as e:
+                # 落盘失败 ⟹ 目标文件未被替换（atomic_write_text 里
+                # _replace_with_busy_retry 是最后一条语句），所以把整批挂回
+                # pending 不会造成二次落地，不需要任何去重启发式。
+                self.user_histories[lanlan_name] = merged
+                self._set_pending_batches(lanlan_name, list(pending) + list(new_messages))
+                logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
+                return (merged, False)
+
+            self._set_pending_batches(lanlan_name, [])
+            self.user_histories[lanlan_name] = merged
+            return (merged, True)
+
+    def _splice_compressed_locked(self, file_path, lanlan_name, snapshot, memo) -> bool:
+        """Replace the compressed head with ``memo`` and persist, as one critical section.
+
+        Re-reads the file inside the lock. The compression LLM ran for seconds to
+        minutes; before this refactor the splice was computed from the in-memory
+        view taken *before* the LLM call, so every batch persisted during that
+        window was overwritten wholesale.
+        """
+        with recent_file.recent_file_lock(file_path):
+            status, current = self._load_history_unlocked(file_path, lanlan_name)
+            if status == RECENT_READ_UNREADABLE:
+                logger.warning(f"[RecentHistory] {lanlan_name} 压缩结果合并时读盘失败，放弃本轮合并")
+                return False
+            if not current:
+                # 被 /new_dialog 清空 / 被用户在 UI 上清掉：把 memo 塞回去等于
+                # 复活已删内容。与 merge_backup_memo 的 'moot' 同一判断。
+                logger.info(f"[RecentHistory] {lanlan_name} 压缩期间历史已被清空，丢弃本轮摘要")
+                return False
+            capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+            if (
+                cutoff_idx is not None
+                and capacity == len(snapshot)
+                and (cutoff_idx - capacity + 1) == 0
+            ):
+                new_history = [memo] + current[cutoff_idx + 1:]
+            else:
+                # 指纹失配（磁盘被带外改过 / 头部已变）→ 退回重构前那条按条数的
+                # 切片。它现在算在**锁内刚读到的**磁盘内容上，而不是几十秒前的
+                # 内存视图，所以严格好于重构前。
+                new_history = [memo] + current[-self.max_history_length + 1:]
+            try:
+                recent_file.write_recent_payload_unlocked(
+                    file_path, messages_to_dict(new_history),
+                )
+            except Exception as e:
+                logger.error(f"[RecentHistory] {lanlan_name} 压缩结果落盘失败: {e}", exc_info=True)
+                return False
+            self.user_histories[lanlan_name] = new_history
+            return True
+
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
         try:
             _, _, _, _, _, _, _, _, recent_log = await self._config_manager.aget_character_data()
@@ -356,6 +476,7 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
+        # 云存档栅栏留在 try 外：MaintenanceModeError 照旧直接冒泡给调用方。
         await asyncio.to_thread(
             assert_cloudsave_writable,
             self._config_manager,
@@ -363,35 +484,30 @@ class CompressedRecentHistoryManager:
             target=f"memory/{lanlan_name}/recent.json",
         )
 
-        self._ensure_path_for_character(lanlan_name)
-
-        if lanlan_name not in self.user_histories:
-            self.user_histories[lanlan_name] = []
-
-        file_path = self.log_file_path[lanlan_name]
-        if await asyncio.to_thread(os.path.exists, file_path):
-            self.user_histories[lanlan_name] = await self._aload_history_from_file(
-                file_path, lanlan_name,
-            )
+        file_path = self._ensure_path_for_character(lanlan_name)
 
         try:
-            self.user_histories[lanlan_name].extend(new_messages)
-            logger.debug(f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，当前共 {len(self.user_histories[lanlan_name])} 条")
-
-            # 先把 extend 后的未压缩状态落盘，再进入耗时的 compress_history。
-            # compress_history 会走 LLM，耗时数秒到数十秒，期间进程崩溃或 task 被 cancel
-            # （CancelledError 穿透下面的 except Exception）会导致本批 new_messages 丢失。
-            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
-            await atomic_write_json_async(
-                file_path,
-                await asyncio.to_thread(messages_to_dict, self.user_histories[lanlan_name]),
-                indent=2,
-                ensure_ascii=False,
+            # CS-1：读盘 + 合并未落盘批次 + append + 落盘，一个临界区。
+            # 先把未压缩状态落盘再进耗时的 compress_history：后者走 LLM，数秒到
+            # 数十秒，期间进程崩溃或 task 被 cancel 会导致本批 new_messages 丢失。
+            history, persisted = await asyncio.to_thread(
+                self._append_and_persist_locked, file_path, lanlan_name, list(new_messages),
             )
+            logger.debug(
+                f"[RecentHistory] {lanlan_name} 添加了 {len(new_messages)} 条新消息，"
+                f"当前共 {len(history)} 条（已落盘={persisted}）"
+            )
+            if not persisted:
+                # 与重构前一致：第一次落盘失败就不再往下走压缩（原实现靠异常跳过
+                # 整段）。这批消息已记进 _pending，下一次 update_history 会连同
+                # 磁盘内容一起补写。
+                return
 
-            if compress and len(self.user_histories[lanlan_name]) > self.compress_threshold:
-                to_compress = self.user_histories[lanlan_name][:-self.max_history_length+1]
+            if compress and len(history) > self.compress_threshold:
+                to_compress = history[:-self.max_history_length+1]
                 snapshot = list(to_compress)
+                # 压缩 LLM 在**锁外**跑。它耗时数秒到数十秒，关进临界区会把
+                # /cache 一起挡住。
                 compressed_result = await self.compress_history(to_compress, lanlan_name, detailed)
                 if compressed_result is None:
                     logger.warning(
@@ -403,26 +519,21 @@ class CompressedRecentHistoryManager:
                     # moot → 那批对话没被摘要就永久丢了。改由后台 best-effort 也压不成
                     # 后再裁剪（memory_server._run_backup_compress / dead-letter 分支），
                     # 让暂时性失败有机会被后台压成摘要保留。
+                    #
+                    # ⚠️ 这个回调**必须**留在所有临界区之外：dead-letter 分支会同步
+                    # 调 enforce_hard_cap，那条路径要拿同一把文件锁，而 threading.Lock
+                    # 不可重入 —— 挪进任何一个临界区就是 worker 线程上的无超时死锁。
                     await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, False, detailed)
                 else:
-                    compressed = [compressed_result[0]]
-                    self.user_histories[lanlan_name] = compressed + self.user_histories[lanlan_name][-self.max_history_length+1:]
+                    # CS-2：读盘 + 定位 + splice + 落盘，一个临界区。
+                    await asyncio.to_thread(
+                        self._splice_compressed_locked,
+                        file_path, lanlan_name, snapshot, compressed_result[0],
+                    )
                     # 主路径成功 → 通知上层 cancel 在跑的后台压缩（兜底不再需要）。
                     await self._notify_compress_done(on_compress_done, lanlan_name, snapshot, True, detailed)
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)
-
-        try:
-            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
-            await atomic_write_json_async(
-                file_path,
-                await asyncio.to_thread(messages_to_dict, self.user_histories.get(lanlan_name, [])),
-                indent=2,
-                ensure_ascii=False,
-            )
-            logger.debug(f"[RecentHistory] {lanlan_name} 历史记录已保存到文件: {file_path}")
-        except Exception as e:
-            logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
 
 
     # ── Past block 更新 meta（防止"几天前的事还在 summary 里被反复带出来"
@@ -825,11 +936,10 @@ class CompressedRecentHistoryManager:
                     target=f"memory/{lanlan_name}/recent.json",
                 )
                 file_path = self._ensure_path_for_character(lanlan_name)
-                await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
-                await atomic_write_json_async(
-                    file_path,
-                    await asyncio.to_thread(messages_to_dict, new_history),
-                    indent=2, ensure_ascii=False,
+                # 只有落盘进临界区。上面的 _trim 要把整段历史 tokenize 两遍
+                # （多 MB CJK 是百毫秒~秒级），拖进一把同时挡着 /cache 的锁不值。
+                await asyncio.to_thread(
+                    self._persist_history_locked, file_path, new_history,
                 )
             except MaintenanceModeError:
                 raise
@@ -845,8 +955,8 @@ class CompressedRecentHistoryManager:
         清空 / 头部已变）→ 丢弃返回 'moot'。
 
         读 current 到写 new_history 之间全是同步代码（_compute_review_capacity
-        同步），asyncio 单线程下原子；落盘在写之后。调用方（memory_server）应在
-        _get_settle_lock 内调用，串行化对该角色的写。
+        同步），asyncio 单线程下原子；落盘走文件锁临界区。调用方（memory_server）
+        应在 _get_settle_lock 内调用，串行化对该角色的写。
         """
         current = self.user_histories.get(lanlan_name, [])
         if not current or not snapshot:
@@ -863,11 +973,8 @@ class CompressedRecentHistoryManager:
                 target=f"memory/{lanlan_name}/recent.json",
             )
             file_path = self._ensure_path_for_character(lanlan_name)
-            await asyncio.to_thread(os.makedirs, os.path.dirname(file_path), exist_ok=True)
-            await atomic_write_json_async(
-                file_path,
-                await asyncio.to_thread(messages_to_dict, new_history),
-                indent=2, ensure_ascii=False,
+            await asyncio.to_thread(
+                self._persist_history_locked, file_path, new_history,
             )
         except MaintenanceModeError:
             raise
@@ -955,20 +1062,10 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        self._ensure_path_for_character(lanlan_name)
-
-        # 确保角色在 user_histories 中
-        if lanlan_name not in self.user_histories:
-            self.user_histories[lanlan_name] = []
-
-        # 如果文件存在，加载历史记录
-        if lanlan_name in self.log_file_path and os.path.exists(self.log_file_path[lanlan_name]):
-            self.user_histories[lanlan_name] = self._load_history_from_file(
-                self.log_file_path[lanlan_name],
-                lanlan_name
-            )
-
-        return self.user_histories.get(lanlan_name, [])
+        file_path = self._ensure_path_for_character(lanlan_name)
+        # 读者也必须进锁：Windows 上一个裸 open() 就足以让并发的 os.replace 抛
+        # PermissionError，只锁写者会漏掉一半以上的失败。
+        return self._read_history_locked(file_path, lanlan_name)
 
     async def aget_recent_history(self, lanlan_name):
         try:
@@ -977,18 +1074,82 @@ class CompressedRecentHistoryManager:
         except Exception as e:
             logger.error(f"获取角色配置失败: {e}")
 
-        self._ensure_path_for_character(lanlan_name)
+        file_path = self._ensure_path_for_character(lanlan_name)
+        return await asyncio.to_thread(self._read_history_locked, file_path, lanlan_name)
 
-        if lanlan_name not in self.user_histories:
-            self.user_histories[lanlan_name] = []
+    def _commit_review_locked(
+        self, file_path, lanlan_name, snapshot, corrected_messages,
+    ) -> tuple[str, list[dict] | None, str]:
+        """Locate the review window, splice the corrected messages in and persist.
 
-        file_path = self.log_file_path[lanlan_name]
-        if await asyncio.to_thread(os.path.exists, file_path):
-            self.user_histories[lanlan_name] = await self._aload_history_from_file(
-                file_path, lanlan_name,
+        One critical section, run in a worker thread: the current history is
+        re-read inside the lock so that batches persisted while the review LLM
+        was running are not overwritten.
+
+        Returns ``(status, new_fingerprint, detail)`` where status is
+        ``'patched'`` / ``'white'`` / ``'failed'`` and detail is a log fragment.
+        Persist failures are NOT swallowed — they propagate so that the caller's
+        ``except Exception`` maps them to ``('failed', None)`` exactly as before.
+        """
+        with recent_file.recent_file_lock(file_path):
+            read_status, current = self._load_history_unlocked(file_path, lanlan_name)
+            if read_status == RECENT_READ_UNREADABLE:
+                # 读不到就定位不了 cutoff。这里绝不能报 'white'：_mutate_review_white
+                # 会清掉 last_reviewed_cutoff_tail 和 review_fail_attempts、还故意
+                # 不刷 last_review_ts → 闸门全放行 → 每次 /process 重跑一整轮
+                # review LLM，永不熔断。只读盘场景下那是整夜空烧。
+                return ('failed', None, '提交时读盘失败，无法定位 cutoff')
+
+            capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
+            if cutoff_idx is None:
+                # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
+                return ('white', None, 'review 完成但 cutoff 失配')
+
+            take_count = min(capacity, len(corrected_messages))
+            if take_count == 0:
+                # corrected 为空（罕见：LLM 返回空 corrected_dialogue），等价于
+                # 整段删除 review 范围。视为白 review 让下轮重建锚点；不去
+                # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
+                return ('white', None, 'review 输出为空')
+
+            # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
+            # 为 corrected 末尾 take_count 条；cutoff_idx 之后新增的保留。
+            # take_count < capacity 时，前 (capacity - take_count) 个 slot
+            # 直接消失（review 决定删条，结果就比原来短）。
+            new_history = (
+                current[:cutoff_idx - capacity + 1]
+                + corrected_messages[-take_count:]
+                + current[cutoff_idx + 1:]
             )
 
-        return self.user_histories.get(lanlan_name, [])
+            # 栅栏留在白 review 判定之后：重构前它也在那两个 early return 之后，
+            # 维护态下的白 review 照旧不会被抬成 'failed'。
+            assert_cloudsave_writable(
+                self._config_manager,
+                operation="save",
+                target=f"memory/{lanlan_name}/recent.json",
+            )
+            recent_file.write_recent_payload_unlocked(
+                file_path, messages_to_dict(new_history),
+            )
+            self.user_histories[lanlan_name] = new_history
+
+            # ── Issue #3 修复：基于 patched 后的 new_history 算新 fingerprint ──
+            # patched 区在 new_history 里的范围是 [patched_start, patched_end]：
+            #   patched_start = cutoff_idx - capacity + 1
+            #   patched_end   = patched_start + take_count - 1
+            # 新 fingerprint = K 条以 patched_end 结尾的消息。如果 patched_end
+            # 之前的消息不足 K-1 条，取从 0 开始所有可用的。
+            patched_end = (cutoff_idx - capacity + 1) + take_count - 1
+            fp_start = max(0, patched_end - REVIEW_FINGERPRINT_K + 1)
+            fp_messages = new_history[fp_start:patched_end + 1]
+            new_fingerprint = build_review_fingerprint(fp_messages, k=REVIEW_FINGERPRINT_K)
+            detail = (
+                f"cutoff_idx={cutoff_idx}, capacity={capacity}, "
+                f"corrected={len(corrected_messages)}, take={take_count}, "
+                f"history {len(current)}→{len(new_history)}"
+            )
+            return ('patched', new_fingerprint, detail)
 
     async def review_history(self, lanlan_name, snapshot=None, cancel_event=None):
         """
@@ -1195,63 +1356,22 @@ class CompressedRecentHistoryManager:
                         corrected_messages = [head] + others
 
                 # ── Phase C 关键：基于 snapshot 算 capacity 做尾部对齐替换 ──
-                current = await self.aget_recent_history(lanlan_name)
-                capacity, cutoff_idx = _compute_review_capacity(snapshot, current)
-
-                if cutoff_idx is None:
-                    # 白 review：cutoff 在当前 history 里失配（被压缩 / 被清空）
-                    print(f"⚠️ {lanlan_name} review 完成但 cutoff 失配（白 review，丢弃）")
+                # 读 current → 定位 → splice → 落盘必须是**一个**临界区：重构前
+                # 这四步中间隔着两次 await，review LLM 跑完到落盘之间涌进来的
+                # /cache 批次会被整体覆盖。
+                file_path = self._ensure_path_for_character(lanlan_name)
+                commit_status, new_fingerprint, detail = await asyncio.to_thread(
+                    self._commit_review_locked,
+                    file_path, lanlan_name, snapshot, corrected_messages,
+                )
+                if commit_status == 'white':
+                    print(f"⚠️ {lanlan_name} {detail}（白 review，丢弃）")
                     return ('white', None)
+                if commit_status != 'patched':
+                    print(f"❌ {lanlan_name} review 提交失败：{detail}")
+                    return ('failed', None)
 
-                take_count = min(capacity, len(corrected_messages))
-                if take_count == 0:
-                    # corrected 为空（罕见：LLM 返回空 corrected_dialogue），等价于
-                    # 整段删除 review 范围。视为白 review 让下轮重建锚点；不去
-                    # 写盘也不更新 fingerprint（避免 anchor 漂移到非 review 区）。
-                    print(f"⚠️ {lanlan_name} review 输出为空，按白 review 处理")
-                    return ('white', None)
-
-                # 替换 [cutoff_idx - capacity + 1, cutoff_idx] 这 capacity 个 slot
-                # 为 corrected 末尾 take_count 条；cutoff_idx 之后新增的保留。
-                # take_count < capacity 时，前 (capacity - take_count) 个 slot
-                # 直接消失（review 决定删条，结果就比原来短）。
-                new_history = (
-                    current[:cutoff_idx - capacity + 1]
-                    + corrected_messages[-take_count:]
-                    + current[cutoff_idx + 1:]
-                )
-
-                # 更新 + 落盘
-                self.user_histories[lanlan_name] = new_history
-                await asyncio.to_thread(
-                    assert_cloudsave_writable,
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{lanlan_name}/recent.json",
-                )
-                await atomic_write_json_async(
-                    self.log_file_path[lanlan_name],
-                    await asyncio.to_thread(messages_to_dict, new_history),
-                    indent=2,
-                    ensure_ascii=False,
-                )
-
-                # ── Issue #3 修复：基于 patched 后的 new_history 算新 fingerprint ──
-                # patched 区在 new_history 里的范围是 [patched_start, patched_end]：
-                #   patched_start = cutoff_idx - capacity + 1
-                #   patched_end   = patched_start + take_count - 1
-                # 新 fingerprint = K 条以 patched_end 结尾的消息。如果 patched_end
-                # 之前的消息不足 K-1 条，取从 0 开始所有可用的。
-                patched_end = (cutoff_idx - capacity + 1) + take_count - 1
-                fp_start = max(0, patched_end - REVIEW_FINGERPRINT_K + 1)
-                fp_messages = new_history[fp_start:patched_end + 1]
-                new_fingerprint = build_review_fingerprint(fp_messages, k=REVIEW_FINGERPRINT_K)
-
-                print(
-                    f"✅ {lanlan_name} 的记忆已修正：cutoff_idx={cutoff_idx}, "
-                    f"capacity={capacity}, corrected={len(corrected_messages)}, "
-                    f"take={take_count}, history {len(current)}→{len(new_history)}"
-                )
+                print(f"✅ {lanlan_name} 的记忆已修正：{detail}")
                 return ('patched', new_fingerprint)
 
             except openai_retry_error_types() as e:

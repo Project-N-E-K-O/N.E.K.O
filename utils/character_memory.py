@@ -19,7 +19,11 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from utils.file_utils import atomic_write_json
+from utils.recent_file import (
+    read_recent_text_unlocked,
+    recent_file_lock,
+    write_recent_payload_unlocked,
+)
 
 
 LEGACY_CHARACTER_MEMORY_FILE_MAP = {
@@ -200,26 +204,31 @@ def _rewrite_recent_message_character_name(item: dict[str, Any], old_name: str, 
 
 
 def rewrite_recent_file_character_name(recent_path: Path, old_name: str, new_name: str) -> bool:
+    """Rewrite the old character name inside a recent file. Blocking — worker thread only.
+
+    Read and write live in one critical section so a concurrent memory_server
+    writer cannot land between them and lose its own append.
+    """
     if old_name == new_name or not recent_path.is_file():
         return False
 
-    try:
-        with open(recent_path, "r", encoding="utf-8") as file_obj:
-            payload = json.load(file_obj)
-    except Exception:
-        return False
+    with recent_file_lock(recent_path):
+        try:
+            payload = json.loads(read_recent_text_unlocked(recent_path))
+        except Exception:
+            return False
 
-    if not isinstance(payload, list):
-        return False
+        if not isinstance(payload, list):
+            return False
 
-    changed = False
-    for item in payload:
-        if not isinstance(item, dict):
-            continue
-        changed = _rewrite_recent_message_character_name(item, old_name, new_name) or changed
+        changed = False
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            changed = _rewrite_recent_message_character_name(item, old_name, new_name) or changed
 
-    if changed:
-        atomic_write_json(recent_path, payload, ensure_ascii=False, indent=2)
+        if changed:
+            write_recent_payload_unlocked(recent_path, payload)
 
     return changed
 

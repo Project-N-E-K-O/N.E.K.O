@@ -524,6 +524,13 @@ async def _on_compress_done(lanlan_name: str, snapshot: list, ok: bool, detailed
             # dead-letter：后台已救不回 → 此时才裁剪兜底（实在不行才丢）。不 acquire
             # settle lock：本回调可能已在 /renew·/settle 的锁内被调（重入会死锁）；
             # enforce_hard_cap 是 best-effort 写。
+            #
+            # recent.json 的互斥不靠这里：它由 utils.recent_file 的 per-path
+            # threading.Lock 保证，enforce_hard_cap 的落盘走那把锁。本回调是从
+            # update_history 的 async 体里、CS-1 已返回而 CS-2 未进入的间隙被调的，
+            # 那一刻文件锁必定未被本调用链持有，所以这里是首次获取。
+            # ⚠️ 谁把 _notify_compress_done 挪进任何一个文件临界区，这行就是 worker
+            # 线程上的无超时永久死锁（threading.Lock 不可重入）。
             await runtime.recent_history_manager.enforce_hard_cap(lanlan_name)
             return
     task = runtime._spawn_background_task(_run_backup_compress(lanlan_name, list(snapshot), detailed))

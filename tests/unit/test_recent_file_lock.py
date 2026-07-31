@@ -1,0 +1,877 @@
+# -*- coding: utf-8 -*-
+"""Regression tests for the recent.json file lock (issue #2528).
+
+Covers the two defects the lock was introduced for:
+(a) concurrent writers to the same recent.json overwrite each other / fail
+    outright on Windows;
+(b) a failed persist used to drop the batch on the floor — the next call
+    reloaded the on-disk copy and the in-memory messages vanished.
+"""
+from __future__ import annotations
+
+import asyncio
+import json
+import os
+import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+from memory.recent import CompressedRecentHistoryManager
+from utils import recent_file
+from utils.llm_client import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    messages_from_dict,
+    messages_to_dict,
+)
+
+
+# ─────────────── fixtures / helpers ───────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_recent_file_locks():
+    """Clear the module-level lock registry around every test.
+
+    Each test uses its own ``tmp_path``, so keys never collide; this only keeps
+    a leaked/held lock from one test out of the next one.
+    """
+    recent_file._LOCKS.clear()
+    yield
+    recent_file._LOCKS.clear()
+
+
+@pytest.fixture(autouse=True)
+def _patch_cloudsave(monkeypatch):
+    monkeypatch.setattr(
+        "memory.recent.assert_cloudsave_writable",
+        lambda *a, **kw: None,
+    )
+
+
+class _FakeConfig:
+    """Only supplies the character recent path that update_history needs."""
+
+    def __init__(self, lanlan_name: str, recent_path: str):
+        self._lanlan_name = lanlan_name
+        self._recent_path = recent_path
+
+    async def aget_character_data(self):
+        return (None, None, None, None, {}, None, None, None,
+                {self._lanlan_name: self._recent_path})
+
+    def get_character_data(self):
+        return (None, None, None, None, {}, None, None, None,
+                {self._lanlan_name: self._recent_path})
+
+
+def _make_manager(tmp_path: Path, lanlan_name: str = "Xiaoba", *, path: str | None = None):
+    recent_path = path or str(tmp_path / "recent.json")
+    mgr = object.__new__(CompressedRecentHistoryManager)
+    mgr._config_manager = _FakeConfig(lanlan_name, recent_path)
+    mgr.max_history_length = 4
+    mgr.compress_threshold = 5
+    mgr.log_file_path = {lanlan_name: recent_path}
+    mgr.name_mapping = {"human": "Master", "ai": lanlan_name, "system": "SYSTEM_MESSAGE"}
+    mgr.user_histories = {}
+    return mgr, lanlan_name, recent_path
+
+
+def _write_disk(path: str, messages: list) -> None:
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(messages_to_dict(messages), f, ensure_ascii=False)
+
+
+def _read_disk(path: str) -> list:
+    with open(path, encoding="utf-8") as f:
+        return messages_from_dict(json.load(f))
+
+
+def _widen_write_window(monkeypatch, seconds: float = 0.02):
+    """Make each persist take measurably long so interleaving is reachable.
+
+    Without this the read-modify-write is a handful of microseconds and a 2-core
+    CI box would almost never schedule two workers inside it.
+    """
+    real = recent_file.atomic_write_json
+
+    def _slow(path, payload, **kwargs):
+        time.sleep(seconds)
+        return real(path, payload, **kwargs)
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", _slow)
+
+
+def _run_with_wide_pool(coro_factory, workers: int = 8):
+    """Run a coroutine with a default executor big enough for real concurrency.
+
+    Python's default ``ThreadPoolExecutor`` is ``min(32, cpu+4)``; on a 2-core
+    runner that is 6 workers, and queueing would hide the very interleaving
+    these tests are about.
+    """
+    async def _main():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=workers))
+        return await coro_factory()
+
+    return asyncio.run(_main())
+
+
+# ─────────────── T1: concurrent update_history keeps every batch ───────────────
+
+
+def test_concurrent_update_history_keeps_every_batch(tmp_path, monkeypatch):
+    """Six concurrent appends against one file must all survive."""
+    _widen_write_window(monkeypatch)
+    mgr, name, path = _make_manager(tmp_path)
+    batches = [[HumanMessage(content=f"batch-{i}")] for i in range(6)]
+
+    async def _go():
+        await asyncio.gather(*[
+            mgr.update_history(batch, name, compress=False) for batch in batches
+        ])
+
+    _run_with_wide_pool(_go)
+
+    disk = _read_disk(path)
+    assert len(disk) == 6, f"每批都必须落盘，实际 {[m.content for m in disk]}"
+    assert {m.content for m in disk} == {f"batch-{i}" for i in range(6)}
+    assert [m.content for m in mgr.user_histories[name]] == [m.content for m in disk]
+    assert mgr._pending_batches(name) == []
+
+
+# ─────────────── T2: readers must not break writers (Windows) ───────────────
+
+
+_HAMMER_WRITES = 20
+
+
+def _hammer_readers_vs_writer(path: str, read_once) -> tuple[list[str], list[str]]:
+    """Spin reader threads against a fixed number of writes; return (write, read) errors.
+
+    Readers must spin rather than run a fixed count: a reader that finishes early
+    leaves the writer alone and the collision window disappears. Measured on this
+    box, spinning readers against unlocked reads fail 95/100 writes; with the
+    lock in place, 0/100.
+    """
+    payload = [{"type": "human", "data": {"content": "x" * 300}} for _ in range(200)]
+    recent_file.write_recent_payload(path, payload)
+
+    stop = threading.Event()
+    read_errors: list[str] = []
+    write_errors: list[str] = []
+
+    def _reader():
+        while not stop.is_set():
+            try:
+                read_once()
+            except Exception as exc:  # noqa: BLE001 - 测试要看到任何异常
+                read_errors.append(repr(exc))
+
+    def _writer():
+        try:
+            for _ in range(_HAMMER_WRITES):
+                try:
+                    recent_file.write_recent_payload(path, payload)
+                except Exception as exc:  # noqa: BLE001
+                    write_errors.append(repr(exc))
+        finally:
+            stop.set()
+
+    threads = [threading.Thread(target=_reader, daemon=True) for _ in range(3)]
+    threads.append(threading.Thread(target=_writer))
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=120)
+    assert stop.is_set(), "writer 没跑完，用例本身失效"
+    return write_errors, read_errors
+
+
+@pytest.mark.skipif(os.name != "nt", reason="裸读打断 os.replace 是 Windows 专属回归")
+def test_locked_readers_do_not_break_concurrent_writers(tmp_path):
+    """Readers take the same lock, so concurrent reads cannot fail the writers.
+
+    On Windows a plain ``open()`` on the target makes ``os.replace`` raise
+    PermissionError even with file_utils' busy-retry enabled. CI runs on
+    windows-latest, so this actually executes there.
+    """
+    path = str(tmp_path / "recent.json")
+    write_errors, read_errors = _hammer_readers_vs_writer(
+        path, lambda: recent_file.read_recent_text(path),
+    )
+    assert write_errors == [], f"读者进锁后写不该失败，实际 {write_errors[:3]}"
+    assert read_errors == [], f"读也不该失败，实际 {read_errors[:3]}"
+
+
+@pytest.mark.skipif(os.name != "nt", reason="裸读打断 os.replace 是 Windows 专属回归")
+def test_manager_reads_go_through_the_file_lock(tmp_path):
+    """The manager's own read path must be inside the lock, not just the writes."""
+    mgr, name, path = _make_manager(tmp_path)
+    write_errors, read_errors = _hammer_readers_vs_writer(
+        path, lambda: mgr._read_history_locked(path, name),
+    )
+    assert write_errors == [], f"manager 的读必须进锁，实际写失败 {write_errors[:3]}"
+    assert read_errors == [], f"读也不该失败，实际 {read_errors[:3]}"
+
+
+def test_concurrent_readers_and_writers_lose_nothing(tmp_path, monkeypatch):
+    """End-to-end: mixed aget/update over one file loses no batch."""
+    _widen_write_window(monkeypatch, seconds=0.01)
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="seed")])
+
+    async def _go():
+        writers = [
+            mgr.update_history([HumanMessage(content=f"w{i}")], name, compress=False)
+            for i in range(6)
+        ]
+        readers = [mgr.aget_recent_history(name) for _ in range(6)]
+        return await asyncio.gather(*writers, *readers)
+
+    _run_with_wide_pool(_go, workers=16)
+
+    disk = _read_disk(path)
+    assert len(disk) == 7, f"seed + 6 批全部必须在盘上，实际 {len(disk)}"
+    assert mgr._pending_batches(name) == [], "任何一次写失败都会在 pending 里留痕"
+
+
+# ─────────────── T3: failed persist keeps the batch and flushes it later ───────────────
+
+
+def test_failed_persist_keeps_batch_and_next_call_flushes_it(tmp_path, monkeypatch):
+    """Defect (b): a failed write must not make the batch disappear."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="A"), HumanMessage(content="B")])
+
+    real = recent_file.atomic_write_json
+    state = {"failed": False}
+
+    def _fail_once(p, payload, **kwargs):
+        if not state["failed"]:
+            state["failed"] = True
+            raise OSError("simulated disk failure")
+        return real(p, payload, **kwargs)
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", _fail_once)
+
+    asyncio.run(mgr.update_history([HumanMessage(content="C")], name, compress=False))
+
+    assert state["failed"] is True
+    assert [m.content for m in _read_disk(path)] == ["A", "B"], "写失败 ⟹ 目标未被替换"
+    assert [m.content for m in mgr.user_histories[name]] == ["A", "B", "C"]
+    assert [m.content for m in mgr._pending_batches(name)] == ["C"]
+
+    asyncio.run(mgr.update_history([HumanMessage(content="D")], name, compress=False))
+
+    assert [m.content for m in _read_disk(path)] == ["A", "B", "C", "D"], \
+        "下一次落盘必须把 C 补上，而不是让磁盘旧内容赢"
+    assert mgr._pending_batches(name) == []
+
+
+# ─────────────── CS-2: the compression splice re-reads under the lock ───────────────
+
+
+def test_compression_splice_keeps_messages_appended_during_compression(tmp_path):
+    """A batch persisted while the compression LLM runs must survive the splice.
+
+    The appending writer is a SECOND manager instance (the UI editor, or the
+    post-reload instance), so the compressing instance's in-memory view does not
+    contain the new message. That is what forces the splice to re-read the file
+    inside its critical section instead of trusting the pre-LLM view.
+    """
+    path = str(tmp_path / "recent.json")
+    mgr_a, name, _ = _make_manager(tmp_path, path=path)
+    mgr_b, _, _ = _make_manager(tmp_path, path=path)
+    seeded = [HumanMessage(content=f"m{i}") for i in range(7)]
+    _write_disk(path, seeded)
+
+    gate = asyncio.Event()
+    memo = SystemMessage(content="先前对话的备忘录: compressed")
+
+    async def _blocking_compress(messages, lanlan_name, detailed=False):
+        await gate.wait()
+        return (memo, "compressed")
+
+    setattr(mgr_a, "compress_history", _blocking_compress)
+
+    async def _go():
+        task = asyncio.create_task(
+            mgr_a.update_history([HumanMessage(content="trigger")], name, compress=True)
+        )
+        await asyncio.sleep(0)
+        await mgr_b.update_history([HumanMessage(content="Z")], name, compress=False)
+        assert [m.content for m in _read_disk(path)][-1] == "Z"
+        gate.set()
+        await asyncio.wait_for(task, timeout=5)
+
+    asyncio.run(_go())
+
+    final = [m.content for m in _read_disk(path)]
+    # 被压掉的是 m0..m4；m5/m6/trigger 既不在 memo 里也不该被切片丢掉。
+    assert final == [memo.content, "m5", "m6", "trigger", "Z"], \
+        f"压缩期间落盘的消息与未压缩中段都必须保留，实际 {final}"
+
+
+# ─────────────── T4: an unreadable file is never overwritten ───────────────
+
+
+def test_unreadable_file_never_writes_and_never_wipes(tmp_path, monkeypatch):
+    """A transient read failure must not be laundered into "history is empty"."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="A"), HumanMessage(content="B")])
+    before = Path(path).read_bytes()
+
+    def _unreadable(p, **kwargs):
+        raise PermissionError("simulated read failure")
+
+    monkeypatch.setattr(recent_file, "read_recent_text_unlocked", _unreadable)
+
+    # 全新 manager：user_histories 里没有这个角色 = 视图未知，不做任何
+    # 「历史已经在内存里」的前置假设。
+    assert name not in mgr.user_histories
+
+    asyncio.run(mgr.update_history([HumanMessage(content="C")], name, compress=False))
+
+    assert Path(path).read_bytes() == before, "读不出来时绝不能写盘"
+    assert [m.content for m in mgr._pending_batches(name)] == ["C"]
+
+
+# ─────────────── T5: the invariant the no-dedup design rests on ───────────────
+
+
+def test_atomic_write_failure_leaves_target_byte_identical(tmp_path, monkeypatch):
+    """``atomic_write_json`` raising ⟹ the target file was NOT replaced.
+
+    The whole "just re-append the pending batch, no dedup needed" design rests
+    on this, so it is pinned explicitly even though the code under test is
+    utils.file_utils rather than this PR's code.
+    """
+    target = tmp_path / "recent.json"
+    target.write_text(json.dumps([{"keep": "me"}]), encoding="utf-8")
+    before = target.read_bytes()
+
+    import utils.file_utils as file_utils
+
+    def _boom(*a, **k):
+        raise PermissionError("target busy")
+
+    monkeypatch.setattr(file_utils.os, "replace", _boom)
+
+    with pytest.raises(PermissionError):
+        recent_file.write_recent_payload(target, [{"clobbered": True}])
+
+    assert target.read_bytes() == before
+    leftovers = [p.name for p in tmp_path.iterdir() if p.name.endswith(".tmp")]
+    assert leftovers == [], f"tmp 必须被清掉，残留 {leftovers}"
+
+
+# ─────────────── T6: the compression callback runs with no file lock held ───────────────
+
+
+def test_compress_callback_runs_with_no_file_lock_held(tmp_path, monkeypatch):
+    """``_notify_compress_done`` must never be invoked from inside a critical section.
+
+    memory_server's dead-letter branch calls ``enforce_hard_cap`` straight from
+    that callback, and ``enforce_hard_cap`` takes the same non-reentrant
+    ``threading.Lock``. Moving the callback into any critical section is an
+    un-timeout-able deadlock on a worker thread.
+    """
+    mgr, name, path = _make_manager(tmp_path)
+    seeded = [HumanMessage(content=f"m{i}" * 40) for i in range(8)]
+    _write_disk(path, seeded)
+    observed: dict[str, Any] = {}
+
+    async def _failed_compress(*a, **k):
+        return None
+
+    setattr(mgr, "compress_history", _failed_compress)
+
+    async def _callback(lanlan_name, snapshot, ok, detailed):
+        observed["ok"] = ok
+        observed["locked"] = recent_file.recent_file_lock(path).locked()
+        # 真的走一遍 dead-letter 分支做的事：拿同一把锁写盘。
+        await mgr.enforce_hard_cap(lanlan_name)
+
+    # 硬上限压到必然触发裁剪，让回调里的 enforce_hard_cap 真的要写盘
+    import memory.recent as recent_mod
+    monkeypatch.setattr(recent_mod, "RECENT_HARD_CAP_TOKENS", 20)
+
+    async def _go():
+        # wait_for 兜底：一旦回调被挪进临界区，enforce_hard_cap 会在 worker
+        # 线程上永久死锁（threading.Lock 不可重入），没有超时就是挂死。
+        await asyncio.wait_for(
+            mgr.update_history(
+                [HumanMessage(content="new")], name,
+                on_compress_done=_callback,
+            ),
+            timeout=5,
+        )
+
+    asyncio.run(_go())
+
+    assert observed.get("ok") is False, "压缩失败必须以 ok=False 回调"
+    assert observed.get("locked") is False, "回调运行时不得持有文件锁"
+    # 裁剪真的落了盘 —— 证明它确实拿到了锁并写成功，不是静默 no-op。
+    assert len(_read_disk(path)) < 9
+
+
+# ─────────────── T7: the lock outlives the manager instance ───────────────
+
+
+def test_two_manager_instances_serialise_writes(tmp_path, monkeypatch):
+    """Two managers over one file (reload window) must still exclude each other."""
+    _widen_write_window(monkeypatch)
+    path = str(tmp_path / "recent.json")
+    mgr_a, name, _ = _make_manager(tmp_path, path=path)
+    mgr_b, _, _ = _make_manager(tmp_path, path=path)
+    _write_disk(path, [HumanMessage(content="seed")])
+
+    async def _go():
+        await asyncio.gather(
+            mgr_a.update_history([HumanMessage(content="from-a")], name, compress=False),
+            mgr_b.update_history([HumanMessage(content="from-b")], name, compress=False),
+        )
+
+    _run_with_wide_pool(_go)
+
+    contents = [m.content for m in _read_disk(path)]
+    assert sorted(contents) == ["from-a", "from-b", "seed"], \
+        f"新旧实例的写都必须在盘上，实际 {contents}"
+
+
+# ─────────────── T8: pending must not survive a reload ───────────────
+
+
+def test_fresh_manager_after_reload_ignores_previous_instance_pending(tmp_path, monkeypatch):
+    """A pending batch belongs to the instance, never to the process."""
+    mgr1, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="A")])
+
+    def _boom(*a, **k):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", _boom)
+    asyncio.run(mgr1.update_history([HumanMessage(content="B")], name, compress=False))
+    assert [m.content for m in mgr1._pending_batches(name)] == ["B"]
+
+    mgr2, _, _ = _make_manager(tmp_path, path=path)
+    assert mgr2._pending_batches(name) == [], "新实例不得继承上一个实例的未落盘账本"
+
+    history = asyncio.run(mgr2.aget_recent_history(name))
+    assert [m.content for m in history] == ["A"], "新实例必须读到磁盘上的真实内容"
+
+
+# ─────────────── T9: review persist failure must report exactly ('failed', None) ───────────────
+
+
+class _ReviewLLM:
+    def __init__(self, corrected: list[dict]):
+        self._payload = json.dumps(
+            {"explanation": "x", "corrected_dialogue": corrected}, ensure_ascii=False,
+        )
+
+    async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+        class _R:
+            content = self._payload
+
+        return _R()
+
+    async def aclose(self) -> None:
+        return None
+
+
+def _review_snapshot() -> list:
+    return [
+        SystemMessage(content="先前对话的备忘录: memo"),
+        HumanMessage(content="hi 1"),
+        AIMessage(content="ai 1"),
+        HumanMessage(content="hi 2"),
+        AIMessage(content="ai 2"),
+    ]
+
+
+def _review_corrected() -> list[dict]:
+    return [
+        {"role": "SYSTEM_MESSAGE", "content": "先前对话的备忘录: memo"},
+        {"role": "Master", "content": "hi 1 fixed"},
+        {"role": "Xiaoba", "content": "ai 1"},
+        {"role": "Master", "content": "hi 2"},
+        {"role": "Xiaoba", "content": "ai 2"},
+    ]
+
+
+def test_review_persist_failure_returns_failed_exactly(tmp_path, monkeypatch):
+    """A failed review persist must report ('failed', None) — never 'white'.
+
+    'white' runs ``_mutate_review_white``, which clears the cutoff fingerprint
+    and the failure backoff and deliberately does NOT refresh ``last_review_ts``,
+    so every /process would re-run a whole review LLM round with no circuit
+    breaker. Hence the exact-equality assertion.
+    """
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+    setattr(mgr, "_get_review_llm", lambda: _ReviewLLM(_review_corrected()))
+
+    def _boom(*a, **k):
+        raise OSError("simulated disk failure")
+
+    monkeypatch.setattr(recent_file, "atomic_write_json", _boom)
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result == ('failed', None)
+
+
+def test_review_unreadable_current_returns_failed_exactly(tmp_path, monkeypatch):
+    """Same contract when the commit cannot read the file at all."""
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+    setattr(mgr, "_get_review_llm", lambda: _ReviewLLM(_review_corrected()))
+
+    def _unreadable(p, **kwargs):
+        raise PermissionError("simulated read failure")
+
+    monkeypatch.setattr(recent_file, "read_recent_text_unlocked", _unreadable)
+
+    result = asyncio.run(mgr.review_history(name, snapshot=list(snapshot)))
+
+    assert result == ('failed', None)
+
+
+# ─────────────── T10: review commit is one atomic RMW ───────────────
+
+
+def test_review_commit_does_not_lose_messages_appended_during_review(tmp_path, monkeypatch):
+    """A message persisted while the review LLM runs must survive the patch.
+
+    Two independent claims are asserted:
+    (1) the appended message and the patch coexist on disk — proving the commit
+        works off the current file, not off the pre-LLM snapshot;
+    (2) the commit's read AND its write both observe the file lock as held —
+        proving they are one critical section rather than two.
+    """
+    snapshot = _review_snapshot()
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, snapshot)
+
+    lock_at_read: list[bool] = []
+    lock_at_write: list[bool] = []
+    real_read = recent_file.read_recent_text_unlocked
+    real_write = recent_file.atomic_write_json
+
+    def _spy_read(p, **kwargs):
+        lock_at_read.append(recent_file.recent_file_lock(path).locked())
+        return real_read(p, **kwargs)
+
+    def _spy_write(p, payload, **kwargs):
+        lock_at_write.append(recent_file.recent_file_lock(path).locked())
+        return real_write(p, payload, **kwargs)
+
+    monkeypatch.setattr(recent_file, "read_recent_text_unlocked", _spy_read)
+    monkeypatch.setattr(recent_file, "atomic_write_json", _spy_write)
+
+    gate = asyncio.Event()
+
+    class _BlockingLLM(_ReviewLLM):
+        async def ainvoke(self, prompt: str, **kwargs: Any) -> Any:
+            await gate.wait()
+            return await super().ainvoke(prompt, **kwargs)
+
+    setattr(mgr, "_get_review_llm", lambda: _BlockingLLM(_review_corrected()))
+
+    async def _go():
+        review_task = asyncio.create_task(mgr.review_history(name, snapshot=list(snapshot)))
+        await asyncio.sleep(0)
+        # review LLM 卡在 gate 上时插一条新消息并确认已上盘
+        await mgr.update_history([HumanMessage(content="Z")], name, compress=False)
+        assert [m.content for m in _read_disk(path)][-1] == "Z"
+        gate.set()
+        return await asyncio.wait_for(review_task, timeout=5)
+
+    status, fingerprint = asyncio.run(_go())
+
+    assert status == "patched"
+    assert fingerprint is not None
+    final = [m.content for m in _read_disk(path)]
+    assert final[-1] == "Z", f"review 期间落盘的消息必须保留，实际 {final}"
+    assert "hi 1 fixed" in final, f"review 的修改必须应用，实际 {final}"
+    assert lock_at_read and all(lock_at_read), "所有读都必须在锁内发生"
+    assert lock_at_write and all(lock_at_write), "所有写都必须在锁内发生"
+
+
+# ─────────────── T11: the main-server writers share the same lock ───────────────
+
+
+def test_main_server_recent_writers_share_the_memory_server_lock(tmp_path, monkeypatch):
+    """The three main_server writers must go through the same per-path lock."""
+    _widen_write_window(monkeypatch, seconds=0.01)
+    path = str(tmp_path / "recent.json")
+    mgr, name, _ = _make_manager(tmp_path, path=path)
+    _write_disk(path, [HumanMessage(content="A: seed")])
+
+    from utils.character_memory import rewrite_recent_file_character_name
+
+    errors: list[BaseException] = []
+
+    def _hammer_rename():
+        # 改名路径 = 锁内读 + 锁内写。来回改让它每轮都真的落一次盘；它写回的是
+        # 自己刚在锁里读到的内容，所以不该吞掉任何并发 append。
+        try:
+            for i in range(4):
+                old, new = ("A", "B") if i % 2 == 0 else ("B", "A")
+                rewrite_recent_file_character_name(Path(path), old, new)
+        except BaseException as exc:  # noqa: BLE001 - 测试要看到任何异常
+            errors.append(exc)
+
+    def _hammer_read():
+        try:
+            for _ in range(8):
+                recent_file.read_recent_text(path)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+
+    async def _go():
+        loop = asyncio.get_running_loop()
+        loop.set_default_executor(ThreadPoolExecutor(max_workers=16))
+        await asyncio.gather(
+            mgr.update_history([HumanMessage(content="w0")], name, compress=False),
+            mgr.update_history([HumanMessage(content="w1")], name, compress=False),
+            asyncio.to_thread(_hammer_rename),
+            asyncio.to_thread(_hammer_read),
+        )
+
+    asyncio.run(_go())
+
+    assert errors == [], f"并发路径不得抛异常，实际 {errors}"
+    contents = [m.content for m in _read_disk(path)]
+    assert "w0" in contents and "w1" in contents, \
+        f"两批 update_history 都必须在盘上，实际 {contents}"
+    assert sum(c.endswith("seed") for c in contents) == 1, \
+        f"改名路径不得复制或丢失原有消息，实际 {contents}"
+
+
+# ─────────────── T12: no writer bypasses the single entry point ───────────────
+
+
+_SKIP_DIRS = {
+    ".venv", "venv", "node_modules", "tests", "deps", "build", "dist",
+    "__pycache__", ".git", ".claude", ".pytest_cache", ".ruff_cache",
+    "steamworks", "frontend", "docs",
+}
+
+
+def _iter_project_sources() -> list[Path]:
+    """Every first-party .py file, pruning vendored/test trees while walking."""
+    root = Path(__file__).resolve().parents[2]
+    out = []
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if d not in _SKIP_DIRS]
+        for filename in filenames:
+            if filename.endswith(".py"):
+                out.append(Path(dirpath) / filename)
+    return out
+
+
+_WRITE_PRIMITIVES = {
+    "atomic_write_json",
+    "atomic_write_json_async",
+    "atomic_write_text",
+    "atomic_write_text_async",
+}
+
+
+def _call_name(node) -> str:
+    import ast
+
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    if isinstance(func, ast.Attribute):
+        return func.attr
+    return ""
+
+
+def _segment(lines: list[str], node) -> str:
+    """Source text of one AST node.
+
+    Hand-rolled instead of ``ast.get_source_segment`` because that one re-splits
+    the whole file per call, which turns this scan quadratic.
+    """
+    end_lineno = getattr(node, "end_lineno", None)
+    if end_lineno is None:
+        return ""
+    start = node.lineno - 1
+    if start == end_lineno - 1:
+        return lines[start][node.col_offset:node.end_col_offset]
+    chunk = [lines[start][node.col_offset:]]
+    chunk.extend(lines[start + 1:end_lineno - 1])
+    chunk.append(lines[end_lineno - 1][:node.end_col_offset])
+    return "".join(chunk)
+
+
+def test_no_recent_json_writer_bypasses_the_lock_module():
+    """Auto-discover recent.json write sites; only the lock module may hold one.
+
+    Discovery is by walking the tree, not by comparing against a hardcoded
+    list — a newly added writer trips this without anyone remembering to update
+    the test.
+
+    A write-primitive call counts as a recent.json write when its destination
+    expression does NOT mention ``meta`` (recent_meta.json is a different file)
+    and either
+      (a) the destination expression mentions ``recent`` (following one level of
+          local assignment), or
+      (b) the enclosing function — or the class it lives in — mentions the
+          literal ``recent.json``.
+    Signal (b) at class scope is what catches a new write added inside
+    ``CompressedRecentHistoryManager`` whose destination is just ``file_path``.
+    """
+    import ast
+
+    allowed = {Path("utils") / "recent_file.py"}
+    root = Path(__file__).resolve().parents[2]
+    violations: list[str] = []
+
+    for source_path in _iter_project_sources():
+        rel = source_path.relative_to(root)
+        if rel in allowed:
+            continue
+        try:
+            source = source_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            continue
+        if "atomic_write" not in source:
+            continue
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            continue
+        lines = source.splitlines(keepends=True)
+
+        # 类作用域信号：类体里出现 recent.json 字面量 → 类里所有方法的落盘都算
+        # 「写 recent.json」，除非目标表达式明说是 meta。
+        recent_scope_funcs: set[int] = set()
+        for cls in ast.walk(tree):
+            if not isinstance(cls, ast.ClassDef):
+                continue
+            if "recent.json" not in _segment(lines, cls):
+                continue
+            for member in ast.walk(cls):
+                if isinstance(member, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    recent_scope_funcs.add(id(member))
+
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = list(ast.walk(func))
+            writes = [
+                n for n in body
+                if isinstance(n, ast.Call) and _call_name(n) in _WRITE_PRIMITIVES and n.args
+            ]
+            if not writes:
+                continue
+            in_recent_scope = (
+                "recent.json" in _segment(lines, func) or id(func) in recent_scope_funcs
+            )
+            # 一级局部赋值解析：把 `x = <expr>` 记下来，好让 write(x, ...) 也能
+            # 看见目标表达式里的 "recent"。
+            assigned: dict[str, str] = {}
+            for node in body:
+                if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                        and isinstance(node.targets[0], ast.Name):
+                    assigned[node.targets[0].id] = _segment(lines, node.value)
+                elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                        and node.value is not None:
+                    assigned[node.target.id] = _segment(lines, node.value)
+
+            for node in writes:
+                dest = _segment(lines, node.args[0])
+                resolved = f"{dest} {assigned.get(dest, '')}".lower()
+                if "meta" in resolved:
+                    continue  # recent_meta.json 是另一个文件，不归这把锁管
+                named = set(re.findall(r"[\w-]+\.json", resolved))
+                if named and "recent.json" not in named:
+                    continue  # 目标表达式明说了是别的文件（如 characters.json）
+                if "recent" in resolved or in_recent_scope:
+                    violations.append(
+                        f"{rel.as_posix()}:{node.lineno} in {func.name}() -> {_call_name(node)}({dest})"
+                    )
+
+    assert violations == [], (
+        "recent.json 的写必须收口到 utils/recent_file.py 的加锁入口，"
+        f"发现绕过的写点：{violations}"
+    )
+
+
+# ─────────────── T13: the hard-cap tokenizer stays out of the lock ───────────────
+
+
+def test_enforce_hard_cap_tokenizes_outside_the_lock(tmp_path, monkeypatch):
+    """Full-history tokenization must never happen while the file lock is held."""
+    mgr, name, path = _make_manager(tmp_path)
+    history = [SystemMessage(content="memo")] + [
+        HumanMessage(content=f"original message {i} with some length") for i in range(12)
+    ]
+    mgr.user_histories[name] = list(history)
+    _write_disk(path, history)
+
+    import memory.recent as recent_mod
+    monkeypatch.setattr(recent_mod, "RECENT_HARD_CAP_TOKENS", 20)
+
+    import utils.tokenize as tokenize_mod
+    real_count = tokenize_mod.count_tokens
+    lock_states: list[bool] = []
+
+    def _spy(text, *a, **k):
+        lock_states.append(recent_file.recent_file_lock(path).locked())
+        return real_count(text, *a, **k)
+
+    monkeypatch.setattr(tokenize_mod, "count_tokens", _spy)
+
+    asyncio.run(mgr.enforce_hard_cap(name))
+
+    assert lock_states, "本用例必须真的触发 tokenize"
+    assert not any(lock_states), "全量 tokenize 不得在临界区内发生"
+    assert len(_read_disk(path)) < len(history), "裁剪结果必须落盘"
+
+
+# ─────────────── lock identity ───────────────
+
+
+def test_lock_is_keyed_by_file_not_by_name(tmp_path):
+    """The same file reached through different spellings shares one lock."""
+    target = tmp_path / "recent.json"
+    a = recent_file.recent_file_lock(str(target))
+    b = recent_file.recent_file_lock(target)
+    c = recent_file.recent_file_lock(str(tmp_path / "sub" / ".." / "recent.json"))
+    assert a is b is c
+    other = recent_file.recent_file_lock(str(tmp_path / "other.json"))
+    assert other is not a
+
+
+def test_lock_registry_is_thread_safe(tmp_path):
+    """Concurrent first-touch of one path must not mint two locks."""
+    target = str(tmp_path / "recent.json")
+    seen: list[threading.Lock] = []
+    barrier = threading.Barrier(8)
+
+    def _grab():
+        barrier.wait()
+        seen.append(recent_file.recent_file_lock(target))
+
+    threads = [threading.Thread(target=_grab) for _ in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert len({id(lock) for lock in seen}) == 1

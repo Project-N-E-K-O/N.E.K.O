@@ -41,8 +41,10 @@ from utils.character_memory import (
     rename_character_memory_storage,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
-from utils.file_utils import atomic_write_json_async
 from utils.logger_config import get_module_logger
+# merged 单进程（发行版默认）下，本模块与 memory_server 的写者同处一个进程，
+# 共用 utils.recent_file 的 per-path 锁；裸 atomic_write_json_async 会绕过它。
+from utils.recent_file import read_recent_text, write_recent_payload
 from fastapi.responses import JSONResponse
 from memory.external_markdown_import import (
     ExternalMemoryImportError,
@@ -346,14 +348,10 @@ async def get_recent_file(filename: str):
         status_code = path_error_status_code(path_error_code)
         return JSONResponse({"success": False, "error": path_error}, status_code=status_code)
     
-    # offload 同步 read 到线程池：recent.json 单文件可达数 MB
-    content = await asyncio.to_thread(_read_text_file, resolved_path)
+    # offload 同步 read 到线程池：recent.json 单文件可达数 MB。
+    # 走文件锁：Windows 上一个裸 open() 就能让并发的 os.replace 抛 PermissionError。
+    content = await asyncio.to_thread(read_recent_text, resolved_path)
     return {"content": content}
-
-
-def _read_text_file(path: str, encoding: str = 'utf-8') -> str:
-    with open(path, 'r', encoding=encoding) as f:
-        return f.read()
 
 
 @router.post('/recent_file/save')
@@ -410,7 +408,7 @@ async def save_recent_file(request: Request):
             }
         })
     try:
-        await atomic_write_json_async(resolved_path, arr, ensure_ascii=False, indent=2)
+        await asyncio.to_thread(write_recent_payload, resolved_path, arr)
         
         if catgirl_name:
             # 中断 memory_server 的 review 任务
@@ -472,7 +470,10 @@ async def update_catgirl_name(request: Request):
                 target=f"memory/{old_name} -> memory/{new_name}",
             )
 
-        result = rename_character_memory_storage(cm, old_name, new_name)
+        # to_thread：改名路径里的 recent.json 读写现在要拿文件锁，在事件循环
+        # 线程上取锁会把整个循环挡住（而且 file_utils 的 busy-retry 在循环线程上
+        # 会主动放弃，第一次 busy 就抛）。
+        result = await asyncio.to_thread(rename_character_memory_storage, cm, old_name, new_name)
         logger.info(
             "已更新猫娘名称从 '%s' 到 '%s' 的记忆文件，changed=%s",
             old_name,

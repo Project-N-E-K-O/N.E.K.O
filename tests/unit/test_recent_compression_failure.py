@@ -303,10 +303,11 @@ def test_merge_backup_memo_reports_failed_on_write_error(tmp_path, monkeypatch):
     batch = [HumanMessage(content="u1"), AIMessage(content="a1"), HumanMessage(content="u2")]
     mgr.user_histories[name] = list(batch)
 
-    async def _boom(*a, **k):
+    def _boom(*a, **k):
         raise OSError("disk full")
 
-    monkeypatch.setattr("memory.recent.atomic_write_json_async", _boom)
+    # 落盘现在收口到 utils.recent_file 的加锁写入口，patch 点跟着走。
+    monkeypatch.setattr("utils.recent_file.atomic_write_json", _boom)
 
     status = _run(mgr.merge_backup_memo(name, list(batch), SystemMessage(content="memo")))
     assert status == "failed"  # 落盘失败必须报 failed，不能谎报 merged
