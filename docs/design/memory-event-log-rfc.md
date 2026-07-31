@@ -105,18 +105,27 @@ During memory-server startup, the runtime:
 
 1. creates the managers, `EventLog`, and `Reconciler`;
 2. registers the current evidence/lifecycle handlers;
-3. scans pending outbox work and spawns replay tasks;
-4. begins reconciliation for each configured character without awaiting those
-   spawned tasks;
+3. reconciles every configured character, awaited to completion;
+4. scans pending outbox work and spawns replay tasks;
 5. runs evidence and archive migrations, then starts the staggered background
    loops.
 
-Steps 3 through 5 are not a strict completion order. Outbox handlers may overlap
-reconciliation, migrations, and early loop activity, so code must not depend on
-an outbox side effect being visible first. `_replay_pending_outbox()` returns the
-spawned task list, but the current startup caller does not await it. If serialized
-recovery becomes a requirement, startup must explicitly await that list before
-reconciliation; the current implementation provides no such guarantee.
+Reconciliation before outbox replay is deliberate and load-bearing. Both write the
+same view files, but their read points are asymmetric: a replay handler loads,
+mutates, and saves inside the `EventLog` lock, while the reflection and persona
+live writers load the whole snapshot *outside* that lock and only then hand it to
+`record_and_save`. Any overlap therefore leaves a window where a live writer saves
+a pre-replay snapshot back over a just-completed repair, with the sentinel already
+past the event — silent, permanent loss. Resumed outbox operations are background
+tasks, and reconciliation is fully awaited, so running reconciliation first removes
+the overlap entirely.
+
+The reverse dependency does not exist: a resumed operation emits its own events
+through `record_and_save`, which appends, applies, and saves as one step, so
+reconciliation never has to apply them afterwards. Code still must not depend on an
+outbox side effect being visible to any later startup step: `_replay_pending_outbox()`
+returns the spawned task list, and the startup caller does not await it, so those
+operations may overlap migrations and early loop activity.
 
 The reconciler reads events after `last_applied_event_id` and applies them in file
 order. A handler must load, idempotently apply, and persist its view before it
@@ -161,6 +170,14 @@ policy. Operators should not assume deployed journals are automatically compacte
   lock or multi-writer protocol.
 - View files remain authoritative for normal reads and may still be repaired or
   migrated directly by dedicated code.
+- The sentinel write is an unconditional overwrite. Event ids are UUIDs, so no
+  writer can tell from two ids which is newer; the only order that exists is the
+  position in the journal. `record_and_save` is safe by construction, since it
+  writes the id it just appended. Replay cannot make that assumption, so it
+  compares the on-disk sentinel against the value its round started from and
+  refuses to write when they differ — a rewound sentinel returns another writer's
+  events to the tail, and one without a registered handler wedges every later
+  boot. The rest of that round's tail is still applied, only the sentinel freezes.
 - Outbox recovery and event replay solve different failure windows: the outbox
   retries background operations; the journal repairs covered mutations after the
   operation has chosen a concrete state transition.

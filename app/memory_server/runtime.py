@@ -547,11 +547,6 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         except Exception as e:
             logger.warning(f"[Memory] Persona 迁移检查失败: {e}")
 
-        try:
-            await outbox_infra._replay_pending_outbox()
-        except Exception as e:
-            logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
-
         async def _reconcile_one(n: str):
             try:
                 applied = await reconciler.areconcile(n)
@@ -560,11 +555,29 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
             except Exception as e:
                 logger.warning(f"[Memory] reconciler {n} replay 失败: {e}")
 
+        # 顺序要求：reconcile 必须整体跑完，才允许 outbox 补跑起任何 op。
+        # 两边都写同一批 view 文件，但它们的读点不对称：reconcile 的 handler
+        # 是在 EventLog 锁内 load→改→save 的，而 reflection/persona 的 live
+        # writer 是在锁**外**先把整份快照读进内存，再交给 record_and_save 写回
+        # （见 memory/reflection/evidence_flow.py）。所以只要两者重叠，就存在
+        # 「live writer 用重放之前的快照整覆盖掉刚修好的结果」的窗口 —— 而哨兵
+        # 此时已经越过那条事件，之后再也不会重放，是静默永久丢失。
+        # 补跑侧是 fire-and-forget 的后台 task（_replay_pending_outbox 只 await
+        # 扫描），reconcile 这边是 await 到底的：先跑 reconcile 就没有重叠。
+        # 反向依赖不存在：补跑的 op 走 record_and_save，append+apply+save 一体，
+        # 不需要 reconcile 再补应用一次；RFC 也明写了「不得依赖 outbox 副作用先
+        # 可见」（docs/design/memory-event-log-rfc.md 启动恢复一节）。
+        # 顺带的好处：补跑 op 读到的是已经修复完的 view，而不是崩溃残留态。
         if catgirl_names:
             await asyncio.gather(
                 *(_reconcile_one(n) for n in catgirl_names),
                 return_exceptions=True,
             )
+
+        try:
+            await outbox_infra._replay_pending_outbox()
+        except Exception as e:
+            logger.warning(f"[Outbox] 启动补跑顶层失败: {e}")
 
         async def _migrate_one(n: str):
             try:
