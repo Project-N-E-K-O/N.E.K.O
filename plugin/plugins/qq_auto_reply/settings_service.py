@@ -45,7 +45,9 @@ class QQSettingsService:
                 ud["pending_disable_settle"] = True
                 ud.pop("pending_enable_rebase", None)
 
-    def _stamp_participant_memory_transition(self, *, enabled_after: bool) -> None:
+    def _stamp_participant_memory_transition(
+        self, *, enabled_after: bool,
+    ) -> list[tuple[dict[str, Any], int]]:
         """私聊 participant 记忆开关转变的同步盖章（对偶群版）。
 
         OFF：给既有 participant 会话盖 cutoff + pending 章——结算只到
@@ -55,6 +57,7 @@ class QQSettingsService:
         （nonconsent 边界只在生成轮 finally 记），floor 一推即闭合；带
         未消费 disable 章的会话不动（旧时代结算先行，finalize 的
         floor>cutoff 豁免保证它仍只结算到 cutoff）。"""
+        created_markers: list[tuple[dict[str, Any], int]] = []
         for ud in list(getattr(self.plugin, "_user_sessions", {}).values()):
             if ud.get("is_group"):
                 continue
@@ -73,9 +76,11 @@ class QQSettingsService:
                 continue
             if not ud.get("pending_disable_settle"):
                 ud["participant_opt_out_cutoff"] = hist_len
+                created_markers.append((ud, hist_len))
             # else：上一次 OFF 的结算还没消费其 cutoff——保留更早的界
             # （与群版同理：覆写会打歪 floor 豁免判据）。
             ud["pending_disable_settle"] = True
+        return created_markers
 
     async def _settle_participant_sessions_on_disable(self) -> None:
         """participant 开关 ON->OFF：把带章会话按 cutoff 结算掉。
@@ -148,6 +153,9 @@ class QQSettingsService:
         cross_group_before: bool | None, cross_group_after: bool | None = None,
         participant_memory_before: bool | None = None,
         participant_memory_after: bool | None = None,
+        participant_markers_created: list[
+            tuple[dict[str, Any], int]
+        ] | None = None,
         deferred_opt_ins: dict[str, bool] | None = None,
     ) -> bool:
         # 取消路径也要能发布：写盘被 shield 保护，取消 await 不取消它。
@@ -165,6 +173,7 @@ class QQSettingsService:
             cross_group_after=cross_group_after,
             participant_memory_before=participant_memory_before,
             participant_memory_after=participant_memory_after,
+            participant_markers_created=participant_markers_created,
         )
         # 写盘跑成独立 task：config_store.save 内部是 to_thread 的原子写，
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
@@ -285,6 +294,9 @@ class QQSettingsService:
         cross_group_after: bool | None = None,
         participant_memory_before: bool | None = None,
         participant_memory_after: bool | None = None,
+        participant_markers_created: list[
+            tuple[dict[str, Any], int]
+        ] | None = None,
     ) -> None:
         """落盘失败时回滚记忆 consent 开关：重启会回到旧值，运行时若继续
         按新值收集，等于在"未成功保存的授权"下入库。回滚运行时政策并按
@@ -321,14 +333,17 @@ class QQSettingsService:
                 participant_memory_before
             )
             if participant_memory_before:
-                for ud in list(
-                    getattr(self.plugin, "_user_sessions", {}).values()
-                ):
-                    if ud.get("is_group"):
-                        continue
-                    if ud.get("private_memory_mode") != "participant":
-                        continue
-                    if ud.pop("pending_disable_settle", None):
+                # Remove only markers created by this failed transaction.
+                # Older pending settlements deliberately survive rapid
+                # ON/OFF toggles and must keep their original retry cutoff.
+                for ud, cutoff in participant_markers_created or []:
+                    if (
+                        ud.get("pending_disable_settle")
+                        and int(
+                            ud.get("participant_opt_out_cutoff", -1) or 0
+                        ) == cutoff
+                    ):
+                        ud.pop("pending_disable_settle", None)
                         ud.pop("participant_opt_out_cutoff", None)
             self.plugin._emit_log(
                 "WARNING",
@@ -720,11 +735,16 @@ class QQSettingsService:
                 "private_participant_memory_enabled", False,
             )
         )
+        participant_markers_created: list[
+            tuple[dict[str, Any], int]
+        ] = []
         if participant_memory_before and not participant_memory_after:
             # 关闭立即生效（与其余 consent 键同向不对称）：同步盖章后交
             # 后台任务按 cutoff 结算既有 participant 会话。ON 方向在
             # _publish_consent_opt_ins（写盘成功后）处理。
-            self._stamp_participant_memory_transition(enabled_after=False)
+            participant_markers_created = (
+                self._stamp_participant_memory_transition(enabled_after=False)
+            )
             self._spawn_group_memory_sync_task(
                 self._settle_participant_sessions_on_disable()
             )
@@ -767,6 +787,7 @@ class QQSettingsService:
             ),
             participant_memory_before=participant_memory_before,
             participant_memory_after=participant_memory_after,
+            participant_markers_created=participant_markers_created,
         )
         if deferred_opt_ins:
             if success:

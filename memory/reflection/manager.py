@@ -77,6 +77,10 @@ class ReflectionEngine(
         # 写盘失败（只读 FS / 权限），失败计数也不会丢、dead-letter 闸门照常生效
         # （Codex P2）。对齐 review 的 _maint_state 进程内持久语义。
         self._synth_backoff_mem: dict[str, dict] = {}
+        # Process-local erase generations for scoped subjects. A synthesis
+        # captures one before its out-of-lock LLM call and rechecks it before
+        # append, so a concurrent scoped_forget can invalidate late results.
+        self._subject_forget_epochs: dict[tuple[str, str, str], int] = {}
 
     def _get_alock(self, name: str) -> asyncio.Lock:
         """Get (or lazily create) the per-character asyncio.Lock.

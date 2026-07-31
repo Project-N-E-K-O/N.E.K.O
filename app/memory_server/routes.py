@@ -1295,7 +1295,15 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         )
     subject = req.subject.to_domain()
     stats: dict = {}
+    forget_epoch_started = False
     try:
+        # Bracket all stores with erase generations. Scoped synthesis releases
+        # its lock during the LLM call, so a late result derived from old facts
+        # must be invalidated before this endpoint can report success.
+        await runtime.reflection_engine.abump_subject_forget_epoch(
+            lanlan_name, subject,
+        )
+        forget_epoch_started = True
         stats.update(await runtime.fact_store.aforget_subject(lanlan_name, subject))
         stats.update(
             await runtime.reflection_engine.aforget_subject(lanlan_name, subject)
@@ -1309,6 +1317,11 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
             status_code=500,
             detail="scoped forget failed; retry is safe and idempotent",
         ) from exc
+    finally:
+        if forget_epoch_started:
+            await runtime.reflection_engine.abump_subject_forget_epoch(
+                lanlan_name, subject,
+            )
     return {
         "status": "forgotten",
         "subject": subject.as_entry_fields(),

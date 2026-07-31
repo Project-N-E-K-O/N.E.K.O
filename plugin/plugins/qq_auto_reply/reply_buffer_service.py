@@ -66,6 +66,13 @@ class QQReplyBufferService:
     DEFAULT_WAIT_SECONDS = 3.0      # 群聊默认等待 3 秒
     DEFAULT_WAIT_PRIVATE = 6.0      # 私聊默认等待 6 秒（对方往往在连续输出）
 
+    @staticmethod
+    def _participant_memory_at_receipt(pending: PendingReply) -> bool | None:
+        """Receipt-time consent for a synthetic private buffer request."""
+        if pending.is_group:
+            return None
+        return not pending.has_nonconsent_input
+
     def _mark_latest_draft_undelivered(
         self, session_key: str, pending: "PendingReply | None" = None,
     ) -> Any | None:
@@ -345,6 +352,9 @@ class QQReplyBufferService:
                         inherited_consent_snapshot=dict(
                             existing.consent_snapshot or {}
                         ),
+                        participant_memory_at_receipt=(
+                            self._participant_memory_at_receipt(existing)
+                        ),
                     )
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
                 except Exception as e:
@@ -398,6 +408,9 @@ class QQReplyBufferService:
                         fallback_to_text_on_voice_failure=True,
                         inherited_consent_snapshot=dict(
                             existing.consent_snapshot or {}
+                        ),
+                        participant_memory_at_receipt=(
+                            self._participant_memory_at_receipt(existing)
                         ),
                     )
                     await self.plugin.reply_pipeline.run(request)  # handler 已持本会话锁，重取会自锁死
@@ -676,6 +689,9 @@ class QQReplyBufferService:
                 fallback_to_text_on_voice_failure=True,
                 inherited_consent_snapshot=dict(
                     pending.consent_snapshot or {}
+                ),
+                participant_memory_at_receipt=(
+                    self._participant_memory_at_receipt(pending)
                 ),
             )
             async def _run_flush() -> Any:

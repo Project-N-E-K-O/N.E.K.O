@@ -434,6 +434,15 @@ async def test_group_name_refresh_rebuilds_and_keeps_on_failure():
         await service.refresh_group_names()
     assert service.group_display_name("7788") == "水群"
 
+    service._refreshed_at = 0.0
+    with patch(
+        "plugin.plugins.qq_auto_reply.display_name_service.time.monotonic",
+        return_value=123.0,
+    ):
+        await service._refresh_once()
+    assert service._refreshed_at == 123.0
+    assert service.group_display_name("7788") == "水群"
+
 
 @pytest.mark.asyncio
 async def test_group_digest_carries_display_name_when_known():
@@ -940,7 +949,7 @@ def test_participant_off_transition_stamps_cutoff_once():
     })
     service = QQSettingsService(plugin)
 
-    service._stamp_participant_memory_transition(enabled_after=False)
+    created = service._stamp_participant_memory_transition(enabled_after=False)
 
     assert participant["participant_opt_out_cutoff"] == 3
     assert participant["pending_disable_settle"] is True
@@ -949,6 +958,7 @@ def test_participant_off_transition_stamps_cutoff_once():
     assert "participant_opt_out_cutoff" not in group
     # 未消费的旧 cutoff 保留（不被 4 覆写）
     assert stale["participant_opt_out_cutoff"] == 1
+    assert created == [(participant, 3)]
 
 
 def test_participant_on_transition_pushes_nonconsent_floor():
@@ -1048,7 +1058,12 @@ def test_participant_rollback_restores_flag_and_unstamps():
         "is_group": False, "private_memory_mode": "participant",
         "session": SimpleNamespace(_conversation_history=[]),
     }
-    plugin = _settings_plugin({"a": stamped, "b": consumed})
+    older = {
+        "is_group": False, "private_memory_mode": "participant",
+        "pending_disable_settle": True, "participant_opt_out_cutoff": 1,
+        "session": SimpleNamespace(_conversation_history=[]),
+    }
+    plugin = _settings_plugin({"a": stamped, "b": consumed, "c": older})
     plugin._qq_settings["private_participant_memory_enabled"] = False
     service = QQSettingsService(plugin)
 
@@ -1057,12 +1072,15 @@ def test_participant_rollback_restores_flag_and_unstamps():
         group_memory_before=False, group_memory_after=False,
         member_memory_before=False, member_memory_after=False,
         participant_memory_before=True, participant_memory_after=False,
+        participant_markers_created=[(stamped, 3)],
     )
 
     assert plugin._qq_settings["private_participant_memory_enabled"] is True
     assert "pending_disable_settle" not in stamped
     assert "participant_opt_out_cutoff" not in stamped
     assert "pending_disable_settle" not in consumed
+    assert older["pending_disable_settle"] is True
+    assert older["participant_opt_out_cutoff"] == 1
 
 
 def test_participant_key_is_deferred_on_open_and_immediate_on_close():
@@ -1212,6 +1230,8 @@ async def test_scoped_forget_persona_drops_section_and_corrections():
     assert stats["corrections"] == 1
     assert target.persona_section_key in persona
     assert [e["id"] for e in section["facts"]] == ["p2"]
+    assert "display_name" not in section
+    assert section["scope"] == mixed.scope
     assert [c["old_text"] for c in harness.corrections_written] == ["keep"]
 
     # 纯净 section：删净后整段消失（连 display_name 元数据）
@@ -1284,20 +1304,98 @@ async def test_scoped_forget_reflections_bypass_archive_merge(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_scoped_forget_reflection_retry_keeps_ids_after_partial_failure(
+    tmp_path,
+):
+    """A partial failure must leave enough source data for retry cleanup."""
+    from memory.reflection.persistence import PersistenceMixin
+
+    target = MemorySubject.participant("qq", "1001")
+    path = tmp_path / "reflections.json"
+    path.write_text(json.dumps([
+        {"id": "r1", "text": "target", **target.as_entry_fields()},
+        {"id": "r2", "text": "keep"},
+    ]), encoding="utf-8")
+
+    class _Harness:
+        aforget_subject = PersistenceMixin.aforget_subject
+
+        def __init__(self):
+            self._lock = asyncio.Lock()
+            self._config_manager = MagicMock()
+            self.surfaced = [
+                {"reflection_id": "r1", "text": "target"},
+                {"reflection_id": "r2", "text": "keep"},
+            ]
+
+        def _get_alock(self, name):
+            return self._lock
+
+        def _reflections_path(self, name):
+            return str(path)
+
+        async def aload_surfaced(self, name):
+            return list(self.surfaced)
+
+        async def asave_surfaced(self, name, surfaced):
+            self.surfaced = list(surfaced)
+
+    harness = _Harness()
+    with patch("memory.reflection.persistence.assert_cloudsave_writable"), \
+            patch(
+                "memory.reflection.persistence.atomic_write_json_async",
+                new=AsyncMock(side_effect=OSError("disk full")),
+            ):
+        with pytest.raises(OSError):
+            await harness.aforget_subject("Neko", target.as_entry_fields())
+
+    assert [s["reflection_id"] for s in harness.surfaced] == ["r2"]
+    assert [r["id"] for r in json.loads(path.read_text(encoding="utf-8"))] == [
+        "r1", "r2",
+    ]
+
+    with patch("memory.reflection.persistence.assert_cloudsave_writable"):
+        stats = await harness.aforget_subject("Neko", target.as_entry_fields())
+    assert stats == {"reflections": 1, "surfaced": 0}
+    assert [r["id"] for r in json.loads(path.read_text(encoding="utf-8"))] == [
+        "r2",
+    ]
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_route_wires_all_three_stores():
     from app.memory_server import routes as memory_routes
     from app.memory_server.routes import ScopedForgetRequest
 
+    calls: list[str] = []
     store = MagicMock()
-    store.aforget_subject = AsyncMock(return_value={"facts": 1, "facts_archive": 0})
+    store.aforget_subject = AsyncMock(
+        side_effect=lambda *args: (
+            calls.append("facts")
+            or {"facts": 1, "facts_archive": 0}
+        ),
+    )
     reflection = MagicMock()
+    reflection.abump_subject_forget_epoch = AsyncMock(
+        side_effect=lambda *args: calls.append("epoch"),
+    )
     reflection.aforget_subject = AsyncMock(
-        return_value={"reflections": 2, "surfaced": 1},
+        side_effect=lambda *args: (
+            calls.append("reflections")
+            or {"reflections": 2, "surfaced": 1}
+        ),
     )
     persona = MagicMock()
-    persona.aforget_subject = AsyncMock(return_value={
-        "persona_entries": 3, "persona_section_dropped": True, "corrections": 0,
-    })
+    persona.aforget_subject = AsyncMock(
+        side_effect=lambda *args: (
+            calls.append("persona")
+            or {
+                "persona_entries": 3,
+                "persona_section_dropped": True,
+                "corrections": 0,
+            }
+        ),
+    )
     with patch.object(memory_routes.runtime, "fact_store", store), \
             patch.object(memory_routes.runtime, "reflection_engine", reflection), \
             patch.object(memory_routes.runtime, "persona_manager", persona):
@@ -1311,6 +1409,7 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["facts"] == 1
     assert result["reflections"] == 2
     assert result["persona_entries"] == 3
+    assert calls == ["epoch", "facts", "reflections", "persona", "epoch"]
     for double in (store, reflection, persona):
         forgotten = double.aforget_subject.await_args.args[1]
         assert forgotten.subject_id == "qq:1001"
@@ -1606,6 +1705,138 @@ def test_nonconsent_boundary_stamps_private_turns_too():
     enabled = {"memory_enabled": True, "is_group": False}
     stamp(enabled, session)
     assert "nonconsent_history_end" not in enabled
+
+
+def test_private_participant_failed_reply_is_excluded_from_digest():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    ai_row = SimpleNamespace(type="ai", content="never delivered")
+    participant = {
+        "is_group": False,
+        "private_memory_mode": "participant",
+        "session": SimpleNamespace(_conversation_history=[ai_row]),
+        "current_turn_ai_row": ai_row,
+    }
+    legacy = {
+        "is_group": False,
+        "private_memory_mode": "legacy",
+        "session": SimpleNamespace(_conversation_history=[ai_row]),
+        "current_turn_ai_row": ai_row,
+    }
+    plugin = SimpleNamespace(
+        _user_sessions={
+            "private:1001": participant,
+            "private:admin": legacy,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+
+    service.record_tail_undelivered_ai_row("private:1001")
+    assert participant["undelivered_draft_rows"] == [ai_row]
+
+    service.record_tail_undelivered_ai_row("private:admin")
+    assert "undelivered_draft_rows" not in legacy
+
+
+@pytest.mark.asyncio
+async def test_private_buffer_uses_resolved_participant_consent():
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    schedule = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_buffer_service=SimpleNamespace(schedule_reply=schedule),
+        _build_session_key=lambda **kwargs: "private:1001",
+        _emit_log=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="off-era input",
+        sender_id="1001",
+        is_group=False,
+    )
+    context = SimpleNamespace(
+        persist_memory=False,
+        consent_snapshot={},
+    )
+    outcome = QQReplyOutcome(
+        action="reply",
+        reply_text="draft",
+        raw_reply_text="draft",
+    )
+    plan = QQDeliveryPlan(
+        target_type="private",
+        target_id="1001",
+        blocks=[QQMessageBlock(text="draft")],
+    )
+
+    await runner._run_delivery(plan, request, outcome, context=context)
+
+    assert schedule.await_args.kwargs["consented"] is False
+
+
+@pytest.mark.asyncio
+async def test_private_synthetic_flush_propagates_receipt_consent():
+    from plugin.plugins.qq_auto_reply.reply_buffer_service import (
+        PendingReply,
+        QQReplyBufferService,
+    )
+
+    async def _run_locked(key, factory):
+        return await factory()
+
+    run = AsyncMock()
+    plugin = SimpleNamespace(
+        reply_pipeline=SimpleNamespace(run=run),
+        _run_with_session_lock=_run_locked,
+        _user_sessions={
+            "private:1001": {
+                "is_group": False,
+                "private_memory_mode": "participant",
+                "session": SimpleNamespace(_conversation_history=[]),
+            },
+        },
+        session_memory_service=SimpleNamespace(
+            session_history_len=lambda key: 0,
+            record_synthetic_prompt_rows=MagicMock(),
+        ),
+        _emit_log=MagicMock(),
+    )
+    service = QQReplyBufferService(plugin)
+    pending = PendingReply(
+        "draft one", 0.0, sender_id="1001", is_group=False, group_id="",
+    )
+    pending.buffered_texts = ["draft one", "draft two"]
+    pending.message_count = 2
+    pending.has_nonconsent_input = True
+    pending.wait_until = 0.0
+    service._pending["private:1001"] = pending
+
+    await service._deliver_after_wait("private:1001", pending)
+
+    synthetic = run.await_args.args[0]
+    assert synthetic.source_kind == "rapid_fire_flush"
+    assert synthetic.participant_memory_at_receipt is False
+
+
+def test_scoped_synthesis_rechecks_forget_epoch_before_append():
+    import inspect
+
+    from memory.reflection.synthesis import SynthesisMixin
+
+    source = inspect.getsource(SynthesisMixin.synthesize_reflections)
+    assert "forget_epoch = (" in source
+    assert source.count("_subject_forget_epoch(") >= 2
+    assert "dropping late result" in source
 
 
 @pytest.mark.asyncio

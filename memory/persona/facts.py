@@ -1020,10 +1020,10 @@ class FactsMixin:
                     ]
                     removed_entries = len(entries) - len(kept)
                     entries[:] = kept
+                section_subject = persona_subject_from_section(
+                    section_key, section,
+                )
                 if not section.get('facts'):
-                    section_subject = persona_subject_from_section(
-                        section_key, section,
-                    )
                     if (
                         section_subject is not None
                         and section_subject.key == memory_subject.key
@@ -1031,6 +1031,27 @@ class FactsMixin:
                     ):
                         persona.pop(section_key, None)
                         section_dropped = True
+                elif (
+                    removed_entries
+                    and section_subject is not None
+                    and section_subject.key == memory_subject.key
+                    and section_subject.scope == memory_subject.scope
+                ):
+                    # This key deliberately omits scope. If another scope
+                    # survives, retaining the forgotten scope's metadata
+                    # leaks its display_name into the surviving section and
+                    # prevents that scope from refreshing the name.
+                    replacement_subject = next(
+                        (
+                            persona_subject_from_section(section_key, entry)
+                            for entry in section.get('facts') or []
+                            if isinstance(entry, dict)
+                        ),
+                        None,
+                    )
+                    if replacement_subject is not None:
+                        section.update(replacement_subject.as_entry_fields())
+                    section.pop('display_name', None)
             if removed_entries or section_dropped:
                 await self.asave_persona(name, persona)
             # corrections 清理留在同一把角色锁内：_aqueue_correction_locked

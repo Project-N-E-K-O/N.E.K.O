@@ -56,6 +56,10 @@ class QQDisplayNameService:
             # 失败保留旧映射：名字是装饰性元数据，绝不让它的刷新失败
             # 打扰任何主流程；下一个 TTL 周期自然重试。
             self.plugin.logger.warning(f"[DisplayName] 群名刷新失败（保留旧映射）: {exc}")
+        finally:
+            # TTL applies to attempts, not only successes. Otherwise a
+            # persistent NapCat failure is retried on every 30-second sweep.
+            self._refreshed_at = time.monotonic()
 
     async def refresh_group_names(self) -> int:
         """Fetch the group list and rebuild the name map.

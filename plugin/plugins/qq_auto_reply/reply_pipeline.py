@@ -245,7 +245,6 @@ class QQReplyPipelineRunner:
     async def _run_delivery(self, delivery_plan, request: QQReplyRequest = None, outcome: QQReplyOutcome = None, context=None) -> QQDeliveryResult | None:
         if (
             request is not None
-            and request.is_group
             and outcome is not None
             and self._primary_row_superseded(outcome, delivery_plan)
         ):
@@ -256,8 +255,8 @@ class QQReplyPipelineRunner:
             self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                 self.plugin._build_session_key(
                     sender_id=request.sender_id,
-                    is_group=True,
-                    group_id=request.group_id,
+                    is_group=request.is_group,
+                    group_id=request.group_id if request.is_group else None,
                 )
             )
 
@@ -324,17 +323,14 @@ class QQReplyPipelineRunner:
                     if context is not None else None
                 ),
                 consented=bool(
-                    not request.is_group
-                    or (
-                        # 解析后的判据：retroactive_review 等路径的 request
-                        # 不带 persist_memory（None），照原样读会把已授权的
-                        # 回放轮标成"非授权输入"，合并出来的总结 ai 行反而
-                        # 被排除出 scoped 历史。
-                        getattr(context, "persist_memory", None)
-                        if context is not None
-                        and getattr(context, "persist_memory", None) is not None
-                        else getattr(request, "persist_memory", None)
-                    )
+                    # Use the resolved policy for private participant turns as
+                    # well as groups. Otherwise every private input looks
+                    # consented and OFF-era text can re-enter memory through a
+                    # later synthetic buffer summary.
+                    getattr(context, "persist_memory", None)
+                    if context is not None
+                    and getattr(context, "persist_memory", None) is not None
+                    else getattr(request, "persist_memory", None)
                 ),
             )
             from .pipeline_models import QQDeliveryResult
@@ -347,7 +343,6 @@ class QQReplyPipelineRunner:
             self.plugin.logger.warning("发送前记忆授权已撤销，取消本轮投递")
             if (
                 request is not None
-                and request.is_group
                 and outcome is not None
                 and not getattr(outcome, "used_fallback", False)
                 and not getattr(outcome, "used_default_message", False)
@@ -355,8 +350,8 @@ class QQReplyPipelineRunner:
                 self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                     self.plugin._build_session_key(
                         sender_id=request.sender_id,
-                        is_group=True,
-                        group_id=request.group_id,
+                        is_group=request.is_group,
+                        group_id=request.group_id if request.is_group else None,
                     )
                 )
             from .pipeline_models import QQDeliveryResult
@@ -368,7 +363,6 @@ class QQReplyPipelineRunner:
         def _mark_tail_undelivered() -> None:
             if (
                 request is not None
-                and request.is_group
                 and outcome is not None
                 and not getattr(outcome, "used_fallback", False)
                 and not getattr(outcome, "used_default_message", False)
@@ -376,8 +370,8 @@ class QQReplyPipelineRunner:
                 self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                     self.plugin._build_session_key(
                         sender_id=request.sender_id,
-                        is_group=True,
-                        group_id=request.group_id,
+                        is_group=request.is_group,
+                        group_id=request.group_id if request.is_group else None,
                     )
                 )
 
@@ -406,7 +400,6 @@ class QQReplyPipelineRunner:
             result is not None
             and not getattr(result, "delivered", False)
             and request is not None
-            and request.is_group
             and outcome is not None
             and not getattr(outcome, "used_fallback", False)
             and not getattr(outcome, "used_default_message", False)
@@ -416,8 +409,8 @@ class QQReplyPipelineRunner:
             # 发出去的回复提取成持久记忆。失败即定局，直接进排除名单。
             session_key = self.plugin._build_session_key(
                 sender_id=request.sender_id,
-                is_group=True,
-                group_id=request.group_id,
+                is_group=request.is_group,
+                group_id=request.group_id if request.is_group else None,
             )
             self.plugin.session_memory_service.record_tail_undelivered_ai_row(
                 session_key

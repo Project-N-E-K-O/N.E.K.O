@@ -397,7 +397,12 @@ class QQSessionMemoryService:
         user_data = (getattr(self.plugin, "_user_sessions", {}) or {}).get(
             session_key
         )
-        if not isinstance(user_data, dict) or not user_data.get("is_group"):
+        if not isinstance(user_data, dict):
+            return
+        if (
+            not user_data.get("is_group")
+            and user_data.get("private_memory_mode") != "participant"
+        ):
             return
         session = user_data.get("session")
         history = getattr(session, "_conversation_history", None) or []

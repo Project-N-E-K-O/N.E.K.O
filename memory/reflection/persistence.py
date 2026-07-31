@@ -57,6 +57,36 @@ from ._shared import (
 )
 
 class PersistenceMixin:
+    def _subject_forget_epoch(self, name: str, subject) -> int:
+        """Return the process-local erase generation for one scoped subject."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            return 0
+        epochs = getattr(self, "_subject_forget_epochs", None) or {}
+        return int(
+            epochs.get((name, memory_subject.key, memory_subject.scope), 0)
+        )
+
+    async def abump_subject_forget_epoch(self, name: str, subject) -> int:
+        """Invalidate scoped synthesis work that overlaps a forget request."""
+        from memory.scopes import coerce_subject
+
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError(
+                "abump_subject_forget_epoch requires an explicit subject"
+            )
+        key = (name, memory_subject.key, memory_subject.scope)
+        async with self._get_alock(name):
+            epochs = getattr(self, "_subject_forget_epochs", None)
+            if epochs is None:
+                epochs = {}
+                self._subject_forget_epochs = epochs
+            epochs[key] = int(epochs.get(key, 0)) + 1
+            return epochs[key]
+
     def _reflections_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'reflections.json')
@@ -327,17 +357,6 @@ class PersistenceMixin:
                 r for r in rows
                 if isinstance(r, dict) and entry_matches_subject(r, memory_subject)
             ]
-            if removed:
-                assert_cloudsave_writable(
-                    self._config_manager,
-                    operation="save",
-                    target=f"memory/{name}/reflections.json",
-                )
-                removed_identities = {id(r) for r in removed}
-                kept = [r for r in rows if id(r) not in removed_identities]
-                await atomic_write_json_async(
-                    path, kept, indent=2, ensure_ascii=False,
-                )
             removed_ids = {
                 r.get('id') for r in removed if isinstance(r, dict) and r.get('id')
             }
@@ -354,6 +373,20 @@ class PersistenceMixin:
                 surfaced_removed = len(surfaced) - len(kept_surfaced)
                 if surfaced_removed:
                     await self.asave_surfaced(name, kept_surfaced)
+            if removed:
+                # Save surfaced first. If the reflections write then fails,
+                # a retry still sees the source rows and can recover their
+                # IDs. The reverse order could strand copied surfaced text.
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{name}/reflections.json",
+                )
+                removed_identities = {id(r) for r in removed}
+                kept = [r for r in rows if id(r) not in removed_identities]
+                await atomic_write_json_async(
+                    path, kept, indent=2, ensure_ascii=False,
+                )
         if removed:
             logger.info(
                 f"[Reflection] {name}: forget "
