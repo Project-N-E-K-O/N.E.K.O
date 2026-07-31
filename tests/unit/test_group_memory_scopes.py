@@ -2216,7 +2216,8 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
         f["speaker_label"] == "Bob(1002)" and f["speaker_trust"] == 0.5
         for f in facts_b
     )
-    # prompt 按段渲染：段首标记（带一次性 nonce）+ 每行冠以该段 speaker。
+    # prompt 按段渲染：段首标记（带一次性 nonce）负责 speaker 归属，正文
+    # 每行统一用短前缀，且不能重复长 label 放大输入。
     prompt = captured["prompt"]
     headers = re.findall(r'^\[SEGMENT (\d+):([0-9a-f]+) \| speaker: (.+)\]$',
                          prompt, flags=re.MULTILINE)
@@ -2227,8 +2228,10 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
     assert len(nonces) == 1, "同一次请求的所有段首必须共用同一个 nonce"
     (only_nonce,) = nonces
     assert len(only_nonce) >= 8, "nonce 太短，挡不住盲猜"
-    assert "Alice(1001) | 我对花生过敏" in prompt
-    assert "Bob(1002) | 我家猫叫毛毛" in prompt
+    assert "| 我对花生过敏" in prompt
+    assert "| 我家猫叫毛毛" in prompt
+    assert "Alice(1001) | 我对花生过敏" not in prompt
+    assert "Bob(1002) | 我家猫叫毛毛" not in prompt
 
     # nonce 必须**每次请求**重新生成。做成进程级常量的实现在单次调用里
     # 看不出区别，但那样攻击者只要拿到过一次（比如模型把段首抄进某条
