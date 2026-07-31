@@ -2007,3 +2007,161 @@ async def test_a_current_turns_terminal_is_accounted_for_exactly_once():
 
     assert tracker.record.call_count == 1
     assert tracker.record.call_args.kwargs["total_tokens"] == 11
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_repeated_terminal_is_not_billed_twice():
+    # Codex P2, self-inflicted by the previous commit. Recording usage on the
+    # stale branch made a REPEATED response.done — which the transport
+    # tolerates on purpose without finalizing the turn twice — bill the same
+    # turn twice: the first takes the normal branch and clears
+    # _current_response_id, so the duplicate necessarily takes the stale one.
+    import json
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    client = _free_client()
+    done = {
+        "type": "response.done",
+        "response": {
+            "id": "resp-1",
+            "model": "free-model",
+            "usage": {"input_tokens": 7, "output_tokens": 8, "total_tokens": 15},
+        },
+    }
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+        json.dumps(done),
+        json.dumps(done),  # the provider repeats it
+    ]
+
+    tracker = MagicMock()
+    with patch("utils.token_tracker.TokenTracker.get_instance", return_value=tracker):
+        try:
+            await client.handle_messages()
+        finally:
+            await client._response_arbiter.shutdown("test teardown")
+
+    assert tracker.record.call_count == 1, (
+        "a repeated terminal is the same turn; billing it again overstates "
+        "usage for a case the transport supports on purpose"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_two_different_turns_are_billed_separately():
+    # The dual: deduplication must key on identity, not collapse everything.
+    import json
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    def _done(rid: str, total: int) -> str:
+        return json.dumps(
+            {
+                "type": "response.done",
+                "response": {
+                    "id": rid,
+                    "model": "free-model",
+                    "usage": {
+                        "input_tokens": 1,
+                        "output_tokens": total - 1,
+                        "total_tokens": total,
+                    },
+                },
+            }
+        )
+
+    client = _free_client()
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "response.created", "response": {"id": "resp-1"}}),
+        _done("resp-1", 10),
+        json.dumps({"type": "response.created", "response": {"id": "resp-2"}}),
+        _done("resp-2", 20),
+    ]
+
+    tracker = MagicMock()
+    with patch("utils.token_tracker.TokenTracker.get_instance", return_value=tracker):
+        try:
+            await client.handle_messages()
+        finally:
+            await client._response_arbiter.shutdown("test teardown")
+
+    assert tracker.record.call_count == 2
+    assert [c.kwargs["total_tokens"] for c in tracker.record.call_args_list] == [10, 20]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_abandoned_transcript_is_dropped_rather_than_spoken_as_the_successors():
+    # Codex P2, also self-inflicted: inserting the repetition check ahead of
+    # the transcript flush gave the flush an await in front of it, so a
+    # successor can start before it runs. handle_output_transcript publishes
+    # and queues TTS under whatever speech id is CURRENT, so flushing then
+    # speaks the abandoned turn's half-sentence as part of the successor's.
+    entered = asyncio.Event()
+    proceed = asyncio.Event()
+    transcripts: list[tuple[str, bool]] = []
+
+    async def _on_repetition() -> None:
+        entered.set()
+        await proceed.wait()
+
+    async def _on_transcript(text: str, is_first: bool) -> None:
+        transcripts.append((text, is_first))
+
+    client = _free_client(
+        on_repetition_detected=_on_repetition, on_output_transcript=_on_transcript
+    )
+    client._repetition_threshold = 0.5
+    # Two prior identical turns so the third trips detection and parks there.
+    client._recent_responses = ["一样的话", "一样的话"]
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    client._current_response_transcript = "一样的话"
+    client._output_transcript_buffer = "旧轮没送出的半句"
+    client._audio_delta_count = 1
+
+    release = asyncio.create_task(
+        client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+    )
+    await asyncio.wait_for(entered.wait(), timeout=1)
+
+    # A successor takes the turn while the repetition callback is parked.
+    client._turn_epoch += 1
+
+    proceed.set()
+    await asyncio.wait_for(release, timeout=2)
+
+    assert transcripts == [], (
+        "the abandoned turn's trailing text must not go out under the "
+        "successor's speech id"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_undisturbed_release_still_flushes_its_trailing_transcript():
+    # The dual. Dropping it is only correct once a successor exists; a normal
+    # release must still deliver what the turn already said, which is the
+    # whole point of the fallback flush (audio with no text otherwise).
+    transcripts: list[tuple[str, bool]] = []
+
+    async def _on_transcript(text: str, is_first: bool) -> None:
+        transcripts.append((text, is_first))
+
+    client = _free_client(on_output_transcript=_on_transcript)
+    client._current_response_id = "resp-1"
+    client._is_responding = True
+    client._turn_epoch += 1
+    # What response.created sets, so the flag the host receives is the one a
+    # real turn would have produced.
+    client._is_first_transcript_chunk = True
+    client._output_transcript_buffer = "旧轮没送出的半句"
+    client._audio_delta_count = 1
+
+    await client._on_arbiter_stuck_release("abandoned resp-1", "resp-1")
+
+    assert transcripts == [("旧轮没送出的半句", True)]

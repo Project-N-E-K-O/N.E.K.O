@@ -54,6 +54,11 @@ _ATTACHED_TRANSPORT = object()
 # when the coroutine returns, and the outer budget still reaches the rotation.
 _STUCK_RELEASE_STEP_TIMEOUT = 0.5
 
+# How many finished response ids to remember for usage deduplication. A repeat
+# arrives right behind its original, so this only has to outlive the events
+# interleaved between them; it is a leak guard, not a history.
+_USAGE_RECORDED_ID_LIMIT = 32
+
 
 # `error` 事件的致命性判定是一串子串匹配（'429' / '1008' / '503' / 'quota' ...）。它
 # 过去匹配在 `str(event['error'])` 上，也就是整个 dict 的 repr —— 里面回显着我们自己
@@ -988,11 +993,20 @@ class _TransportMixin:
         )
 
     def _record_response_usage(self, resp_data: Any) -> None:
-        """Book the provider's token counts for one finished response.
+        """Book the provider's token counts for one finished response, once.
 
         Shared by the terminal path and the stale-terminal path, because a
         response's cost does not depend on whose turn the host thinks is
         current when its ``response.done`` finally arrives.
+
+        Which is exactly why it has to deduplicate. The transport already
+        tolerates a repeated ``response.done`` without finalizing the turn
+        twice — and a repeat necessarily takes the stale branch, because the
+        first one cleared ``_current_response_id`` — so counting on both paths
+        without a guard would overstate usage for a case the transport
+        supports on purpose. Keyed by response id; a terminal with no id
+        never reaches the stale branch (that filter needs an id to compare),
+        so it can only be counted once anyway.
         """
 
         if not isinstance(resp_data, dict):
@@ -1001,6 +1015,13 @@ class _TransportMixin:
             usage = resp_data.get("usage")
             if not usage:
                 return
+            response_id = resp_data.get("id")
+            if response_id is not None:
+                if response_id in self._usage_recorded_ids:
+                    return
+                self._usage_recorded_ids.append(response_id)
+                if len(self._usage_recorded_ids) > _USAGE_RECORDED_ID_LIMIT:
+                    self._usage_recorded_ids.pop(0)
             from utils.token_tracker import TokenTracker
 
             TokenTracker.get_instance().record(
@@ -1299,26 +1320,44 @@ class _TransportMixin:
             )
         except Exception as exc:
             logger.warning("stuck-release repetition check failed: %s", exc)
-        # Best-effort, and the only step that is. A host that blocks or raises
-        # while taking this turn's last half-sentence must not take the
-        # rotation behind it down as well. Not epoch-guarded: this is the
-        # first await, nothing can have moved since the synchronous block, and
-        # the text belongs to the released turn either way.
-        try:
-            await asyncio.wait_for(
-                self._emit_pending_output_transcript(pending_transcript),
-                _STUCK_RELEASE_STEP_TIMEOUT,
+        # Epoch-guarded, unlike the repetition check above it. That one is
+        # bookkeeping about the released turn's own text and lands nowhere
+        # else; this one goes out through ``handle_output_transcript``, which
+        # publishes and queues TTS under whatever speech id is CURRENT — so
+        # once a successor has started, flushing here speaks the abandoned
+        # turn's half-sentence as part of the successor's. The released turn's
+        # trailing text is worth losing to prevent that; it is the same
+        # "lands on that turn or not at all" rule the end-of-turn hooks follow.
+        #
+        # The repetition check ahead of it can yield (on_repetition_detected),
+        # which is what makes this reachable — an earlier version of this
+        # comment said the flush was the first await and therefore safe, and
+        # inserting that step in front of it quietly made that false.
+        #
+        # Best-effort besides: a host that blocks or raises while taking the
+        # last half-sentence must not take the rotation behind it down too.
+        if _still_ours():
+            try:
+                await asyncio.wait_for(
+                    self._emit_pending_output_transcript(pending_transcript),
+                    _STUCK_RELEASE_STEP_TIMEOUT,
+                )
+            except asyncio.CancelledError:
+                raise
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "stuck-release transcript flush exceeded %.1fs; ending the "
+                    "turn anyway",
+                    _STUCK_RELEASE_STEP_TIMEOUT,
+                )
+            except Exception as exc:
+                logger.warning("stuck-release transcript flush failed: %s", exc)
+        elif pending_transcript is not None:
+            logger.info(
+                "a new turn started before the abandoned turn's trailing "
+                "transcript could be sent; dropping it rather than speaking "
+                "it as the new turn's"
             )
-        except asyncio.CancelledError:
-            raise
-        except asyncio.TimeoutError:
-            logger.warning(
-                "stuck-release transcript flush exceeded %.1fs; ending the "
-                "turn anyway",
-                _STUCK_RELEASE_STEP_TIMEOUT,
-            )
-        except Exception as exc:
-            logger.warning("stuck-release transcript flush failed: %s", exc)
         await self._notify_turn_finished(
             step_timeout=_STUCK_RELEASE_STEP_TIMEOUT,
             still_ours=_still_ours,

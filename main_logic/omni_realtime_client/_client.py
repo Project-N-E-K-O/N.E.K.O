@@ -168,6 +168,9 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._response_created_total = 0  # diagnostic: response.created events observed
         self._last_response_created_time = 0.0
         self._response_done_total = 0  # diagnostic: response.done events observed
+        # Response ids whose token usage has already been booked, so a
+        # repeated response.done cannot count the same turn twice.
+        self._usage_recorded_ids: list[str] = []
         self._last_response_done_time = 0.0
         self._last_response_transcript = ""
         self._speech_started_total = 0  # diagnostic: server VAD start events observed
