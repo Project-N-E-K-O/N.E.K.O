@@ -6,6 +6,9 @@ from plugin.plugins.qq_auto_reply import reply_generation_service as reply_modul
 from plugin.plugins.qq_auto_reply.reply_generation_service import (
     QQReplyGenerationService,
 )
+from plugin.plugins.qq_auto_reply.reply_postprocess_node import (
+    QQReplyPostprocessNode,
+)
 
 
 def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook(monkeypatch):
@@ -53,3 +56,12 @@ def test_qq_recall_tool_does_not_install_a_pre_tool_discard_hook(monkeypatch):
     assert "reply_chunks" not in inspect.signature(
         service._build_recall_tool_handler
     ).parameters
+
+
+def test_dynamic_xml_keeps_visible_text_before_the_first_message():
+    """Pre-tool text must survive the default dynamic XML parser."""
+    blocks = QQReplyPostprocessNode._parse_blocks(
+        "<wait>2</wait>我查一下<msg><text>查到了</text></msg>"
+    )
+
+    assert [block.text for block in blocks] == ["我查一下", "查到了"]

@@ -163,11 +163,11 @@ def _recall_tool_call(arguments):
     )
 
 
-def _tool_round_rows(recall_output):
+def _tool_round_rows(recall_output, assistant_content="我查一下"):
     return [
         {
             "role": "assistant",
-            "content": "我查一下",
+            "content": assistant_content,
             "tool_calls": [{
                 "id": "call_1", "type": "function",
                 "function": {"name": "recall_memory", "arguments": "{}"},
@@ -872,6 +872,37 @@ async def test_pre_tool_text_creates_history_row_without_a_final_segment():
     history = client._conversation_history
     assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
     assert history[-1].content == "我查一下"
+
+
+@pytest.mark.asyncio
+async def test_whitespace_pre_tool_text_does_not_create_a_history_row():
+    """Provider-only whitespace must not become a phantom assistant turn."""
+    plugin = _tool_plugin()
+    service = _generation_service(plugin)
+
+    async def _script(client, message):
+        result = await client.on_tool_call(_recall_tool_call({"query": "群规"}))
+        client._conversation_history.append(
+            SimpleNamespace(type="human", content=message)
+        )
+        client._conversation_history.extend(
+            _tool_round_rows(
+                result.output_as_json_string(), assistant_content="\n",
+            )
+        )
+
+    client = _RecallToolClient(_script)
+    result = await service._run_session_generation(
+        context=_group_context(),
+        session_key="group:7788",
+        user_data={"lock": asyncio.Lock()},
+        user_session=client,
+        reply_chunks=[],
+    )
+    assert result == ""
+    assert [
+        getattr(row, "type", "") for row in client._conversation_history
+    ] == ["human"]
 
 
 @pytest.mark.asyncio

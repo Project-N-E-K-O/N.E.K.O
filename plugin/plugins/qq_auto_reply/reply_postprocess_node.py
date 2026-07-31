@@ -45,6 +45,18 @@ class QQReplyPostprocessNode:
             return [block] if (clean or text) else []
 
         blocks: list[QQMessageBlock] = []
+        # 模型可在 tool call 前先输出普通 assistant 文本；forced-finalize
+        # 的 XML 会接在其后。ElementTree 把这段放在 root.text，若前面有
+        # <wait> 则放在该元素的 tail，不能只遍历 <msg> 而把它静默丢掉。
+        leading_parts = [root.text or ""]
+        for child in root:
+            if child.tag == "msg":
+                break
+            leading_parts.append(child.tail or "")
+        leading_text = "".join(leading_parts).strip()
+        if leading_text:
+            blocks.append(QQMessageBlock(text=leading_text))
+
         for msg_el in root.findall("msg"):
             block = QQMessageBlock()
 

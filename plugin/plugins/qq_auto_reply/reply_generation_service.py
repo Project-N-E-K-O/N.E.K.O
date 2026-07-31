@@ -534,7 +534,9 @@ class QQReplyGenerationService:
                 and isinstance(row.get("content"), str)
             )
         )
-        if pre_tool_text:
+        # stream_text 不外发纯空白 chunk；相同内容即使进了 provider 的
+        # assistant tool-call history，也不能凭空合成一条用户没看到的 AI 行。
+        if pre_tool_text.strip():
             final_ai_row = next(
                 (
                     row for row in reversed(history[start:])
