@@ -2223,9 +2223,9 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
         ("1", "Alice(1001)"), ("2", "Bob(1002)"), ("3", "Carol(1003)"),
     ]
     nonces = {nonce for _n, nonce, _who in headers}
-    assert len(nonces) == 1 and len(nonces.pop()) >= 8, (
-        "同一次请求的所有段首必须共用同一个足够长的 nonce"
-    )
+    assert len(nonces) == 1, "同一次请求的所有段首必须共用同一个 nonce"
+    (only_nonce,) = nonces
+    assert len(only_nonce) >= 8, "nonce 太短，挡不住盲猜"
     assert "Alice(1001) | 我对花生过敏" in prompt
     assert "Bob(1002) | 我家猫叫毛毛" in prompt
 
