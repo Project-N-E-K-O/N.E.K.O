@@ -18,6 +18,7 @@ import json
 import math
 import os
 import platform
+import subprocess
 import sys
 import time
 from collections import defaultdict
@@ -130,6 +131,36 @@ def _project_relative_path(path: Path) -> str:
         return path.relative_to(PROJECT_ROOT).as_posix()
     except ValueError:
         return "<external>"
+
+
+def _resolve_revision() -> str:
+    override = os.environ.get("GIT_COMMIT")
+    if override:
+        return override
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=PROJECT_ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        ).stdout.strip()
+        dirty = bool(
+            subprocess.run(
+                ["git", "status", "--porcelain"],
+                cwd=PROJECT_ROOT,
+                check=True,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            ).stdout.strip()
+        )
+    except (FileNotFoundError, subprocess.SubprocessError):
+        return "unknown"
+    if not commit:
+        return "unknown"
+    return f"{commit}-dirty" if dirty else commit
 
 
 def source_group_id(clip_id: str) -> str:
@@ -246,7 +277,11 @@ def split_calibration_holdout(
         if source_group_id(clip.clip_id) in holdout_groups
     ]
     if not calibration or not holdout:
-        raise ValueError("calibration/holdout split requires at least two source groups")
+        raise ValueError(
+            "calibration/holdout split requires at least two source groups "
+            "in one label/device/scenario/locale stratum; singleton-only "
+            "strata cannot be split without leakage"
+        )
     return calibration, holdout
 
 
@@ -504,6 +539,46 @@ def _current_rnnoise_policy_trigger_ms(
     )
 
 
+def _processor_rnnoise_evidence(
+    processor: AudioProcessor,
+) -> RnnoiseEvidence:
+    count = processor.rnnoise_frame_count
+    return RnnoiseEvidence(
+        available=processor.rnnoise_available,
+        frame_count=count,
+        peak=processor.rnnoise_probability_peak if count else None,
+        mean=processor.rnnoise_probability_mean if count else None,
+        last=processor.rnnoise_probability_last if count else None,
+        ema=processor.rnnoise_probability_ema if count else None,
+    )
+
+
+def _finalize_rnnoise_stream(
+    processor: AudioProcessor,
+) -> tuple[bytes, RnnoiseEvidence | None]:
+    processed_chunks: list[bytes] = []
+    final_evidence: RnnoiseEvidence | None = None
+    pending_samples = int(getattr(processor, "_frame_buffer_size", 0))
+    if pending_samples:
+        padding_samples = processor.RNNOISE_FRAME_SIZE - pending_samples
+        padded = processor.process_chunk(
+            np.zeros(padding_samples, dtype=np.int16).tobytes()
+        )
+        if padded:
+            processed_chunks.append(padded)
+        final_evidence = _processor_rnnoise_evidence(processor)
+
+    resampler = getattr(processor, "_downsample_resampler", None)
+    if resampler is not None:
+        tail = resampler.resample_chunk(
+            np.empty(0, dtype=np.float32),
+            last=True,
+        )
+        if tail.size:
+            processed_chunks.append(_pcm16(tail))
+    return b"".join(processed_chunks), final_evidence
+
+
 def _rnnoise_process(
     processor: AudioProcessor,
     samples_48k: np.ndarray,
@@ -540,17 +615,7 @@ def _rnnoise_process(
             )
             if processed:
                 processed_chunks.append(processed)
-            count = processor.rnnoise_frame_count
-            chunk_evidence.append(
-                RnnoiseEvidence(
-                    available=processor.rnnoise_available,
-                    frame_count=count,
-                    peak=processor.rnnoise_probability_peak if count else None,
-                    mean=processor.rnnoise_probability_mean if count else None,
-                    last=processor.rnnoise_probability_last if count else None,
-                    ema=processor.rnnoise_probability_ema if count else None,
-                )
-            )
+            chunk_evidence.append(_processor_rnnoise_evidence(processor))
             chunk_probabilities = frame_probabilities[frame_start:]
             last_speech_frame = next(
                 (
@@ -570,6 +635,11 @@ def _rnnoise_process(
                 silence_audio_seconds = (
                     trailing_frames * RNNOISE_CHUNK_MS / 1000.0
                 )
+        final_audio, final_evidence = _finalize_rnnoise_stream(processor)
+        if final_audio:
+            processed_chunks.append(final_audio)
+        if final_evidence is not None:
+            chunk_evidence.append(final_evidence)
     finally:
         cpu_elapsed = time.process_time() - cpu_started
         wall_elapsed = time.perf_counter() - wall_started
@@ -636,14 +706,6 @@ def _replay_rnnoise_policy(
                     trigger_ms = (index + 1) * chunk_ms
                 rnnoise_candidate_open = True
 
-            shadow_decision = shadow_policy.decide(
-                evidence,
-                candidate_open=shadow_candidate_open,
-                allow_baseline_update=not shadow_candidate_open,
-            )
-            if shadow_decision.action in positive_actions:
-                shadow_candidate_open = True
-
             chunk_end_ms = (index + 1) * chunk_ms
             while (
                 silero_probabilities is not None
@@ -657,6 +719,14 @@ def _replay_rnnoise_policy(
                         probability=probability,
                     )
                 silero_index += 1
+
+            shadow_decision = shadow_policy.decide(
+                evidence,
+                candidate_open=shadow_candidate_open,
+                allow_baseline_update=not shadow_candidate_open,
+            )
+            if shadow_decision.action in positive_actions:
+                shadow_candidate_open = True
     finally:
         replay_vad.close()
 
@@ -947,7 +1017,7 @@ def build_report(
     return {
         "schema_version": 2,
         "scope": "speech_presence_only",
-        "revision": os.environ.get("GIT_COMMIT", "working-tree"),
+        "revision": _resolve_revision(),
         "environment": {
             "platform": platform.platform(),
             "python": platform.python_version(),

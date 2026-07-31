@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -246,12 +247,17 @@ def test_online_replay_omits_silero_metrics_when_activity_is_unavailable() -> No
 
 
 def test_online_replay_aligns_silero_activity_with_rnnoise_chunks() -> None:
+    aligned_chunk_count = math.ceil(
+        evaluation.SILERO_MINIMUM_WINDOWS
+        * evaluation.SILERO_WINDOW_MS
+        / evaluation.RNNOISE_CHUNK_MS
+    )
     chunks = [
         evaluation.RnnoiseEvidence.from_legacy_probability(
             0.05,
             available=True,
         )
-        for _ in range(24)
+        for _ in range(aligned_chunk_count)
     ]
 
     trigger, metrics = evaluation._replay_rnnoise_policy(
@@ -261,7 +267,7 @@ def test_online_replay_aligns_silero_activity_with_rnnoise_chunks() -> None:
     )
 
     assert trigger is None
-    assert metrics.evidence_chunk_count == 24
+    assert metrics.evidence_chunk_count == aligned_chunk_count
     assert metrics.rnnoise_trigger_count == 0
     assert metrics.silero_trigger_count == 1
     assert metrics.rnnoise_silero_disagreement_count == 1
@@ -325,6 +331,64 @@ def test_offline_replay_resets_rnnoise_from_audio_time() -> None:
     evaluation._rnnoise_process(processor, samples)
 
     assert processor.reset_count == 1
+
+
+def test_rnnoise_process_flushes_pending_frame_and_resampler_tail() -> None:
+    class _TailResampler:
+        def resample_chunk(
+            self,
+            samples: np.ndarray,
+            *,
+            last: bool = False,
+        ) -> np.ndarray:
+            assert samples.size == 0
+            assert last is True
+            return np.asarray([0.25, -0.25], dtype=np.float32)
+
+    class _BufferedProcessor(_OfflineProcessor):
+        def __init__(self) -> None:
+            super().__init__()
+            self._pending = np.empty(0, dtype=np.int16)
+            self._frame_buffer_size = 0
+            self._downsample_resampler = _TailResampler()
+
+        def process_chunk(self, audio_bytes: bytes) -> bytes:
+            incoming = np.frombuffer(audio_bytes, dtype=np.int16)
+            combined = np.concatenate((self._pending, incoming))
+            if combined.size < self.RNNOISE_FRAME_SIZE:
+                self._pending = combined.copy()
+                self._frame_buffer_size = combined.size
+                self.rnnoise_frame_count = 0
+                return b""
+            frame = combined[: self.RNNOISE_FRAME_SIZE]
+            self._pending = combined[self.RNNOISE_FRAME_SIZE :].copy()
+            self._frame_buffer_size = self._pending.size
+            denoised, probability = self._denoiser.process_frame(frame)
+            self.rnnoise_frame_count = 1
+            self.rnnoise_probability_peak = probability
+            self.rnnoise_probability_mean = probability
+            self.rnnoise_probability_last = probability
+            self.rnnoise_probability_ema = probability
+            return denoised.astype("<i2").tobytes()
+
+    processor = _BufferedProcessor()
+    (
+        frame_probabilities,
+        chunk_evidence,
+        processed,
+        _wall_elapsed,
+        _cpu_elapsed,
+    ) = evaluation._rnnoise_process(
+        processor,
+        np.full(100, 0.5, dtype=np.float32),
+    )
+
+    assert frame_probabilities == [0.0]
+    assert [evidence.frame_count for evidence in chunk_evidence] == [0, 1]
+    assert len(processed) == (processor.RNNOISE_FRAME_SIZE + 2) * 2
+    assert processed[-4:] == evaluation._pcm16(
+        np.asarray([0.25, -0.25], dtype=np.float32)
+    )
 
 
 def test_offline_replay_uses_production_rnnoise_speech_threshold() -> None:
@@ -498,6 +562,42 @@ def test_calibration_holdout_keeps_source_variants_together() -> None:
     }
 
 
+def test_calibration_holdout_rejects_singleton_only_strata_explicitly() -> None:
+    clips = [
+        SimpleNamespace(
+            clip_id="real/mic-a/speech-a",
+            label=True,
+            locale="en",
+            scenario="speech-a",
+            device_id="mic-a",
+        ),
+        SimpleNamespace(
+            clip_id="real/mic-b/speech-b",
+            label=True,
+            locale="zh",
+            scenario="speech-b",
+            device_id="mic-b",
+        ),
+        SimpleNamespace(
+            clip_id="real/mic-a/idle-a",
+            label=False,
+            locale=None,
+            scenario="idle-a",
+            device_id="mic-a",
+        ),
+        SimpleNamespace(
+            clip_id="real/mic-b/idle-b",
+            label=False,
+            locale=None,
+            scenario="idle-b",
+            device_id="mic-b",
+        ),
+    ]
+
+    with pytest.raises(ValueError, match="singleton-only strata"):
+        evaluation.split_calibration_holdout(clips, seed=2398)
+
+
 def test_threshold_is_selected_from_calibration_metrics_only() -> None:
     clips = [
         SimpleNamespace(label=True, score=0.80),
@@ -616,6 +716,29 @@ def test_real_device_manifest_rejects_paths_outside_its_directory(
         match="real-device path must stay inside the manifest directory",
     ):
         evaluation.load_real_device_manifest(manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("status_output", "expected"),
+    [
+        ("", "abc123"),
+        (" M scripts/evaluate_speech_presence.py", "abc123-dirty"),
+    ],
+)
+def test_revision_uses_repository_commit_and_dirty_marker(
+    monkeypatch: pytest.MonkeyPatch,
+    status_output: str,
+    expected: str,
+) -> None:
+    outputs = iter(("abc123\n", status_output))
+    monkeypatch.delenv("GIT_COMMIT", raising=False)
+    monkeypatch.setattr(
+        evaluation.subprocess,
+        "run",
+        lambda *_args, **_kwargs: SimpleNamespace(stdout=next(outputs)),
+    )
+
+    assert evaluation._resolve_revision() == expected
 
 
 def test_report_includes_silero_latency_and_private_asset_contract(
