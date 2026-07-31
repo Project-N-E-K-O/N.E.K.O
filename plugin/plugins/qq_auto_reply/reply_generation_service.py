@@ -341,8 +341,10 @@ class QQReplyGenerationService:
                     # tool 轮写进共享历史的裸 dict 行随轮清理：召回原文是按
                     # consent 域临时授权给本轮的，语义与旧管线的"prompt 注入
                     # + restore"一致——留在共享历史里会进 digest、进后续每轮
-                    # 的上下文，member 撤销后也无法再摘除。模型的最终回答行
-                    # （引用了召回结论的那条 ai 行）照常保留。
+                    # 的上下文，member 撤销后也无法再摘除。assistant tool-call
+                    # 行里的 pre-tool 可见文本先折叠进最终 ai 行，再删掉携带
+                    # tool metadata 的裸 dict，保证用户看到的文本与后续上下文
+                    # 一致。
                     self._strip_tool_round_rows(history_now, history_before)
                 appended = list(history_now)[history_before:]
                 user_data["human_row_accepted"] = any(
@@ -496,7 +498,7 @@ class QQReplyGenerationService:
 
     @classmethod
     def _strip_tool_round_rows(cls, history: list, start_index: int) -> int:
-        """Remove this turn's tool-round dict rows from shared history.
+        """Fold visible pre-tool text into the final AI row, then remove tool rows.
 
         Only rows appended at or after ``start_index`` are considered —
         the rows sit BETWEEN the human row and the final ai row, so this
@@ -504,8 +506,35 @@ class QQReplyGenerationService:
         guard can reset the history to shorter than ``start_index``; the
         range is then empty and nothing is touched.
         """
+        start = max(start_index, 0)
+        pre_tool_text = "".join(
+            str(row.get("content") or "")
+            for row in history[start:]
+            if (
+                isinstance(row, dict)
+                and row.get("role") == "assistant"
+                and row.get("tool_calls")
+                and isinstance(row.get("content"), str)
+            )
+        )
+        if pre_tool_text:
+            final_ai_row = next(
+                (
+                    row for row in reversed(history[start:])
+                    if getattr(row, "type", "") == "ai"
+                ),
+                None,
+            )
+            final_content = getattr(final_ai_row, "content", None)
+            if (
+                final_ai_row is not None
+                and isinstance(final_content, str)
+                and not final_content.startswith(pre_tool_text)
+            ):
+                final_ai_row.content = pre_tool_text + final_content
+
         removed = 0
-        for index in range(len(history) - 1, max(start_index, 0) - 1, -1):
+        for index in range(len(history) - 1, start - 1, -1):
             if cls._is_tool_round_row(history[index]):
                 del history[index]
                 removed += 1

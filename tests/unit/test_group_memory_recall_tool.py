@@ -778,6 +778,9 @@ async def test_pre_tool_text_remains_in_the_outbound_message():
         reply_chunks=reply_chunks,
     )
     assert result == "我查一下查到了，是不剧透"
+    history = client._conversation_history
+    assert [getattr(row, "type", "") for row in history] == ["human", "ai"]
+    assert history[-1].content == "我查一下查到了，是不剧透"
 
 
 @pytest.mark.asyncio
