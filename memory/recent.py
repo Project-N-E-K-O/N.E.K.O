@@ -60,25 +60,42 @@ REVIEW_FINGERPRINT_K = 3
 REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
 
 
+def _review_message_content(message) -> str:
+    if isinstance(message, dict):
+        content = message.get('content', '')
+        if 'content' not in message and isinstance(message.get('data'), dict):
+            content = message['data'].get('content', '')
+    elif hasattr(message, 'content'):
+        content = message.content
+    else:
+        return str(message)
+    content = content or ''
+    if isinstance(content, list):
+        parts = []
+        for item in content:
+            if isinstance(item, dict):
+                parts.append(str(item.get('text', '') or item))
+            else:
+                parts.append(str(item))
+        return '\n'.join(parts)
+    if isinstance(content, str):
+        return content
+    return str(content)
+
+
+def _review_prompt_locale_text(messages: list) -> str:
+    """Return raw message content without speaker labels."""
+    return '\n\n'.join(_review_message_content(message) for message in messages)
+
+
 async def review_context_token_count(messages: list) -> int:
     """Return a stable token-size metric without blocking the event loop."""
     rows = []
     for message in messages:
         role = getattr(message, 'type', '') or ''
-        content = getattr(message, 'content', '') or ''
+        content = _review_message_content(message)
         if isinstance(message, dict):
             role = message.get('type', message.get('role', role)) or ''
-            content = message.get('content', content) or ''
-        if isinstance(content, list):
-            parts = []
-            for item in content:
-                if isinstance(item, dict):
-                    parts.append(str(item.get('text', '') or item))
-                else:
-                    parts.append(str(item))
-            content = '\n'.join(parts)
-        elif not isinstance(content, str):
-            content = str(content)
         rows.append(f"{role}: {content}")
     return await acount_tokens('\n\n'.join(rows))
 
@@ -1065,15 +1082,7 @@ class CompressedRecentHistoryManager:
             else:
                 role = "unknown"
 
-            if hasattr(msg, 'content'):
-                if isinstance(msg.content, str):
-                    content = msg.content
-                elif isinstance(msg.content, list):
-                    content = "\n".join([str(i) if isinstance(i, str) else i.get("text", str(i)) for i in msg.content])
-                else:
-                    content = str(msg.content)
-            else:
-                content = str(msg)
+            content = _review_message_content(msg)
 
             history_text += f"{role}: {content}\n\n"
 
@@ -1094,7 +1103,7 @@ class CompressedRecentHistoryManager:
                     (
                         get_history_review_prompt(
                             detect_prompt_language(
-                                history_text,
+                                _review_prompt_locale_text(snapshot),
                                 ui_language=get_global_language_full(),
                             )
                         )

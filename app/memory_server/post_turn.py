@@ -21,8 +21,6 @@ handler at import time.
 
 import asyncio
 from functools import wraps
-import threading
-import time
 
 from config import (
     IGNORED_REINFORCEMENT_DELTA,
@@ -39,18 +37,6 @@ from memory.outbox import OP_POST_TURN_SIGNALS
 from . import gates, outbox_infra, runtime, signal_extraction
 from ._shared import logger
 from .rows import _extract_ai_response, _extract_user_messages
-
-
-_locale_order_lock = threading.Lock()
-_last_locale_order = 0
-
-
-def _next_locale_order() -> int:
-    global _last_locale_order
-
-    with _locale_order_lock:
-        _last_locale_order = max(time.time_ns(), _last_locale_order + 1)
-        return _last_locale_order
 
 
 def _with_language_context(func):
@@ -79,9 +65,13 @@ async def _spawn_outbox_post_turn_signals(
     ``_run_post_turn_signals``. The registered payload contains the whole turn's
     conversation serialized via messages_to_dict, replayable at restart.
     """
+    from .locale_state import reserve_character_prompt_locale_order
     from utils.llm_client import messages_to_dict
 
-    locale_order = _next_locale_order()
+    locale_order = await asyncio.to_thread(
+        reserve_character_prompt_locale_order,
+        lanlan_name,
+    )
     payload = {
         'messages': messages_to_dict(messages),
         'locale_order': locale_order,

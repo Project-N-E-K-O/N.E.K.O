@@ -616,6 +616,7 @@ class QQSessionInstructionService:
                 memory_context = await self.plugin.memory_bridge.fetch_scoped_bootstrap_memory(
                     her_name,
                     subjects=subjects,
+                    language=locale,
                 )
                 if not bool(
                     (getattr(self.plugin, "_qq_settings", {}) or {}).get(
@@ -626,7 +627,10 @@ class QQSessionInstructionService:
                     # 落在 fetch 飞行期间时丢弃已读回的数据。
                     return ""
             else:
-                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(her_name)
+                memory_context = await self.plugin.memory_bridge.fetch_bootstrap_memory(
+                    her_name,
+                    language=locale,
+                )
             if not memory_context:
                 return ""
             # 走本地化静态层（与其余 prompt 段同一条解析路径）：裸 format

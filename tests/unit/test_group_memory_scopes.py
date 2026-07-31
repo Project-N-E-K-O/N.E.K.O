@@ -494,6 +494,7 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
             QQMemoryBridge.group_subject("7788"),
             QQMemoryBridge.group_participant_subject("7788", "2046"),
         ],
+        language="",
     )
 
     # Member memory OFF gates this read too (dual of the recall path):
@@ -510,7 +511,9 @@ async def test_qq_group_bootstrap_never_reads_legacy_private_memory():
         sender_id="2046",
     )
     bridge.fetch_scoped_bootstrap_memory.assert_awaited_once_with(
-        "Neko", subjects=[QQMemoryBridge.group_subject("7788")],
+        "Neko",
+        subjects=[QQMemoryBridge.group_subject("7788")],
+        language="",
     )
 
 
@@ -537,7 +540,10 @@ async def test_qq_private_bootstrap_keeps_legacy_behavior():
     )
 
     assert "旧私人记忆" in rendered
-    bridge.fetch_bootstrap_memory.assert_awaited_once_with("Neko")
+    bridge.fetch_bootstrap_memory.assert_awaited_once_with(
+        "Neko",
+        language="",
+    )
     bridge.fetch_scoped_bootstrap_memory.assert_not_awaited()
 
 

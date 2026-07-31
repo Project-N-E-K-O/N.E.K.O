@@ -61,10 +61,28 @@ class QQMemoryBridge:
             ),
         }
 
-    async def fetch_bootstrap_memory(self, her_name: str, *, timeout: float = 5.0) -> str:
+    async def fetch_bootstrap_memory(
+        self,
+        her_name: str,
+        *,
+        language: str | None = None,
+        timeout: float = 5.0,
+    ) -> str:
+        from utils.language_utils import (
+            get_global_language_full,
+            is_supported_language_code,
+        )
+
+        prompt_language = (
+            language
+            if is_supported_language_code(language)
+            else get_global_language_full()
+        )
         client = self._client()
         response = await client.get(
-            f"{self._base_url()}/new_dialog/{her_name}", timeout=timeout,
+            f"{self._base_url()}/new_dialog/{her_name}",
+            params={"language": prompt_language},
+            timeout=timeout,
         )
         response.raise_for_status()
         return response.text.strip()
@@ -74,14 +92,25 @@ class QQMemoryBridge:
         her_name: str,
         *,
         subjects: list[dict[str, str]],
+        language: str | None = None,
         timeout: float = 5.0,
     ) -> str:
         if not subjects:
             return ""
+        from utils.language_utils import (
+            get_global_language_full,
+            is_supported_language_code,
+        )
+
+        prompt_language = (
+            language
+            if is_supported_language_code(language)
+            else get_global_language_full()
+        )
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_context",
-            json={"subjects": subjects},
+            json={"subjects": subjects, "language": prompt_language},
             timeout=timeout,
         )
         response.raise_for_status()

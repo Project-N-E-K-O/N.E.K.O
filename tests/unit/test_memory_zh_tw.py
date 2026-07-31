@@ -223,10 +223,76 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
         raise Recorded
 
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda _name: 42,
+    )
     monkeypatch.setattr(locale_state, "record_character_prompt_locale", record)
 
     with pytest.raises(Recorded):
         await routes._new_dialog("Neko", "zh-TW")
+
+
+@pytest.mark.asyncio
+async def test_scoped_context_activates_request_locale(monkeypatch):
+    from app.memory_server import routes
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    async def render(name, req):
+        observed.append((name, req.language, get_global_language_full()))
+        return "ok"
+
+    monkeypatch.setattr(routes, "_get_scoped_context", render)
+    request = routes.ScopedContextRequest(
+        subjects=[{
+            "subject_kind": "group_chat",
+            "subject_id": "qq:7788",
+        }],
+        language="zh-TW",
+    )
+
+    assert await routes.get_scoped_context("Neko", request) == "ok"
+    assert observed == [("Neko", "zh-TW", "zh-TW")]
+
+
+@pytest.mark.asyncio
+async def test_qq_bootstrap_requests_forward_full_locale(monkeypatch):
+    from plugin.plugins.qq_auto_reply.memory_bridge import QQMemoryBridge
+
+    calls = []
+
+    class Response:
+        text = "ok"
+
+        def raise_for_status(self):
+            return None
+
+    class Client:
+        async def get(self, _url, **kwargs):
+            calls.append(("get", kwargs))
+            return Response()
+
+        async def post(self, _url, **kwargs):
+            calls.append(("post", kwargs))
+            return Response()
+
+    monkeypatch.setattr(QQMemoryBridge, "_client", staticmethod(Client))
+    bridge = QQMemoryBridge(object())
+    await bridge.fetch_bootstrap_memory("Neko", language="zh-TW")
+    await bridge.fetch_scoped_bootstrap_memory(
+        "Neko",
+        subjects=[{
+            "subject_kind": "group_chat",
+            "subject_id": "qq:7788",
+        }],
+        language="zh-TW",
+    )
+
+    assert calls[0][1]["params"] == {"language": "zh-TW"}
+    assert calls[1][1]["json"]["language"] == "zh-TW"
 
 
 def test_memory_prompt_locale_detection_ignores_formatter_metadata():
@@ -260,6 +326,17 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
 
     for raw_text in (dedup_text, refine_text, promotion_text, synthesis_text):
         assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
+
+
+def test_review_locale_detection_ignores_ascii_speaker_labels():
+    from memory.recent import _review_prompt_locale_text
+    from utils.language_utils import detect_prompt_language
+
+    messages = [{"type": "Alice", "content": "好"} for _ in range(3)]
+    raw_text = _review_prompt_locale_text(messages)
+
+    assert "Alice" not in raw_text
+    assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
 
 
 @pytest.mark.asyncio
@@ -423,6 +500,74 @@ def test_signal_loop_rejects_stale_locale_worker(monkeypatch, tmp_path):
     # 升级前入队的旧任务没有顺序号，也不能覆盖已有的新状态。
     signal_extraction._signal_check_record_turn("Neko", language="ja")
     assert signal_extraction._signal_check_state["Neko"]["language"] == "zh-TW"
+
+
+def test_locale_order_reservation_survives_clock_rollback(monkeypatch, tmp_path):
+    import json
+
+    from app.memory_server import locale_state
+
+    locale_path = tmp_path / "prompt_locale.json"
+    future_order = 10**30
+    locale_path.write_text(
+        json.dumps({
+            "language": "zh-CN",
+            "order": future_order,
+            "reserved_order": future_order,
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
+
+    reserved = locale_state.reserve_character_prompt_locale_order("Neko")
+
+    assert reserved == future_order + 1
+    locale_state.record_character_prompt_locale(
+        "Neko",
+        "zh-TW",
+        order=reserved,
+    )
+    locale_state._locale_cache.clear()
+    assert locale_state.get_character_prompt_locale("Neko") == "zh-TW"
+
+
+@pytest.mark.asyncio
+async def test_periodic_rebuttal_uses_durable_character_locale(monkeypatch, tmp_path):
+    from app.memory_server import evidence_loops, locale_state, runtime
+    from utils.language_utils import get_global_language_full
+
+    observed = []
+
+    class ReflectionEngine:
+        async def check_feedback_for_confirmed(
+            self,
+            name,
+            confirmed,
+            user_msgs,
+        ):
+            observed.append(
+                (name, confirmed, user_msgs, get_global_language_full())
+            )
+            return []
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
+    order = locale_state.reserve_character_prompt_locale_order("Neko")
+    locale_state.record_character_prompt_locale("Neko", "zh-TW", order=order)
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+
+    result = await evidence_loops._check_feedback_for_confirmed(
+        "Neko",
+        [{"id": "r1"}],
+        ["我不同意"],
+    )
+
+    assert result == []
+    assert observed == [
+        ("Neko", [{"id": "r1"}], ["我不同意"], "zh-TW"),
+    ]
 
 
 def test_persona_correction_locale_ignores_formatter_labels():

@@ -17,6 +17,15 @@ import pytest
 from utils.llm_client import AIMessage, HumanMessage
 
 
+@pytest.fixture(autouse=True)
+def _isolate_prompt_locale_sidecar(monkeypatch, tmp_path):
+    from app.memory_server import locale_state
+
+    locale_path = tmp_path / "prompt_locale.json"
+    monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
+    locale_state._locale_cache.clear()
+
+
 def _install_fresh_memory_state(tmpdir: str):
     """Replace memory_server's outbox / config_manager with fresh instances backed by tmpdir."""
     from memory.outbox import Outbox

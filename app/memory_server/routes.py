@@ -815,6 +815,7 @@ class ScopedHistoryRequest(BaseModel):
 
 class ScopedContextRequest(BaseModel):
     subjects: list[MemorySubjectRequest]
+    language: str | None = None
 
 
 class ScopedMentionsRequest(BaseModel):
@@ -1117,6 +1118,11 @@ async def _process_scoped_history_segments(
 
 @app.post("/internal/memory/{lanlan_name}/scoped_context")
 async def get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
+    with language_context(_activate_request_language(req.language)):
+        return await _get_scoped_context(lanlan_name, req)
+
+
+async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
     """Render only explicitly authorized persona/reflection subjects.
 
     ⚠️ `subjects` ORDER IS THE BUDGET PRIORITY. The renderer allocates the
@@ -1460,11 +1466,15 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if is_supported_language_code(language):
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_character_prompt_locale_order,
+            lanlan_name,
+        )
         await asyncio.to_thread(
             locale_state.record_character_prompt_locale,
             lanlan_name,
             language,
-            order=post_turn._next_locale_order(),
+            order=locale_order,
         )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成

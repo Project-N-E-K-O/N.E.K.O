@@ -63,6 +63,21 @@ async def _run_with_character_language(name: str, operation):
     return await run_with_character_prompt_locale(name, operation, name)
 
 
+async def _check_feedback_for_confirmed(
+    name: str,
+    confirmed: list[dict],
+    user_msgs: list[str],
+):
+    """Run periodic rebuttal analysis with the durable character locale."""
+    return await run_with_character_prompt_locale(
+        name,
+        runtime.reflection_engine.check_feedback_for_confirmed,
+        name,
+        confirmed,
+        user_msgs,
+    )
+
+
 async def _resolve_rebuttal_start_time(name: str, now: datetime):
     """Decide the starting time for this round's rebuttal_loop query.
 
@@ -272,7 +287,7 @@ async def _periodic_rebuttal_loop():
                 user_msgs = [m for m, _ in batch]
 
                 # 复用 check_feedback 判断反驳
-                feedbacks = await runtime.reflection_engine.check_feedback_for_confirmed(
+                feedbacks = await _check_feedback_for_confirmed(
                     name, confirmed, user_msgs,
                 )
                 if feedbacks is None:

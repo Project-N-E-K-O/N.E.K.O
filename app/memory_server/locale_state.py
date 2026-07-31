@@ -21,6 +21,7 @@ import asyncio
 import json
 import os
 import threading
+import time
 
 from utils.file_utils import atomic_write_json
 from utils.language_utils import (
@@ -32,7 +33,7 @@ from utils.logger_config import get_module_logger
 
 
 logger = get_module_logger(__name__, "Memory")
-_locale_cache: dict[str, tuple[str | None, int | None]] = {}
+_locale_cache: dict[str, tuple[str | None, int | None, int | None]] = {}
 _locale_locks: dict[str, threading.Lock] = {}
 _locale_locks_guard = threading.Lock()
 
@@ -56,12 +57,15 @@ def _get_locale_lock(name: str) -> threading.Lock:
     return _locale_locks[name]
 
 
-def _load_locale_state_unlocked(name: str) -> tuple[str | None, int | None]:
+def _load_locale_state_unlocked(
+    name: str,
+) -> tuple[str | None, int | None, int | None]:
     if name in _locale_cache:
         return _locale_cache[name]
 
     selected = None
     order = None
+    reserved_order = None
     try:
         with open(_locale_path(name), encoding="utf-8") as handle:
             payload = json.load(handle)
@@ -71,11 +75,61 @@ def _load_locale_state_unlocked(name: str) -> tuple[str | None, int | None]:
         candidate_order = payload.get("order") if isinstance(payload, dict) else None
         if isinstance(candidate_order, int) and not isinstance(candidate_order, bool):
             order = candidate_order
+        candidate_reserved = (
+            payload.get("reserved_order") if isinstance(payload, dict) else None
+        )
+        if isinstance(candidate_reserved, int) and not isinstance(
+            candidate_reserved,
+            bool,
+        ):
+            reserved_order = candidate_reserved
     except (OSError, json.JSONDecodeError):
         # A missing or partially-written sidecar is equivalent to no saved locale.
         pass
-    _locale_cache[name] = (selected, order)
-    return selected, order
+    if order is not None:
+        reserved_order = max(reserved_order or order, order)
+    _locale_cache[name] = (selected, order, reserved_order)
+    return selected, order, reserved_order
+
+
+def _persist_locale_state_unlocked(
+    name: str,
+    language: str | None,
+    order: int | None,
+    reserved_order: int | None,
+) -> None:
+    _locale_cache[name] = (language, order, reserved_order)
+    try:
+        atomic_write_json(
+            _locale_path(name),
+            {
+                "language": language,
+                "order": order,
+                "reserved_order": reserved_order,
+            },
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        logger.warning(
+            "[PromptLocale] %s: persist failed: %s",
+            name,
+            exc,
+        )
+
+
+def reserve_character_prompt_locale_order(name: str) -> int:
+    """Reserve and durably persist the next per-character causal order."""
+    with _get_locale_lock(name):
+        language, order, reserved_order = _load_locale_state_unlocked(name)
+        high_water = max(order or 0, reserved_order or 0)
+        selected_order = max(time.time_ns(), high_water + 1)
+        _persist_locale_state_unlocked(
+            name,
+            language,
+            order,
+            selected_order,
+        )
+        return selected_order
 
 
 def record_character_prompt_locale(
@@ -91,32 +145,28 @@ def record_character_prompt_locale(
     selected_order = order if isinstance(order, int) and not isinstance(order, bool) else None
 
     with _get_locale_lock(name):
-        current_language, current_order = _load_locale_state_unlocked(name)
+        current_language, current_order, reserved_order = _load_locale_state_unlocked(name)
         if current_order is not None and (
             selected_order is None or selected_order < current_order
         ):
             return current_language
 
-        _locale_cache[name] = (selected, selected_order)
-        try:
-            atomic_write_json(
-                _locale_path(name),
-                {"language": selected, "order": selected_order},
-                ensure_ascii=False,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[PromptLocale] %s: persist failed: %s",
-                name,
-                exc,
-            )
+        next_reserved_order = reserved_order
+        if selected_order is not None:
+            next_reserved_order = max(reserved_order or selected_order, selected_order)
+        _persist_locale_state_unlocked(
+            name,
+            selected,
+            selected_order,
+            next_reserved_order,
+        )
     return selected
 
 
 def get_character_prompt_locale(name: str) -> str | None:
     """Load the latest explicit session locale, including after restart."""
     with _get_locale_lock(name):
-        selected, _order = _load_locale_state_unlocked(name)
+        selected, _order, _reserved_order = _load_locale_state_unlocked(name)
         return selected
 
 
