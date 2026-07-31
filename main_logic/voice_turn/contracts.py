@@ -112,8 +112,14 @@ class AsrFailureEvent:
 class VoicePartialEvent:
     """Display-only partial transcript emitted by independent ASR."""
 
+    turn_token: VoiceTurnToken
     text: str
-    session_epoch: int
+
+    @property
+    def session_epoch(self) -> int:
+        """Compatibility view for existing read-only epoch checks."""
+
+        return self.turn_token.ingress.session_epoch
 
 
 @dataclass(frozen=True, slots=True)

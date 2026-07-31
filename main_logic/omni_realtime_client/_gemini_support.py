@@ -605,6 +605,15 @@ class _GeminiMixin:
                 was_interrupted = bool(
                     getattr(server_content, 'interrupted', False)
                 )
+                # ⚠️ 这里刻意【不】触发 on_audio_done（issue #1566 的音频完结信号，
+                # 见 _transport.py 的 response.audio.done 分支）。Gemini（原生 +
+                # lanlan.app free 代理）唯一的结束信号就是 turn_complete，而它会
+                # 抢跑迟到音频 —— 本文件上下已有三处注释承认这点（"late content
+                # after premature turn_complete"、"turn_complete 后到达的迟到转录"、
+                # "Gemini turn_complete 抢跑的迟到音频"）。把 on_audio_done 挂在
+                # turn_complete 上等于把「音频还没放完就宣告放完」重新造一遍，正是
+                # 这个 issue 本身。Gemini 这条路继续靠前端的 give-up 计时器兜底：
+                # 漏发是可接受的降级，早发不是。
                 if getattr(server_content, 'turn_complete', False):
                     # Gemini Live API 不返回 token 数，仅记录调用次数
                     try:

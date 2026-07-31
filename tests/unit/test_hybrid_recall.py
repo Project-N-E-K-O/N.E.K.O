@@ -520,5 +520,129 @@ class TestRecallByTime(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["results"], [])
 
 
+# ── archive half-commit overlap (issue #2528) ─────────────────────────
+
+
+class TestArchiveHalfCommitOverlap(unittest.IsolatedAsyncioTestCase):
+    """A row present in both facts.json and facts_archive.json scores once.
+
+    ``FactStore._archive_absorbed`` writes facts_archive.json before
+    facts.json on purpose: an interrupted commit leaves the row in *both*
+    files rather than in neither. The archive-side cooldown then keeps that
+    state around for up to ``_ARCHIVE_COOLDOWN_HOURS``, so every archive
+    reader has to collapse the overlap — ``FactStore.load_facts_full`` does
+    it for its callers, these two do it for the recall pools.
+    """
+
+    def setUp(self):
+        self.tmpdir = tempfile.mkdtemp()
+        self.archive_path = os.path.join(self.tmpdir, "facts_archive.json")
+
+    def _write_archive(self, rows):
+        with open(self.archive_path, "w", encoding="utf-8") as f:
+            json.dump(rows, f)
+
+    def _make_stores(self, active_facts):
+        fact_store = MagicMock()
+        fact_store.aload_facts = AsyncMock(return_value=active_facts)
+        fact_store._facts_archive_path = MagicMock(return_value=self.archive_path)
+        reflection_engine = MagicMock()
+        reflection_engine.aload_reflections = AsyncMock(return_value=[])
+        return fact_store, reflection_engine
+
+    async def test_half_committed_row_neither_double_scores_nor_evicts(self):
+        """A half-committed row scores once and takes one budget slot."""
+        dup = {"id": "dup", "score": 1.0,
+               "text": "博士 博士 博士 博士最喜欢的游戏 游戏 游戏 The Witness"}
+        solo = {"id": "solo", "score": 1.0, "text": "博士喜欢的游戏是别的"}
+        self._write_archive([dict(dup)])
+        fact_store, reflection_engine = self._make_stores([dup, solo])
+
+        with patch("memory.hybrid_recall._cosine_rank", new=AsyncMock(return_value=[])), \
+             patch("memory.hybrid_recall.HYBRID_RECALL_BM25_THRESHOLD", 0.0), \
+             patch("memory.hybrid_recall.HYBRID_RECALL_BUDGET_EACH", 2):
+            res = await hybrid_recall(
+                lanlan_name="testcat", query="博士 游戏",
+                fact_store=fact_store, reflection_engine=reflection_engine,
+                config_manager=MagicMock(),
+            )
+
+        ids = [r["id"] for r in res["results"]]
+        self.assertEqual(ids.count("dup"), 1, ids)
+        # 名额：两份 dup 会把 BM25 的 top-2 占满，solo 本该被召回却被挤掉。
+        self.assertIn("solo", ids, ids)
+        # 计分：RRF 对同一 id 的每次出现都累加 1/(k+rank)，重复行会拿双倍分。
+        dup_score = next(r["score"] for r in res["results"] if r["id"] == "dup")
+        self.assertAlmostEqual(dup_score, 1.0 / 61, places=6)
+        # 活跃副本胜出（它至少和归档副本一样新，monotonic 标记以它为准）。
+        self.assertEqual(
+            next(r["tier"] for r in res["results"] if r["id"] == "dup"), "fact",
+        )
+
+    async def test_recall_by_time_returns_a_half_committed_row_once(self):
+        """``recall_by_time`` has no fusion step: a duplicate row would
+        simply be returned twice."""
+        from memory.hybrid_recall import recall_by_time
+        dup = {"id": "dup", "text": "五月一号通宵", "score": 1.0,
+               "event_start_at": "2026-05-01T22:00:00"}
+        self._write_archive([dict(dup)])
+        fact_store, reflection_engine = self._make_stores([dup])
+
+        res = await recall_by_time(
+            lanlan_name="testcat", time_spec="2026-05-01",
+            fact_store=fact_store, reflection_engine=reflection_engine,
+        )
+
+        ids = [r["id"] for r in res["results"]]
+        self.assertEqual(ids, ["dup"], ids)
+        self.assertEqual(res["results"][0]["tier"], "fact")
+
+    async def test_archive_only_rows_still_reach_the_pool(self):
+        """Only overlapping ids are collapsed; archive-only rows still recall."""
+        active = [{"id": "act", "text": "博士今天在写代码", "score": 1.0}]
+        self._write_archive([
+            {"id": "arch_only", "text": "博士曾经养过一只猫", "score": 1.0},
+        ])
+        fact_store, reflection_engine = self._make_stores(active)
+
+        with patch("memory.hybrid_recall._cosine_rank", new=AsyncMock(return_value=[])), \
+             patch("memory.hybrid_recall.HYBRID_RECALL_BM25_THRESHOLD", 0.0):
+            res = await hybrid_recall(
+                lanlan_name="testcat", query="博士 猫",
+                fact_store=fact_store, reflection_engine=reflection_engine,
+                config_manager=MagicMock(),
+            )
+
+        ids = [r["id"] for r in res["results"]]
+        self.assertIn("arch_only", ids, ids)
+
+    def test_rows_without_a_usable_id_are_never_folded(self):
+        """Rows without a usable id share no key, so folding them would trade
+        a duplicate for silent data loss."""
+        from memory.hybrid_recall import _drop_archive_overlap
+        # 活跃侧同样可能有手改 / 老库留下的坏 id：把它们原样塞进集合会在
+        # list/dict 上抛 TypeError（unhashable），一条坏行带挂整次召回。
+        active = [
+            {"id": "", "text": "空 id 的活跃行"},
+            {"id": None, "text": "没有 id 的活跃行"},
+            {"id": ["unhashable"], "text": "id 是 list 的活跃行"},
+            {"id": 0, "text": "id 为 0 的 legacy 活跃行"},
+            {"id": "real", "text": "x"},
+        ]
+        archive = [
+            {"id": "", "text": "空 id 的归档行"},
+            {"id": None, "text": "没有 id 的归档行"},
+            {"id": ["unhashable"], "text": "id 是 list 的归档行"},
+            {"id": "real", "text": "真重叠"},
+            {"id": 0, "text": "id 为 0 的 legacy 重叠行"},
+        ]
+        kept = _drop_archive_overlap(archive, active, "testcat")
+        texts = [r["text"] for r in kept]
+        self.assertEqual(len(kept), 3, texts)
+        self.assertNotIn("真重叠", texts)
+        # id 为 0 是完全可用的键（`not fact_id` 会把它误判成没有 id）。
+        self.assertNotIn("id 为 0 的 legacy 重叠行", texts)
+
+
 if __name__ == "__main__":
     unittest.main()

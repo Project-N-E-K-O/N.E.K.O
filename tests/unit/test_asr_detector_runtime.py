@@ -216,6 +216,25 @@ async def test_rnnoise_soft_gate_skips_silero_until_probable_voice() -> None:
     assert speech.events == (SpeechActivityEvent.SPEECH_STARTED,)
 
 
+async def test_disabled_resource_optimization_never_skips_quiet_silero_pcm() -> None:
+    gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=gate,
+        rnnoise_onset_probability=0.4,
+        resource_optimization_enabled=False,
+    )
+
+    result = await detector.feed(
+        b"\x01\x00",
+        speech_probability=0.1,
+        rnnoise_available=True,
+    )
+
+    assert gate.inputs == [b"\x01\x00"]
+    assert result.events == (SpeechActivityEvent.SPEECH_STARTED,)
+
+
 async def test_rnnoise_unavailable_does_not_look_like_zero_probability() -> None:
     gate = _Gate((SpeechActivityEvent.SPEECH_STARTED,))
     detector = DetectorRuntime(vad=_Vad(), gate=gate, rnnoise_onset_probability=0.4)
@@ -347,6 +366,28 @@ async def test_candidate_open_prevents_rnnoise_from_skipping_followup_pcm() -> N
     assert quiet.status is DetectorSubmitStatus.SKIPPED_QUIET
     assert onset.status is DetectorSubmitStatus.ACCEPTED
     assert followup.status is DetectorSubmitStatus.ACCEPTED
+    await detector.close()
+
+
+async def test_disabled_resource_optimization_never_skips_quiet_smart_turn_pcm() -> None:
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate(),
+        provider_policy=_smart_turn_policy(),
+        coordinator=_SemanticCoordinator(),
+        on_turn_complete=AsyncMock(),
+        resource_optimization_enabled=False,
+    )
+
+    result = await detector.submit_audio(
+        b"\x01\x00" * 160,
+        ingress_token=_ingress_token(),
+        sample_rate_hz=16_000,
+        speech_probability=0.1,
+        rnnoise_available=True,
+    )
+
+    assert result.status is DetectorSubmitStatus.ACCEPTED
     await detector.close()
 
 

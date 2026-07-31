@@ -52,7 +52,10 @@ def test_imported_paths_resolves_package_alias_attribute_chains(
     assert expected in referenced
 
 
-def _dynamic_import_results(contract_checker, source: str) -> list[tuple[str | None, bool]]:
+def _dynamic_import_results(
+    contract_checker,
+    source: str,
+) -> list[tuple[tuple[str, ...] | None, bool]]:
     tree = ast.parse(source)
     aliases = contract_checker.module_alias_paths(tree, "main_logic.asr_client")
     return [
@@ -80,7 +83,7 @@ def test_dynamic_import_target_resolves_string_literal_forms(
     source: str,
 ) -> None:
     assert _dynamic_import_results(contract_checker, source) == [
-        ("main_logic.core", True)
+        (("main_logic.core",), True)
     ]
 
 
@@ -89,6 +92,31 @@ def test_dynamic_import_target_reports_non_literal_argument(contract_checker) ->
     source = "import importlib\ndef load(name):\n    return importlib.import_module(name)"
 
     assert _dynamic_import_results(contract_checker, source) == [(None, True)]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "import importlib\n\n"
+            "def load():\n"
+            '    return importlib.import_module(".core", "main_logic")\n'
+        ),
+        (
+            "def load():\n"
+            '    return __import__("main_logic", fromlist=["core"])\n'
+        ),
+    ],
+)
+def test_dynamic_import_gate_resolves_relative_and_fromlist_targets(
+    contract_checker,
+    source: str,
+) -> None:
+    assert (
+        "asr_client must not import main_logic.core (dynamic import)"
+        in _dynamic_import_violation_messages(contract_checker, source)
+    )
 
 
 @pytest.mark.unit
@@ -107,6 +135,15 @@ def _dynamic_import_violation_messages(contract_checker, source: str) -> list[st
             Path("loader.py"), tree, aliases, "main_logic.core", "asr_client"
         )
     ]
+
+
+@pytest.mark.unit
+def test_dynamic_import_docstring_describes_multiple_forbidden_prefixes(
+    contract_checker,
+) -> None:
+    docstring = contract_checker._dynamic_import_violations.__doc__ or ""
+
+    assert "forbidden prefixes" in docstring
 
 
 @pytest.mark.unit
@@ -332,6 +369,129 @@ def test_run_flags_dynamic_imports_of_core_inside_asr_client(
 
     assert "asr_client must not import main_logic.core (dynamic import)" in messages
     assert any("non-literal module name" in message for message in messages)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import main_logic.core\n",
+        "from main_logic import asr_client\n",
+        "from main_logic.voice_turn import audio_input\n",
+        "import main_routers.game_router\n",
+        "from utils import preferences\n",
+        "import plugin.plugins.demo\n",
+        "import importlib\nimportlib.import_module('main_logic.core')\n",
+    ],
+)
+def test_run_flags_forbidden_voice_input_dependencies(
+    contract_checker,
+    tmp_path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    for package in (tmp_path / "main_routers", tmp_path / "utils"):
+        package.mkdir()
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    plugin = tmp_path / "plugin" / "plugins" / "demo"
+    plugin.mkdir(parents=True)
+    for package in (plugin.parent.parent, plugin.parent, plugin):
+        (package / "__init__.py").write_text("", encoding="utf-8")
+    voice_input = tmp_path / "main_logic" / "voice_input"
+    voice_input.mkdir()
+    probe = voice_input / "probe.py"
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "VOICE_INPUT_LAYERING"
+    ]
+
+    assert messages
+
+
+@pytest.mark.unit
+def test_missing_voice_input_registry_uses_voice_input_violation_code(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    missing = tmp_path / "main_logic" / "voice_input"
+
+    violations = [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == missing
+    ]
+
+    assert len(violations) == 1
+    assert violations[0].code == "VOICE_INPUT_LAYERING"
+    assert (
+        violations[0].message
+        == "required layering path is missing (VOICE_INPUT_LAYERING)"
+    )
+
+
+@pytest.mark.unit
+def test_run_accepts_frozen_voice_input_dependency_direction(
+    contract_checker,
+    tmp_path,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    voice_input = tmp_path / "main_logic" / "voice_input"
+    consumers = voice_input / "consumers"
+    consumers.mkdir(parents=True)
+    probe = consumers / "game.py"
+    probe.write_text(
+        "from main_logic.voice_input.contracts import VoiceInputConsumer\n"
+        "from main_logic.voice_turn.contracts import VoiceTurnToken\n"
+        "from utils.game_route_state import is_game_route_active\n",
+        encoding="utf-8",
+    )
+
+    violations = [
+        violation
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe
+        and violation.code == "VOICE_INPUT_LAYERING"
+    ]
+
+    assert violations == []
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import main_logic.voice_input\n",
+        "import importlib\n"
+        "importlib.import_module('main_logic.voice_input.registry')\n",
+    ],
+)
+def test_run_flags_asr_client_importing_core_owned_registry(
+    contract_checker,
+    tmp_path,
+    source: str,
+) -> None:
+    _write_minimal_core_layout(tmp_path)
+    (tmp_path / "main_logic" / "voice_input").mkdir()
+    asr_client = tmp_path / "main_logic" / "asr_client"
+    asr_client.mkdir()
+    probe = asr_client / "probe.py"
+    probe.write_text(source, encoding="utf-8")
+
+    messages = [
+        violation.message
+        for violation in contract_checker.run(tmp_path)
+        if violation.path == probe and violation.code == "ASR_LAYERING"
+    ]
+
+    assert any(
+        "asr_client must not import main_logic.voice_input" in message
+        for message in messages
+    )
 
 
 @pytest.mark.unit

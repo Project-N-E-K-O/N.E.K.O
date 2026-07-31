@@ -72,6 +72,11 @@
         pendingAudioChunkMetaQueue: [],
         incomingAudioEpoch: 0,
         isProcessingIncomingAudioBlob: false,
+        // 正在解码中的那个 blob 属于哪一轮。processIncomingAudioBlobQueue 是
+        // 先 shift 出队再 await 解码，这段窗口里该 chunk 不在任何一个队列里，
+        // 只有这个字段能证明"这一轮还有音频在路上"。缺了它，解码期间进来的
+        // turn-end / source.onended 会把本轮判成已放完 → 提前收尾。
+        processingAudioBlobTurnId: null,
         decoderResetPromise: null,
 
         // --- Audio (录音/麦克风) ---
@@ -83,17 +88,26 @@
         selectedMicrophoneId: null,
         microphoneGainDb: 0,
         noiseReductionEnabled: true,
-        independentAsrEnabled: false,
+        independentAsrEnabled: true,
+        voiceInputResourceOptimizationEnabled: true,
         // 设置是否已"水合"：server GET 合并成功或用户显式改过设置后才为 true。
-        // 在此之前 S.independentAsrEnabled 只是启动默认值（false），不代表权威偏好，
+        // 在此之前两个 true 都只是启动默认值，不代表服务器权威偏好；
+        // independentAsrEnabled 尤其不能提前进入会话握手，
         // start_session 握手（app-websocket.js attachStartSessionHandshake）不得携带它，
-        // 否则新浏览器 profile 首个会话会用默认 false 覆盖后端持久化的 true。
+        // 否则新浏览器 profile 首个会话会覆盖后端持久化的显式 false。
         settingsHydrated: false,
         // independentAsrEnabled 的按键权威位：settingsHydrated 在任何一次用户改
         // 设置时都会翻真，而那与 ASR 的值毫无关系。只有「server GET 合并成功」
         // 「用户显式改过 ASR 开关」「跨窗口 ASR 翻转」这三种事件才让它变权威；
         // 在此之前 start_session 握手必须省略该字段，由后端持久化值兜底。
         independentAsrAuthoritative: false,
+        // 资源优化同样参与会话路由启动，必须独立证明该键来自 server merge、
+        // 本窗口显式修改或可信的跨窗口修改，不能用启动默认值覆盖持久化选择。
+        voiceInputResourceOptimizationAuthoritative: false,
+        // 跨 popup generation 保存「下次会话生效」状态与当前会话的实际 ASR
+        // route。否则跨窗口设置事件更新偏好后，重渲染会把偏好误报成当前 route。
+        voiceSettingsPendingUntilEpoch: null,
+        pendingVoiceRouteIndependentAsr: null,
         // 独立 ASR 已 fail-closed 的粘性标记：blocked 生命周期事件只发一次，
         // 而游戏 STT 网关持有麦克风时会跳过停麦，退出游戏的恢复路径必须据此
         // 拒绝把麦克风重新开到一条仍然关闭的路由上。
@@ -167,6 +181,17 @@
         assistantSpeechPlaybackTurnId: null,
         assistantSpeechPlaybackStartAudioTime: 0,
         assistantSpeechPlaybackEndAudioTime: 0,
+        // 后端声明"这一 speech 的音频流已关闭"之后记下的轮 id + 当时的 epoch。
+        // 音频队列瞬时为空只能证明"此刻手里没有音频"，证明不了"后面不会再有"：
+        // TTS 一阵一阵地到，阵间空档和真正的流结束在前端长得一模一样。所以收尾
+        // 要等这个权威标记，或等 give-up 计时器到点。epoch 用来作废打断之后才
+        // 迟到的信号（否则会去收尾一个已经被取消的轮）。
+        assistantAudioStreamClosedTurnId: null,
+        assistantAudioStreamClosedEpoch: -1,
+        // speech_id → turnId。音频头只带 speech_id（后端 send_speech 不发 turn_id），
+        // audio_done 也只能按 speech_id 对账，这里存下音频头到达时解析出的映射。
+        // 随 close 标记一起清，所以条目数被限制在单轮之内。
+        assistantAudioTurnBySpeechId: {},
         // 最近一次本地麦克风 RMS 超过语音阈值的时间戳（ms epoch）。
         // 由 app-audio-capture.js 里的 monitorInputVolume 持续写入；
         // app-proactive.js 在 voice 模式 tick 时用它判断"用户最近是否在发声"，

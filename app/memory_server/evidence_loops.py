@@ -417,7 +417,7 @@ async def _periodic_idle_maintenance_loop():
        by the recent_memory_auto_review switch or REVIEW_SKIP_HISTORY_LEN: persona corrections
        don't read recent history; they are an independent contradiction-resolution pipeline and
        shouldn't be blanket-disabled by the review switch.
-    3. Memory tidy-up review — skipped when review_clean; subject to the REVIEW_MIN_INTERVAL
+    3. Memory tidy-up review — subject to the REVIEW_MIN_INTERVAL
        minimum interval; skipped when history < REVIEW_SKIP_HISTORY_LEN or review_enabled is off.
     """
     await asyncio.sleep(_INITIAL_DELAY_IDLE_MAINT)

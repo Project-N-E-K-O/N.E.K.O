@@ -266,7 +266,11 @@ def _atomic_write(lock_path: Path, payload: bytes) -> None:
         assert last_exc is not None
         raise last_exc
     except BaseException:
-        with suppress(FileNotFoundError):
+        # suppress(OSError) 而不是只吞 FileNotFoundError：目标被句柄占着时
+        # os.replace 抛 PermissionError，紧随其后的 unlink 往往被同一个原因拒掉，
+        # 只吞 FileNotFoundError 就会让调用方看到 unlink 的异常、真实原因退到
+        # __context__ 里。与 utils/file_utils.atomic_write_text 保持一致。
+        with suppress(OSError):
             tmp_path.unlink()
         raise
 

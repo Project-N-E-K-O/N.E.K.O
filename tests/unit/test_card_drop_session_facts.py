@@ -2385,3 +2385,56 @@ def test_callback_access_logs_suppress_sensitive_query_parameters(caplog):
     assert "secret-code" not in caplog.text
     assert "secret-state" not in caplog.text
     assert "secret-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_archive_pick_excludes_rows_still_present_in_active_facts(
+    tmp_path, monkeypatch
+):
+    """A half-committed row must not be offered as a "distant" archive memory.
+
+    ``FactStore._archive_absorbed`` writes facts_archive.json before
+    facts.json, so an interrupted commit leaves the row in both files until
+    the next successful archive pass. The exclusion set therefore has to come
+    from the whole active file, not from the handful of facts this call
+    happened to pick: any row that was not picked would otherwise come back
+    through the archive branch while still being live.
+    """
+    facts_path = tmp_path / "facts.json"
+    archive_path = tmp_path / "facts_archive.json"
+    active = [
+        {
+            "id": f"f{i}",
+            "text": f"fact {i}",
+            "importance": 8,
+            "hash": f"h{i}",
+            "created_at": "2020-01-01T00:00:00Z",
+        }
+        for i in range(6)
+    ]
+    facts_path.write_text(json.dumps(active), encoding="utf-8")
+    # 归档里是全部 6 条的副本 = 最坏情况的半提交：无论这次抽中哪 5 条，
+    # 剩下那条都会从归档侧漏回来。
+    archive_path.write_text(json.dumps(active), encoding="utf-8")
+
+    async def fake_context(*_args, **_kwargs):
+        return ActiveNekoContext(
+            master_name="Master",
+            lanlan_name="Lanlan",
+            memory_dir=tmp_path,
+            facts_path=facts_path,
+            source="test",
+        )
+
+    monkeypatch.setattr(F, "resolve_active_neko_context", fake_context)
+    payload = await build_forge_facts_payload(
+        runtime_character_hint="Lanlan",
+        min_importance=0,
+        limit=5,
+    )
+
+    assert payload["returnedCount"] == 5
+    assert payload["archiveRawCount"] == 6
+    assert payload["archiveFilteredCount"] == 0, payload["archiveFilteredCount"]
+    sources = [fact["sourceCollection"] for fact in payload["facts"]]
+    assert "facts_archive" not in sources, sources

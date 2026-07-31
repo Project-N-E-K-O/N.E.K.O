@@ -19,6 +19,7 @@ Method-only mixin: every instance attribute is assigned in
 ``LLMSessionManager.__init__`` (``main_logic.core.manager``).
 """
 
+import asyncio
 import os
 from main_logic.omni_realtime_client import OmniRealtimeClient
 from main_logic.tool_calling import ToolCall, ToolDefinition, ToolResult
@@ -280,22 +281,57 @@ class ToolCallingMixin:
                 return _loc(RECALL_MEMORY_TOOL_NO_RESULT_LOOSEN, _lang).format(query=query)
             return _loc(RECALL_MEMORY_TOOL_NO_RESULT, _lang)
 
-        # 渲染：首行 i18n 总览 + 每条 markdown bullet
-        # 格式: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``
-        # tier/entity 走本地化标签表（scoped 条目的 entity 恒等于
-        # subject.kind，裸回显会把 `[fact/group_chat]` 塞进中文 prompt）；
-        # 与插件侧 memory_bridge.render_relevant_memory 共用同一张表。
-        # text 是原始记忆原文不翻译（按用户拍板）。时间锚点优先取事件真正
-        # 发生时间 event_end_at → event_start_at → created_at（与 persona
-        # 过时 block / temporal _past_anchor 同口径），让模型看到的是"事件
-        # 什么时候发生"而不是"记忆什么时候写下"；再附一个本地化相对标签。
+        # 整段渲染扔进 worker 线程：truncate_to_tokens 编码的是**截断前**的
+        # 原文，而这条链路存在的理由正是"上游可能返回一条超长的合并
+        # reflection"。tiktoken 对切不开的超长 chunk 是二次退化，同步跑在
+        # 事件循环上会连带卡住语音会话。渲染本身保持同步函数（与插件侧
+        # memory_bridge.render_relevant_memory 同构、测试可直调），offload
+        # 放在这个唯一的 async 调用点。
+        return await asyncio.to_thread(self._render_recall_block, results, _lang)
+
+    @staticmethod
+    def _render_recall_block(results: list, _lang: str) -> str:
+        """Render recall hits as the markdown block the model receives.
+
+        Format: ``1. [事实/关于用户] text  (2026-05-01, 23 天前)``, under an
+        i18n overview line.
+
+        tier/entity go through the localized label table (a scoped entry's
+        entity is always its subject.kind, and echoing it raw would push
+        ``[fact/group_chat]`` into a Chinese prompt); the plugin's
+        ``memory_bridge.render_relevant_memory`` shares that table. The
+        memory text itself is never translated. The time anchor prefers
+        when the event actually happened — event_end_at → event_start_at →
+        created_at, the same order as the persona stale block and temporal
+        ``_past_anchor`` — so the model sees when the event happened rather
+        than when the memory was written, plus a localized relative label.
+
+        Budget mirrors the plugin twin: each entry truncated by tokens
+        (never dropped), the block through the same
+        ``take_lines_within_token_budget``. Entry count here comes from
+        hybrid_recall's fusion cap rather than the plugin's limit=5, so
+        this is the side where the block cap actually binds.
+
+        Deliberately synchronous, and called through ``asyncio.to_thread``
+        — see the caller.
+        """  # noqa: DOCSTRING_CJK
+        from config import (
+            RECALL_RENDER_ENTRY_MAX_TOKENS,
+            RECALL_RENDER_LINE_OVERHEAD_TOKENS,
+            RECALL_RENDER_TOTAL_MAX_TOKENS,
+        )
         from config.prompts.prompts_memory import render_recall_entry_tag
         from memory.temporal import (
             time_since_label as _time_label,
             _parse_iso_safe,
             to_naive_local,
         )
-        lines = [_loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang).format(n=len(results))]
+        from utils.tokenize import (
+            count_tokens,
+            take_lines_within_token_budget,
+            truncate_to_tokens,
+        )
+        entry_lines: list[str] = []
         for i, r in enumerate(results, start=1):
             tag = render_recall_entry_tag(r.get("tier"), r.get("entity"), _lang)
             # str() coerce 防 malformed memory entry：facts/reflections.json
@@ -304,7 +340,10 @@ class ToolCallingMixin:
             # truthy non-string（时间戳尤其常见，老数据可能存 epoch int）。
             # codex review (2 轮): 不 coerce → .strip() / [:10] crash → 整条
             # tool call 翻 is_error，模型反而不能正常走。
-            text = str(r.get("text") or "").strip()
+            text = truncate_to_tokens(
+                str(r.get("text") or "").strip(),
+                RECALL_RENDER_ENTRY_MAX_TOKENS,
+            )
             # 锚点取 event_end_at → event_start_at → created_at 里**第一个能
             # 解析出来**的（不是第一个 truthy 的）：manual edit / 迁移可能让
             # 高优先级字段是个非空但解析不了的脏值，按 truthiness 选会卡住、
@@ -328,8 +367,33 @@ class ToolCallingMixin:
                 time_suffix = f"  ({date_part})"
             else:
                 time_suffix = ""
-            lines.append(f"{i}. {tag} {text}{time_suffix}")
-        return "\n".join(lines)
+            # 整行再兜一次底（与插件侧对偶）：截断只管 text，而 tag 里的
+            # tier / entity 是未知枚举原样透出的，手改过的 facts.json 能塞
+            # 进任意长的 entity——而整段预算的"至少留一条"规则会无条件留下
+            # 第一行。行上限用「单条 + 行装饰」的口径，正常条目够不着。
+            entry_lines.append(truncate_to_tokens(
+                f"{i}. {tag} {text}{time_suffix}",
+                RECALL_RENDER_ENTRY_MAX_TOKENS + RECALL_RENDER_LINE_OVERHEAD_TOKENS,
+            ))
+        # 首行 i18n 总览也进这个字符串，所以要先从预算里扣掉，否则整段实际
+        # 超预算（ja 的表头就有 14 tok）。用 n=条目总数 估表头开销：最终 n
+        # 只可能更小、位数只可能更少，往大了估是安全方向。
+        header_template = _loc(RECALL_MEMORY_TOOL_FOUND_HEADER, _lang)
+        header_reserve = count_tokens(
+            header_template.format(n=len(entry_lines))
+        ) + count_tokens("\n")
+        kept, dropped = take_lines_within_token_budget(
+            entry_lines, max(0, RECALL_RENDER_TOTAL_MAX_TOKENS - header_reserve),
+        )
+        if dropped:
+            logger.info(
+                "[recall_memory] rendered block over %d tok budget; dropped "
+                "trailing %d entries", RECALL_RENDER_TOTAL_MAX_TOKENS, dropped,
+            )
+        # 总览按**实际渲染出去的条数**算：报 n=8 却只列 5 条会让模型以为
+        # 剩下三条被自己漏掉了，追着再调一次工具。
+        header = header_template.format(n=len(kept))
+        return "\n".join([header] + kept)
 
     async def _sync_tools_to_active_session(self, *, raise_on_failure: bool = False) -> None:
         """Sync the registry's current state to all active clients.

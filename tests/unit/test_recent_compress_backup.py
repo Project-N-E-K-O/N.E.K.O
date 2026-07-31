@@ -48,7 +48,7 @@ async def test_on_compress_done_failure_spawns_backup():
     fake_mgr.compress_history = _slow_compress
 
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, snapshot, ok=False, detailed=False)
         task = memory_server.compress_backup_tasks.get(name)
         assert task is not None and not task.done()  # 起了后台兜底
@@ -67,7 +67,7 @@ async def test_on_compress_done_success_cancels_backup():
     task.done.return_value = False
     memory_server.compress_backup_tasks[name] = task
 
-    with patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+    with patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, [], ok=True, detailed=False)
 
     task.cancel.assert_called_once()  # 主路径成功 → cancel 在跑的后台
@@ -89,7 +89,7 @@ async def test_on_compress_done_in_flight_guard():
     fake_mgr = MagicMock()
     fake_mgr.compress_history = AsyncMock(return_value=None)
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, _history(6), ok=False, detailed=False)
 
     # 同角色已有后台在跑 → 不重复起，仍是原 task
@@ -115,7 +115,7 @@ async def test_on_compress_done_deadletter_skips_spawn():
     fake_mgr = MagicMock()
     fake_mgr.enforce_hard_cap = AsyncMock()
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, snapshot, ok=False, detailed=False)
 
     # 连续失败 ≥ N 且输入未变 → dead-letter，不再起后台；但仍裁剪兜底
@@ -145,7 +145,7 @@ async def test_on_compress_done_deadletter_resets_when_input_changed():
     fake_mgr = MagicMock()
     fake_mgr.compress_history = _slow_compress
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._on_compress_done(name, new_snapshot, ok=False, detailed=False)
         # 输入变了 → 复位放行，起了后台
         task = memory_server.compress_backup_tasks.get(name)
@@ -169,7 +169,7 @@ async def test_run_backup_compress_failure_bumps_backoff():
     fake_mgr.compress_history = AsyncMock(return_value=None)
     fake_mgr.enforce_hard_cap = AsyncMock()
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._run_backup_compress(name, snapshot, False)
 
     state = memory_server.gates._maint_state[name]
@@ -191,7 +191,7 @@ async def test_run_backup_compress_merges_and_clears_backoff():
     fake_mgr.compress_history = AsyncMock(return_value=(SystemMessage(content="memo"), "memo"))
     fake_mgr.merge_backup_memo = AsyncMock(return_value="merged")
     with patch.object(memory_server.runtime, "recent_history_manager", fake_mgr), \
-         patch.object(memory_server.gates, "_asave_maint_state", AsyncMock()):
+         patch.object(memory_server.gates, "_persist_maint_state_locked", MagicMock()):
         await memory_server._run_backup_compress(name, snapshot, False)
 
     fake_mgr.merge_backup_memo.assert_awaited_once()  # 成功 → 合并写回

@@ -12,13 +12,11 @@ This policy applies to the Project N.E.K.O. documentation site.
 
 ## Your choice
 
-Analytics is optional. Google Analytics is not loaded until you allow it, and declining analytics does not limit access to the documentation.
-
-Google Analytics is not loaded and the site does not send requests to Google Analytics. The consent banner stores no choice until you select **Allow** or **Decline**.
+Analytics is optional. Until you allow it, the site neither loads Google Analytics nor sends requests to it, and the consent banner does not save a choice. Declining analytics does not limit access to the documentation.
 
 ## Information used when analytics is enabled
 
-When analytics is allowed, the site loads Google Analytics 4 using measurement ID `G-N4QZK4PHE3`. It sends page-view events so we can understand which documentation pages are useful and how visitors reach the site. When a visitor selects a link to the N.E.K.O. Steam page, it also sends a `steam_cta_click` event containing the sanitized destination URL, CTA placement, sanitized page URL, and page title.
+When analytics is allowed, the site loads Google Analytics 4 and sends page-view and limited interaction events so we can understand which documentation pages are useful and how visitors reach the site. If a visitor follows a link to the N.E.K.O. Steam page, the site records that outbound interaction to understand how the documentation leads visitors to the product page. Analytics events include only cleaned page or destination information and basic page context needed for aggregate reporting.
 
 Google Analytics may process information such as the page URL and title, referrer, browser and device information, and approximate location. We disable advertising storage, ad user data, ad personalization, Google Signals, and advertising-personalization signals in the site configuration.
 
@@ -28,17 +26,17 @@ The information is used for aggregate reporting and documentation improvement. A
 
 Google Analytics processes analytics information on behalf of the site. The documentation site does not intentionally send account credentials, private messages, form contents, or other sensitive information through analytics.
 
-Before analytics events are sent, page URLs retain only the approved `utm_source`, `utm_medium`, `utm_campaign`, `utm_content`, and `utm_term` campaign parameters, with each value limited to 100 characters. Other query parameters and URL fragments are removed. Steam destination URLs are sent without query parameters or fragments.
+Before analytics events are sent, page and destination URLs are cleaned. Only campaign information needed for attribution may be retained; other query data and URL fragments are removed, and retained values are limited to reduce accidental disclosure.
 
-Your browser stores the choice in local storage under `neko.docs.analytics-consent.v1`. It contains only the choice, a format version, and the time it was saved. The choice expires after 180 days, after which the site asks again.
+Your browser stores only your analytics choice and the minimal state needed to remember it. The choice expires periodically, after which the site asks again.
 
-User-level and event-level data covered by GA4's Data Retention setting is kept for no longer than 14 months. Property administrators can reduce that period to 2 months. This setting does not affect aggregated standard reports. See [Google Analytics data retention](https://support.google.com/analytics/answer/7667196?hl=en).
+Google Analytics processes data according to the property's retention settings, which may be adjusted by the property administrators. Aggregated standard reports may follow different retention behavior. See [Google Analytics data retention](https://support.google.com/analytics/answer/7667196?hl=en).
 
 The site may rely on external services for hosting and may open external destinations such as Steam. Those services handle information under their own policies.
 
 ## Changing or withdrawing your choice
 
-Use the persistent **Cookie settings** control at the bottom of any documentation page to allow or decline analytics at any time. If you withdraw previously granted consent, the site changes analytics consent to denied, attempts to remove accessible `_ga` cookies, and reloads without loading the Google tag. You can also clear the site's stored data through your browser, which resets the saved choice.
+Use the persistent **Cookie settings** control at the bottom of any documentation page to allow or decline analytics at any time. If you withdraw previously granted consent, the site records the choice as declined, stops future analytics, attempts to remove analytics cookies accessible to the site, and reloads without analytics. You can also clear the site's stored data through your browser, which resets the saved choice.
 
 ## Questions
 

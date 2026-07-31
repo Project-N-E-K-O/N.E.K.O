@@ -175,9 +175,9 @@ MMDManager.prototype.setupFloatingButtons = function() {
 
         btnWrapper.appendChild(btn);
 
-        // 麦克风静音按钮（仅非手机模式下的麦克风按钮）
+        // 语音会话快捷控制（仅非手机模式下的麦克风按钮）
         if (config.id === 'mic' && config.hasPopup && config.separatePopupTrigger && !(window.isMobileWidth && window.isMobileWidth())) {
-            this.createMicMuteButton(btnWrapper);
+            this.createVoiceSessionQuickControls(btnWrapper);
         }
 
         // 处理弹窗

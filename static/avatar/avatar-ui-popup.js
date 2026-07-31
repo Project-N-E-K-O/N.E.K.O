@@ -231,6 +231,40 @@ function injectPopupStyles(prefix) {
         .${prefix}-toggle-indicator[aria-checked="true"] .${prefix}-toggle-checkmark {
             opacity: 1;
         }
+        .${prefix}-toggle-item.${prefix}-toggle-item-slider {
+            gap: 12px;
+        }
+        .${prefix}-toggle-item-slider .${prefix}-toggle-label {
+            flex: 1 1 auto;
+            min-width: 0;
+        }
+        .${prefix}-toggle-indicator.${prefix}-toggle-slider {
+            box-sizing: border-box;
+            width: 36px;
+            min-width: 36px;
+            height: 20px;
+            border-width: 1px;
+            border-radius: 999px;
+            background-color: var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05));
+            overflow: visible;
+            transition: background-color 0.2s ease, border-color 0.2s ease;
+        }
+        .${prefix}-toggle-slider .${prefix}-toggle-thumb {
+            position: absolute;
+            top: 1px;
+            left: 1px;
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            background: #fff;
+            box-shadow: 0 1px 3px rgba(15, 23, 42, 0.24);
+            opacity: 1;
+            transform: translateX(0);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        .${prefix}-toggle-slider[aria-checked="true"] .${prefix}-toggle-thumb {
+            transform: translateX(16px);
+        }
         .${prefix}-toggle-label {
             cursor: pointer;
             user-select: none;
@@ -414,8 +448,8 @@ function createSettingsPopupContent(manager, prefix, popup) {
 
     // 4. 主动搭话和自主视觉（角色设置已移至分隔线下方的导航菜单区域）
     const settingsToggles = [
-        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15 },
-        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true }
+        { id: 'proactive-chat', label: window.t ? window.t('settings.toggles.proactiveChat') : '主动搭话', labelKey: 'settings.toggles.proactiveChat', storageKey: 'proactiveChatEnabled', hasInterval: true, intervalKey: 'proactiveChatInterval', defaultInterval: 15, controlStyle: 'slider' },
+        { id: 'proactive-vision', label: window.t ? window.t('settings.toggles.proactiveVision') : '隐私模式', labelKey: 'settings.toggles.proactiveVision', tooltipKey: 'settings.toggles.proactiveVisionTooltip', storageKey: 'proactiveVisionEnabled', hasInterval: true, intervalKey: 'proactiveVisionInterval', defaultInterval: 15, inverted: true, controlStyle: 'slider' }
     ];
 
     settingsToggles.forEach(toggle => {
@@ -2189,11 +2223,15 @@ function createToggleItem(manager, prefix, toggle, popup) {
  * 创建设置开关项
  */
 function createSettingsToggleItem(manager, prefix, toggle) {
+    const usesSliderControl = toggle.controlStyle === 'slider';
     const toggleItem = document.createElement('div');
     toggleItem.className = `${prefix}-toggle-item`;
     markAvatarPopupActionElement(toggleItem, 'settings-toggle');
     if (toggle.alwaysTinted) {
         toggleItem.classList.add(`${prefix}-toggle-item-static`);
+    }
+    if (usesSliderControl) {
+        toggleItem.classList.add(`${prefix}-toggle-item-slider`);
     }
     toggleItem.id = `${prefix}-toggle-${toggle.id}`;
     toggleItem.setAttribute('role', 'switch');
@@ -2252,16 +2290,33 @@ function createSettingsToggleItem(manager, prefix, toggle) {
 
     const indicator = document.createElement('div');
     indicator.className = `${prefix}-toggle-indicator`;
+    if (usesSliderControl) {
+        indicator.classList.add(`${prefix}-toggle-slider`);
+    }
     indicator.setAttribute('role', 'presentation');
     indicator.setAttribute('aria-hidden', 'true');
 
     const checkmark = document.createElement('div');
     checkmark.className = `${prefix}-toggle-checkmark`;
+    if (usesSliderControl) {
+        checkmark.classList.add(`${prefix}-toggle-thumb`);
+    }
     checkmark.setAttribute('aria-hidden', 'true');
-    checkmark.innerHTML = '✓';
+    checkmark.textContent = usesSliderControl ? '' : '✓';
     indicator.appendChild(checkmark);
 
     const updateIndicatorStyle = (checked) => {
+        if (usesSliderControl) {
+            const activeColor = 'var(--neko-popup-accent, #44b7fe)';
+            indicator.style.backgroundColor = checked
+                ? activeColor
+                : 'var(--neko-popup-accent-bg, rgba(42, 123, 196, 0.05))';
+            indicator.style.borderColor = checked
+                ? activeColor
+                : 'var(--neko-popup-indicator-border, #ccc)';
+            checkmark.style.opacity = '1';
+            return;
+        }
         if (checked) {
             const activeColor = 'var(--neko-popup-accent, #44b7fe)';
             indicator.style.backgroundColor = activeColor;
@@ -2275,6 +2330,7 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     };
 
     const label = document.createElement('label');
+    label.className = `${prefix}-toggle-label`;
     label.innerText = toggle.label;
     if (toggle.labelKey) {
         label.setAttribute('data-i18n', toggle.labelKey);
@@ -2324,8 +2380,13 @@ function createSettingsToggleItem(manager, prefix, toggle) {
     updateStyle();
 
     toggleItem.appendChild(checkbox);
-    toggleItem.appendChild(indicator);
-    toggleItem.appendChild(label);
+    if (usesSliderControl) {
+        toggleItem.appendChild(label);
+        toggleItem.appendChild(indicator);
+    } else {
+        toggleItem.appendChild(indicator);
+        toggleItem.appendChild(label);
+    }
 
     toggleItem.addEventListener('mouseenter', () => {
         updateStyle();

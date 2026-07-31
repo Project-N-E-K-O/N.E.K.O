@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.responses import Response
 
 from plugin.logging_config import get_logger
+from utils.host_origin_guard import HostOriginGuardMiddleware
 from utils.logger_config import get_module_logger
 from plugin.server.infrastructure.exceptions import register_exception_handlers
 from plugin.server.lifecycle import shutdown as lifecycle_shutdown
@@ -246,4 +247,7 @@ def build_plugin_server_app(title: str = "N.E.K.O User Plugin Server") -> FastAP
     app.include_router(plugin_cli_router)
     app.include_router(llm_tools_router)
     app.include_router(market_bridge_router)
+    # Keep the Host/Origin guard outside CORS and the cache-header middleware;
+    # untrusted requests must not be short-circuited before the guard runs.
+    app.add_middleware(HostOriginGuardMiddleware)
     return app

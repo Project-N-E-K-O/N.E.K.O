@@ -19,7 +19,10 @@ import json
 import os
 import re
 import tempfile
+import threading
+import time
 import unicodedata
+from contextlib import suppress
 from pathlib import Path
 from typing import Any, Callable
 
@@ -496,13 +499,163 @@ def robust_json_loads(raw: str) -> Any:
     return _normalize_overescaped_newlines(json.loads(s))  # 让最终错误带完整上下文抛出
 
 
+# 崩后残留 tmp 的清扫。mkstemp 与 os.replace 之间被硬杀（taskkill、断电、OOM）会留下
+# 一个 tmp：没人读它，但会一直攒在用户的 config / memory 目录里。
+#
+# 按**目录节流**，不是「每个目录一辈子扫一次」。清理型 sweeper 的正确不变量是「隔一段
+# 时间再看一眼」而不是「只看一次」：只看一次的话，本次写自己泄漏的 tmp（清扫跑在
+# mkstemp 之前）、扫描当时还太年轻的 tmp、以及扫描本身瞬时失败的目录，都会留到进程
+# 退出。换成「上次扫描时刻 + 最小间隔」之后这三类自然都被下一个窗口兜住，泄漏存活
+# 时间有上界（≤ 年龄门槛 + 间隔），而且不需要撤记账 / CAS / 重试计数这一串补丁。
+# 按目录而不是按目标记账：同一目录下每多一个目标就多扫一遍整个目录（archive_shards
+# 是一个目录几百个各自独立的目标，cloudsave 的 bindings/<角色>.json 同理），而且
+# 「写完就沉底、再也不会被写第二次」的目标留下的残留按目标记账永远扫不到。
+#
+# 按目录扫就不能靠目标名认自己的 tmp，而「形状 + mtime」证明不了所有权：别的程序、
+# 插件或用户放在同一个目录里的旧文件只要撞上同一个形状就会被永久删掉。所以自己的
+# tmp 名里嵌一个所有权标记，只清带标记的文件 —— 可证明的所有权，不是概率论。
+# install_source 的 `plugins.lock.json.<pid>.<uuid>.tmp` 是同一个思路。代价：本次改动
+# 之前的旧版残留没有标记、永远扫不到；宁可漏清，也不删自己证明不了归属的文件。
+#
+# 年龄门槛防误删。它不能证明 tmp 没有主人（写者理论上能在 mkstemp 之后被冻结很久），
+# 所以还有两道兜底：Windows 上活写者的句柄一直开着，unlink 会被拒（实测
+# PermissionError winerror=32）—— 物理上抢不走；POSIX 上 unlink 会成功，但后果是那次
+# 写的 os.replace 抛 FileNotFoundError，一个诚实的异常而不是静默损坏。
+_TMP_OWNER_TAG = "nkatmp"
+# 随机段写成 [^.]+ 而不是 [a-z0-9_]+：有了所有权标记之后它的长度和字符集就不重要了，
+# 硬编码字符集等于又依赖回 tempfile._RandomNameSequence 的实现细节 —— CPython 哪天往
+# 里加个大写字母，自己产的 tmp 就再也不被认领，而且是静默失效。
+_STALE_TMP_RE = re.compile(rf"^\.{_TMP_OWNER_TAG}[^.]+\.tmp$")
+_STALE_TMP_MIN_AGE_S = 86400.0
+_STALE_TMP_SWEEP_INTERVAL_S = 3600.0
+# 记账容量上限：cloudsave 的 staging 每次导出都 mkdtemp 出一批新目录（含 per-character
+# 子目录），永久留着会随操作次数无界增长。丢掉一条记账最坏只是多扫一次，所以到顶之后
+# 直接丢一半最旧的。
+_STALE_TMP_MEMO_MAX = 512
+_swept_tmp_dirs: dict[str, float] = {}
+_swept_tmp_dirs_lock = threading.Lock()
+# tmp 名里**不**嵌目标 basename。原来嵌是为了可诊断，但那是多余的：os.replace 失败时
+# OSError 自带 filename+filename2，回显本来就是 `'<tmp>' -> '<目标>'`，目标名一直在。
+# 不嵌换来两件事：名字长度变成常量（约 19 字节），比改动前的 `.<basename>.<8>.tmp` 严格
+# 更短，于是 ENAMETOOLONG 这一类彻底消失 —— 不需要按目标文件系统探 NAME_MAX（eCryptfs
+# 这类只允许 143 字节的文件系统上，固定的字节上限照样会算错）；正则也简单一档。
+
+
+def _sweep_stale_tmp_if_due(target_path: Path) -> None:
+    """Best-effort removal of abandoned temp files in this target's directory. Never fatal."""
+    parent = str(target_path.parent)
+    now = time.monotonic()
+    with _swept_tmp_dirs_lock:
+        last = _swept_tmp_dirs.get(parent)
+        if last is not None and now - last < _STALE_TMP_SWEEP_INTERVAL_S:
+            return
+        # 先记账再扫：并发的两个首写只有一个会真扫，另一个直接跳过；扫描失败也照样
+        # 记账，下一个间隔到了自然重试，不需要单独的重试计数。
+        _swept_tmp_dirs[parent] = now
+        if len(_swept_tmp_dirs) > _STALE_TMP_MEMO_MAX:
+            oldest = sorted(_swept_tmp_dirs, key=_swept_tmp_dirs.__getitem__)
+            for stale in oldest[: _STALE_TMP_MEMO_MAX // 2]:
+                _swept_tmp_dirs.pop(stale, None)
+
+    try:
+        entries = list(os.scandir(parent))
+    except OSError:
+        return
+
+    cutoff = time.time() - _STALE_TMP_MIN_AGE_S
+    for entry in entries:
+        if not _STALE_TMP_RE.match(entry.name):
+            continue
+        with suppress(OSError):
+            if entry.stat().st_mtime < cutoff:
+                os.unlink(entry.path)
+
+
+def _reset_tmp_sweep_state_after_fork() -> None:
+    """Re-create the sweep lock in a forked child and drop inherited bookkeeping."""
+    # app/main_server/__init__.py:56 选的是 fork 启动方式，而 fork 只复制调用它的那
+    # 一个线程：如果别的线程正持着这把锁，子进程继承到的就是一把永远锁着的 mutex，
+    # 子进程里任何一次落盘都会死锁。记账也一并清掉——子进程是新进程，本来就该重扫。
+    global _swept_tmp_dirs_lock
+    _swept_tmp_dirs_lock = threading.Lock()
+    _swept_tmp_dirs.clear()
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_reset_tmp_sweep_state_after_fork)
+
+
+# Windows 上 os.replace 会因为「目标此刻正被别的句柄打开」而失败，抛 PermissionError，
+# winerror 是 5（ACCESS_DENIED）或 32（SHARING_VIOLATION）。制造这个窗口的不只是杀软扫描
+# 和资源管理器预览 —— 本进程自己就够了：落盘常跑在 to_thread 的工作线程里，同一时刻另一
+# 个线程（或测试）正 open() 读同一个文件，replace 就被拒。POSIX 的 rename 不受读者影响，
+# 这段窗口是 Windows 独有的，而且几乎总是毫秒级：对方句柄一关就没了。
+#
+# 所以这里退避重试。它不会掩盖真实错误，四条理由：
+#   * 判据是 OS 给的错误码，不是消息文本猜测。POSIX 的 OSError 根本没有 winerror 属性，
+#     getattr 取到 None，整段在非 Windows 上恒等于「直接抛」。
+#   * 别的错误码一次都不重试：磁盘满、路径过长、跨卷、目标是目录，第一次就原样抛出。
+#   * 最后一次尝试写在循环外，所以重试用尽后抛出的就是那次真实的 os.replace 异常，带着
+#     完整的 filename/filename2，不是一个被包装过的「重试失败」。
+#   * 上界是固定的（5 次退避，累计 155ms）。目标要是被永久占着（只读、被别的进程长期
+#     持有），行为和改动前完全一样是抛错，只是晚 155ms —— 拿这点延迟换掉绝大多数
+#     毫秒级窗口造成的偶发写失败。
+#
+# 但退避绝不在事件循环上跑。本模块是全仓库共用的落盘原语，而仓库里有二十多处在
+# `async def` 里裸调同步的 atomic_write_*（其中 memory/anti_repeat.py 与
+# memory/user_directives.py 是 per-turn 的，跟音频同在一条循环上）。在那些地方睡
+# 155ms 就是掐音频。而且这不只是量级问题：scripts/check_async_blocking.py 把
+# `time.sleep` 明文列进 RISKY_ATTR_PAIRS，本来就禁止它出现在 async 可达路径上 ——
+# 该守卫此刻不报，只是因为它文档里写明的 depth-1 限制看不到这里（sleep 在
+# atomic_write_text → _replace_with_busy_retry 的深度 2），不是这段代码合规。
+#
+# 所以有运行中的事件循环时，第一次 busy 就抛：上环调用者拿到的**恰好是改动前的
+# 行为**，一个字节的回归都没有。而制造这个 flake 的落盘全部跑在 to_thread 的工作
+# 线程里（那里没有 running loop），完整退避原样保留 —— 修复的收益一分不少。
+#
+# 代价要说清楚：那二十多处上环调用点因此继续吃不到这份保护，撞上占用时照旧丢一次
+# 写（它们的调用方多半是 `except Exception: logger.warning`，所以丢得是静默的）。
+# 这不该靠原语在循环上偷偷睡来补 —— 正确的收口是把那些调用点改成
+# atomic_write_json_async（已存在，仓库里已有 77 处在用），那是独立的一份工作。
+_REPLACE_BUSY_WINERRORS = frozenset({5, 32})
+_REPLACE_RETRY_BACKOFF_S = (0.005, 0.01, 0.02, 0.04, 0.08)
+
+
+def _running_on_event_loop() -> bool:
+    """Whether this thread is currently inside a running asyncio event loop."""
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return False
+    return True
+
+
+def _replace_with_busy_retry(temp_path: str, target_path: Path) -> None:
+    """Replace the target, briefly retrying Windows' "target is busy" errors."""
+    for delay in _REPLACE_RETRY_BACKOFF_S:
+        try:
+            os.replace(temp_path, target_path)
+            return
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in _REPLACE_BUSY_WINERRORS:
+                raise
+            # 只在真的撞上 busy 之后才问「我是不是在循环上」：happy path 一条
+            # 指令都不多。
+            if _running_on_event_loop():
+                raise
+        time.sleep(delay)
+    os.replace(temp_path, target_path)
+
+
 def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: str = "utf-8") -> None:
     """Atomically replace a text file in the same directory."""
     target_path = Path(path)
     target_path.parent.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_tmp_if_due(target_path)
 
     fd, temp_path = tempfile.mkstemp(
-        prefix=f".{target_path.name}.",
+        # 前缀里带所有权标记：清扫器靠它证明这个 tmp 是本模块产的，而不是靠猜形状。
+        prefix=f".{_TMP_OWNER_TAG}",
         suffix=".tmp",
         dir=str(target_path.parent),
     )
@@ -512,12 +665,19 @@ def atomic_write_text(path: str | os.PathLike[str], content: str, *, encoding: s
             temp_file.write(content)
             temp_file.flush()
             os.fsync(temp_file.fileno())
-        os.replace(temp_path, target_path)
-    except Exception:
-        try:
+        _replace_with_busy_retry(temp_path, target_path)
+    except BaseException:
+        # BaseException 而不是 Exception：Ctrl-C / SystemExit 落在 write/fsync 上很常见，
+        # 只收 Exception 的话 tmp 直接留盘（要等到下一个清扫窗口 + 24h 才清）。
+        # install_source/manager.py 的 _atomic_write 用的也是 BaseException，保持对偶。
+        # 清理失败不许盖掉真正的失败原因。只吞 FileNotFoundError 时有一个具体的坑：
+        # 目标被别的句柄占着（杀软扫描、资源管理器预览）会让 os.replace 抛
+        # PermissionError，而紧随其后的 os.remove 往往被同一个原因拒掉，于是调用方
+        # 看到的是 remove 的异常、真实原因退到 __context__ 里去了，同时 tmp 还是留盘。
+        # 删不掉就成了残留：清扫跑在本次写之前，所以清不了这一个。它会被这个目录的
+        # 下一个清扫窗口兜住（这正是把「只扫一次」换成「按间隔节流」的原因之一）。
+        with suppress(OSError):
             os.remove(temp_path)
-        except FileNotFoundError:
-            pass
         raise
 
 

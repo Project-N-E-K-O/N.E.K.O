@@ -424,6 +424,15 @@ def test_serialization_oracle_rejects_unlocked_mode(tmp_path):
     log = _fresh_log(str(tmp_path))
     # Replace per-character lock with a no-op context manager
     log._get_lock = lambda name: nullcontext()
+    # 锁一拆，record_and_save 收尾那句哨兵落盘也跟着失去串行化，5 个线程会同时
+    # os.replace 到同一个 events_applied.json —— Windows 上直接 WinError 5。哨兵
+    # 落盘不是本用例的被测对象（上一条正向 oracle 才覆盖它），所以给每个线程一个
+    # 独立的哨兵文件名：真实写盘路径照跑，只是不再互抢同一个目标。
+    _real_sentinel_path = log._sentinel_path
+    log._sentinel_path = lambda name: os.path.join(
+        os.path.dirname(_real_sentinel_path(name)),
+        f"events_applied_{real_threading.get_ident()}.json",
+    )
 
     num_workers = 5
     mutable_view = {"value": 0}
@@ -483,7 +492,14 @@ def test_concurrent_append_during_compact_preserves_events(tmp_path):
 
     t = real_threading.Thread(target=appender, daemon=True)
     t.start()
-    time.sleep(0.02)  # let appender get going
+    # 不能用固定 sleep 猜「线程起来了没」：线程启动延迟不受控，而 Windows 上
+    # sleep 的实际时长又是 15.6ms 粒度的抛硬币；睡短了 compact 会在第一次并发
+    # append 之前就跑完，用例静默退化成非并发、断言恒真。改成轮询到确实已经
+    # 写出一条事件，并发前提才是确定的。
+    _deadline = time.monotonic() + 5.0
+    while not appended_ids and not append_errors and time.monotonic() < _deadline:
+        time.sleep(0.001)
+    assert appended_ids or append_errors, "appender 线程 5s 内一条都没写出，并发前提不成立"
 
     with patch("memory.event_log._COMPACT_LINES_THRESHOLD", 1):
         log.compact_if_needed("小天", lambda: [(EVT_FACT_ADDED, {"seed": "kept"})])

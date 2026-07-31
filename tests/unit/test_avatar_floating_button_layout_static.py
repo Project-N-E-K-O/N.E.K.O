@@ -38,8 +38,8 @@ def test_avatar_floating_button_rows_keep_fixed_height_when_aux_controls_toggle(
     )
 
     # Live2D positions the toolbar from five 48px rows plus four 12px gaps.
-    # The row wrapper must keep that height even when the mic mute button or
-    # popup trigger is shown, otherwise the vertical toolbar visibly contracts.
+    # The row wrapper must keep that height even when the voice-session quick
+    # controls or popup trigger are shown, otherwise the vertical toolbar visibly contracts.
     assert "const LIVE2D_FLOATING_BUTTON_SIZE = 48;" in live2d_source
     assert "const LIVE2D_FLOATING_BUTTON_GAP = 12;" in live2d_source
     assert "const LIVE2D_FLOATING_BUTTON_COUNT = 5;" in live2d_source
@@ -49,15 +49,41 @@ def test_avatar_floating_button_rows_keep_fixed_height_when_aux_controls_toggle(
     assert "flex: '0 0 48px'" in wrapper_block
     assert "boxSizing: 'border-box'" in wrapper_block
 
+    quick_controls_rail_block = _source_slice_between(
+        avatar_source,
+        "const rail = document.createElement('div');",
+        "btnWrapper.appendChild(rail);",
+        "voice-session quick controls rail",
+    )
+    assert "position: 'absolute'" in quick_controls_rail_block
+    assert "left: '-24px'" in quick_controls_rail_block
+    assert "width: '22px'" in quick_controls_rail_block
+    assert "height: '48px'" in quick_controls_rail_block
+    assert "flexDirection: 'column'" in quick_controls_rail_block
+    assert "gap: '4px'" in quick_controls_rail_block
+
+    quick_control_slot_block = _source_slice_between(
+        avatar_source,
+        "const slot = document.createElement('div');",
+        "slot.appendChild(button);",
+        "voice-session quick control slot",
+    )
+    assert "width: '22px'" in quick_control_slot_block
+    assert "height: '0'" in quick_control_slot_block
+    assert "flex: '0 0 0px'" in quick_control_slot_block
+    assert "overflow: 'hidden'" in quick_control_slot_block
+    assert "pointerEvents: 'none'" in quick_control_slot_block
+
     mute_button_block = _source_slice_between(
         avatar_source,
         "Object.assign(muteBtn.style, {",
         "const stopMuteEvent = (e) => { e.stopPropagation(); };",
         "mic mute button styles",
     )
-    assert "position: 'absolute'" in mute_button_block
-    assert "top: '50%'" in mute_button_block
-    assert "transform: 'translateY(-50%)'" in mute_button_block
+    assert "width: '22px'" in mute_button_block
+    assert "height: '22px'" in mute_button_block
+    assert "position: 'relative'" in mute_button_block
+    assert "position: 'absolute'" not in mute_button_block
 
 
 def test_live2d_lock_icon_tracks_the_floating_toolbar_scale():

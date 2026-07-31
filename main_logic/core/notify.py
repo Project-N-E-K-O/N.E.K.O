@@ -561,7 +561,7 @@ class NotifyMixin:
                 #
                 # Game owner exempt, matching send_session_ended_by_server and
                 # _fail_closed_voice_route. The galgame gate owns the mic
-                # through its own consumer binding and tears down via
+                # through the built-in game consumer route and tears down via
                 # GAME_ROUTE_ENDED, and websocket_router acknowledges a text
                 # entry during an active game route with a bare
                 # send_session_started("text") -- no ordinary text session, no
@@ -652,7 +652,7 @@ class NotifyMixin:
             # the window holding the hardware is not necessarily the current
             # socket. Outside the guard on purpose: a dead current socket must
             # not swallow the lease holder's copy. Game owner exempt -- the
-            # galgame gate owns the mic through its own consumer binding and
+            # galgame gate owns the mic through the built-in game consumer and
             # tears down via GAME_ROUTE_ENDED.
             if getattr(self, "_voice_lease_owner", "none") != "game":
                 await self._send_to_voice_owner(payload)

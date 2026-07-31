@@ -87,6 +87,56 @@ def test_live2d_niri_physical_crop_mouse_tracking_splits_virtual_and_local_coord
     assert "isPointerNearFloatingButtons()" in source
 
 
+def test_physical_crop_host_has_single_live2d_drag_coordinate_owner():
+    source = _live2d_source()
+    assert "function isLive2DHostModelDragActive()" in source
+    assert "window.__nekoNiriPetPhysicalCrop" in source
+    host_state = _js_block(source, "function isLive2DHostModelDragActive")
+    assert "if (!api) return false;" in host_state
+    assert "const ownershipVersion = Number(api.hostModelDragOwnershipVersion);" in host_state
+    assert "if (!Number.isFinite(ownershipVersion) || ownershipVersion < 1) return false;" in host_state
+    assert "if (typeof api.isHostModelDragActive !== 'function') return true;" in host_state
+    assert "return api.isHostModelDragActive() !== false;" in host_state
+    assert "catch (_) {\n        return true;" in host_state
+
+    drag_source = source.split(
+        "Live2DManager.prototype.setupDragAndDrop = function",
+        1,
+    )[1]
+    drag_end = drag_source.split("const onDragEnd = async (event) => {", 1)[1].split(
+        "const onDragMove = (event) => {",
+        1,
+    )[0]
+    drag_move = drag_source.split("const onDragMove = (event) => {", 1)[1].split(
+        "// 清理旧的监听器",
+        1,
+    )[0]
+
+    host_guard = "if (isLive2DHostModelDragActive()) return;"
+    assert host_guard in drag_end
+    for cleanup in (
+        "this._isDraggingModel = false;",
+        "document.getElementById('live2d-canvas').style.cursor = '';",
+        "restoreButtonPointerEvents();",
+        "dragHintLastPointer = captureDragHintPointer(event) || dragHintLastPointer;",
+    ):
+        assert drag_end.index(cleanup) < drag_end.index(host_guard)
+    for settlement in (
+        "const displaySwitched = await this._checkAndSwitchDisplay(model);",
+        "await this._checkAndPerformSnap(model)",
+        "await this._savePositionAfterInteraction();",
+        "await this._tryApplyLive2DPeek(model);",
+    ):
+        assert drag_end.index(host_guard) < drag_end.index(settlement)
+    assert host_guard in drag_move
+    host_guard_index = drag_move.index(host_guard)
+    for coordinate_assignment in (
+        "model.x = x - dragStartPos.x;",
+        "model.y = y - dragStartPos.y;",
+    ):
+        assert host_guard_index < drag_move.index(coordinate_assignment)
+
+
 def test_live2d_click_touch_set_logs_trigger_summary():
     source = _live2d_source()
     summary_logger = _js_block(source, "function logLive2DClickTriggerSummary")

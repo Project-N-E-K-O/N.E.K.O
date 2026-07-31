@@ -957,6 +957,43 @@ class TtsRuntimeMixin:
             logger.error(f"💥 WS Send Response Error: {e}")
             return False
 
+    async def send_audio_done(self, speech_id: Optional[str]):
+        """Tell the frontend that this speech_id's audio stream is closed.
+
+        Callers MUST await this only after the last ``audio_chunk`` of the same
+        speech_id has already been awaited out. The frontend finalizes the turn
+        on this signal, so an emission that overtakes trailing audio truncates
+        the utterance -- which is the very defect this signal exists to fix.
+        Never scheduled fire-and-forget for that reason.
+
+        Best-effort by design: a dropped signal only costs the frontend its
+        fast path (it still has its own give-up timer plus a watchdog), so any
+        failure is swallowed instead of propagating to the caller. Unlike
+        ``send_speech`` this is not mirrored to ``sync_message_queue``: no
+        monitor/viewer surface consumes audio.
+        """
+        if not speech_id:
+            # 无主信号会让前端给错误的一轮收尾，宁可不发。
+            return False
+        try:
+            if self.websocket and hasattr(self.websocket, 'client_state') and self.websocket.client_state == self.websocket.client_state.CONNECTED:
+                await self.websocket.send_json({
+                    "type": "audio_done",
+                    "speech_id": speech_id
+                })
+                logger.debug(f"🔚 send_audio_done OK: speech_id={speech_id}")
+                return True
+            else:
+                ws_state = getattr(self.websocket, 'client_state', None) if self.websocket else None
+                logger.warning(f"⚠️ send_audio_done skipped: ws={self.websocket is not None}, state={ws_state}")
+                return False
+        except WebSocketDisconnect:
+            logger.warning("⚠️ send_audio_done: WebSocket disconnected")
+            return False
+        except Exception as e:
+            logger.warning(f"⚠️ send_audio_done 发送失败: speech_id={speech_id}, err={e}")
+            return False
+
     async def tts_response_handler(self):
         q = self.tts_response_queue
         logger.info(f"🎧 tts_response_handler started (queue id={id(q):#x})")
@@ -990,6 +1027,13 @@ class TtsRuntimeMixin:
                     continue
 
                 if isinstance(data, tuple) and len(data) == 2:
+                    if data[0] == "__audio_done__":
+                        # 必须 await，不能 _fire_task：handler 顺序消费队列，
+                        # await 才能保证这条收尾信号排在该 sid 的所有
+                        # __audio__/裸 bytes 之后。fire-and-forget 会插到尾音
+                        # 前面，前端提前收尾——正是本信号要解决的问题。
+                        await self.send_audio_done(data[1])
+                        continue
                     if data[0] == "__ready__":
                         ready_flag = bool(data[1])
                         async with self.tts_cache_lock:
