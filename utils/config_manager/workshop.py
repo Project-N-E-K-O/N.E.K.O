@@ -21,6 +21,7 @@ root path resolution.
 import json
 import os
 import threading
+import time
 
 from utils.file_utils import (
     _REPLACE_BUSY_WINERRORS,
@@ -33,6 +34,10 @@ from ._shared import logger
 
 # 守护上面那把「last-good 缓存微锁」的懒创建，见 _last_good_workshop_config_lock。
 _LAST_GOOD_LOCK_GUARD = threading.Lock()
+
+# 读侧回落「还算瞬时」的上限。读侧重试预算约 155ms，os.replace 的窗口是个位数毫秒；
+# 取 5 秒是它的几十倍，撑过这个时长的 ACCESS_DENIED 就不是那条竞态了。
+_WORKSHOP_CONFIG_FALLBACK_GRACE_S = 5.0
 
 # Workshop配置相关常量 - 将在ConfigManager实例化时使用self.workshop_dir
 
@@ -150,6 +155,46 @@ class WorkshopMixin:
                 self._last_good_lock_obj = lock
         return lock
 
+    def _clear_workshop_config_fallback_streak(self) -> None:
+        """Forget an in-progress fallback streak; the file just read fine."""
+        with self._last_good_workshop_config_lock:
+            self._workshop_config_fallback_since = None
+            self._workshop_config_fallback_escalated = False
+
+    def _note_workshop_config_fallback(self, exc) -> None:
+        """Escalate once when the read-side fallback stops looking transient.
+
+        ``winerror`` 5 is ACCESS_DENIED, which Windows raises both for the
+        millisecond-wide window where ``os.replace`` has the target open and
+        for a permanent revocation (an ACL change, Controlled Folder Access, a
+        path that is now a directory). The code cannot tell those apart, so
+        persistence is the only usable signal: the read-side retry budget is
+        about 155ms, and a replace race clears in single-digit milliseconds,
+        so anything still failing seconds later is not that race.
+
+        The value keeps being served either way — it is the user's real
+        workshop root, and swapping to defaults would silently relocate every
+        upload. What changes is that the failure stops being a debug-level
+        shrug nobody will ever find.
+        """
+        now = time.monotonic()
+        with self._last_good_workshop_config_lock:
+            since = getattr(self, "_workshop_config_fallback_since", None)
+            if since is None:
+                self._workshop_config_fallback_since = now
+                return
+            if getattr(self, "_workshop_config_fallback_escalated", False):
+                return
+            if now - since < _WORKSHOP_CONFIG_FALLBACK_GRACE_S:
+                return
+            self._workshop_config_fallback_escalated = True
+        logger.error(
+            "workshop 配置已连续 %.0f 秒读不出来，仍在沿用上一次成功读到的配置。"
+            "这已经不像 os.replace 的瞬时窗口，请检查 workshop_config.json 的权限"
+            "（ACL / 受控文件夹访问）或它是否被换成了目录: %s",
+            _WORKSHOP_CONFIG_FALLBACK_GRACE_S, exc,
+        )
+
     def _remember_good_workshop_config(self, config, generation) -> None:
         """Cache a successful read, unless a save landed while it was in flight.
 
@@ -161,6 +206,9 @@ class WorkshopMixin:
         if not isinstance(config, dict):
             return
         snapshot = dict(config)
+        # 读成功就把「回落连续时长」清零 —— 即使下面因为代数不符不采纳这份快照，
+        # 文件本身是读得到的，那就不是持续故障。
+        self._clear_workshop_config_fallback_streak()
         # 比较和赋值必须是一个原子步：中间被抢占的话，一次 save 可以在这两步之间
         # 把代数推上去并写好新缓存，然后这条旧读再把它盖回去。这把锁只圈住两行内存
         # 操作、不含任何 I/O，所以拿它不会有「持锁跨 fsync」那类问题。
@@ -318,12 +366,16 @@ class WorkshopMixin:
             # PermissionError。直接退回默认配置的话，upload / publish 就拿着默认的
             # 工坊根目录去干活，而用户的配置明明好好的 —— 静默换根目录比报错糟得多。
             # ⚠️ 只对「瞬时 busy」回落。缓存一旦建立就把**所有**读失败都盖掉的话，
-            # JSON 被改坏、权限被收走这类真故障就永远不会暴露，upload / publish 会
-            # 一直对着旧根目录干活。判据同写入侧：OS 给的 winerror，不是消息猜测。
-            transient = getattr(e, "winerror", None) in _REPLACE_BUSY_WINERRORS
+            # JSON 被改坏这类真故障就永远不会暴露，upload / publish 会一直对着旧根
+            # 目录干活。判据同写入侧：OS 给的 winerror，不是消息猜测。
+            # ⚠️ 但 winerror 5（ACCESS_DENIED）本身是**二义**的：os.replace 的瞬时
+            # 窗口和「权限被永久收走」给的是同一个码，光看码分不开。所以再叠一层按
+            # **持续时长**的判据 —— 见 _note_workshop_config_fallback。
+            busy_code = getattr(e, "winerror", None) in _REPLACE_BUSY_WINERRORS
             last_good = getattr(self, "_last_good_workshop_config", None)
-            if transient and last_good is not None:
+            if busy_code and last_good is not None:
                 logger.warning("加载workshop配置失败，沿用上一次成功读到的配置: %s", e)
+                self._note_workshop_config_fallback(e)
                 return dict(last_good)
             error_msg = f"加载workshop配置失败: {e}"
             logger.error(error_msg)

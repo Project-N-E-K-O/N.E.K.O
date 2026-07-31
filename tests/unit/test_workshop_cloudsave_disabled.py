@@ -1013,3 +1013,139 @@ def test_the_path_probe_runs_in_the_worker_not_on_the_loop():
     assert not outside, (
         f"os.stat 留在了协程体里（相对行 {outside}）——慢速网络盘会把事件循环挂住"
     )
+
+
+def _make_workshop_cm(tmp_path, config_path):
+    from utils.config_manager import workshop as workshop_mixin
+
+    class _CM(workshop_mixin.WorkshopMixin):
+        def __init__(self):
+            import threading
+
+            self._workshop_config_lock = threading.RLock()
+            self.workshop_dir = tmp_path / "default"
+
+        def get_workshop_config_path(self):
+            return config_path
+
+        def _rebase_workshop_config_after_storage_migration(self, config):
+            return config
+
+    return _CM()
+
+
+class _RecordingLogger:
+    """Capture .error() without caplog.
+
+    这个模块的 logger 由项目日志初始化关掉了 propagate，caplog 的 handler 挂在 root
+    上，所以它收不到 —— 单独跑绿、跟整个文件一起跑红。注入替身没有这个顺序依赖。
+    """
+
+    def __init__(self):
+        self.errors = []
+
+    def error(self, *args, **kwargs):
+        self.errors.append(args)
+
+    def __getattr__(self, _name):
+        return lambda *a, **kw: None
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def monotonic(self):
+        return self.now
+
+
+@pytest.mark.unit
+def test_a_persistent_access_denial_stops_looking_transient(tmp_path, monkeypatch):
+    """winerror 5 is ambiguous, so persistence is what separates the two cases.
+
+    ACCESS_DENIED is what Windows raises for the millisecond-wide window where
+    os.replace holds the target open AND for a permanent revocation. The
+    fallback keeps serving the last good value either way, because that is the
+    user's real workshop root and defaults would relocate every upload. What
+    must not happen is that a permanent failure stays a debug-level shrug.
+    """
+    from utils.config_manager import workshop as workshop_mixin
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text(
+        json.dumps({"user_mod_folder": "/user/mods", "auto_create_folder": True}),
+        encoding="utf-8",
+    )
+    cm = _make_workshop_cm(tmp_path, config_path)
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+
+    clock = _FakeClock()
+    monkeypatch.setattr(workshop_mixin, "time", clock)
+    denied = PermissionError(13, "Access is denied")
+    denied.winerror = 5           # ← 与 os.replace 瞬时窗口同码
+    monkeypatch.setattr(
+        workshop_mixin, "read_json_tolerating_replace",
+        lambda *a, **kw: (_ for _ in ()).throw(denied),
+    )
+
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(workshop_mixin, "logger", recorder)
+
+    # 宽限期内：照常沿用 last-good，不吵。
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+    clock.now += workshop_mixin._WORKSHOP_CONFIG_FALLBACK_GRACE_S - 0.1
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+    assert not recorder.errors, "还在瞬时窗口内就报 ERROR，会把正常的 replace 竞态吵成故障"
+
+    # 撑过宽限期：值照给，但必须留下一条能查的 ERROR。
+    clock.now += 0.2
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+    assert len(recorder.errors) == 1, "持续读不出来却始终只有 debug 级日志，没人会发现"
+
+    # 只报一次，别把日志刷爆。
+    clock.now += 100.0
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+    assert len(recorder.errors) == 1, "每次读失败都报一遍 ERROR，日志会被刷爆"
+
+
+@pytest.mark.unit
+def test_a_successful_read_resets_the_fallback_streak(tmp_path, monkeypatch):
+    """A replace race that clears must not count toward the persistence budget."""
+    from utils.config_manager import workshop as workshop_mixin
+
+    config_path = tmp_path / "workshop_config.json"
+    config_path.write_text(
+        json.dumps({"user_mod_folder": "/user/mods", "auto_create_folder": True}),
+        encoding="utf-8",
+    )
+    cm = _make_workshop_cm(tmp_path, config_path)
+    assert cm.load_workshop_config()["user_mod_folder"] == "/user/mods"
+
+    clock = _FakeClock()
+    monkeypatch.setattr(workshop_mixin, "time", clock)
+    recorder = _RecordingLogger()
+    monkeypatch.setattr(workshop_mixin, "logger", recorder)
+
+    real_read = workshop_mixin.read_json_tolerating_replace
+    denied = PermissionError(13, "Access is denied")
+    denied.winerror = 5
+    fail = {"on": True}
+
+    def _maybe_fail(*args, **kwargs):
+        if fail["on"]:
+            raise denied
+        return real_read(*args, **kwargs)
+
+    monkeypatch.setattr(workshop_mixin, "read_json_tolerating_replace", _maybe_fail)
+
+    cm.load_workshop_config()                 # 开始计时
+    clock.now += workshop_mixin._WORKSHOP_CONFIG_FALLBACK_GRACE_S - 0.1
+    fail["on"] = False
+    cm.load_workshop_config()                 # 竞态过去了，读成功
+    fail["on"] = True
+    clock.now += 0.2                          # 从头算的话还没到宽限期
+    cm.load_workshop_config()
+
+    assert not recorder.errors, (
+        "一次读成功没有把连续失败时长清零 —— 间歇性的 replace 竞态会被误判成持续故障"
+    )
