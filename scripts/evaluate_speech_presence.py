@@ -35,7 +35,11 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from main_logic.asr_client.endpointing.silero_vad import SileroVad  # noqa: E402
+from main_logic.asr_client.endpointing.config import SmartTurnConfig  # noqa: E402
+from main_logic.asr_client.endpointing.silero_vad import (  # noqa: E402
+    SileroActivityGate,
+    SileroVad,
+)
 from main_logic.asr_client.endpointing.throttle_policy import (  # noqa: E402
     ThrottleAction,
     ThrottleShadowMetrics,
@@ -592,28 +596,80 @@ def _replay_rnnoise_policy(
     chunks: Sequence[RnnoiseEvidence],
     *,
     chunk_ms: float,
+    silero_probabilities: Sequence[float] | None = None,
 ) -> tuple[float | None, ThrottleShadowMetrics]:
-    policy = VoiceThrottlePolicy(
+    rnnoise_policy = VoiceThrottlePolicy(
         resource_optimization_enabled=True,
         bootstrap_onset=RNNOISE_CURRENT_THRESHOLD,
     )
+    shadow_policy = VoiceThrottlePolicy(
+        resource_optimization_enabled=True,
+        bootstrap_onset=RNNOISE_CURRENT_THRESHOLD,
+    )
+    replay_vad = SileroVad(enabled=False)
+    silero_gate = SileroActivityGate(
+        replay_vad,
+        SmartTurnConfig(
+            enabled=True,
+            onset_probability=SILERO_CURRENT_THRESHOLD,
+            offset_probability=SILERO_OFFSET_THRESHOLD,
+            minimum_speech_ms=SILERO_MINIMUM_SPEECH_MS,
+        ),
+    )
     trigger_ms: float | None = None
-    candidate_open = False
+    rnnoise_candidate_open = False
+    shadow_candidate_open = False
+    silero_index = 0
     positive_actions = {
         ThrottleAction.PREWARM,
         ThrottleAction.OPEN_CANDIDATE,
     }
-    for index, evidence in enumerate(chunks):
-        decision = policy.decide(
-            evidence,
-            candidate_open=candidate_open,
-            allow_baseline_update=not candidate_open,
+    try:
+        for index, evidence in enumerate(chunks):
+            rnnoise_decision = rnnoise_policy.decide(
+                evidence,
+                candidate_open=rnnoise_candidate_open,
+                allow_baseline_update=not rnnoise_candidate_open,
+            )
+            if rnnoise_decision.action in positive_actions:
+                if trigger_ms is None:
+                    trigger_ms = (index + 1) * chunk_ms
+                rnnoise_candidate_open = True
+
+            shadow_decision = shadow_policy.decide(
+                evidence,
+                candidate_open=shadow_candidate_open,
+                allow_baseline_update=not shadow_candidate_open,
+            )
+            if shadow_decision.action in positive_actions:
+                shadow_candidate_open = True
+
+            chunk_end_ms = (index + 1) * chunk_ms
+            while (
+                silero_probabilities is not None
+                and silero_index < len(silero_probabilities)
+                and (silero_index + 1) * SILERO_WINDOW_MS <= chunk_end_ms
+            ):
+                probability = silero_probabilities[silero_index]
+                for event in silero_gate.process_probabilities((probability,)):
+                    shadow_policy.observe_silero(
+                        event,
+                        probability=probability,
+                    )
+                silero_index += 1
+    finally:
+        replay_vad.close()
+
+    metrics = shadow_policy.shadow_metrics
+    if not silero_probabilities:
+        metrics = ThrottleShadowMetrics(
+            evidence_chunk_count=metrics.evidence_chunk_count,
+            incomplete_chunk_count=metrics.incomplete_chunk_count,
+            rnnoise_trigger_count=metrics.rnnoise_trigger_count,
+            silero_trigger_count=0,
+            rnnoise_silero_disagreement_count=0,
         )
-        if decision.action in positive_actions:
-            if trigger_ms is None:
-                trigger_ms = (index + 1) * chunk_ms
-            candidate_open = True
-    return trigger_ms, policy.shadow_metrics
+    return trigger_ms, metrics
 
 
 def _replay_rnnoise_policy_trigger_ms(
@@ -690,6 +746,7 @@ def evaluate_corpus(
             online_trigger_ms, clip_shadow_metrics = _replay_rnnoise_policy(
                 chunk_evidence,
                 chunk_ms=RNNOISE_CHUNK_MS,
+                silero_probabilities=denoised_probabilities,
             )
             for name, value in asdict(clip_shadow_metrics).items():
                 throttle_shadow_metrics[name] += int(value)

@@ -223,7 +223,7 @@ def test_online_replay_treats_fail_open_as_a_presence_trigger() -> None:
     assert trigger == evaluation.RNNOISE_CHUNK_MS
 
 
-def test_online_replay_preserves_production_shadow_metrics() -> None:
+def test_online_replay_omits_silero_metrics_when_activity_is_unavailable() -> None:
     trigger, metrics = evaluation._replay_rnnoise_policy(
         [
             evaluation.RnnoiseEvidence.from_legacy_probability(
@@ -241,6 +241,29 @@ def test_online_replay_preserves_production_shadow_metrics() -> None:
     assert trigger == 2 * evaluation.RNNOISE_CHUNK_MS
     assert metrics.evidence_chunk_count == 2
     assert metrics.rnnoise_trigger_count == 1
+    assert metrics.silero_trigger_count == 0
+    assert metrics.rnnoise_silero_disagreement_count == 0
+
+
+def test_online_replay_aligns_silero_activity_with_rnnoise_chunks() -> None:
+    chunks = [
+        evaluation.RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        )
+        for _ in range(24)
+    ]
+
+    trigger, metrics = evaluation._replay_rnnoise_policy(
+        chunks,
+        chunk_ms=evaluation.RNNOISE_CHUNK_MS,
+        silero_probabilities=[0.9] * evaluation.SILERO_MINIMUM_WINDOWS,
+    )
+
+    assert trigger is None
+    assert metrics.evidence_chunk_count == 24
+    assert metrics.rnnoise_trigger_count == 0
+    assert metrics.silero_trigger_count == 1
     assert metrics.rnnoise_silero_disagreement_count == 1
 
 
@@ -259,7 +282,7 @@ def test_online_replay_delegates_to_production_throttle_policy(
     monkeypatch.setattr(evaluation, "VoiceThrottlePolicy", _RecordingPolicy)
 
     assert evaluation._current_rnnoise_policy_trigger_ms([0.0, 0.9]) == 20
-    assert decisions == 2
+    assert decisions == 4
 
 
 def test_offline_replay_resets_rnnoise_from_audio_time() -> None:

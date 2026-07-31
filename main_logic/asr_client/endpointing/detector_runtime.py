@@ -465,6 +465,12 @@ class _VoiceTurnAdapter:
                 or item.detector_identity.sequence_no <= fence[1]
             ):
                 return
+            item = _AudioItem(
+                identity=self._identity,
+                pcm16=item.pcm16,
+                duration_us=item.duration_us,
+                detector_identity=item.detector_identity,
+            )
         if self._evaluation_task is not None:
             self._evaluation_tail.append(item)
             self._evaluation_tail_duration_us += item.duration_us
@@ -1054,6 +1060,7 @@ class DetectorRuntime:
         self._semantic_coordinator: TurnCoordinator | None = None
         self._semantic_started = False
         self._semantic_generation = 0
+        self._deferred_completion_identity_advanced = False
         self._semantic_turn_id = 1
         self._on_endpointing_failure = on_endpointing_failure
         self._on_turn_complete = on_turn_complete
@@ -1140,6 +1147,7 @@ class DetectorRuntime:
                     self._throttle_policy.reset_candidate_activity()
                 if self._defer_turn_complete:
                     self._deferred_turn_complete = True
+                    self._deferred_completion_identity_advanced = fence is not None
                     return
                 # 当前轮 seal 后立即把检测身份推进到下一轮。旧 provider final
                 # 到达前，新语音只做本地语义判断，完成信号延迟发布。
@@ -1481,6 +1489,7 @@ class DetectorRuntime:
             self._deferred_completions.clear()
             self._completion_fences.clear()
             self._provider_candidate_fence = None
+            self._deferred_completion_identity_advanced = False
             self._provider_discarded_through_sequence_no = None
             # A deferred completion belongs to the invalidated epoch; keeping
             # the flags would let release_deferred_turn spuriously advance the
@@ -1725,12 +1734,13 @@ class DetectorRuntime:
             )
             self._provider_discarded_through_sequence_no = None
             successor_present = self._sequence_no > successor_floor
-            if not successor_present:
+            successor_confirmed = successor_present and self._speech_active
+            if not successor_confirmed:
                 self._candidate_open = False
                 self._speech_active = False
                 self._policy_event_candidate = None
                 self._throttle_policy.reset_candidate_activity()
-            return successor_present
+            return successor_confirmed
 
     async def submit_audio(
         self,
@@ -1839,6 +1849,7 @@ class DetectorRuntime:
             self._throttle_policy.reset_candidate_activity()
             self._ingress_token = None
             self._bound_turns.clear()
+            self._deferred_completion_identity_advanced = False
             self._deferred_completions.clear()
             self._completion_fences.clear()
             self._provider_candidate_fence = None
@@ -1954,6 +1965,7 @@ class DetectorRuntime:
                     self._semantic_adapter.unpin_smart_turn()
                 self._defer_turn_complete = False
                 self._deferred_turn_complete = False
+                self._deferred_completion_identity_advanced = False
                 self._semantic_generation += 1
                 self._semantic_turn_id += 1
                 adapter = self._semantic_adapter
@@ -1985,13 +1997,16 @@ class DetectorRuntime:
             if self._deferred_turn_complete:
                 self._deferred_turn_complete = False
                 self._defer_turn_complete = True
-                self._semantic_generation += 1
-                self._semantic_turn_id += 1
-                await self._semantic_adapter.reset(
-                    generation=self._semantic_generation,
-                    buffer_epoch=0,
-                    utterance_id=self._semantic_turn_id,
-                )
+                identity_advanced = self._deferred_completion_identity_advanced
+                self._deferred_completion_identity_advanced = False
+                if not identity_advanced:
+                    self._semantic_generation += 1
+                    self._semantic_turn_id += 1
+                    await self._semantic_adapter.reset(
+                        generation=self._semantic_generation,
+                        buffer_epoch=0,
+                        utterance_id=self._semantic_turn_id,
+                    )
                 callback = self._on_turn_complete
         if callback is not None:
             # 不持有 detector lock 调用 Core，避免 Core 清理时反向 reset 死锁。

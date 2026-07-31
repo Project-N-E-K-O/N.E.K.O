@@ -12,11 +12,13 @@ from main_logic.asr_client.endpointing.detector_runtime import (
     DetectorRuntime,
     SmartTurnLease,
     SmartTurnReadiness,
+    _AudioItem,
     _ResetItem,
     _VoiceTurnAdapter,
 )
 from main_logic.asr_client.endpointing.detector import (
     DetectorActivityEvent,
+    DetectorIngressIdentity,
     DetectorPrewarmEvent,
     DetectorSubmitStatus,
     DetectorTurnEvent,
@@ -129,6 +131,17 @@ class _BlockingSemanticCoordinator(_SemanticCoordinator):
         self.prepare_started.set()
         await self.prepare_release.wait()
         return True
+
+
+class _ResetClearsSemanticCoordinator(_SemanticCoordinator):
+    def __init__(self) -> None:
+        super().__init__()
+        self.reset_calls = 0
+
+    async def reset(self) -> None:
+        self.reset_calls += 1
+        self.audio.clear()
+        await super().reset()
 
 
 class _RaisingPrepareCoordinator(_SemanticCoordinator):
@@ -304,6 +317,46 @@ async def test_completion_fence_replays_pcm_consumed_during_inference() -> None:
     assert successor.candidate.candidate_generation == 0
     assert gate.inputs.count(successor_pcm) == 2
     assert coordinator.audio.count(successor_pcm) == 2
+    await detector.close()
+
+
+async def test_successor_fence_uses_active_identity_for_queued_pause() -> None:
+    coordinator = _BlockingSemanticCoordinator()
+    detector = DetectorRuntime(
+        vad=_Vad(),
+        gate=_Gate((SpeechActivityEvent.CANDIDATE_PAUSE,)),
+        provider_policy=_smart_turn_policy(),
+        coordinator=coordinator,
+        on_turn_complete=AsyncMock(),
+    )
+    adapter = detector._semantic_adapter
+    assert isinstance(adapter, _VoiceTurnAdapter)
+    await adapter.start()
+    predecessor_identity = (0, 0, 1)
+    active_identity = (1, 0, 2)
+    adapter._identity = active_identity
+    adapter._successor_audio_fence = (
+        predecessor_identity,
+        1,
+        active_identity,
+    )
+
+    await adapter._process_audio(
+        _AudioItem(
+            identity=predecessor_identity,
+            pcm16=b"\x01\x00" * 160,
+            duration_us=10_000,
+            detector_identity=DetectorIngressIdentity(
+                _ingress_token(),
+                detector_epoch=0,
+                sequence_no=2,
+            ),
+        )
+    )
+
+    await asyncio.wait_for(coordinator.evaluate_started.wait(), 1)
+    assert adapter._evaluation_task is not None
+    coordinator.evaluate_release.set()
     await detector.close()
 
 
@@ -494,7 +547,7 @@ async def test_provider_candidate_fence_preserves_post_discard_successor() -> No
     await detector.close()
 
 
-async def test_provider_fence_admits_low_rnnoise_successor_before_final() -> None:
+async def test_provider_fence_buffers_quiet_pcm_until_final_then_closes() -> None:
     gate = _Gate()
     detector = DetectorRuntime(
         vad=_Vad(),
@@ -524,8 +577,19 @@ async def test_provider_fence_admits_low_rnnoise_successor_before_final() -> Non
 
     assert successor.throttle_action is ThrottleAction.KEEP_CANDIDATE_OPEN
     assert gate.inputs == [b"\x01\x00", b"\x02\x00"]
-    assert await detector.complete_provider_candidate(fence) is True
-    assert detector.candidate_open is True
+    assert await detector.complete_provider_candidate(fence) is False
+    assert detector.candidate_open is False
+    quiet = await detector.feed(
+        b"\x03\x00",
+        rnnoise_evidence=RnnoiseEvidence.from_legacy_probability(
+            0.05,
+            available=True,
+        ),
+        ingress_token=ingress,
+        allow_baseline_update=True,
+    )
+    assert quiet.throttle_action is ThrottleAction.SKIP_IDLE_PCM
+    assert gate.inputs == [b"\x01\x00", b"\x02\x00"]
     await detector.close()
 
 
@@ -952,16 +1016,18 @@ async def test_deferred_completion_retires_candidate_before_third_turn() -> None
             assert bound is not None
             assert bound.turn_token == turn_token
 
+    gate = _Gate(
+        (
+            SpeechActivityEvent.SPEECH_STARTED,
+            SpeechActivityEvent.CANDIDATE_PAUSE,
+        )
+    )
+    coordinator = _ResetClearsSemanticCoordinator()
     detector = DetectorRuntime(
         vad=_Vad(),
-        gate=_Gate(
-            (
-                SpeechActivityEvent.SPEECH_STARTED,
-                SpeechActivityEvent.CANDIDATE_PAUSE,
-            )
-        ),
+        gate=gate,
         provider_policy=_smart_turn_policy(),
-        coordinator=_SemanticCoordinator(),
+        coordinator=coordinator,
         on_event=on_event,
     )
 
@@ -969,16 +1035,30 @@ async def test_deferred_completion_retires_candidate_before_third_turn() -> None
     assert detector._candidate_generation == 1
 
     await detector.feed(b"\x02\x00" * 160)
+    async with asyncio.timeout(1):
+        while not detector._deferred_turn_complete:
+            await asyncio.sleep(0)
     deferred_candidate = candidates[1]
     assert detector._candidate_generation == 2
     assert deferred_candidate not in detector._bound_turns
+
+    gate.events = ()
+    third_pcm = b"\x03\x00" * 160
+    await detector.feed(third_pcm)
+    reset_calls = coordinator.reset_calls
 
     await detector.release_deferred_turn()
     assert detector._candidate_generation == 2
     assert deferred_candidate not in detector._bound_turns
     assert deferred_candidate not in detector._deferred_completions
+    assert coordinator.reset_calls == reset_calls
+    assert third_pcm in coordinator.audio
 
-    await detector.feed(b"\x03\x00" * 160)
+    gate.events = (
+        SpeechActivityEvent.SPEECH_STARTED,
+        SpeechActivityEvent.CANDIDATE_PAUSE,
+    )
+    await detector.feed(b"\x04\x00" * 160)
 
     assert [candidate.candidate_generation for candidate in candidates] == [0, 1, 2]
     assert [
