@@ -1016,7 +1016,7 @@ async def market_oauth_status(
         )
     token_snapshot = dict(token_data)
 
-    if token_data.get("subject_pending"):
+    if not _oauth_subject_is_verified(token_data):
         access_token = token_data.get("access_token")
         try:
             auth_user = await _fetch_auth_userinfo(access_token)
@@ -1064,6 +1064,8 @@ async def market_oauth_status(
                 )
             token_snapshot = dict(token_data)
         else:
+            token_data["subject"] = None
+            token_data["subject_pending"] = True
             token_data["auth_state"] = "pending"
             token_data["updated_at"] = time.time()
             if not _write_oauth_token_if_matches(token_snapshot, token_data):
@@ -1132,6 +1134,8 @@ async def market_oauth_account_summary(
     _verify_token(token, authorization=authorization)
     token_data = await _ensure_valid_oauth_token()
     if not token_data:
+        return _unauthenticated_account_summary()
+    if not _oauth_subject_is_verified(token_data):
         return _unauthenticated_account_summary()
     token_snapshot = dict(token_data)
 
@@ -1266,6 +1270,7 @@ async def market_oauth_complete(
         "session_id": state,
         "client_id": _OAUTH_CLIENT_ID,
         "refresh_generation": 0,
+        "state_revision": 0,
         "market_api_url": _normalized_base_url(MARKET_API_URL),
         "market_state": market_state,
         "user": user,
@@ -1543,7 +1548,13 @@ def _oauth_token_snapshot_matches(snapshot: dict[str, Any]) -> bool:
             and secrets.compare_digest(expected_session, current_session)
         ):
             return False
-    return current.get("refresh_generation") == snapshot.get("refresh_generation")
+    expected_revision = _oauth_state_revision(snapshot)
+    current_revision = _oauth_state_revision(current)
+    return (
+        current.get("refresh_generation") == snapshot.get("refresh_generation")
+        and expected_revision is not None
+        and current_revision == expected_revision
+    )
 
 
 def _write_oauth_token_if_matches(
@@ -1552,6 +1563,10 @@ def _write_oauth_token_if_matches(
 ) -> bool:
     if not _oauth_token_snapshot_matches(snapshot):
         return False
+    revision = _oauth_state_revision(snapshot)
+    if revision is None:
+        return False
+    payload["state_revision"] = revision + 1
     _write_private_json(_OAUTH_TOKEN_FILE, payload)
     return True
 
@@ -1583,6 +1598,22 @@ def _market_token_is_expired(token_data: dict[str, Any]) -> bool:
         return True
 
 
+def _oauth_state_revision(token_data: dict[str, Any]) -> int | None:
+    value = token_data.get("state_revision", 0)
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return None
+    return value
+
+
+def _oauth_subject_is_verified(token_data: dict[str, Any]) -> bool:
+    subject = token_data.get("subject")
+    return (
+        token_data.get("subject_pending") is False
+        and isinstance(subject, str)
+        and bool(subject.strip())
+    )
+
+
 def _oauth_token_provenance_matches(token_data: dict[str, Any]) -> bool:
     if token_data.get("auth_url") != _normalized_base_url(NEKO_AUTH_URL):
         return False
@@ -1599,6 +1630,8 @@ def _oauth_token_provenance_matches(token_data: dict[str, Any]) -> bool:
     try:
         int(token_data.get("refresh_generation"))
     except (TypeError, ValueError):
+        return False
+    if _oauth_state_revision(token_data) is None:
         return False
 
     granted = _normalize_oauth_scopes(str(token_data.get("scope") or "").split())
