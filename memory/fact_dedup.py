@@ -81,6 +81,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def cosine_similarity(left, right) -> float:
+    """Load the optional vector implementation only when detection runs."""
+    try:
+        from memory.embeddings import cosine_similarity as implementation
+    except ImportError:
+        from memory.embeddings_fallback import (
+            _warn_once,
+            cosine_similarity as implementation,
+        )
+        _warn_once(__name__)
+    return implementation(left, right)
+
+
 # Cosine cutoff for "candidate is *probably* a paraphrase". 0.85 is
 # the design number from the P2 plan — empirically what the default
 # local profile emits for "主人喜欢猫" vs "对猫咪很感兴趣" (≈0.88)
@@ -444,14 +457,6 @@ class FactDedupResolver:
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
         """  # noqa: DOCSTRING_CJK
-        try:
-            from memory.embeddings import cosine_similarity
-        except ImportError:
-            # Queue management and erasure must remain importable without the
-            # optional embedding stack. Candidate detection alone degrades to
-            # the zero-cosine fallback when vectors are unavailable.
-            from memory.embeddings_fallback import cosine_similarity, _warn_once
-            _warn_once(__name__)
         from memory.scopes import is_legacy_private_entry, subject_from_entry
 
         def _bucket_key(f: dict) -> tuple | None:
