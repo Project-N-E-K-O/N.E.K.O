@@ -471,6 +471,7 @@ def _current_rnnoise_policy_trigger_ms(
 
     if frames_per_chunk <= 0:
         raise ValueError("frames_per_chunk must be positive")
+    alpha = AudioProcessor.RNNOISE_EMA_ALPHA
     ema: float | None = None
     chunks: list[RnnoiseEvidence] = []
     for start in range(0, len(frame_probabilities), frames_per_chunk):
@@ -478,7 +479,11 @@ def _current_rnnoise_policy_trigger_ms(
         if not values:
             continue
         for probability in values:
-            ema = probability if ema is None else 0.35 * probability + 0.65 * ema
+            ema = (
+                probability
+                if ema is None
+                else alpha * probability + (1.0 - alpha) * ema
+            )
         mean = sum(values) / len(values)
         evidence = RnnoiseEvidence(
             available=True,
@@ -640,6 +645,7 @@ def evaluate_corpus(
     rss_after_rnnoise = process.memory_info().rss
     vad = SileroVad(enabled=True, asset_dir=asset_dir, intra_op_threads=1)
     if not vad.load():
+        vad.close()
         processor.close()
         raise RuntimeError(f"Silero failed to load: {vad.unavailable_reason}")
 

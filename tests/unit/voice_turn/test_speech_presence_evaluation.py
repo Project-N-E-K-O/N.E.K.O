@@ -275,6 +275,24 @@ def test_offline_replay_uses_production_rnnoise_speech_threshold() -> None:
     assert evaluation.AudioProcessor.RNNOISE_SPEECH_PROBABILITY_THRESHOLD == 0.2
 
 
+def test_offline_replay_uses_audio_processor_rnnoise_ema_alpha(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: list[evaluation.RnnoiseEvidence] = []
+
+    def _capture(chunks, *, chunk_ms):
+        assert chunk_ms == 10.0
+        captured.extend(chunks)
+        return None
+
+    monkeypatch.setattr(evaluation.AudioProcessor, "RNNOISE_EMA_ALPHA", 0.5)
+    monkeypatch.setattr(evaluation, "_replay_rnnoise_policy_trigger_ms", _capture)
+
+    evaluation._current_rnnoise_policy_trigger_ms([0.2, 1.0])
+
+    assert [chunk.ema for chunk in captured] == pytest.approx([0.2, 0.6])
+
+
 def test_evaluate_corpus_closes_processor_when_rnnoise_is_unavailable(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -294,6 +312,38 @@ def test_evaluate_corpus_closes_processor_when_rnnoise_is_unavailable(
         evaluation.evaluate_corpus([], tmp_path)
 
     assert closed == ["processor"]
+
+
+def test_evaluate_corpus_closes_runtimes_when_silero_load_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    closed: list[str] = []
+
+    class _LoadProcessor:
+        def __init__(self, **_kwargs) -> None:
+            self._denoiser = object()
+
+        def close(self) -> None:
+            closed.append("processor")
+
+    class _LoadVad:
+        def __init__(self, **_kwargs) -> None:
+            self.unavailable_reason = "load failed"
+
+        def load(self) -> bool:
+            return False
+
+        def close(self) -> None:
+            closed.append("vad")
+
+    monkeypatch.setattr(evaluation, "AudioProcessor", _LoadProcessor)
+    monkeypatch.setattr(evaluation, "SileroVad", _LoadVad)
+
+    with pytest.raises(RuntimeError, match="Silero failed to load: load failed"):
+        evaluation.evaluate_corpus([], tmp_path)
+
+    assert closed == ["vad", "processor"]
 
 
 def test_evaluate_corpus_closes_runtimes_when_silero_warmup_fails(

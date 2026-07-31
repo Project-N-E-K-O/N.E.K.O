@@ -201,6 +201,18 @@ def test_rnnoise_evidence_aggregates_every_complete_frame_in_chunk() -> None:
     assert processor.rnnoise_probability_ema == pytest.approx(0.29425)
 
 
+def test_rnnoise_evidence_uses_exposed_ema_alpha() -> None:
+    processor = _processor()
+    processor.RNNOISE_EMA_ALPHA = 0.5
+    processor._denoiser = _ProbabilityDenoiser([0.2, 1.0])
+
+    processor._process_with_rnnoise(
+        np.zeros(processor.RNNOISE_FRAME_SIZE * 2, dtype=np.int16)
+    )
+
+    assert processor.rnnoise_probability_ema == pytest.approx(0.6)
+
+
 def test_rnnoise_incomplete_chunk_does_not_reuse_prior_evidence() -> None:
     processor = _processor()
     processor._denoiser = _ProbabilityDenoiser([0.75])

@@ -227,6 +227,7 @@ class AudioProcessor:
     RNNOISE_SAMPLE_RATE = 48000  # RNNoise requires 48kHz
     RNNOISE_FRAME_SIZE = 480     # 10ms at 48kHz
     RNNOISE_SPEECH_PROBABILITY_THRESHOLD = 0.2
+    RNNOISE_EMA_ALPHA = 0.35
     API_SAMPLE_RATE = 16000      # API expects 16kHz
     
     # Reset denoiser if no speech detected for this many seconds
@@ -477,7 +478,8 @@ class AudioProcessor:
                 if ema_state is None:
                     ema_state = probability
                 else:
-                    ema_state = 0.35 * probability + 0.65 * ema_state
+                    alpha = self.RNNOISE_EMA_ALPHA
+                    ema_state = alpha * probability + (1.0 - alpha) * ema_state
             self._rnnoise_ema_state = ema_state
             self._rnnoise_ema = ema_state
         return output
