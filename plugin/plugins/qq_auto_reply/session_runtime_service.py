@@ -81,6 +81,31 @@ class QQSessionRuntimeService:
                     "group_memory_enabled", False,
                 )
             )
+        elif not context.is_group and persist:
+            mode = user_data.get("private_memory_mode")
+            if mode is None:
+                # OFF 时代创建的会话首次拿到 persist=True（开关中途打开）：
+                # 此刻补章。结算目标从此定格，per-turn 权限漂移不再改它。
+                mode = (
+                    "legacy" if context.permission_level == "admin"
+                    else "participant"
+                )
+                user_data["private_memory_mode"] = mode
+            if mode == "participant":
+                # 对偶群分支的实时策略门控：OFF 盖章循环之后才插入的会话
+                # 不得凭陈旧的 True 继续收集。
+                persist = bool(
+                    (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+                        "private_participant_memory_enabled", False,
+                    )
+                )
+            elif mode == "legacy" and context.permission_level != "admin":
+                # 会话以 admin 语料结算、当前发言人却不再是 admin（降权）：
+                # fail-closed 停写。继续写会把非 admin 的发言并进主人的
+                # legacy 私聊语料；改道 participant 也不行——先前的历史
+                # 属于 legacy 时代，混写更糟。与降权前的旧行为一致（旧代
+                # 码里非 admin 私聊 persist 恒 False）。
+                persist = False
         user_data["memory_enabled"] = persist
         user_data["memory_context_used"] = context.memory_context_used
         user_data["ephemeral_session"] = context.ephemeral_session
@@ -96,6 +121,11 @@ class QQSessionRuntimeService:
         )
         if int(user_data.get("last_group_digest_index", 0) or 0) > history_len:
             user_data["last_group_digest_index"] = history_len
+        if int(
+            user_data.get("last_participant_digest_index", 0) or 0
+        ) > history_len:
+            # participant 游标同受重复守卫重置影响（对偶群游标钳制）。
+            user_data["last_participant_digest_index"] = history_len
         if int(user_data.get("nonconsent_history_end", 0) or 0) > history_len:
             # 历史被重置后旧的未授权边界同样越界：不钳的话 max() 地板会
             # 把重置后新授权轮当成已处理丢弃。
@@ -187,6 +217,11 @@ class QQSessionRuntimeService:
         try:
             while True:
                 await asyncio.sleep(self.plugin.SESSION_SWEEP_INTERVAL_SECONDS)
+                # 群显示名刷新挂在这个既有周期上（TTL 门在服务内部，绝大多
+                # 数轮次是零开销判断），不为它单开定时器。
+                display_names = getattr(self.plugin, "display_name_service", None)
+                if display_names is not None:
+                    display_names.maybe_schedule_refresh()
                 await self.plugin._flush_idle_memory_sessions()
                 if getattr(self.plugin, "attention_service", None):
                     await self.plugin.attention_service.decay_all()

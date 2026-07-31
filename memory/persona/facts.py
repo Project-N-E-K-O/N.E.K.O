@@ -928,6 +928,57 @@ class FactsMixin:
             return section.setdefault('facts', [])
         return persona.setdefault(entity, {}).setdefault('facts', [])
 
+    async def aupdate_subject_display_name(
+        self, name: str, subject, display_name,
+    ) -> bool:
+        """Stamp a human-readable display name onto an EXISTING scoped section.
+
+        写入路径（scoped facts / scoped history）在成功后调它刷新 section
+        元数据；渲染侧读到就把标题从裸 subject_id 换成「名字 + id」。三条
+        刻意的边界：
+
+        1. **绝不建 section**——scoped persona section 由晋升创建，为了存
+           一个名字就建空 section，会让每个说过话的群成员在 persona.json
+           里留一个空壳（渲染/晋升/refine 循环全要空转它们）。section 还
+           没出现时丢弃名字，下一次写入自然补上（自愈）。
+        2. **scope 必须精确匹配**——section key 不含 scope，同 key 可能住
+           着另一个隔离域的数据；给别人的 section 盖自己的名字等于跨域
+           改元数据（对偶 _normalize_entry_for_section 的 fail-closed）。
+        3. **display_name 过 sanitize_speaker_label**——它会进 prompt 标
+           题，群名/群名片是用户可改的原始数据，与 speaker_label 同一个
+           攻击面（#2605），复用同一个中和器；中和后为空视为没有名字，
+           不清除已有值（名字暂时拿不到时保留旧名比退回裸 id 有用）。
+        """  # noqa: DOCSTRING_CJK
+        from memory.facts import FactStore
+        from memory.scopes import coerce_subject, persona_subject_from_section
+        try:
+            memory_subject = coerce_subject(subject)
+        except Exception:
+            return False
+        if memory_subject is None:
+            return False
+        cleaned = FactStore.sanitize_speaker_label(display_name)
+        if not cleaned:
+            return False
+        section_key = memory_subject.persona_section_key
+        async with self._get_alock(name):
+            persona = await self._aensure_persona_locked(name)
+            section = persona.get(section_key)
+            if not isinstance(section, dict):
+                return False
+            section_subject = persona_subject_from_section(section_key, section)
+            if (
+                section_subject is None
+                or section_subject.key != memory_subject.key
+                or section_subject.scope != memory_subject.scope
+            ):
+                return False
+            if section.get('display_name') == cleaned:
+                return False
+            section['display_name'] = cleaned
+            await self.asave_persona(name, persona)
+            return True
+
     def _normalize_entry_for_section(
         self, persona: dict, section_key: str, value,
     ) -> dict:

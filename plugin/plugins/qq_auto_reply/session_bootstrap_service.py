@@ -161,6 +161,17 @@ class QQSessionBootstrapService:
                 "last_synced_index": 0,
                 "last_activity_at": time.time(),
                 "memory_enabled": context.persist_memory,
+                # 私聊记忆模式在创建时刻定格（"participant"=以对方为主体
+                # 的 scoped 结算；"legacy"=admin 主人语料）：结算目标绝不
+                # 随 per-turn 的权限变化漂移——漂移的代价是把一个人的历史
+                # 写进另一个语料库。群会话恒 None。
+                "private_memory_mode": (
+                    None if context.is_group or not context.persist_memory
+                    else (
+                        "legacy" if context.permission_level == "admin"
+                        else "participant"
+                    )
+                ),
                 "memory_context_used": context.memory_context_used,
                 "has_cached_memory": False,
                 "session_key": session_key,

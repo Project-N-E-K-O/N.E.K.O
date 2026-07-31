@@ -661,9 +661,18 @@ class RenderingMixin:
                     from config.prompts.prompts_memory import (
                         get_scoped_persona_section_header,
                     )
+                    from memory.facts import FactStore
                     from utils.language_utils import get_global_language
+                    # display_name 是不可信用户输入（群名/群名片），路由入口
+                    # 已中和过一次，这里再过一次——渲染是唯一把它拼进 prompt
+                    # 的地方，而 persona.json 可被手改（与 speaker_label 的
+                    # 双侧中和同一道理，#2605）。中和后为空按无名回退。
+                    display_name = FactStore.sanitize_speaker_label(
+                        section_meta.get('display_name'),
+                    )
                     header = get_scoped_persona_section_header(
                         subject_kind, subject_id, get_global_language(),
+                        display_name=display_name or None,
                     )
                 else:
                     header = _headers.get(entity_key, entity_key)

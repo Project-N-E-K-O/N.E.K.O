@@ -3352,9 +3352,53 @@ SCOPED_PERSONA_SECTION_HEADER = {
 }
 
 
+# 带显示名的变体：display_name 来自 section 元数据（群名/成员昵称），是
+# 不可信用户输入——两侧（路由入口 + 渲染）都过 FactStore.sanitize_speaker_
+# label 后才允许进这里。subject_id 保留在标题里：显示名可变且可重复
+# （同名群、同昵称成员），稳定标识才能与消息头/存储对得上。
+SCOPED_PERSONA_SECTION_HEADER_NAMED = {
+    "group_chat": {
+        "zh": "群聊记忆（{display_name}，{subject_id}）",
+        "en": "Group chat memory ({display_name}, {subject_id})",
+        "ja": "グループチャットの記憶（{display_name}、{subject_id}）",
+        "ko": "그룹 채팅 기억 ({display_name}, {subject_id})",
+        "ru": "Память группового чата ({display_name}, {subject_id})",
+        "es": "Memoria del chat grupal ({display_name}, {subject_id})",
+        "pt": "Memória do chat em grupo ({display_name}, {subject_id})",
+    },
+    "participant": {
+        "zh": "成员记忆（{display_name}，{subject_id}）",
+        "en": "Participant memory ({display_name}, {subject_id})",
+        "ja": "メンバーの記憶（{display_name}、{subject_id}）",
+        "ko": "멤버 기억 ({display_name}, {subject_id})",
+        "ru": "Память об участнике ({display_name}, {subject_id})",
+        "es": "Memoria del participante ({display_name}, {subject_id})",
+        "pt": "Memória do participante ({display_name}, {subject_id})",
+    },
+    "group_participant": {
+        "zh": "群内成员记忆（{display_name}，{subject_id}）",
+        "en": "Group member memory ({display_name}, {subject_id})",
+        "ja": "グループメンバーの記憶（{display_name}、{subject_id}）",
+        "ko": "그룹 멤버 기억 ({display_name}, {subject_id})",
+        "ru": "Память об участнике группы ({display_name}, {subject_id})",
+        "es": "Memoria del miembro del grupo ({display_name}, {subject_id})",
+        "pt": "Memória do membro do grupo ({display_name}, {subject_id})",
+    },
+}
+
+
 def get_scoped_persona_section_header(
     subject_kind: str, subject_id: str, lang: str = "zh",
+    display_name: str | None = None,
 ) -> str:
+    if display_name:
+        named = SCOPED_PERSONA_SECTION_HEADER_NAMED.get(subject_kind)
+        if named is not None:
+            # str.format 只展开模板里的槽位，替换值里的花括号不会被二次
+            # 解释——display_name 含 "{x}" 也不会变成注入面。
+            return _loc(named, lang).format(
+                display_name=display_name, subject_id=subject_id,
+            )
     table = SCOPED_PERSONA_SECTION_HEADER.get(subject_kind)
     if table is None:
         return subject_id

@@ -159,6 +159,9 @@ class QQReplyPipelineRunner:
             member_memory_at_receipt=getattr(
                 request, "member_memory_at_receipt", None,
             ),
+            participant_memory_at_receipt=getattr(
+                request, "participant_memory_at_receipt", None,
+            ),
             inherited_consent_snapshot=getattr(
                 request, "inherited_consent_snapshot", None,
             ),
@@ -498,6 +501,7 @@ class QQReplyPipelineRunner:
             for key in (
                 "group_memory_enabled",
                 "group_member_memory_enabled",
+                "private_participant_memory_enabled",
                 "allow_cross_group_context",
             )
         }

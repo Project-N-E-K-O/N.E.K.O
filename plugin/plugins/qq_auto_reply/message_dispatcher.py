@@ -118,6 +118,13 @@ class QQMessageDispatcher:
                         message["_member_memory_at_receipt"] = bool(
                             settings_now.get("group_member_memory_enabled", False)
                         ) and bool(settings_now.get("group_memory_enabled", False))
+                        # 私聊 participant 记忆政策的接收边界章（对偶上面
+                        # 两枚；群消息不消费它）。
+                        message["_participant_memory_at_receipt"] = bool(
+                            settings_now.get(
+                                "private_participant_memory_enabled", False,
+                            )
+                        )
                     task = __import__("asyncio").create_task(self.plugin._run_message_handler(message))
                     self.plugin.handler_runtime_service.track_handler_task(task)
             except __import__("asyncio").CancelledError:
@@ -232,7 +239,15 @@ class QQMessageDispatcher:
                 self.plugin._user_sessions[session_key]["last_activity_at"] = __import__("time").time()
             fwd_count = int(message.get("_forward_sub_count", 0) or 0) if isinstance(message, dict) else 0
             current_message_id = str(message.get("message_id") or message.get("msg_id") or "").strip()
-            await self.handle_private_message(sender_id, message_text, attachments=attachments, user_nickname=user_nickname, forward_sub_count=fwd_count, current_message_id=current_message_id)
+            await self.handle_private_message(
+                sender_id, message_text, attachments=attachments,
+                user_nickname=user_nickname, forward_sub_count=fwd_count,
+                current_message_id=current_message_id,
+                participant_memory_at_receipt=(
+                    message.get("_participant_memory_at_receipt")
+                    if isinstance(message, dict) else None
+                ),
+            )
         elif message_type == "group":
             group_id = str(message.get("group_id") or "").strip()
             is_at_bot = message.get("is_at_bot", False)
@@ -279,7 +294,7 @@ class QQMessageDispatcher:
             )
             await self.plugin._maybe_notify_backlog_summary(group_id=group_id)
 
-    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0, current_message_id: str = ""):
+    async def handle_private_message(self, sender_id: str, message_text: str, attachments: Optional[list[dict[str, Any]]] = None, user_nickname: Optional[str] = None, forward_sub_count: int = 0, current_message_id: str = "", participant_memory_at_receipt: bool | None = None):
         # 开放平台：第一个私聊用户自动成为管理员，之后可在前端配置
         if self.plugin.qq_client and not self.plugin.qq_client.needs_attention:
             if self.plugin.permission_mgr and not self.plugin.permission_mgr.list_users():
@@ -303,6 +318,10 @@ class QQMessageDispatcher:
             fallback_to_text_on_voice_failure=True,
             source_kind="incoming_private",
             forward_sub_count=forward_sub_count,
+            # 接收边界的 participant 记忆政策章（None=旁路调用者，build
+            # 内回退实时读）：排队期间 OFF→ON 不得让收到时无授权的私聊
+            # 被收集。
+            participant_memory_at_receipt=participant_memory_at_receipt,
         )
         outcome = await self.plugin.reply_pipeline.run(request)
         if outcome.action == "reply" and outcome.reply_text and current_message_id:

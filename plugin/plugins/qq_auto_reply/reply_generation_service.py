@@ -369,10 +369,13 @@ class QQReplyGenerationService:
                      if getattr(row, "type", "") == "ai"),
                     None,
                 )
-                if context.is_group and not user_data.get("memory_enabled"):
+                if not user_data.get("memory_enabled"):
                     # 未授权边界在 finally 记：异常/空回复的 human 行也已
                     # 进历史，只在成功路径记会漏（超时路径会话随后被弃，
-                    # 多记无害）。
+                    # 多记无害）。私聊轮同样记（去掉此前的 is_group 限定）：
+                    # participant 结算分支拿它当 digest 起点地板，OFF 时代
+                    # 的私聊行在开关翻 ON 后绝不回溯入库；legacy admin 路径
+                    # 不读该字段，多记无害。
                     user_data["nonconsent_history_end"] = len(
                         getattr(user_session, "_conversation_history", []) or []
                     )
@@ -572,6 +575,15 @@ class QQReplyGenerationService:
                 settings.get("allow_cross_group_context", False)
             )
         if not getattr(context, "is_group", False):
+            if getattr(context, "participant_memory_enabled", False) and (
+                getattr(context, "core_memory_text", "")
+                or getattr(context, "recalled_memory_text", "")
+            ):
+                # 私聊 participant 轮的 prompt 依赖该开关（对偶群轮的
+                # group_memory_enabled 记账）：发送前撤销复检要覆盖它。
+                snapshot["private_participant_memory_enabled"] = bool(
+                    settings.get("private_participant_memory_enabled", False)
+                )
             return snapshot
         if getattr(context, "core_memory_text", "") or getattr(
             context, "recalled_memory_text", "",
@@ -631,6 +643,16 @@ class QQReplyGenerationService:
                 system_prompt, getattr(context, "cross_session_section", "") or "",
             )
         if not getattr(context, "is_group", False):
+            if getattr(
+                context, "participant_memory_enabled", False,
+            ) and not settings.get("private_participant_memory_enabled", False):
+                # 私聊 participant 轮的授权在生成前被撤销：scoped 召回与
+                # bootstrap 段全部撤除（对偶下面群分支的撤法）。
+                recalled_text = ""
+                system_prompt = self._strip_section_text(
+                    system_prompt,
+                    getattr(context, "core_memory_text", "") or "",
+                )
             return system_prompt, recalled_text
         core_text = getattr(context, "core_memory_text", "") or ""
         if not settings.get("group_memory_enabled", False):
@@ -799,7 +821,12 @@ class QQReplyGenerationService:
         buffer 合并场景的草稿没人看到，各记一次会把被引用条目推进 suppression
         阈值、错误地从后续上下文消失。best-effort：失败只影响该条目晚几轮
         进入"暂不主动提及"。"""
-        if not context.is_group or not reply_text or context.ephemeral_session:
+        if not reply_text or context.ephemeral_session:
+            return
+        if not context.is_group:
+            await self._record_participant_mentions_on_delivery(
+                context, reply_text,
+            )
             return
         if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
             "group_memory_enabled", False,
@@ -812,6 +839,42 @@ class QQReplyGenerationService:
         if not user_data or not user_data.get("memory_enabled"):
             return
         await self._record_scoped_mentions_best_effort(context, reply_text)
+
+    async def _record_participant_mentions_on_delivery(
+        self, context: QQReplyContext, reply_text: str,
+    ) -> None:
+        """私聊 participant 轮的 mention 计数（对偶群路径）。
+
+        没有它，scoped 条目的防重复 suppression 对私聊 participant 永不
+        生效，模型会在每次回复里重复提起同一条事实。legacy admin 私聊走
+        本体 post_turn，不在这里记。"""
+        if not getattr(context, "participant_memory_enabled", False):
+            return
+        if not (getattr(self.plugin, "_qq_settings", {}) or {}).get(
+            "private_participant_memory_enabled", False,
+        ):
+            # 与群分支同语义：开关关掉之后不得再改 participant 域元数据。
+            return
+        session_key = self.plugin.session_runtime_service.build_generation_session_key(context)
+        user_data = self.plugin._user_sessions.get(session_key)
+        if not user_data or not user_data.get("memory_enabled"):
+            return
+        sender_id = str(context.sender_id or "").strip()
+        if not sender_id or is_synthetic_source(
+            getattr(context, "source_kind", ""),
+        ):
+            # 合成轮的名义 sender 不是真实对话方；缺 sender 时 fail-closed
+            # ——绝不退化成无 subject 的 legacy 写。
+            return
+        try:
+            await self.plugin.memory_bridge.post_scoped_mentions(
+                context.her_name, reply_text,
+                subjects=[
+                    self.plugin.memory_bridge.participant_subject(sender_id),
+                ],
+            )
+        except Exception as e:
+            self.plugin.logger.warning(f"participant mention 记录失败（忽略）: {e}")
 
     async def _record_scoped_mentions_best_effort(
         self, context: QQReplyContext, reply_text: str,

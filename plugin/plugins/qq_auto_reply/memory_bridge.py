@@ -61,6 +61,18 @@ class QQMemoryBridge:
             ),
         }
 
+    @staticmethod
+    def participant_subject(sender_id: object) -> dict[str, str]:
+        """非 admin QQ 私聊对象的独立记忆主体（无群维度）。
+
+        与群成员的 group_participant 平行：同一个人在群里与私聊里是两个
+        隔离域（scope 由 subject_id 派生），跨域合并是单独的产品决定，
+        不在 schema 层顺手做。"""
+        return {
+            "subject_kind": "participant",
+            "subject_id": f"qq:{str(sender_id or '').strip()}",
+        }
+
     async def fetch_bootstrap_memory(self, her_name: str, *, timeout: float = 5.0) -> str:
         client = self._client()
         response = await client.get(
@@ -250,17 +262,27 @@ class QQMemoryBridge:
         *,
         subject: dict[str, str],
         speaker_label: str | None = None,
+        speaker_trust: float | None = None,
+        display_name: str | None = None,
         timeout: float = 30.0,
     ) -> dict[str, Any]:
-        # speaker_label 只在单发言人批次（成员 bucket）传：提取 prompt 用它
-        # 替代私聊主人名渲染 user 轮，避免成员发言被抽成"关于主人"的事实。
-        # 群 digest 不传——内容里每条消息已带发言人头。
+        # speaker_label 只在单发言人批次（成员 bucket / 私聊 participant
+        # digest）传：提取 prompt 用它替代私聊主人名渲染 user 轮，避免对方
+        # 发言被抽成"关于主人"的事实。群 digest 不传——内容里每条消息已带
+        # 发言人头。speaker_trust 与 label 同源同段（信赖度阶段一：随 fact
+        # 落盘，与群成员段同一组字段）。display_name 是 subject 的人类可读
+        # 名（群名/昵称），服务端中和后刷进 persona section 元数据，渲染
+        # 标题用；纯装饰性，缺省即退化裸 id。
         payload: dict[str, Any] = {
             "input_history": json.dumps(messages, ensure_ascii=False),
             "subject": subject,
         }
         if speaker_label:
             payload["speaker_label"] = speaker_label
+        if speaker_trust is not None:
+            payload["speaker_trust"] = speaker_trust
+        if display_name:
+            payload["display_name"] = display_name
         client = self._client()
         response = await client.post(
             f"{self._base_url()}/internal/memory/{her_name}/scoped_history",
@@ -280,9 +302,11 @@ class QQMemoryBridge:
         """The batched multi-speaker shape of /scoped_history.
 
         ``segments``: ``[{'messages': [...], 'subject': {...},
-        'speaker_label': str, 'speaker_trust': float|None}, ...]``——每段一位
-        发言人。服务端一次抽取后按段分派，响应体按请求顺序逐段报
-        ok/failed，调用方只 pop 成功段的 bucket。"""
+        'speaker_label': str, 'speaker_trust': float|None,
+        'display_name': str|None}, ...]``——每段一位发言人。服务端一次抽取
+        后按段分派，响应体按请求顺序逐段报 ok/failed，调用方只 pop 成功段
+        的 bucket。display_name 是该段 subject 的显示名（昵称），只用于
+        persona 标题，可缺省。"""
         payload_segments: list[dict[str, Any]] = []
         for segment in segments:
             wire: dict[str, Any] = {
@@ -295,6 +319,9 @@ class QQMemoryBridge:
             trust = segment.get("speaker_trust")
             if trust is not None:
                 wire["speaker_trust"] = trust
+            display_name = segment.get("display_name")
+            if display_name:
+                wire["display_name"] = display_name
             payload_segments.append(wire)
         client = self._client()
         response = await client.post(

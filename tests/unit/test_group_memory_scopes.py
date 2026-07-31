@@ -9277,6 +9277,9 @@ async def test_memory_free_turn_keeps_its_empty_consent_snapshot():
     assert schedule.await_args.kwargs["consent_snapshot"] == {
         "group_memory_enabled": True,
         "group_member_memory_enabled": True,
+        # fallback 采样必须覆盖全部 consent 键：漏一个键，该开关的
+        # 发送前撤销复检对"没走完生成"的轮次就是盲区。
+        "private_participant_memory_enabled": False,
         "allow_cross_group_context": True,
     }
 
