@@ -678,7 +678,9 @@ class FactStore:
 
         def _rendered_cost(body: str) -> int:
             body_lines = body.splitlines() or ['']
-            return count_tokens("\n".join(f"| {line}" for line in body_lines))
+            rendered_lines = [f"> {body_lines[0]}"]
+            rendered_lines.extend(f"| {line}" for line in body_lines[1:])
+            return count_tokens("\n".join(rendered_lines))
 
         def _clip(body: str, budget: int) -> str:
             if budget <= 0:
@@ -720,18 +722,30 @@ class FactStore:
         ):
             final_flat = individually_capped
         else:
-            final_flat = []
+            costs = [_rendered_cost(body) for body in individually_capped]
+            allocations = [0] * len(costs)
             remaining_budget = SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
-            for index, body in enumerate(flat_raw):
-                remaining_messages = len(flat_raw) - index
-                fair_share = remaining_budget // remaining_messages
-                message_budget = min(
-                    SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
-                    fair_share,
-                )
-                clipped = _clip(body, message_budget)
-                final_flat.append(clipped)
-                remaining_budget -= _rendered_cost(clipped)
+            active = list(range(len(costs)))
+            while active:
+                fair_share = remaining_budget // len(active)
+                satisfied = [index for index in active if costs[index] <= fair_share]
+                if satisfied:
+                    for index in satisfied:
+                        allocations[index] = costs[index]
+                        remaining_budget -= costs[index]
+                    satisfied_set = set(satisfied)
+                    active = [index for index in active if index not in satisfied_set]
+                    continue
+
+                bonus_count = remaining_budget % len(active)
+                for position, index in enumerate(active):
+                    allocations[index] = fair_share + (position < bonus_count)
+                break
+
+            final_flat = [
+                _clip(body, budget)
+                for body, budget in zip(flat_raw, allocations)
+            ]
 
         final_iter = iter(final_flat)
         return [
@@ -766,8 +780,9 @@ class FactStore:
            没有长度校验），逐行重复 label 等于给攻击者一个 ~67 倍的放大器
            ——一条几千行的消息就能把 prompt 撑爆或耗光抽取超时，而失败的
            批是保留重试的，同批其他成员会被一起拖住（Codex）。发言人已在
-           段首唯一标明，正文统一用短标记把固定开销压到每行 2 字节；这些
-           生成前缀也计入 batch token 预算，避免换行密集正文再次放大。
+           段首唯一标明；消息首行用 ``> ``、续行用 ``| ``，既保留消息边界，
+           又把固定开销压到每行 2 字节。这些生成前缀也计入 batch token
+           预算，避免换行密集正文再次放大。
         2. **段首带一次性 nonce**——攻击者的消息在 nonce 生成之前就写死了，
            猜不到本次请求的 token，伪造头与真段首形状对不上。
         3. **label 与正文里的结构字面量中和**——label 剥方括号/竖线/换行，
@@ -789,7 +804,8 @@ class FactStore:
             lines = [f"[SEGMENT {index}:{nonce} | speaker: {label}]"]
             for body in message_bodies:
                 body_lines = body.splitlines() or ['']
-                lines.extend(f"| {line}" for line in body_lines)
+                lines.append(f"> {body_lines[0]}")
+                lines.extend(f"| {line}" for line in body_lines[1:])
             blocks.append("\n".join(lines))
         return "\n\n".join(blocks)
 

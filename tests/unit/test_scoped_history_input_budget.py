@@ -9,6 +9,7 @@ from config import (
     SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS,
 )
 from config.prompts.prompts_memory import (
+    FACT_EXTRACTION_BATCH_PROMPT,
     SCOPED_BATCH_MIDDLE_OMISSION_MARKER,
     get_scoped_batch_middle_omission_marker,
 )
@@ -27,7 +28,7 @@ def _segment(messages: list[str]) -> dict:
 
 
 def _single_line_bodies(rendered: str) -> list[str]:
-    prefix = "| "
+    prefix = "> "
     return [
         line.removeprefix(prefix)
         for line in rendered.splitlines()
@@ -47,6 +48,23 @@ def test_scoped_batch_omission_marker_covers_every_supported_locale():
         "pt",
     }
     assert all(SCOPED_BATCH_MIDDLE_OMISSION_MARKER.values())
+
+
+def test_scoped_batch_prompts_describe_the_rendered_message_prefixes():
+    expected = {
+        "zh": "首行以「> 」",
+        "zh-TW": "首行以「> 」",
+        "en": 'first line starts with "> "',
+        "ja": "先頭行は「> 」",
+        "ko": '첫 줄은 "> "',
+        "ru": "первая строка каждого сообщения начинается с «> »",
+        "es": 'primera línea de cada mensaje empieza con "> "',
+        "pt": 'primeira linha de cada mensagem começa com "> "',
+    }
+
+    assert set(FACT_EXTRACTION_BATCH_PROMPT) == set(expected)
+    for lang, fragment in expected.items():
+        assert fragment in FACT_EXTRACTION_BATCH_PROMPT[lang]
 
 
 def test_scoped_batch_message_budget_preserves_normal_text_and_both_long_ends():
@@ -102,8 +120,25 @@ def test_scoped_batch_budget_includes_generated_newline_prefixes():
     rendered_message = "\n".join(rendered.splitlines()[1:])
 
     assert count_tokens(rendered_message) <= SCOPED_HISTORY_PER_MESSAGE_MAX_TOKENS
-    assert "| BEGIN" in rendered_message
+    assert "> BEGIN" in rendered_message
     assert rendered_message.endswith("| END")
+
+
+def test_scoped_batch_water_filling_reuses_later_short_message_savings():
+    messages = ["H" + ("界" * 1000) + "T" for _ in range(20)]
+    messages.extend("ok" for _ in range(180))
+
+    rendered = FactStore._format_speaker_segments(
+        [_segment(messages)],
+        nonce="abcd1234",
+        lang="en",
+    )
+    bodies = _single_line_bodies(rendered)
+    rendered_costs = [count_tokens(f"> {body}") for body in bodies]
+
+    assert all(cost > 300 for cost in rendered_costs[:20])
+    assert sum(rendered_costs) > 7500
+    assert sum(rendered_costs) <= SCOPED_HISTORY_BATCH_CONTENT_MAX_TOKENS
 
 
 @pytest.mark.parametrize("lang", SCOPED_BATCH_MIDDLE_OMISSION_MARKER)

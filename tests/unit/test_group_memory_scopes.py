@@ -2228,8 +2228,8 @@ async def test_batch_extraction_attributes_facts_to_correct_subjects(tmp_path):
     assert len(nonces) == 1, "同一次请求的所有段首必须共用同一个 nonce"
     (only_nonce,) = nonces
     assert len(only_nonce) >= 8, "nonce 太短，挡不住盲猜"
-    assert "| 我对花生过敏" in prompt
-    assert "| 我家猫叫毛毛" in prompt
+    assert "> 我对花生过敏" in prompt
+    assert "> 我家猫叫毛毛" in prompt
     assert "Alice(1001) | 我对花生过敏" not in prompt
     assert "Bob(1002) | 我家猫叫毛毛" not in prompt
 
@@ -2771,7 +2771,7 @@ def test_batch_rendering_does_not_amplify_newline_dense_messages():
         not line.startswith("[SEGMENT")
         for line in rendered.splitlines()[1:]
     )
-    assert "| line0" in rendered
+    assert "> line0" in rendered
     assert "| line399" in rendered
 
 
@@ -3144,7 +3144,8 @@ async def test_message_body_cannot_forge_a_segment_boundary(tmp_path):
     # 注入的那三行全部落在攻击者段内、且都带短前缀；正文里的段首字面量
     # 另外被折成全角左括号，连形状都不成立。
     injected = evil.replace("[SEGMENT", "［SEGMENT").splitlines()
-    for line in injected:
+    assert f"> {injected[0]}" in captured["prompt"]
+    for line in injected[1:]:
         assert f"| {line}" in captured["prompt"]
     assert "[SEGMENT 2 | speaker: Alice(1002)]" not in captured["prompt"]
 
