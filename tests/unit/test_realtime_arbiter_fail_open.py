@@ -1620,3 +1620,162 @@ async def test_the_release_leaves_the_lane_to_a_successor_that_took_over(make_ha
         {"type": "response.done", "response": {"id": "resp-3"}}
     )
     await asyncio.wait_for(third.done, timeout=1)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_release_with_nothing_to_release_does_not_end_a_host_turn():
+    # Codex P2. cancel_current()'s unowned branch escalates over a server
+    # response the arbiter never owned. It keeps that response's id on purpose
+    # — the response may still be streaming — so telling the host to finalize
+    # discards the turn on one side while the other goes on tracking it, and
+    # the response's own later events are then stale-filtered against an
+    # identity the host no longer holds.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    sent: list[dict] = []
+
+    async def _send(event: dict) -> None:
+        sent.append(event)
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    arbiter._fail_open = True
+    try:
+        # A server-initiated response the arbiter never owned, with an id.
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "srv-1"}}
+        )
+        client._current_response_id = "srv-1"
+        client._is_responding = True
+        assert arbiter._response_owner is None and arbiter._current is None
+
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+        await _settle()
+
+        assert done_calls == [], (
+            "no lifecycle was released, so no turn ended"
+        )
+        assert client._is_responding is True, (
+            "the server response may still be streaming; the host must keep "
+            "tracking it"
+        )
+        assert client._current_response_id == "srv-1", (
+            "and keep the identity its later events are matched against"
+        )
+        assert "srv-1" in arbiter._server_response_ids, (
+            "the two halves must agree about what is live"
+        )
+    finally:
+        await arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_release_that_gave_up_a_lifecycle_still_ends_the_host_turn():
+    # The dual: when there really was a lifecycle, the host still finalizes.
+    # Without this pair, "never notify" would pass for correct.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    done_calls: list[str] = []
+
+    async def _on_done() -> None:
+        done_calls.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://lanlan.app/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    sent: list[dict] = []
+
+    async def _send(event: dict) -> None:
+        sent.append(event)
+
+    arbiter = client._response_arbiter
+    arbiter._send_event = _send
+    arbiter._fail_open = True
+    try:
+        ticket = await arbiter.enqueue(source="native")
+        await asyncio.wait_for(ticket.sent, timeout=1)
+        arbiter.notify_response_created(
+            {"type": "response.created", "response": {"id": "resp-1"}}
+        )
+        client._current_response_id = "resp-1"
+        client._is_responding = True
+
+        with pytest.raises(asyncio.TimeoutError):
+            await arbiter.cancel_current(timeout=0.05)
+        await _settle()
+
+        assert done_calls == ["done"]
+        assert client._is_responding is False
+        assert client._current_response_id is None
+    finally:
+        await arbiter.shutdown("test teardown")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_user_turn_starting_on_server_vad_advances_the_epoch():
+    # Codex P2. On a server-VAD provider the user's turn starts at
+    # speech_stopped — on_new_message assigns the new speech id and fires
+    # USER_INPUT right there — and the provider's response.created only
+    # follows later. Advancing the epoch only at response.created leaves that
+    # whole gap open: a release suspended in a host callback resumes, still
+    # believes the turn is its own, and finalizes against the speech id the
+    # user turn just took.
+    import json
+    from unittest.mock import AsyncMock
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    rotations: list[int] = []
+
+    async def _on_new_message() -> None:
+        rotations.append(client._turn_epoch)
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="qwen-omni-turbo-realtime",
+        api_type="qwen",
+        on_new_message=_on_new_message,
+    )
+    assert client._has_server_vad is True, (
+        "this case is about the providers that DO emit speech_stopped"
+    )
+    client.ws = AsyncMock()
+    client.ws.__aiter__.return_value = [
+        json.dumps({"type": "input_audio_buffer.speech_stopped"}),
+    ]
+    before = client._turn_epoch
+
+    try:
+        await client.handle_messages()
+    finally:
+        await client._response_arbiter.shutdown("test teardown")
+
+    assert client._turn_epoch == before + 1, (
+        "the user's turn boundary must advance the epoch, not only the "
+        "provider's response.created"
+    )
+    assert rotations == [before + 1], (
+        "and before on_new_message runs, since that is what takes the new "
+        "speech id a suspended release must not finalize against"
+    )

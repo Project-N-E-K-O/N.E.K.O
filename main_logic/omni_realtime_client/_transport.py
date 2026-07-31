@@ -1511,6 +1511,14 @@ class _TransportMixin:
                     self._response_arbiter.notify_server_vad_response_pending(
                         arm_timeout=False
                     )
+                    # The user's turn starts HERE on a server-VAD provider, not
+                    # at response.created: on_new_message assigns the new
+                    # speech id and fires USER_INPUT, and the provider's
+                    # response.created only follows some time later. A release
+                    # suspended in a host callback would otherwise resume in
+                    # that gap, still believe the turn is its own, and finalize
+                    # against the speech id this user turn just took.
+                    self._turn_epoch += 1
                     try:
                         if self.on_new_message:
                             await self.on_new_message()
