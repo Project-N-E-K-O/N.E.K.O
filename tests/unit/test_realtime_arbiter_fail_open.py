@@ -1528,9 +1528,9 @@ def test_every_turn_start_advances_the_epoch():
     import pathlib
     import re
 
-    import main_logic.omni_realtime_client as package
+    from main_logic.omni_realtime_client import _transport
 
-    root = pathlib.Path(package.__file__).parent
+    root = pathlib.Path(_transport.__file__).parent
     starts = 0
     offenders: list[str] = []
     for path in sorted(root.glob("*.py")):
