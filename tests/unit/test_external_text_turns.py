@@ -3181,3 +3181,58 @@ async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
         "to adopt"
     )
     await arbiter.shutdown()
+
+
+@pytest.mark.unit
+def test_a_response_id_of_zero_is_an_identity_not_an_absence():
+    # `_event_response_id` used a truthiness test, so a provider numbering its
+    # responses from zero had its FIRST response read as unidentified. Among
+    # other things that makes `_cannot_keep_the_connection` answer "no id to
+    # attribute later events by" and tear the transport down in spite of the
+    # escape hatch — for a response the host could name perfectly well.
+    #
+    # No configured provider numbers this way, so this closes a trap rather
+    # than a live failure. The empty string stays an absence on purpose: it
+    # names nothing, and admitting it would collapse every unidentified
+    # response onto one shared identity.
+    read = RealtimeResponseArbiter._event_response_id
+    assert read({"response": {"id": 0}}) == "0"
+    assert read({"response": {"id": 1}}) == "1"
+    assert read({"response": {"id": "resp-1"}}) == "resp-1"
+    assert read({"response": {"id": ""}}) is None
+    assert read({"response": {}}) is None
+    assert read({}) is None
+    assert read(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_abandoned_turns_skip_flag_does_not_mute_the_successor():
+    # The stand-down branch hand-picks what it resets and left
+    # `_skip_until_next_response` behind. `_interrupted` may be left to the
+    # successor because `response.created` clears it; the skip flag has no such
+    # reset, so the successor's every delta stayed suppressed until its own
+    # terminal — a whole turn dropped in silence.
+    #
+    # Unreachable today: nothing on the WebSocket path passes `skipped=True`.
+    # This pins the trap shut for the first caller that does.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+    client._skip_until_next_response = True
+    client._current_response_id = "resp-abandoned"
+    client._is_responding = True
+    # A turn already started before the release runs — the branch under test.
+    client._current_turn_epoch = client._turn_epoch
+    client._turn_epoch += 1
+
+    await client._on_arbiter_stuck_release("stalled", "resp-abandoned")
+
+    assert client._skip_until_next_response is False, (
+        "the successor cannot clear this for itself, so the release must"
+    )

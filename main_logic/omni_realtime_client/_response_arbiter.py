@@ -519,8 +519,24 @@ class RealtimeResponseArbiter:
     @staticmethod
     def _event_response_id(event: dict[str, Any] | None) -> str | None:
         response = (event or {}).get("response")
-        response_id = response.get("id") if isinstance(response, dict) else None
-        return str(response_id) if response_id else None
+        if not isinstance(response, dict):
+            return None
+        response_id = response.get("id")
+        # Presence, not truthiness. A provider numbering its responses from
+        # zero would have had its FIRST response read as unidentified, which
+        # among other things makes ``_cannot_keep_the_connection`` report "no
+        # id to attribute later events by" and tear the transport down in
+        # spite of the escape hatch. No configured provider numbers this way —
+        # this is a trap, not a live failure — but "0 is not an id" is the
+        # kind of thing that is free to get right and expensive to discover.
+        #
+        # An empty string still normalizes to None on purpose: it names
+        # nothing, and admitting it would collapse every unidentified response
+        # onto one shared identity.
+        if response_id is None:
+            return None
+        text = str(response_id)
+        return text or None
 
     def _remember_server_response_id(self, response_id: str) -> None:
         self._server_response_ids.pop(response_id, None)

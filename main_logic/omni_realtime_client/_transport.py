@@ -1034,9 +1034,24 @@ class _TransportMixin:
         twice — and a repeat necessarily takes the stale branch, because the
         first one cleared ``_current_response_id`` — so counting on both paths
         without a guard would overstate usage for a case the transport
-        supports on purpose. Keyed by response id; a terminal with no id
-        never reaches the stale branch (that filter needs an id to compare),
-        so it can only be counted once anyway.
+        supports on purpose. Keyed by response id.
+
+        The last sentence of this docstring used to read "a terminal with no
+        id never reaches the stale branch, so it can only be counted once
+        anyway." That is backwards. An id-less terminal never reaches the
+        stale branch precisely BECAUSE the filter needs an id — so a repeat of
+        it takes the ordinary terminal path both times, and the guard below,
+        keyed on an id it does not have, does not fire for either. Two copies
+        book twice; measured.
+
+        Left unfixed on purpose. A latch would have to be reset per turn, and
+        the provider class that omits a terminal id is the same one that omits
+        ``response.created`` — on such a connection there is no reset point at
+        all, so the latch would swallow every turn after the first. That trades
+        an accounting error no measured provider can produce for a real missed
+        bill. If a provider ever does repeat an id-less terminal, the fix
+        belongs at the terminal dispatch as a "this turn is already finalized"
+        latch, not here.
         """
 
         if not isinstance(resp_data, dict):
@@ -1402,6 +1417,16 @@ class _TransportMixin:
             # successor has not announced itself yet, so it has produced no
             # output of its own to erase.
             self._reset_per_turn_output_state()
+            # The one per-turn flag the successor cannot clear for itself.
+            # `_interrupted` may be left to it because `response.created`
+            # resets it; `_skip_until_next_response` has no such reset, so
+            # leaving it here mutes every delta of the next turn until its own
+            # terminal. Unreachable today — nothing on the WebSocket path
+            # passes `skipped=True`, and `prime_context(skipped=True)` takes
+            # the session.update branch instead of `create_response` — so this
+            # closes a trap for the first caller that does, rather than fixing
+            # a live drop.
+            self._skip_until_next_response = False
             # Both release paths raise it: the abandoned response may still be
             # streaming, and from here until the next response.created nothing
             # id-less can be attributed. Clearing _current_response_id above
