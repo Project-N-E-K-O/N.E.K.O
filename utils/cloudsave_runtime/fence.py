@@ -150,11 +150,10 @@ def _cloud_apply_mutex_name(config_manager) -> str:
 
 
 def _configure_win32_mutex_apis(kernel32) -> None:
-    import ctypes
-    from ctypes import wintypes
+    from ctypes import c_void_p, wintypes
 
     kernel32.CreateMutexW.argtypes = [
-        ctypes.c_void_p,
+        c_void_p,
         wintypes.BOOL,
         wintypes.LPCWSTR,
     ]
