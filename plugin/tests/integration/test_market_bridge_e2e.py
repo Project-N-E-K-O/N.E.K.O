@@ -2161,7 +2161,7 @@ async def test_oauth_status_resolves_a_pending_auth_subject(
 
 
 @pytest.mark.asyncio
-async def test_oauth_status_does_not_restore_pending_after_concurrent_resolution(
+async def test_oauth_status_keeps_auth_after_concurrent_subject_resolution(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2223,19 +2223,23 @@ async def test_oauth_status_does_not_restore_pending_after_concurrent_resolution
     slower_status = asyncio.create_task(
         client.get("/market/oauth/status", headers=headers)
     )
-    await first_userinfo_started.wait()
+    await asyncio.wait_for(first_userinfo_started.wait(), timeout=5)
 
     resolved_status = await client.get("/market/oauth/status", headers=headers)
     release_first_userinfo.set()
-    stale_status = await slower_status
+    stale_status = await asyncio.wait_for(slower_status, timeout=5)
 
     assert resolved_status.status_code == 200
     assert resolved_status.json()["authenticated"] is True
     assert stale_status.status_code == 200
-    assert stale_status.json()["authenticated"] is False
+    assert stale_status.json()["authenticated"] is True
+    assert stale_status.json()["auth_state"] == "ready"
+    assert stale_status.json()["market_state"] == "ready"
+    assert stale_status.json()["user"]["username"] == "concurrent-user"
     saved = json.loads(token_file.read_text(encoding="utf-8"))
     assert saved["subject"] == "resolved-concurrent-subject"
     assert saved["subject_pending"] is False
+    assert saved["state_revision"] == 2
 
 
 @pytest.mark.asyncio

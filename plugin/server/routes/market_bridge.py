@@ -1048,20 +1048,14 @@ async def market_oauth_status(
                 )
         subject = _extract_auth_subject(auth_user)
         if not _oauth_token_snapshot_matches(token_snapshot):
-            return MarketOAuthStatusResponse(
-                authenticated=False,
-                market_web_url=MARKET_WEB_URL,
-            )
+            return _oauth_status_after_cas_conflict(token_snapshot)
         if subject:
             token_data["subject"] = subject
             token_data["subject_pending"] = False
             token_data["auth_state"] = "ready"
             token_data["updated_at"] = time.time()
             if not _write_oauth_token_if_matches(token_snapshot, token_data):
-                return MarketOAuthStatusResponse(
-                    authenticated=False,
-                    market_web_url=MARKET_WEB_URL,
-                )
+                return _oauth_status_after_cas_conflict(token_snapshot)
             token_snapshot = dict(token_data)
         else:
             token_data["subject"] = None
@@ -1069,10 +1063,7 @@ async def market_oauth_status(
             token_data["auth_state"] = "pending"
             token_data["updated_at"] = time.time()
             if not _write_oauth_token_if_matches(token_snapshot, token_data):
-                return MarketOAuthStatusResponse(
-                    authenticated=False,
-                    market_web_url=MARKET_WEB_URL,
-                )
+                return _oauth_status_after_cas_conflict(token_snapshot)
             return MarketOAuthStatusResponse(
                 authenticated=False,
                 auth_state="pending",
@@ -1119,25 +1110,7 @@ async def market_oauth_status(
     token_data["auth_state"] = "ready"
     token_data["updated_at"] = time.time()
     if not _write_oauth_token_if_matches(token_snapshot, token_data):
-        current = _current_oauth_token_for_invalidated_snapshot(token_snapshot)
-        if current is not None:
-            current_state = current.get("market_state")
-            if current_state not in get_args(MarketOAuthState):
-                current_state = "unavailable"
-            current_user = current.get("user")
-            return MarketOAuthStatusResponse(
-                authenticated=True,
-                auth_state="ready",
-                market_state=current_state,
-                retryable=current_state == "unavailable",
-                user=current_user if isinstance(current_user, dict) else None,
-                expires_at=current.get("expires_at"),
-                market_web_url=MARKET_WEB_URL,
-            )
-        return MarketOAuthStatusResponse(
-            authenticated=False,
-            market_web_url=MARKET_WEB_URL,
-        )
+        return _oauth_status_after_cas_conflict(token_snapshot)
 
     return MarketOAuthStatusResponse(
         authenticated=True,
@@ -1590,28 +1563,75 @@ def _oauth_token_snapshot_matches(snapshot: dict[str, Any]) -> bool:
     )
 
 
-def _current_oauth_token_for_invalidated_snapshot(
+def _current_oauth_token_for_same_session_snapshot(
     snapshot: dict[str, Any],
 ) -> dict[str, Any] | None:
-    """Return the current token when a same-session task won the CAS race.
+    """Return the current token when only same-session state won the CAS race.
 
     This deliberately ignores ``state_revision`` because a newer revision is
-    the expected cause of this recovery path. Unlike
-    ``_oauth_token_snapshot_matches``, it only proves that the authenticated
-    session identity has not been replaced.
+    the expected cause of this recovery path. It only proves that the session
+    identity has not been replaced.
     """
 
     current = _read_json_file(_OAUTH_TOKEN_FILE)
     if (
         not current
         or not _oauth_token_provenance_matches(current)
-        or not _oauth_subject_is_verified(current)
         or current.get("access_token") != snapshot.get("access_token")
         or current.get("session_id") != snapshot.get("session_id")
         or current.get("refresh_generation") != snapshot.get("refresh_generation")
     ):
         return None
     return current
+
+
+def _current_oauth_token_for_invalidated_snapshot(
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Return a same-session CAS winner only after subject verification."""
+
+    current = _current_oauth_token_for_same_session_snapshot(snapshot)
+    if current is None or not _oauth_subject_is_verified(current):
+        return None
+    return current
+
+
+def _oauth_status_after_cas_conflict(
+    snapshot: dict[str, Any],
+) -> MarketOAuthStatusResponse:
+    current = _current_oauth_token_for_same_session_snapshot(snapshot)
+    if current is None:
+        return MarketOAuthStatusResponse(
+            authenticated=False,
+            market_web_url=MARKET_WEB_URL,
+        )
+    if not _oauth_subject_is_verified(current):
+        if current.get("subject_pending") is True:
+            return MarketOAuthStatusResponse(
+                authenticated=False,
+                auth_state="pending",
+                retryable=True,
+                expires_at=current.get("expires_at"),
+                market_web_url=MARKET_WEB_URL,
+            )
+        return MarketOAuthStatusResponse(
+            authenticated=False,
+            market_web_url=MARKET_WEB_URL,
+        )
+
+    current_state = current.get("market_state")
+    if current_state not in get_args(MarketOAuthState):
+        current_state = "unavailable"
+    current_user = current.get("user")
+    return MarketOAuthStatusResponse(
+        authenticated=True,
+        auth_state="ready",
+        market_state=current_state,
+        retryable=current_state == "unavailable",
+        user=current_user if isinstance(current_user, dict) else None,
+        expires_at=current.get("expires_at"),
+        market_web_url=MARKET_WEB_URL,
+    )
 
 
 def _write_oauth_token_if_matches(
@@ -1797,7 +1817,7 @@ async def _ensure_valid_oauth_token(
             return None
 
         if not _write_oauth_token_if_matches(current, refreshed):
-            latest = _current_oauth_token_for_invalidated_snapshot(current)
+            latest = _current_oauth_token_for_same_session_snapshot(current)
             if latest is not None:
                 merged = dict(latest)
                 for key in (
