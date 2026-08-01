@@ -475,6 +475,54 @@ async def test_buffers_and_tombstones_remain_bounded() -> None:
     await runtime.close()
 
 
+async def test_evicted_tombstone_keeps_late_finish_idempotent() -> None:
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(),
+        config=_config(
+            queue_capacity=1,
+            finalized_candidate_capacity=1,
+        ),
+    )
+    evicted_candidate = _candidate(20)
+
+    assert runtime.finish_candidate(evicted_candidate)
+    await runtime.wait_idle()
+    assert runtime.finish_candidate(_candidate(21))
+    await runtime.wait_idle()
+    before_duplicate = runtime.snapshot()
+
+    assert runtime.finish_candidate(evicted_candidate)
+    assert runtime.submit(
+        _pcm(10),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=evicted_candidate,
+    ) is False
+    await runtime.wait_idle()
+
+    after_duplicate = runtime.snapshot()
+    assert after_duplicate["finished_candidate_count"] == before_duplicate[
+        "finished_candidate_count"
+    ]
+    assert after_duplicate["insufficient_candidate_count"] == before_duplicate[
+        "insufficient_candidate_count"
+    ]
+    assert after_duplicate["finalized_tombstone_count"] == 1
+    await runtime.close()
+
+
+def test_threshold_metric_keys_preserve_distinct_float_values() -> None:
+    runtime = SpeakerShadowRuntime(
+        backend_factory=None,
+        config=_config(similarity_thresholds=(0.4, 0.404)),
+    )
+
+    metrics = runtime.snapshot()
+
+    assert metrics["would_block_at_0_4_count"] == 0
+    assert metrics["would_block_at_0_404_count"] == 0
+    asyncio.run(runtime.close())
+
+
 @pytest.mark.parametrize("failure_stage", ["load", "score", "callback"])
 async def test_failures_stay_inside_shadow_and_have_one_terminal_state(
     failure_stage: str,
@@ -904,7 +952,11 @@ async def test_close_tracks_cancelled_off_loop_host_start_without_leaks(
     )
     runtime = SpeakerShadowRuntime(
         backend_factory=_BackendFactory(),
-        config=_config(minimum_audio_ms=10, shutdown_grace_seconds=0.05),
+        config=_config(
+            minimum_audio_ms=10,
+            shutdown_grace_seconds=0.05,
+            process_terminate_timeout_seconds=0.05,
+        ),
     )
     assert runtime.submit(
         _pcm(10),
@@ -922,7 +974,9 @@ async def test_close_tracks_cancelled_off_loop_host_start_without_leaks(
 
     await mark_loop_progress()
     close_task = asyncio.create_task(runtime.close())
-    await asyncio.sleep(0.1)
+    # Exceed both cleanup cancellation budgets. Repeated cancellation must not
+    # detach the off-loop start task and orphan the host it eventually returns.
+    await asyncio.sleep(0.35)
     assert loop_progressed is True
     assert close_task.done() is False
 

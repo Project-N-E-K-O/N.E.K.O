@@ -22,8 +22,10 @@ Speaker Shadow 是纯观察器。它不能创建、推进、结束或撤销 ASR 
 
 Detector 只镜像已经通过当前 ingress/candidate fence 的不可变 PCM16。Shadow
 的 `submit()`、`finish_candidate()`、相似度、callback 结果和异常都不能成为
-主链条件。队列饱和时只丢弃 Shadow 工作，Provider PCM 的字节、顺序、终态、
-endpoint 与 lifecycle 不受影响。
+主链条件。`submit()` 与 `finish_candidate()` 只能做有界、非阻塞的立即入队；
+队列满、stale、closing、closed 或 Shadow 异常时必须立即丢弃并返回，禁止等待
+队列、worker、backend、关闭锁或推理完成。Provider PCM 的字节、顺序、时序、
+终态、endpoint、lifecycle 与主链延迟不受影响。
 
 Provider/ASR 的真实错误继续遵循 Phase 4B 的 fail-closed 规则；Shadow 的
 factory、加载、推理、callback、reset 与关闭错误全部 fail-open。两类故障不得
@@ -38,8 +40,10 @@ core/asr_runtime
             -> speaker_shadow.contracts
        -> speaker_shadow.runtime/contracts
 
-speaker_shadow.campplus (后续 PR)
-  -> speaker_shadow.runtime/contracts/asset_manifest
+speaker_shadow.campplus (PR-B)
+  -> speaker_shadow.runtime (PR-A)
+  -> speaker_shadow.contracts (PR-A)
+  -> speaker_shadow.asset_manifest (PR-B，拥有 manifest 解析与校验 API)
 ```
 
 Core 只能从 `asr_client.runtime` 获取 `SpeakerShadowFactory`，不得直接导入
@@ -105,7 +109,8 @@ PCM、embedding、相似度、路径、candidate identity 与用户身份都不�
 
 PR-B 的模型解析顺序固定为：显式 override、PyInstaller `_MEIPASS`、可执行文件
 父目录、package-local `models`。不得恢复 `data/speaker_models`、用户缓存 fallback
-或运行时下载。
+或运行时下载。包括显式 override 在内的每个来源都必须通过同一份 manifest
+校验，并匹配固定的 revision、size 与 SHA256；生产加载不得绕过该校验。
 
 资产 manifest 必须固定模型仓库、revision、license、size 与 SHA256。发行产物
 只能包含一份正确权重。CAM++ PR 可单独回滚；PR-A 保持 factory 为 `None` 即为

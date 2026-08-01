@@ -24,6 +24,7 @@ from .contracts import (
     SpeakerShadowConfig,
     SpeakerShadowMetrics,
     SpeakerShadowObservation,
+    SpeakerShadowScope,
     SPEAKER_SHADOW_SAMPLE_RATE_HZ,
     SpeakerShadowTerminalReason,
 )
@@ -420,6 +421,7 @@ class SpeakerShadowRuntime:
         self._finalized: OrderedDict[
             SpeakerShadowCandidateKey, _FinalizedCandidate
         ] = OrderedDict()
+        self._finalized_through: dict[SpeakerShadowScope, tuple[int, int]] = {}
         self._candidate_tokens: OrderedDict[
             SpeakerShadowCandidateKey, _CandidateToken
         ] = OrderedDict()
@@ -504,7 +506,7 @@ class SpeakerShadowRuntime:
         )
         snapshot.update(
             {
-                f"would_block_at_{round(threshold * 100):03d}_count": count
+                self._threshold_metric_key(threshold): count
                 for threshold, count in self._would_block_counts.items()
             }
         )
@@ -538,7 +540,11 @@ class SpeakerShadowRuntime:
             return False
 
         identity = (self._generation, candidate)
-        if candidate in self._finalized or identity == self._active_evaluation:
+        if (
+            candidate in self._finalized
+            or self._candidate_was_evicted(candidate)
+            or identity == self._active_evaluation
+        ):
             return False
 
         token = self._candidate_tokens.get(candidate)
@@ -630,6 +636,8 @@ class SpeakerShadowRuntime:
         if finalized is not None:
             self._record_finish(candidate, finalized)
             return True
+        if self._candidate_was_evicted(candidate):
+            return True
         token = self._candidate_tokens.get(candidate)
         if token is None:
             token = _CandidateToken(candidate, 0)
@@ -669,7 +677,7 @@ class SpeakerShadowRuntime:
         self._generation += 1
         self._cancel_observation_callback()
         self._clear_buffers()
-        self._finalized.clear()
+        self._retire_finalized_candidates()
         self._candidate_tokens.clear()
         self._load_failure_streak = 0
         self._next_load_attempt_at = 0.0
@@ -952,11 +960,15 @@ class SpeakerShadowRuntime:
                 self._active_pcm_bytes = 0
 
     async def _ensure_backend(self) -> _BackendProcessHost | None:
-        host = self._backend_host
-        if host is not None and host.alive and host.loaded:
-            return host
-        if host is not None:
-            self._discard_backend_host(host)
+        existing_host = self._backend_host
+        if (
+            existing_host is not None
+            and existing_host.alive
+            and existing_host.loaded
+        ):
+            return existing_host
+        if existing_host is not None:
+            self._discard_backend_host(existing_host)
         if time.monotonic() < self._next_load_attempt_at:
             self._metrics.load_retry_suppressed_count += 1
             return None
@@ -981,10 +993,22 @@ class SpeakerShadowRuntime:
             try:
                 host = await asyncio.shield(start_task)
             except asyncio.CancelledError:
-                try:
-                    host = await asyncio.shield(start_task)
-                except Exception:
-                    host = None
+                # ``to_thread`` cannot stop an in-progress ``Process.start``.
+                # Keep ownership across repeated worker cancellations so a host
+                # that finishes starting after shutdown is always retrieved and
+                # terminated by the outer cancellation handler.
+                while not start_task.done():
+                    try:
+                        await asyncio.shield(start_task)
+                    except asyncio.CancelledError:
+                        continue
+                    except Exception:
+                        break
+                if start_task.done() and not start_task.cancelled():
+                    try:
+                        host = start_task.result()
+                    except Exception:
+                        host = None
                 raise
             available = await host.load(
                 timeout_seconds=self._config.backend_load_timeout_seconds
@@ -1107,6 +1131,12 @@ class SpeakerShadowRuntime:
                             host, self._backend_host = self._backend_host, None
                             if host is not None:
                                 await self._terminate_host(host)
+                    if not worker.done():
+                        # A thread already inside ``Process.start`` cannot be
+                        # cancelled. Keep cleanup attached until the worker
+                        # retrieves and terminates any host it eventually
+                        # returns; close must not leave that ownership orphaned.
+                        await asyncio.wait({worker})
             if worker is not None and worker.done():
                 self._consume_worker_result(worker)
             await self._cancel_callback_bounded()
@@ -1216,7 +1246,43 @@ class SpeakerShadowRuntime:
             getattr(self._metrics, counter_name) + 1,
         )
         while len(self._finalized) > self._config.finalized_candidate_capacity:
-            self._finalized.popitem(last=False)
+            evicted_candidate, _ = self._finalized.popitem(last=False)
+            self._record_evicted_candidate(evicted_candidate)
+
+    def _candidate_was_evicted(self, candidate: SpeakerShadowCandidateKey) -> bool:
+        finalized_through = self._finalized_through.get(candidate.scope)
+        if finalized_through is None:
+            return False
+        return (
+            candidate.detector_epoch,
+            candidate.shadow_generation,
+        ) <= finalized_through
+
+    def _record_evicted_candidate(
+        self,
+        candidate: SpeakerShadowCandidateKey,
+    ) -> None:
+        position = (candidate.detector_epoch, candidate.shadow_generation)
+        previous = self._finalized_through.get(candidate.scope)
+        if previous is None or position > previous:
+            self._finalized_through[candidate.scope] = position
+
+    def _retire_finalized_candidates(self) -> None:
+        for candidate in self._finalized:
+            self._record_evicted_candidate(candidate)
+        self._finalized.clear()
+
+    @staticmethod
+    def _threshold_metric_key(threshold: float) -> str:
+        # ``repr`` is the shortest round-trippable float representation, so
+        # distinct configured thresholds cannot collapse into one metric key.
+        suffix = (
+            repr(threshold)
+            .replace("-", "m")
+            .replace("+", "p")
+            .replace(".", "_")
+        )
+        return f"would_block_at_{suffix}_count"
 
     def _record_finish(
         self,
