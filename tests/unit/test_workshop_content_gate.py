@@ -926,7 +926,19 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                 state = merge(state, after(node.body, state))
                 state = after(node.orelse, state)
             elif isinstance(node, ast.With):
-                state = after(node.body, state)
+                body_state = dict(state)
+                for item in node.items:
+                    if item.optional_vars is None:
+                        continue
+                    for name in {
+                        child.id
+                        for child in ast.walk(item.optional_vars)
+                        if isinstance(child, ast.Name)
+                    }:
+                        for key in list(body_state):
+                            if key == name or key.startswith(f'{name}.'):
+                                body_state.pop(key, None)
+                state = after(node.body, body_state)
             elif isinstance(node, ast.Try):
                 prefix_states = [state]
                 body_state = state
@@ -2242,32 +2254,48 @@ def _scope_claiming_names_called_on_loop(
                 source_module = alias.name.rsplit('.', 1)[-1]
                 if source_module in module_names and alias.asname:
                     local_module_aliases[alias.asname] = source_module
+        elif isinstance(child, (ast.Assign, ast.AnnAssign)):
+            source_module = (
+                local_module_aliases.get(child.value.id)
+                if isinstance(child.value, ast.Name)
+                else None
+            )
+            targets = (
+                child.targets if isinstance(child, ast.Assign) else [child.target]
+            )
+            for target in targets:
+                if not isinstance(target, ast.Name):
+                    continue
+                if source_module:
+                    local_module_aliases[target.id] = source_module
+                else:
+                    local_module_aliases.pop(target.id, None)
     def merge_callable_states(*states):
         return {
             name: set().union(*(state.get(name, set()) for state in states))
             for name in set().union(*(set(state) for state in states))
         }
 
-    def instance_classes_before(name: str, before_line: int):
-        def constructed_class(value):
-            if not isinstance(value, ast.Call):
-                return None
-            if isinstance(value.func, ast.Name):
-                candidate = local_class_aliases.get(
-                    value.func.id, (module, value.func.id)
-                )
-            elif (
-                isinstance(value.func, ast.Attribute)
-                and isinstance(value.func.value, ast.Name)
-                and value.func.value.id in local_module_aliases
-            ):
-                candidate = (
-                    local_module_aliases[value.func.value.id], value.func.attr
-                )
-            else:
-                return None
-            return candidate if candidate in claiming_by_scope else None
+    def constructed_class(value):
+        if not isinstance(value, ast.Call):
+            return None
+        if isinstance(value.func, ast.Name):
+            candidate = local_class_aliases.get(
+                value.func.id, (module, value.func.id)
+            )
+        elif (
+            isinstance(value.func, ast.Attribute)
+            and isinstance(value.func.value, ast.Name)
+            and value.func.value.id in local_module_aliases
+        ):
+            candidate = (
+                local_module_aliases[value.func.value.id], value.func.attr
+            )
+        else:
+            return None
+        return candidate if candidate in claiming_by_scope else None
 
+    def instance_classes_before(name: str, before_line: int):
         def after(statements, state):
             state = {key: set(values) for key, values in state.items()}
             for statement in statements:
@@ -2487,6 +2515,8 @@ def _scope_claiming_names_called_on_loop(
                 resolutions = {
                     (stored_class, name) for stored_class in stored_classes
                 }
+            elif (constructed := constructed_class(node.value)) is not None:
+                resolutions = {(constructed, name)}
             elif (
                 isinstance(node.value, ast.Name)
                 and (module, node.value.id) in claiming_by_scope
@@ -3259,6 +3289,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def local_module_direct():\n'
         '    from . import source as local_workers\n'
         '    local_workers.owner()\n'
+        'async def assigned_module_direct():\n'
+        '    dispatchers = workers\n'
+        '    dispatchers.owner()\n'
+        'async def immediate_instance_direct():\n'
+        '    workers.Service().worker()\n'
     )
     unrelated = ast.parse(
         'def owner():\n'
@@ -3341,6 +3376,16 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'consumer', None, imported_claiming, imported_generators, imported_aliases,
         imported_facts,
     ), 'handler 内 module alias 的 owner 直调也必须被发现'
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['assigned_module_direct'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
+    ), '赋给局部变量的 module alias 仍必须解析 claim-owning owner'
+    assert _scope_claiming_names_called_on_loop(
+        imported_functions['immediate_instance_direct'],
+        'consumer', None, imported_claiming, imported_generators, imported_aliases,
+        imported_facts,
+    ), '立即构造的 imported class instance 也必须解析 claim-owning method'
     assert _scope_claiming_names_called_on_loop(
         imported_functions['safe_same_name'],
         'unrelated',
@@ -4047,10 +4092,17 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                 state = merge(state, after(statement.body, state))
                 state = after(statement.orelse, state)
             elif isinstance(statement, ast.Try):
-                paths = [after(statement.body, state)]
-                paths.extend(after(handler.body, state) for handler in statement.handlers)
-                if statement.orelse:
-                    paths.append(after(statement.orelse, paths[0]))
+                prefix_states = [state]
+                body_state = state
+                for nested in statement.body:
+                    body_state = after([nested], body_state)
+                    prefix_states.append(body_state)
+                paths = [after(statement.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in statement.handlers
+                    for prefix_state in prefix_states
+                )
                 state = paths[0]
                 for path in paths[1:]:
                     state = merge(state, path)
@@ -4102,6 +4154,87 @@ def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
     return found
 
 
+def _known_open_flag_names(func, before_line: int) -> dict[str, set[str]]:
+    """Possible ``os.open`` flag constants stored in local variables."""
+    flag_names = {'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC'}
+
+    def merge(*states):
+        return {
+            name: set().union(*(state.get(name, set()) for state in states))
+            for name in set().union(*(set(state) for state in states))
+        }
+
+    def expression_flags(node, state):
+        flags = {
+            name
+            for child in ast.walk(node)
+            if (name := _reference_name(child)) in flag_names
+        }
+        for child in ast.walk(node):
+            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load):
+                flags.update(state.get(child.id, set()))
+        return flags
+
+    def after(statements, state):
+        state = {name: set(flags) for name, flags in state.items()}
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                flags = expression_flags(statement.value, state)
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    for name in {
+                        child.id
+                        for child in ast.walk(target)
+                        if isinstance(child, ast.Name)
+                    }:
+                        if flags:
+                            state[name] = set(flags)
+                        else:
+                            state.pop(name, None)
+            elif isinstance(statement, ast.If):
+                state = merge(
+                    after(statement.body, state), after(statement.orelse, state)
+                )
+            elif isinstance(statement, ast.Match):
+                paths = [after(case.body, state) for case in statement.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                state = merge(*paths)
+            elif isinstance(statement, ast.With):
+                state = after(statement.body, state)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                state = merge(state, after(statement.body, state))
+                state = after(statement.orelse, state)
+            elif isinstance(statement, ast.Try):
+                prefix_states = [state]
+                body_state = state
+                for nested in statement.body:
+                    body_state = after([nested], body_state)
+                    prefix_states.append(body_state)
+                paths = [after(statement.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in statement.handlers
+                    for prefix_state in prefix_states
+                )
+                state = after(statement.finalbody, merge(*paths))
+        return state
+
+    return after(func.body, {})
+
+
 def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
     write_flags = {'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC'}
     found = []
@@ -4131,6 +4264,11 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
                 _reference_name(child) in write_flags
                 for child in ast.walk(flags)
             )
+            if isinstance(flags, ast.Name):
+                writes = writes or bool(
+                    _known_open_flag_names(func, node.lineno).get(flags.id, set())
+                    & write_flags
+                )
         else:
             mode_index = 0 if is_path_open else 1
             mode = (
@@ -5279,6 +5417,16 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '        break\n'
         '    shutil.rmtree(target)\n'
         '\n'
+        'def exceptional_prefix_target(content_folder, other):\n'
+        '    target = other\n'
+        '    try:\n'
+        '        target = content_folder\n'
+        '        may_raise()\n'
+        '        target = other\n'
+        '    except Exception:\n'
+        '        pass\n'
+        '    shutil.rmtree(target)\n'
+        '\n'
         'def os_mutations(content_folder, other_content_folder):\n'
         "    os.mkdir(os.path.join(content_folder, 'generated'))\n"
         "    os.makedirs(os.path.join(content_folder, 'nested'))\n"
@@ -5326,6 +5474,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         'def stored_open_mode(content_folder):\n'
         "    mode = 'wb'\n"
         "    open(os.path.join(content_folder, 'preview.png'), mode)\n"
+        '\n'
+        'def stored_os_open_flags(content_folder):\n'
+        '    flags = os.O_TRUNC | os.O_WRONLY\n'
+        '    os.open(content_folder, flags)\n'
         '\n'
         'def aliased_os_open(content_folder):\n'
         '    import os as filesystem\n'
@@ -5419,6 +5571,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['while_walrus_target'], 'new_router'
     ), 'While.test 中 walrus 绑定的 target 必须传播 content-folder origin'
+    assert _unclaimed_folder_operations(
+        functions['exceptional_prefix_target'], 'new_router'
+    ), 'try body 的异常前缀必须保留 content-folder path origin'
     os_offenders = _unclaimed_folder_operations(
         functions['os_mutations'], 'new_router'
     )
@@ -5458,6 +5613,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['stored_open_mode'], 'new_router'
     ), '局部变量保存的 write mode 也必须识别为 content-folder writer'
+    assert _unclaimed_folder_operations(
+        functions['stored_os_open_flags'], 'new_router'
+    ), '局部变量保存的 os.open write flags 也必须识别为 writer'
     assert _unclaimed_folder_operations(
         functions['aliased_os_open'], 'new_router'
     ), 'import os as ... 的 alias 也必须识别 os.open writer'
@@ -5632,6 +5790,13 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '        with factory(folder):\n'
         '            _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    with_target_factory = ast.parse(
+        'def publish(provider):\n'
+        '    factory = claim_content_folder\n'
+        '    with provider as factory:\n'
+        '        with factory(folder):\n'
+        '            _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     exceptional_prefix_restored_factory = ast.parse(
         'def publish():\n'
         '    factory = claim_content_folder\n'
@@ -5726,6 +5891,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(loop_target_factory, 'publish'), (
         'for target 绑定必须先清除同名 claim factory alias'
+    )
+    assert _unclaimed_folder_operations(with_target_factory, 'publish'), (
+        'with optional target 绑定必须先清除同名 claim factory alias'
     )
     assert _unclaimed_folder_operations(
         exceptional_prefix_restored_factory, 'publish'
