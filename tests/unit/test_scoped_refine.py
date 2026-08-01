@@ -855,7 +855,8 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     assert merged["event_end_at"] is None
     assert merged["schema_version"] == 2
     assert merged["reinforcement"] == pytest.approx(0.2)
-    assert set(merged["source_fact_ids"]) == {"fact_low", "fact_high"}
+    assert merged["source_fact_ids"] == ["fact_high"]
+    assert set(merged["audit_source_fact_ids"]) == {"fact_low", "fact_high"}
     assert merged["merged_from_ids"] == ["low", "high"]
 
 

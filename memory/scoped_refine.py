@@ -921,10 +921,15 @@ async def apply_scoped_reflection_merge(
             )
             semantic_source = semantic_sources[0]
             source_fact_ids: list[str] = []
-            for src in sources:
+            for src in semantic_sources:
                 for fid in src.get('source_fact_ids') or []:
                     if fid not in source_fact_ids:
                         source_fact_ids.append(fid)
+            audit_source_fact_ids: list[str] = []
+            for src in sources:
+                for fid in src.get('source_fact_ids') or []:
+                    if fid not in audit_source_fact_ids:
+                        audit_source_fact_ids.append(fid)
             # 事件窗取并集而非继承首源：矛盾合并的结论（「曾X后Y」）覆盖
             # 全部源的时间跨度，只抄首源会把结论锚在旧时段，recall_by_time
             # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
@@ -948,6 +953,7 @@ async def apply_scoped_reflection_merge(
                 # scoped 分支）。
                 'status': 'confirmed',
                 'source_fact_ids': source_fact_ids,
+                'audit_source_fact_ids': audit_source_fact_ids,
                 'created_at': now_iso,
                 'confirmed_at': now_iso,
                 'auto_confirmed': True,

@@ -11642,29 +11642,25 @@ async def test_member_flush_retries_owner_after_failed_chronological_predecessor
 
 
 @pytest.mark.asyncio
-async def test_member_flush_retry_owner_excludes_successful_later_fact():
+async def test_member_flush_retries_later_non_owner_after_failed_predecessor():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
     )
 
-    earlier = {
-        "role": "user", "content": "earlier member fact",
+    first = {
+        "role": "user", "content": "first member fact",
         "_speaker_permission_level": "normal", "_speaker_sequence": 1,
     }
-    owner = {
-        "role": "user", "content": "owner statement",
-        "_speaker_permission_level": "admin", "_speaker_sequence": 2,
-    }
-    later = {
-        "role": "user", "content": "later member fact",
-        "_speaker_permission_level": "normal", "_speaker_sequence": 3,
+    second = {
+        "role": "user", "content": "second member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 2,
     }
     user_data = {
         "group_member_memory_messages": {
-            "1001": [earlier, later], "9999": [owner],
+            "1001": [first], "1002": [second],
         },
         "group_member_memory_labels": {
-            "1001": "Alice(1001)", "9999": "Owner(9999)",
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
         },
     }
     bridge = MagicMock()
@@ -11675,8 +11671,7 @@ async def test_member_flush_retry_owner_excludes_successful_later_fact():
         "status": "processed",
         "segments": [
             {"status": "failed"},
-            {"status": "ok", "trust_events": []},
-            {"status": "ok", "reconciled": [{"id": "later-fact"}]},
+            {"status": "ok", "fact_ids": ["second-fact"]},
         ],
     })
     settings = SimpleNamespace(
@@ -11691,23 +11686,18 @@ async def test_member_flush_retry_owner_excludes_successful_later_fact():
         user_data, group_id="7788", her_name="Neko", reason="test",
     )
 
-    assert set(failed) == {"1001", "9999"}
-    assert user_data["group_member_memory_messages"]["1001"] == [earlier]
-    assert user_data["group_member_memory_messages"]["9999"] == [owner]
-    assert owner["_trust_signal_excluded_fact_ids"] == ["later-fact"]
+    assert set(failed) == {"1001", "1002"}
+    assert user_data["group_member_memory_messages"] == {
+        "1001": [first], "1002": [second],
+    }
+    settings.apply_speaker_trust_update.assert_not_awaited()
 
     settings.apply_speaker_trust_update.reset_mock()
     bridge.post_scoped_memory_history_batch.return_value = {
         "status": "processed",
         "segments": [
-            {"status": "ok", "fact_ids": ["earlier-fact"]},
-            {"status": "ok", "trust_events": [{
-                "kind": "confirmation", "speaker_id": "qq:1001",
-                "event_id": "earlier-event", "source_fact_id": "earlier-fact",
-            }, {
-                "kind": "confirmation", "speaker_id": "qq:1001",
-                "event_id": "later-event", "source_fact_id": "later-fact",
-            }]},
+            {"status": "ok", "fact_ids": ["first-fact"]},
+            {"status": "ok", "fact_ids": ["second-fact"]},
         ],
     }
 
@@ -11715,20 +11705,7 @@ async def test_member_flush_retry_owner_excludes_successful_later_fact():
         user_data, group_id="7788", her_name="Neko", reason="retry",
     ) == []
     retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
-    assert [segment["messages"] for segment in retried] == [
-        [earlier], [{
-            key: value for key, value in owner.items()
-            if key != "_trust_signal_excluded_fact_ids"
-        }],
-    ]
-    owner_update = next(
-        call for call in settings.apply_speaker_trust_update.await_args_list
-        if call.kwargs["sender_id"] == "9999"
-    )
-    assert owner_update.kwargs["trust_events"] == [{
-        "kind": "confirmation", "speaker_id": "qq:1001",
-        "event_id": "earlier-event", "source_fact_id": "earlier-fact",
-    }]
+    assert [segment["messages"] for segment in retried] == [[first], [second]]
     assert user_data["group_member_memory_messages"] == {}
 
 
@@ -11843,6 +11820,60 @@ async def test_member_flush_serializes_cross_sender_request_chronology():
         segment["messages"][0]["content"]
         for call in calls for segment in call
     ] == [f"message-{index}" for index in range(9)]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_restages_repeated_speaker_after_activity_update():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages = {
+        "1001": [
+            {"role": "user", "content": "b1", "_speaker_sequence": 1},
+            {"role": "user", "content": "b2", "_speaker_sequence": 3},
+        ],
+        "1002": [
+            {"role": "user", "content": "c1", "_speaker_sequence": 2},
+        ],
+    }
+    user_data = {
+        "group_member_memory_messages": messages,
+        "group_member_memory_labels": {"1001": "B(1001)", "1002": "C(1002)"},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+
+    async def _post(_name, segments, **_kwargs):
+        calls.append(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+    trust = {"1001": 0.4, "1002": 0.5}
+    service._speaker_trust_for = lambda sender, _level=None: trust[sender]
+
+    async def _update(sender_id, *_args, **_kwargs):
+        trust[sender_id] += 0.01
+        return True
+
+    service._apply_speaker_trust_update = AsyncMock(side_effect=_update)
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    assert [[s["speaker_id"] for s in call] for call in calls] == [
+        ["qq:1001", "qq:1002"], ["qq:1001"],
+    ]
+    assert calls[0][0]["speaker_trust"] == pytest.approx(0.4)
+    assert calls[1][0]["speaker_trust"] == pytest.approx(0.41)
 
 
 @pytest.mark.asyncio

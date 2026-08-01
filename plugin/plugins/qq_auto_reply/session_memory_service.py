@@ -1452,20 +1452,20 @@ class QQSessionMemoryService:
                         isinstance(segment_result, dict)
                         and segment_result.get("status") == "ok"
                     ):
-                        if (
-                            chronological_predecessor_failed
-                            and self._speaker_is_owner_for(
-                                sender_id, spec.get("permission_level"),
+                        if chronological_predecessor_failed:
+                            # The server persisted this segment after a gap in
+                            # authored chronology. Retain it and retry after
+                            # the missing predecessor lands; exact dedup keeps
+                            # the fact write idempotent while trust/activity
+                            # effects remain ordered.
+                            role_label = (
+                                "主人" if self._speaker_is_owner_for(
+                                    sender_id, spec.get("permission_level"),
+                                ) else "成员"
                             )
-                        ):
-                            # The server persisted this segment, but could not
-                            # derive its owner signals from a predecessor that
-                            # failed in the same request.  Retain the messages
-                            # and retry after the missing fact has landed;
-                            # exact dedup keeps the fact write idempotent.
                             self.plugin.logger.warning(
-                                f"[{reason}] 群 {group_id} 主人 {sender_id} "
-                                "的前序段失败，保留本段重试信任信号"
+                                f"[{reason}] 群 {group_id} {role_label} "
+                                f"{sender_id} 的前序段失败，保留本段重试"
                             )
                             later_fact_ids = {
                                 str(fact_id)
@@ -1489,7 +1489,9 @@ class QQSessionMemoryService:
                                 for row in (later_result.get("reconciled") or [])
                                 if isinstance(row, dict) and row.get("id")
                             )
-                            if later_fact_ids:
+                            if later_fact_ids and self._speaker_is_owner_for(
+                                sender_id, spec.get("permission_level"),
+                            ):
                                 for message in spec["messages"]:
                                     if not isinstance(message, dict):
                                         continue
@@ -1784,9 +1786,16 @@ class QQSessionMemoryService:
                     current_messages = 0
                 batches.append(group)
                 continue
+            current_senders = {
+                str(spec.get("sender_id") or "") for spec in current
+            }
+            group_senders = {
+                str(spec.get("sender_id") or "") for spec in group
+            }
             if current and (
                 current_messages + group_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES
                 or len(current) + len(group) > SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+                or bool(current_senders & group_senders)
             ):
                 batches.append(current)
                 current = []

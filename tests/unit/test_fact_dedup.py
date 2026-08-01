@@ -23,6 +23,7 @@ We do NOT exercise the real LLM. The resolve-path tests stub
 test_persona_version_history.py does."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -269,7 +270,7 @@ def test_detect_candidates_only_for_ids_filters_candidate_side():
     assert all(p["candidate_id"] == "f3" for p in pairs)
 
 
-def test_detect_candidates_same_batch_pair_emitted_in_canonical_direction_only():
+def test_detect_candidates_same_batch_pair_keeps_newer_candidate_direction():
     """When two fresh rows in the same batch collide, the queue should
     receive ONE pair, not both (a,b) and (b,a). Without the canonical
     direction guard the LLM's `replace` semantics would degenerate to
@@ -284,8 +285,22 @@ def test_detect_candidates_same_batch_pair_emitted_in_canonical_direction_only()
     )
     assert len(pairs) == 1
     p = pairs[0]
-    # Canonical direction: smaller id is candidate, larger is existing.
-    assert (p["candidate_id"], p["existing_id"]) == ("alpha", "beta")
+    # Same timestamp: later authored row is candidate, regardless of ID text.
+    assert (p["candidate_id"], p["existing_id"]) == ("beta", "alpha")
+
+
+def test_detect_candidates_same_batch_prefers_created_at_over_id_text():
+    same_vec = [1.0, 0.0, 0.0]
+    newer = _fact("zzz", "newer", embedding=same_vec)
+    older = _fact("aaa", "older", embedding=same_vec)
+    newer["created_at"] = "2026-04-25T10:00:01"
+    older["created_at"] = "2026-04-25T10:00:00"
+    pairs = FactDedupResolver.detect_candidates(
+        [newer, older], only_for_ids={"aaa", "zzz"},
+    )
+    assert [(p["candidate_id"], p["existing_id"]) for p in pairs] == [
+        ("zzz", "aaa"),
+    ]
 
 
 def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
@@ -1184,6 +1199,44 @@ async def test_corrupt_archive_aborts_arbitration_without_active_loss(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_arbitration_stages_survivor_until_archive_lock(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "candidate", embedding=[1.0, 0.0])
+    existing = _fact("e1", "existing", embedding=[0.99, 0.05], importance=4)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    (tmp_path / "Neko" / "facts_archive.json").write_text(
+        "not-json", encoding="utf-8",
+    )
+    original_archive = fs.aarchive_arbitrated_facts
+    archive_entered = asyncio.Event()
+    allow_archive = asyncio.Event()
+
+    async def _paused_archive(name, specs, **kwargs):
+        archive_entered.set()
+        await allow_archive.wait()
+        return await original_archive(name, specs, **kwargs)
+
+    fs.aarchive_arbitrated_facts = _paused_archive
+    batch = [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }]
+    task = asyncio.create_task(resolver._aapply_decisions(
+        "Neko", batch, [{"index": 0, "action": "merge"}],
+    ))
+    await archive_entered.wait()
+    live = await fs.aload_facts("Neko")
+    assert next(row for row in live if row["id"] == "e1")["importance"] == 4
+    await fs.asave_facts("Neko")
+    allow_archive.set()
+    with pytest.raises(RuntimeError, match="facts_archive unreadable"):
+        await task
+    fs._facts.pop("Neko", None)
+    durable = await fs.aload_facts("Neko")
+    assert next(row for row in durable if row["id"] == "e1")["importance"] == 4
+
+
+@pytest.mark.asyncio
 async def test_concurrent_forget_archive_mismatch_invalidates_mutated_cache(tmp_path):
     fs, resolver = _install_resolver(str(tmp_path))
     candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
@@ -1198,11 +1251,11 @@ async def test_concurrent_forget_archive_mismatch_invalidates_mutated_cache(tmp_
 
     original_archive = fs.aarchive_arbitrated_facts
 
-    async def _forget_before_archive(name, specs):
+    async def _forget_before_archive(name, specs, **kwargs):
         fs._facts[name][:] = [
             fact for fact in fs._facts[name] if fact.get("id") != "e1"
         ]
-        return await original_archive(name, specs)
+        return await original_archive(name, specs, **kwargs)
 
     fs.aarchive_arbitrated_facts = _forget_before_archive
     model = _make_llm_mock([{"index": 0, "action": "merge"}])

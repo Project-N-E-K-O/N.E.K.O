@@ -497,9 +497,13 @@ class FactDedupResolver:
         # Pre-bucket by entity + subject so the inner loop only walks
         # rows inside the same dedup boundary.
         by_entity: dict[tuple, list[dict]] = {}
-        for f in facts:
+        fact_order: dict[object, int] = {}
+        for index, f in enumerate(facts):
             if not isinstance(f, dict):
                 continue
+            fid = f.get('id')
+            if fid is not None:
+                fact_order[fid] = index
             bucket = _bucket_key(f)
             if bucket is None:
                 continue
@@ -547,14 +551,21 @@ class FactDedupResolver:
                 # FACT_DEDUP_PAIRS_PER_NEW / FACT_DEDUP_BATCH_LIMIT
                 # budget and letting traversal order decide which row
                 # plays "candidate" for the LLM's replace semantics.
-                # Keep one canonical direction (cid < sid by id) so a
-                # single pair lands in the queue. The cross-batch case
-                # ("fresh vs already-embedded") is unaffected — there
-                # sid is NOT in only_for_ids and the check is a no-op.
+                # Keep one direction, but preserve the candidate/newer
+                # contract: created_at is authoritative and authored list
+                # order breaks same-timestamp ties.  ID text is hash-random
+                # within one timestamp and must not decide chronology.
                 if (only_for_ids is not None
                         and sid in only_for_ids
-                        and cid >= sid):
-                    continue
+                        and cid in only_for_ids):
+                    candidate_order = (
+                        str(f.get('created_at') or ''), fact_order.get(cid, -1),
+                    )
+                    sibling_order = (
+                        str(sib.get('created_at') or ''), fact_order.get(sid, -1),
+                    )
+                    if candidate_order <= sibling_order:
+                        continue
                 if sib.get('absorbed'):
                     continue
                 svec = sib.get('embedding')
@@ -922,11 +933,21 @@ class FactDedupResolver:
         """
         if not results:
             return 0, set()
-        facts = await self._fact_store.aload_facts(name)
+        live_facts = await self._fact_store.aload_facts(name)
+        # Decisions are staged away from FactStore's shared cache.  The
+        # archive transaction validates the original survivor snapshots and
+        # publishes these copies only after it owns the persistence lock.
+        facts = [dict(f) if isinstance(f, dict) else f for f in live_facts]
         by_id = {f.get('id'): f for f in facts if isinstance(f, dict) and f.get('id')}
+        original_by_id = {
+            f.get('id'): dict(f)
+            for f in live_facts
+            if isinstance(f, dict) and f.get('id')
+        }
         applied = 0
         ids_to_remove: set[str] = set()
         archive_specs: dict[str, dict] = {}
+        mutated_survivor_ids: set[str] = set()
         processed_pairs: set[tuple] = set()
         seen_pairs: set[tuple] = set()
         for r in results:
@@ -1080,6 +1101,7 @@ class FactDedupResolver:
                 # keep the selected winner attributable for later disputes.
                 if preference != 'old':
                     _fold_survivor_provenance(existing, cand)
+                mutated_survivor_ids.add(exist_id)
                 ids_to_remove.add(cand_id)
                 archive_specs[cand_id] = {
                     'reason': 'fact_dedup_merge',
@@ -1105,6 +1127,7 @@ class FactDedupResolver:
                 cand['importance'] = max(cur, old)
                 if preference != 'new':
                     _fold_survivor_provenance(cand, existing)
+                mutated_survivor_ids.add(cand_id)
                 ids_to_remove.add(exist_id)
                 archive_specs[exist_id] = {
                     'reason': 'fact_dedup_replace',
@@ -1119,8 +1142,14 @@ class FactDedupResolver:
                 applied += 1
 
         if ids_to_remove:
+            survivor_ids = mutated_survivor_ids - ids_to_remove
             await self._fact_store.aarchive_arbitrated_facts(
-                name, archive_specs,
+                name,
+                archive_specs,
+                survivor_updates={fid: by_id[fid] for fid in survivor_ids},
+                expected_survivors={
+                    fid: original_by_id[fid] for fid in survivor_ids
+                },
             )
         elif applied:
             # Even pure keep_both rounds may have nudged nothing on

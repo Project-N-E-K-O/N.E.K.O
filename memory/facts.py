@@ -921,11 +921,20 @@ class FactStore:
             await asyncio.to_thread(_record_under_fact_lock)
 
     async def aarchive_arbitrated_facts(
-        self, name: str, archive_specs: dict[str, dict],
+        self,
+        name: str,
+        archive_specs: dict[str, dict],
+        *,
+        survivor_updates: dict[str, dict] | None = None,
+        expected_survivors: dict[str, dict] | None = None,
     ) -> int:
         """Archive trust/dedup losers with an archive-first two-file commit."""
         if not archive_specs:
             return 0
+        survivor_updates = survivor_updates or {}
+        expected_survivors = expected_survivors or {}
+        if set(survivor_updates) != set(expected_survivors):
+            raise ValueError("survivor updates require matching expected snapshots")
         async with self._get_persist_alock(name):
             def _archive() -> int:
                 with self._get_lock(name):
@@ -949,6 +958,20 @@ class FactStore:
                         raise RuntimeError(
                             "fact arbitration archive mismatch: expected "
                             f"{len(archive_specs)}, archived {len(losers)}"
+                        )
+                    live_by_id = {
+                        fact.get('id'): fact
+                        for fact in facts
+                        if isinstance(fact, dict) and fact.get('id')
+                    }
+                    stale_survivors = [
+                        fact_id for fact_id, expected in expected_survivors.items()
+                        if live_by_id.get(fact_id) != expected
+                    ]
+                    if stale_survivors:
+                        raise RuntimeError(
+                            "fact arbitration survivor mismatch: "
+                            + ",".join(sorted(stale_survivors))
                         )
                     archive_path = self._facts_archive_path(name)
                     archived: list[dict] = []
@@ -979,13 +1002,15 @@ class FactStore:
                         stamped.append(copy)
                     merged_archive = _merge_archive_entries(archived, stamped)
                     loser_ids = {fact.get('id') for fact in losers}
-                    active = [
-                        fact for fact in facts
-                        if not (
-                            isinstance(fact, dict)
-                            and fact.get('id') in loser_ids
+                    active = []
+                    for fact in facts:
+                        fact_id = fact.get('id') if isinstance(fact, dict) else None
+                        if fact_id in loser_ids:
+                            continue
+                        replacement = survivor_updates.get(fact_id)
+                        active.append(
+                            dict(replacement) if replacement is not None else fact
                         )
-                    ]
                     # Never reverse: crash between writes leaves a recoverable
                     # duplicate, not an unrecoverable missing fact.
                     try:
@@ -1015,10 +1040,8 @@ class FactStore:
             try:
                 return await asyncio.to_thread(_archive)
             except BaseException:
-                # The resolver mutates the survivor in memory before asking
-                # for the archive-first commit. Any failure (including an
-                # unreadable pre-existing archive) must discard that cache so
-                # the next attempt reloads the unchanged durable active set.
+                # Any failure may follow a partial archive-first two-file
+                # commit, so discard the cache and reload durable truth.
                 def _invalidate() -> None:
                     with self._get_lock(name):
                         self._facts.pop(name, None)
