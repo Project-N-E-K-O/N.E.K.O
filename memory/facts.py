@@ -1134,6 +1134,8 @@ class FactStore:
             for prior in facts:
                 if not isinstance(prior, dict) or not _in_signal_scope(prior):
                     continue
+                if prior.get('speaker_provenance_mixed') is True:
+                    continue
                 target_id = stable_speaker_id(prior.get('speaker_id'))
                 if target_id is None or target_id == source_id:
                     continue
@@ -1232,7 +1234,9 @@ class FactStore:
                         'superseded_by',
                     ):
                         restored.pop(key, None)
-                    restored['arbitration_restored_at'] = datetime.now().isoformat()
+                    restored_at = datetime.now().isoformat()
+                    restored['arbitration_restored_at'] = restored_at
+                    restored['restored_at'] = restored_at
                     active = list(facts)
                     if target_id not in active_ids:
                         active.append(restored)

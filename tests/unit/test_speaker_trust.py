@@ -301,6 +301,31 @@ async def test_owner_signal_deduplicates_spelling_variants_for_one_fact():
 
 
 @pytest.mark.asyncio
+async def test_mixed_fact_with_residual_speaker_id_emits_no_owner_signal():
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    store = object.__new__(FactStore)
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko",
+        [{"role": "user", "content": "Alice is not smart"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[{
+            "id": "smart",
+            "text": "Alice is smart",
+            "speaker_id": "qq:1001",
+            "speaker_provenance_mixed": True,
+            **target.as_entry_fields(),
+        }],
+    )
+
+    assert events == []
+
+
+@pytest.mark.asyncio
 async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
     from memory.facts import FactStore
 
@@ -1692,6 +1717,23 @@ def test_bare_conditional_introducers_never_emit_correction(marker):
         f"{marker} Alice is smart, Bob smiles",
         f"{marker} Alice is not smart, Bob smiles",
     ) is None
+
+
+@pytest.mark.parametrize("old_text,new_text", [
+    (
+        "Alice is smart or Bob is happy",
+        "Alice is not smart or Bob is happy",
+    ),
+    ("小明喜欢猫或者小红开心", "小明不喜欢猫或者小红开心"),
+])
+def test_disjunctive_negations_never_emit_correction(old_text, new_text):
+    assert deterministic_relation(old_text, new_text) is None
+
+
+def test_or_substring_does_not_disable_asserted_correction():
+    assert deterministic_relation(
+        "Alice is ordinary", "Alice is not ordinary",
+    ) == "correction"
 
 
 @pytest.mark.parametrize("marker", ["只要", "一旦"])

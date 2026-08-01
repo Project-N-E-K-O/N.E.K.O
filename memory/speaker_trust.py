@@ -271,6 +271,14 @@ def _has_cjk_conditional_negation(text: str) -> bool:
     )
 
 
+def _has_disjunction(text: str) -> bool:
+    """Reject polarity matches that alter only one disjunct."""
+    return (
+        "or" in _word_tokens(text)
+        or any(marker in text for marker in ("或者", "还是", "或"))
+    )
+
+
 def deterministic_relation(old_text: str, new_text: str) -> str | None:
     """Return confirmation/correction only for conservative code-side matches."""
     old_norm = " ".join(str(old_text or "").split()).casefold()
@@ -283,6 +291,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         return None
     if old_norm == new_norm:
         return "confirmation"
+    if _has_disjunction(old_norm) or _has_disjunction(new_norm):
+        return None
     if (
         (
             old_norm in _cjk_positive_variants(new_norm)

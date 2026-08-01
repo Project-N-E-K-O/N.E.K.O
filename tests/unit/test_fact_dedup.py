@@ -1171,6 +1171,9 @@ async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
     assert await fs.arestore_arbitrated_fact("Neko", "5")
     restored = await fs.aload_facts("Neko")
     assert {fact["id"] for fact in restored} == {"active", 5}
+    restored_row = next(fact for fact in restored if fact["id"] == 5)
+    assert restored_row["restored_at"]
+    assert restored_row["arbitration_restored_at"] == restored_row["restored_at"]
     assert json.loads(archive_path.read_text(encoding="utf-8")) == []
 
 
