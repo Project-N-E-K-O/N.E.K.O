@@ -784,6 +784,7 @@ class SpeakerShadowRuntime:
         if (
             frame.token.terminal_reason is not None
             or frame.candidate in self._finalized
+            or self._candidate_was_evicted(frame.candidate)
         ):
             return
         buffer = self._buffers.get(frame.candidate)

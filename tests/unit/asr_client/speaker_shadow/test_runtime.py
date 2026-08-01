@@ -19,6 +19,7 @@ from main_logic.asr_client.speaker_shadow.contracts import (
 )
 from main_logic.asr_client.speaker_shadow.runtime import (
     SpeakerShadowRuntime,
+    _AudioFrame,
     _CandidateFinished,
     _CandidateToken,
     _backend_host_main,
@@ -512,7 +513,7 @@ async def test_evicted_tombstone_keeps_late_finish_idempotent() -> None:
     await runtime.close()
 
 
-def test_queued_finish_ignores_evicted_candidate_watermark() -> None:
+async def test_queued_work_ignores_evicted_candidate_watermark() -> None:
     runtime = SpeakerShadowRuntime(
         backend_factory=_BackendFactory(),
         config=_config(queue_capacity=1, finalized_candidate_capacity=1),
@@ -523,13 +524,23 @@ def test_queued_finish_ignores_evicted_candidate_watermark() -> None:
         candidate,
         _CandidateToken(candidate, 0),
     )
+    pcm16 = bytearray(_pcm(10))
+    frame = _AudioFrame(
+        runtime._generation,
+        candidate,
+        _CandidateToken(candidate, SPEAKER_SHADOW_SAMPLE_RATE_HZ),
+        pcm16,
+        SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        len(pcm16) // 2,
+    )
     runtime._record_evicted_candidate(candidate)
-    before_marker = runtime.snapshot()
+    before_work = runtime.snapshot()
 
     runtime._process_finish(marker)
+    await runtime._process_frame(frame)
 
-    assert runtime.snapshot() == before_marker
-    asyncio.run(runtime.close())
+    assert runtime.snapshot() == before_work
+    await runtime.close()
 
 
 def test_threshold_metric_keys_preserve_distinct_float_values() -> None:
