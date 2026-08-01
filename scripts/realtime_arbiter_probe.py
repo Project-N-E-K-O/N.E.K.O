@@ -236,6 +236,24 @@ class _Probe:
         )
         await client.connect(_INSTRUCTIONS)
         client.ws = _TappedSocket(client.ws, self._on_frame)
+
+        # Wrap the arbiter's own teardown callback. `create_response()` returns
+        # at `ticket.sent`, while the missing-announcement and missing-terminal
+        # fail-closes fire later on the worker — so inferring a teardown from
+        # the NEXT create's ConnectionError attributes it to the wrong turn and
+        # misses one on the last turn of a run entirely. The report said
+        # "teardown: none" after the socket was already gone.
+        arbiter = client._response_arbiter
+        inner_abort = arbiter._abort_transport
+
+        async def _observed_abort(reason: str) -> None:
+            if self._obs.teardown is None:
+                self._obs.teardown = f"{self._stamp():.2f}s {reason}"
+            self._log(f"!! arbiter tore the transport down: {reason}")
+            if inner_abort is not None:
+                await inner_abort(reason)
+
+        arbiter._abort_transport = _observed_abort
         self._client = client
         self._pump = asyncio.create_task(client.handle_messages())
         # The provider acknowledges session.update asynchronously; let that
@@ -511,7 +529,15 @@ def _margin_line(name: str, stats: dict[str, float] | None, bound: float) -> str
 
 def _report(obs: _Observations) -> dict[str, Any]:
     announce = [_Turn._delta(t.sent_at, t.created_at) for t in obs.turns]
-    complete = [_Turn._delta(t.created_at, t.done_at) for t in obs.turns]
+    # From the announcement when there is one, otherwise from the request
+    # itself. One of the two routes this probe exists for never announces,
+    # so keying completion on created_at alone reported 'no observations'
+    # for that whole route — i.e. it could not measure the 60s bound it was
+    # written to measure.
+    complete = [
+        _Turn._delta(t.created_at if t.created_at is not None else t.sent_at, t.done_at)
+        for t in obs.turns
+    ]
     item_ack = [_Turn._delta(t.sent_at, t.item_acked_at) for t in obs.turns]
     cancel = [
         _Turn._delta(t.cancel_sent_at, t.done_at)
@@ -588,7 +614,10 @@ def _report(obs: _Observations) -> dict[str, Any]:
                 "response_id": t.response_id,
                 "status": t.status,
                 "announce_s": _Turn._delta(t.sent_at, t.created_at),
-                "complete_s": _Turn._delta(t.created_at, t.done_at),
+                "complete_s": _Turn._delta(
+                    t.created_at if t.created_at is not None else t.sent_at, t.done_at
+                ),
+                "complete_from": "created" if t.created_at is not None else "sent",
                 "cancel_s": _Turn._delta(t.cancel_sent_at, t.done_at),
                 "stream_events": t.stream_events,
                 "stream_events_with_id": t.stream_events_with_id,
