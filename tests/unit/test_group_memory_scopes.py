@@ -11149,6 +11149,71 @@ async def test_member_flush_malformed_batch_response_keeps_all_buckets():
 
 
 @pytest.mark.asyncio
+async def test_member_flush_preserves_permission_snapshot_per_authored_message():
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "created": 0, "fact_ids": []},
+            {"status": "ok", "created": 0, "fact_ids": []},
+        ],
+    })
+    plugin = SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda _sender: None,
+            get_permission_level=lambda _sender: "admin",
+        ),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+    user_data = {}
+    base = dict(
+        member_memory_enabled=True,
+        is_group=True,
+        group_facing=False,
+        group_scene_mode="",
+        source_kind="incoming",
+        sender_id="1001",
+        user_nickname="",
+    )
+    service.record_group_member_turn(
+        user_data, SimpleNamespace(**base, message="普通时说的", permission_level="normal"),
+    )
+    service.record_group_member_turn(
+        user_data, SimpleNamespace(**base, message="成为主人后说的", permission_level="admin"),
+    )
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert len(segments) == 2
+    assert segments[0].get("speaker_is_owner") is None
+    assert segments[0]["speaker_trust"] == pytest.approx(
+        SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"]
+    )
+    assert segments[1]["speaker_is_owner"] is True
+    assert segments[1]["speaker_trust"] == pytest.approx(
+        SPEAKER_TRUST_BY_PERMISSION_LEVEL["admin"]
+    )
+    assert segments[0]["messages"][0]["content"][0]["text"] == "普通时说的"
+    assert segments[1]["messages"][0]["content"][0]["text"] == "成为主人后说的"
+
+
+@pytest.mark.asyncio
 async def test_speaker_trust_derived_from_permission_level():
     """信赖度初值按权限等级派生（阶段一只落字段）：admin/trusted/normal/
     none 各归各档，permission_mgr 缺失或抛错回落 none 档。"""  # noqa: DOCSTRING_CJK

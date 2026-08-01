@@ -64,7 +64,27 @@ class CorrectionsMixin:
                     and existing.get('new_text') == new_text
                     and existing.get('entity') == entity
                     and existing.get('scope') == (subject_fields or {}).get('scope')):
-                return None
+                from memory.speaker_trust import normalize_trust, stable_speaker_id
+                changed = False
+                for prefix, provenance in (
+                    ('old', old_speaker_provenance),
+                    ('new', new_speaker_provenance),
+                ):
+                    if not isinstance(provenance, dict):
+                        continue
+                    speaker_id = stable_speaker_id(provenance.get('speaker_id'))
+                    if speaker_id is None:
+                        continue
+                    trust = normalize_trust(provenance.get('speaker_trust'))
+                    current_id = existing.get(f'{prefix}_speaker_id')
+                    current_trust = normalize_trust(
+                        existing.get(f'{prefix}_speaker_trust')
+                    )
+                    if current_id is None or trust > current_trust:
+                        existing[f'{prefix}_speaker_id'] = speaker_id
+                        existing[f'{prefix}_speaker_trust'] = trust
+                        changed = True
+                return corrections if changed else None
         item = {
             'old_text': old_text,
             'new_text': new_text,
@@ -503,10 +523,26 @@ class CorrectionsMixin:
                         if isinstance(existing, dict):
                             from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                             prior_history = existing.get('version_history', []) or []
+                            mixed_speakers = not (
+                                old_speaker_id
+                                and new_speaker_id
+                                and old_speaker_id == new_speaker_id
+                            )
+                            merged_history = list(prior_history) + [history_entry]
+                            if mixed_speakers and new_speaker_id:
+                                merged_history.append(_history_snapshot(
+                                    new_text, 'new', 'correction_merge_source',
+                                ))
                             existing['text'] = merged_text
-                            existing['version_history'] = (
-                                list(prior_history) + [history_entry]
-                            )[-_VH_MAX:]
+                            existing['version_history'] = merged_history[-_VH_MAX:]
+                            if mixed_speakers:
+                                # The merged text no longer belongs to one
+                                # speaker. Keeping the old identity would let
+                                # another source borrow its trust later.
+                                for key in (
+                                    'speaker_id', 'speaker_trust', 'speaker_label',
+                                ):
+                                    existing.pop(key, None)
                             # Text changed → invalidate the derived
                             # caches so the next render recomputes
                             # against the new text instead of serving

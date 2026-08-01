@@ -72,6 +72,14 @@ def _polarity(text: str) -> bool:
     return any(marker in lowered for marker in _NEGATION_MARKERS)
 
 
+def _proposition_tokens(text: str) -> set[str]:
+    """Return content tokens after removing explicit polarity markers."""
+    cleaned = str(text or "").lower()
+    for marker in sorted(_NEGATION_MARKERS, key=len, reverse=True):
+        cleaned = cleaned.replace(marker, " ")
+    return _tokens(cleaned)
+
+
 def deterministic_relation(old_text: str, new_text: str) -> str | None:
     """Return confirmation/correction only for conservative code-side matches."""
     old_norm = " ".join(str(old_text or "").split()).casefold()
@@ -80,12 +88,13 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         return None
     if old_norm == new_norm:
         return "confirmation"
-    old_tokens = _tokens(old_norm)
-    new_tokens = _tokens(new_norm)
-    if not old_tokens or not new_tokens:
-        return None
-    overlap = len(old_tokens & new_tokens) / min(len(old_tokens), len(new_tokens))
-    if overlap >= 0.6 and _polarity(old_norm) != _polarity(new_norm):
+    old_tokens = _proposition_tokens(old_norm)
+    new_tokens = _proposition_tokens(new_norm)
+    if (
+        old_tokens
+        and old_tokens == new_tokens
+        and _polarity(old_norm) != _polarity(new_norm)
+    ):
         return "correction"
     return None
 

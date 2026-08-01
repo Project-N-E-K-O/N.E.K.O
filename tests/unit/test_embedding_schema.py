@@ -257,6 +257,70 @@ async def test_correction_trust_overrides_model_and_archives_rejected_text(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_mixed_speaker_merge_clears_single_speaker_provenance(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "旧来源说法",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    await pm._aqueue_correction(
+        "Neko", "旧来源说法", "另一来源补充", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.8,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.7,
+        },
+    )
+    response = MagicMock()
+    response.content = json.dumps([{
+        "index": 0, "action": "merge", "text": "两个来源的合并说法",
+    }])
+
+    class _MergeLLM:
+        async def ainvoke(self, *_args, **_kwargs):
+            return response
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_MergeLLM()):
+        assert await pm.resolve_corrections("Neko") == 1
+    persona = await pm.aensure_persona("Neko")
+    merged = pm._get_section_facts(persona, "master")[0]
+    assert merged["text"] == "两个来源的合并说法"
+    assert "speaker_id" not in merged
+    assert "speaker_trust" not in merged
+    history = {row["text"]: row for row in merged["version_history"]}
+    assert history["旧来源说法"]["speaker_id"] == "qq:2002"
+    assert history["另一来源补充"]["speaker_id"] == "qq:1001"
+
+
+@pytest.mark.asyncio
+async def test_duplicate_pending_correction_upgrades_to_stronger_source(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    common_old = {"speaker_id": "qq:9000", "speaker_trust": 0.8}
+    await pm._aqueue_correction(
+        "Neko", "旧事实", "相同的新观察", "master",
+        old_speaker_provenance=common_old,
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+    )
+    await pm._aqueue_correction(
+        "Neko", "旧事实", "相同的新观察", "master",
+        old_speaker_provenance=common_old,
+        new_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.7,
+        },
+    )
+    pending = await pm.aload_pending_corrections("Neko")
+    assert len(pending) == 1
+    assert pending[0]["new_speaker_id"] == "qq:2002"
+    assert pending[0]["new_speaker_trust"] == pytest.approx(0.7)
+
+
+@pytest.mark.asyncio
 async def test_aadd_fact_carries_both_speakers_into_correction_queue(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

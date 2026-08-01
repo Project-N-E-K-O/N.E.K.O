@@ -620,14 +620,17 @@ class QQSettingsService:
         trust_events: list[dict] | None = None,
     ) -> bool:
         """Single durable writer for global per-QQ trust evolution."""
-        manager = self.plugin.permission_mgr
-        if manager is None:
-            return False
         async with self._speaker_trust_write_lock:
             # Share the full settings transaction lock as well: a dashboard
             # save writes the same config file and could otherwise publish a
             # stale snapshot over this trust update.
             async with self._consent_transaction_lock:
+                # Dashboard reloads replace the manager object. Resolve it
+                # only after both writer locks so a queued update cannot
+                # mutate a detached instance and then report success.
+                manager = self.plugin.permission_mgr
+                if manager is None:
+                    return False
                 before = manager.speaker_trust_profiles()
                 changed = manager.record_speaker_activity(
                     sender_id, message_count, activity_event_id,

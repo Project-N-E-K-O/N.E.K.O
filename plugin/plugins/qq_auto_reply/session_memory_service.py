@@ -615,9 +615,20 @@ class QQSessionMemoryService:
         else:
             labels[sender_id] = sender_id[:self.MEMBER_LABEL_MAX_CHARS]
         messages = buckets.setdefault(sender_id, [])
+        permission_level = self._speaker_permission_level_for(
+            sender_id, getattr(context, "permission_level", None),
+        )
+        activity_id = hashlib.sha256(
+            f"{sender_id}|{time.time_ns()}|{len(messages)}|{text}".encode("utf-8")
+        ).hexdigest()[:24]
         messages.append({
             "role": "user",
             "content": [{"type": "text", "text": text}],
+            # These request-side snapshots are ignored by the LLM message
+            # converter. They let a delayed flush split one speaker's bucket
+            # by the permission held when each message was authored.
+            "_speaker_permission_level": permission_level,
+            "_speaker_activity_id": activity_id,
         })
         if len(messages) >= self.GROUP_MEMBER_MAX_MESSAGES:
             # 活跃群永远等不到 idle 结算，焦点 digest 又只冲群历史：到线
@@ -950,6 +961,11 @@ class QQSessionMemoryService:
                 sender_id,
                 scoped_messages,
                 result.get("trust_events") or [],
+                activity_identity=(
+                    f"participant:{her_name}:"
+                    f"{user_data.setdefault('_speaker_trust_activity_epoch', time.time_ns())}:"
+                    f"{last_participant_digest_index}:{next_index}"
+                ),
             )
             self.plugin.logger.info(
                 f"[{reason}] 已为私聊 {sender_id} 完成 scoped 记忆结算，"
@@ -1251,8 +1267,40 @@ class QQSessionMemoryService:
         )
         member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
-        async def _flush_one_batch(batch_senders: list[str]) -> list[str]:
+        def _speaker_segment_group(sender_id: str) -> list[dict[str, Any]]:
+            by_level: dict[str, list[dict]] = {}
+            fallback = self._speaker_permission_level_for(sender_id)
+            for message in list(member_buckets.get(sender_id) or []):
+                raw_level = (
+                    message.get("_speaker_permission_level")
+                    if isinstance(message, dict) else None
+                )
+                level = self._speaker_permission_level_for(
+                    sender_id, raw_level or fallback,
+                )
+                by_level.setdefault(level, []).append(message)
+            return [
+                {
+                    "sender_id": sender_id,
+                    "permission_level": level,
+                    "messages": messages,
+                }
+                for level, messages in by_level.items()
+                if messages
+            ]
+
+        speaker_segment_groups = [
+            group
+            for sender_id in list(member_buckets)
+            if (group := _speaker_segment_group(sender_id))
+        ]
+
+        async def _flush_one_batch(batch_specs: list[dict]) -> list[str]:
             async with member_flush_sem:
+                batch_senders = list(dict.fromkeys(
+                    str(spec.get("sender_id") or "") for spec in batch_specs
+                    if spec.get("sender_id")
+                ))
                 if require_consent and not self._member_memory_consent_live():
                     # 逐批复检（与旧的逐请求复检同语义），因为信号量排队与
                     # gather 的任务调度都是挂起点：调用点检查过之后、真正发
@@ -1264,9 +1312,11 @@ class QQSessionMemoryService:
                         f"个成员发出前授权已撤销，按 fail-closed 丢弃"
                     )
                     return list(batch_senders)
-                def _member_segment(sender_id: str) -> dict[str, Any]:
+                def _member_segment(spec: dict) -> dict[str, Any]:
+                    sender_id = spec["sender_id"]
+                    permission_level = spec["permission_level"]
                     segment: dict[str, Any] = {
-                        "messages": member_buckets.get(sender_id) or [],
+                        "messages": spec["messages"],
                         "subject": (
                             self.plugin.memory_bridge.group_participant_subject(
                                 group_id, sender_id,
@@ -1277,10 +1327,14 @@ class QQSessionMemoryService:
                         ),
                         # 全局信赖度快照：权限基线 + 有界演化，随段落盘到
                         # 该段抽出的每条 fact 上。
-                        "speaker_trust": self._speaker_trust_for(sender_id),
+                        "speaker_trust": self._speaker_trust_for(
+                            sender_id, permission_level,
+                        ),
                         "speaker_id": f"qq:{sender_id}",
                     }
-                    if self._speaker_is_owner_for(sender_id):
+                    if self._speaker_is_owner_for(
+                        sender_id, permission_level,
+                    ):
                         segment["speaker_is_owner"] = True
                     # 显示名 = label 剥掉 "(sender_id)" 后缀的昵称本体
                     # （persona 标题里 subject_id 已含数字 id，不重复）。
@@ -1293,7 +1347,7 @@ class QQSessionMemoryService:
                     return segment
 
                 segments = [
-                    _member_segment(sender_id) for sender_id in batch_senders
+                    _member_segment(spec) for spec in batch_specs
                 ]
                 try:
                     # 外层再包一次墙钟上限：httpx 的 timeout= 是给 connect /
@@ -1320,7 +1374,7 @@ class QQSessionMemoryService:
                     segment_results = result.get("segments")
                     if (
                         not isinstance(segment_results, list)
-                        or len(segment_results) != len(batch_senders)
+                        or len(segment_results) != len(batch_specs)
                     ):
                         # 响应形状与请求对不上时绝不按位置乱猜——整批按
                         # 失败保留重试（fail-closed）。
@@ -1333,10 +1387,11 @@ class QQSessionMemoryService:
                         f"个成员记忆结算失败: {exc}"
                     )
                     return list(batch_senders)
-                failed: list[str] = []
-                for sender_id, segment_result in zip(
-                    batch_senders, segment_results,
+                failed: set[str] = set()
+                for spec, segment_result in zip(
+                    batch_specs, segment_results,
                 ):
+                    sender_id = spec["sender_id"]
                     if (
                         isinstance(segment_result, dict)
                         and segment_result.get("status") == "ok"
@@ -1355,29 +1410,35 @@ class QQSessionMemoryService:
                             )
                         await self._apply_speaker_trust_update(
                             sender_id,
-                            list(member_buckets.get(sender_id) or []),
+                            list(spec["messages"]),
                             segment_result.get("trust_events") or [],
+                            activity_identity=self._group_activity_identity(
+                                group_id, spec,
+                            ),
                         )
-                        member_buckets.pop(sender_id, None)
-                        # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
-                        # 群会让 label 映射无限增长，而参与者名额是按 bucket
-                        # 数算的，关闭成员记忆时（bucket 已空）也没人清这些
-                        # 残留。批内失败段的 label 与 bucket 一起留下。
-                        if isinstance(member_labels, dict):
-                            member_labels.pop(sender_id, None)
                         continue
                     self.plugin.logger.error(
                         f"[{reason}] 群 {group_id} 成员 {sender_id} "
                         f"记忆结算失败（批内单段失败）"
                     )
-                    failed.append(sender_id)
-                return failed
+                    failed.add(sender_id)
+                for sender_id in batch_senders:
+                    if sender_id in failed:
+                        continue
+                    member_buckets.pop(sender_id, None)
+                    # label 与 bucket 同生命周期：只弹 bucket 的话，活跃
+                    # 群会让 label 映射无限增长，而参与者名额是按 bucket
+                    # 数算的，关闭成员记忆时（bucket 已空）也没人清这些
+                    # 残留。批内失败段的 label 与 bucket 一起留下。
+                    if isinstance(member_labels, dict):
+                        member_labels.pop(sender_id, None)
+                return [sid for sid in batch_senders if sid in failed]
 
         # 冲刷进行中标记：设置侧的快照合并看它决定"追加进这一代"还是
         # "另起一代"。往正在飞的那一代里追加会被它成功后的整桶 pop 带走。
         self._enter_member_flush(user_data)
-        batches = self._pack_member_batches(
-            member_buckets, isolate_segments=isolate_segments,
+        batches = self._pack_member_segment_groups(
+            speaker_segment_groups, isolate_segments=isolate_segments,
         )
         if not batches:
             self._finish_member_flush_generation(user_data)
@@ -1435,6 +1496,37 @@ class QQSessionMemoryService:
             batches.append(current)
         return batches
 
+    @staticmethod
+    def _pack_member_segment_groups(
+        groups: list[list[dict]], *, isolate_segments: bool = False,
+    ) -> list[list[dict]]:
+        """Pack per-speaker permission segments without splitting a speaker."""
+        from config import (
+            SCOPED_HISTORY_BATCH_MAX_MESSAGES,
+            SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
+        )
+
+        batches: list[list[dict]] = []
+        current: list[dict] = []
+        current_messages = 0
+        for group in groups:
+            if not group:
+                continue
+            group_messages = sum(len(spec.get("messages") or []) for spec in group)
+            if current and (
+                isolate_segments
+                or current_messages + group_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES
+                or len(current) + len(group) > SCOPED_HISTORY_BATCH_MAX_SEGMENTS
+            ):
+                batches.append(current)
+                current = []
+                current_messages = 0
+            current.extend(group)
+            current_messages += group_messages
+        if current:
+            batches.append(current)
+        return batches
+
     def _group_display_name(self, group_id: object) -> str | None:
         """The group's human-readable name for scoped writes, or None.
 
@@ -1462,11 +1554,35 @@ class QQSessionMemoryService:
             if get_level is not None:
                 permission_level = permission_level or get_level(sender_id)
         except Exception:
+            # Permission lookup is best-effort here; use the frozen/default
+            # config baseline below when lightweight integrations omit it.
             pass
         from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL, SPEAKER_TRUST_DEFAULT
         return SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(
             permission_level or "none", SPEAKER_TRUST_DEFAULT,
         )
+
+    def _speaker_permission_level_for(
+        self, sender_id: str, permission_level: str | None = None,
+    ) -> str:
+        """Freeze one canonical permission tier at message-authoring time."""
+        level = str(permission_level or "").strip().lower()
+        if level == "user":
+            level = "normal"
+        if level in {"admin", "trusted", "normal", "none"}:
+            return level
+        manager = getattr(self.plugin, "permission_mgr", None)
+        try:
+            get_level = getattr(manager, "get_permission_level", None)
+            if get_level is not None:
+                resolved = str(get_level(sender_id) or "none").strip().lower()
+                return resolved if resolved in {
+                    "admin", "trusted", "normal", "none",
+                } else "none"
+        except Exception:
+            # Lightweight integrations can omit permission state entirely.
+            pass
+        return "none"
 
     def _speaker_is_owner_for(
         self, sender_id: str, permission_level: str | None = None,
@@ -1485,11 +1601,14 @@ class QQSessionMemoryService:
 
     async def _apply_speaker_trust_update(
         self, sender_id: str, messages: list[dict], trust_events: list[dict],
+        *, activity_identity: str | None = None,
     ) -> None:
         """Persist one idempotent raw-activity event plus server-verified signals."""
         canonical = json.dumps(messages or [], ensure_ascii=False, sort_keys=True)
         event_id = "activity_" + hashlib.sha256(
-            f"qq:{sender_id}|{canonical}".encode("utf-8")
+            f"qq:{sender_id}|{activity_identity or canonical}|{canonical}".encode(
+                "utf-8"
+            )
         ).hexdigest()[:24]
         from memory.speaker_trust import observation_texts
         authored_count = len(observation_texts(messages or []))
@@ -1512,6 +1631,25 @@ class QQSessionMemoryService:
             self.plugin.logger.warning(
                 f"speaker trust 演化未持久化 sender={sender_id} event={event_id}"
             )
+
+    @staticmethod
+    def _group_activity_identity(group_id: str, spec: dict) -> str:
+        """Stable across retries, distinct for equal text in separate batches."""
+        message_ids = [
+            str(message.get("_speaker_activity_id") or "")
+            for message in spec.get("messages") or []
+            if isinstance(message, dict) and message.get("_speaker_activity_id")
+        ]
+        if message_ids:
+            batch_identity = "|".join(message_ids)
+        else:
+            batch_identity = json.dumps(
+                spec.get("messages") or [], ensure_ascii=False, sort_keys=True,
+            )
+        return (
+            f"group:{group_id}:{spec.get('permission_level') or 'none'}:"
+            f"{batch_identity}"
+        )
 
     def _member_memory_consent_live(self) -> bool:
         """Whether member memory is still authorized right now.

@@ -9,7 +9,11 @@ from unittest.mock import patch
 import pytest
 
 from memory.scopes import MemorySubject
-from memory.speaker_trust import observation_texts, preferred_by_trust
+from memory.speaker_trust import (
+    deterministic_relation,
+    observation_texts,
+    preferred_by_trust,
+)
 from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from utils.llm_client import AIMessage, HumanMessage
 
@@ -103,6 +107,11 @@ def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text()
         HumanMessage(content="  owner confirmation  "),
         AIMessage(content="model-produced correction"),
     ]) == ["owner confirmation"]
+
+
+def test_correction_relation_requires_the_same_proposition():
+    assert deterministic_relation("小明喜欢猫", "小明不喜欢猫") == "correction"
+    assert deterministic_relation("小明喜欢猫", "小明不喜欢狗") is None
 
 
 @pytest.mark.asyncio
@@ -227,6 +236,29 @@ async def test_trust_writer_is_mutexed_with_dashboard_settings_transaction():
 
 
 @pytest.mark.asyncio
+async def test_trust_writer_resolves_manager_after_dashboard_rebuild():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    old_manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    plugin = SimpleNamespace(
+        permission_mgr=old_manager, logger=MagicMock(), _qq_settings={},
+    )
+    service = QQSettingsService(plugin)
+    service.persist_business_config = AsyncMock(return_value=True)
+    async with service._consent_transaction_lock:
+        task = asyncio.create_task(service.apply_speaker_trust_update(
+            sender_id="1001", message_count=1,
+            activity_event_id="after-rebuild", trust_events=[],
+        ))
+        await asyncio.sleep(0)
+        replacement = PermissionManager([{"qq": "1001", "level": "normal"}])
+        plugin.permission_mgr = replacement
+    assert await task
+    assert old_manager.speaker_trust_profiles() == {}
+    assert replacement.speaker_trust_profiles()["1001"]["message_count"] == 1
+
+
+@pytest.mark.asyncio
 async def test_activity_counts_only_the_speaker_not_assistant_replies():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
@@ -249,3 +281,33 @@ async def test_activity_counts_only_the_speaker_not_assistant_replies():
     assert settings.apply_speaker_trust_update.await_args.kwargs[
         "message_count"
     ] == 1
+
+
+@pytest.mark.asyncio
+async def test_identical_text_in_distinct_batches_has_distinct_activity_ids():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
+        return_value=True,
+    ))
+    service = QQSessionMemoryService(SimpleNamespace(
+        settings_service=settings, logger=MagicMock(),
+    ))
+    messages = [{"role": "user", "content": "好的"}]
+    await service._apply_speaker_trust_update(
+        "1001", messages, [], activity_identity="group:a:batch-1",
+    )
+    await service._apply_speaker_trust_update(
+        "1001", messages, [], activity_identity="group:b:batch-2",
+    )
+    await service._apply_speaker_trust_update(
+        "1001", messages, [], activity_identity="group:a:batch-1",
+    )
+    event_ids = [
+        call.kwargs["activity_event_id"]
+        for call in settings.apply_speaker_trust_update.await_args_list
+    ]
+    assert event_ids[0] != event_ids[1]
+    assert event_ids[0] == event_ids[2]

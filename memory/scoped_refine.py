@@ -127,9 +127,11 @@ def _trust_weighted_merge_text(
         reverse=True,
     )
     from config import SPEAKER_TRUST_ARBITRATION_MARGIN
+    # The leader must beat the runner-up, not merely the weakest outlier.
+    # Otherwise 0.80/0.75/0.30 would discard the unresolved 0.75 source.
     if (
         normalize_trust(ordered[0].get('speaker_trust'))
-        - normalize_trust(ordered[-1].get('speaker_trust'))
+        - normalize_trust(ordered[1].get('speaker_trust'))
         < SPEAKER_TRUST_ARBITRATION_MARGIN
     ):
         return proposed_text, sources

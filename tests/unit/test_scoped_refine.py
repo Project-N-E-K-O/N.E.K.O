@@ -556,6 +556,47 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_trust_merge_leader_must_beat_runner_up_not_weakest(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    sources = []
+    for fact_id, text, speaker_id, trust in (
+        ("high", "可信来源甲", "qq:1001", 0.80),
+        ("near", "可信来源乙", "qq:1002", 0.75),
+        ("low", "低信任离群说法", "qq:1003", 0.30),
+    ):
+        entry = pm._build_fact_entry(
+            text, "manual", None, subject=GROUP_A,
+            speaker_provenance={
+                "speaker_id": speaker_id, "speaker_trust": trust,
+            },
+        )
+        entry["id"] = fact_id
+        sources.append(entry)
+    section.extend(sources)
+    await pm.asave_persona("Neko", persona)
+
+    assert await apply_scoped_persona_merge(
+        pm, "Neko", GROUP_A, [dict(entry) for entry in sources],
+        [{
+            "action": "merge",
+            "source_ids": ["high", "near", "low"],
+            "produce": {"text": "保留甲乙共同信息的模型合并"},
+        }],
+        "runner-up-hash",
+    ) == 1
+    persona = await pm.aensure_persona("Neko")
+    merged = next(
+        entry for entry in persona[GROUP_A.persona_section_key]["facts"]
+        if entry.get("merged_from_ids")
+    )
+    assert merged["text"] == "保留甲乙共同信息的模型合并"
+    assert "speaker_id" not in merged
+    assert "speaker_trust" not in merged
+
+
+@pytest.mark.asyncio
 async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
     """One section key may legally mix entries from different custom
     scopes; even if the LLM hallucinates another scope's id, that row
