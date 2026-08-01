@@ -480,6 +480,16 @@ def test_derived_provenance_does_not_borrow_an_omitted_trust_value():
     ]) == {"speaker_id": "qq:1001"}
 
 
+def test_derived_provenance_omits_non_finite_trust():
+    assert provenance_of_entries([
+        {"speaker_id": "qq:1001", "speaker_trust": float("nan")},
+        {"speaker_id": "qq:1001", "speaker_trust": 0.8},
+    ]) == {"speaker_id": "qq:1001"}
+    assert provenance_of_entries([
+        {"speaker_id": "qq:1001", "speaker_trust": float("inf")},
+    ]) == {"speaker_id": "qq:1001"}
+
+
 @pytest.mark.asyncio
 async def test_scoped_route_returns_request_derived_events_when_no_fact_created():
     from app.memory_server import routes
@@ -1505,6 +1515,17 @@ def test_conditional_clause_negations_never_emit_correction():
         "小明喜欢猫，如果天气好",
         "小明不喜欢猫，如果天气好",
     ) is None
+
+
+def test_epistemic_modal_negations_never_emit_correction():
+    for modal in ("might", "may", "could"):
+        assert deterministic_relation(
+            f"Alice {modal} attend",
+            f"Alice {modal} not attend",
+        ) is None
+    assert deterministic_relation(
+        "Alice will attend", "Alice will not attend",
+    ) == "correction"
 
 
 @pytest.mark.asyncio

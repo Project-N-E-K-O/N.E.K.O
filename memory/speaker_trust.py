@@ -47,6 +47,7 @@ _NEGATION_AUXILIARIES = frozenset({
     "were", "will", "would",
 })
 _CONDITIONAL_CLAUSE_MARKERS = frozenset({"if", "unless", "whether"})
+_EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
 })
@@ -187,6 +188,17 @@ def _has_embedded_clause_negation(text: str) -> bool:
     )
 
 
+def _has_epistemic_modal_negation(text: str) -> bool:
+    """Reject uncertainty modals from deterministic polarity matching."""
+    tokens = _word_tokens(text)
+    return any(
+        index > 0
+        and tokens[index - 1] in _EPISTEMIC_MODALS
+        and _is_word_negation(tokens, index)
+        for index in range(len(tokens))
+    )
+
+
 def _cjk_positive_variants(text: str) -> set[str]:
     """Return exact positive forms for conservative predicate negations."""
     variants: set[str] = set()
@@ -254,6 +266,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         and _polarity(old_norm) != _polarity(new_norm)
         and not _has_embedded_clause_negation(old_norm)
         and not _has_embedded_clause_negation(new_norm)
+        and not _has_epistemic_modal_negation(old_norm)
+        and not _has_epistemic_modal_negation(new_norm)
     ):
         return "correction"
     return None
@@ -307,6 +321,7 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
         normalize_trust(entry.get("speaker_trust")) for entry in rows
         if isinstance(entry.get("speaker_trust"), (int, float))
         and not isinstance(entry.get("speaker_trust"), bool)
+        and math.isfinite(float(entry.get("speaker_trust")))
     ]
     result = {"speaker_id": speaker_id}
     if len(trusts) == len(rows):
