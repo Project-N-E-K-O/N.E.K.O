@@ -1720,6 +1720,79 @@ async def test_oauth_status_refreshes_a_market_rejected_token_before_expiry(
 
 
 @pytest.mark.asyncio
+async def test_concurrent_oauth_status_cas_conflict_keeps_session_authenticated(
+    bridge_e2e_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from plugin.server.routes import market_bridge as market_bridge_module
+
+    monkeypatch.setattr(market_bridge_module, "NEKO_AUTH_URL", "https://auth.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_API_URL", "https://market.test")
+    monkeypatch.setattr(market_bridge_module, "MARKET_WEB_URL", "https://market.test")
+    first_probe_started = asyncio.Event()
+    release_first_probe = asyncio.Event()
+    probe_calls = 0
+
+    async def probe_market_user(access_token: Any) -> Any:
+        nonlocal probe_calls
+        probe_calls += 1
+        if probe_calls == 1:
+            first_probe_started.set()
+            await release_first_probe.wait()
+            username = "stale-probe-user"
+        else:
+            username = "current-probe-user"
+        return market_bridge_module._MarketUserProbe(
+            state="ready",
+            user={"username": username, "auth_user_id": "test-subject"},
+        )
+
+    monkeypatch.setattr(market_bridge_module, "_probe_market_user", probe_market_user)
+
+    token_file: Path = bridge_e2e_env["oauth_token_file"]
+    token_file.write_text(
+        json.dumps(
+            {
+                "access_token": "concurrent-status-token",
+                "refresh_token": "concurrent-status-refresh",
+                "expires_at": time.time() + 3600,
+                "auth_url": "https://auth.test",
+                "issuer": "https://auth.test/",
+                "subject": "test-subject",
+                "subject_pending": False,
+                "client_id": "neko-desktop",
+                "scope": "openid email profile offline",
+                "refresh_generation": 0,
+                "state_revision": 0,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    client: AsyncClient = bridge_e2e_env["client"]
+    token: str = bridge_e2e_env["token"]
+    headers = {"Authorization": f"Bearer {token}"}
+    slower_status = asyncio.create_task(
+        client.get("/market/oauth/status", headers=headers)
+    )
+    await asyncio.wait_for(first_probe_started.wait(), timeout=5)
+
+    current_status = await client.get("/market/oauth/status", headers=headers)
+    release_first_probe.set()
+    stale_status = await asyncio.wait_for(slower_status, timeout=5)
+
+    assert current_status.status_code == 200
+    assert current_status.json()["authenticated"] is True
+    assert current_status.json()["user"]["username"] == "current-probe-user"
+    assert stale_status.status_code == 200
+    assert stale_status.json()["authenticated"] is True
+    assert stale_status.json()["user"]["username"] == "current-probe-user"
+    saved = json.loads(token_file.read_text(encoding="utf-8"))
+    assert saved["state_revision"] == 1
+    assert saved["user"]["username"] == "current-probe-user"
+
+
+@pytest.mark.asyncio
 async def test_oauth_status_keeps_unexpired_token_when_refresh_transiently_fails(
     bridge_e2e_env: dict[str, Any],
     monkeypatch: pytest.MonkeyPatch,

@@ -1119,6 +1119,28 @@ async def market_oauth_status(
     token_data["auth_state"] = "ready"
     token_data["updated_at"] = time.time()
     if not _write_oauth_token_if_matches(token_snapshot, token_data):
+        current = _current_oauth_token_for_invalidated_snapshot(token_snapshot)
+        if current is not None:
+            current_state = current.get("market_state")
+            if current_state not in {
+                "ready",
+                "token_rejected",
+                "forbidden",
+                "identity_conflict",
+                "unavailable",
+                "invalid_response",
+            }:
+                current_state = "unavailable"
+            current_user = current.get("user")
+            return MarketOAuthStatusResponse(
+                authenticated=True,
+                auth_state="ready",
+                market_state=current_state,
+                retryable=current_state == "unavailable",
+                user=current_user if isinstance(current_user, dict) else None,
+                expires_at=current.get("expires_at"),
+                market_web_url=MARKET_WEB_URL,
+            )
         return MarketOAuthStatusResponse(
             authenticated=False,
             market_web_url=MARKET_WEB_URL,
@@ -1575,6 +1597,22 @@ def _oauth_token_snapshot_matches(snapshot: dict[str, Any]) -> bool:
     )
 
 
+def _current_oauth_token_for_invalidated_snapshot(
+    snapshot: dict[str, Any],
+) -> dict[str, Any] | None:
+    current = _read_json_file(_OAUTH_TOKEN_FILE)
+    if (
+        not current
+        or not _oauth_token_provenance_matches(current)
+        or not _oauth_subject_is_verified(current)
+        or current.get("access_token") != snapshot.get("access_token")
+        or current.get("session_id") != snapshot.get("session_id")
+        or current.get("refresh_generation") != snapshot.get("refresh_generation")
+    ):
+        return None
+    return current
+
+
 def _write_oauth_token_if_matches(
     snapshot: dict[str, Any],
     payload: dict[str, Any],
@@ -2022,15 +2060,8 @@ def _unauthenticated_account_summary() -> MarketOAuthAccountSummaryResponse:
 def _account_summary_for_invalidated_snapshot(
     snapshot: dict[str, Any],
 ) -> MarketOAuthAccountSummaryResponse:
-    current = _read_json_file(_OAUTH_TOKEN_FILE)
-    if (
-        not current
-        or not _oauth_token_provenance_matches(current)
-        or not _oauth_subject_is_verified(current)
-        or current.get("access_token") != snapshot.get("access_token")
-        or current.get("session_id") != snapshot.get("session_id")
-        or current.get("refresh_generation") != snapshot.get("refresh_generation")
-    ):
+    current = _current_oauth_token_for_invalidated_snapshot(snapshot)
+    if current is None:
         return _unauthenticated_account_summary()
     return MarketOAuthAccountSummaryResponse(
         authenticated=True,
