@@ -1042,10 +1042,12 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=502,
             detail="scoped fact extraction failed; retry later",
         ) from exc
+    await _stamp_subject_display_name(lanlan_name, subject, display_name)
     trust_events = []
     if req.speaker_is_owner:
-        # Re-read after extraction: a concurrent scoped forget may have
-        # archived the target fact while the LLM call was in flight.
+        # Keep this as the endpoint's final yielding operation. A concurrent
+        # scoped forget during extraction or display-name persistence must be
+        # visible before an owner signal is returned to the durable writer.
         trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
             lanlan_name,
             input_history,
@@ -1053,7 +1055,6 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_provenance=speaker_provenance,
             speaker_is_owner=True,
         )
-    await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
@@ -1221,48 +1222,29 @@ async def _process_scoped_history_segments(
             status_code=502,
             detail="scoped fact extraction returned mismatched segments",
         )
+    owner_signal_jobs = []
     for segment, result in zip(parsed, segment_results):
         segment["trust_events"] = []
+        owner_signal_keys = None
         if (
             signal_facts is not None
             and segment.get("speaker_is_owner")
             and result.get("status") == "ok"
         ):
-            active_fact_keys = {
+            # Freeze only the authored-order allow-list. The rows themselves
+            # must be refreshed after every remaining await so a concurrent
+            # dedup/reconcile cannot leave stale speaker provenance behind.
+            owner_signal_keys = [
                 (
                     str(fact.get("id")),
                     fact.get("subject_kind"),
                     fact.get("subject_id"),
                     fact.get("scope"),
                 )
-                for fact in await runtime.fact_store.aload_facts(lanlan_name)
-                if isinstance(fact, dict) and fact.get("id") is not None
-            }
-            active_signal_facts = [
-                fact
                 for fact in signal_facts
-                if fact.get("id") is not None
-                and (
-                    str(fact.get("id")),
-                    fact.get("subject_kind"),
-                    fact.get("subject_id"),
-                    fact.get("scope"),
-                ) in active_fact_keys
+                if isinstance(fact, dict) and fact.get("id") is not None
             ]
-            segment["trust_events"] = (
-                await runtime.fact_store.aevaluate_speaker_trust_events(
-                    lanlan_name,
-                    segment["messages"],
-                    subject=segment["subject"],
-                    speaker_provenance={
-                        "speaker_id": segment.get("speaker_id"),
-                        "speaker_trust": segment.get("speaker_trust"),
-                        "speaker_label": segment.get("speaker_label"),
-                    },
-                    speaker_is_owner=True,
-                    facts_snapshot=active_signal_facts,
-                )
-            )
+            owner_signal_jobs.append((segment, owner_signal_keys))
         if signal_facts is not None:
             reconciled_by_id = {
                 str(fact.get("id")): dict(fact)
@@ -1284,6 +1266,40 @@ async def _process_scoped_history_segments(
         if result.get("status") == "ok":
             await _stamp_subject_display_name(
                 lanlan_name, segment["subject"], segment.get("display_name"),
+            )
+    if owner_signal_jobs:
+        # This is the final I/O await in the endpoint. Every display-name
+        # write for every segment has completed, so a forget racing any of
+        # those writes is reflected in the active rows below.
+        current_by_key = {
+            (
+                str(fact.get("id")),
+                fact.get("subject_kind"),
+                fact.get("subject_id"),
+                fact.get("scope"),
+            ): dict(fact)
+            for fact in await runtime.fact_store.aload_facts(lanlan_name)
+            if isinstance(fact, dict) and fact.get("id") is not None
+        }
+        for segment, owner_signal_keys in owner_signal_jobs:
+            active_signal_facts = [
+                current_by_key[key]
+                for key in owner_signal_keys
+                if key in current_by_key
+            ]
+            segment["trust_events"] = (
+                await runtime.fact_store.aevaluate_speaker_trust_events(
+                    lanlan_name,
+                    segment["messages"],
+                    subject=segment["subject"],
+                    speaker_provenance={
+                        "speaker_id": segment.get("speaker_id"),
+                        "speaker_trust": segment.get("speaker_trust"),
+                        "speaker_label": segment.get("speaker_label"),
+                    },
+                    speaker_is_owner=True,
+                    facts_snapshot=active_signal_facts,
+                )
             )
     return {
         "status": "processed",

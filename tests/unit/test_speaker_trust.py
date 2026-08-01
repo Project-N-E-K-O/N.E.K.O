@@ -434,9 +434,12 @@ async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
         return list(active_facts)
 
     async def _extract_facts(*_args, **_kwargs):
+        return []
+
+    async def _stamp_display_name(*_args, **_kwargs):
         active_facts.clear()
         active_facts.append(same_id_other_scope)
-        return []
+        return True
 
     store = SimpleNamespace(
         aload_facts=_load_facts,
@@ -458,8 +461,14 @@ async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
         speaker_trust=1.0,
         speaker_id="qq:9999",
         speaker_is_owner=True,
+        display_name="Owner",
     )
-    with patch.object(routes.runtime, "fact_store", store):
+    persona = SimpleNamespace(
+        aupdate_subject_display_name=_stamp_display_name,
+    )
+    with patch.object(routes.runtime, "fact_store", store), patch.object(
+        routes.runtime, "persona_manager", persona,
+    ):
         result = await routes.process_scoped_history("Neko", request)
 
     assert result["trust_events"] == []
@@ -640,8 +649,89 @@ async def test_batch_route_revalidates_trust_signals_after_concurrent_forget():
         "speaker_trust": 1.0,
         "speaker_is_owner": True,
     }
+    follower = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Later statement"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:2002",
+        },
+        "speaker_label": "Member(2002)",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+        "display_name": "Member",
+    }
+    active_facts = [prior]
+
+    async def _load_facts(_lanlan_name):
+        return list(active_facts)
+
+    async def _stamp_display_name(*_args, **_kwargs):
+        active_facts.clear()
+        active_facts.append(same_id_other_scope)
+        return True
+
     store = SimpleNamespace(
-        aload_facts=AsyncMock(side_effect=[[prior], [same_id_other_scope]]),
+        aload_facts=_load_facts,
+        extract_facts_batch=AsyncMock(return_value=[
+            {"status": "ok", "created": [], "dropped": 0},
+            {"status": "ok", "created": [], "dropped": 0},
+        ]),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    persona = SimpleNamespace(
+        aupdate_subject_display_name=_stamp_display_name,
+    )
+
+    with patch.object(routes.runtime, "fact_store", store), patch.object(
+        routes.runtime, "persona_manager", persona,
+    ):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[owner, follower]),
+        )
+
+    assert response["segments"][0]["trust_events"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_route_refreshes_concurrently_reconciled_provenance():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    prior = {
+        "id": "reconciled-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    current = {
+        **prior,
+        "speaker_provenance_mixed": True,
+    }
+    current.pop("speaker_id")
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [current]]),
         extract_facts_batch=AsyncMock(return_value=[{
             "status": "ok", "created": [], "dropped": 0,
         }]),
@@ -656,6 +746,25 @@ async def test_batch_route_revalidates_trust_signals_after_concurrent_forget():
         )
 
     assert response["segments"][0]["trust_events"] == []
+
+
+def test_group_participant_subject_requires_canonical_identity():
+    from app.memory_server.routes import MemorySubjectRequest
+    from fastapi import HTTPException
+    from memory.scopes import MemoryScopeError, subject_from_entry
+
+    with pytest.raises(MemoryScopeError):
+        MemorySubject.create("group_participant", "qq:7788")
+    with pytest.raises(HTTPException) as exc_info:
+        MemorySubjectRequest(
+            subject_kind="group_participant", subject_id="qq:7788",
+        ).to_domain()
+    assert exc_info.value.status_code == 422
+    assert subject_from_entry({
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788",
+        "scope": "group_participant:qq:7788",
+    }) is None
 
 
 def test_model_shaped_fields_never_replace_request_provenance():

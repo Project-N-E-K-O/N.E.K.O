@@ -491,6 +491,28 @@ async def test_correction_action_normalization_precedes_trust_override(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_duplicate_correction_index_is_applied_only_once(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "旧观察", speaker_id="qq:2002", speaker_trust=0.3,
+    )
+    correction = {
+        "old_text": "旧观察", "new_text": "新观察", "entity": "master",
+        "old_speaker_id": "qq:2002", "old_speaker_trust": 0.3,
+        "new_speaker_id": "qq:1001", "new_speaker_trust": 0.8,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0}, [
+            {"index": 0, "action": "merge"},
+            {"index": 0, "action": "merge"},
+        ],
+    ) == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    assert [entry["text"] for entry in facts] == ["新观察"]
+
+
+@pytest.mark.asyncio
 async def test_mixed_correction_response_keeps_invalid_item_queued(tmp_path):
     pm = _install_pm(str(tmp_path))
     await pm._aqueue_correction(

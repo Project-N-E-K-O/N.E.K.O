@@ -450,6 +450,8 @@ class CorrectionsMixin:
                 idx = int(result.get('index', -1))
                 if idx < 0 or idx >= len(corrections) or idx not in allowed_indices:
                     continue
+                if idx in resolved_indices:
+                    continue
                 item = corrections[idx]
                 if fresh_by_created_at is not None:
                     item = fresh_by_created_at.get(item.get('created_at'))
