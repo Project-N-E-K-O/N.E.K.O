@@ -1170,6 +1170,66 @@ async def test_barge_in_cancels_an_idless_live_lifecycle():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_expired_idless_tail_stays_quarantined_until_a_host_turn_starts():
+    delivered: list[str] = []
+
+    async def on_text(delta, _first):
+        delivered.append(delta)
+
+    client = OmniRealtimeClient(
+        "wss://www.lanlan.app/core",
+        "free-access",
+        model="free-model",
+        api_type="free",
+        on_text_delta=on_text,
+    )
+    socket = _QueueSocket()
+    client.ws = socket
+    receiver = asyncio.create_task(client.handle_messages())
+    try:
+        socket.push({"type": "response.text.delta", "delta": "FIRST"})
+        for _ in range(20):
+            if delivered:
+                break
+            await asyncio.sleep(0.005)
+        assert delivered == ["FIRST"]
+        expired_generation = client._current_response_generation
+        assert expired_generation is not None
+
+        client._response_arbiter._server_response_max_age = 0
+        client._response_arbiter._release_lane_if_clear()
+        assert client._current_response_generation is None
+        assert client._idless_quarantine is True
+
+        committed_before = client._input_audio_committed_total
+        socket.push({"type": "response.text.delta", "delta": "STALE"})
+        socket.push({"type": "input_audio_buffer.committed"})
+        for _ in range(40):
+            if client._input_audio_committed_total > committed_before:
+                break
+            await asyncio.sleep(0.005)
+        assert client._input_audio_committed_total == committed_before + 1
+        assert delivered == ["FIRST"]
+        assert client._current_response_generation is None
+        assert client._idless_quarantine is True
+
+        client.notify_host_turn_started()
+        socket.push({"type": "response.text.delta", "delta": "NEXT"})
+        for _ in range(20):
+            if delivered == ["FIRST", "NEXT"]:
+                break
+            await asyncio.sleep(0.005)
+        assert delivered == ["FIRST", "NEXT"]
+        assert client._current_response_generation is not None
+        assert client._current_response_generation != expired_generation
+        assert client._idless_quarantine is False
+    finally:
+        await _cancel_task(receiver)
+        await client.close()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_adoption_keeps_transport_generation_and_ticket_suppression():
     finished: list[str] = []
     delivered: list[str] = []

@@ -1282,6 +1282,14 @@ class _TransportMixin:
     def _activate_unannounced_response_state(self) -> None:
         """Track output on a protocol that never emits response.created."""
 
+        # A stale deadline deliberately quarantines unidentified tail frames.
+        # Such a frame cannot prove a new response started, so it must not
+        # create a fresh lifetime that immediately clears its own quarantine.
+        # A real host turn boundary lowers the gate in
+        # ``notify_host_turn_started``; an identified response lowers it through
+        # ``_activate_response_state``.
+        if self._idless_quarantine:
+            return
         generation = self._response_arbiter.notify_unannounced_response_started()
         if generation is not None:
             self._activate_response_state(
@@ -1306,6 +1314,7 @@ class _TransportMixin:
         """Invalidate end-of-turn work captured by an older host turn."""
 
         self._turn_epoch += 1
+        self._idless_quarantine = False
         # The host start path performs the full sid hand-off itself.
         self._sid_rotation_required_before_dispatch = False
 
