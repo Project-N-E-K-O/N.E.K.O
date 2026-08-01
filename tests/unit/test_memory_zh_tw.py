@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import re
 from collections import Counter
 from contextlib import contextmanager
@@ -443,6 +444,55 @@ def test_sync_connector_omits_seeded_fallback_locale(monkeypatch):
     assert (
         character_runtime._get_explicit_session_user_language("Neko") == "zh-TW"
     )
+
+
+@pytest.mark.asyncio
+async def test_character_reload_preserves_locale_provenance(monkeypatch):
+    from app.main_server import character_runtime
+
+    name = "NekoLocaleReload"
+
+    class OldManager:
+        websocket = object()
+        is_active = False
+        is_starting = False
+        user_language = "zh-TW"
+        _user_language_explicit = True
+
+        def __init__(self):
+            self.shutdown_called = False
+
+        def shutdown(self):
+            self.shutdown_called = True
+
+    class NewManager:
+        def __init__(self, queue, lanlan_name, prompt):
+            self.queue = queue
+            self.lanlan_name = lanlan_name
+            self.prompt = prompt
+            self.websocket = None
+            self.user_language = None
+            self._user_language_explicit = False
+
+    old_manager = OldManager()
+    role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
+        session_manager=old_manager,
+        sync_message_queue=object(),
+        sync_task=SimpleNamespace(done=lambda: False),
+    )
+    monkeypatch.setitem(character_runtime.role_state, name, role)
+    monkeypatch.setattr(character_runtime, "lanlan_prompt", {name: "{LANLAN_NAME}/{MASTER_NAME}"})
+    monkeypatch.setattr(character_runtime, "master_name", "Master")
+    monkeypatch.setattr(character_runtime.core, "LLMSessionManager", NewManager)
+
+    await character_runtime._init_character_resources(name, False)
+
+    assert old_manager.shutdown_called is True
+    assert role.session_manager is not old_manager
+    assert role.session_manager.user_language == "zh-TW"
+    assert role.session_manager._user_language_explicit is True
+    assert role.session_manager.websocket is OldManager.websocket
 
 
 @pytest.mark.asyncio

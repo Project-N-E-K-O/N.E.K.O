@@ -1098,7 +1098,15 @@ async def _init_character_resources(k: str, is_new_character: bool):
             # 旧 manager 持有的后台任务（如 idle session reset loop）必须显式
             # cancel，否则强引用 self 让旧 manager 永远不被 GC——多次 reload 后
             # 积累 N 份的 idle loop 各自 60s 醒一次。
+            old_user_language = None
+            old_user_language_explicit = False
             if rs.session_manager is not None:
+                old_user_language = getattr(rs.session_manager, "user_language", None)
+                old_user_language_explicit = getattr(
+                    rs.session_manager,
+                    "_user_language_explicit",
+                    False,
+                )
                 try:
                     rs.session_manager.shutdown()
                 except Exception as e:
@@ -1113,6 +1121,8 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
             # 将websocket锁存储到session manager中，供cleanup()使用
             new_mgr.websocket_lock = rs.websocket_lock
+            new_mgr.user_language = old_user_language
+            new_mgr._user_language_explicit = old_user_language_explicit
 
             # 恢复websocket引用（如果存在）
             if old_websocket:
