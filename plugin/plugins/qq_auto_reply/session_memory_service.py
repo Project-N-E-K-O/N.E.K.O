@@ -1923,10 +1923,13 @@ class QQSessionMemoryService:
             trust_events=trust_events,
         )
         if not ok:
-            # 记忆已安全落盘；trust 是派生权重，失败不回滚事实，只明确留痕。
             self.plugin.logger.warning(
                 f"speaker trust 演化未持久化 sender={sender_id} event={event_id}"
             )
+            # The server-issued signal is durable, but the local application
+            # is not.  Propagate failure so callers retain this segment and
+            # retry the same idempotent activity/signal event IDs.
+            raise RuntimeError("speaker trust update persistence failed")
 
     @staticmethod
     def _group_activity_identity(group_id: str, spec: dict) -> str:

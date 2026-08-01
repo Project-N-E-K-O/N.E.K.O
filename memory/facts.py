@@ -864,7 +864,7 @@ class FactStore:
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
 
     def _load_archived_speaker_trust_signal_facts(self, name: str) -> list[dict]:
-        """Strictly load non-subject-archived rows carrying issued signals."""
+        """Strictly load archived rows carrying issued trust signals."""
         archive_path = self._facts_archive_path(name)
         if not os.path.exists(archive_path):
             return []
@@ -882,7 +882,6 @@ class FactStore:
             for row in archived
             if (
                 isinstance(row, dict)
-                and not row.get('subject_archived_at')
                 and isinstance(row.get('_speaker_trust_signal_events'), list)
             )
         ]
@@ -1373,11 +1372,28 @@ class FactStore:
                 await persist_task
                 raise
 
-    async def arestore_arbitrated_fact(self, name: str, fact_id: str) -> bool:
-        """Restore one arbitration archive row by its logged fact id."""
+    async def arestore_arbitrated_fact(
+        self,
+        name: str,
+        fact_id: str,
+        *,
+        subject: MemorySubject | dict | None = None,
+    ) -> bool:
+        """Restore one arbitration row, rejecting ambiguous scoped IDs."""
         target_id = str(fact_id or '').strip()
         if not target_id:
             return False
+        target_subject = coerce_subject(subject)
+        target_identity = (
+            (
+                target_id,
+                target_subject.kind,
+                target_subject.subject_id,
+                target_subject.scope,
+            )
+            if target_subject is not None
+            else None
+        )
         async with self._get_persist_alock(name):
             def _restore() -> bool:
                 # Warm the non-reentrant cache lock before taking it below.
@@ -1408,18 +1424,43 @@ class FactStore:
                         normalized = str(readable).strip()
                         return normalized or None
 
+                    def _restore_identity(row: dict) -> tuple:
+                        restore_id = _restore_id(row)
+                        row_subject = subject_from_entry(row)
+                        if row_subject is None:
+                            return restore_id, None, None, None
+                        return (
+                            restore_id,
+                            row_subject.kind,
+                            row_subject.subject_id,
+                            row_subject.scope,
+                        )
+
                     matches = [
                         row for row in archived
                         if isinstance(row, dict)
                         and _restore_id(row) == target_id
                         and row.get('arbitration_archived_at')
+                        and (
+                            target_identity is None
+                            or _restore_identity(row) == target_identity
+                        )
                     ]
                     if not matches:
                         return False
+                    match_identities = {
+                        _restore_identity(row) for row in matches
+                    }
+                    if target_identity is None and len(match_identities) != 1:
+                        return False
+                    selected_identity = target_identity or next(
+                        iter(match_identities)
+                    )
                     facts = self._facts.get(name, [])
-                    active_ids = {
-                        restored_id for row in facts if isinstance(row, dict)
-                        if (restored_id := _restore_id(row)) is not None
+                    active_identities = {
+                        _restore_identity(row)
+                        for row in facts
+                        if isinstance(row, dict)
                     }
                     restored = dict(matches[-1])
                     for key in (
@@ -1431,13 +1472,13 @@ class FactStore:
                     restored['arbitration_restored_at'] = restored_at
                     restored['restored_at'] = restored_at
                     active = list(facts)
-                    if target_id not in active_ids:
+                    if selected_identity not in active_identities:
                         active.append(restored)
                     remaining = [
                         row for row in archived
                         if not (
                             isinstance(row, dict)
-                            and _restore_id(row) == target_id
+                            and _restore_identity(row) == selected_identity
                             and row.get('arbitration_archived_at')
                         )
                     ]

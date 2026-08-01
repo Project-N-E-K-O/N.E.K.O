@@ -75,6 +75,46 @@ async def test_missing_correction_trust_stays_unknown_and_cannot_override(tmp_pa
     assert "trust=unknown" in prompts[0]
 
 
+@pytest.mark.asyncio
+async def test_mixed_correction_trust_is_hidden_from_prompt(tmp_path):
+    from utils.file_utils import atomic_write_json_async
+
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(pm, "Neko", "旧观察", speaker_id="qq:2002")
+    await pm._aqueue_correction(
+        "Neko", "旧观察", "新观察", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.8,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        },
+    )
+    pending = await pm.aload_pending_corrections("Neko")
+    pending[0]["old_speaker_provenance_mixed"] = True
+    pending[0]["new_speaker_provenance_mixed"] = True
+    await atomic_write_json_async(
+        pm._corrections_path("Neko"), pending,
+        indent=2, ensure_ascii=False,
+    )
+    prompts = []
+    response = MagicMock()
+    response.content = json.dumps([{"index": 0, "action": "keep_old"}])
+
+    class _RecordingLLM:
+        async def ainvoke(self, prompt, *_args, **_kwargs):
+            prompts.append(prompt)
+            return response
+
+        async def aclose(self):
+            return None
+
+    with patch("utils.llm_client.create_chat_llm", return_value=_RecordingLLM()):
+        assert await pm.resolve_corrections("Neko") == 1
+    assert prompts[0].count("trust=unknown") == 2
+    assert "trust=high" not in prompts[0]
+
+
 def test_duplicate_partial_correction_does_not_invent_trust():
     from memory.persona.corrections import CorrectionsMixin
 

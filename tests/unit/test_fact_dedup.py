@@ -1178,6 +1178,39 @@ async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_arbitrated_fact_uses_full_scoped_identity(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [])
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    foreign = MemorySubject.group_participant("qq", "8899", "1001")
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archived = [
+        {
+            **_fact("shared", "target loser"),
+            **target.as_entry_fields(),
+            "arbitration_archived_at": "2026-08-01T00:00:00",
+        },
+        {
+            **_fact("shared", "foreign loser"),
+            **foreign.as_entry_fields(),
+            "arbitration_archived_at": "2026-08-01T00:00:01",
+        },
+    ]
+    archive_path.write_text(json.dumps(archived), encoding="utf-8")
+
+    assert not await fs.arestore_arbitrated_fact("Neko", "shared")
+    assert await fs.arestore_arbitrated_fact(
+        "Neko", "shared", subject=target,
+    )
+    active = await fs.aload_facts("Neko")
+    assert [fact["text"] for fact in active] == ["target loser"]
+    remaining = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert [fact["text"] for fact in remaining] == ["foreign loser"]
+
+
+@pytest.mark.asyncio
 async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
     fs, _resolver = _install_resolver(str(tmp_path))
     await _seed_facts(fs, "Neko", [

@@ -341,10 +341,16 @@ class CorrectionsMixin:
             allowed_indices = {i for i, _ in pairs}
 
             from memory.speaker_trust import trust_band
+
+            def _prompt_trust_band(item: dict, side: str) -> str:
+                if item.get(f'{side}_speaker_provenance_mixed') is True:
+                    return 'unknown'
+                return trust_band(item.get(f'{side}_speaker_trust'))
+
             batch_text = "\n".join(
-                f"[{i}] 已有(trust={trust_band(item.get('old_speaker_trust'))}): "
+                f"[{i}] 已有(trust={_prompt_trust_band(item, 'old')}): "
                 f"{item['old_text']} | 新观察(trust="
-                f"{trust_band(item.get('new_speaker_trust'))}): {item['new_text']}"
+                f"{_prompt_trust_band(item, 'new')}): {item['new_text']}"
                 for i, item in pairs
             )
             prompt = persona_correction_prompt.format(pairs=batch_text, count=len(pairs))

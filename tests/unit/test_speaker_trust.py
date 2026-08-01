@@ -414,8 +414,13 @@ async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry(
     )
     assert unrelated == []
 
+    subject_archived_fact = {
+        **fact,
+        "subject_archived_at": "2026-08-01T22:00:00",
+    }
     archive_path.write_text(
-        json.dumps([fact], ensure_ascii=False), encoding="utf-8",
+        json.dumps([subject_archived_fact], ensure_ascii=False),
+        encoding="utf-8",
     )
     store._facts["Neko"] = []
     store.aload_facts = AsyncMock(return_value=[])
@@ -1894,6 +1899,30 @@ async def test_activity_counts_only_the_speaker_not_assistant_replies():
     assert settings.apply_speaker_trust_update.await_args.kwargs[
         "message_count"
     ] == 1
+
+
+@pytest.mark.asyncio
+async def test_failed_trust_persist_keeps_the_segment_retryable():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    settings = SimpleNamespace(apply_speaker_trust_update=AsyncMock(
+        return_value=False,
+    ))
+    logger = MagicMock()
+    service = QQSessionMemoryService(SimpleNamespace(
+        settings_service=settings, logger=logger,
+    ))
+
+    with pytest.raises(
+        RuntimeError, match="speaker trust update persistence failed",
+    ):
+        await service._apply_speaker_trust_update(
+            "1001", [{"role": "user", "content": "hello"}],
+            [{"event_id": "server-issued"}],
+        )
+    logger.warning.assert_called_once()
 
 
 @pytest.mark.asyncio
