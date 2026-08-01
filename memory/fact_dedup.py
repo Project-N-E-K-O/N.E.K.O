@@ -973,6 +973,7 @@ class FactDedupResolver:
                 processed_pairs.add((cand_id, exist_id))
                 continue
             from memory.speaker_trust import (
+                deterministic_relation,
                 preferred_by_trust,
                 provenance_of_entries,
                 stable_speaker_id,
@@ -988,6 +989,10 @@ class FactDedupResolver:
                 and not isinstance(cand_trust, bool)
                 and isinstance(exist_trust, (int, float))
                 and not isinstance(exist_trust, bool)
+                and deterministic_relation(
+                    str(existing.get('text') or ''),
+                    str(cand.get('text') or ''),
+                ) == 'correction'
             ):
                 preference = preferred_by_trust(
                     exist_trust, cand_trust,

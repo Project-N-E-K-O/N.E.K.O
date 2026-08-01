@@ -136,19 +136,6 @@ def _trust_weighted_merge_text(
     # different speaker at once.
     if len(speaker_ids) != len(set(speaker_ids)):
         return proposed_text, sources
-    from memory.speaker_trust import deterministic_relation
-    # Scoped ``merge`` also covers semantic duplicates and complementary
-    # details.  A trust winner may replace the model merge only for a conflict
-    # established by the conservative code-side relation detector; otherwise
-    # verbatim winner substitution could silently discard nonconflicting facts.
-    if not any(
-        deterministic_relation(
-            str(left.get('text') or ''), str(right.get('text') or ''),
-        ) == 'correction'
-        for index, left in enumerate(usable)
-        for right in usable[index + 1:]
-    ):
-        return proposed_text, sources
     ordered = sorted(
         usable, key=lambda source: normalize_trust(source.get('speaker_trust')),
         reverse=True,
@@ -162,8 +149,21 @@ def _trust_weighted_merge_text(
         < SPEAKER_TRUST_ARBITRATION_MARGIN
     ):
         return proposed_text, sources
-    winner_text = str(ordered[0].get('text') or '').strip()
-    return (winner_text or proposed_text), [ordered[0]]
+    from memory.speaker_trust import deterministic_relation
+    # Scoped ``merge`` also covers duplicates, complementary details, and
+    # mixed clusters.  Replacing the whole merge with one source is safe only
+    # when that winner conflicts with every row it would consume; a conflict
+    # between two other rows must not let an unrelated leader erase both.
+    winner = ordered[0]
+    if not all(
+        deterministic_relation(
+            str(winner.get('text') or ''), str(other.get('text') or ''),
+        ) == 'correction'
+        for other in ordered[1:]
+    ):
+        return proposed_text, sources
+    winner_text = str(winner.get('text') or '').strip()
+    return (winner_text or proposed_text), [winner]
 
 
 def _pick_temporal_boundary(values: list[str], *, latest: bool) -> str | None:

@@ -989,9 +989,9 @@ async def test_aapply_decisions_evicts_fact_cache_on_save_failure(tmp_path):
 @pytest.mark.asyncio
 async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
     fs, resolver = _install_resolver(str(tmp_path))
-    candidate = _fact("c1", "low wording", embedding=[1.0, 0.0])
+    candidate = _fact("c1", "小明不喜欢猫", embedding=[1.0, 0.0])
     candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
-    existing = _fact("e1", "high wording", embedding=[0.99, 0.05])
+    existing = _fact("e1", "小明喜欢猫", embedding=[0.99, 0.05])
     existing.update(speaker_id="qq:2002", speaker_trust=0.8)
     await _seed_facts(fs, "Neko", [candidate, existing])
     await resolver.aenqueue_candidates("Neko", [{
@@ -1008,7 +1008,7 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
     loser = next(fact for fact in archived if fact["id"] == "c1")
     assert loser["superseded_by"] == "e1"
     assert loser["arbitration_reason"] == "fact_dedup_merge"
-    assert loser["text"] == "low wording"
+    assert loser["text"] == "小明不喜欢猫"
     fs._facts.pop("Neko", None)
     original_load_facts = fs.load_facts
 
@@ -1043,9 +1043,9 @@ async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
 @pytest.mark.asyncio
 async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_path):
     fs, resolver = _install_resolver(str(tmp_path))
-    candidate = _fact("c1", "high wording", embedding=[1.0, 0.0])
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
     candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
-    existing = _fact("e1", "low wording", embedding=[0.99, 0.05])
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
     existing.update(speaker_id="qq:1001", speaker_trust=0.3)
     await _seed_facts(fs, "Neko", [candidate, existing])
     await resolver.aenqueue_candidates("Neko", [{
@@ -1063,6 +1063,26 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
     assert next(fact for fact in archived if fact["id"] == "e1")[
         "superseded_by"
     ] == "c1"
+
+
+@pytest.mark.asyncio
+async def test_trust_does_not_override_complementary_replace(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact(
+        "c1", "Alice lives in Tokyo near Shibuya", embedding=[1.0, 0.0],
+    )
+    candidate.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "Alice lives in Tokyo", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:2002", speaker_trust=0.8)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
 
 
 @pytest.mark.asyncio

@@ -178,12 +178,14 @@ class PermissionManager:
             message_count = max(0, int(raw.get("message_count", 0) or 0))
         except (TypeError, ValueError):
             message_count = 0
-        def _event_ids(key: str) -> list[str]:
+        def _event_ids(key: str, *, durable: bool = False) -> list[str]:
             events: list[str] = []
             for event_id in raw.get(key) or []:
                 normalized = str(event_id or "").strip()
                 if normalized and normalized not in events:
                     events.append(normalized[:96])
+            if durable:
+                return events
             return events[-SPEAKER_TRUST_EVENT_HISTORY_LIMIT:]
         return {
             "adjustment": adjustment,
@@ -194,7 +196,7 @@ class PermissionManager:
                 "processed_activity_events"
             ),
             "processed_signal_events": _event_ids(
-                "processed_signal_events"
+                "processed_signal_events", durable=True,
             ),
         }
 
@@ -274,7 +276,6 @@ class PermissionManager:
             SPEAKER_TRUST_ADJUSTMENT_LIMIT,
             SPEAKER_TRUST_CONFIRMATION_DELTA,
             SPEAKER_TRUST_CORRECTION_DELTA,
-            SPEAKER_TRUST_EVENT_HISTORY_LIMIT,
         )
 
         applied = 0
@@ -295,8 +296,10 @@ class PermissionManager:
             processed = profile["processed_signal_events"]
             if event_id in processed:
                 continue
+            # Owner signals change arbitration power.  Their deterministic
+            # IDs form an exact append-only replay ledger: truncating this
+            # list would let an old correction apply again after eviction.
             processed.append(event_id)
-            del processed[:-SPEAKER_TRUST_EVENT_HISTORY_LIMIT]
             delta = (
                 SPEAKER_TRUST_CONFIRMATION_DELTA
                 if kind == "confirmation"

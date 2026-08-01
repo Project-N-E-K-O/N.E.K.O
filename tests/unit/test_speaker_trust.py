@@ -46,6 +46,30 @@ def test_activity_spam_cannot_evict_owner_signal_id():
     assert manager.apply_speaker_trust_events([signal]) == 0
 
 
+def test_owner_signal_replay_ledger_survives_history_limit():
+    from config import SPEAKER_TRUST_EVENT_HISTORY_LIMIT
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    signals = [
+        {
+            "kind": "confirmation" if index % 2 == 0 else "correction",
+            "speaker_id": "qq:1001",
+            "event_id": f"owner-signal-{index}",
+        }
+        for index in range(SPEAKER_TRUST_EVENT_HISTORY_LIMIT + 1)
+    ]
+    assert manager.apply_speaker_trust_events(signals) == len(signals)
+    before = manager.speaker_trust_profiles()["1001"]
+    assert len(before["processed_signal_events"]) == len(signals)
+    assert manager.apply_speaker_trust_events([signals[0]]) == 0
+    assert manager.speaker_trust_profiles()["1001"] == before
+    reloaded = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={"1001": before},
+    )
+    assert reloaded.apply_speaker_trust_events([signals[0]]) == 0
+
+
 def test_global_qq_profile_is_shared_by_group_and_private_callers():
     manager = PermissionManager([{"qq": "1001", "level": "normal"}])
     manager.apply_speaker_trust_events([{

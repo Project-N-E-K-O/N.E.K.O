@@ -721,6 +721,48 @@ async def test_trust_merge_preserves_complementary_details(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trust_winner_must_conflict_with_every_consumed_source(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    sources = []
+    for fact_id, text, speaker_id, trust in (
+        ("leader", "Alice lives in Tokyo", "qq:1001", 0.90),
+        ("cats", "小明喜欢猫", "qq:1002", 0.60),
+        ("no-cats", "小明不喜欢猫", "qq:1003", 0.30),
+    ):
+        entry = pm._build_fact_entry(
+            text, "manual", None, subject=GROUP_A,
+            speaker_provenance={
+                "speaker_id": speaker_id, "speaker_trust": trust,
+            },
+        )
+        entry["id"] = fact_id
+        sources.append(entry)
+    section.extend(sources)
+    await pm.asave_persona("Neko", persona)
+
+    proposed = "Alice lives in Tokyo；小明是否喜欢猫仍有冲突"
+    assert await apply_scoped_persona_merge(
+        pm, "Neko", GROUP_A, [dict(entry) for entry in sources], [{
+            "action": "merge",
+            "source_ids": ["leader", "cats", "no-cats"],
+            "produce": {"text": proposed},
+        }], "mixed-cluster-hash",
+    ) == 1
+    persona = await pm.aensure_persona("Neko")
+    merged = next(
+        entry for entry in persona[GROUP_A.persona_section_key]["facts"]
+        if entry.get("merged_from_ids")
+    )
+    assert merged["text"] == proposed
+    assert "speaker_id" not in merged
+    assert {item["text"] for item in merged["version_history"]} == {
+        "Alice lives in Tokyo", "小明喜欢猫", "小明不喜欢猫",
+    }
+
+
+@pytest.mark.asyncio
 async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     low = _r_entry(
