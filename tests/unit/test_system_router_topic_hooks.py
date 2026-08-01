@@ -118,7 +118,7 @@ def test_topic_hook_locale_falls_back_to_full_global_language(monkeypatch):
 
 
 def test_new_dialog_locale_params_require_explicit_user_language(monkeypatch):
-    mgr = SimpleNamespace(user_language=None)
+    mgr = SimpleNamespace(user_language=None, _user_language_explicit=False)
     monkeypatch.setattr(
         proactive_service,
         "get_global_language_full",
@@ -137,6 +137,9 @@ def test_new_dialog_locale_params_require_explicit_user_language(monkeypatch):
     ) == {"language": "zh-TW"}
 
     mgr.user_language = "ja"
+    assert proactive_service._new_dialog_locale_params({}, mgr) is None
+
+    mgr._user_language_explicit = True
     assert proactive_service._new_dialog_locale_params({}, mgr) == {
         "language": "ja",
     }

@@ -237,6 +237,14 @@ def _get_session_manager(name):
     return rs.session_manager if rs is not None else None
 
 
+def _get_explicit_session_user_language(name):
+    """Return the live session locale only when the frontend declared it."""
+    manager = _get_session_manager(name)
+    if manager is None or not getattr(manager, "_user_language_explicit", False):
+        return None
+    return getattr(manager, "user_language", None)
+
+
 try:
     from main_logic.topic.delivery import register_topic_session_manager_getter
 
@@ -1183,9 +1191,7 @@ async def _init_character_resources(k: str, is_new_character: bool):
                     {"bullet": False, "monitor": True},
                     _status_cb,
                     user_language_provider=(
-                        lambda _name=k: getattr(
-                            _get_session_manager(_name), "user_language", None,
-                        )
+                        lambda _name=k: _get_explicit_session_user_language(_name)
                     ),
                 ),
                 name=f"SyncConnector-{k}",

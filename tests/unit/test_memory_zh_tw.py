@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import pytest
 
@@ -405,6 +406,27 @@ async def test_new_dialog_request_omits_seeded_fallback_locale(monkeypatch):
 
     assert await manager._start_session_fetch_new_dialog("Neko", 48912) == "ok"
     assert "params" not in calls[0]
+
+
+def test_sync_connector_omits_seeded_fallback_locale(monkeypatch):
+    from app.main_server import character_runtime
+
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+    )
+    monkeypatch.setattr(
+        character_runtime,
+        "_get_session_manager",
+        lambda _name: manager,
+    )
+
+    assert character_runtime._get_explicit_session_user_language("Neko") is None
+    manager.user_language = "zh-TW"
+    manager._user_language_explicit = True
+    assert (
+        character_runtime._get_explicit_session_user_language("Neko") == "zh-TW"
+    )
 
 
 @pytest.mark.asyncio
@@ -1500,11 +1522,8 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
         "relation_type": "preference",
         "temporal_scope": "pattern",
     }])
-    promotion_line = '[persona.master.fedcba0987654321] "愛狗" (score=1)'
     promotion_text = PromotionMergeMixin._promotion_locale_text(
         {"id": "reflection.abcdef1234567890", "text": "怕貓"},
-        [(promotion_line, "愛狗", promotion_line.index("愛狗"))],
-        promotion_line,
     )
     synthesis_text = SynthesisMixin._synthesis_locale_text(
         [{"id": "abcdef1234567890", "text": "怕貓", "importance": 5}],
@@ -1645,23 +1664,26 @@ def test_fact_batch_locale_uses_capped_visible_message_bodies(monkeypatch):
     assert "我很開心" in rendered
 
 
-def test_promotion_locale_detection_excludes_truncated_pool_tail():
+def test_promotion_locale_detection_uses_promoted_reflection_not_old_pool():
     from memory.reflection.promotion_merge import PromotionMergeMixin
     from utils.language_utils import detect_prompt_language
 
-    visible = '[persona.master.a] "愛狗" (score=1)'
-    hidden = '[persona.master.b] "english words dominate hidden tail" (score=0)'
     raw_text = PromotionMergeMixin._promotion_locale_text(
         {"text": "怕貓"},
-        [
-            (visible, "愛狗", visible.index("愛狗")),
-            (hidden, "english words dominate hidden tail", hidden.index("english")),
-        ],
-        visible,
     )
 
-    assert raw_text == "怕貓\n愛狗"
+    assert raw_text == "怕貓"
     assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
+
+
+@pytest.mark.parametrize("locale", prompts_memory.REFLECTION_PROMPT)
+def test_reflection_prompt_keeps_fixed_fact_watermarks(locale):
+    from config.prompts.prompts_memory import get_reflection_prompt
+
+    prompt = get_reflection_prompt(locale)
+
+    assert "======以下为事实======" in prompt
+    assert "======以上为事实======" in prompt
 
 
 def test_review_locale_detection_ignores_ascii_speaker_labels():

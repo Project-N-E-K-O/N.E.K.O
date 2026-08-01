@@ -2531,6 +2531,8 @@ def get_signal_detection_prompt(lang: str = "zh") -> str:
 
 # ---------- reflection_prompt → i18n dict ----------
 
+# The fact delimiters are matched safety watermarks, not translated copy.
+# Keep their Simplified-Chinese literals identical in every locale.
 REFLECTION_PROMPT = {
     "zh": """以下是关于 {LANLAN_NAME} 和 {MASTER_NAME} 的一系列已提取事实：
 

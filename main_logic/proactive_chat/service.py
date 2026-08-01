@@ -322,14 +322,16 @@ def _resolve_declared_topic_hook_locale(
     mgr,
 ) -> str | None:
     """Resolve only a locale explicitly declared by the request or session."""
-    for raw_lang in (
-        *_command_language_candidates(data),
-        getattr(mgr, "user_language", None),
-    ):
+    for raw_lang in _command_language_candidates(data):
         if raw_lang and is_supported_language_code(raw_lang):
             normalized = normalize_language_code(raw_lang, format="full")
             if normalized:
                 return normalized
+    if not getattr(mgr, "_user_language_explicit", False):
+        return None
+    raw_lang = getattr(mgr, "user_language", None)
+    if raw_lang and is_supported_language_code(raw_lang):
+        return normalize_language_code(raw_lang, format="full") or None
     return None
 
 

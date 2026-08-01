@@ -73,24 +73,9 @@ class PromotionMergeMixin:
     @staticmethod
     def _promotion_locale_text(
         reflection: dict,
-        pool_rows: list[tuple[str, str, int]],
-        visible_pool_text: str,
     ) -> str:
-        """Return only raw text that remains visible after pool truncation."""
-        texts = [reflection.get('text', '')]
-        visible_length = len(visible_pool_text)
-        cursor = 0
-        for line, raw_text, text_offset in pool_rows:
-            visible_chars = min(
-                len(raw_text),
-                max(0, visible_length - cursor - text_offset),
-            )
-            if visible_chars:
-                texts.append(raw_text[:visible_chars])
-            cursor += len(line) + 1
-            if cursor >= visible_length:
-                break
-        return "\n".join(str(text) for text in texts if text)
+        """Use the promoted reflection as locale evidence, not the old pool."""
+        return str(reflection.get('text', '') or '')
 
     @staticmethod
     def _compute_merged_evidence(
@@ -403,7 +388,7 @@ class PromotionMergeMixin:
 
         prompt = get_promotion_merge_prompt(
             _detect_promotion_prompt_language(
-                self._promotion_locale_text(R, pool_rows, pool_text)
+                self._promotion_locale_text(R)
             )
         ).format(
             AI_NAME=lanlan_name,
