@@ -133,11 +133,13 @@ def observation_texts(messages: Iterable[Any]) -> list[str]:
 
 def provenance_of_entries(entries: Iterable[dict]) -> dict:
     """Conservatively fold same-source provenance into a derived entry."""
-    rows = [entry for entry in entries if isinstance(entry, dict)]
-    speaker_ids = {
-        sid for entry in rows
-        if (sid := stable_speaker_id(entry.get("speaker_id"))) is not None
-    }
+    rows = list(entries)
+    if not rows or any(not isinstance(entry, dict) for entry in rows):
+        return {}
+    speaker_ids = [stable_speaker_id(entry.get("speaker_id")) for entry in rows]
+    if any(speaker_id is None for speaker_id in speaker_ids):
+        return {}
+    speaker_ids = set(speaker_ids)
     if len(speaker_ids) != 1:
         return {}
     speaker_id = next(iter(speaker_ids))

@@ -13,6 +13,7 @@ from memory.speaker_trust import (
     deterministic_relation,
     observation_texts,
     preferred_by_trust,
+    provenance_of_entries,
 )
 from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from utils.llm_client import AIMessage, HumanMessage
@@ -112,6 +113,13 @@ def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text()
 def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation("小明喜欢猫", "小明不喜欢猫") == "correction"
     assert deterministic_relation("小明喜欢猫", "小明不喜欢狗") is None
+
+
+def test_derived_provenance_rejects_partially_attributed_sources():
+    assert provenance_of_entries([
+        {"speaker_id": "qq:1001", "speaker_trust": 0.8},
+        {"text": "legacy source without provenance"},
+    ]) == {}
 
 
 @pytest.mark.asyncio

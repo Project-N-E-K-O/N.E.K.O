@@ -11166,12 +11166,13 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
             {"status": "ok", "created": 0, "fact_ids": []},
         ],
     })
+    current_level = {"value": "normal"}
     plugin = SimpleNamespace(
         memory_bridge=bridge,
         logger=MagicMock(),
         permission_mgr=SimpleNamespace(
             get_nickname=lambda _sender: None,
-            get_permission_level=lambda _sender: "admin",
+            get_permission_level=lambda _sender: current_level["value"],
         ),
         _qq_settings={
             "group_memory_enabled": True,
@@ -11190,10 +11191,15 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
         user_nickname="",
     )
     service.record_group_member_turn(
-        user_data, SimpleNamespace(**base, message="普通时说的", permission_level="normal"),
+        user_data, SimpleNamespace(
+            **base, message="普通时说的", permission_level="trusted",
+        ),
     )
+    current_level["value"] = "admin"
     service.record_group_member_turn(
-        user_data, SimpleNamespace(**base, message="成为主人后说的", permission_level="admin"),
+        user_data, SimpleNamespace(
+            **base, message="成为主人后说的", permission_level="trusted",
+        ),
     )
 
     assert await service._flush_member_buckets(

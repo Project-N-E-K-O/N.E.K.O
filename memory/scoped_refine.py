@@ -120,6 +120,11 @@ def _trust_weighted_merge_text(
         and isinstance(source.get('speaker_trust'), (int, float))
         and not isinstance(source.get('speaker_trust'), bool)
     ]
+    # A deterministic winner may replace the model merge only when every
+    # source being consumed participated in the comparison.  Otherwise an
+    # unscored legacy/mixed row could disappear behind a scored winner.
+    if len(usable) != len(sources):
+        return proposed_text, sources
     if len({stable_speaker_id(source.get('speaker_id')) for source in usable}) < 2:
         return proposed_text, sources
     ordered = sorted(

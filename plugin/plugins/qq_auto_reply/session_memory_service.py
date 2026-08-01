@@ -615,9 +615,10 @@ class QQSessionMemoryService:
         else:
             labels[sender_id] = sender_id[:self.MEMBER_LABEL_MAX_CHARS]
         messages = buckets.setdefault(sender_id, [])
-        permission_level = self._speaker_permission_level_for(
-            sender_id, getattr(context, "permission_level", None),
-        )
+        # context.permission_level is the group's admission tier here, not
+        # this member's user permission.  Resolve the member profile directly
+        # so a trusted group cannot promote every speaker's trust baseline.
+        permission_level = self._speaker_permission_level_for(sender_id)
         activity_id = hashlib.sha256(
             f"{sender_id}|{time.time_ns()}|{len(messages)}|{text}".encode("utf-8")
         ).hexdigest()[:24]
