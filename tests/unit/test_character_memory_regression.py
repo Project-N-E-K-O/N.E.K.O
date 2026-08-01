@@ -845,6 +845,30 @@ async def test_workshop_resume_exception_is_not_swallowed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_memory_reload_failure_still_resumes_requested_admission():
+    """Explicit compensation must not depend on rebuilding every manager."""
+    from app.memory_server import review, runtime
+
+    resume_admission = AsyncMock()
+    with patch.object(
+        runtime,
+        "CompressedRecentHistoryManager",
+        side_effect=RuntimeError("reload failed"),
+    ), patch.object(
+        review,
+        "resume_character_derived_task_admission",
+        resume_admission,
+    ):
+        reloaded = await runtime.reload_memory_components(
+            resume_derived_task_names={"StillHere"},
+        )
+
+    assert reloaded is False
+    resume_admission.assert_awaited_once_with("StillHere")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_workshop_request_cancellation_survives_late_resume_failure(monkeypatch):
     """A late transaction error must not replace caller cancellation."""
     unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")

@@ -222,6 +222,7 @@ async def reload_memory_components(
     recovers it.
     """
     global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
+    requested_resume_names = set(resume_derived_task_names or ())
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -287,7 +288,7 @@ async def reload_memory_components(
                 active_names = set((characters.get("猫娘") or {}).keys())
                 await review.reconcile_character_derived_task_admission(
                     active_names,
-                    resume_names=resume_derived_task_names,
+                    resume_names=requested_resume_names,
                 )
             except Exception as reconcile_exc:
                 # 组件引用已经完成原子替换；协调失败不能把真实成功的 reload
@@ -302,6 +303,22 @@ async def reload_memory_components(
         except Exception as e:
             logger.error(f"[MemoryServer] ❌ 重新加载记忆组件配置失败: {e}", exc_info=True)
             return False
+        finally:
+            if requested_resume_names:
+                # 显式 resume 是 release 事务的补偿动作，不能依赖组件 reload 成功。
+                # 否则构造新 manager 失败会把仍存在的角色永久留在 retired 集合。
+                from . import review
+
+                try:
+                    for name in sorted(requested_resume_names):
+                        await review.resume_character_derived_task_admission(name)
+                except Exception as resume_exc:
+                    logger.error(
+                        "[MemoryServer] reload 收尾恢复派生任务准入失败: names=%s err=%s",
+                        sorted(requested_resume_names),
+                        resume_exc,
+                        exc_info=True,
+                    )
 
 
 @app.post("/release_character/{lanlan_name}")
