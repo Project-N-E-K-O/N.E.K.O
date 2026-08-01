@@ -380,7 +380,13 @@ class _Probe:
             if turn is not None:
                 turn.done_at = now
                 turn.status = status or None
-            self._terminal.set()
+            # Gated like the delta signal beside it. A duplicate or delayed
+            # terminal for an EARLIER response is attributed to that turn by
+            # `_resolve`, and waking the shared event anyway told the open turn
+            # its own response had ended — after which the barge-in fires at a
+            # reply that has not spoken.
+            if turn is not None and turn is self._open:
+                self._terminal.set()
             return
 
         if etype == "error":
@@ -398,7 +404,16 @@ class _Probe:
             self._obs.errors.append(record)
             if self._idle_cancel_watch is not None:
                 self._idle_cancel_watch.append(record)
-            self._terminal.set()
+                return
+            # An error ends the open turn, and the turn has to KNOW that —
+            # waking the waiter while leaving `done_at` unset made the barge-in
+            # check below read "still running" and cancel a response that had
+            # already failed. Recording it is what makes the wake-up honest;
+            # gating alone would just trade a bad measurement for a 20s stall.
+            if self._open is not None and self._open.done_at is None:
+                self._open.done_at = now
+                self._open.status = "error"
+                self._terminal.set()
             return
 
         if etype.startswith("response."):
