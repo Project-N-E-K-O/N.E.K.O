@@ -425,6 +425,7 @@ class CorrectionsMixin:
     ) -> int:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
+        resolved_indices: set[int] = set()
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -678,23 +679,16 @@ class CorrectionsMixin:
                     section_facts.append(_stamped_new_entry(new_text))
 
             resolved += 1
+            resolved_indices.add(idx)
 
         if resolved:
             await self.asave_persona(name, persona)
             # 收集已处理条目的 created_at 作为精确匹配键
-            processed_keys: set[str] = set()
-            for r in results:
-                raw_idx = r.get('index')
-                if raw_idx is None:
-                    continue
-                try:
-                    idx = int(raw_idx)
-                    if 0 <= idx < len(corrections) and idx in allowed_indices:
-                        key = corrections[idx].get('created_at', '')
-                        if key:
-                            processed_keys.add(key)
-                except (ValueError, TypeError):
-                    continue
+            processed_keys = {
+                corrections[idx].get('created_at', '')
+                for idx in resolved_indices
+                if corrections[idx].get('created_at', '')
+            }
             # 重新读取文件，仅删除已处理的条目，保留 LLM 期间新增的
             # （防止并发 _aqueue_correction 新追加的矛盾被覆盖丢失）
             current = await self.aload_pending_corrections(name)

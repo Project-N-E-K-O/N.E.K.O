@@ -11187,19 +11187,29 @@ async def test_loss_terminal_flushes_send_one_bucket_per_request():
         "pending_member_settle": True,
     }
     requests: list[list[dict]] = []
+    active = 0
+    max_active = 0
 
     async def _post_batch(her_name, segments, *, timeout=30.0):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
         requests.append(segments)
-        # 第一个请求超时/断连：只该带走它自己那一个成员。
-        if len(requests) == 1:
-            raise RuntimeError("connection reset")
-        return {
-            "status": "processed",
-            "segments": [
-                {"status": "ok", "created": 0, "dropped": 0}
-                for _ in segments
-            ],
-        }
+        request_number = len(requests)
+        try:
+            await asyncio.sleep(0)
+            # 第一个请求超时/断连：只该带走它自己那一个成员。
+            if request_number == 1:
+                raise RuntimeError("connection reset")
+            return {
+                "status": "processed",
+                "segments": [
+                    {"status": "ok", "created": 0, "dropped": 0}
+                    for _ in segments
+                ],
+            }
+        finally:
+            active -= 1
 
     plugin = SimpleNamespace(
         logger=MagicMock(),
@@ -11234,9 +11244,10 @@ async def test_loss_terminal_flushes_send_one_bucket_per_request():
         f"抹掉整批成员"
     )
     assert all(len(segs) == 1 for segs in requests)
-    assert sorted(
+    assert [
         segs[0]["subject"]["subject_id"] for segs in requests
-    ) == [f"qq:7788:{1000 + i}" for i in range(4)]
+    ] == [f"qq:7788:{1000 + i}" for i in range(4)]
+    assert max_active == 1
 
 
 @pytest.mark.asyncio

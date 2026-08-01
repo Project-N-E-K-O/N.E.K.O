@@ -1594,7 +1594,10 @@ class QQSessionMemoryService:
         # permission changes alternate one-message segments). Bound each sweep
         # to the same two-wave contract used by the settlement join timeout;
         # unattempted messages remain in their buckets for the next sweep.
-        batch_attempt_limit = self.GROUP_MEMBER_MAX_PARTICIPANTS
+        batch_attempt_limit = (
+            len(batches) if isolate_segments
+            else self.GROUP_MEMBER_MAX_PARTICIPANTS
+        )
         deferred_batches = batches[batch_attempt_limit:]
         batches = batches[:batch_attempt_limit]
         try:
@@ -1605,17 +1608,27 @@ class QQSessionMemoryService:
             # keeps the session-lock wait bounded; leftovers stay retryable.
             chains: list[list[list[dict]]] = [batches]
 
-            async def _flush_chain(chain: list[list[dict]]) -> list[str]:
-                failed: list[str] = []
-                serial_attempt_limit = -(
+            def _chain_attempt_limit(chain: list[list[dict]]) -> int:
+                if isolate_segments:
+                    # Terminal opt-out/orphan settlement has no next sweep.
+                    # Every isolated request must be attempted even if an
+                    # earlier request fails; isolation bounds each failure to
+                    # one sender, and no retry remains whose chronology could
+                    # be overtaken.
+                    return len(chain)
+                return -(
                     -self.GROUP_MEMBER_MAX_PARTICIPANTS
                     // self.MEMBER_FLUSH_CONCURRENCY
                 )
+
+            async def _flush_chain(chain: list[list[dict]]) -> list[str]:
+                failed: list[str] = []
+                serial_attempt_limit = _chain_attempt_limit(chain)
                 attempted = chain[:serial_attempt_limit]
                 for batch_index, batch in enumerate(attempted):
                     batch_failed = await _flush_one_batch(batch)
                     failed.extend(batch_failed)
-                    if batch_failed:
+                    if batch_failed and not isolate_segments:
                         # Later chronological work must not overtake a failed
                         # predecessor. Report its still-buffered senders too,
                         # so callers do not mistake "not attempted" for ok.
@@ -1644,10 +1657,7 @@ class QQSessionMemoryService:
                 if spec.get("sender_id")
             ]
             deferred_count = len(deferred_batches) + sum(
-                max(0, len(chain) - (
-                    -self.GROUP_MEMBER_MAX_PARTICIPANTS
-                    // self.MEMBER_FLUSH_CONCURRENCY
-                ))
+                max(0, len(chain) - _chain_attempt_limit(chain))
                 for chain in chains
             )
             if deferred_count:

@@ -432,6 +432,29 @@ async def test_correction_action_normalization_precedes_trust_override(tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_mixed_correction_response_keeps_invalid_item_queued(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await pm._aqueue_correction(
+        "Neko", "旧观察甲", "新观察甲", "master",
+    )
+    await pm._aqueue_correction(
+        "Neko", "旧观察乙", "新观察乙", "master",
+    )
+    corrections = await pm.aload_pending_corrections("Neko")
+
+    assert await pm._apply_correction_results(
+        "Neko", corrections, {0, 1}, [
+            {"index": 0, "action": "keep_both"},
+            {"index": 1, "action": "retry"},
+        ],
+    ) == 1
+    pending = await pm.aload_pending_corrections("Neko")
+    assert [(item["old_text"], item["new_text"]) for item in pending] == [
+        ("旧观察乙", "新观察乙"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_mixed_speaker_merge_clears_single_speaker_provenance(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

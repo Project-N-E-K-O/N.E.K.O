@@ -520,11 +520,11 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
     persona = await pm.aensure_persona("Neko")
     section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
     low = pm._build_fact_entry(
-        "低信任说法", "manual", None, subject=GROUP_A,
+        "小明不喜欢猫", "manual", None, subject=GROUP_A,
         speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
     )
     high = pm._build_fact_entry(
-        "高信任说法", "manual", None, subject=GROUP_A,
+        "小明喜欢猫", "manual", None, subject=GROUP_A,
         speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.8},
     )
     low["id"], high["id"] = "low", "high"
@@ -539,7 +539,7 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
         [{
             "action": "merge",
             "source_ids": ["low", "high"],
-            "produce": {"text": "模型偏向低信任说法"},
+            "produce": {"text": "小明不喜欢猫"},
         }],
         "trust-hash",
     )
@@ -547,12 +547,12 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
     persona = await pm.aensure_persona("Neko")
     facts = persona[GROUP_A.persona_section_key]["facts"]
     merged = next(entry for entry in facts if entry.get("merged_from_ids"))
-    assert merged["text"] == "高信任说法"
+    assert merged["text"] == "小明喜欢猫"
     assert merged["speaker_id"] == "qq:2002"
     assert merged["speaker_trust"] == pytest.approx(0.8)
     history = {item["text"]: item for item in merged["version_history"]}
-    assert history["低信任说法"]["speaker_id"] == "qq:1001"
-    assert history["高信任说法"]["speaker_id"] == "qq:2002"
+    assert history["小明不喜欢猫"]["speaker_id"] == "qq:1001"
+    assert history["小明喜欢猫"]["speaker_id"] == "qq:2002"
 
 
 @pytest.mark.asyncio
@@ -562,8 +562,8 @@ async def test_trust_merge_leader_must_beat_runner_up_not_weakest(tmp_path):
     section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
     sources = []
     for fact_id, text, speaker_id, trust in (
-        ("high", "可信来源甲", "qq:1001", 0.80),
-        ("near", "可信来源乙", "qq:1002", 0.75),
+        ("high", "小明喜欢猫", "qq:1001", 0.80),
+        ("near", "小明不喜欢猫", "qq:1002", 0.75),
         ("low", "低信任离群说法", "qq:1003", 0.30),
     ):
         entry = pm._build_fact_entry(
@@ -685,10 +685,46 @@ async def test_trust_merge_does_not_override_an_unscored_source(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trust_merge_preserves_complementary_details(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    high = pm._build_fact_entry(
+        "Alice likes cats", "manual", None, subject=GROUP_A,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.9},
+    )
+    low = pm._build_fact_entry(
+        "Alice likes cats and lives in Tokyo", "manual", None, subject=GROUP_A,
+        speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.3},
+    )
+    high["id"], low["id"] = "high", "low"
+    section.extend([high, low])
+    await pm.asave_persona("Neko", persona)
+
+    proposed = "Alice likes cats and lives in Tokyo"
+    assert await apply_scoped_persona_merge(
+        pm, "Neko", GROUP_A, [dict(high), dict(low)], [{
+            "action": "merge", "source_ids": ["high", "low"],
+            "produce": {"text": proposed},
+        }], "complementary-hash",
+    ) == 1
+    persona = await pm.aensure_persona("Neko")
+    merged = next(
+        entry for entry in persona[GROUP_A.persona_section_key]["facts"]
+        if entry.get("merged_from_ids")
+    )
+    assert merged["text"] == proposed
+    assert "speaker_id" not in merged
+    assert {item["text"] for item in merged["version_history"]} == {
+        "Alice likes cats", "Alice likes cats and lives in Tokyo",
+    }
+
+
+@pytest.mark.asyncio
 async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     low = _r_entry(
-        "low", "低信任旧说法", GROUP_A,
+        "low", "小明不喜欢猫", GROUP_A,
         speaker_id="qq:1001", speaker_trust=0.3,
         relation_type="habit", temporal_scope="past",
         event_when_raw={"kind": "absolute", "value": "2026-01-01"},
@@ -697,7 +733,7 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
         schema_version=1,
     )
     high = _r_entry(
-        "high", "高信任当前说法", GROUP_A,
+        "high", "小明喜欢猫", GROUP_A,
         speaker_id="qq:2002", speaker_trust=0.9,
         relation_type="preference", temporal_scope="current",
         event_when_raw={"kind": "absolute", "value": "2026-06-01"},
@@ -716,7 +752,7 @@ async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
     ) == 1
     full = await re._aload_reflections_full("小天")
     merged = next(row for row in full if row.get("merged_from_ids"))
-    assert merged["text"] == "高信任当前说法"
+    assert merged["text"] == "小明喜欢猫"
     assert merged["relation_type"] == "preference"
     assert merged["temporal_scope"] == "current"
     assert merged["event_when_raw"] == {

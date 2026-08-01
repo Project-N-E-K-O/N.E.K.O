@@ -136,6 +136,19 @@ def _trust_weighted_merge_text(
     # different speaker at once.
     if len(speaker_ids) != len(set(speaker_ids)):
         return proposed_text, sources
+    from memory.speaker_trust import deterministic_relation
+    # Scoped ``merge`` also covers semantic duplicates and complementary
+    # details.  A trust winner may replace the model merge only for a conflict
+    # established by the conservative code-side relation detector; otherwise
+    # verbatim winner substitution could silently discard nonconflicting facts.
+    if not any(
+        deterministic_relation(
+            str(left.get('text') or ''), str(right.get('text') or ''),
+        ) == 'correction'
+        for index, left in enumerate(usable)
+        for right in usable[index + 1:]
+    ):
+        return proposed_text, sources
     ordered = sorted(
         usable, key=lambda source: normalize_trust(source.get('speaker_trust')),
         reverse=True,
