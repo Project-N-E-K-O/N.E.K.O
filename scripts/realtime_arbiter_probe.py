@@ -686,16 +686,29 @@ def _report(obs: _Observations) -> dict[str, Any]:
     # so keying completion on created_at alone reported 'no observations'
     # for that whole route — i.e. it could not measure the 60s bound it was
     # written to measure.
+    # Deliberately NOT clamped, unlike every other latency here: both ends are
+    # INBOUND events on one ordered socket, so `created` cannot follow `done`,
+    # and the `sent_at` fallback is the caller's own instant, which precedes
+    # any inbound frame. There is no arrangement that yields a negative.
     complete = [
         _Turn._delta(t.created_at if t.created_at is not None else t.sent_at, t.done_at)
         for t in obs.turns
     ]
+    # Clamped for the same reason the announcement is: the outbound stamp is
+    # taken after the send COMPLETES, so a peer that answered while the write
+    # was still draining yields a negative interval. The arbiter consumes none
+    # of the bound there either.
     item_ack = [
-        _Turn._delta(t.item_sent_at if t.item_sent_at is not None else t.sent_at, t.item_acked_at)
+        _clamp_at_zero(
+            _Turn._delta(
+                t.item_sent_at if t.item_sent_at is not None else t.sent_at,
+                t.item_acked_at,
+            )
+        )
         for t in obs.turns
     ]
     cancel = [
-        _Turn._delta(t.cancel_sent_at, t.done_at)
+        _clamp_at_zero(_Turn._delta(t.cancel_sent_at, t.done_at))
         for t in obs.turns
         if t.cancel_sent_at is not None
     ]
@@ -786,12 +799,35 @@ def _report(obs: _Observations) -> dict[str, Any]:
                 "label": t.label,
                 "response_id": t.response_id,
                 "status": t.status,
-                "announce_s": _Turn._delta(t.sent_at, t.created_at),
+                # Computed exactly as the aggregate above computes them,
+                # origin and clamp included. They disagreed before: the
+                # aggregate measured the announcement from the outbound create
+                # and clamped a pre-send announcement to zero, while this
+                # exported the raw interval from the caller's instant — so a
+                # consumer reading the per-turn records got the inflated
+                # numbers the aggregate had already corrected.
+                "announce_s": _clamp_at_zero(
+                    _Turn._delta(
+                        t.create_sent_at if t.create_sent_at is not None else t.sent_at,
+                        t.created_at,
+                    )
+                ),
+                "announce_from": "create_sent" if t.create_sent_at is not None else "sent",
+                # Unclamped for the same reason as the aggregate above: both
+                # ends are inbound and cannot invert.
                 "complete_s": _Turn._delta(
                     t.created_at if t.created_at is not None else t.sent_at, t.done_at
                 ),
                 "complete_from": "created" if t.created_at is not None else "sent",
-                "cancel_s": _Turn._delta(t.cancel_sent_at, t.done_at),
+                "item_ack_s": _clamp_at_zero(
+                    _Turn._delta(
+                        t.item_sent_at if t.item_sent_at is not None else t.sent_at,
+                        t.item_acked_at,
+                    )
+                ),
+                "cancel_s": _clamp_at_zero(
+                    _Turn._delta(t.cancel_sent_at, t.done_at)
+                ),
                 "stream_events": t.stream_events,
                 "stream_events_with_id": t.stream_events_with_id,
             }
