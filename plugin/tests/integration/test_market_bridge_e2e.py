@@ -1874,7 +1874,9 @@ async def test_status_revision_race_preserves_rotated_refresh_credentials(
     )
     await asyncio.wait_for(refresh_started.wait(), timeout=5)
 
-    concurrent = await client.get("/market/oauth/status", headers=headers)
+    concurrent = await asyncio.wait_for(
+        client.get("/market/oauth/status", headers=headers), timeout=5
+    )
     release_refresh.set()
     recovered = await asyncio.wait_for(refreshing, timeout=5)
 
