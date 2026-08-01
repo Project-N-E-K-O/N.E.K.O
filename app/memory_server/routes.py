@@ -56,9 +56,10 @@ from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
+from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
-from . import gates, locale_state, post_turn, review, runtime
+from . import gates, locale_state, outbox_infra, post_turn, review, runtime
 from ._shared import logger, validate_lanlan_name
 from .rows import _has_human_messages
 from .runtime import app
@@ -1807,7 +1808,7 @@ async def new_dialog(lanlan_name: str, language: str | None = None):
 async def _write_new_dialog_locale(
     lanlan_name: str,
     language: str,
-    generation: int,
+    generation: int | None,
     *,
     locale_admission_order: int,
 ) -> None:
@@ -1817,7 +1818,10 @@ async def _write_new_dialog_locale(
         lanlan_name,
         order=locale_admission_order,
     )
-    if _new_dialog_locale_generations.get(lanlan_name) != generation:
+    if (
+        generation is not None
+        and _new_dialog_locale_generations.get(lanlan_name) != generation
+    ):
         return
     await asyncio.to_thread(
         locale_state.record_character_prompt_locale,
@@ -1830,13 +1834,16 @@ async def _write_new_dialog_locale(
 async def _retry_new_dialog_locale(
     lanlan_name: str,
     language: str,
-    generation: int,
+    generation: int | None,
     *,
     locale_admission_order: int,
 ) -> None:
     """Retry a deferred locale write until it succeeds or becomes stale."""
     persistence_retry_delay = 0.25
-    while _new_dialog_locale_generations.get(lanlan_name) == generation:
+    while (
+        generation is None
+        or _new_dialog_locale_generations.get(lanlan_name) == generation
+    ):
         try:
             await _write_new_dialog_locale(
                 lanlan_name,
@@ -1861,6 +1868,62 @@ async def _retry_new_dialog_locale(
                 persistence_retry_delay * 2,
                 30.0,
             )
+
+
+async def _outbox_new_dialog_locale_handler(
+    lanlan_name: str,
+    payload: dict,
+) -> None:
+    """Replay one durable new-dialog locale intent once at startup."""
+    language = payload.get('language')
+    locale_admission_order = payload.get('locale_admission_order')
+    if not is_supported_language_code(language):
+        raise ValueError("invalid prompt locale in outbox payload")
+    if not isinstance(locale_admission_order, int) or isinstance(
+        locale_admission_order,
+        bool,
+    ):
+        raise ValueError("invalid prompt locale order in outbox payload")
+
+    await _write_new_dialog_locale(
+        lanlan_name,
+        language,
+        None,
+        locale_admission_order=locale_admission_order,
+    )
+
+
+async def _run_durable_new_dialog_locale_retry(
+    lanlan_name: str,
+    language: str,
+    generation: int,
+    *,
+    locale_admission_order: int,
+    op_id: str,
+) -> None:
+    """Retry now and close the durable outbox marker on success/staleness."""
+    await _retry_new_dialog_locale(
+        lanlan_name,
+        language,
+        generation,
+        locale_admission_order=locale_admission_order,
+    )
+    try:
+        await runtime.outbox.aappend_done(lanlan_name, op_id)
+    except Exception as exc:
+        # The pending marker intentionally remains replayable after restart.
+        logger.warning(
+            "[PromptLocale] %s: locale retry succeeded but outbox completion "
+            "was not persisted: %s",
+            lanlan_name,
+            exc,
+        )
+
+
+outbox_infra.register_outbox_handler(
+    OP_PERSIST_PROMPT_LOCALE,
+    _outbox_new_dialog_locale_handler,
+)
 
 
 async def _new_dialog(lanlan_name: str, language: str | None = None):
@@ -1905,14 +1968,39 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                 lanlan_name,
                 exc,
             )
-            runtime._spawn_background_task(
-                _retry_new_dialog_locale(
+            payload = {
+                'language': language,
+                'locale_admission_order': locale_admission_order,
+                'generation': generation,
+            }
+            try:
+                op_id = await runtime.outbox.aappend_pending(
+                    lanlan_name,
+                    OP_PERSIST_PROMPT_LOCALE,
+                    payload,
+                )
+            except Exception as outbox_exc:
+                logger.warning(
+                    "[PromptLocale] %s: durable locale retry registration failed; "
+                    "falling back to process-local retry: %s",
+                    lanlan_name,
+                    outbox_exc,
+                )
+                operation = _retry_new_dialog_locale(
                     lanlan_name,
                     language,
                     generation,
                     locale_admission_order=locale_admission_order,
                 )
-            )
+            else:
+                operation = _run_durable_new_dialog_locale_retry(
+                    lanlan_name,
+                    language,
+                    generation,
+                    locale_admission_order=locale_admission_order,
+                    op_id=op_id,
+                )
+            runtime._spawn_background_task(operation)
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
     # cacheable 机会，记进来反而污染 per_char 分布。

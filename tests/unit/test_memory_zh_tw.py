@@ -733,7 +733,11 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
     from app.memory_server import locale_state, routes, runtime
+    from memory.outbox import OP_PERSIST_PROMPT_LOCALE
     from utils.cloudsave_runtime import MaintenanceModeError
 
     class ReachedContextRead(RuntimeError):
@@ -750,6 +754,7 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
         return {"猫娘": {"Neko": {}}}
 
     deferred = []
+    append_pending = AsyncMock(return_value="locale-op")
 
     def blocked_reservation(_name, *, order):
         assert order == 42
@@ -780,6 +785,11 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
     monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: ContextReadLock())
     monkeypatch.setattr(
         runtime,
+        "outbox",
+        SimpleNamespace(aappend_pending=append_pending),
+    )
+    monkeypatch.setattr(
+        runtime,
         "_spawn_background_task",
         lambda operation: deferred.append(operation),
     )
@@ -787,8 +797,77 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
     with pytest.raises(ReachedContextRead):
         await routes._new_dialog("Neko", "zh-TW")
 
+    append_pending.assert_awaited_once_with(
+        "Neko",
+        OP_PERSIST_PROMPT_LOCALE,
+        {
+            "language": "zh-TW",
+            "locale_admission_order": 42,
+            "generation": routes._new_dialog_locale_generations["Neko"],
+        },
+    )
     assert len(deferred) == 1
     deferred[0].close()
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_locale_outbox_replays_after_restart(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import routes
+
+    routes._new_dialog_locale_generations.pop("RestartNeko", None)
+    writer = AsyncMock()
+    monkeypatch.setattr(routes, "_write_new_dialog_locale", writer)
+
+    await routes._outbox_new_dialog_locale_handler(
+        "RestartNeko",
+        {
+            "language": "zh-TW",
+            "locale_admission_order": 42,
+            "generation": 7,
+        },
+    )
+
+    writer.assert_awaited_once_with(
+        "RestartNeko",
+        "zh-TW",
+        None,
+        locale_admission_order=42,
+    )
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_durable_retry_closes_outbox_marker(monkeypatch):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import routes, runtime
+
+    retry = AsyncMock()
+    append_done = AsyncMock()
+    monkeypatch.setattr(routes, "_retry_new_dialog_locale", retry)
+    monkeypatch.setattr(
+        runtime,
+        "outbox",
+        SimpleNamespace(aappend_done=append_done),
+    )
+
+    await routes._run_durable_new_dialog_locale_retry(
+        "Neko",
+        "zh-TW",
+        8,
+        locale_admission_order=42,
+        op_id="locale-op",
+    )
+
+    retry.assert_awaited_once_with(
+        "Neko",
+        "zh-TW",
+        8,
+        locale_admission_order=42,
+    )
+    append_done.assert_awaited_once_with("Neko", "locale-op")
 
 
 @pytest.mark.asyncio
