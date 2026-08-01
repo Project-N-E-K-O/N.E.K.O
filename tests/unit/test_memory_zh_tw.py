@@ -1668,6 +1668,26 @@ def test_game_archive_prompt_language_falls_back_to_global_locale(monkeypatch):
         assert archive._archive_prompt_language({"lanlan_name": "Neko"}) == "en"
 
 
+def test_game_archive_refreshes_locale_from_live_session(monkeypatch):
+    from main_routers.game_router import archive
+
+    manager = type("Manager", (), {"user_language": "zh-TW"})()
+
+    class SessionManager:
+        @staticmethod
+        def get(_name):
+            return manager
+
+    monkeypatch.setattr(archive, "get_session_manager", SessionManager)
+
+    built = archive._build_game_archive({
+        "lanlan_name": "Neko",
+        "user_language": "en",
+    })
+
+    assert built["user_language"] == "zh-TW"
+
+
 @pytest.mark.asyncio
 async def test_pregame_history_request_forwards_session_locale(monkeypatch):
     from main_routers.game_router import pregame
@@ -2739,6 +2759,20 @@ def test_persona_correction_locale_ignores_formatter_labels():
     pairs = [(0, {"old_text": "A", "new_text": "B"})]
     with language_context("en"):
         assert _detect_correction_prompt_language(pairs) == "en"
+
+
+def test_persona_correction_locale_uses_replacement_text():
+    from memory.persona.corrections import _detect_correction_prompt_language
+
+    pairs = [(0, {
+        "old_text": "The user has always preferred coffee and never drinks tea.",
+        "new_text": "使用者喜歡茶",
+    })]
+
+    assert _detect_correction_prompt_language(
+        pairs,
+        ui_language="zh-TW",
+    ) == "zh-TW"
 
 
 @pytest.mark.asyncio

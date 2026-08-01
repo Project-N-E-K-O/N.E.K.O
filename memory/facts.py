@@ -1303,12 +1303,21 @@ class FactStore:
         return "\n".join(lines)
 
     @classmethod
-    def _messages_locale_text(cls, messages: list) -> str:
+    def _messages_locale_text(
+        cls,
+        messages: list,
+        *,
+        roles: frozenset[str] | None = None,
+    ) -> str:
         """Return message bodies without generated speaker or segment labels."""
-        return "\n".join(
+        selected = [
             cls._message_locale_content(getattr(message, 'content', ''))
             for message in messages
-        )
+            if roles is None or getattr(message, 'type', '') in roles
+        ]
+        if roles is not None and not any(text.strip() for text in selected):
+            return cls._messages_locale_text(messages)
+        return "\n".join(selected)
 
     # 段首标记里不允许出现的结构字符：方括号 / 竖线 / 任何换行与制表。
     # speaker_label 是**用户可改**的原始数据（群名片），不中和的话
@@ -1759,7 +1768,10 @@ class FactStore:
             name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
         prompt_lang = _detect_fact_extraction_prompt_language(
-            self._messages_locale_text(messages),
+            self._messages_locale_text(
+                messages,
+                roles=frozenset({'human', 'user'}),
+            ),
             ui_language=get_global_language_full(),
         )
 
@@ -3828,7 +3840,10 @@ class FactStore:
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
         prompt_lang = _detect_fact_extraction_prompt_language(
-            self._messages_locale_text(messages),
+            self._messages_locale_text(
+                messages,
+                roles=frozenset({'ai', 'assistant'}),
+            ),
             ui_language=get_global_language_full(),
         )
 

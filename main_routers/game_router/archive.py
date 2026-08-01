@@ -124,7 +124,7 @@ def _build_game_archive(state: dict) -> dict:
         "game_type": state.get("game_type"),
         "session_id": state.get("session_id"),
         "lanlan_name": state.get("lanlan_name"),
-        "user_language": _archive_prompt_language(state),
+        "user_language": _current_route_prompt_language(state),
         "dialog_count": len(dialog),
         "full_dialogues": dialog,
         "last_full_dialogues": dialog[-keep_last:],
@@ -177,6 +177,25 @@ def _archive_prompt_language(archive: dict) -> str:
     except Exception:
         logger.debug("赛后归档语言解析失败，使用默认 prompt 语言", exc_info=True)
     return get_global_language_full()
+
+
+def _current_route_prompt_language(state: dict) -> str:
+    """Resolve the live session locale before freezing a game archive."""
+    lanlan_name = str(state.get("lanlan_name") or "").strip()
+    if lanlan_name:
+        try:
+            session_manager = get_session_manager()
+            manager = (
+                session_manager.get(lanlan_name)
+                if hasattr(session_manager, "get")
+                else None
+            )
+            language = str(getattr(manager, "user_language", "") or "").strip()
+            if language:
+                return normalize_language_code(language, format="full") or language
+        except Exception:
+            logger.debug("赛后归档实时语言解析失败，使用路由状态语言", exc_info=True)
+    return _archive_prompt_language(state)
 
 
 def _archive_memory_language(archive: dict) -> str:

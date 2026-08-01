@@ -144,3 +144,68 @@ def test_machine_readable_tokens_stay_ascii(name):
 def test_other_locales_are_unaffected(name):
     for locale in ("en", "ja", "ko", "ru", "es", "pt"):
         assert GETTERS[name](locale) == TABLES[name][locale], locale
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("human_text", "ai_text", "expected"),
+    [
+        (
+            "我喜歡貓",
+            "This is a much longer English assistant response " * 20,
+            [("basic", "zh-TW"), ("aware", "en")],
+        ),
+        (
+            "This is a much longer English user statement " * 20,
+            "我喜歡貓",
+            [("basic", "en"), ("aware", "zh-TW")],
+        ),
+    ],
+)
+async def test_fact_extractors_detect_locale_from_persisted_role(
+    monkeypatch,
+    human_text,
+    ai_text,
+    expected,
+):
+    from unittest.mock import AsyncMock
+
+    from config.prompts import prompts_memory as prompt_module
+    from memory import facts
+    from utils.language_utils import language_context
+    from utils.llm_client import AIMessage, HumanMessage
+
+    selected = []
+
+    def basic_prompt(lang):
+        selected.append(("basic", lang))
+        return "{CONVERSATION} {LANLAN_NAME} {MASTER_NAME}"
+
+    def aware_prompt(lang):
+        selected.append(("aware", lang))
+        return "{CONVERSATION} {KNOWN_POOL} {LANLAN_NAME} {MASTER_NAME}"
+
+    class ConfigManager:
+        async def aget_character_data(self):
+            return (None, None, None, None, {"human": "Alice"}, None, None, None, None)
+
+    store = object.__new__(facts.FactStore)
+    store._config_manager = ConfigManager()
+    store._allm_call_with_retries = AsyncMock(return_value=[])
+    messages = [
+        HumanMessage(content=human_text),
+        AIMessage(content=ai_text),
+    ]
+
+    monkeypatch.setattr(facts, "get_fact_extraction_prompt", basic_prompt)
+    monkeypatch.setattr(
+        prompt_module,
+        "get_fact_extraction_ai_aware_prompt",
+        aware_prompt,
+    )
+
+    with language_context("zh-TW"):
+        await store._allm_extract_facts("Neko", messages)
+        await store._allm_extract_facts_with_known_pool("Neko", messages, [])
+
+    assert selected == expected

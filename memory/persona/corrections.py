@@ -62,10 +62,7 @@ def _detect_correction_prompt_language(
         get_global_language_full,
     )
 
-    raw_text = "\n".join(
-        f"{item['old_text']}\n{item['new_text']}"
-        for _, item in pairs
-    )
+    raw_text = "\n".join(str(item.get('new_text') or '') for _, item in pairs)
     return detect_prompt_language_with_ascii_fallback(
         raw_text,
         ui_language=ui_language or get_global_language_full(),
