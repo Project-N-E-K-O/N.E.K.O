@@ -111,8 +111,15 @@ def _is_word_negation(tokens: tuple[str, ...], index: int) -> bool:
     if marker not in _WORD_NEGATION_MARKERS:
         return False
     if marker == "no":
-        # ``No 5 Main Street`` is numbering metadata, not clause negation.
-        return index + 1 < len(tokens) and not tokens[index + 1].isdigit()
+        # ``No 5 Main Street`` is numbering metadata, and ``the No button``
+        # is a label.  Only an auxiliary-led predicate form such as
+        # ``has no cats`` is safe enough for a code-side trust penalty.
+        return (
+            index > 0
+            and tokens[index - 1] in _NEGATION_AUXILIARIES
+            and index + 1 < len(tokens)
+            and not tokens[index + 1].isdigit()
+        )
     # Bare lexical occurrences are unsafe: ``the never button`` and
     # ``the not operator`` are modifiers, while hate/dislike are independent
     # predicates rather than removable polarity markers.  Restrict the two

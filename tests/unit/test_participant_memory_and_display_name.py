@@ -973,6 +973,37 @@ async def test_participant_digest_uses_session_permission_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_participant_digest_refreshes_trust_between_batches():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [
+        SimpleNamespace(type="human", content="第一批"),
+        SimpleNamespace(type="human", content="第二批"),
+    ]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    plugin.permission_mgr.get_speaker_trust = MagicMock(
+        side_effect=[0.50, 0.51],
+    )
+    service = QQSessionMemoryService(plugin)
+    service.GROUP_HISTORY_MAX_MESSAGES = 1
+    service._apply_speaker_trust_update = AsyncMock(return_value=None)
+
+    assert await service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=0,
+    )
+
+    trusts = [
+        call.kwargs["speaker_trust"]
+        for call in bridge.post_scoped_memory_history.await_args_list
+    ]
+    assert trusts == pytest.approx([0.50, 0.51])
+
+
+@pytest.mark.asyncio
 async def test_open_private_tier_resolves_unknown_participant_to_none_trust():
     from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
     from plugin.plugins.qq_auto_reply.session_memory_service import (

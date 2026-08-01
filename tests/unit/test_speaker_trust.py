@@ -304,6 +304,9 @@ def test_correction_relation_requires_the_same_proposition():
         "Alice lives at No 5 Main Street", "Alice lives at 5 Main Street",
     ) is None
     assert deterministic_relation(
+        "Alice clicked the No button", "Alice clicked the button",
+    ) is None
+    assert deterministic_relation(
         "Alice has no cats", "Alice has cats",
     ) == "correction"
     assert deterministic_relation(

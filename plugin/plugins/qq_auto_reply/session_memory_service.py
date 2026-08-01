@@ -917,7 +917,6 @@ class QQSessionMemoryService:
         permission_level = self._speaker_permission_level_for(
             sender_id, user_data.get("permission_level"),
         )
-        speaker_trust = self._speaker_trust_for(sender_id, permission_level)
         speaker_is_owner = self._speaker_is_owner_for(
             sender_id, permission_level,
         )
@@ -962,6 +961,12 @@ class QQSessionMemoryService:
                 participant_extra["display_name"] = display_name
             if speaker_is_owner:
                 participant_extra["speaker_is_owner"] = True
+            # Permission is frozen with the session, but trust evolves after
+            # each successful batch.  Refresh it before every POST so later
+            # facts never inherit the previous batch's stale score.
+            speaker_trust = self._speaker_trust_for(
+                sender_id, permission_level,
+            )
             result = await self.plugin.memory_bridge.post_scoped_memory_history(
                 her_name,
                 scoped_messages,
