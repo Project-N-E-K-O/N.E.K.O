@@ -469,6 +469,31 @@ async def test_model_selected_mixed_new_provenance_stays_fail_closed(
 
 
 @pytest.mark.asyncio
+async def test_model_merge_keeps_mixed_new_provenance_fail_closed(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "旧观察",
+        speaker_id="qq:1001", speaker_trust=0.9,
+    )
+    correction = {
+        "old_text": "旧观察", "new_text": "新观察", "entity": "master",
+        "new_speaker_id": "qq:1001", "new_speaker_trust": 0.9,
+        "new_speaker_provenance_mixed": True,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "merge", "text": "合并观察"}],
+    ) == 1
+    merged = pm._get_section_facts(
+        await pm.aensure_persona("Neko"), "master",
+    )[0]
+    assert merged["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in merged
+    assert "speaker_trust" not in merged
+
+
+@pytest.mark.asyncio
 async def test_trust_rejected_history_is_idempotent_after_queue_write_failure(
     tmp_path,
 ):

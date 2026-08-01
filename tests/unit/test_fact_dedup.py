@@ -303,6 +303,22 @@ def test_detect_candidates_same_batch_prefers_created_at_over_id_text():
     ]
 
 
+def test_detect_candidates_compares_offset_timestamps_as_instants():
+    same_vec = [1.0, 0.0, 0.0]
+    newer = _fact("newer", "newer", embedding=same_vec)
+    older = _fact("older", "older", embedding=same_vec)
+    newer["created_at"] = "2026-04-25T03:00:00+00:00"
+    older["created_at"] = "2026-04-25T10:00:00+08:00"
+
+    pairs = FactDedupResolver.detect_candidates(
+        [newer, older], only_for_ids={"newer", "older"},
+    )
+
+    assert [(p["candidate_id"], p["existing_id"]) for p in pairs] == [
+        ("newer", "older"),
+    ]
+
+
 def test_detect_candidates_cross_batch_pair_unaffected_by_canonical_guard():
     """The canonical-direction guard only kicks in when BOTH ids are in
     ``only_for_ids``. A fresh row paired with an already-embedded

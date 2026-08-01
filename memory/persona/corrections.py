@@ -672,6 +672,10 @@ class CorrectionsMixin:
                                 'speaker_id': new_speaker_id,
                                 'speaker_trust': item.get('new_speaker_trust'),
                             }
+                            if item.get(
+                                'new_speaker_provenance_mixed'
+                            ) is True:
+                                new_source['speaker_provenance_mixed'] = True
                             folded_provenance = provenance_of_entries([
                                 existing, new_source,
                             ])
@@ -696,6 +700,10 @@ class CorrectionsMixin:
                             ):
                                 existing.pop(key, None)
                             existing.update(folded_provenance)
+                            if new_source.get(
+                                'speaker_provenance_mixed'
+                            ) is True:
+                                existing['speaker_provenance_mixed'] = True
                             # Text changed → invalidate the derived
                             # caches so the next render recomputes
                             # against the new text instead of serving

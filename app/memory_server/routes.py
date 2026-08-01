@@ -1313,6 +1313,14 @@ async def _process_scoped_history_segments(
             if key in fact
         }
 
+    def _fact_identity(fact: dict) -> tuple:
+        return (
+            str(fact.get("id")),
+            fact.get("subject_kind"),
+            fact.get("subject_id"),
+            fact.get("scope"),
+        )
+
     owner_signal_jobs = []
     for segment, result in zip(parsed, segment_results):
         segment["trust_events"] = []
@@ -1329,28 +1337,23 @@ async def _process_scoped_history_segments(
             owner_signal_jobs.append({
                 "segment": segment,
                 "facts_by_key": {
-                    (
-                        str(fact.get("id")),
-                        fact.get("subject_kind"),
-                        fact.get("subject_id"),
-                        fact.get("scope"),
-                    ): dict(fact)
+                    _fact_identity(fact): dict(fact)
                     for fact in signal_facts
                     if isinstance(fact, dict) and fact.get("id") is not None
                 },
-                "later_reconciled_by_id": {},
+                "later_reconciled_by_key": {},
             })
         if signal_facts is not None:
-            reconciled_by_id = {
-                str(fact.get("id")): dict(fact)
+            reconciled_by_key = {
+                _fact_identity(fact): dict(fact)
                 for fact in (result.get("reconciled") or [])
                 if isinstance(fact, dict) and fact.get("id")
             }
-            if reconciled_by_id:
+            if reconciled_by_key:
                 for job in owner_signal_jobs:
-                    job["later_reconciled_by_id"].update(reconciled_by_id)
+                    job["later_reconciled_by_key"].update(reconciled_by_key)
                 signal_facts[:] = [
-                    reconciled_by_id.get(str(fact.get("id")), fact)
+                    reconciled_by_key.get(_fact_identity(fact), fact)
                     for fact in signal_facts
                 ]
             signal_facts.extend(
@@ -1369,12 +1372,7 @@ async def _process_scoped_history_segments(
         # write for every segment has completed, so a forget racing any of
         # those writes is reflected in the active rows below.
         current_by_key = {
-            (
-                str(fact.get("id")),
-                fact.get("subject_kind"),
-                fact.get("subject_id"),
-                fact.get("scope"),
-            ): dict(fact)
+            _fact_identity(fact): dict(fact)
             for fact in await runtime.fact_store.aload_facts(lanlan_name)
             if isinstance(fact, dict) and fact.get("id") is not None
         }
@@ -1396,7 +1394,7 @@ async def _process_scoped_history_segments(
                 current_fact = current_by_key.get(key)
                 if current_fact is None:
                     continue
-                batch_reconciled = job["later_reconciled_by_id"].get(key[0])
+                batch_reconciled = job["later_reconciled_by_key"].get(key)
                 active_signal_facts.append(
                     authored_fact
                     if (

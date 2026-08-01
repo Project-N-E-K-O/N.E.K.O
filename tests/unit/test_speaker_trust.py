@@ -1411,6 +1411,80 @@ async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
 
 
 @pytest.mark.asyncio
+async def test_batch_reconciliation_keeps_same_id_in_other_scope():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    target = {
+        "id": "shared-fact", "text": "Target fact",
+        "speaker_id": "qq:1001", "speaker_trust": 0.8,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    foreign = {
+        "id": "shared-fact", "text": "Foreign fact",
+        "speaker_id": "qq:2002", "speaker_trust": 0.7,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:2002",
+        "scope": "group_participant:qq:7788:2002",
+    }
+    reconciled = dict(target)
+    reconciled.pop("speaker_id")
+    reconciled.pop("speaker_trust")
+    reconciled["speaker_provenance_mixed"] = True
+    member = {
+        "input_history": json.dumps([{
+            "role": "user", "content": "Target fact",
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:1001",
+        },
+        "speaker_label": "Member(1001)",
+        "speaker_id": "qq:1001",
+    }
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user", "content": "Foreign fact",
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_is_owner": True,
+    }
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[
+            [target, foreign], [reconciled, foreign],
+        ]),
+        extract_facts_batch=AsyncMock(return_value=[
+            {
+                "status": "ok", "created": [],
+                "reconciled": [reconciled], "dropped": 0,
+            },
+            {"status": "ok", "created": [], "dropped": 0},
+        ]),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[member, owner]),
+        )
+
+    events = response["segments"][1]["trust_events"]
+    assert len(events) == 1
+    assert events[0]["source_fact_id"] == "shared-fact"
+    assert events[0]["speaker_id"] == "qq:2002"
+
+
+@pytest.mark.asyncio
 async def test_batch_route_revalidates_trust_signals_after_concurrent_forget():
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest

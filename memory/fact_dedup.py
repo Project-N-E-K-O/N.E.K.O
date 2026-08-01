@@ -64,7 +64,7 @@ import json
 import logging
 import os
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import TYPE_CHECKING
 
 from memory.facts import _fact_scoped_identity, safe_int_field
@@ -77,6 +77,15 @@ from utils.file_utils import (
 
 if TYPE_CHECKING:
     from memory.facts import FactStore
+
+
+def _created_at_instant(value: object) -> datetime | None:
+    """Parse an ISO timestamp as a comparable UTC instant."""
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return parsed.astimezone(timezone.utc)
+    except (TypeError, ValueError):
+        return None
 
 
 def _queue_identity(item: dict) -> tuple:
@@ -614,13 +623,19 @@ class FactDedupResolver:
                 if (only_for_ids is not None
                         and sid in only_for_ids
                         and cid in only_for_ids):
-                    candidate_order = (
-                        str(f.get('created_at') or ''), fact_order.get(cid, -1),
-                    )
-                    sibling_order = (
-                        str(sib.get('created_at') or ''), fact_order.get(sid, -1),
-                    )
-                    if candidate_order <= sibling_order:
+                    candidate_instant = _created_at_instant(f.get('created_at'))
+                    sibling_instant = _created_at_instant(sib.get('created_at'))
+                    if (
+                        candidate_instant is not None
+                        and sibling_instant is not None
+                        and candidate_instant != sibling_instant
+                    ):
+                        candidate_is_newer = candidate_instant > sibling_instant
+                    else:
+                        candidate_is_newer = (
+                            fact_order.get(cid, -1) > fact_order.get(sid, -1)
+                        )
+                    if not candidate_is_newer:
                         continue
                 if sib.get('absorbed'):
                     continue
