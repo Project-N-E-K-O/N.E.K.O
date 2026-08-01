@@ -51,6 +51,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import logging
 import statistics
 import sys
 import time
@@ -182,6 +183,9 @@ class _Observations:
     # the whole probe exists to detect, so it is reported whether or not any
     # latency was interesting.
     teardown: str | None = None
+    # The arbiter's own bound-consumption lines, the only honest
+    # margin measurement available.
+    margin_lines: list[str] = field(default_factory=list)
     frames_in: int = 0
 
 
@@ -594,16 +598,39 @@ def _summarize(values: list[float | None]) -> dict[str, float] | None:
     }
 
 
-def _margin_line(name: str, stats: dict[str, float] | None, bound: float) -> str:
+class _MarginCapture(logging.Handler):
+    """Collect the arbiter's own bound-consumption lines.
+
+    This is the whole correction six rounds of review converged on. A bound is
+    not the interval between two provider events — it is how long the arbiter's
+    own ``wait_for`` was actually blocked, which is ZERO when the future is
+    already resolved by the time the wait begins. On the non-announcing route
+    a single ``response.done`` resolves both `started` and `terminal`, so both
+    of those waits consume nothing while the generation itself took seconds.
+    Every latency this probe can time from the outside is a provider
+    observation; none of them is a margin, and presenting one as the other is
+    what produced numbers that had to be retracted.
+
+    ``_report_wait_margin`` already measures the real thing from inside, so the
+    probe's job is to run the scenarios and collect what it says.
+    """
+
+    def __init__(self) -> None:
+        super().__init__(level=logging.INFO)
+        self.lines: list[str] = []
+
+    def emit(self, record: logging.LogRecord) -> None:
+        message = record.getMessage()
+        if "waited" in message and "of its" in message:
+            self.lines.append(message)
+
+
+def _latency_line(name: str, stats: dict[str, float] | None) -> str:
     if stats is None:
-        return f"  {name:<22} (no observations){' ' * 30}bound={bound:>5.1f}s"
-    worst = stats["max"]
-    pct = 100.0 * worst / bound if bound else 0.0
-    verdict = "OK" if pct < 50 else ("TIGHT" if pct < 100 else "OVER")
+        return f"  {name:<22} (no observations)"
     return (
         f"  {name:<22} n={int(stats['n']):<3d} p50={stats['p50']:6.2f}s "
-        f"p95={stats['p95']:6.2f}s max={worst:6.2f}s  bound={bound:>5.1f}s "
-        f"worst={pct:5.1f}%  {verdict}"
+        f"p95={stats['p95']:6.2f}s max={stats['max']:6.2f}s"
     )
 
 
@@ -667,11 +694,20 @@ def _report(obs: _Observations) -> dict[str, Any]:
     print(f"route     {_ROUTES[obs.route]['label']}")
     print(f"scenario  {obs.scenario}   turns={len(obs.turns)}   frames={obs.frames_in}")
     print("-" * 80)
-    print("margin against the arbiter's fail-close bounds")
-    print(_margin_line("item ack", stats["item_ack"], _ARBITER_BOUNDS["item_ack"]))
-    print(_margin_line("response announce", stats["response_started"], _ARBITER_BOUNDS["response_started"]))
-    print(_margin_line("response complete", stats["response_done"], _ARBITER_BOUNDS["response_done"]))
-    print(_margin_line("cancel -> terminal", stats["cancel"], _ARBITER_BOUNDS["cancel"]))
+    # Provider observations. NOT margins — see _MarginCapture. These say what
+    # the provider did; they say nothing about how much of a bound was spent.
+    print("provider latencies (observations, not bound consumption)")
+    print(_latency_line("item ack", stats["item_ack"]))
+    print(_latency_line("response announce", stats["response_started"]))
+    print(_latency_line("response complete", stats["response_done"]))
+    print(_latency_line("cancel -> terminal", stats["cancel"]))
+    print("-" * 80)
+    print("bound consumption, as the arbiter measured it from inside:")
+    if obs.margin_lines:
+        for line in obs.margin_lines:
+            print(f"  {line}")
+    else:
+        print("  (none — no wait spent half its allowance)")
     print("-" * 80)
     print(f"terminals never received : {len(missing)} / {len(obs.turns)}")
     if missing:
@@ -708,7 +744,8 @@ def _report(obs: _Observations) -> dict[str, Any]:
         "route": obs.route,
         "scenario": obs.scenario,
         "bounds": _ARBITER_BOUNDS,
-        "stats": stats,
+        "arbiter_bound_consumption": obs.margin_lines,
+        "provider_latencies": stats,
         "teardown": obs.teardown,
         "missing_terminal": missing,
         "idless_stream_turns": idless,
@@ -738,6 +775,14 @@ def _report(obs: _Observations) -> dict[str, Any]:
 async def _run(args: argparse.Namespace) -> dict[str, Any]:
     probe = _Probe(args.route, verbose=not args.quiet)
     probe.observations.scenario = args.scenario
+    capture = _MarginCapture()
+    arbiter_log = logging.getLogger(
+        "main_logic.omni_realtime_client._response_arbiter"
+    )
+    previous_level = arbiter_log.level
+    arbiter_log.setLevel(logging.INFO)
+    arbiter_log.addHandler(capture)
+    probe.observations.margin_lines = capture.lines
     await probe.connect(args.url)
     obs = probe.observations
     try:
@@ -767,6 +812,8 @@ async def _run(args: argparse.Namespace) -> dict[str, Any]:
                 await asyncio.sleep(args.gap)
     finally:
         await probe.close()
+        arbiter_log.removeHandler(capture)
+        arbiter_log.setLevel(previous_level)
 
     return _report(probe.observations)
 
