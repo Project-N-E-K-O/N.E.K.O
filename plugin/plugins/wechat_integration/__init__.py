@@ -732,11 +732,11 @@ class WechatIntegrationPlugin(NekoPluginBase):
         try:
             import httpx
             from config import MEMORY_SERVER_PORT
-            from utils.language_utils import get_global_language_full
+            # WeChat has no explicit per-conversation locale.  Omitting the
+            # process fallback lets Memory Server restore the durable locale.
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.get(
                     f"http://127.0.0.1:{MEMORY_SERVER_PORT}/new_dialog/{her_name}",
-                    params={"language": get_global_language_full()},
                 )
                 if response.is_success:
                     memory = response.text.strip()
@@ -753,10 +753,9 @@ class WechatIntegrationPlugin(NekoPluginBase):
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
-            from utils.language_utils import get_global_language_full
+            # Do not persist the process fallback as user-declared evidence.
             payload = {
                 "input_history": json.dumps(messages, ensure_ascii=False),
-                "language": get_global_language_full(),
             }
             async with httpx.AsyncClient(timeout=5.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
@@ -777,13 +776,12 @@ class WechatIntegrationPlugin(NekoPluginBase):
             import json
             import httpx
             from config import MEMORY_SERVER_PORT
-            from utils.language_utils import get_global_language_full
             # /settle with an empty increment performs compression/review for
             # cached turns.  Passing the in-memory session history to /process
             # would append the same messages to recent history and SQLite again.
+            # Locale is likewise omitted because WeChat did not declare one.
             payload = {
                 "input_history": json.dumps([], ensure_ascii=False),
-                "language": get_global_language_full(),
             }
             async with httpx.AsyncClient(timeout=30.0, proxy=None, trust_env=False) as client:
                 response = await client.post(
