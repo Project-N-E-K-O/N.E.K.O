@@ -420,8 +420,10 @@ async def test_stale_normalized_payload_has_no_pre_pipeline_live_side_effects(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("provider_event_id", ["", "provider-event-1"])
 async def test_selected_provider_event_is_observed_once_across_pipeline_handoff(
     runtime: LiveRuntime,
+    provider_event_id: str,
 ) -> None:
     runtime._accepting_live_events = True
     runtime._live_session_generation = 1
@@ -437,15 +439,17 @@ async def test_selected_provider_event_is_observed_once_across_pipeline_handoff(
         )
     )
     try:
+        payload = {
+            "nickname": "synthetic",
+            "text": "synthetic question?",
+        }
+        if provider_event_id:
+            payload["provider_event_id"] = provider_event_id
         runtime.live_events.submit(
             LiveEvent(
                 type="danmaku",
                 uid="synthetic-viewer",
-                payload={
-                    "nickname": "synthetic",
-                    "text": "synthetic question?",
-                    "provider_event_id": "provider-event-1",
-                },
+                payload=payload,
                 session_generation=1,
             )
         )

@@ -16,8 +16,10 @@ from plugin.plugins.neko_live.modules.douyin_live_ingest.bridge_adapter import (
     DouyinLiveBridgeAdapter,
 )
 from plugin.plugins.neko_live.modules.douyin_live_ingest.event_model import (
+    DouyinLiveProviderEvent,
     platform_uid,
     safe_avatar_url,
+    to_live_event,
 )
 from plugin.plugins.neko_live.modules.douyin_live_ingest.room_ref import (
     parse_douyin_room_ref,
@@ -31,6 +33,7 @@ from plugin.plugins.neko_live.modules.live_bridge.process_supervisor import (
     BridgeProcessSupervisor,
     cleanup_stale_windows_processes,
 )
+from plugin.plugins.neko_live.modules.live_support_events import LiveSupportEventsModule
 
 
 class _Bus:
@@ -347,6 +350,7 @@ def test_routable_event_is_published_without_raw_credentials() -> None:
     event = module.publish_provider_event(
         {
             "event_type": "chat",
+            "provider_event_id": "event-42",
             "uid": "42",
             "text": "hello",
             "room_ref": "123456",
@@ -359,6 +363,7 @@ def test_routable_event_is_published_without_raw_credentials() -> None:
     assert event.type == "danmaku"
     assert event.uid == "douyin:42"
     assert event.payload["text"] == "hello"
+    assert event.payload["provider_event_id"] == "event-42"
     assert "cookie" not in event.payload
     assert bus.events == [("danmaku", event)]
 
@@ -374,6 +379,29 @@ def test_support_event_keeps_live_source_and_routes_by_event_type() -> None:
     assert event.uid == "douyin:viewer-token-42"
     assert event.source == "live_danmaku"
     assert support_event_type(event) == "gift"
+
+
+def test_douyin_support_event_id_survives_scheduled_payload_projection() -> None:
+    event = to_live_event(
+        DouyinLiveProviderEvent(
+            event_type="gift",
+            provider_event_id="gift-event-42",
+            uid="viewer-42",
+            nickname="viewer",
+            gift_name="rose",
+            gift_count=1,
+        )
+    )
+    support = LiveSupportEventsModule()
+
+    payload = support._payload_for_event(
+        event.raw,
+        event_type_hint="gift",
+        fallback_event=event,
+    )
+
+    assert event.payload["provider_event_id"] == "gift-event-42"
+    assert payload["provider_event_id"] == "gift-event-42"
 
 
 @pytest.mark.parametrize("gift_field", ["giftName", "gift_name"])

@@ -88,7 +88,9 @@ async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> Interact
     # the pipeline reaches its own stale-event gate.
     if is_current_live_session_event(runtime, event):
         remember_live_danmaku_seen(runtime, event)
-        observe_live_danmaku(runtime, event)
+        raw = event.raw if isinstance(event.raw, dict) else {}
+        if raw.get("_recent_chat_observed") is not True:
+            observe_live_danmaku(runtime, event)
     record_timeline(
         runtime,
         event,

@@ -1311,6 +1311,10 @@ class LiveEventsModule(BaseModule):
             # cannot consume the same public event a second time.
             self._schedule_ambient_context_refresh()
         payload = self._payload_for_event(event, selected_event_type)
+        if selected_event_type == "danmaku" and recent_chat_seq > 0:
+            # submit() already recorded this exact provider event before the
+            # selected payload re-enters the shared runtime pipeline.
+            payload["_recent_chat_observed"] = True
         record_payload_timeline(
             self.ctx,
             payload,

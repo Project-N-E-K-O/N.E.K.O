@@ -118,6 +118,8 @@ def to_live_event(event: DouyinLiveProviderEvent, *, ts: float | None = None) ->
         "event_label": event.text or event.gift_name,
         "room_ref": event.room_ref,
     }
+    if event.provider_event_id:
+        payload["provider_event_id"] = event.provider_event_id
     if event.avatar_url:
         payload["avatar_url"] = event.avatar_url
     if event.room_id:
