@@ -269,6 +269,10 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
     new_norm = " ".join(str(new_text or "").split()).casefold()
     if not old_norm or not new_norm:
         return None
+    if any(marker in text for marker in ("?", "？") for text in (old_norm, new_norm)):
+        # A question does not assert either polarity, so it cannot safely
+        # confirm a fact or penalise its speaker as a correction.
+        return None
     if old_norm == new_norm:
         return "confirmation"
     if (

@@ -469,6 +469,33 @@ def test_duplicate_correction_backfills_missing_trust_for_same_speaker():
     assert queued[0]["old_speaker_trust"] == pytest.approx(0.7)
 
 
+@pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
+def test_correction_queue_preserves_non_finite_trust_as_unknown(invalid_trust):
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": invalid_trust,
+        },
+    )
+
+    assert queued[0]["old_speaker_id"] == "qq:1001"
+    assert "old_speaker_trust" not in queued[0]
+
+    # A legacy malformed queue value remains unknown and may be replaced by
+    # later finite provenance; it must not be normalized into arbitration.
+    queued[0]["old_speaker_trust"] = invalid_trust
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.7,
+        },
+    )
+    assert queued[0]["old_speaker_trust"] == pytest.approx(0.7)
+
+
 def test_derived_provenance_rejects_partially_attributed_sources():
     assert provenance_of_entries([
         {"speaker_id": "qq:1001", "speaker_trust": 0.8},
@@ -1597,6 +1624,15 @@ async def test_identical_text_in_distinct_batches_has_distinct_activity_ids():
 
 def test_correction_relation_preserves_argument_order():
     assert deterministic_relation("小明喜欢小红", "小红不喜欢小明") is None
+
+
+@pytest.mark.parametrize("old_text,new_text", [
+    ("Alice is smart", "Alice is not smart?"),
+    ("小明喜欢猫", "小明不喜欢猫？"),
+])
+def test_interrogative_observations_never_emit_trust_relations(old_text, new_text):
+    assert deterministic_relation(old_text, new_text) is None
+    assert deterministic_relation(new_text, new_text) is None
 
 
 def test_relative_clause_negation_never_emits_correction():

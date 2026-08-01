@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import math
 
 
 import json
@@ -88,6 +89,7 @@ class CorrectionsMixin:
                         normalize_trust(raw_trust)
                         if isinstance(raw_trust, (int, float))
                         and not isinstance(raw_trust, bool)
+                        and math.isfinite(float(raw_trust))
                         else None
                     )
                     current_id = existing.get(f'{prefix}_speaker_id')
@@ -96,6 +98,7 @@ class CorrectionsMixin:
                         normalize_trust(raw_current_trust)
                         if isinstance(raw_current_trust, (int, float))
                         and not isinstance(raw_current_trust, bool)
+                        and math.isfinite(float(raw_current_trust))
                         else None
                     )
                     if current_id is None:
@@ -139,7 +142,7 @@ class CorrectionsMixin:
                 raw_trust = provenance.get('speaker_trust')
                 if isinstance(raw_trust, (int, float)) and not isinstance(
                     raw_trust, bool
-                ):
+                ) and math.isfinite(float(raw_trust)):
                     item[f'{prefix}_speaker_trust'] = normalize_trust(raw_trust)
         corrections.append(item)
         return corrections
