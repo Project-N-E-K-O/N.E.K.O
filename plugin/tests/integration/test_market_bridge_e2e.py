@@ -1784,12 +1784,19 @@ async def test_concurrent_oauth_status_cas_conflict_keeps_session_authenticated(
     assert current_status.status_code == 200
     assert current_status.json()["authenticated"] is True
     assert current_status.json()["user"]["username"] == "current-probe-user"
+    assert current_status.json()["market_state"] == "ready"
+    assert current_status.json()["retryable"] is False
     assert stale_status.status_code == 200
     assert stale_status.json()["authenticated"] is True
     assert stale_status.json()["user"]["username"] == "current-probe-user"
+    assert stale_status.json()["auth_state"] == "ready"
+    assert stale_status.json()["market_state"] == "ready"
+    assert stale_status.json()["retryable"] is False
     saved = json.loads(token_file.read_text(encoding="utf-8"))
     assert saved["state_revision"] == 1
     assert saved["user"]["username"] == "current-probe-user"
+    assert saved["market_state"] == "ready"
+    assert saved["access_token"] == "concurrent-status-token"
 
 
 @pytest.mark.asyncio

@@ -21,7 +21,7 @@ import time
 import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Iterable, Literal
+from typing import Any, Awaitable, Callable, Iterable, Literal, get_args
 from urllib.parse import quote, urlparse, urlencode
 
 import httpx
@@ -1122,14 +1122,7 @@ async def market_oauth_status(
         current = _current_oauth_token_for_invalidated_snapshot(token_snapshot)
         if current is not None:
             current_state = current.get("market_state")
-            if current_state not in {
-                "ready",
-                "token_rejected",
-                "forbidden",
-                "identity_conflict",
-                "unavailable",
-                "invalid_response",
-            }:
+            if current_state not in get_args(MarketOAuthState):
                 current_state = "unavailable"
             current_user = current.get("user")
             return MarketOAuthStatusResponse(
@@ -1600,6 +1593,14 @@ def _oauth_token_snapshot_matches(snapshot: dict[str, Any]) -> bool:
 def _current_oauth_token_for_invalidated_snapshot(
     snapshot: dict[str, Any],
 ) -> dict[str, Any] | None:
+    """Return the current token when a same-session task won the CAS race.
+
+    This deliberately ignores ``state_revision`` because a newer revision is
+    the expected cause of this recovery path. Unlike
+    ``_oauth_token_snapshot_matches``, it only proves that the authenticated
+    session identity has not been replaced.
+    """
+
     current = _read_json_file(_OAUTH_TOKEN_FILE)
     if (
         not current
