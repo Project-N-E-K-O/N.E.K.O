@@ -423,6 +423,25 @@ async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
 
 
 @pytest.mark.asyncio
+async def test_legacy_deferred_locale_replay_sorts_before_newer_turn(monkeypatch):
+    """A legacy deferred row must not receive a fresh order during replay."""
+    from app import memory_server
+
+    reserve = MagicMock(return_value=0)
+    monkeypatch.setattr(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        reserve,
+    )
+
+    assert await memory_server.post_turn._wait_for_character_prompt_locale_order(
+        "小天",
+        admission_order=None,
+    ) == 0
+    reserve.assert_called_once_with("小天", order=0)
+
+
+@pytest.mark.asyncio
 async def test_replay_without_recorded_language_defers_locale_resolution():
     """Legacy entries leave locale selection to the post-turn operation wrapper."""
     # 这是升级用户唯一会走的路径：#1542 之前入队的条目都没有这个键。

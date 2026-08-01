@@ -9,6 +9,7 @@
     let currentCatName = '';
     let memoryFileRequestId = 0;
     let memorySaveRequestId = 0;
+    let memoryEditRevision = 0;
     let memorySaveInFlight = null;
     let memoryRowExitInProgress = false;
     let memoryRowExitTimer = 0;
@@ -3380,18 +3381,32 @@
     async function saveCurrentMemory() {
         const requestedFile = currentMemoryFile;
         const requestedSelectionId = memoryFileRequestId;
+        const requestedContentRevision = memoryEditRevision;
         if (
             memorySaveInFlight
             && memorySaveInFlight.file === requestedFile
             && memorySaveInFlight.selectionId === requestedSelectionId
         ) {
-            return memorySaveInFlight.promise;
+            if (memorySaveInFlight.contentRevision === requestedContentRevision) {
+                return memorySaveInFlight.promise;
+            }
+            return memorySaveInFlight.promise.then(function (saved) {
+                if (!saved) return false;
+                if (
+                    currentMemoryFile !== requestedFile
+                    || memoryFileRequestId !== requestedSelectionId
+                ) {
+                    return false;
+                }
+                return saveCurrentMemory();
+            });
         }
 
         const promise = saveCurrentMemoryOnce();
         const activeSave = {
             file: requestedFile,
             selectionId: requestedSelectionId,
+            contentRevision: requestedContentRevision,
             promise
         };
         memorySaveInFlight = activeSave;
@@ -3420,6 +3435,7 @@
         const saveFile = currentMemoryFile;
         const saveSelectionId = memoryFileRequestId;
         const saveRequestId = ++memorySaveRequestId;
+        const saveContentRevision = memoryEditRevision;
         const saveFingerprint = currentMemoryFingerprint;
         const saveIdentityToken = currentMemoryIdentityToken;
         const stillTargetsSavedSelection = () => (
@@ -3427,10 +3443,15 @@
             && memoryFileRequestId === saveSelectionId
             && memorySaveRequestId === saveRequestId
         );
+        const stillMatchesSavedRevision = () => (
+            stillTargetsSavedSelection()
+            && memoryEditRevision === saveContentRevision
+        );
+        const saveChat = chatData.map(msg => ({ ...msg }));
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
-        chatData.forEach(msg => {
+        saveChat.forEach(msg => {
             if (msg.role === 'system') {
                 let text = msg.text || '';
                 if (text.startsWith(memoPrefix)) {
@@ -3447,7 +3468,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     filename: saveFile,
-                    chat: chatData,
+                    chat: saveChat,
                     fingerprint: saveFingerprint,
                     identity_token: saveIdentityToken
                 })
@@ -3461,6 +3482,8 @@
                     currentMemoryIdentityToken = typeof data.identity_token === 'string'
                         ? data.identity_token
                         : null;
+                }
+                if (stillMatchesSavedRevision()) {
                     setMemoryDirty(false);
                     showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
                 }
@@ -3540,6 +3563,7 @@
         }, { batch: true });
     };
     function setMemoryDirty(dirty) {
+        if (dirty) memoryEditRevision++;
         memoryHasUnsavedChanges = Boolean(dirty);
         const indicator = document.getElementById('memory-unsaved-status');
         const saveButton = document.getElementById('save-memory-btn');

@@ -163,19 +163,15 @@ async def _wait_for_character_prompt_locale_order(
     admission_order: int | None,
 ) -> int:
     """Wait until the deferred locale reservation is durably committed."""
-    from .locale_state import (
-        allocate_character_prompt_locale_order,
-        reserve_character_prompt_locale_order,
-    )
+    from .locale_state import reserve_character_prompt_locale_order
     from utils.cloudsave_runtime import MaintenanceModeError
 
     if not isinstance(admission_order, int) or isinstance(admission_order, bool):
-        # Legacy outbox rows only carried ``locale_order_deferred``. Allocate
-        # their admission order once, then keep that exact order across retries.
-        admission_order = await asyncio.to_thread(
-            allocate_character_prompt_locale_order,
-            lanlan_name,
-        )
+        # Legacy outbox rows predate admission-order persistence, so they must
+        # sort before every ordered turn. Allocating here would put a replayed
+        # old locale above the durable high-water mark and let it overwrite a
+        # newer session locale.
+        admission_order = 0
     while True:
         try:
             return await asyncio.to_thread(

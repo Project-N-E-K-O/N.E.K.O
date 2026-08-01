@@ -3643,19 +3643,25 @@ def test_memory_browser_serializes_concurrent_saves_for_same_file(
         """
     )
 
-    save_button = mock_page.locator("#save-memory-btn")
+    memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
+    expect(memo).to_be_visible(timeout=5000)
+    memo.fill("第一版备忘录")
+
     mock_page.evaluate(
         """
         () => {
             const save = document.getElementById('save-memory-btn').onclick;
             save();
-            save();
         }
         """
     )
     mock_page.wait_for_function("window.__memorySaveBodies.length === 1")
+    memo.fill("第二版备忘录")
+    mock_page.evaluate("document.getElementById('save-memory-btn').onclick()")
     mock_page.wait_for_timeout(50)
     assert len(mock_page.evaluate("window.__memorySaveBodies")) == 1
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_visible()
+    expect(mock_page.locator("#save-status")).not_to_contain_text("保存成功")
 
     mock_page.evaluate(
         """
@@ -3668,11 +3674,13 @@ def test_memory_browser_serializes_concurrent_saves_for_same_file(
         }
         """
     )
-    expect(mock_page.locator("#save-status")).to_contain_text("保存成功")
-    save_button.click()
     mock_page.wait_for_function("window.__memorySaveBodies.length === 2")
+    expect(mock_page.locator("#save-status")).to_contain_text("保存成功")
+    expect(mock_page.locator("#memory-unsaved-status")).to_be_hidden()
 
     bodies = mock_page.evaluate("window.__memorySaveBodies")
+    assert "第一版备忘录" in bodies[0]["chat"][0]["text"]
+    assert "第二版备忘录" in bodies[1]["chat"][0]["text"]
     assert bodies[1]["fingerprint"] == "fp:stale-response"
     assert bodies[1]["identity_token"] == "token:stale-response"
     assert len(mock_page.evaluate("window.__memoryRefreshBroadcasts")) == 1
