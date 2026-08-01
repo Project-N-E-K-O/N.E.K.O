@@ -100,6 +100,44 @@ def _retrieve_exception(future: asyncio.Future[Any]) -> None:
         future.exception()
 
 
+@dataclass(slots=True)
+class _AdoptionEvidence:
+    """Readings a request took of the arbiter's live adoption counters.
+
+    Every field is a snapshot of an arbiter-wide value taken at a NAMED
+    instant. Nothing pushes into this object from an event callback, which is
+    what stops a fact from outliving the window it describes — the previous
+    shape had one capture point plus one uncontrolled push, and the push was
+    the one with no arming instant, no reset, and no way to ask "what window is
+    this?".
+
+    The two instants differ on purpose, and the rule that picks between them is
+    what three rounds of review kept rediscovering one field at a time:
+
+        Positive evidence gets the NARROWEST honest window — the one in which
+        this request could have caused the thing. Disqualifying evidence gets
+        the WIDEST honest window — every moment in which something else could
+        explain it.
+
+    ``arm_on_selection`` is where a disqualifier belongs: from the instant this
+    request becomes ``_current``, a server-VAD boundary interrupts THIS
+    request, so an automatic response announced from here on could be what we
+    are about to look at. ``arm_on_send`` is where a causation claim belongs:
+    nothing before this request's first byte can have been caused by it.
+    """
+
+    vad_epoch: int = -1
+    serial: int = -1
+    item_created_serial: int = -1
+
+    def arm_on_selection(self, vad_epoch: int) -> None:
+        self.vad_epoch = vad_epoch
+
+    def arm_on_send(self, serial: int, item_created_serial: int) -> None:
+        self.serial = serial
+        self.item_created_serial = item_created_serial
+
+
 @dataclass(order=True, slots=True)
 class _QueuedResponse:
     priority: int
@@ -124,12 +162,11 @@ class _QueuedResponse:
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
     # Evidence this request collected for itself, so both the terminal path
-    # and the started-timeout path can judge an adoption from the same facts.
-    # Captured immediately before its pre-response events go out.
-    adoption_serial: int = field(default=-1, compare=False)
-    adoption_vad_epoch: int = field(default=-1, compare=False)
+    # and the started-timeout path judge an adoption from the same facts.
+    adoption: _AdoptionEvidence = field(
+        default_factory=_AdoptionEvidence, compare=False
+    )
     item_acked: bool = field(default=False, compare=False)
-    item_created_seen: bool = field(default=False, compare=False)
     server_vad_won_during_response_send: bool = field(
         default=False,
         compare=False,
@@ -202,6 +239,10 @@ class RealtimeResponseArbiter:
         # request that observed a different epoch than the one it started with
         # cannot know whose announcement it is looking at.
         self._vad_epoch = 0
+        # Every ``conversation.item.created`` this connection has seen, in
+        # arrival order. A request arms against it and compares later; it is
+        # never reset, for the reason in ``_AdoptionEvidence``.
+        self._item_created_serial = 0
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
@@ -448,16 +489,20 @@ class RealtimeResponseArbiter:
             await asyncio.gather(*stale, return_exceptions=True)
 
     def notify_item_created(self, event: dict[str, Any]) -> None:
+        # Counted before anything else, including the "is there a current
+        # request" check: this is a property of the CONNECTION, and a request
+        # reads it by comparing against its own arming. Writing it into
+        # whatever happened to be ``_current`` is what let an acknowledgement
+        # belonging to an EARLIER response count as evidence for a request that
+        # had not sent a byte yet.
+        #
+        # Counted rather than flagged, and deliberately never reset — see
+        # ``_AdoptionEvidence``. Monotonic means a stale reading can only ever
+        # refuse an adoption, never wrongly grant one.
+        self._item_created_serial += 1
         current = self._current
         if current is None:
             return
-        # Recorded before the id match, and separately from the ack, because a
-        # provider that assigns its own item ids never satisfies the match —
-        # the free routes do exactly that. "The provider acknowledged an item
-        # while this request held the lane" is weaker than "it acknowledged
-        # MINE", but it is real evidence and it is the only such evidence
-        # those providers offer.
-        current.item_created_seen = True
         if current.item_ack is None or current.item_ack.done():
             return
         item = event.get("item")
@@ -575,7 +620,9 @@ class RealtimeResponseArbiter:
 
         if not queued.response_send_started or queued.response_id is not None:
             return None
-        if not queued.ack_expected or not queued.item_created_seen:
+        if not queued.ack_expected:
+            return None
+        if self._item_created_serial == queued.adoption.item_created_serial:
             return None
         if len(queued.events_before_response) != 1:
             # ``conversation.item.created`` proves the provider acknowledged
@@ -589,10 +636,10 @@ class RealtimeResponseArbiter:
             return None
         if (
             self._server_vad_response_pending
-            or self._vad_epoch != queued.adoption_vad_epoch
+            or self._vad_epoch != queued.adoption.vad_epoch
         ):
             return None
-        if self._adoptable_serial != queued.adoption_serial + 1:
+        if self._adoptable_serial != queued.adoption.serial + 1:
             return None
         adopted = self._adoptable_announcement
         if adopted is None:
@@ -1657,6 +1704,13 @@ class RealtimeResponseArbiter:
 
     async def _process(self, queued: _QueuedResponse) -> None:
         self._current = queued
+        # The disqualifier arms HERE, not after the waits below. From this
+        # instant a server-VAD boundary interrupts this request, so an
+        # automatic response announced from here on could be what a later
+        # adoption is looking at — including one announced after the 5s
+        # missing-created backstop gives up while this request is still
+        # parked waiting for the lane.
+        queued.adoption.arm_on_selection(self._vad_epoch)
         loop = asyncio.get_running_loop()
         item_acked = not queued.ack_expected
         queued.item_acked = item_acked
@@ -1679,12 +1733,13 @@ class RealtimeResponseArbiter:
             self._idle.clear()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
-            # Captured before the first pre-response event goes out, so
-            # anything the provider announces from here on is inside this
-            # request's own window. Adoption is refused unless both are still
-            # what this request saw.
-            queued.adoption_serial = self._adoptable_serial
-            queued.adoption_vad_epoch = self._vad_epoch
+            # The causation claims arm HERE, immediately before the first
+            # pre-response event goes out: nothing earlier can have been caused
+            # by this request. The disqualifier armed at selection, deliberately
+            # wider.
+            queued.adoption.arm_on_send(
+                self._adoptable_serial, self._item_created_serial
+            )
             for event in queued.events_before_response:
                 if queued.interrupted:
                     raise RuntimeError("response dispatch interrupted")

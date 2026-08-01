@@ -3047,3 +3047,137 @@ async def test_an_auxiliary_item_ahead_of_the_instruction_blocks_adoption():
         "request's to adopt"
     )
     await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_item_ack_from_before_dispatch_is_not_this_requests_evidence():
+    # A request becomes `_current` the instant the worker selects it, which is
+    # BEFORE it waits for the lane and long before it sends a byte. An earlier
+    # response's `conversation.item.created` crossing the socket in that gap
+    # used to satisfy the adoption evidence — a causation claim granted for
+    # something the request could not have caused.
+    #
+    # Positive evidence gets the narrowest honest window: from this request's
+    # first byte. Anything earlier belongs to whatever was running then.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            # One unowned announcement in the window, and our own item is
+            # never acknowledged — the exact corner the ack barrier exists to
+            # detect.
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-elsewhere"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    # An earlier response holds the lane, so the request below is SELECTED —
+    # `_current` is set, the disqualifier has armed — and then parks without
+    # having sent anything. That gap is the whole point.
+    arbiter.notify_response_created(
+        {"type": "response.created", "response": {"id": "resp-earlier"}}
+    )
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    await asyncio.sleep(0.01)
+    assert arbiter._current is not None, "selected, parked, and has sent nothing"
+
+    # The earlier response's own item is acknowledged while we wait for it.
+    arbiter.notify_item_created({"item": {"id": "not-ours", "role": "assistant"}})
+
+    # It ends; the lane opens and our request finally sends.
+    arbiter.notify_response_terminal(
+        {"type": "response.done", "response": {"id": "resp-earlier"}}
+    )
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, (
+        "an acknowledgement this request cannot have caused is not evidence "
+        "that the announcement answers it"
+    )
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_vad_boundary_that_expired_while_parked_still_disqualifies():
+    # The 5s missing-created backstop can fire while a request is parked
+    # waiting for the lane. Arming the VAD epoch only after that wait made the
+    # request adopt the expiry as its own baseline, so the delayed automatic
+    # response — announced afterwards, inside its item window — looked like an
+    # unchanged epoch and was adopted.
+    #
+    # Disqualifying evidence gets the widest honest window: from selection,
+    # because that is when a VAD boundary starts being able to interrupt THIS
+    # request.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-vad-late"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned", "role": "user"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    # An announced-but-unidentified automatic response holds the lane.
+    arbiter.notify_server_vad_response_pending(arm_timeout=False)
+    ticket = await arbiter.enqueue(
+        source="external_asr",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "item-ours", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="item-ours",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    await asyncio.sleep(0.01)
+
+    # The backstop gives up while the request is still parked. This is the one
+    # epoch bump that does not interrupt the current request, which is why it
+    # is the only one the wider window changes.
+    arbiter._server_vad_pending_expired()
+
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, (
+        "the automatic response the backstop gave up on is not this request's "
+        "to adopt"
+    )
+    await arbiter.shutdown()
