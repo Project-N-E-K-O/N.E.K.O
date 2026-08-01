@@ -784,7 +784,10 @@ class SpeakerShadowRuntime:
         if (
             frame.token.terminal_reason is not None
             or frame.candidate in self._finalized
-            or self._candidate_was_evicted(frame.candidate)
+            or self._candidate_was_evicted(
+                frame.candidate,
+                token=frame.token,
+            )
         ):
             return
         buffer = self._buffers.get(frame.candidate)
@@ -1168,7 +1171,10 @@ class SpeakerShadowRuntime:
     def _process_finish(self, marker: _CandidateFinished) -> None:
         if marker.generation != self._generation:
             return
-        if self._candidate_was_evicted(marker.candidate):
+        if self._candidate_was_evicted(
+            marker.candidate,
+            token=marker.token,
+        ):
             return
         if marker.token.terminal_reason is not None:
             self._record_token_finish(marker.token)
@@ -1253,7 +1259,25 @@ class SpeakerShadowRuntime:
             evicted_candidate, _ = self._finalized.popitem(last=False)
             self._record_evicted_candidate(evicted_candidate)
 
-    def _candidate_was_evicted(self, candidate: SpeakerShadowCandidateKey) -> bool:
+    def _candidate_was_evicted(
+        self,
+        candidate: SpeakerShadowCandidateKey,
+        *,
+        token: _CandidateToken | None = None,
+    ) -> bool:
+        current_token = self._candidate_tokens.get(candidate)
+        buffer = self._buffers.get(candidate)
+        if token is None and (
+            current_token is not None
+            or buffer is not None
+            or self._active_evaluation == (self._generation, candidate)
+        ):
+            return False
+        if token is not None and (
+            current_token is token
+            or (buffer is not None and buffer.token is token)
+        ):
+            return False
         finalized_through = self._finalized_through.get(candidate.scope)
         if finalized_through is None:
             return False

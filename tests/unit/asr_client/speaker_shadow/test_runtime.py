@@ -513,6 +513,36 @@ async def test_evicted_tombstone_keeps_late_finish_idempotent() -> None:
     await runtime.close()
 
 
+async def test_eviction_watermark_preserves_older_live_candidate() -> None:
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(),
+        config=_config(
+            queue_capacity=1,
+            finalized_candidate_capacity=1,
+        ),
+    )
+    live_candidate = _candidate(20)
+
+    assert runtime.submit(
+        _pcm(1),
+        sample_rate_hz=SPEAKER_SHADOW_SAMPLE_RATE_HZ,
+        candidate=live_candidate,
+    )
+    await runtime.wait_idle()
+    for generation in (21, 22):
+        assert runtime.finish_candidate(_candidate(generation))
+        await runtime.wait_idle()
+
+    assert runtime.finish_candidate(live_candidate)
+    await runtime.wait_idle()
+
+    metrics = runtime.snapshot()
+    assert metrics["buffered_candidate_count"] == 0
+    assert metrics["finished_candidate_count"] == 3
+    assert metrics["insufficient_candidate_count"] == 3
+    await runtime.close()
+
+
 async def test_queued_work_ignores_evicted_candidate_watermark() -> None:
     runtime = SpeakerShadowRuntime(
         backend_factory=_BackendFactory(),
