@@ -2952,6 +2952,9 @@ async def test_a_never_announcing_provider_still_finalizes_its_turn_on_the_host(
     try:
         await asyncio.wait_for(client.handle_messages(), 1)
     except (asyncio.TimeoutError, Exception):
+        # The socket parks after its scripted frames, so the receive loop is
+        # still running when the bound expires — that IS the end of the
+        # scenario, not a failure. The assertions below are what judge it.
         pass
 
     assert "on_response_done" in fired, "the host never completed the turn"

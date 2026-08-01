@@ -2694,6 +2694,9 @@ async def test_an_id_less_tool_call_after_a_release_is_quarantined():
     try:
         await asyncio.wait_for(client.handle_messages(), 2)
     except (asyncio.TimeoutError, Exception):
+        # The socket parks after its scripted frames, so the receive loop is
+        # still running when the bound expires — that IS the end of the
+        # scenario, not a failure. The assertions below are what judge it.
         pass
     await asyncio.sleep(0.05)
 
