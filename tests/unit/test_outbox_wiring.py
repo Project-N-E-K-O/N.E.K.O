@@ -163,6 +163,42 @@ async def test_spawn_outbox_survives_post_commit_locale_reservation_fence(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_spawn_outbox_defers_unpersisted_locale_reservation(tmp_path):
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from app.memory_server.locale_state import PromptLocalePersistenceError
+    from memory.outbox import OP_POST_TURN_SIGNALS
+
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_handler(name: str, payload: dict):
+        calls.append((name, payload))
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_POST_TURN_SIGNALS: _fake_handler},
+        clear=False,
+    ), patch.object(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        side_effect=PromptLocalePersistenceError("not committed"),
+    ):
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天",
+            [HumanMessage(content="喵")],
+            language="zh-TW",
+        )
+        await task
+
+    assert len(calls) == 1
+    _name, payload = calls[0]
+    assert payload["language"] == "zh-TW"
+    assert "locale_order" not in payload
+    assert payload["locale_order_deferred"] is True
+    assert await ob.apending_ops("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
     """Deferred locale allocation must resume after the cloud fence clears."""
     from app import memory_server

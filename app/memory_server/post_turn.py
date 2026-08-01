@@ -79,7 +79,10 @@ async def _spawn_outbox_post_turn_signals(
     ``_run_post_turn_signals``. The registered payload contains the whole turn's
     conversation serialized via messages_to_dict, replayable at restart.
     """
-    from .locale_state import reserve_character_prompt_locale_order
+    from .locale_state import (
+        PromptLocalePersistenceError,
+        reserve_character_prompt_locale_order,
+    )
     from utils.cloudsave_runtime import MaintenanceModeError
     from utils.llm_client import messages_to_dict
 
@@ -88,12 +91,13 @@ async def _spawn_outbox_post_turn_signals(
             reserve_character_prompt_locale_order,
             lanlan_name,
         )
-    except MaintenanceModeError as exc:
+    except (MaintenanceModeError, PromptLocalePersistenceError) as exc:
         # The conversation rows may already be durable when a cloud operation
-        # closes the write fence. Locale ordering is auxiliary metadata, so a
-        # late fence must not report the whole turn as failed and make the main
-        # server resend it. The durable outbox marker retries the reservation
-        # before any locale-bearing maintenance signal is allowed to complete.
+        # closes the write fence or its sidecar commit is invalidated. Locale
+        # ordering is auxiliary metadata, so a late failure must not report the
+        # whole turn as failed and make the main server resend it. The durable
+        # outbox marker retries the reservation before any locale-bearing
+        # maintenance signal is allowed to complete.
         logger.info(
             "[PromptLocale] %s: reservation deferred while cloudsave is fenced: %s",
             lanlan_name,
@@ -146,8 +150,11 @@ async def _spawn_outbox_post_turn_signals(
 
 
 async def _wait_for_character_prompt_locale_order(lanlan_name: str) -> int:
-    """Wait until a cloud fence permits the deferred locale reservation."""
-    from .locale_state import reserve_character_prompt_locale_order
+    """Wait until the deferred locale reservation is durably committed."""
+    from .locale_state import (
+        PromptLocalePersistenceError,
+        reserve_character_prompt_locale_order,
+    )
     from utils.cloudsave_runtime import MaintenanceModeError
 
     while True:
@@ -156,7 +163,7 @@ async def _wait_for_character_prompt_locale_order(lanlan_name: str) -> int:
                 reserve_character_prompt_locale_order,
                 lanlan_name,
             )
-        except MaintenanceModeError:
+        except (MaintenanceModeError, PromptLocalePersistenceError):
             await asyncio.sleep(0.25)
 
 

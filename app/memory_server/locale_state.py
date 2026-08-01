@@ -47,6 +47,10 @@ _locale_cache_generation = 0
 _subject_locale_forget_cutoffs: dict[tuple[str, str], int] = {}
 
 
+class PromptLocalePersistenceError(RuntimeError):
+    """Raised when a prompt-locale sidecar update was not committed."""
+
+
 def invalidate_prompt_locale_caches() -> None:
     """Force the next locale lookup to reload both durable sidecars."""
     global _locale_cache_generation
@@ -322,12 +326,15 @@ def reserve_character_prompt_locale_order(name: str) -> int:
         language, order, reserved_order = _load_locale_state_unlocked(name)
         high_water = max(order or 0, reserved_order or 0)
         selected_order = max(time.time_ns(), high_water + 1)
-        _persist_locale_state_unlocked(
+        if not _persist_locale_state_unlocked(
             name,
             language,
             order,
             selected_order,
-        )
+        ):
+            raise PromptLocalePersistenceError(
+                "prompt locale order reservation was not persisted"
+            )
         return selected_order
 
 
@@ -354,12 +361,15 @@ def record_character_prompt_locale(
         next_reserved_order = reserved_order
         if selected_order is not None:
             next_reserved_order = max(reserved_order or selected_order, selected_order)
-        _persist_locale_state_unlocked(
+        if not _persist_locale_state_unlocked(
             name,
             selected,
             selected_order,
             next_reserved_order,
-        )
+        ):
+            raise PromptLocalePersistenceError(
+                "prompt locale update was not persisted"
+            )
     return selected
 
 
@@ -394,7 +404,10 @@ def reserve_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
             selected_order = max(time.time_ns(), high_water + 1)
             states[key] = (language, order, selected_order)
             selected_orders.append(selected_order)
-        _persist_subject_locale_state_unlocked(name, states)
+        if not _persist_subject_locale_state_unlocked(name, states):
+            raise PromptLocalePersistenceError(
+                "scoped prompt locale order reservation was not persisted"
+            )
         return selected_orders
 
 
@@ -459,7 +472,10 @@ def record_subject_prompt_locales(name: str, updates) -> list[str | None]:
             results.append(selected)
             changed = True
         if changed:
-            _persist_subject_locale_state_unlocked(name, states)
+            if not _persist_subject_locale_state_unlocked(name, states):
+                raise PromptLocalePersistenceError(
+                    "scoped prompt locale update was not persisted"
+                )
         return results
 
 
@@ -482,7 +498,9 @@ def forget_subject_prompt_locale(name: str, subject) -> int:
         if previous is None:
             return 0
         if not _persist_subject_locale_state_unlocked(name, states):
-            raise RuntimeError("scoped prompt locale erase was not persisted")
+            raise PromptLocalePersistenceError(
+                "scoped prompt locale erase was not persisted"
+            )
         return 1
 
 

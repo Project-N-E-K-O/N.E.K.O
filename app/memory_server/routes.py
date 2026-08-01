@@ -1802,7 +1802,10 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                 language,
                 order=locale_order,
             )
-        except MaintenanceModeError as exc:
+        except (
+            MaintenanceModeError,
+            locale_state.PromptLocalePersistenceError,
+        ) as exc:
             # /new_dialog is a read path. The request-scoped language context is
             # already active, so a cloud snapshot should only defer the durable
             # locale hint instead of preventing a new conversation from opening.

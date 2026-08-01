@@ -680,12 +680,17 @@ def test_prompt_locale_inflight_write_cannot_replace_restored_sidecar(
         restore_during_staged_write,
     )
 
-    if scoped:
-        locale_state.reserve_subject_prompt_locale_order(name, subject)
-        selected = locale_state.get_subject_prompt_locale(name, subject)
-    else:
-        locale_state.reserve_character_prompt_locale_order(name)
-        selected = locale_state.get_character_prompt_locale(name)
+    with pytest.raises(locale_state.PromptLocalePersistenceError):
+        if scoped:
+            locale_state.reserve_subject_prompt_locale_order(name, subject)
+        else:
+            locale_state.reserve_character_prompt_locale_order(name)
+
+    selected = (
+        locale_state.get_subject_prompt_locale(name, subject)
+        if scoped
+        else locale_state.get_character_prompt_locale(name)
+    )
 
     assert selected == "zh-TW"
     assert json.loads(locale_path.read_text(encoding="utf-8")) == restored
@@ -967,14 +972,74 @@ def test_prompt_locale_write_failure_does_not_publish_cache(
     monkeypatch.setattr(locale_state, "atomic_write_json", fail_write)
     locale_state.invalidate_prompt_locale_caches()
 
-    if scoped:
-        locale_state.reserve_subject_prompt_locale_order(name, subject)
-        cached = locale_state._subject_locale_cache[name][subject_key]
-    else:
-        locale_state.reserve_character_prompt_locale_order(name)
-        cached = locale_state._locale_cache[name]
+    with pytest.raises(locale_state.PromptLocalePersistenceError):
+        if scoped:
+            locale_state.reserve_subject_prompt_locale_order(name, subject)
+        else:
+            locale_state.reserve_character_prompt_locale_order(name)
+
+    cached = (
+        locale_state._subject_locale_cache[name][subject_key]
+        if scoped
+        else locale_state._locale_cache[name]
+    )
 
     assert cached == ("en", 1, 1)
+
+
+def test_prompt_locale_public_writers_reject_unpersisted_results(monkeypatch):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    monkeypatch.setattr(
+        locale_state,
+        "_load_locale_state_unlocked",
+        lambda _name: (None, None, None),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_load_subject_locale_state_unlocked",
+        lambda _name: {},
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_persist_locale_state_unlocked",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_persist_subject_locale_state_unlocked",
+        lambda *_args: False,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+
+    writes = (
+        lambda: locale_state.reserve_character_prompt_locale_order("Neko"),
+        lambda: locale_state.record_character_prompt_locale(
+            "Neko",
+            "zh-TW",
+            order=1,
+        ),
+        lambda: locale_state.reserve_subject_prompt_locale_order(
+            "Neko",
+            subject,
+        ),
+        lambda: locale_state.record_subject_prompt_locale(
+            "Neko",
+            subject,
+            "zh-TW",
+            order=1,
+        ),
+    )
+
+    for write in writes:
+        with pytest.raises(locale_state.PromptLocalePersistenceError):
+            write()
 
 
 @pytest.mark.asyncio
