@@ -1400,6 +1400,7 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
                 type="button"
                 className="neko-button"
                 data-tone="default"
+                aria-describedby="neko-live-readiness-reason"
                 disabled
                 style={{ width: "100%", minHeight: "48px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", cursor: "not-allowed" }}
               >
@@ -1422,6 +1423,14 @@ export default function NekoLivePanel(props: PluginSurfaceProps<DashboardState>)
                 {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
               </button>
             )}
+            {!started && !canStart && !connectPending ? (
+              <span
+                id="neko-live-readiness-reason"
+                style={{ position: "absolute", width: "1px", height: "1px", padding: 0, margin: "-1px", overflow: "hidden", clip: "rect(0, 0, 0, 0)", whiteSpace: "nowrap", border: 0 }}
+              >
+                {readinessReason}
+              </span>
+            ) : null}
           </div>
         </Stack>
       </Card>

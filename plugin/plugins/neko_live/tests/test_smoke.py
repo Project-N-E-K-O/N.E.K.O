@@ -287,6 +287,8 @@ def test_console_keeps_live_control_inline_with_priority_readiness_hint() -> Non
         assert 'disabled={connectPending || !!simpleActionPending}' in live_control_source
         assert 't("panel.actions.connect")' in live_control_source
         assert "title={!started && !canStart && !connectPending ? readinessReason : undefined}" in live_control_source
+        assert 'aria-describedby="neko-live-readiness-reason"' in live_control_source
+        assert 'id="neko-live-readiness-reason"' in live_control_source
         assert "readinessTooltip" not in source
         readiness_source = source.split("const readinessReason =", 1)[1].split(
             "const primaryStatusLabel", 1
