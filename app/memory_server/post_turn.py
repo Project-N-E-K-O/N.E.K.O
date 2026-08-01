@@ -168,7 +168,10 @@ async def _wait_for_character_prompt_locale_order(
     admission_order: int | None,
 ) -> int:
     """Wait until the deferred locale reservation is durably committed."""
-    from .locale_state import reserve_character_prompt_locale_order
+    from .locale_state import (
+        PromptLocalePersistenceError,
+        reserve_character_prompt_locale_order,
+    )
     from utils.cloudsave_runtime import MaintenanceModeError
 
     if not isinstance(admission_order, int) or isinstance(admission_order, bool):
@@ -184,7 +187,7 @@ async def _wait_for_character_prompt_locale_order(
                 lanlan_name,
                 order=admission_order,
             )
-        except MaintenanceModeError:
+        except (MaintenanceModeError, PromptLocalePersistenceError):
             await asyncio.sleep(0.25)
 
 
@@ -214,6 +217,7 @@ async def _wait_for_signal_locale_persistence(
     locale_order: int | None,
 ) -> None:
     """Wait until the turn locale is durable before exposing its signal."""
+    from .locale_state import PromptLocalePersistenceError
     from utils.cloudsave_runtime import MaintenanceModeError
 
     while True:
@@ -225,7 +229,7 @@ async def _wait_for_signal_locale_persistence(
                 locale_order=locale_order,
             )
             return
-        except MaintenanceModeError:
+        except (MaintenanceModeError, PromptLocalePersistenceError):
             await asyncio.sleep(0.25)
 
 

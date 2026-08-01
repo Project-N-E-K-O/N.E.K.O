@@ -273,13 +273,19 @@ async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_deferred_locale_reservation_propagates_permanent_failure(monkeypatch):
+async def test_deferred_locale_reservation_retries_unpersisted_write(monkeypatch):
     from app import memory_server
     from app.memory_server.locale_state import PromptLocalePersistenceError
 
+    attempts = 0
+
     def reserve(_name, *, order=None):
+        nonlocal attempts
         assert order == 41
-        raise PromptLocalePersistenceError("disk write failed")
+        attempts += 1
+        if attempts == 1:
+            raise PromptLocalePersistenceError("not committed")
+        return order
 
     sleep = AsyncMock()
     monkeypatch.setattr(
@@ -289,13 +295,14 @@ async def test_deferred_locale_reservation_propagates_permanent_failure(monkeypa
     )
     monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
 
-    with pytest.raises(PromptLocalePersistenceError, match="disk write failed"):
-        await memory_server.post_turn._wait_for_character_prompt_locale_order(
-            "小天",
-            admission_order=41,
-        )
+    locale_order = await memory_server.post_turn._wait_for_character_prompt_locale_order(
+        "小天",
+        admission_order=41,
+    )
 
-    sleep.assert_not_awaited()
+    assert locale_order == 41
+    assert attempts == 2
+    sleep.assert_awaited_once_with(0.25)
 
 
 @pytest.mark.asyncio
@@ -362,45 +369,36 @@ async def test_post_turn_locale_record_retries_fence_before_counter(monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_post_turn_locale_record_propagates_permanent_failure(monkeypatch):
+async def test_post_turn_locale_record_retries_unpersisted_write(monkeypatch):
     from app import memory_server
     from app.memory_server.locale_state import PromptLocalePersistenceError
 
+    attempts = 0
+
     def persist(_name, *, language, locale_order):
+        nonlocal attempts
         assert language == "zh-TW"
         assert locale_order == 42
-        raise PromptLocalePersistenceError("disk write failed")
+        attempts += 1
+        if attempts == 1:
+            raise PromptLocalePersistenceError("not committed")
 
-    record_turn = MagicMock()
     sleep = AsyncMock()
-    monkeypatch.setattr(
-        memory_server.post_turn,
-        "_extract_user_messages",
-        lambda _messages: ["請記住我喜歡草莓"],
-    )
-    monkeypatch.setattr(memory_server.post_turn, "_extract_ai_response", lambda _messages: "")
     monkeypatch.setattr(
         memory_server.signal_extraction,
         "_signal_check_persist_locale",
         persist,
     )
-    monkeypatch.setattr(
-        memory_server.signal_extraction,
-        "_signal_check_record_turn",
-        record_turn,
-    )
     monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
 
-    with pytest.raises(PromptLocalePersistenceError, match="disk write failed"):
-        await memory_server._run_post_turn_signals(
-            [HumanMessage(content="請記住我喜歡草莓")],
-            "小天",
-            language="zh-TW",
-            locale_order=42,
-        )
+    await memory_server.post_turn._wait_for_signal_locale_persistence(
+        "小天",
+        language="zh-TW",
+        locale_order=42,
+    )
 
-    sleep.assert_not_awaited()
-    record_turn.assert_not_called()
+    assert attempts == 2
+    sleep.assert_awaited_once_with(0.25)
 
 
 def test_deferred_locale_admission_order_cannot_overwrite_newer_turn(tmp_path):
