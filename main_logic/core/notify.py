@@ -334,6 +334,7 @@ class NotifyMixin:
         normalized_lang = normalize_language_code(language, format='full')
 
         self.user_language = normalized_lang
+        self._user_language_explicit = True
         self._conversation_turn_language = normalized_lang
         self._set_conversation_turn_language(normalized_lang)
         if normalized_lang != language:

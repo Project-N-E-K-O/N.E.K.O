@@ -374,11 +374,37 @@ async def test_new_dialog_request_forwards_session_locale(monkeypatch):
     monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
     manager = object.__new__(LifecycleMixin)
     manager.user_language = "zh-TW"
+    manager._user_language_explicit = True
 
     result = await manager._start_session_fetch_new_dialog("Neko", 48912)
 
     assert result == "ok"
     assert calls[0]["params"] == {"language": "zh-TW"}
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_request_omits_seeded_fallback_locale(monkeypatch):
+    from main_logic.core.lifecycle import LifecycleMixin
+    from utils import internal_http_client
+
+    calls: list[dict] = []
+
+    class Response:
+        is_success = True
+        text = "ok"
+
+    class Client:
+        async def get(self, _url, **kwargs):
+            calls.append(kwargs)
+            return Response()
+
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
+    manager = object.__new__(LifecycleMixin)
+    manager.user_language = "en"
+    manager._user_language_explicit = False
+
+    assert await manager._start_session_fetch_new_dialog("Neko", 48912) == "ok"
+    assert "params" not in calls[0]
 
 
 @pytest.mark.asyncio
@@ -497,8 +523,13 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
     monkeypatch.setattr(
         locale_state,
-        "reserve_character_prompt_locale_order",
+        "allocate_character_prompt_locale_order",
         lambda _name: 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda _name, *, order: order,
     )
     monkeypatch.setattr(locale_state, "record_character_prompt_locale", record)
 
@@ -526,7 +557,8 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
 
     deferred = []
 
-    def blocked_reservation(_name):
+    def blocked_reservation(_name, *, order):
+        assert order == 42
         raise MaintenanceModeError(
             "maintenance_readonly",
             operation="save",
@@ -534,6 +566,11 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
         )
 
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(
+        locale_state,
+        "allocate_character_prompt_locale_order",
+        lambda _name: 42,
+    )
     monkeypatch.setattr(
         locale_state,
         "reserve_character_prompt_locale_order",
@@ -570,8 +607,9 @@ async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
     attempts = 0
     recorded = []
 
-    def reserve(_name):
+    def reserve(_name, *, order):
         nonlocal attempts
+        assert order == 42
         attempts += 1
         if attempts == 1:
             raise MaintenanceModeError(
@@ -579,7 +617,7 @@ async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
                 operation="save",
                 target="prompt_locale.json",
             )
-        return 42
+        return order
 
     generation = routes._new_dialog_locale_generations.get("RetryNeko", 0) + 1
     routes._new_dialog_locale_generations["RetryNeko"] = generation
@@ -598,7 +636,12 @@ async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
     sleep = AsyncMock()
     monkeypatch.setattr(routes.asyncio, "sleep", sleep)
 
-    await routes._retry_new_dialog_locale("RetryNeko", "zh-TW", generation)
+    await routes._retry_new_dialog_locale(
+        "RetryNeko",
+        "zh-TW",
+        generation,
+        locale_admission_order=42,
+    )
 
     assert attempts == 2
     assert recorded == [("RetryNeko", "zh-TW", 42)]
@@ -613,8 +656,9 @@ async def test_new_dialog_locale_retry_stops_after_permanent_failure(monkeypatch
 
     attempts = 0
 
-    def reserve(_name):
+    def reserve(_name, *, order):
         nonlocal attempts
+        assert order == 42
         attempts += 1
         raise locale_state.PromptLocalePersistenceError("disk full")
 
@@ -628,7 +672,12 @@ async def test_new_dialog_locale_retry_stops_after_permanent_failure(monkeypatch
     )
     monkeypatch.setattr(routes.asyncio, "sleep", sleep)
 
-    await routes._retry_new_dialog_locale("BrokenNeko", "zh-TW", generation)
+    await routes._retry_new_dialog_locale(
+        "BrokenNeko",
+        "zh-TW",
+        generation,
+        locale_admission_order=42,
+    )
 
     assert attempts == 1
     sleep.assert_not_awaited()
@@ -647,7 +696,12 @@ async def test_new_dialog_stale_locale_retry_cannot_overwrite_newer_request(
         lambda _name: pytest.fail("stale retry must stop before reserving"),
     )
 
-    await routes._retry_new_dialog_locale("RetryNeko", "zh-TW", 1)
+    await routes._retry_new_dialog_locale(
+        "RetryNeko",
+        "zh-TW",
+        1,
+        locale_admission_order=41,
+    )
 
 
 @pytest.mark.asyncio

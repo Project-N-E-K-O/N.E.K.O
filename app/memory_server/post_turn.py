@@ -71,6 +71,7 @@ async def _spawn_outbox_post_turn_signals(
     messages: list,
     *,
     language: str | None = None,
+    locale_admission_order: int | None = None,
 ) -> asyncio.Task:
     """Register the per-turn signals background task in the outbox and spawn it.
 
@@ -87,10 +88,14 @@ async def _spawn_outbox_post_turn_signals(
     from utils.cloudsave_runtime import MaintenanceModeError
     from utils.llm_client import messages_to_dict
 
-    locale_admission_order = await asyncio.to_thread(
-        allocate_character_prompt_locale_order,
-        lanlan_name,
-    )
+    if not isinstance(locale_admission_order, int) or isinstance(
+        locale_admission_order,
+        bool,
+    ):
+        locale_admission_order = await asyncio.to_thread(
+            allocate_character_prompt_locale_order,
+            lanlan_name,
+        )
     try:
         locale_order = await asyncio.to_thread(
             reserve_character_prompt_locale_order,

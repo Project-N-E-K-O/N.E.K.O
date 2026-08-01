@@ -566,6 +566,10 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    locale_admission_order = await asyncio.to_thread(
+        locale_state.allocate_character_prompt_locale_order,
+        lanlan_name,
+    )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
         gates._touch_activity()
@@ -586,6 +590,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
             # 阻塞下一轮 /cache 写盘。
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                locale_admission_order=locale_admission_order,
             )
             return {"status": "cached", "count": len(input_history)}
         except Exception as e:
@@ -596,6 +601,10 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    locale_admission_order = await asyncio.to_thread(
+        locale_state.allocate_character_prompt_locale_order,
+        lanlan_name,
+    )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
         gates._touch_activity()
@@ -633,6 +642,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
             # 异步事实提取（不阻塞返回，失败静默跳过）
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                locale_admission_order=locale_admission_order,
             )
 
             # Phase C: 不再 cancel-and-restart review；让 maybe_spawn_review 在新消息
@@ -648,6 +658,10 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
+    locale_admission_order = await asyncio.to_thread(
+        locale_state.allocate_character_prompt_locale_order,
+        lanlan_name,
+    )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
         gates._touch_activity()
@@ -684,6 +698,7 @@ async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: s
             # 异步事实提取
             await post_turn._spawn_outbox_post_turn_signals(
                 lanlan_name, input_history, language=request.language,
+                locale_admission_order=locale_admission_order,
             )
 
             # Phase C: 见 /process 的注释——不再 cancel-and-restart。
@@ -704,6 +719,10 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
+    locale_admission_order = await asyncio.to_thread(
+        locale_state.allocate_character_prompt_locale_order,
+        lanlan_name,
+    )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
         gates._touch_activity()
@@ -727,6 +746,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
             if input_history:
                 await post_turn._spawn_outbox_post_turn_signals(
                     lanlan_name, input_history, language=request.language,
+                    locale_admission_order=locale_admission_order,
                 )
 
             # Phase C: 见 /process 的注释——不再 cancel-and-restart。
@@ -1780,11 +1800,14 @@ async def _write_new_dialog_locale(
     lanlan_name: str,
     language: str,
     generation: int,
+    *,
+    locale_admission_order: int,
 ) -> None:
     """Persist one still-current new-dialog locale selection."""
     locale_order = await asyncio.to_thread(
         locale_state.reserve_character_prompt_locale_order,
         lanlan_name,
+        order=locale_admission_order,
     )
     if _new_dialog_locale_generations.get(lanlan_name) != generation:
         return
@@ -1800,11 +1823,18 @@ async def _retry_new_dialog_locale(
     lanlan_name: str,
     language: str,
     generation: int,
+    *,
+    locale_admission_order: int,
 ) -> None:
     """Retry a deferred locale write until it succeeds or becomes stale."""
     while _new_dialog_locale_generations.get(lanlan_name) == generation:
         try:
-            await _write_new_dialog_locale(lanlan_name, language, generation)
+            await _write_new_dialog_locale(
+                lanlan_name,
+                language,
+                generation,
+                locale_admission_order=locale_admission_order,
+            )
             return
         except MaintenanceModeError:
             await asyncio.sleep(0.25)
@@ -1820,6 +1850,12 @@ async def _retry_new_dialog_locale(
 async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
+    locale_admission_order = None
+    if is_supported_language_code(language):
+        locale_admission_order = await asyncio.to_thread(
+            locale_state.allocate_character_prompt_locale_order,
+            lanlan_name,
+        )
 
     # 检查角色是否存在于配置中
     try:
@@ -1840,6 +1876,7 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                 lanlan_name,
                 language,
                 generation,
+                locale_admission_order=locale_admission_order,
             )
         except (
             MaintenanceModeError,
@@ -1854,7 +1891,12 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                 exc,
             )
             runtime._spawn_background_task(
-                _retry_new_dialog_locale(lanlan_name, language, generation)
+                _retry_new_dialog_locale(
+                    lanlan_name,
+                    language,
+                    generation,
+                    locale_admission_order=locale_admission_order,
+                )
             )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成

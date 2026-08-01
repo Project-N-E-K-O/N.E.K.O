@@ -46,10 +46,18 @@ async def test_cache_endpoint_writes_time_indexed_db():
     """
     from app import memory_server
 
+    events = []
+    allocate_locale_order = MagicMock(
+        side_effect=lambda _name: events.append("allocate") or 314
+    )
     fake_time_manager = MagicMock()
-    fake_time_manager.astore_conversation = AsyncMock(return_value=None)
+    fake_time_manager.astore_conversation = AsyncMock(
+        side_effect=lambda *_args: events.append("time-indexed")
+    )
     fake_recent_history_manager = MagicMock()
-    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
+    fake_recent_history_manager.update_history = AsyncMock(
+        side_effect=lambda *_args, **_kwargs: events.append("recent")
+    )
     fake_spawn_outbox = AsyncMock(return_value=None)
 
     payload = _build_history_request_payload([
@@ -61,16 +69,19 @@ async def test_cache_endpoint_writes_time_indexed_db():
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
+         patch.object(memory_server.locale_state, "allocate_character_prompt_locale_order", allocate_locale_order), \
          patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
         result = await memory_server.cache_conversation(request, "测试角色")
 
     assert result["status"] == "cached"
     assert result["count"] == 2
+    assert events == ["allocate", "recent", "time-indexed"]
     fake_time_manager.astore_conversation.assert_awaited_once()
     awaited_args = fake_time_manager.astore_conversation.await_args
     # astore_conversation(uid, messages, lanlan_name) — 顺序由 store_conversation 签名定
     assert awaited_args.args[2] == "测试角色"
     assert len(awaited_args.args[1]) == 2
+    assert fake_spawn_outbox.await_args.kwargs["locale_admission_order"] == 314
 
 
 @pytest.mark.unit

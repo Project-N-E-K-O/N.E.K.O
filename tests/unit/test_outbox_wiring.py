@@ -120,6 +120,38 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spawn_outbox_preserves_route_admission_order(tmp_path):
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from memory.outbox import OP_POST_TURN_SIGNALS
+
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_handler(name: str, payload: dict):
+        calls.append((name, payload))
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_POST_TURN_SIGNALS: _fake_handler},
+        clear=False,
+    ), patch.object(
+        memory_server.locale_state,
+        "allocate_character_prompt_locale_order",
+        side_effect=AssertionError("route admission order must be reused"),
+    ):
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天",
+            [HumanMessage(content="喵")],
+            language="zh-TW",
+            locale_admission_order=314,
+        )
+        await task
+
+    assert calls[0][1]["locale_order"] == 314
+    assert await ob.apending_ops("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_spawn_outbox_survives_post_commit_locale_reservation_fence(tmp_path):
     """A late locale fence must not make the durable conversation retry."""
     ob, _ = _install_fresh_memory_state(str(tmp_path))

@@ -1285,11 +1285,13 @@ class LifecycleMixin:
         deliberately avoiding the GIL contention window during TTS worker startup."""
         from utils.internal_http_client import get_internal_http_client
         _mem_client = get_internal_http_client()
+        request_kwargs = {"timeout": 5.0}
+        if getattr(self, "_user_language_explicit", False):
+            request_kwargs["params"] = {"language": self.user_language}
         try:
             resp = await _mem_client.get(
                 f"http://127.0.0.1:{port}/new_dialog/{lanlan_name}",
-                params={"language": self.user_language},
-                timeout=5.0,
+                **request_kwargs,
             )
         except httpx.ConnectError:
             raise ConnectionError(f"❌ 记忆服务未启动！请先启动记忆服务 (端口 {port})")
