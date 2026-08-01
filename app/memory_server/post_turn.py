@@ -82,7 +82,7 @@ async def _spawn_outbox_post_turn_signals(
     """
     from .locale_state import (
         PromptLocalePersistenceError,
-        capture_character_prompt_locale_order,
+        allocate_character_prompt_locale_order,
         reserve_character_prompt_locale_order,
     )
     from utils.cloudsave_runtime import MaintenanceModeError
@@ -92,7 +92,7 @@ async def _spawn_outbox_post_turn_signals(
         locale_admission_order,
         bool,
     ):
-        locale_admission_order = capture_character_prompt_locale_order(
+        locale_admission_order = allocate_character_prompt_locale_order(
             lanlan_name,
         )
     try:

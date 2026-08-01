@@ -53,7 +53,7 @@ async def test_cache_assigns_locale_order_before_thread_offload():
     request = memory_server.HistoryRequest(input_history="[]", language="zh-TW")
     with patch.object(
         memory_server.locale_state,
-        "capture_character_prompt_locale_order",
+        "allocate_character_prompt_locale_order",
         allocated,
     ), patch.object(memory_routes.asyncio, "to_thread", reject_threaded_allocation):
         result = await memory_server.cache_conversation(request, "测试角色")
@@ -95,7 +95,7 @@ async def test_cache_endpoint_writes_time_indexed_db():
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
          patch.object(memory_server.runtime, "recent_history_manager", fake_recent_history_manager), \
          patch.object(memory_server.post_turn, "_spawn_outbox_post_turn_signals", fake_spawn_outbox), \
-         patch.object(memory_server.locale_state, "capture_character_prompt_locale_order", allocate_locale_order), \
+         patch.object(memory_server.locale_state, "allocate_character_prompt_locale_order", allocate_locale_order), \
          patch.object(memory_server.gates, "_aclear_review_clean", AsyncMock(return_value=None)):
         result = await memory_server.cache_conversation(request, "测试角色")
 

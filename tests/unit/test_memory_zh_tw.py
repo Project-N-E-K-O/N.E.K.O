@@ -701,11 +701,10 @@ async def test_new_dialog_unknown_character_only_captures_locale_token(monkeypat
         return {"猫娘": {"Neko": {}}}
 
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
-    captured = []
     monkeypatch.setattr(
         locale_state,
-        "capture_character_prompt_locale_order",
-        lambda name: captured.append(name) or 42,
+        "_locale_path",
+        lambda _name: pytest.fail("capture must not inspect character storage"),
     )
     monkeypatch.setattr(
         locale_state,
@@ -718,7 +717,9 @@ async def test_new_dialog_unknown_character_only_captures_locale_token(monkeypat
     response = await routes._new_dialog("NotACharacter", "en")
 
     assert response.body == b""
-    assert captured == ["NotACharacter"]
+    assert "NotACharacter" not in locale_state._locale_locks
+    assert "NotACharacter" not in locale_state._locale_cache
+    assert "NotACharacter" not in locale_state._character_locale_admission_orders
 
 
 @pytest.mark.asyncio
@@ -846,8 +847,10 @@ async def test_new_dialog_rejects_if_locale_and_outbox_are_both_unwritable(
 
     from app.memory_server import locale_state, routes, runtime
 
+    name = "RejectedNeko"
+
     async def load_characters():
-        return {"猫娘": {"Neko": {}}}
+        return {"猫娘": {name: {}}}
 
     append_pending = AsyncMock(side_effect=OSError("outbox disk full"))
 
@@ -873,13 +876,17 @@ async def test_new_dialog_rejects_if_locale_and_outbox_are_both_unwritable(
         SimpleNamespace(aappend_pending=append_pending),
     )
     monkeypatch.setattr(runtime, "_spawn_background_task", spawn)
+    routes._new_dialog_locale_generations[name] = 7
+    routes._new_dialog_locale_generation_counters[name] = 7
 
     with pytest.raises(HTTPException) as exc_info:
-        await routes._new_dialog("Neko", "zh-TW")
+        await routes._new_dialog(name, "zh-TW")
 
     assert exc_info.value.status_code == 503
     assert exc_info.value.detail == "Prompt locale persistence is unavailable"
     append_pending.assert_awaited_once()
+    assert routes._new_dialog_locale_generations[name] == 7
+    assert routes._new_dialog_locale_generation_counters[name] == 8
 
 
 @pytest.mark.asyncio

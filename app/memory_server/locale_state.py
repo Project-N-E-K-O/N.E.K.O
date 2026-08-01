@@ -50,6 +50,7 @@ _subject_locale_forget_cutoffs_loaded = False
 _character_locale_admission_orders: dict[str, int] = {}
 _subject_locale_admission_orders: dict[tuple[str, str], int] = {}
 _locale_admission_orders_guard = threading.Lock()
+_character_locale_capture_order = 0
 
 
 class PromptLocalePersistenceError(RuntimeError):
@@ -403,6 +404,7 @@ def _persist_subject_locale_state_unlocked(
 
 def allocate_character_prompt_locale_order(name: str) -> int:
     """Allocate a process-local causal order at request admission time."""
+    global _character_locale_capture_order
     with _locale_reload_guard, _get_locale_lock(name):
         language, order, reserved_order = _load_locale_state_unlocked(name)
         with _locale_admission_orders_guard:
@@ -413,12 +415,23 @@ def allocate_character_prompt_locale_order(name: str) -> int:
             )
             selected_order = max(time.time_ns(), high_water + 1)
             _character_locale_admission_orders[name] = selected_order
+            _character_locale_capture_order = max(
+                _character_locale_capture_order,
+                selected_order,
+            )
         return selected_order
 
 
-def capture_character_prompt_locale_order(name: str) -> int:
-    """Capture a durable-aware token without persisting request state."""
-    return allocate_character_prompt_locale_order(name)
+def capture_character_prompt_locale_order(_name: str) -> int:
+    """Capture a monotonic token without touching per-character state."""
+    global _character_locale_capture_order
+    with _locale_admission_orders_guard:
+        selected_order = max(
+            time.time_ns(),
+            _character_locale_capture_order + 1,
+        )
+        _character_locale_capture_order = selected_order
+        return selected_order
 
 
 def reserve_character_prompt_locale_order(

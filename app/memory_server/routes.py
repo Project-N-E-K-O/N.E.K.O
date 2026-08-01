@@ -135,7 +135,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     if is_supported_language_code(request.language):
         explicit_language = normalize_language_code(request.language, format='full')
         locale_admission_order = (
-            locale_state.capture_character_prompt_locale_order(name)
+            locale_state.allocate_character_prompt_locale_order(name)
         )
 
     imported_at = datetime.now().astimezone().isoformat()
@@ -395,7 +395,27 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
 # 上 main_server 端缓存（C+ 方案）。
 _new_dialog_qps_counter: dict[str, int] = {}
 _new_dialog_locale_generations: dict[str, int] = {}
+_new_dialog_locale_generation_counters: dict[str, int] = {}
 NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
+
+
+def _next_new_dialog_locale_generation(lanlan_name: str) -> int:
+    generation = max(
+        _new_dialog_locale_generation_counters.get(lanlan_name, 0),
+        _new_dialog_locale_generations.get(lanlan_name, 0),
+    ) + 1
+    _new_dialog_locale_generation_counters[lanlan_name] = generation
+    return generation
+
+
+def _promote_new_dialog_locale_generation(
+    lanlan_name: str,
+    generation: int,
+) -> None:
+    _new_dialog_locale_generations[lanlan_name] = max(
+        _new_dialog_locale_generations.get(lanlan_name, 0),
+        generation,
+    )
 
 
 def _format_legacy_settings_as_text(
@@ -575,7 +595,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.capture_character_prompt_locale_order(lanlan_name)
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -609,7 +629,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.capture_character_prompt_locale_order(lanlan_name)
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -665,7 +685,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.capture_character_prompt_locale_order(lanlan_name)
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -725,7 +745,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.capture_character_prompt_locale_order(lanlan_name)
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -1946,13 +1966,12 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if is_supported_language_code(language):
-        generation = _new_dialog_locale_generations.get(lanlan_name, 0) + 1
-        _new_dialog_locale_generations[lanlan_name] = generation
+        generation = _next_new_dialog_locale_generation(lanlan_name)
         try:
             await _write_new_dialog_locale(
                 lanlan_name,
                 language,
-                generation,
+                None,
                 locale_admission_order=locale_admission_order,
             )
         except (
@@ -1990,6 +2009,10 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                     detail="Prompt locale persistence is unavailable",
                 ) from outbox_exc
             else:
+                _promote_new_dialog_locale_generation(
+                    lanlan_name,
+                    generation,
+                )
                 operation = _run_durable_new_dialog_locale_retry(
                     lanlan_name,
                     language,
@@ -1998,6 +2021,11 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                     op_id=op_id,
                 )
                 runtime._spawn_background_task(operation)
+        else:
+            _promote_new_dialog_locale_generation(
+                lanlan_name,
+                generation,
+            )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
     # cacheable 机会，记进来反而污染 per_char 分布。
