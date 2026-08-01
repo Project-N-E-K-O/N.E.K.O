@@ -576,7 +576,10 @@ class QQSettingsService:
                 return await self._persist_business_config_locked(overlay)
 
     async def _persist_business_config_locked(
-        self, overlay: dict[str, Any] | None = None,
+        self,
+        overlay: dict[str, Any] | None = None,
+        *,
+        refresh_backlog_store: bool = True,
     ) -> bool:
         """Persist while the shared settings writer locks are already held."""
         try:
@@ -606,7 +609,12 @@ class QQSettingsService:
                 # after save succeeds; readers keep seeing the live snapshot.
                 saved["speaker_trust_profiles"] = live_trust_profiles
             self.plugin._qq_settings = saved
-            self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
+            if refresh_backlog_store:
+                self.plugin.backlog_store = (
+                    self.plugin._create_backlog_store_from_settings(
+                        self.plugin._qq_settings,
+                    )
+                )
             return True
         except Exception as e:
             self.plugin.logger.error(f"持久化 QQ 配置失败: {e}")
@@ -694,7 +702,9 @@ class QQSettingsService:
                 after = staged_manager.speaker_trust_profiles()
                 self._staged_speaker_trust_profiles = after
                 save_task = asyncio.ensure_future(
-                    self._persist_business_config_locked()
+                    self._persist_business_config_locked(
+                        refresh_backlog_store=False,
+                    )
                 )
                 try:
                     persisted = await asyncio.shield(save_task)

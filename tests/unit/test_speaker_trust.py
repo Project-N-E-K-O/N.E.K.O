@@ -296,6 +296,9 @@ def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation(
         "喜欢猫的人来自北京", "不喜欢猫的人来自北京",
     ) is None
+    assert deterministic_relation(
+        "喜欢猫的女孩来自北京", "不喜欢猫的女孩来自北京",
+    ) is None
     assert deterministic_relation("Alice is able", "Alice is notable") is None
     assert deterministic_relation(
         "Alice likes false eyelashes", "Alice likes eyelashes",
@@ -408,6 +411,61 @@ async def test_scoped_route_returns_request_derived_events_when_no_fact_created(
 
 
 @pytest.mark.asyncio
+async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    active_facts = [{
+        "id": "forgotten-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }]
+    same_id_other_scope = {
+        **active_facts[0],
+        "subject_id": "qq:8899:1001",
+        "scope": "group_participant:qq:8899:1001",
+    }
+
+    async def _load_facts(_lanlan_name):
+        return list(active_facts)
+
+    async def _extract_facts(*_args, **_kwargs):
+        active_facts.clear()
+        active_facts.append(same_id_other_scope)
+        return []
+
+    store = SimpleNamespace(
+        aload_facts=_load_facts,
+        extract_facts=_extract_facts,
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+    request = ScopedHistoryRequest(
+        input_history=json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        subject={
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        speaker_label="Owner(9999)",
+        speaker_trust=1.0,
+        speaker_id="qq:9999",
+        speaker_is_owner=True,
+    )
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    assert result["trust_events"] == []
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("member_first", [True, False])
 async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
     from app.memory_server import routes
@@ -462,7 +520,7 @@ async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
         ]
     )
     store = SimpleNamespace(
-        aload_facts=AsyncMock(return_value=[]),
+        aload_facts=AsyncMock(side_effect=[[], [created_fact]]),
         extract_facts_batch=AsyncMock(return_value=results),
     )
     store.aevaluate_speaker_trust_events = (
@@ -527,7 +585,7 @@ async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
     reconciled.pop("speaker_trust")
     reconciled["speaker_provenance_mixed"] = True
     store = SimpleNamespace(
-        aload_facts=AsyncMock(return_value=[existing]),
+        aload_facts=AsyncMock(side_effect=[[existing], [reconciled]]),
         extract_facts_batch=AsyncMock(return_value=[
             {
                 "status": "ok", "created": [],
@@ -547,6 +605,57 @@ async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
 
     assert response["segments"][1]["trust_events"] == []
     assert response["segments"][0]["reconciled"] == [{"id": "shared-fact"}]
+
+
+@pytest.mark.asyncio
+async def test_batch_route_revalidates_trust_signals_after_concurrent_forget():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    prior = {
+        "id": "forgotten-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    same_id_other_scope = {
+        **prior,
+        "subject_id": "qq:8899:1001",
+        "scope": "group_participant:qq:8899:1001",
+    }
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [same_id_other_scope]]),
+        extract_facts_batch=AsyncMock(return_value=[{
+            "status": "ok", "created": [], "dropped": 0,
+        }]),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[owner]),
+        )
+
+    assert response["segments"][0]["trust_events"] == []
 
 
 def test_model_shaped_fields_never_replace_request_provenance():
@@ -583,7 +692,7 @@ async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
     active = 0
     max_active = 0
 
-    async def _persist():
+    async def _persist(**_kwargs):
         nonlocal active, max_active
         active += 1
         max_active = max(max_active, active)
@@ -616,6 +725,37 @@ async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
 
 
 @pytest.mark.asyncio
+async def test_trust_only_save_preserves_backlog_store_instance():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    backlog_store = object()
+
+    async def _save(payload):
+        return dict(payload)
+
+    plugin = SimpleNamespace(
+        permission_mgr=manager,
+        group_permission_mgr=None,
+        logger=MagicMock(),
+        _qq_settings={},
+        config_store=SimpleNamespace(save=_save),
+        backlog_store=backlog_store,
+        _create_backlog_store_from_settings=MagicMock(),
+    )
+    service = QQSettingsService(plugin)
+
+    assert await service.apply_speaker_trust_update(
+        sender_id="1001",
+        message_count=1,
+        activity_event_id="preserve-backlog-lock",
+        trust_events=[],
+    )
+    assert plugin.backlog_store is backlog_store
+    plugin._create_backlog_store_from_settings.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_unpersisted_trust_is_invisible_during_slow_failed_save():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,
@@ -630,7 +770,7 @@ async def test_unpersisted_trust_is_invisible_during_slow_failed_save():
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _persist():
+    async def _persist(**_kwargs):
         started.set()
         await release.wait()
         return False
@@ -671,7 +811,7 @@ async def test_cancelled_trust_writer_waits_for_the_inflight_save(persisted):
     started = asyncio.Event()
     release = asyncio.Event()
 
-    async def _persist():
+    async def _persist(**_kwargs):
         started.set()
         await release.wait()
         return persisted
@@ -908,7 +1048,7 @@ async def test_dashboard_reload_waits_before_reading_trust_config():
     settings = QQSettingsService(plugin)
     plugin.settings_service = settings
 
-    async def _persist():
+    async def _persist(**_kwargs):
         persist_started.set()
         await persist_release.wait()
         stored["speaker_trust_profiles"] = dict(

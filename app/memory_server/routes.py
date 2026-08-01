@@ -1024,15 +1024,6 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         from config.prompts.prompts_memory import get_group_digest_speaker_label
         from utils.language_utils import get_global_language_full
         speaker_label = get_group_digest_speaker_label(get_global_language_full())
-    trust_events = []
-    if req.speaker_is_owner:
-        trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
-            lanlan_name,
-            input_history,
-            subject=subject,
-            speaker_provenance=speaker_provenance,
-            speaker_is_owner=True,
-        )
     # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
     # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
     # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
@@ -1051,6 +1042,17 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=502,
             detail="scoped fact extraction failed; retry later",
         ) from exc
+    trust_events = []
+    if req.speaker_is_owner:
+        # Re-read after extraction: a concurrent scoped forget may have
+        # archived the target fact while the LLM call was in flight.
+        trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
+            lanlan_name,
+            input_history,
+            subject=subject,
+            speaker_provenance=speaker_provenance,
+            speaker_is_owner=True,
+        )
     await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "processed",
@@ -1226,6 +1228,27 @@ async def _process_scoped_history_segments(
             and segment.get("speaker_is_owner")
             and result.get("status") == "ok"
         ):
+            active_fact_keys = {
+                (
+                    str(fact.get("id")),
+                    fact.get("subject_kind"),
+                    fact.get("subject_id"),
+                    fact.get("scope"),
+                )
+                for fact in await runtime.fact_store.aload_facts(lanlan_name)
+                if isinstance(fact, dict) and fact.get("id") is not None
+            }
+            active_signal_facts = [
+                fact
+                for fact in signal_facts
+                if fact.get("id") is not None
+                and (
+                    str(fact.get("id")),
+                    fact.get("subject_kind"),
+                    fact.get("subject_id"),
+                    fact.get("scope"),
+                ) in active_fact_keys
+            ]
             segment["trust_events"] = (
                 await runtime.fact_store.aevaluate_speaker_trust_events(
                     lanlan_name,
@@ -1237,7 +1260,7 @@ async def _process_scoped_history_segments(
                         "speaker_label": segment.get("speaker_label"),
                     },
                     speaker_is_owner=True,
-                    facts_snapshot=signal_facts,
+                    facts_snapshot=active_signal_facts,
                 )
             )
         if signal_facts is not None:

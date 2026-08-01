@@ -157,12 +157,12 @@ def _cjk_positive_variants(text: str) -> set[str]:
         while (index := text.find(negative, start)) >= 0:
             prefix = text[:index]
             suffix = text[index + len(negative):]
-            # ``不喜欢猫的人来自北京`` negates a relative-clause modifier,
-            # not the asserted ``来自北京`` predicate.  A finite predicate
-            # vocabulary can never reliably recognize every predicate after
-            # ``的人``; reject the relative-clause shape directly instead.
+            # ``不喜欢猫的女孩来自北京`` negates a relative-clause modifier,
+            # not the asserted ``来自北京`` predicate. A finite noun/predicate
+            # vocabulary cannot reliably classify what follows ``的``;
+            # reject the relative-clause shape directly instead.
             # False negatives are safer than fabricating a trust penalty.
-            if "的人" in suffix:
+            if "的" in suffix:
                 start = index + len(negative)
                 continue
             # Another predicate on either side makes this occurrence a
