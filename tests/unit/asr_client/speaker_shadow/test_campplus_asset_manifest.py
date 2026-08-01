@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import socket
 import sys
 from pathlib import Path
 
@@ -108,6 +109,13 @@ def test_manifest_rejects_malformed_security_fields(
         load_campplus_manifest(tmp_path)
 
 
+def test_manifest_rejects_non_utf8_as_unreadable(tmp_path) -> None:
+    (tmp_path / "manifest.json").write_bytes(b"\xff\xfe\x00")
+
+    with pytest.raises(CampPlusAssetError, match="manifest_unreadable"):
+        load_campplus_manifest(tmp_path)
+
+
 def test_asset_verification_rejects_missing_empty_wrong_size_and_wrong_sha(
     tmp_path,
     monkeypatch,
@@ -196,7 +204,8 @@ def test_runtime_resolution_never_opens_network(monkeypatch, tmp_path) -> None:
     def fail_network(*_args, **_kwargs):
         raise AssertionError("runtime CAM++ resolution must remain offline")
 
-    monkeypatch.setattr("urllib.request.urlopen", fail_network)
+    monkeypatch.setattr(socket.socket, "connect", fail_network)
+    monkeypatch.setattr(socket, "create_connection", fail_network)
 
     with pytest.raises(CampPlusAssetError):
         resolve_verified_campplus_asset(tmp_path)

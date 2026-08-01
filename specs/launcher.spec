@@ -123,7 +123,7 @@ for pkg in critical_packages:
                 f"Cannot collect {pkg!r}, but packaged model assets require it. "
                 "Install with "
                 "`uv sync` or remove the embedding "
-                "or voice-turn assets directory before building."
+                "voice-turn, or speaker-shadow assets directory before building."
             ) from e
         if pkg in galgame_group_packages:
             raise RuntimeError(

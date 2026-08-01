@@ -122,7 +122,19 @@ def test_preparer_rejects_non_https_download_source(tmp_path, monkeypatch) -> No
     assert not (tmp_path / MODEL_FILENAME).exists()
 
 
-def test_preparer_removes_partial_file_after_bad_download(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize(
+    ("downloaded", "expected_reason"),
+    [
+        (b"corrupt model", "asset_size_mismatch"),
+        (b"reviewed modeX", "asset_sha256_mismatch"),
+    ],
+)
+def test_preparer_removes_partial_file_after_bad_download(
+    tmp_path,
+    monkeypatch,
+    downloaded: bytes,
+    expected_reason: str,
+) -> None:
     payload = b"reviewed model"
     _manifest(tmp_path, payload=payload)
     monkeypatch.setattr(
@@ -135,10 +147,10 @@ def test_preparer_removes_partial_file_after_bad_download(tmp_path, monkeypatch)
     monkeypatch.setattr(
         preparer.urllib.request,
         "urlopen",
-        lambda *_args, **_kwargs: _Response(b"corrupt model"),
+        lambda *_args, **_kwargs: _Response(downloaded),
     )
 
-    with pytest.raises(CampPlusAssetError, match="size|SHA-256"):
+    with pytest.raises(CampPlusAssetError, match=expected_reason):
         preparer.prepare_speaker_model(tmp_path)
 
     assert not (tmp_path / MODEL_FILENAME).exists()

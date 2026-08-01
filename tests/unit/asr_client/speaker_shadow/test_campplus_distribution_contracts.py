@@ -19,6 +19,14 @@ def test_hatch_artifacts_exclude_downloaded_campplus_weights() -> None:
         assert f"{MODEL_DIRECTORY}/*.part" in excludes
 
 
+def test_unit_ci_installs_pinned_frontend_parity_oracle() -> None:
+    workflow = (ROOT / ".github/workflows/unit-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "uv pip install kaldi-native-fbank==1.22.3" in workflow
+
+
 def test_pyinstaller_bundles_campplus_and_requires_onnxruntime() -> None:
     spec = (ROOT / "specs" / "launcher.spec").read_text(encoding="utf-8")
 

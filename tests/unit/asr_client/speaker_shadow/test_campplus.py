@@ -138,29 +138,30 @@ def test_embedding_model_constructor_is_zero_io_and_onnxruntime_is_lazy(
 
 
 @pytest.mark.parametrize(
-    ("session_kwargs", "message"),
+    ("session_kwargs", "expected_token"),
     [
-        ({"input_name": "features"}, "input name"),
-        ({"input_type": "tensor(double)"}, "input type"),
-        ({"input_shape": ["N", "T", 64]}, "input shape"),
-        ({"output_name": "speaker"}, "output name"),
-        ({"output_type": "tensor(double)"}, "output type"),
-        ({"output_shape": ["N", 256]}, "output shape"),
+        ({"input_name": "features"}, "onnx_input_name"),
+        ({"input_type": "tensor(double)"}, "onnx_input_type"),
+        ({"input_shape": ["N", "T", 64]}, "onnx_input_shape"),
+        ({"output_name": "speaker"}, "onnx_output_name"),
+        ({"output_type": "tensor(double)"}, "onnx_output_type"),
+        ({"output_shape": ["N", 256]}, "onnx_output_shape"),
     ],
 )
 def test_load_rejects_wrong_onnx_tensor_contract(
     tmp_path,
     monkeypatch,
     session_kwargs,
-    message,
+    expected_token,
 ) -> None:
     _install_verified_model_path(monkeypatch, tmp_path)
     session = _FakeSession(np.ones((1, 192), dtype=np.float32), **session_kwargs)
     _install_fake_onnxruntime(monkeypatch, session, [])
     model = CampPlusEmbeddingModel(asset_dir=tmp_path)
 
+    with pytest.raises(ValueError, match=expected_token):
+        model._validate_session_contract(session)
     assert model.load() is False
-    assert message.startswith(("input", "output"))
     model.close()
 
 

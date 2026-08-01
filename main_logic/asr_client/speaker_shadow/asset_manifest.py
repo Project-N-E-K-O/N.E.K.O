@@ -95,7 +95,7 @@ def load_campplus_manifest(directory: Path) -> CampPlusManifest:
 
     try:
         raw = json.loads((directory / MANIFEST_FILENAME).read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         raise CampPlusAssetError("manifest_unreadable") from None
     if not isinstance(raw, dict):
         raise CampPlusAssetError("manifest_invalid")
