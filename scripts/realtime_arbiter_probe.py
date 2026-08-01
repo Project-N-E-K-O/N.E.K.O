@@ -404,16 +404,23 @@ class _Probe:
             self._obs.errors.append(record)
             if self._idle_cancel_watch is not None:
                 self._idle_cancel_watch.append(record)
-                return
-            # An error ends the open turn, and the turn has to KNOW that —
-            # waking the waiter while leaving `done_at` unset made the barge-in
-            # check below read "still running" and cancel a response that had
-            # already failed. Recording it is what makes the wake-up honest;
-            # gating alone would just trade a bad measurement for a 20s stall.
-            if self._open is not None and self._open.done_at is None:
-                self._open.done_at = now
-                self._open.status = "error"
-                self._terminal.set()
+            # Recorded, and nothing else. An error frame is not proof this turn
+            # ended: an uncorrelated one belongs to something else, and a
+            # connection-level one (a 503 the transport answers by throttling
+            # and continuing) leaves the response streaming. The arbiter takes
+            # the same posture — `notify_error` ignores what it cannot match to
+            # a ticket.
+            #
+            # I had this wrong in both directions one round apart: first waking
+            # the waiter without recording anything, which let a barge-in fire
+            # at a response that had already failed; then recording a
+            # completion, which is a FALSE completion for every error that did
+            # not end the turn, and skips the barge-in that should have
+            # happened. The honest posture is neither.
+            #
+            # The cost is real and preferred: a turn that dies by error alone
+            # now waits out the probe's own budget and is reported under
+            # "terminals never received", which is exactly what was observed.
             return
 
         if etype.startswith("response."):
