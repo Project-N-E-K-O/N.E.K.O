@@ -2257,7 +2257,29 @@ def _storage_key(node) -> str | None:
     if isinstance(node, ast.Attribute):
         base = _storage_key(node.value)
         return f'{base}.{node.attr}' if base else None
+    if isinstance(node, ast.Subscript):
+        base = _storage_key(node.value)
+        if base:
+            index = ast.dump(
+                node.slice, annotate_fields=False, include_attributes=False
+            )
+            return f'{base}[{index}]'
     return None
+
+
+def _loaded_storage_keys(node):
+    """Yield maximal load keys without losing attribute/subscript identity."""
+    if isinstance(node, (ast.Attribute, ast.Subscript)) and isinstance(
+        node.ctx, ast.Load
+    ):
+        if (key := _storage_key(node)) is not None:
+            yield key
+            return
+    if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+        yield node.id
+        return
+    for child in ast.iter_child_nodes(node):
+        yield from _loaded_storage_keys(child)
 
 
 def _class_protocol_claim(
@@ -2284,6 +2306,12 @@ def _class_protocol_claim(
             for method in ('__enter__', '__exit__', '__aenter__', '__aexit__')
             if method in claiming_by_scope.get(scope, set())
         }
+    if stored_classes and isinstance(parent, ast.Await):
+        return {
+            (scope, '__await__')
+            for scope in stored_classes
+            if '__await__' in claiming_by_scope.get(scope, set())
+        }
     if stored_classes and isinstance(parent, ast.Call) and parent.func is node:
         return {
             (scope, '__call__')
@@ -2306,6 +2334,8 @@ def _class_protocol_claim(
                 if method in methods:
                     return {(scope, method)}
             return set()
+        if isinstance(current, ast.Await):
+            return {(scope, '__await__')} if '__await__' in methods else set()
         if isinstance(current, (ast.For, ast.AsyncFor)) and _contains_node(
             current.iter, node
         ):
@@ -3978,6 +4008,33 @@ def test_iterator_protocol_claims_are_counted_as_event_loop_work():
     ), 'for 必须解析 claim-owning __iter__ / __next__ protocol calls'
 
 
+def test_awaitable_protocol_claims_are_counted_as_event_loop_work():
+    tree = ast.parse(
+        'class AwaitOwner:\n'
+        '    def __await__(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            yield\n'
+        'async def handler():\n'
+        '    await AwaitOwner()\n'
+    )
+    claiming, generators, aliases, import_facts = _module_level_claiming_workers([
+        ('synthetic_awaitable', tree)
+    ])
+    handler = next(
+        node for node in tree.body if isinstance(node, ast.AsyncFunctionDef)
+    )
+
+    assert _scope_claiming_names_called_on_loop(
+        handler,
+        'synthetic_awaitable',
+        None,
+        claiming,
+        generators,
+        aliases,
+        import_facts,
+    ), 'await 必须解析 claim-owning __await__ protocol call'
+
+
 def test_workshop_router_discovery_is_recursive(tmp_path):
     (tmp_path / 'top.py').write_text('VALUE = 1\n', encoding='utf-8')
     workers = tmp_path / 'workers'
@@ -4113,6 +4170,15 @@ _OS_CONTENT_PATH_MUTATION_ARGS = {
     'truncate': ((0, 'path'),),
 }
 
+_TEMPFILE_CONTENT_PATH_MUTATION_ARGS = {
+    'mkstemp': 2,
+    'mkdtemp': 2,
+    'TemporaryFile': 2,
+    'NamedTemporaryFile': 6,
+    'SpooledTemporaryFile': 7,
+    'TemporaryDirectory': 2,
+}
+
 _COPY_CONTENT_PATH_ARGS = {
     'copy': ((0, 'src'), (1, 'dst')),
     'copy2': ((0, 'src'), (1, 'dst')),
@@ -4155,6 +4221,12 @@ _FOLDER_OPERATION_CLAIMS = {
     'mkstemp': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
+    **{
+        name: {
+            'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+        }
+        for name in _TEMPFILE_CONTENT_PATH_MUTATION_ARGS
+    },
     'truncate': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
@@ -4179,7 +4251,7 @@ _FOLDER_OPERATION_ARGS = {
     'copyfile': 1,
     'copytree': 1,
     'move': 1,
-    'mkstemp': 2,
+    **_TEMPFILE_CONTENT_PATH_MUTATION_ARGS,
     **{name: arguments[0][0] for name, arguments in _OS_CONTENT_PATH_MUTATION_ARGS.items()},
 }
 
@@ -4199,7 +4271,7 @@ _PACKAGE_OPERATION_FOLDER_KEYWORDS = {
     'copyfile': 'dst',
     'copytree': 'dst',
     'move': 'dst',
-    'mkstemp': 'dir',
+    **{name: 'dir' for name in _TEMPFILE_CONTENT_PATH_MUTATION_ARGS},
 }
 
 # 这些名字过于通用，不能全模块扫描；但在指定 worker 单元里，它们正是内容目录的
@@ -4288,6 +4360,16 @@ def _known_operation_names() -> set[str]:
     return names
 
 
+_OPERATION_IMPORT_MODULES = {
+    **{name: {'os'} for name in _OS_CONTENT_PATH_MUTATION_ARGS},
+    **{name: {'tempfile'} for name in _TEMPFILE_CONTENT_PATH_MUTATION_ARGS},
+    **{
+        name: {'shutil'}
+        for name in {'rmtree', *set(_COPY_CONTENT_PATH_ARGS)}
+    },
+}
+
+
 def _operation_aliases(
     nodes, seed=None, before_line: int | None = None
 ) -> dict[str, str]:
@@ -4315,6 +4397,9 @@ def _operation_aliases(
                 continue
             if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
+                    allowed_modules = _OPERATION_IMPORT_MODULES.get(alias.name)
+                    if allowed_modules and node.module not in allowed_modules:
+                        continue
                     canonical = operation_set(state.get(alias.name, alias.name))
                     local = alias.asname or alias.name
                     if canonical:
@@ -4326,7 +4411,8 @@ def _operation_aliases(
                         for operation in _OS_CONTENT_PATH_MUTATION_ARGS:
                             state[f'{local}.{operation}'] = frozenset({operation})
                     elif alias.name == 'tempfile':
-                        state[f'{local}.mkstemp'] = frozenset({'mkstemp'})
+                        for operation in _TEMPFILE_CONTENT_PATH_MUTATION_ARGS:
+                            state[f'{local}.{operation}'] = frozenset({operation})
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
                 reference = (
@@ -4394,6 +4480,133 @@ def _operation_aliases(
     return after(list(nodes), dict(seed or {}))
 
 
+def _operation_partial_bindings(
+    nodes, before_line: int | None = None
+) -> dict[str, frozenset[ast.Call]]:
+    """Resolve operation partials while retaining their bound arguments."""
+    def merge_possible(left, right):
+        return {
+            name: frozenset(left.get(name, ())) | frozenset(right.get(name, ()))
+            for name in set(left) | set(right)
+            if left.get(name) or right.get(name)
+        }
+
+    def after(statements, state):
+        state = {name: frozenset(calls) for name, calls in state.items()}
+        for node in statements:
+            if before_line is not None and node.lineno >= before_line:
+                continue
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                value = node.value
+                if (
+                    isinstance(value, ast.Call)
+                    and _tail_name(value) == 'partial'
+                    and value.args
+                ):
+                    bindings = frozenset({value})
+                else:
+                    bindings = state.get(_storage_key(value) or '', frozenset())
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                for target in targets:
+                    if (key := _storage_key(target)) is None:
+                        continue
+                    if bindings:
+                        state[key] = bindings
+                    else:
+                        state.pop(key, None)
+            elif isinstance(node, ast.If):
+                state = merge_possible(
+                    after(node.body, state), after(node.orelse, state)
+                )
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                state = after(node.body, state)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                state = merge_possible(state, after(node.body, state))
+                state = after(node.orelse, state)
+            elif isinstance(node, ast.Match):
+                paths = [after(case.body, state) for case in node.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in node.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                if paths:
+                    state = paths[0]
+                    for path in paths[1:]:
+                        state = merge_possible(state, path)
+            elif isinstance(node, ast.Try):
+                prefix_states = [state]
+                body_state = state
+                for statement in node.body:
+                    body_state = after([statement], body_state)
+                    prefix_states.append(body_state)
+                paths = [after(node.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in node.handlers
+                    for prefix_state in prefix_states
+                )
+                state = paths[0]
+                for path in paths[1:]:
+                    state = merge_possible(state, path)
+                state = after(node.finalbody, state)
+        return state
+
+    return after(list(nodes), {})
+
+
+def _invalid_operation_import_names(
+    nodes, before_line: int | None = None
+) -> set[str]:
+    """Names proven to come from a module that does not provide that API."""
+    def after(statements, state):
+        state = set(state)
+        for node in statements:
+            if before_line is not None and node.lineno >= before_line:
+                continue
+            if isinstance(node, ast.ImportFrom):
+                for alias in node.names:
+                    local = alias.asname or alias.name
+                    allowed = _OPERATION_IMPORT_MODULES.get(alias.name)
+                    if allowed and node.module not in allowed:
+                        state.add(local)
+                    else:
+                        state.discard(local)
+            elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = (
+                    node.targets if isinstance(node, ast.Assign) else [node.target]
+                )
+                state.difference_update(
+                    name for target in targets for name in _assigned_names(target)
+                )
+            elif isinstance(node, ast.If):
+                state = after(node.body, state) | after(node.orelse, state)
+            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+                state |= after(node.body, state)
+                state = after(node.orelse, state)
+            elif isinstance(node, (ast.With, ast.AsyncWith)):
+                state = after(node.body, state)
+            elif isinstance(node, ast.Match):
+                paths = [after(case.body, state) for case in node.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in node.cases
+                )
+                state = set().union(*paths, *([] if exhaustive else [state]))
+            elif isinstance(node, ast.Try):
+                paths = [after(node.orelse, after(node.body, state))]
+                paths.extend(after(handler.body, state) for handler in node.handlers)
+                state = after(node.finalbody, set().union(*paths))
+        return state
+
+    return after(list(nodes), set())
+
+
 def _is_operation_alias_source(node, parents: dict[int, ast.AST]) -> bool:
     """An assignment RHS defines an alias; only its later uses execute work."""
     parent = parents.get(id(node))
@@ -4435,9 +4648,7 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
 
     def expression_origins(node, state):
         return set().union(*(
-            state.get(child.id, {child.id})
-            for child in ast.walk(node)
-            if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+            state.get(key, {key}) for key in _loaded_storage_keys(node)
         )) if node is not None else set()
 
     def merge(left, right):
@@ -4496,13 +4707,16 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                     else [statement.target]
                 )
                 for target in targets:
-                    bound_names = {
-                        child.id
-                        for child in ast.walk(target)
-                        if isinstance(child, ast.Name)
-                        and isinstance(child.ctx, ast.Store)
-                    }
-                    for name in bound_names:
+                    bound_keys = (
+                        {key} if (key := _storage_key(target)) is not None
+                        else {
+                            child.id
+                            for child in ast.walk(target)
+                            if isinstance(child, ast.Name)
+                            and isinstance(child.ctx, ast.Store)
+                        }
+                    )
+                    for name in bound_keys:
                         named_origins = set(origins)
                         if _looks_like_content_folder(name):
                             named_origins.add(name)
@@ -4603,9 +4817,7 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
 def _expression_path_origins(node, func, before_line: int) -> set[str]:
     origins = _path_origins(func, before_line)
     return set().union(*(
-        origins.get(child.id, {child.id})
-        for child in ast.walk(node)
-        if isinstance(child, ast.Name) and isinstance(child.ctx, ast.Load)
+        origins.get(key, {key}) for key in _loaded_storage_keys(node)
     )) if node is not None else set()
 
 
@@ -4633,8 +4845,12 @@ def _propagate_content_folder_parameters(functions) -> None:
     """Mark helper parameters reached by local content-folder arguments."""
     functions = list(functions)
     by_name = {}
+    methods_by_name = {}
     for func in functions:
         by_name.setdefault(func.name, []).append(func)
+        positional = list(func.args.posonlyargs) + list(func.args.args)
+        if positional and positional[0].arg in {'self', 'cls'}:
+            methods_by_name.setdefault(func.name, []).append(func)
         func._content_folder_parameters = set()
 
     changed = True
@@ -4642,13 +4858,22 @@ def _propagate_content_folder_parameters(functions) -> None:
         changed = False
         for caller in functions:
             for call in _walk_own_scope(caller):
-                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                if not isinstance(call, ast.Call):
                     continue
-                candidates = by_name.get(call.func.id, [])
+                if isinstance(call.func, ast.Name):
+                    candidates = by_name.get(call.func.id, [])
+                    bound_method = False
+                elif isinstance(call.func, ast.Attribute):
+                    candidates = methods_by_name.get(call.func.attr, [])
+                    bound_method = True
+                else:
+                    continue
                 if len(candidates) != 1:
                     continue
                 callee = candidates[0]
                 positional = list(callee.args.posonlyargs) + list(callee.args.args)
+                if bound_method and positional and positional[0].arg in {'self', 'cls'}:
+                    positional = positional[1:]
                 supplied = [
                     (positional[index].arg, value)
                     for index, value in enumerate(call.args[:len(positional)])
@@ -4872,6 +5097,25 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
                     for assigned in targets:
                         if (key := _storage_key(assigned)) is not None:
                             handle_paths[key] = (path, node.lineno)
+    for assignment in sorted(
+        (
+            node for node in _walk_own_scope(func)
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+        ),
+        key=lambda node: node.lineno,
+    ):
+        source = _storage_key(assignment.value)
+        path_and_line = handle_paths.get(source)
+        if path_and_line is None or assignment.lineno <= path_and_line[1]:
+            continue
+        targets = (
+            assignment.targets
+            if isinstance(assignment, ast.Assign)
+            else [assignment.target]
+        )
+        for target in targets:
+            if (key := _storage_key(target)) is not None:
+                handle_paths[key] = (path_and_line[0], assignment.lineno)
     for node in _walk_own_scope(func):
         if (
             not isinstance(node, ast.Call)
@@ -5074,6 +5318,19 @@ def _operation_nodes(
             func.body, seed_aliases, before_line=getattr(node, 'lineno', None)
         )
         reference = node.value if isinstance(node, ast.NamedExpr) else node
+        if (
+            isinstance(reference, ast.Name)
+            and reference.id in _invalid_operation_import_names(
+                func.body, before_line=getattr(node, 'lineno', None)
+            )
+        ):
+            continue
+        partials_at_node = _operation_partial_bindings(
+            func.body, before_line=getattr(node, 'lineno', None)
+        )
+        reference_key = _storage_key(reference) or ''
+        if reference_key in partials_at_node:
+            node._partial_operation_calls = partials_at_node[reference_key]
         qualified = _storage_key(reference) if isinstance(reference, ast.Attribute) else None
         canonical_values = aliases_at_node.get(
             qualified,
@@ -5321,6 +5578,30 @@ def _operation_folder_expressions(
     open_handle_path = getattr(operation, '_open_handle_path', None)
     if name == _OPEN_WRITE_OPERATION and open_handle_path is not None:
         return [open_handle_path]
+    partial_calls = getattr(operation, '_partial_operation_calls', ())
+    if (
+        partial_calls
+        and isinstance(parent, ast.Call)
+        and parent.func is operation
+    ):
+        index = _PACKAGE_OPERATION_FOLDER_ARGS.get(
+            name, _FOLDER_OPERATION_ARGS.get(name)
+        )
+        keyword_name = _PACKAGE_OPERATION_FOLDER_KEYWORDS.get(name)
+        folders = []
+        for partial_call in partial_calls:
+            arguments = [*partial_call.args[1:], *parent.args]
+            keywords = {
+                keyword.arg: keyword.value
+                for keyword in [*partial_call.keywords, *parent.keywords]
+                if keyword.arg is not None
+            }
+            if index is not None and len(arguments) > index:
+                folders.append(arguments[index])
+            elif keyword_name is not None and keyword_name in keywords:
+                folders.append(keywords[keyword_name])
+        if folders:
+            return folders
     if (
         name == _OPEN_WRITE_OPERATION
         and isinstance(parent, ast.Call)
@@ -5764,7 +6045,11 @@ def _unclaimed_folder_operations(
         state = dict(state)
         for statement in statements:
             if isinstance(statement, (ast.Assign, ast.AnnAssign)):
-                value = claim_value(statement.value)
+                value = (
+                    state.get(statement.value.id)
+                    if isinstance(statement.value, ast.Name)
+                    else claim_value(statement.value)
+                )
                 targets = (
                     statement.targets
                     if isinstance(statement, ast.Assign)
@@ -6381,6 +6666,24 @@ def test_the_claim_guard_resolves_operation_aliases():
         'bound pathlib mutator alias 必须保留 receiver 的 content-folder origin'
     )
 
+    bound_partial = ast.parse(
+        'def delete(content_folder):\n'
+        '    operation = functools.partial(shutil.rmtree, content_folder)\n'
+        '    operation()\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(bound_partial, 'publish'), (
+        'partial alias 必须保留已绑定的 content-folder 参数'
+    )
+
+    unrelated_import = ast.parse(
+        'def inspect(content_folder):\n'
+        '    from helpers import rmtree\n'
+        '    rmtree(content_folder)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(unrelated_import, 'publish') == [], (
+        '错误来源模块的同名 import 不能冒充 shutil operation'
+    )
+
 
 def test_the_claim_guard_discovers_content_path_mutations():
     tree = ast.parse(
@@ -6801,6 +7104,72 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['ancestor_claim'], 'new_router'
     ) == [], 'ancestor folder claim 应覆盖其 descendant mutation'
+
+
+def test_claim_guard_preserves_extended_folder_dataflow():
+    tree = ast.parse(
+        'class Service:\n'
+        '    def erase(self, path):\n'
+        '        shutil.rmtree(path)\n'
+        'def method_route(content_folder):\n'
+        '    service = Service()\n'
+        '    service.erase(content_folder)\n'
+        'def member_route(content_folder, holder):\n'
+        '    holder.path = content_folder\n'
+        '    shutil.rmtree(holder.path)\n'
+        'def subscript_route(content_folder, holder):\n'
+        "    holder['path'] = content_folder\n"
+        "    shutil.rmtree(holder['path'])\n"
+        'def tempfile_route(content_folder):\n'
+        '    tempfile.mkdtemp(dir=content_folder)\n'
+        '    tempfile.NamedTemporaryFile(dir=content_folder)\n'
+        '    tempfile.TemporaryFile(dir=content_folder)\n'
+        '    tempfile.SpooledTemporaryFile(dir=content_folder)\n'
+        '    tempfile.TemporaryDirectory(dir=content_folder)\n'
+        'def escaped_handle_alias(content_folder):\n'
+        "    path = Path(content_folder, 'preview.png')\n"
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        "        writer = open(path, 'wb')\n"
+        '    alias = writer\n'
+        '    alias.write(data)\n'
+    )
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    _propagate_content_folder_parameters(functions.values())
+
+    assert _unclaimed_folder_operations(functions['erase'], 'new_router'), (
+        'bound method call 的 content-folder 参数必须传播到 method body'
+    )
+    for name in ('member_route', 'subscript_route'):
+        assert _unclaimed_folder_operations(functions[name], 'new_router'), (
+            f'{name} 必须保留 object member 中的 content-folder origin'
+        )
+    tempfile_offenders = _unclaimed_folder_operations(
+        functions['tempfile_route'], 'new_router'
+    )
+    assert {item[3] for item in tempfile_offenders} >= {
+        'mkdtemp', 'NamedTemporaryFile', 'TemporaryFile',
+        'SpooledTemporaryFile', 'TemporaryDirectory',
+    }, '所有接受 dir 的 tempfile creation API 都必须要求 claim'
+    escaped = _unclaimed_folder_operations(
+        functions['escaped_handle_alias'], 'new_router'
+    )
+    assert any(item[3] == _OPEN_WRITE_OPERATION for item in escaped), (
+        'writable handle alias 逃出 claim 后必须保留 path provenance'
+    )
+    context_alias = ast.parse(
+        'def delete(folder):\n'
+        '    guard = claim_content_folder(folder, purpose=p)\n'
+        '    alias = guard\n'
+        '    with alias:\n'
+        '        shutil.rmtree(folder)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(context_alias, 'publish') == [], (
+        '普通赋值必须传播 stored claim context identity'
+    )
 
 
 def test_the_claim_guard_resolves_claim_context_aliases():
