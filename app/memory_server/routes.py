@@ -1460,6 +1460,11 @@ async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
         stats.update(
             await runtime.persona_manager.aforget_subject(lanlan_name, subject)
         )
+        stats["prompt_locale"] = await asyncio.to_thread(
+            locale_state.forget_subject_prompt_locale,
+            lanlan_name,
+            subject,
+        )
         # Reflection/persona archive writers take their store locks. Their
         # forget calls above therefore drain any writer that had already
         # snapshotted this subject. Advance the persistent cutoff only now,

@@ -647,6 +647,131 @@ def test_prompt_locale_inflight_write_cannot_replace_restored_sidecar(
     assert json.loads(locale_path.read_text(encoding="utf-8")) == restored
 
 
+@pytest.mark.parametrize("scoped", [False, True])
+def test_prompt_locale_reload_waits_for_inflight_write(
+    monkeypatch,
+    tmp_path,
+    scoped,
+):
+    import json
+    import threading
+    from concurrent.futures import ThreadPoolExecutor
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "OrdinaryReloadRaceNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    locale_path = tmp_path / (
+        "scoped_prompt_locales.json" if scoped else "prompt_locale.json"
+    )
+    subject_key = locale_state._subject_locale_key(subject)
+    old_state = {"language": "en", "order": 1, "reserved_order": 1}
+    initial = {"subjects": {subject_key: old_state}} if scoped else old_state
+    locale_path.write_text(json.dumps(initial), encoding="utf-8")
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path" if scoped else "_locale_path",
+        lambda _name: str(locale_path),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+    locale_state.invalidate_prompt_locale_caches()
+
+    started = threading.Event()
+    release = threading.Event()
+    invalidated = threading.Event()
+    original_write = locale_state.atomic_write_json
+
+    def delayed_write(*args, **kwargs):
+        original_write(*args, **kwargs)
+        started.set()
+        assert release.wait(timeout=5)
+
+    def write_locale():
+        if scoped:
+            return locale_state.record_subject_prompt_locale(
+                name, subject, "zh-TW", order=2,
+            )
+        return locale_state.record_character_prompt_locale(
+            name, "zh-TW", order=2,
+        )
+
+    def invalidate():
+        locale_state.invalidate_prompt_locale_caches()
+        invalidated.set()
+
+    monkeypatch.setattr(locale_state, "atomic_write_json", delayed_write)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        write_future = pool.submit(write_locale)
+        assert started.wait(timeout=5)
+        invalidate_future = pool.submit(invalidate)
+        assert not invalidated.wait(timeout=0.1)
+        release.set()
+        assert write_future.result(timeout=5) == "zh-TW"
+        invalidate_future.result(timeout=5)
+
+    selected = (
+        locale_state.get_subject_prompt_locale(name, subject)
+        if scoped
+        else locale_state.get_character_prompt_locale(name)
+    )
+    assert selected == "zh-TW"
+
+
+def test_scoped_prompt_locale_forget_erases_row_and_rejects_late_record(
+    monkeypatch,
+    tmp_path,
+):
+    import json
+
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "ForgetLocaleNeko"
+    target = MemorySubject.participant("qq", "1001")
+    other = MemorySubject.participant("qq", "1002")
+    locale_path = tmp_path / "scoped_prompt_locales.json"
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(locale_path),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "_assert_prompt_locale_writable",
+        lambda _target: None,
+    )
+    locale_state.invalidate_prompt_locale_caches()
+
+    stale_order = locale_state.reserve_subject_prompt_locale_order(name, target)
+    locale_state.record_subject_prompt_locale(
+        name, target, "zh-TW", order=stale_order,
+    )
+    other_order = locale_state.reserve_subject_prompt_locale_order(name, other)
+    locale_state.record_subject_prompt_locale(
+        name, other, "zh-CN", order=other_order,
+    )
+
+    assert locale_state.forget_subject_prompt_locale(name, target) == 1
+    rows = json.loads(locale_path.read_text(encoding="utf-8"))["subjects"]
+    assert locale_state._subject_locale_key(target) not in rows
+    assert locale_state._subject_locale_key(other) in rows
+    assert locale_state.record_subject_prompt_locale(
+        name, target, "zh-TW", order=stale_order,
+    ) is None
+    rows = json.loads(locale_path.read_text(encoding="utf-8"))["subjects"]
+    assert locale_state._subject_locale_key(target) not in rows
+
+    new_order = locale_state.reserve_subject_prompt_locale_order(name, target)
+    assert locale_state.record_subject_prompt_locale(
+        name, target, "zh-TW", order=new_order,
+    ) == "zh-TW"
+
+
 def test_prompt_locale_writes_honor_cloudsave_fence(monkeypatch):
     from app.memory_server import locale_state
     from memory.scopes import MemorySubject

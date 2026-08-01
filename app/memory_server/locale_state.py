@@ -42,16 +42,19 @@ _subject_locale_cache: dict[
 _locale_locks: dict[str, threading.Lock] = {}
 _locale_locks_guard = threading.Lock()
 _locale_cache_guard = threading.Lock()
+_locale_reload_guard = threading.RLock()
 _locale_cache_generation = 0
+_subject_locale_forget_cutoffs: dict[tuple[str, str], int] = {}
 
 
 def invalidate_prompt_locale_caches() -> None:
     """Force the next locale lookup to reload both durable sidecars."""
     global _locale_cache_generation
-    with _locale_cache_guard:
-        _locale_cache_generation += 1
-        _locale_cache.clear()
-        _subject_locale_cache.clear()
+    with _locale_reload_guard:
+        with _locale_cache_guard:
+            _locale_cache_generation += 1
+            _locale_cache.clear()
+            _subject_locale_cache.clear()
 
 
 def _locale_path(name: str) -> str:
@@ -171,7 +174,7 @@ def _persist_locale_state_unlocked(
     language: str | None,
     order: int | None,
     reserved_order: int | None,
-) -> None:
+) -> bool:
     path = _locale_path(name)
     with _locale_cache_guard:
         generation = _locale_cache_generation
@@ -191,9 +194,10 @@ def _persist_locale_state_unlocked(
         with _prompt_locale_write_transaction("prompt_locale.json"):
             with _locale_cache_guard:
                 if generation != _locale_cache_generation:
-                    return
+                    return False
                 os.replace(staging_path, path)
                 _locale_cache[name] = (language, order, reserved_order)
+                return True
     except MaintenanceModeError:
         raise
     except Exception as exc:
@@ -202,6 +206,7 @@ def _persist_locale_state_unlocked(
             name,
             exc,
         )
+        return False
     finally:
         try:
             os.remove(staging_path)
@@ -261,7 +266,7 @@ def _load_subject_locale_state_unlocked(
 def _persist_subject_locale_state_unlocked(
     name: str,
     states: dict[str, tuple[str | None, int | None, int | None]],
-) -> None:
+) -> bool:
     snapshot = dict(states)
     path = _subject_locale_path(name)
     with _locale_cache_guard:
@@ -287,9 +292,10 @@ def _persist_subject_locale_state_unlocked(
         with _prompt_locale_write_transaction("scoped_prompt_locales.json"):
             with _locale_cache_guard:
                 if generation != _locale_cache_generation:
-                    return
+                    return False
                 os.replace(staging_path, path)
                 _subject_locale_cache[name] = snapshot
+                return True
     except MaintenanceModeError:
         raise
     except Exception as exc:
@@ -298,6 +304,7 @@ def _persist_subject_locale_state_unlocked(
             name,
             exc,
         )
+        return False
     finally:
         try:
             os.remove(staging_path)
@@ -310,7 +317,7 @@ def _persist_subject_locale_state_unlocked(
 
 def reserve_character_prompt_locale_order(name: str) -> int:
     """Reserve and durably persist the next per-character causal order."""
-    with _get_locale_lock(name):
+    with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("prompt_locale.json")
         language, order, reserved_order = _load_locale_state_unlocked(name)
         high_water = max(order or 0, reserved_order or 0)
@@ -336,7 +343,7 @@ def record_character_prompt_locale(
         selected = normalize_language_code(str(language), format="full")
     selected_order = order if isinstance(order, int) and not isinstance(order, bool) else None
 
-    with _get_locale_lock(name):
+    with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("prompt_locale.json")
         current_language, current_order, reserved_order = _load_locale_state_unlocked(name)
         if current_order is not None and (
@@ -373,7 +380,7 @@ def reserve_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
     keys = [_subject_locale_key(subject) for subject in subjects]
     if not keys:
         return []
-    with _get_locale_lock(name):
+    with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("scoped_prompt_locales.json")
         states = dict(_load_subject_locale_state_unlocked(name))
         selected_orders = []
@@ -420,7 +427,7 @@ def record_subject_prompt_locales(name: str, updates) -> list[str | None]:
     if not prepared:
         return []
 
-    with _get_locale_lock(name):
+    with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("scoped_prompt_locales.json")
         states = dict(_load_subject_locale_state_unlocked(name))
         results = []
@@ -430,6 +437,12 @@ def record_subject_prompt_locales(name: str, updates) -> list[str | None]:
                 key,
                 (None, None, None),
             )
+            forget_cutoff = _subject_locale_forget_cutoffs.get((name, key))
+            if forget_cutoff is not None and (
+                selected_order is None or selected_order <= forget_cutoff
+            ):
+                results.append(current_language)
+                continue
             if current_order is not None and (
                 selected_order is None or selected_order < current_order
             ):
@@ -447,6 +460,29 @@ def record_subject_prompt_locales(name: str, updates) -> list[str | None]:
         if changed:
             _persist_subject_locale_state_unlocked(name, states)
         return results
+
+
+def forget_subject_prompt_locale(name: str, subject) -> int:
+    """Erase one scoped locale and reject records reserved before the erase."""
+    key = _subject_locale_key(subject)
+    with _locale_reload_guard, _get_locale_lock(name):
+        _assert_prompt_locale_writable("scoped_prompt_locales.json")
+        states = dict(_load_subject_locale_state_unlocked(name))
+        previous = states.pop(key, None)
+        previous_order = previous[1] if previous is not None else None
+        previous_reserved = previous[2] if previous is not None else None
+        cutoff_key = (name, key)
+        _subject_locale_forget_cutoffs[cutoff_key] = max(
+            time.time_ns(),
+            previous_order or 0,
+            previous_reserved or 0,
+            _subject_locale_forget_cutoffs.get(cutoff_key, 0),
+        )
+        if previous is None:
+            return 0
+        if not _persist_subject_locale_state_unlocked(name, states):
+            raise RuntimeError("scoped prompt locale erase was not persisted")
+        return 1
 
 
 def get_subject_prompt_locale(name: str, subject) -> str | None:

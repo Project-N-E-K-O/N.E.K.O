@@ -2545,10 +2545,18 @@ async def test_scoped_forget_route_wires_all_three_stores():
             calls.append("dedup") or {"pending_dedup": 1}
         ),
     )
+    forget_locale = MagicMock(
+        side_effect=lambda *args: calls.append("prompt_locale") or 1,
+    )
     with patch.object(memory_routes.runtime, "fact_store", store), \
             patch.object(memory_routes.runtime, "fact_dedup_resolver", dedup), \
             patch.object(memory_routes.runtime, "reflection_engine", reflection), \
-            patch.object(memory_routes.runtime, "persona_manager", persona):
+            patch.object(memory_routes.runtime, "persona_manager", persona), \
+            patch.object(
+                memory_routes.locale_state,
+                "forget_subject_prompt_locale",
+                forget_locale,
+            ):
         result = await memory_routes.forget_scoped_subject(
             "Neko",
             ScopedForgetRequest(
@@ -2560,9 +2568,10 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["reflections"] == 2
     assert result["persona_entries"] == 3
     assert result["pending_dedup"] == 1
+    assert result["prompt_locale"] == 1
     assert calls == [
         "fact_begin", "reflection_begin", "dedup", "facts", "reflections",
-        "persona", "fact_finalize", "reflection_end", "fact_end",
+        "persona", "prompt_locale", "fact_finalize", "reflection_end", "fact_end",
     ]
     for double in (store, dedup, reflection, persona):
         forgotten = double.aforget_subject.await_args.args[1]
