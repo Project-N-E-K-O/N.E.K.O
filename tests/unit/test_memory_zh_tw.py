@@ -408,6 +408,22 @@ async def test_new_dialog_request_omits_seeded_fallback_locale(monkeypatch):
     assert "params" not in calls[0]
 
 
+def test_hot_swap_new_dialog_request_reuses_explicit_locale_guard():
+    from main_logic.core.lifecycle import LifecycleMixin
+
+    manager = object.__new__(LifecycleMixin)
+    manager.user_language = "en"
+    manager._user_language_explicit = False
+
+    assert manager._new_dialog_request_kwargs() == {"timeout": 5.0}
+    manager.user_language = "zh-TW"
+    manager._user_language_explicit = True
+    assert manager._new_dialog_request_kwargs() == {
+        "timeout": 5.0,
+        "params": {"language": "zh-TW"},
+    }
+
+
 def test_sync_connector_omits_seeded_fallback_locale(monkeypatch):
     from app.main_server import character_runtime
 
@@ -1903,7 +1919,11 @@ def test_game_archive_prompt_language_falls_back_to_global_locale(monkeypatch):
 def test_game_archive_refreshes_locale_from_live_session(monkeypatch):
     from main_routers.game_router import archive
 
-    manager = type("Manager", (), {"user_language": "zh-TW"})()
+    manager = type(
+        "Manager",
+        (),
+        {"user_language": "zh-TW", "_user_language_explicit": True},
+    )()
 
     class SessionManager:
         @staticmethod
@@ -1918,6 +1938,31 @@ def test_game_archive_refreshes_locale_from_live_session(monkeypatch):
     })
 
     assert built["user_language"] == "zh-TW"
+
+
+def test_game_archive_does_not_persist_seeded_session_locale(monkeypatch):
+    from main_routers.game_router import archive
+
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+    )
+
+    class SessionManager:
+        @staticmethod
+        def get(_name):
+            return manager
+
+    monkeypatch.setattr(archive, "get_session_manager", SessionManager)
+
+    built = archive._build_game_archive({
+        "lanlan_name": "Neko",
+        "user_language": "zh-TW",
+    })
+
+    assert built["user_language"] == "zh-TW"
+    assert built["user_language_source"] == "route"
+    assert archive._archive_memory_language({"lanlan_name": "Neko"}) is None
 
 
 @pytest.mark.asyncio

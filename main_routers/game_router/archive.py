@@ -192,7 +192,7 @@ def _current_route_prompt_language_with_source(state: dict) -> tuple[str, str]:
                 else None
             )
             language = str(getattr(manager, "user_language", "") or "").strip()
-            if language:
+            if getattr(manager, "_user_language_explicit", False) and language:
                 return normalize_language_code(language, format="full") or language, "session"
         except Exception:
             logger.debug("赛后归档实时语言解析失败，使用路由状态语言", exc_info=True)
@@ -220,7 +220,7 @@ def _archive_memory_language(archive: dict) -> str | None:
         session_manager = get_session_manager()
         manager = session_manager.get(lanlan_name) if hasattr(session_manager, "get") else None
         language = str(getattr(manager, "user_language", "") or "").strip()
-        if language:
+        if getattr(manager, "_user_language_explicit", False) and language:
             return normalize_language_code(language, format="full") or language
     except Exception:
         logger.debug("赛后归档记忆语言解析失败，省略持久化语言", exc_info=True)

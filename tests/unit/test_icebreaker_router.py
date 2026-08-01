@@ -49,6 +49,7 @@ class _FakeAppendContextManager:
         self.engagement_times = []
         self.language_updates = []
         self.user_language = "zh-CN"
+        self._user_language_explicit = True
         self.result = result or SimpleNamespace(appended=True, deduped=False, reason=None)
         self.error = error
         self.speech_error = speech_error
@@ -56,6 +57,7 @@ class _FakeAppendContextManager:
     def set_user_language(self, language):
         self.language_updates.append(language)
         self.user_language = language
+        self._user_language_explicit = True
 
     def note_user_engagement(self, *, at=None):
         self.engagement_calls += 1
@@ -414,6 +416,36 @@ async def test_icebreaker_context_cache_failure_does_not_block_context(monkeypat
     }]
     assert warning_calls
     assert "icebreaker memory cache failed" in warning_calls[0][0]
+
+
+@pytest.mark.asyncio
+async def test_icebreaker_context_omits_seeded_fallback_cache_locale(monkeypatch):
+    mgr = _FakeAppendContextManager()
+    mgr.user_language = "en"
+    mgr._user_language_explicit = False
+    memory_cache_calls = []
+
+    async def fake_cache_memory(**kwargs):
+        memory_cache_calls.append(kwargs)
+        return True, ""
+
+    monkeypatch.setattr(icebreaker_router, "get_session_manager", lambda: {"Lan": mgr})
+    monkeypatch.setattr(system_router, "_validate_local_mutation_request", _allow_local_mutation)
+    monkeypatch.setattr(icebreaker_router, "_cache_icebreaker_context_memory", fake_cache_memory)
+    icebreaker_route_state.activate_icebreaker_route("Lan", "icebreaker-day1-test")
+
+    result = await icebreaker_router.icebreaker_context(
+        _FakeRequest({
+            "lanlan_name": "Lan",
+            "role": "assistant",
+            "text": "教程看完啦？",
+            "session_id": "icebreaker-day1-test",
+            "request_id": "line-seeded",
+        })
+    )
+
+    assert result["ok"] is True
+    assert memory_cache_calls[0]["language"] is None
 
 
 @pytest.mark.asyncio
