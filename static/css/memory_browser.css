@@ -3732,3 +3732,185 @@ body[data-memory-layout="compact"] .editor {
         animation-duration: 1.4s;
     }
 }
+
+/* ── Memory Component Tabs ── */
+
+.memory-tab-bar {
+    display: flex;
+    gap: 2px;
+}
+
+.memory-tab {
+    position: relative;
+    padding: 0 12px;
+    height: 28px;
+    font-size: var(--memory-font-control, 13px);
+    font-weight: var(--memory-font-weight-regular, 400);
+    color: var(--memory-text-secondary);
+    background: none;
+    border: none;
+    cursor: pointer;
+    border-radius: 6px 6px 0 0;
+    transition: color var(--memory-motion-fast) ease, background var(--memory-motion-fast) ease;
+    white-space: nowrap;
+}
+
+.memory-tab:hover {
+    color: var(--memory-text);
+    background: var(--memory-surface-hover);
+}
+
+.memory-tab.is-active {
+    color: var(--memory-accent);
+    font-weight: var(--memory-font-weight-strong, 650);
+}
+
+.memory-tab.is-active::after {
+    content: '';
+    position: absolute;
+    bottom: 0;
+    left: 6px;
+    right: 6px;
+    height: 2px;
+    background: var(--memory-accent-brand);
+    border-radius: 1px 1px 0 0;
+}
+
+.memory-tab:focus-visible {
+    outline: 2px solid var(--memory-focus);
+    outline-offset: -2px;
+}
+
+/* Component views */
+
+.memory-component-loading {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--memory-text-tertiary);
+    font-size: var(--memory-font-body, 14px);
+}
+
+.memory-component-empty {
+    padding: 40px 20px;
+    text-align: center;
+    color: var(--memory-text-tertiary);
+    font-size: var(--memory-font-body, 14px);
+}
+
+.memory-component-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.memory-component-item {
+    padding: 10px 12px;
+    background: var(--memory-surface);
+    border: 1px solid var(--memory-divider);
+    border-radius: var(--memory-radius-row, 10px);
+}
+
+.memory-component-header-row {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.memory-component-text {
+    font-size: var(--memory-font-body, 14px);
+    line-height: 1.55;
+    color: var(--memory-text);
+    overflow-wrap: break-word;
+}
+
+.memory-component-meta {
+    font-size: var(--memory-font-caption, 12px);
+    color: var(--memory-text-tertiary);
+    margin-top: 4px;
+}
+
+.memory-component-section {
+    margin-bottom: 8px;
+    border: 1px solid var(--memory-divider);
+    border-radius: var(--memory-radius-row, 10px);
+    overflow: hidden;
+}
+
+.memory-component-section-title {
+    padding: 8px 12px;
+    font-size: var(--memory-font-control, 13px);
+    font-weight: var(--memory-font-weight-strong, 650);
+    color: var(--memory-accent);
+    cursor: pointer;
+    background: var(--memory-surface-subtle);
+    user-select: none;
+}
+
+.memory-component-section-title:hover {
+    background: var(--memory-surface-hover);
+}
+
+.memory-component-section[open] .memory-component-section-title {
+    border-bottom: 1px solid var(--memory-divider);
+}
+
+.memory-component-badge {
+    display: inline-block;
+    padding: 1px 7px;
+    font-size: 11px;
+    font-weight: 600;
+    border-radius: 999px;
+    white-space: nowrap;
+    flex-shrink: 0;
+    margin-top: 2px;
+}
+
+.memory-component-badge.is-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.memory-component-badge.is-confirmed {
+    background: #dbeafe;
+    color: #1e40af;
+}
+
+.memory-component-badge.is-promoted {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.memory-component-badge.is-denied {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.memory-component-badge.is-archived {
+    background: #f3f4f6;
+    color: #6b7280;
+}
+
+[data-theme="dark"] .memory-component-badge.is-pending {
+    background: #451a03;
+    color: #fcd34d;
+}
+
+[data-theme="dark"] .memory-component-badge.is-confirmed {
+    background: #1e3a5f;
+    color: #93c5fd;
+}
+
+[data-theme="dark"] .memory-component-badge.is-promoted {
+    background: #14532d;
+    color: #86efac;
+}
+
+[data-theme="dark"] .memory-component-badge.is-denied {
+    background: #7f1d1d;
+    color: #fca5a5;
+}
+
+[data-theme="dark"] .memory-component-badge.is-archived {
+    background: #374151;
+    color: #d1d5db;
+}

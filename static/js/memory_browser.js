@@ -3348,17 +3348,26 @@
             editDiv.innerHTML = '<div style="color:#e74c3c; padding: 20px; text-align: center;">' + (window.t ? window.t('memory.loadFailed') : '加载失败') + '</div>';
         }
     }
+    var _savePromise = Promise.resolve();
+
     async function saveCurrentMemory() {
         if (!currentMemoryFile) {
             showSaveStatus(window.t ? window.t('memory.pleaseSelectFile') : '请先选择文件', false);
             return false;
         }
-        // 处理备忘录为空的情况
+        var promise = _savePromise.then(function () {
+            return _doSave();
+        });
+        _savePromise = promise.then(function () {}, function () {});
+        return promise;
+    }
+
+    async function _doSave() {
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
-        chatData.forEach(msg => {
+        chatData.forEach(function (msg) {
             if (msg.role === 'system') {
-                let text = msg.text || '';
+                var text = msg.text || '';
                 if (text.startsWith(memoPrefix)) {
                     text = text.slice(memoPrefix.length);
                 }
@@ -3367,6 +3376,7 @@
                 }
             }
         });
+        var reqId = ++_saveRequestId;
         try {
             const resp = await fetch('/api/memory/recent_file/save', {
                 method: 'POST',
@@ -3374,42 +3384,12 @@
                 body: JSON.stringify({ filename: currentMemoryFile, chat: chatData })
             });
             const data = await resp.json();
+            if (reqId !== _saveRequestId) return false;
             if (data.success) {
                 setMemoryDirty(false);
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
-
-                // 通知父窗口刷新对话上下文
                 if (data.need_refresh) {
-                    let broadcastSent = false;
-                    
-                    // 优先使用 BroadcastChannel（跨页面通信）
-                    if (typeof BroadcastChannel !== 'undefined') {
-                        let channel = null;
-                        try {
-                            channel = new BroadcastChannel('neko_page_channel');
-                            channel.postMessage({
-                                action: 'memory_edited',
-                                catgirl_name: data.catgirl_name
-                            });
-                            console.log('[MemoryBrowser] 已通过 BroadcastChannel 发送 memory_edited 消息');
-                            broadcastSent = true;
-                        } catch (e) {
-                            console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
-                        } finally {
-                            if (channel) {
-                                channel.close();
-                            }
-                        }
-                    }
-                    
-                    // 仅当 BroadcastChannel 不可用时，使用 postMessage 作为后备（iframe 场景）
-                    if (!broadcastSent && window.parent && window.parent !== window) {
-                        window.parent.postMessage({
-                            type: 'memory_edited',
-                            catgirl_name: data.catgirl_name
-                        }, PARENT_ORIGIN);
-                        console.log('[MemoryBrowser] 已通过 postMessage 发送 memory_edited 消息（后备方案）');
-                    }
+                    _broadcastMemoryEdit(data.catgirl_name);
                 }
                 return true;
             } else {
@@ -3420,6 +3400,25 @@
         } catch (e) {
             showSaveStatus(window.t ? window.t('memory.saveFailedGeneral') : '保存失败', false);
             return false;
+        }
+    }
+
+    function _broadcastMemoryEdit(catgirlName) {
+        var broadcastSent = false;
+        if (typeof BroadcastChannel !== 'undefined') {
+            var channel = null;
+            try {
+                channel = new BroadcastChannel('neko_page_channel');
+                channel.postMessage({ action: 'memory_edited', catgirl_name: catgirlName });
+                broadcastSent = true;
+            } catch (e) {
+                console.error('[MemoryBrowser] BroadcastChannel 发送失败:', e);
+            } finally {
+                if (channel) channel.close();
+            }
+        }
+        if (!broadcastSent && window.parent && window.parent !== window) {
+            window.parent.postMessage({ type: 'memory_edited', catgirl_name: catgirlName }, PARENT_ORIGIN);
         }
     }
     document.getElementById('save-memory-btn').onclick = saveCurrentMemory;
@@ -3967,5 +3966,168 @@
 
     window.resetSelectedTutorial = resetSelectedTutorial;
     window.showTutorialResetNotice = showTutorialResetNotice;
+
+    // ── Memory Component Tabs ──
+
+    let _activeMemoryTab = 'recent';
+    let _componentDataCache = {};
+    let _componentRequestId = 0;
+    let _saveRequestId = 0;
+
+    function _renderMemoryCards(container, data, metaBuilder) {
+        container.innerHTML = '';
+        if (!Array.isArray(data) || !data.length) {
+            container.innerHTML = '<div class="memory-component-empty">' + translate('memory.componentEmpty', 'No data') + '</div>';
+            return;
+        }
+        var sorted = data.slice().sort(function (a, b) {
+            return (b.created_at || '').localeCompare(a.created_at || '');
+        });
+        var list = document.createElement('div');
+        list.className = 'memory-component-list';
+        sorted.forEach(function (item) {
+            var card = document.createElement('div');
+            card.className = 'memory-component-item';
+            var text = document.createElement('div');
+            text.className = 'memory-component-text';
+            text.textContent = item.text || translate('memory.empty', '(empty)');
+            card.appendChild(text);
+            var meta = document.createElement('div');
+            meta.className = 'memory-component-meta';
+            meta.textContent = metaBuilder(item).join(' | ');
+            card.appendChild(meta);
+            list.appendChild(card);
+        });
+        container.appendChild(list);
+    }
+
+    function _renderMemoryFacts(container, data) {
+        _renderMemoryCards(container, data, function (fact) {
+            var parts = [];
+            if (fact.created_at) parts.push(fact.created_at.replace('T', ' ').slice(0, 19));
+            if (fact.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + fact.importance);
+            if (fact.source) parts.push(translate('memory.source', 'Source') + ': ' + fact.source);
+            if (fact.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + fact.entity);
+            return parts;
+        });
+    }
+
+    function _renderMemoryReflections(container, data) {
+        _renderMemoryCards(container, data, function (ref) {
+            var parts = [];
+            if (ref.created_at) parts.push(ref.created_at.replace('T', ' ').slice(0, 19));
+            if (ref.importance != null) parts.push(translate('memory.importance', 'Importance') + ': ' + ref.importance);
+            if (ref.status) parts.push(translate('memory.status', 'Status') + ': ' + ref.status);
+            if (ref.entity) parts.push(translate('memory.entity', 'Entity') + ': ' + ref.entity);
+            return parts;
+        });
+    }
+
+    function _loadComponentTab(container, name, type) {
+        var requestId = ++_componentRequestId;
+        container.innerHTML = '<div class="memory-component-loading">' + translate('memory.loading', 'Loading...') + '</div>';
+        fetch('/api/memory/component/' + encodeURIComponent(name) + '?type=' + encodeURIComponent(type))
+            .then(function (r) {
+                if (!r.ok) throw new Error('HTTP ' + r.status);
+                return r.json();
+            })
+            .then(function (result) {
+                if (requestId !== _componentRequestId) return;
+                if (result.error) throw new Error(result.error);
+                _componentDataCache[type] = result.data;
+                if (type === 'facts' || type === 'facts_archive') _renderMemoryFacts(container, result.data);
+                else if (type === 'reflections') _renderMemoryReflections(container, result.data);
+            })
+            .catch(function (err) {
+                if (requestId !== _componentRequestId) return;
+                if (console && console.warn) console.warn('Memory component load failed:', err);
+                container.innerHTML = '<div class="memory-component-empty">' + translate('memory.loadFailed', 'Load failed') + '</div>';
+            });
+    }
+
+    async function switchMemoryTab(tab) {
+        var sameTab = tab === _activeMemoryTab;
+        var cancelPendingSave = sameTab && _activeMemoryTab === 'recent' && memoryHasUnsavedChanges;
+        if (sameTab && !cancelPendingSave) return;
+        var myId = ++_componentRequestId;
+
+        if (_activeMemoryTab === 'recent') {
+            memoryFileRequestId++;
+        }
+
+        // Preserve unsaved edits when switching away from recent tab
+        if (_activeMemoryTab === 'recent' && memoryHasUnsavedChanges) {
+            var saved = await saveCurrentMemory();
+            if (!saved || myId !== _componentRequestId) return;
+        }
+
+        _activeMemoryTab = tab;
+
+        document.querySelectorAll('.memory-tab').forEach(function (btn) {
+            var isActive = btn.dataset.tab === tab;
+            btn.classList.toggle('is-active', isActive);
+            btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+        });
+
+        var container = document.getElementById('memory-chat-edit');
+        var saveRow = document.getElementById('save-row');
+        if (tab === 'recent') {
+            if (saveRow) saveRow.style.display = 'flex';
+            if (currentMemoryFile && currentCatName) {
+                var li = findMemoryRoleListItem(currentMemoryFile);
+                _selectMemoryFileInternal(currentMemoryFile, li, currentCatName, { allowDuringImport: true });
+            } else {
+                container.innerHTML = '<div class="memory-component-empty">' + translate('memory.selectCharacterFirst', 'Select a character first') + '</div>';
+            }
+            return;
+        }
+
+        if (saveRow) saveRow.style.display = 'none';
+        if (!currentCatName) {
+            container.innerHTML = '<div class="memory-component-empty">' + translate('memory.selectCharacterFirst', 'Select a character first') + '</div>';
+            return;
+        }
+
+        _loadComponentTab(container, currentCatName, tab);
+    }
+
+    function initMemoryTabs() {
+        document.querySelectorAll('.memory-tab').forEach(function (btn) {
+            btn.addEventListener('click', function () {
+                switchMemoryTab(btn.dataset.tab);
+            });
+        });
+    }
+
+    // Internal helper: selectMemoryFile without tab-switch guard
+    async function _selectMemoryFileInternal(filename, li, catName, options) {
+        return selectMemoryFile(filename, li, catName, options);
+    }
+
+    // Override selectMemoryFile to always land on recent tab
+    var _selectMemoryFileOrig = selectMemoryFile;
+    selectMemoryFile = function (filename, li, catName, options) {
+        if (window._memoryImportInProgress && !(options && options.allowDuringImport)) {
+            return _selectMemoryFileOrig(filename, li, catName, options);
+        }
+        if (_activeMemoryTab !== 'recent') {
+            _componentRequestId++;
+            _activeMemoryTab = 'recent';
+            document.querySelectorAll('.memory-tab').forEach(function (btn) {
+                var isActive = btn.dataset.tab === 'recent';
+                btn.classList.toggle('is-active', isActive);
+                btn.setAttribute('aria-selected', isActive ? 'true' : 'false');
+            });
+            var saveRow = document.getElementById('save-row');
+            if (saveRow) saveRow.style.display = 'flex';
+        }
+        return _selectMemoryFileOrig(filename, li, catName, options);
+    };
+
+    document.addEventListener('DOMContentLoaded', function () {
+        initMemoryTabs();
+    });
+
+    window.switchMemoryTab = switchMemoryTab;
 
 })();
