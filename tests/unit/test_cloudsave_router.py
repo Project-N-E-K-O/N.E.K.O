@@ -4,6 +4,7 @@ import sys
 import json
 import re
 import shutil
+import threading
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -961,7 +962,10 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             indent=2,
         )
         original_characters = target_cm.load_characters()
-        original_recent = (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8")
+        target_recent = Path(target_cm.memory_dir) / "小满" / "recent.json"
+        original_recent = target_recent.read_text(encoding="utf-8")
+        from utils import recent_file
+        admitted_generation = recent_file.capture_recent_generation(target_recent)
         shutil.copytree(source_cm.cloudsave_dir, target_cm.cloudsave_dir, dirs_exist_ok=True)
 
         async def _noop_init():
@@ -999,7 +1003,8 @@ async def test_cloudsave_router_download_reload_failure_rolls_back():
             _assert_localized_error_payload(failed_payload, "cloudsave.error.localReloadFailedRolledBack")
             assert failed_payload["rolled_back"] is True
             assert target_cm.load_characters() == original_characters
-            assert (Path(target_cm.memory_dir) / "小满" / "recent.json").read_text(encoding="utf-8") == original_recent
+            assert target_recent.read_text(encoding="utf-8") == original_recent
+            assert recent_file.capture_recent_generation(target_recent) == admitted_generation
 
 
 @pytest.mark.unit
@@ -1069,6 +1074,98 @@ async def test_cloudsave_router_download_rollback_reports_notify_reload_false():
         assert failed_payload["code"] == "LOCAL_RELOAD_FAILED_ROLLED_BACK"
         assert failed_payload["rolled_back"] is False
         assert failed_payload["rollback_error"] == "notify_memory_server_reload returned False"
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_restore_failure_still_rolls_back_recent_registry():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    result = {
+        "backup_path": "backup-path",
+        "_recent_import_transaction": {"held_locks": []},
+    }
+    with patch.object(
+        cloudsave_router_module,
+        "_reload_after_character_download",
+        AsyncMock(return_value=(False, "forced reload failure")),
+    ), patch.object(
+        cloudsave_router_module,
+        "restore_cloudsave_operation_backup",
+        side_effect=OSError("disk restore failed"),
+    ), patch.object(
+        cloudsave_router_module,
+        "rollback_cloudsave_character_import_registry",
+    ) as rollback_registry, patch.object(
+        cloudsave_router_module,
+        "finalize_cloudsave_character_import",
+    ) as finalize_import:
+        response = await cloudsave_router_module._complete_cloudsave_character_download(
+            object(), "小满", result,
+        )
+
+    payload = json.loads(response.body)
+    assert response.status_code == 500
+    assert payload["rollback_error"] == "disk restore failed"
+    assert payload["rolled_back"] is False
+    rollback_registry.assert_called_once_with(result)
+    finalize_import.assert_called_once_with(result)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_directly_cancelled_download_completion_rolls_back_before_release():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    reload_started = asyncio.Event()
+    config_manager = object()
+    result = {
+        "backup_path": "backup-path",
+        "_recent_import_transaction": {"held_locks": []},
+    }
+
+    async def _blocked_reload(_name, _release_claim_token=None):
+        reload_started.set()
+        await asyncio.Event().wait()
+
+    async def _noop_init():
+        return None
+
+    with patch.object(
+        cloudsave_router_module,
+        "_reload_after_character_download",
+        side_effect=_blocked_reload,
+    ), patch.object(
+        cloudsave_router_module,
+        "restore_cloudsave_operation_backup",
+    ) as restore_backup, patch.object(
+        cloudsave_router_module,
+        "rollback_cloudsave_character_import_registry",
+    ) as rollback_registry, patch.object(
+        cloudsave_router_module,
+        "get_initialize_character_data",
+        return_value=_noop_init,
+    ), patch.object(
+        cloudsave_router_module,
+        "notify_memory_server_reload",
+        AsyncMock(return_value=True),
+    ), patch.object(
+        cloudsave_router_module,
+        "finalize_cloudsave_character_import",
+    ) as finalize_import:
+        task = asyncio.create_task(
+            cloudsave_router_module._complete_cloudsave_character_download(
+                config_manager, "小满", result,
+            )
+        )
+        await asyncio.wait_for(reload_started.wait(), timeout=3)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    restore_backup.assert_called_once_with(
+        config_manager, "backup-path", recent_locks_held=True,
+    )
+    rollback_registry.assert_called_once_with(result)
+    finalize_import.assert_called_once_with(result)
 
 
 @pytest.mark.unit
@@ -1319,6 +1416,136 @@ async def test_download_active_session_force_memory_release_fail():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_download_import_failure_resumes_released_character():
+    """An overwrite that aborts after release must reopen derived-task admission."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module(
+                "main_routers.cloudsave_router"
+            )
+            reload_memory = AsyncMock(return_value=True)
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ) as release_memory, patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                side_effect=OSError("corrupt cloud unit"),
+            ), patch.object(
+                cloudsave_router_module,
+                "notify_memory_server_reload",
+                reload_memory,
+            ):
+                response = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True}),
+                )
+
+        assert response.status_code == 500
+        claim_token = release_memory.await_args.kwargs[
+            "derived_task_claim_token"
+        ]
+        reload_memory.assert_awaited_once_with(
+            reason="云存档下载中止，恢复角色派生任务: 小满",
+            release_derived_task_claims={"小满": (claim_token,)},
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_reload_explicitly_resumes_a_reused_character_name():
+    """A recreated name must discard admission claims owned by its old identity."""
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+    async def _initialize():
+        return None
+
+    session_manager = SimpleNamespace(get=lambda _name: None)
+    reload_memory = AsyncMock(return_value=True)
+    with patch.object(
+        cloudsave_router_module,
+        "get_initialize_character_data",
+        return_value=_initialize,
+    ), patch.object(
+        cloudsave_router_module,
+        "notify_memory_server_reload",
+        reload_memory,
+    ), patch.object(
+        cloudsave_router_module,
+        "get_session_manager",
+        return_value=session_manager,
+    ):
+        result = await cloudsave_router_module._reload_after_character_download(
+            "复用名",
+        )
+
+    assert result == (True, "")
+    reload_memory.assert_awaited_once_with(
+        reason="云存档下载角色: 复用名",
+        resume_derived_task_names=("复用名",),
+        release_derived_task_claims=None,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_cancellation_during_release_withdraws_exact_claim():
+    """Cancellation during release waits for its result, compensates, then propagates."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+
+        async def _release(_name, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module(
+                "main_routers.cloudsave_router"
+            )
+            reload_memory = AsyncMock(return_value=True)
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                side_effect=_release,
+            ) as release_memory, patch.object(
+                cloudsave_router_module,
+                "notify_memory_server_reload",
+                reload_memory,
+            ):
+                operation = asyncio.create_task(
+                    cloudsave_router_module.post_cloudsave_character_download(
+                        "小满",
+                        _DummyRequest({"overwrite": True}),
+                    )
+                )
+                await release_started.wait()
+                operation.cancel()
+                finish_release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await operation
+
+        claim_token = release_memory.await_args.kwargs[
+            "derived_task_claim_token"
+        ]
+        reload_memory.assert_awaited_once_with(
+            reason=(
+                "云存档下载前释放 SQLite 句柄: 小满"
+                "（release 失败或取消补偿）"
+            ),
+            release_derived_task_claims={"小满": (claim_token,)},
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_download_no_active_session_force_ignored():
     """No active session + force=true → normal download (force ignored)."""
     with TemporaryDirectory() as td:
@@ -1425,3 +1652,211 @@ async def test_download_after_force_memory_released():
         call_args = release_mock.call_args
         assert call_args[0][0] == "小满"
         assert "强制" in call_args[1]["reason"]
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_worker_wait_keeps_event_loop_responsive():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    started = threading.Event()
+    release = threading.Event()
+
+    def _worker():
+        started.set()
+        assert release.wait(3)
+        return "done"
+
+    operation = asyncio.create_task(
+        cloudsave_router_module._await_thread_call_to_completion(_worker),
+    )
+    assert await asyncio.to_thread(started.wait, 3)
+    asyncio.get_running_loop().call_later(0.02, release.set)
+
+    result, cancelled = await asyncio.wait_for(operation, 1)
+
+    assert result == "done"
+    assert cancelled is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cloudsave_worker_wait_recovers_result_after_cancellation():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    started = threading.Event()
+    release = threading.Event()
+
+    def _worker():
+        started.set()
+        assert release.wait(3)
+        return {"_recent_import_transaction": {"held_locks": []}}
+
+    operation = asyncio.create_task(
+        cloudsave_router_module._await_thread_call_to_completion(_worker),
+    )
+    assert await asyncio.to_thread(started.wait, 3)
+    operation.cancel()
+    release.set()
+
+    result, cancelled = await asyncio.wait_for(operation, 1)
+
+    assert result["_recent_import_transaction"] == {"held_locks": []}
+    assert cancelled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_upload_finishes_worker_before_propagating_cancel():
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+    started = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    event_loop_thread = threading.get_ident()
+
+    def _export(*args, **kwargs):
+        assert threading.get_ident() != event_loop_thread
+        started.set()
+        assert release.wait(3)
+        finished.set()
+        return {"detail": {}}
+
+    with patch.object(
+        cloudsave_router_module,
+        "get_config_manager",
+        return_value=object(),
+    ), patch.object(
+        cloudsave_router_module,
+        "is_cloudsave_provider_available",
+        return_value=True,
+    ), patch.object(
+        cloudsave_router_module,
+        "export_cloudsave_character_unit",
+        side_effect=_export,
+    ):
+        operation = asyncio.create_task(
+            cloudsave_router_module.post_cloudsave_character_upload(
+                "小满",
+                _DummyRequest({"overwrite": True}),
+            ),
+        )
+        assert await asyncio.to_thread(started.wait, 3)
+        operation.cancel()
+        await asyncio.sleep(0)
+        assert not operation.done()
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await operation
+
+    assert finished.is_set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_keeps_cloud_fence_through_reload_and_lock_finalize():
+    from utils.cloudsave_runtime import (
+        MaintenanceModeError,
+        ROOT_MODE_BOOTSTRAP_IMPORTING,
+        assert_cloudsave_writable,
+        get_root_mode,
+    )
+
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+        observed_modes = []
+
+        async def _reload(name, _release_claim_token=None):
+            observed_modes.append(("reload", get_root_mode(cm)))
+            with pytest.raises(MaintenanceModeError):
+                assert_cloudsave_writable(
+                    cm, operation="save", target="memory/小满/recent.json",
+                )
+            return True, ""
+
+        def _finalize(result):
+            observed_modes.append(("finalize", get_root_mode(cm)))
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                return_value={"detail": {}, "backup_path": ""},
+            ) as import_mock, patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                side_effect=_reload,
+            ), patch.object(
+                cloudsave_router_module,
+                "finalize_cloudsave_character_import",
+                side_effect=_finalize,
+            ):
+                response = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True, "force": True}),
+                )
+
+        assert response["success"] is True
+        assert observed_modes == [
+            ("reload", ROOT_MODE_BOOTSTRAP_IMPORTING),
+            ("finalize", ROOT_MODE_BOOTSTRAP_IMPORTING),
+        ]
+        assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING
+        assert import_mock.call_args.kwargs["use_cloud_apply_fence"] is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_download_finishes_reload_before_propagating_cancel():
+    from utils.cloudsave_runtime import ROOT_MODE_BOOTSTRAP_IMPORTING, get_root_mode
+
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        export_local_cloudsave_snapshot(cm)
+        worker_started = threading.Event()
+        worker_release = threading.Event()
+        reload_mock = AsyncMock(return_value=(True, ""))
+        finalized_modes = []
+
+        def _import(*args, **kwargs):
+            worker_started.set()
+            assert worker_release.wait(3)
+            return {"detail": {}, "backup_path": ""}
+
+        def _finalize(result):
+            finalized_modes.append(get_root_mode(cm))
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+            with patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                side_effect=_import,
+            ), patch.object(
+                cloudsave_router_module,
+                "_reload_after_character_download",
+                reload_mock,
+            ), patch.object(
+                cloudsave_router_module,
+                "finalize_cloudsave_character_import",
+                side_effect=_finalize,
+            ):
+                operation = asyncio.create_task(
+                    cloudsave_router_module.post_cloudsave_character_download(
+                        "小满",
+                        _DummyRequest({"overwrite": True, "force": True}),
+                    ),
+                )
+                assert await asyncio.to_thread(worker_started.wait, 3)
+                operation.cancel()
+                worker_release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await operation
+
+        reload_mock.assert_awaited_once()
+        assert reload_mock.await_args.args[0] == "小满"
+        assert isinstance(reload_mock.await_args.args[1], str)
+        assert reload_mock.await_args.args[1]
+        assert finalized_modes == [ROOT_MODE_BOOTSTRAP_IMPORTING]
+        assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING

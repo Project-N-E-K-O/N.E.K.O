@@ -33,7 +33,7 @@ export default defineConfig({
         secure: false
       },
       // Market Bridge API endpoints only. Keep the SPA route /market on Vite.
-      '^/market/(status|bridge-token|install|installed|token-exchange|oauth(?:/.*)?|tasks(?:/.*)?)(?:\\?.*)?$': {
+      '^/market/(status|bridge-token|install|installed|token-exchange|catalog(?:/.*)?|oauth(?:/.*)?|tasks(?:/.*)?)(?:\\?.*)?$': {
         target: BACKEND_TARGET,
         changeOrigin: true,
         secure: false

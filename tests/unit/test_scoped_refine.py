@@ -1170,20 +1170,33 @@ async def test_scoped_refine_round_caps_calls_and_rotates_characters(monkeypatch
     from app.memory_server import refine_loops
 
     calls = []
+    locale_contexts = []
     served = {"甲": False, "乙": True, "丙": True}
 
     async def _fake_run(name):
         calls.append(name)
         return served[name]
 
+    async def _with_locale(name, operation, *args):
+        locale_contexts.append(name)
+        return await operation(*args)
+
     monkeypatch.setattr(refine_loops, "_run_scoped_refine_for_character", _fake_run)
+    monkeypatch.setattr(
+        refine_loops,
+        "run_with_character_prompt_locale",
+        _with_locale,
+    )
     monkeypatch.setattr(refine_loops, "_scoped_refine_character_cursor", None)
 
     await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
     assert calls == ["甲", "乙"]
+    assert locale_contexts == ["甲", "乙"]
     assert refine_loops._scoped_refine_character_cursor == "乙"
 
     calls.clear()
+    locale_contexts.clear()
     await refine_loops._run_scoped_refine_round(["甲", "乙", "丙"])
     assert calls == ["丙"]
+    assert locale_contexts == ["丙"]
     assert refine_loops._scoped_refine_character_cursor == "丙"

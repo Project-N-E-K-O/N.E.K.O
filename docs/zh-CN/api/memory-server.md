@@ -38,14 +38,16 @@
 | 方法 | 路径 | 参数 | 响应 |
 |---|---|---|---|
 | `GET` | `/health` | 无 | `{"app":"N.E.K.O","service":"memory","status":"ok","instance_id":"..."}` |
-| `POST` | `/release_character/{lanlan_name}` | 仅路径参数 | 释放该角色的 SQLite 句柄后返回 `{"status":"success","character_name":"..."}`；非法名称保留对应 HTTP 错误状态，其他失败返回 `500` |
-| `POST` | `/reload` | 无 | 重建并原子替换记忆组件；返回 `{"status":"success","message":"..."}` 或 `status: "error"` |
+| `POST` | `/release_character/{lanlan_name}` | 路径参数，加必需查询参数 `derived_task_claim_token`（非空字符串）和 `derived_task_claim_generation`（整数）；可选布尔参数 `hold_derived_task_admission` 默认为 `false` | 排空派生任务并释放 SQLite 句柄后返回 `{"status":"success","character_name":"...","cancelled_derived_tasks":N,"derived_task_claim_token":"..."}`。缺少 claim 参数返回 `400`；已撤销或重放的 claim 返回 `409` 和 `status: "cancelled"`；非法名称保留对应 HTTP 错误状态，其他失败返回 `500` |
+| `POST` | `/reload` | 可选 JSON 对象：`resume_derived_task_names: string[]`、对应的非负整数 `resume_derived_task_generations`，以及/或者 `release_derived_task_claims: {角色名: token[]}` | 重建并原子替换记忆组件，仅释放列出的 claim token，并发布列出的身份 generation；返回 `{"status":"success","message":"..."}` 或 `status: "error"` |
 | `POST` | `/shutdown` | 无 | 独立进程启用了 shutdown 时返回 `shutdown_signal_received`，否则返回 `shutdown_disabled` |
 | `POST` | `/internal/storage/startup/continue` | 可选 `{"reason":"..."}` | 存储就绪后释放 limited mode：`{"ok":true,"initialized":true|false}`；仍受阻时返回 `409` |
 | `POST` | `/internal/storage/startup/block` | 可选 `{"reason":"..."}` | 上游启动失败后恢复 limited mode：`{"ok":true,"limited_mode":true,"reason":"..."}` |
 | `POST` | `/internal/memory/reset_confirmed_at` | 无 | 强力记忆 `ON` → `OFF` 迁移：`{"ok":true,"count":N}`，或 `{"ok":false,"error":"...","count":0}` |
 
 三个 `/internal/*` 端点是主进程与记忆进程之间的控制面调用，不应暴露为面向用户的管理路由。
+
+`/release_character` 和 `/reload` 的 claim 字段同样属于 loopback 生命周期控制。调用方必须为每次操作生成一个 opaque token、捕获当前 recent identity generation，并在重试和补偿时复用同一个 token。release 成功后 claim 会保持有效，直到 `/reload` 精确释放该 token 或显式发布结果身份；发布只移除旧 generation 的 claim，并保留发布 generation 上的并发 claim。仓库内调用方应使用角色路由 helper，不应自行推测 generation。
 
 ## 对话持久化端点
 

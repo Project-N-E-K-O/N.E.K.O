@@ -3,6 +3,8 @@
 
     const PARENT_ORIGIN = window.location.origin;
     let currentMemoryFile = null;
+    let currentMemoryFingerprint = null;
+    let currentMemoryIdentityToken = null;
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
@@ -1851,6 +1853,7 @@
 
     function renderMemoryBrowserLimitedState(state) {
         currentMemoryFile = null;
+        currentMemoryIdentityToken = null;
         currentCatName = '';
         chatData = [];
         memoryFileRequestId++;
@@ -3288,6 +3291,8 @@
             && li.classList.contains('selected');
         const requestId = ++memoryFileRequestId;
         currentMemoryFile = filename;
+        currentMemoryFingerprint = null;
+        currentMemoryIdentityToken = null;
         currentCatName = catName || (li ? li.getAttribute('data-catname') : '');
         setMemoryDirty(false);
         dismissSaveStatus(true);
@@ -3319,6 +3324,12 @@
             if (requestId !== memoryFileRequestId) {
                 return;
             }
+            currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                ? data.fingerprint
+                : null;
+            currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                ? data.identity_token
+                : null;
             if (data.content) {
                 let arr = [];
                 try { arr = JSON.parse(data.content); } catch (e) { arr = []; }
@@ -3362,6 +3373,14 @@
             showSaveStatus(window.t ? window.t('memory.pleaseSelectFile') : '请先选择文件', false);
             return false;
         }
+        if (!currentMemoryFingerprint || !currentMemoryIdentityToken) {
+            const loadFailed = window.t ? window.t('memory.loadFailed') : '加载失败';
+            const refreshTip = window.t
+                ? window.t('memory.tip1')
+                : '请重新点击角色名加载后再保存';
+            showSaveStatus(loadFailed + '。' + refreshTip, false);
+            return false;
+        }
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
         const memoNone = window.t ? window.t('memory.memoNone') : '无。';
@@ -3380,10 +3399,21 @@
             const resp = await fetch('/api/memory/recent_file/save', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ filename: currentMemoryFile, chat: chatData })
+                body: JSON.stringify({
+                    filename: currentMemoryFile,
+                    chat: chatData,
+                    fingerprint: currentMemoryFingerprint,
+                    identity_token: currentMemoryIdentityToken
+                })
             });
             const data = await resp.json();
             if (data.success) {
+                currentMemoryFingerprint = typeof data.fingerprint === 'string'
+                    ? data.fingerprint
+                    : null;
+                currentMemoryIdentityToken = typeof data.identity_token === 'string'
+                    ? data.identity_token
+                    : null;
                 setMemoryDirty(false);
                 showSaveStatus(window.t ? window.t('memory.saveSuccess') : '保存成功', 'success', 3000);
 

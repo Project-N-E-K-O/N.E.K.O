@@ -27,7 +27,9 @@ Music crawler module, for searching and fetching music from different platforms.
 """
 
 import asyncio
+import base64
 import difflib
+import hashlib
 import httpx
 import random
 import re
@@ -134,11 +136,14 @@ MAX_RECOMMENDED_TRACK_DURATION_SECONDS = 10 * 60
 NETEASE_TASTE_SNAPSHOT_TTL_SECONDS = 30 * 60
 NETEASE_PLAYLIST_LIST_LIMIT = 100
 NETEASE_TASTE_TRACKS_PER_PLAYLIST = 5
+NETEASE_TASTE_TRACK_CANDIDATE_LIMIT = 25
 NETEASE_TASTE_SUBSCRIPTION_LIMIT = 10
 NETEASE_PERSONALIZATION_REQUEST_INTERVAL_SECONDS = 1.0
 NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS = 30 * 60
 NETEASE_AUTH_COOKIE_NAMES = frozenset({'MUSIC_U', 'MUSIC_A', '__csrf'})
-NETEASE_PERSONALIZATION_SOURCE_ORDER = ('liked', 'daily', 'liked', 'daily', 'liked', 'artist')
+NETEASE_PERSONALIZATION_SOURCE_ORDER = (
+    'liked', 'daily_playlist', 'liked', 'daily', 'liked', 'artist',
+)
 
 
 def sync_pyncm_session_cookies(session, cookies: Dict[str, str]) -> bool:
@@ -208,6 +213,7 @@ def _parse_duration_seconds(value: Any, *, milliseconds: bool = False) -> float 
 
 def _is_recommendable_duration(duration_seconds: float | None) -> bool:
     return duration_seconds is None or duration_seconds < MAX_RECOMMENDED_TRACK_DURATION_SECONDS
+
 
 # ==================================================
 # 去重与多样性管理
@@ -428,6 +434,39 @@ class BaseMusicCrawler:
 # 3. 各平台爬虫实现
 # =======================================================
 
+def _normalize_netease_cover_url(value: Any) -> str:
+    cover = str(value or '').strip()
+    candidate = f'https:{cover}' if cover.startswith('//') else cover
+    try:
+        parsed = urllib.parse.urlsplit(candidate)
+    except ValueError:
+        return cover
+    hostname = (parsed.hostname or '').lower()
+    if parsed.scheme in {'http', 'https'} and (
+        hostname == 'music.126.net' or hostname.endswith('.music.126.net')
+    ):
+        return urllib.parse.urlunsplit(parsed._replace(scheme='https'))
+    return cover
+
+
+def _netease_album_cover(album: Any) -> str:
+    if not isinstance(album, dict):
+        return ''
+    cover = _normalize_netease_cover_url(album.get('picUrl'))
+    if cover:
+        return cover
+    pic_id = str(album.get('picId') or '').strip()
+    if not pic_id.isdecimal():
+        return ''
+    magic = b'3go8&$8*3*3h0k(2)2'
+    encoded = bytearray(pic_id.encode())
+    for index in range(len(encoded)):
+        encoded[index] ^= magic[index % len(magic)]
+    key = base64.b64encode(hashlib.md5(encoded).digest()).decode('ascii')
+    key = key.replace('/', '_').replace('+', '-')
+    return f'https://p2.music.126.net/{key}/{pic_id}.jpg?param=130y130'
+
+
 class NeteaseCrawler(BaseMusicCrawler):
     """
     NetEase Cloud Music crawler; supports search with VIP/paid song filtering.
@@ -461,6 +500,12 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._daily_recommend_retry_after = 0.0
         self._daily_recommend_error_code = ''
         self._daily_recommend_lock = asyncio.Lock()
+        self._daily_playlist_tracks: List[Dict[str, Any]] = []
+        self._daily_playlist_date = ''
+        self._daily_playlist_user_id = 0
+        self._daily_playlist_retry_after = 0.0
+        self._daily_playlist_error_code = ''
+        self._daily_playlist_lock = asyncio.Lock()
         self._exploration_tracks: List[Dict[str, Any]] = []
         self._exploration_tracks_at = 0.0
         self._exploration_keyword = ''
@@ -486,6 +531,11 @@ class NeteaseCrawler(BaseMusicCrawler):
         self._daily_recommend_user_id = 0
         self._daily_recommend_retry_after = 0.0
         self._daily_recommend_error_code = ''
+        self._daily_playlist_tracks = []
+        self._daily_playlist_date = ''
+        self._daily_playlist_user_id = 0
+        self._daily_playlist_retry_after = 0.0
+        self._daily_playlist_error_code = ''
         self._exploration_tracks = []
         self._exploration_tracks_at = 0.0
         self._exploration_keyword = ''
@@ -655,10 +705,7 @@ class NeteaseCrawler(BaseMusicCrawler):
             'name': name,
             'artist': artist,
             'url': f"/api/music/play/netease/{song_id}",
-            'cover': (
-                str(album.get('picUrl') or '')
-                if isinstance(album, dict) else ''
-            ),
+            'cover': _netease_album_cover(album),
             'theme': '#44b7fe',
             'fee': song.get('fee'),
         }
@@ -679,14 +726,14 @@ class NeteaseCrawler(BaseMusicCrawler):
         playlist_info = await self._personalization_api_call(
             lambda: GetPlaylistInfo(
                 playlist_id,
-                limit=NETEASE_TASTE_TRACKS_PER_PLAYLIST,
+                limit=NETEASE_TASTE_TRACK_CANDIDATE_LIMIT,
             ),
         )
         track_ids = [
             item['id']
             for item in ((playlist_info or {}).get('playlist') or {}).get('trackIds') or []
             if isinstance(item, dict) and item.get('id')
-        ][:NETEASE_TASTE_TRACKS_PER_PLAYLIST]
+        ][:NETEASE_TASTE_TRACK_CANDIDATE_LIMIT]
         if not track_ids:
             return []
 
@@ -697,6 +744,8 @@ class NeteaseCrawler(BaseMusicCrawler):
             if not track or (not self._is_vip and track.get('fee') not in (0, None)):
                 continue
             tracks.append(track)
+            if len(tracks) >= NETEASE_TASTE_TRACKS_PER_PLAYLIST:
+                break
         self._playlist_tracks_cache[playlist_id] = (time.time(), tracks)
         return [dict(item) for item in tracks]
 
@@ -888,6 +937,125 @@ class NeteaseCrawler(BaseMusicCrawler):
             self._daily_recommend_error_code = ''
             return [dict(item) for item in tracks]
 
+    async def get_daily_playlist_recommendations(
+        self,
+        user_id: int,
+    ) -> List[Dict[str, Any]]:
+        """Fetch up to five tracks from the first playable daily playlist."""
+        if self._cookie_invalid:
+            self._personalization_error_code = 'cookie_invalid'
+            return []
+        today = time.strftime('%Y-%m-%d')
+        if (
+            self._daily_playlist_date == today
+            and self._daily_playlist_user_id == user_id
+        ):
+            if not self._daily_playlist_tracks:
+                self._personalization_error_code = self._daily_playlist_error_code
+            return [dict(item) for item in self._daily_playlist_tracks]
+        if time.time() < self._daily_playlist_retry_after:
+            self._personalization_error_code = self._daily_playlist_error_code
+            return []
+
+        async with self._daily_playlist_lock:
+            if (
+                self._daily_playlist_date == today
+                and self._daily_playlist_user_id == user_id
+            ):
+                if not self._daily_playlist_tracks:
+                    self._personalization_error_code = self._daily_playlist_error_code
+                return [dict(item) for item in self._daily_playlist_tracks]
+            if time.time() < self._daily_playlist_retry_after:
+                self._personalization_error_code = self._daily_playlist_error_code
+                return []
+
+            from pyncm_async.apis import WeapiCryptoRequest
+
+            @WeapiCryptoRequest
+            def GetDailyRecommendedPlaylists():
+                return '/api/v1/discovery/recommend/resource', {}
+
+            try:
+                payload = await self._personalization_api_call(
+                    GetDailyRecommendedPlaylists,
+                )
+            except Exception as exc:
+                self._daily_playlist_error_code = (
+                    'cookie_invalid' if self._cookie_invalid else 'upstream_error'
+                )
+                self._personalization_error_code = self._daily_playlist_error_code
+                self._daily_playlist_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+                logger.warning(
+                    "[%s] 每日推荐歌单获取失败，已进入冷却: %s: %s",
+                    self.platform_name,
+                    type(exc).__name__,
+                    exc,
+                )
+                return []
+
+            playlist = None
+            tracks: List[Dict[str, Any]] = []
+            candidate_error_code = ''
+            for candidate in (payload or {}).get('recommend') or []:
+                if not isinstance(candidate, dict) or not candidate.get('id'):
+                    continue
+                try:
+                    candidate_tracks = await self._fetch_playlist_tracks(
+                        int(candidate['id'])
+                    )
+                except Exception as exc:
+                    if self._cookie_invalid:
+                        candidate_error_code = 'cookie_invalid'
+                        logger.warning(
+                            "[%s] 候选歌单 %s 抓取时凭证失效，停止后续请求",
+                            self.platform_name,
+                            candidate.get('id'),
+                        )
+                        break
+                    logger.warning(
+                        "[%s] 候选歌单 %s 抓取失败，已跳过: %s",
+                        self.platform_name,
+                        candidate.get('id'),
+                        exc,
+                    )
+                    continue
+                if candidate_tracks:
+                    playlist = candidate
+                    tracks = candidate_tracks
+                    break
+
+            playlist_id = int(playlist['id']) if playlist else 0
+            playlist_name = str((playlist or {}).get('name') or '').strip()
+            daily_tracks: List[Dict[str, Any]] = []
+            seen_ids = set()
+            for track in tracks[:NETEASE_TASTE_TRACKS_PER_PLAYLIST]:
+                if track.get('id') in seen_ids:
+                    continue
+                item = dict(track)
+                item['recommendation_source'] = 'daily_playlist'
+                item['playlist_id'] = playlist_id
+                item['playlist_name'] = playlist_name
+                seen_ids.add(item.get('id'))
+                daily_tracks.append(item)
+
+            self._daily_playlist_tracks = daily_tracks
+            if daily_tracks:
+                self._daily_playlist_date = today
+                self._daily_playlist_user_id = user_id
+                self._daily_playlist_retry_after = 0.0
+                self._daily_playlist_error_code = ''
+            else:
+                self._daily_playlist_error_code = (
+                    candidate_error_code or 'source_empty'
+                )
+                self._personalization_error_code = self._daily_playlist_error_code
+                self._daily_playlist_retry_after = (
+                    time.time() + NETEASE_PERSONALIZATION_RETRY_COOLDOWN_SECONDS
+                )
+            return [dict(item) for item in daily_tracks]
+
     async def get_taste_snapshot(self) -> Dict[str, Any] | None:
         self._check_cookie_freshness()
         if not self._has_cookies or self._cookie_invalid:
@@ -1028,19 +1196,19 @@ class NeteaseCrawler(BaseMusicCrawler):
             )
             if not requested_playlist:
                 normalized_name = playlist_name.strip().casefold()
-                exact_matches = [
+                matching_names = [
                     item for item in playlists
-                    if normalized_name
-                    and str(item.get('name') or '').strip().casefold() == normalized_name
+                    if str(item.get('name') or '').strip().casefold() == normalized_name
                 ]
-                self._personalization_error_code = (
-                    'playlist_ambiguous' if len(exact_matches) > 1 else 'playlist_not_found'
-                )
-                logger.warning(
-                    "[%s] 指定歌单不存在或名称不唯一",
+                if not playlist_id and normalized_name and len(matching_names) > 1:
+                    self._personalization_error_code = 'playlist_ambiguous'
+                    return []
+                logger.info(
+                    "[%s] 指定歌单不存在，回退每日推荐歌单",
                     self.platform_name,
                 )
-                return []
+                daily_playlist = await self.get_daily_playlist_recommendations(user_id)
+                return daily_playlist[:bounded_limit]
             tracks = await self._fetch_playlist_tracks(int(requested_playlist['id']))
             for track in tracks:
                 track['recommendation_source'] = 'playlist'
@@ -1056,10 +1224,33 @@ class NeteaseCrawler(BaseMusicCrawler):
             if not user_id:
                 return []
             daily = await self.get_daily_recommendations(user_id)
-            random.shuffle(daily)
-            if not daily and not self._personalization_error_code:
-                self._personalization_error_code = 'source_empty'
-            return daily[:bounded_limit]
+            daily_error_code = self._personalization_error_code
+            if self._cookie_invalid:
+                self._personalization_error_code = 'cookie_invalid'
+                return []
+            daily_playlist = await self.get_daily_playlist_recommendations(user_id)
+            daily_playlist_error_code = self._personalization_error_code
+            combined_daily: List[Dict[str, Any]] = []
+            seen_ids = set()
+            for track in daily + daily_playlist:
+                if track.get('id') in seen_ids:
+                    continue
+                seen_ids.add(track.get('id'))
+                combined_daily.append(track)
+            random.shuffle(combined_daily)
+            if combined_daily:
+                self._personalization_error_code = ''
+            else:
+                source_errors = (daily_error_code, daily_playlist_error_code)
+                self._personalization_error_code = next(
+                    (
+                        code
+                        for code in ('cookie_invalid', 'upstream_error', 'source_empty')
+                        if code in source_errors
+                    ),
+                    'source_empty',
+                )
+            return combined_daily[:bounded_limit]
 
         if personalization_source == 'liked':
             user_id = await self._get_personalization_user_id()
@@ -1091,6 +1282,11 @@ class NeteaseCrawler(BaseMusicCrawler):
         daily = await self.get_daily_recommendations(int(snapshot['user_id']))
         random.shuffle(daily)
 
+        daily_playlist = await self.get_daily_playlist_recommendations(
+            int(snapshot['user_id']),
+        )
+        random.shuffle(daily_playlist)
+
         try:
             artist = await self._fetch_exploration_tracks(
                 snapshot,
@@ -1119,10 +1315,15 @@ class NeteaseCrawler(BaseMusicCrawler):
             ]
             self._personalization_source_index += 1
         source_order = [lead_source] + [
-            source for source in ('liked', 'daily', 'artist')
+            source for source in ('liked', 'daily_playlist', 'daily', 'artist')
             if source != lead_source
         ]
-        pools = {'liked': liked, 'daily': daily, 'artist': artist}
+        pools = {
+            'liked': liked,
+            'daily_playlist': daily_playlist,
+            'daily': daily,
+            'artist': artist,
+        }
         combined: List[Dict[str, Any]] = []
         seen_ids = set()
         while len(combined) < bounded_limit and any(pools.values()):
@@ -1137,6 +1338,8 @@ class NeteaseCrawler(BaseMusicCrawler):
                 combined.append(track)
                 if len(combined) >= bounded_limit:
                     break
+        if combined:
+            self._personalization_error_code = ''
         return combined[:bounded_limit]
 
     async def search(self, keyword: str, limit: int = 1) -> List[Dict[str, Any]]:
@@ -1155,12 +1358,17 @@ class NeteaseCrawler(BaseMusicCrawler):
 
         logger.info(f"[{self.platform_name}] 正在搜索: {keyword}")
         search_url = "https://music.163.com/api/search/get/web"
-        search_limit = min(100, max(5, limit * 2))
+        search_limit = min(10, max(5, limit * 2))
         data = {'s': keyword, 'type': 1, 'offset': 0, 'limit': search_limit}
         
         try:
             # 搜索属于公开读取，不携带账号凭证；登录态仅用于个性化读取和播放鉴权。
-            response = await self.client.post(search_url, data=data, headers={'Cookie': ''})
+            response = await self.client.post(
+                search_url,
+                data=data,
+                headers={'Cookie': ''},
+                timeout=5.0,
+            )
             response.raise_for_status()
             result = response.json()
 
@@ -1180,6 +1388,36 @@ class NeteaseCrawler(BaseMusicCrawler):
                 found_songs = [song for song in songs if song.get("fee", 1) == 0]
                 if self._has_cookies:
                     logger.info(f"[{self.platform_name}] 普通已登录用户，仅返回免费歌曲")
+                if len(found_songs) < limit and len(songs) >= search_limit:
+                    try:
+                        fallback_data = {
+                            **data,
+                            'offset': search_limit,
+                            'limit': 100 - search_limit,
+                        }
+                        fallback_response = await self.client.post(
+                            search_url,
+                            data=fallback_data,
+                            headers={'Cookie': ''},
+                            timeout=5.0,
+                        )
+                        fallback_response.raise_for_status()
+                        fallback_result = fallback_response.json()
+                        fallback_songs = (
+                            fallback_result.get("result", {}).get("songs") or []
+                            if fallback_result.get("code") == 200
+                            else []
+                        )
+                        found_songs.extend(
+                            song for song in fallback_songs
+                            if song.get("fee", 1) == 0
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[%s] 补充搜索请求失败，沿用首页结果: %s",
+                            self.platform_name,
+                            exc,
+                        )
             if not found_songs:
                 return []
 
@@ -1202,7 +1440,7 @@ class NeteaseCrawler(BaseMusicCrawler):
                     for artist in artists
                     if isinstance(artist, dict) and artist.get('name')
                 ) or "未知"
-                cover_url = song.get("album", {}).get("picUrl", "")
+                cover_url = _netease_album_cover(song.get("album"))
                 # 使用本地代理路由，支持 VIP 歌曲解析重定向
                 audio_url = f"/api/music/play/netease/{song_id}"
                 final_results.append(self._format_item(
@@ -1930,6 +2168,7 @@ async def fetch_music_content(
     personalization_source: str = "auto",
     requested_song: str = "",
     requested_artist: str = "",
+    bypass_recommendation_dedupe: bool = False,
 ) -> Dict[str, Any]:
     """
     Fetch music content with staged fallback and locale-aware source ordering.
@@ -1951,7 +2190,15 @@ async def fetch_music_content(
         or requested_artist
         or personalization_source != "auto"
     )
-    use_account_personalization = personalized and not (requested_song or requested_artist)
+    use_account_personalization = (
+        personalized
+        and not (requested_song or requested_artist)
+        and (
+            not keyword
+            or bool(playlist_id or playlist_name)
+            or personalization_source != "auto"
+        )
+    )
     strict_personalization = use_account_personalization and bool(
         playlist_id
         or playlist_name
@@ -2076,6 +2323,12 @@ async def fetch_music_content(
                 try:
                     res = await completed_task
                     if isinstance(res, list) and res:
+                        res = _filter_requested_music_results(
+                            res,
+                            requested_song=requested_song,
+                            requested_artist=requested_artist,
+                        )
+                    if isinstance(res, list) and res:
                         all_results.extend(res)
                         logger.info("[智能调度] 第一梯队某源命中，取消其他任务")
                         # 取消剩余任务
@@ -2086,8 +2339,11 @@ async def fetch_music_content(
                         await asyncio.gather(*primary_task_objs, return_exceptions=True)
                         break
                 except asyncio.CancelledError:
-                    # 任务被取消，忽略
-                    pass
+                    for task in primary_task_objs:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*primary_task_objs, return_exceptions=True)
+                    raise
                 except Exception as e:
                     logger.warning(f"[智能调度] 第一梯队某源异常: {e}")
                 
@@ -2110,6 +2366,12 @@ async def fetch_music_content(
                 try:
                     res = await completed_task
                     if isinstance(res, list) and res:
+                        res = _filter_requested_music_results(
+                            res,
+                            requested_song=requested_song,
+                            requested_artist=requested_artist,
+                        )
+                    if isinstance(res, list) and res:
                         all_results.extend(res)
                         logger.info("[智能调度] 兜底源命中，取消其他任务")
                         # 取消剩余任务
@@ -2120,8 +2382,11 @@ async def fetch_music_content(
                         await asyncio.gather(*fallback_task_objs, return_exceptions=True)
                         break
                 except asyncio.CancelledError:
-                    # 任务被取消，忽略
-                    pass
+                    for task in fallback_task_objs:
+                        if not task.done():
+                            task.cancel()
+                    await asyncio.gather(*fallback_task_objs, return_exceptions=True)
+                    raise
                 except Exception as e:
                     logger.warning(f"[智能调度] 兜底源异常: {e}")
 
@@ -2198,8 +2463,9 @@ async def fetch_music_content(
             unique_results.append(item)
             seen_urls.add(item['url'])
     
-    # 使用缓存进行短期去重（只过滤，不写入缓存）
-    unique_results = music_cache.filter_duplicates(unique_results)
+    # 主动推荐需要短期多样性；用户显式点播则必须允许重播刚推荐过的歌曲。
+    if not bypass_recommendation_dedupe:
+        unique_results = music_cache.filter_duplicates(unique_results)
     
     # 去重后可能为空，需要修正返回语义
     if not unique_results:
@@ -2213,12 +2479,12 @@ async def fetch_music_content(
         }
 
     if requested_song:
-        requested_match = _select_requested_song(
-            requested_song,
-            requested_artist,
+        matched_results = _filter_requested_music_results(
             unique_results,
+            requested_song=requested_song,
+            requested_artist=requested_artist,
         )
-        if not requested_match:
+        if not matched_results:
             logger.warning("指定歌曲未找到可靠候选: %s - %s", requested_song, requested_artist)
             return {
                 'success': False,
@@ -2227,16 +2493,13 @@ async def fetch_music_content(
                 'data': [],
                 'netease_cookie_invalid': netease_cookie_invalid,
             }
-        unique_results = [requested_match]
+        unique_results = matched_results
     elif requested_artist:
-        target_artist = _normalize_song_match_text(requested_artist)
-        unique_results = [
-            item
-            for item in unique_results
-            if target_artist
-            and target_artist
-            in _normalize_song_match_text(str(item.get('artist') or ''))
-        ]
+        unique_results = _filter_requested_music_results(
+            unique_results,
+            requested_song=requested_song,
+            requested_artist=requested_artist,
+        )
         if not unique_results:
             logger.warning("指定歌手未找到可靠候选: %s", requested_artist)
             return {
@@ -2461,6 +2724,31 @@ def _select_requested_song(
             best_item = item
             best_score = score
     return best_item
+
+
+def _filter_requested_music_results(
+    search_results: List[Dict[str, Any]],
+    *,
+    requested_song: str,
+    requested_artist: str,
+) -> List[Dict[str, Any]]:
+    if requested_song:
+        match = _select_requested_song(
+            requested_song,
+            requested_artist,
+            search_results,
+        )
+        return [match] if match else []
+    if requested_artist:
+        target_artist = _normalize_song_match_text(requested_artist)
+        return [
+            item
+            for item in search_results
+            if target_artist
+            and target_artist
+            in _normalize_song_match_text(str(item.get("artist") or ""))
+        ]
+    return search_results
 
 
 def identify_best_music_resource(target_song: str, search_results: List[Dict[str, Any]]) -> Dict[str, Any]:

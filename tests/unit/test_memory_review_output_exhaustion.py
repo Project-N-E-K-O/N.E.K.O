@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from utils import recent_file
 from utils.llm_client import AIMessage, HumanMessage
 
 
@@ -128,7 +129,12 @@ async def _drive_review_gate(
     memory_server, name: str, history: list, token_count=None
 ) -> None:
     fake_manager = MagicMock()
-    fake_manager.aget_recent_history = AsyncMock(return_value=history)
+    fake_manager.aget_recent_history = AsyncMock(
+        return_value=(
+            history,
+            recent_file.capture_recent_generation("review-test-recent.json"),
+        ),
+    )
     fake_manager.review_history = AsyncMock(return_value=("white", None))
 
     with (
@@ -150,6 +156,10 @@ async def _drive_review_gate(
         ),
     ):
         await memory_server.maybe_spawn_review(name)
+        task = memory_server.correction_tasks.get(name)
+        if task is not None:
+            await task
+    return fake_manager
 
 
 @pytest.mark.unit
@@ -160,28 +170,25 @@ async def test_output_exhaustion_gate_waits_for_context_to_shrink():
 
     name = "output-limit-gate"
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_output_exhaustion_attempts": (
             MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         ),
         "review_output_exhaustion_min_context_tokens": 1000,
         "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(generation),
     }
 
     await _drive_review_gate(memory_server, name, _history(14))
     assert name not in memory_server.correction_tasks
 
-    await _drive_review_gate(memory_server, name, _history(8))
+    fake_manager = await _drive_review_gate(memory_server, name, _history(8))
     state = memory_server.gates._maint_state[name]
     assert state["review_output_exhaustion_attempts"] == 0
     assert state["review_output_exhaustion_min_context_tokens"] is None
     assert state["review_output_exhaustion_blocked"] is False
-
-    task = memory_server.correction_tasks.get(name)
-    assert task is not None
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
+    fake_manager.review_history.assert_awaited_once()
 
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
@@ -312,12 +319,14 @@ async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
 
     name = "output-limit-lost-race"
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_output_exhaustion_attempts": (
             MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         ),
         "review_output_exhaustion_min_context_tokens": 1000,
         "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(generation),
     }
 
     def count_while_a_concurrent_writer_arms_a_newer_breaker(rows):
@@ -344,4 +353,31 @@ async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
         MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
     )
     assert state["review_output_exhaustion_blocked"] is True
+    memory_server.gates._maint_state.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_output_exhaustion_cannot_arm_reused_identity(tmp_path):
+    """An old review result must not mutate the reused identity's breaker."""
+    from app import memory_server
+    from utils import recent_file
+
+    name = "测试角色-stale-output"
+    path = tmp_path / "recent.json"
+    path.write_text("[]", encoding="utf-8")
+    old_generation = recent_file.capture_recent_generation(path)
+    recent_file.activate_recent_paths([path])
+    memory_server.gates._maint_state.pop(name, None)
+
+    with patch(
+        "memory.recent.review_context_token_count",
+        AsyncMock(return_value=100),
+    ):
+        result = await memory_server.review._record_review_output_exhaustion(
+            name, _history(10), old_generation,
+    )
+
+    assert result is None
+    assert memory_server.gates._maint_state.get(name) == {}
     memory_server.gates._maint_state.pop(name, None)

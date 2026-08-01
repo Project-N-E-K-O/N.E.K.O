@@ -4069,7 +4069,10 @@
         "unknownState": "未知状态",
         "volume": "音量: ",
         "unsafeSource": "已拦截不安全音源: {{domain}}",
-        "cookieExpired": "音乐Cookie已失效"
+        "cookieExpired": "音乐Cookie已失效",
+        "loginRequired": "请先配置网易云音乐 Cookie",
+        "playlistAmbiguous": "存在重名歌单，请提供更明确的歌单名",
+        "sourceEmpty": "该音乐来源暂无可播放歌曲"
     },
     "Jukebox": {
         "title": "点歌台",

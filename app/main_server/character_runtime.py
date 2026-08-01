@@ -244,6 +244,13 @@ try:
 except Exception:
     logger.warning("Failed to register topic session manager getter", exc_info=True)
 
+try:
+    from main_logic.music_playback import register_music_session_manager_getter
+
+    register_music_session_manager_getter(_get_session_manager)
+except Exception:
+    logger.warning("Failed to register music session manager getter", exc_info=True)
+
 
 def _select_fallback_session_manager():
     """Return a single connected session manager as a safe fallback, if unambiguous."""

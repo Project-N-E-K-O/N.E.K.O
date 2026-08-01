@@ -134,6 +134,7 @@ from utils.language_utils import (
 )
 from utils.logger_config import get_module_logger
 from utils.meme_moderation import moderate_meme_image_url
+from utils.music_crawlers import mark_music_as_played
 from .break_reminders import (
     _compose_break_system_prompt,
     _deliver_break_reminder_via_llm,
@@ -367,6 +368,7 @@ async def handle_proactive_chat(
         )
         lanlan_name = command.lanlan_name or her_name_current
         is_playing_music = command.is_playing_music
+        is_music_occupied = command.is_music_occupied
         current_track = command.current_track
         music_cooldown = command.music_cooldown
 
@@ -1466,10 +1468,14 @@ async def handle_proactive_chat(
         selected_meme_topic_key = None
 
         # 【加固】如果正在放歌或处于冷却期，强制清空 music 通道，彻底跳过搜歌逻辑
-        if is_playing_music or music_cooldown:
+        if is_music_occupied or is_playing_music or music_cooldown:
             if music_content:
                 reason = (
-                    "音乐正在播放" if is_playing_music else "用户连续秒关，音乐冷却中"
+                    "音乐播放器已占用"
+                    if is_music_occupied
+                    else "音乐正在播放"
+                    if is_playing_music
+                    else "用户连续秒关，音乐冷却中"
                 )
                 logger.debug(f"[{lanlan_name}]-{reason}，强制屏蔽 Phase 1 搜歌逻辑")
             music_content = None
@@ -2003,7 +2009,12 @@ async def handle_proactive_chat(
         # 歌可投递，不会"发了 [MUSIC] 却转译不出"。selected_music_link 非空时
         # music_topic 必非空（同生于 Phase 1 选曲）。正在放歌 / 冷却期时
         # music_content / selected_music_link 已在上游清空，此分支自然不命中。
-        if selected_music_link and not is_playing_music and not music_cooldown:
+        if (
+            selected_music_link
+            and not is_music_occupied
+            and not is_playing_music
+            and not music_cooldown
+        ):
             # 【优化】使用独立的标识符，防止模型将音乐素材误认为普通的外部 WEB 话题
             msh = _loc(MUSIC_SECTION_HEADER, proactive_lang)
             msf = _loc(MUSIC_SECTION_FOOTER, proactive_lang)
@@ -2253,6 +2264,18 @@ async def handle_proactive_chat(
         committed_delivery = delivery_commit.delivery
         if committed_delivery is None:  # Defensive: the stage contract is exhaustive.
             raise RuntimeError("delivery commit returned neither result nor delivery")
+        if (
+            committed_delivery.is_music_used
+            and committed_delivery.delivered_music_link
+        ):
+            delivered_music_link = committed_delivery.delivered_music_link
+            mark_music_as_played(
+                {
+                    "name": delivered_music_link.get("title", ""),
+                    "artist": delivered_music_link.get("artist", ""),
+                    "url": delivered_music_link.get("url", ""),
+                }
+            )
         recorded_result = await _record_committed_delivery(
             mgr=mgr,
             delivery=committed_delivery,

@@ -4069,7 +4069,10 @@
         "unknownState": "알 수 없는 상태",
         "volume": "볼륨: ",
         "unsafeSource": "안전하지 않은 오디오 소스를 차단했습니다: {{domain}}",
-        "cookieExpired": "음악 쿠키가 만료되었습니다"
+        "cookieExpired": "음악 쿠키가 만료되었습니다",
+        "loginRequired": "먼저 NetEase Cloud Music 쿠키를 설정해 주세요",
+        "playlistAmbiguous": "같은 이름의 재생 목록이 여러 개 있습니다. 더 구체적인 이름을 입력해 주세요",
+        "sourceEmpty": "이 음악 소스에는 현재 재생 가능한 곡이 없습니다"
     },
     "Jukebox": {
         "title": "주크박스",

@@ -4069,7 +4069,10 @@
         "unknownState": "Estado desconocido",
         "volume": "Volumen:",
         "unsafeSource": "Fuente de audio insegura bloqueada: {{domain}}",
-        "cookieExpired": "La cookie de música ha caducado"
+        "cookieExpired": "La cookie de música ha caducado",
+        "loginRequired": "Configura primero la cookie de NetEase Cloud Music",
+        "playlistAmbiguous": "Hay varias listas de reproducción con este nombre. Indica un nombre más específico",
+        "sourceEmpty": "Esta fuente de música no tiene pistas reproducibles en este momento"
     },
     "Jukebox": {
         "title": "Tocadiscos tragamonedas",

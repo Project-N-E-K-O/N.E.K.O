@@ -4069,7 +4069,10 @@
         "unknownState": "未知狀態",
         "volume": "音量: ",
         "unsafeSource": "已攔截不安全音源: {{domain}}",
-        "cookieExpired": "音樂Cookie已失效"
+        "cookieExpired": "音樂Cookie已失效",
+        "loginRequired": "請先設定網易雲音樂 Cookie",
+        "playlistAmbiguous": "存在同名歌單，請提供更明確的歌單名稱",
+        "sourceEmpty": "此音樂來源目前沒有可播放的歌曲"
     },
     "Jukebox": {
         "title": "點歌台",

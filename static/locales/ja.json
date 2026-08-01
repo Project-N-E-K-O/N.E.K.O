@@ -4069,7 +4069,10 @@
         "unknownState": "不明な状態",
         "volume": "音量: ",
         "unsafeSource": "安全でない音源をブロックしました: {{domain}}",
-        "cookieExpired": "音楽Cookieの有効期限が切れました"
+        "cookieExpired": "音楽Cookieの有効期限が切れました",
+        "loginRequired": "先にNetEase Cloud MusicのCookieを設定してください",
+        "playlistAmbiguous": "同名のプレイリストがあります。より具体的な名前を指定してください",
+        "sourceEmpty": "この音楽ソースには現在再生可能な曲がありません"
     },
     "Jukebox": {
         "title": "ジュークボックス",

@@ -1286,6 +1286,34 @@ def test_storage_location_restart_restores_previous_migration_when_shutdown_fail
 
 
 @pytest.mark.unit
+def test_restart_rollback_never_deletes_existing_checkpoint_after_restore_failure(
+    tmp_path,
+):
+    config_manager = _DummyConfigManager(tmp_path)
+    previous_migration = {"status": "completed", "target_root": "kept"}
+
+    with patch.object(
+        storage_location_router_module,
+        "save_storage_migration",
+        side_effect=OSError("restore failed"),
+    ), patch.object(
+        storage_location_router_module,
+        "delete_storage_migration",
+    ) as delete_migration, patch.object(
+        storage_location_router_module.logger,
+        "exception",
+    ) as log_exception:
+        storage_location_router_module._restore_restart_schedule_state(
+            config_manager,
+            {"migration": previous_migration, "root_state": None},
+            anchor_root=config_manager.anchor_root,
+        )
+
+    delete_migration.assert_not_called()
+    log_exception.assert_called_once()
+
+
+@pytest.mark.unit
 def test_storage_location_restart_rejects_existing_pending_migration(tmp_path):
     config_manager = _DummyConfigManager(tmp_path)
     target_root = tmp_path / "new-storage" / "N.E.K.O"

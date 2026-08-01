@@ -4069,7 +4069,10 @@
         "unknownState": "Unknown state",
         "volume": "Volume: ",
         "unsafeSource": "Blocked unsafe audio source: {{domain}}",
-        "cookieExpired": "Music cookie has expired"
+        "cookieExpired": "Music cookie has expired",
+        "loginRequired": "Please configure your NetEase Cloud Music cookie first",
+        "playlistAmbiguous": "Multiple playlists have this name. Please provide a more specific playlist name",
+        "sourceEmpty": "No playable tracks are currently available from this music source"
     },
     "Jukebox": {
         "title": "Jukebox",

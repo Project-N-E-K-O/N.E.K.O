@@ -460,7 +460,11 @@ async def _run_scoped_refine_round(catgirl_names: list[str]) -> None:
     rotation = names[start:] + names[:start]
     for name in rotation:
         try:
-            served = await _run_scoped_refine_for_character(name)
+            served = await run_with_character_prompt_locale(
+                name,
+                _run_scoped_refine_for_character,
+                name,
+            )
         except Exception as e:
             logger.warning(f"[ScopedRefine] {name} cron 异常: {e}")
             continue

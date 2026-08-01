@@ -49,6 +49,7 @@ _STORAGE_WRITE_PRIMITIVES = frozenset(
         "save_storage_migration",
         "save_storage_policy",
         "set_root_mode",
+        "save_root_state",
         "create_pending_storage_migration",
     }
 )
@@ -241,6 +242,65 @@ def test_read_is_not_blocked_while_a_worker_holds_the_writer_lock(tmp_path):
     assert elapsed < hold_seconds / 2, (
         f"读路径等了 {elapsed:.3f}s，说明它在等工作线程手里那把写者锁"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_lifecycle_transaction_hands_off_to_to_thread_only():
+    """Inherited workers may write, while an unrelated thread stays blocked."""
+    inherited_entered = threading.Event()
+    unrelated_started = threading.Event()
+    unrelated_entered = threading.Event()
+
+    def _inherited_writer() -> None:
+        with root_state_lock.root_state_transaction():
+            inherited_entered.set()
+
+    def _unrelated_writer() -> None:
+        unrelated_started.set()
+        with root_state_lock.root_state_transaction():
+            unrelated_entered.set()
+
+    unrelated = threading.Thread(target=_unrelated_writer)
+    with root_state_lock.root_state_lifecycle_transaction():
+        await asyncio.wait_for(asyncio.to_thread(_inherited_writer), timeout=1)
+        assert inherited_entered.is_set()
+
+        unrelated.start()
+        assert unrelated_started.wait(1)
+        assert not unrelated_entered.wait(0.1)
+
+    unrelated.join(timeout=1)
+    assert not unrelated.is_alive()
+    assert unrelated_entered.is_set()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_lifecycle_transaction_keeps_loop_live_for_unrelated_worker():
+    """A worker may wait for the lifecycle lock without blocking its event loop."""
+    begin_unrelated = asyncio.Event()
+    unrelated_started = threading.Event()
+    unrelated_entered = threading.Event()
+
+    def _unrelated_writer() -> None:
+        unrelated_started.set()
+        with root_state_lock.root_state_transaction():
+            unrelated_entered.set()
+
+    async def _unrelated_request() -> None:
+        await begin_unrelated.wait()
+        await asyncio.to_thread(_unrelated_writer)
+
+    unrelated_request = asyncio.create_task(_unrelated_request())
+    with root_state_lock.root_state_lifecycle_transaction():
+        begin_unrelated.set()
+        assert await asyncio.to_thread(unrelated_started.wait, 1)
+        await asyncio.sleep(0.05)
+        assert not unrelated_entered.is_set()
+
+    await asyncio.wait_for(unrelated_request, timeout=1)
+    assert unrelated_entered.is_set()
 
 
 # ── 2. 读路径不写 root_state（对偶 + 调用点） ─────────────────────────
@@ -865,11 +925,10 @@ def test_empty_snapshot_never_deletes_storage_state(tmp_path):
 def test_storage_write_primitives_never_sit_directly_in_an_async_body():
     """Keep the write sequences indivisible by keeping them out of async bodies.
 
-    Rollbacks are the one exception and they are recognised by shape rather than
-    by name: they all live inside an ``except`` handler and are deliberately
-    synchronous, because awaiting in an except handler makes the rollback itself
-    cancellable (``CancelledError`` is a ``BaseException``, so the surrounding
-    ``except Exception`` would not catch it).
+    Event-loop callers must submit synchronous root-state writers through
+    ``_run_locked_storage_job``. Otherwise an unrelated cloud lifecycle fence can
+    make the route wait on a thread lock from the event loop, or an ``RLock`` can
+    admit the unrelated coroutine as if it were the lifecycle owner.
     """
     source_path = _REPO_ROOT / "main_routers" / "storage_location_router.py"
     tree = ast.parse(source_path.read_text(encoding="utf-8"))
@@ -889,10 +948,20 @@ def test_storage_write_primitives_never_sit_directly_in_an_async_body():
             for child in ast.iter_child_nodes(node):
                 _walk(child, async_owner=async_owner, in_except=True)
             return
-        if isinstance(node, ast.Call) and async_owner is not None and not in_except:
+        if isinstance(node, ast.Call) and async_owner is not None:
             func = node.func
             name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
-            if name in _STORAGE_WRITE_PRIMITIVES:
+            persist_reconcile = name == "build_storage_location_bootstrap_payload" and any(
+                keyword.arg == "persist_reconcile"
+                and isinstance(keyword.value, ast.Constant)
+                and keyword.value.value is True
+                for keyword in node.keywords
+            )
+            if (
+                name in _STORAGE_WRITE_PRIMITIVES
+                or name == "_restore_storage_mutation_state"
+                or persist_reconcile
+            ):
                 offenders.append(f"{name}() at line {node.lineno} in async {async_owner}()")
         for child in ast.iter_child_nodes(node):
             _walk(child, async_owner=async_owner, in_except=in_except)
