@@ -52,6 +52,7 @@ _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
 })
 _CJK_CONDITIONAL_MARKERS = ("如果", "若", "假如", "假设", "倘若", "要是")
+_CJK_EPISTEMIC_MARKERS = ("也许", "或许", "大概", "可能")
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
@@ -67,7 +68,11 @@ def normalize_trust(value, default: float = SPEAKER_TRUST_DEFAULT) -> float:
 
 
 def trust_band(value) -> str:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
+    if (
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+    ):
         return "unknown"
     score = normalize_trust(value)
     if score >= 0.75:
@@ -199,6 +204,23 @@ def _has_epistemic_modal_negation(text: str) -> bool:
     )
 
 
+def _has_cjk_epistemic_negation(text: str) -> bool:
+    """Reject uncertain CJK markers that precede a negated predicate."""
+    marker_indices = [
+        text.find(marker)
+        for marker in _CJK_EPISTEMIC_MARKERS
+        if marker in text
+    ]
+    if not marker_indices:
+        return False
+    return any(
+        text.find(negative) > marker_index
+        for marker_index in marker_indices
+        for negative, _positive in _CJK_NEGATED_PREDICATES
+        if negative in text
+    )
+
+
 def _cjk_positive_variants(text: str) -> set[str]:
     """Return exact positive forms for conservative predicate negations."""
     variants: set[str] = set()
@@ -256,6 +278,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         )
         and not _has_cjk_conditional_negation(old_norm)
         and not _has_cjk_conditional_negation(new_norm)
+        and not _has_cjk_epistemic_negation(old_norm)
+        and not _has_cjk_epistemic_negation(new_norm)
     ):
         return "correction"
     old_tokens = _proposition_tokens(old_norm)

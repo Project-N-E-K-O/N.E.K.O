@@ -16,6 +16,7 @@ from memory.speaker_trust import (
     observation_texts,
     preferred_by_trust,
     provenance_of_entries,
+    trust_band,
 )
 from plugin.plugins.qq_auto_reply.permission import PermissionManager
 from utils.llm_client import AIMessage, HumanMessage
@@ -42,6 +43,8 @@ def test_trust_normalization_rejects_non_finite_values():
     assert normalize_trust(float("inf")) == pytest.approx(SPEAKER_TRUST_DEFAULT)
     assert preferred_by_trust(float("nan"), 0.3) is None
     assert preferred_by_trust(0.8, float("inf")) is None
+    assert trust_band(float("nan")) == "unknown"
+    assert trust_band(float("inf")) == "unknown"
     manager = PermissionManager(
         [{"qq": "1001", "level": "normal"}],
         speaker_trust_profiles={"1001": {"adjustment": float("nan")}},
@@ -1634,6 +1637,19 @@ def test_epistemic_modal_negations_never_emit_correction():
     assert deterministic_relation(
         "Alice will attend", "Alice will not attend",
     ) == "correction"
+
+
+@pytest.mark.parametrize("marker", ["也许", "或许", "大概", "可能"])
+@pytest.mark.parametrize("positive,negative", [
+    ("小明喜欢猫", "小明不喜欢猫"),
+    ("小明住上海", "小明不住上海"),
+])
+def test_cjk_epistemic_negations_never_emit_correction(
+    marker, positive, negative,
+):
+    assert deterministic_relation(
+        f"{marker}{positive}", f"{marker}{negative}",
+    ) is None
 
 
 @pytest.mark.asyncio
