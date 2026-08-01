@@ -972,7 +972,11 @@ class FactDedupResolver:
                 # so it doesn't keep blocking subsequent batches.
                 processed_pairs.add((cand_id, exist_id))
                 continue
-            from memory.speaker_trust import preferred_by_trust
+            from memory.speaker_trust import (
+                preferred_by_trust,
+                provenance_of_entries,
+                stable_speaker_id,
+            )
             cand_speaker = cand.get('speaker_id')
             exist_speaker = existing.get('speaker_id')
             cand_trust = cand.get('speaker_trust')
@@ -1000,6 +1004,32 @@ class FactDedupResolver:
                     name, cand_id, cand_speaker,
                 )
                 action = 'replace'
+
+            def _fold_survivor_provenance(
+                survivor: dict, absorbed: dict,
+            ) -> None:
+                provenance_keys = (
+                    'speaker_id', 'speaker_label', 'speaker_trust',
+                    'speaker_provenance_mixed',
+                )
+                folded = provenance_of_entries((survivor, absorbed))
+                known_ids = [
+                    stable_speaker_id(row.get('speaker_id'))
+                    for row in (survivor, absorbed)
+                ]
+                attributed_ids = {value for value in known_ids if value}
+                mixed = (
+                    survivor.get('speaker_provenance_mixed') is True
+                    or absorbed.get('speaker_provenance_mixed') is True
+                    or (bool(attributed_ids) and None in known_ids)
+                    or len(attributed_ids) > 1
+                )
+                for key in provenance_keys:
+                    survivor.pop(key, None)
+                if mixed:
+                    survivor['speaker_provenance_mixed'] = True
+                else:
+                    survivor.update(folded)
             # Reciprocal-pair guard: an earlier decision in this batch
             # already scheduled one side for removal. Honouring this
             # decision too would either delete both facts (merge after
@@ -1024,6 +1054,7 @@ class FactDedupResolver:
                 existing['merged_from_ids'] = merged
                 cur_imp = int(existing.get('importance', 5) or 5)
                 existing['importance'] = min(10, cur_imp + 1)
+                _fold_survivor_provenance(existing, cand)
                 ids_to_remove.add(cand_id)
                 archive_specs[cand_id] = {
                     'reason': 'fact_dedup_merge',
@@ -1047,6 +1078,7 @@ class FactDedupResolver:
                 cur = int(cand.get('importance', 5) or 5)
                 old = int(existing.get('importance', 5) or 5)
                 cand['importance'] = max(cur, old)
+                _fold_survivor_provenance(cand, existing)
                 ids_to_remove.add(exist_id)
                 archive_specs[exist_id] = {
                     'reason': 'fact_dedup_replace',

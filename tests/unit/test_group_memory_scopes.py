@@ -11517,7 +11517,7 @@ async def test_member_flush_retry_owner_excludes_successful_later_fact():
         "segments": [
             {"status": "failed"},
             {"status": "ok", "trust_events": []},
-            {"status": "ok", "fact_ids": ["later-fact"]},
+            {"status": "ok", "reconciled": [{"id": "later-fact"}]},
         ],
     })
     settings = SimpleNamespace(
@@ -11623,6 +11623,62 @@ async def test_member_flush_splits_oversized_permission_runs_in_order():
         user_data, group_id="7788", her_name="Neko", reason="test",
     ) == []
     assert [len(call) for call in calls] == [8, 1]
+    assert max_active == 1
+    assert [
+        segment["messages"][0]["content"]
+        for call in calls for segment in call
+    ] == [f"message-{index}" for index in range(9)]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_serializes_cross_sender_request_chronology():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    alice = []
+    bob = []
+    for index in range(9):
+        message = {
+            "role": "user", "content": f"message-{index}",
+            "_speaker_permission_level": "normal",
+            "_speaker_sequence": index,
+        }
+        (alice if index % 2 == 0 else bob).append(message)
+    user_data = {
+        "group_member_memory_messages": {"1001": alice, "1002": bob},
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+    active = 0
+    max_active = 0
+
+    async def _post(_name, segments, **_kwargs):
+        nonlocal active, max_active
+        calls.append(segments)
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0)
+        active -= 1
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
     assert max_active == 1
     assert [
         segment["messages"][0]["content"]

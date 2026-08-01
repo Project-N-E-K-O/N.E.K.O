@@ -467,8 +467,52 @@ async def test_aresolve_merge_drops_candidate_and_bumps_importance(tmp_path):
     survivor = next(f for f in facts if f["id"] == "e1")
     assert survivor["importance"] == 5  # 4 + 1
     assert "c1" in (survivor.get("merged_from_ids") or [])
+    assert "speaker_provenance_mixed" not in survivor
     # Queue is empty after resolve.
     assert await resolver.aload_pending("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_aresolve_merge_folds_speaker_provenance(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "paraphrase", embedding=[1.0, 0.0])
+    cand.update(speaker_id="qq:1001", speaker_trust=0.3)
+    existing = _fact("e1", "original", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.8)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": cand["text"], "existing_text": existing["text"],
+        "entity": "master", "cosine": 0.99,
+    }])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await resolver.aresolve("小天") == 1
+    survivor = (await fs.aload_facts("小天"))[0]
+    assert survivor["speaker_id"] == "qq:1001"
+    assert survivor["speaker_trust"] == pytest.approx(0.3)
+
+
+@pytest.mark.asyncio
+async def test_aresolve_merge_marks_mixed_speaker_provenance(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    cand = _fact("c1", "paraphrase", embedding=[1.0, 0.0])
+    cand.update(speaker_id="qq:2002", speaker_trust=0.9)
+    existing = _fact("e1", "original", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "小天", [cand, existing])
+    await resolver.aenqueue_candidates("小天", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "candidate_text": cand["text"], "existing_text": existing["text"],
+        "entity": "master", "cosine": 0.99,
+    }])
+    fake_llm = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await resolver.aresolve("小天") == 1
+    survivor = (await fs.aload_facts("小天"))[0]
+    assert survivor["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in survivor
+    assert "speaker_trust" not in survivor
 
 
 @pytest.mark.asyncio

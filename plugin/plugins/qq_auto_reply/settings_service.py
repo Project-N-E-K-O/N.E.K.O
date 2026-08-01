@@ -14,7 +14,7 @@ class QQSettingsService:
         self.plugin = plugin
         # trust 演化的唯一写者锁：不同群/私聊会话可能同时结算同一个 QQ，
         # 所有 read-modify-persist 必须在这里串行，不能依赖 session lock。
-        self._speaker_trust_write_lock = asyncio.Lock()
+        self._speaker_trust_lock = asyncio.Lock()
 
     def _stamp_group_memory_transition(self, *, enabled_after: bool) -> None:
         """同步（无 await）给"转变时刻已存在"的群会话打标：后台任务只处理
@@ -197,8 +197,18 @@ class QQSettingsService:
         # 取消这个 await 并不会取消那个线程——它可能照样把新配置落盘。
         # 直接按"没写成"回滚会让磁盘与运行时永久相反（重启后才暴露）。
         # 取消时先把 task 等出真实结果，再决定是否回滚，然后再抛。
+        # Preserve the established instance-level persistence seam used by
+        # lightweight hosts/tests. Normal instances do not shadow the method
+        # and therefore use the lock-aware internal writer, avoiding a
+        # non-reentrant call back into persist_business_config.
+        persist_override = self.__dict__.get("persist_business_config")
+        persist_call = (
+            persist_override
+            if callable(persist_override)
+            else self._persist_business_config_locked
+        )
         save_task = asyncio.ensure_future(
-            self._persist_business_config_locked(overlay=deferred_opt_ins)
+            persist_call(overlay=deferred_opt_ins)
         )
         try:
             success = await asyncio.shield(save_task)
@@ -302,6 +312,15 @@ class QQSettingsService:
         if lock is None:
             lock = asyncio.Lock()
             self._consent_lock = lock
+        return lock
+
+    @property
+    def _speaker_trust_write_lock(self) -> asyncio.Lock:
+        """Return the global trust/settings writer lock, creating it lazily."""
+        lock = getattr(self, "_speaker_trust_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._speaker_trust_lock = lock
         return lock
 
     def _rollback_unpersisted_memory_toggles(

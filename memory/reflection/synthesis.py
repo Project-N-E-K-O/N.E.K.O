@@ -546,6 +546,7 @@ class SynthesisMixin:
             # 容当 RELATED_CONTEXT 会把它重新洗进活跃 reflection——归档
             # 语义就被这条侧路悄悄绕开了。
             and not f.get('subject_archived_at')
+            and not f.get('arbitration_archived_at')
             and is_cached_embedding_valid(f, f.get('text', ''), model_id)
         ]
         if not absorbed_pool:

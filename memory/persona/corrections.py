@@ -75,6 +75,9 @@ class CorrectionsMixin:
                     speaker_id = stable_speaker_id(provenance.get('speaker_id'))
                     if speaker_id is None:
                         continue
+                    mixed_key = f'{prefix}_speaker_provenance_mixed'
+                    if existing.get(mixed_key) is True:
+                        continue
                     raw_trust = provenance.get('speaker_trust')
                     trust = (
                         normalize_trust(raw_trust)
@@ -93,14 +96,20 @@ class CorrectionsMixin:
                     if current_id is None:
                         existing[f'{prefix}_speaker_id'] = speaker_id
                         changed = True
-                    if trust is not None and (
-                        current_id is None
-                        or current_trust is None
-                        or trust > current_trust
-                    ):
-                        existing[f'{prefix}_speaker_id'] = speaker_id
+                    elif stable_speaker_id(current_id) != speaker_id:
+                        existing.pop(f'{prefix}_speaker_id', None)
+                        existing.pop(f'{prefix}_speaker_trust', None)
+                        existing[mixed_key] = True
+                        changed = True
+                        continue
+                    if current_id is None and trust is not None:
                         existing[f'{prefix}_speaker_trust'] = trust
                         changed = True
+                    elif trust is not None and current_trust is not None:
+                        conservative = min(current_trust, trust)
+                        if conservative != current_trust:
+                            existing[f'{prefix}_speaker_trust'] = conservative
+                            changed = True
                 return corrections if changed else None
         item = {
             'old_text': old_text,

@@ -205,9 +205,41 @@ def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text()
 def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation("小明喜欢猫", "小明不喜欢猫") == "correction"
     assert deterministic_relation("小明喜欢猫", "小明不喜欢狗") is None
+    assert deterministic_relation(
+        "小明认识喜欢猫的人", "小明认识不喜欢猫的人",
+    ) is None
     assert deterministic_relation("Alice is able", "Alice is notable") is None
     assert deterministic_relation("她来自锡山区", "她来自无锡山区") is None
     assert deterministic_relation("她认识不二同学", "她认识二同学") is None
+
+
+def test_duplicate_correction_provenance_folds_conservatively():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued: list[dict] = []
+    assert CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.8,
+        },
+    ) == queued
+    assert CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 1.0,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:3003", "speaker_trust": 1.0,
+        },
+    ) == queued
+    assert queued[0]["old_speaker_trust"] == pytest.approx(0.3)
+    assert queued[0]["old_speaker_id"] == "qq:1001"
+    assert "new_speaker_id" not in queued[0]
+    assert "new_speaker_trust" not in queued[0]
+    assert queued[0]["new_speaker_provenance_mixed"] is True
 
 
 def test_derived_provenance_rejects_partially_attributed_sources():

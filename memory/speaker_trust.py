@@ -109,10 +109,20 @@ def _proposition_tokens(text: str) -> tuple[str, ...]:
 def _cjk_positive_variants(text: str) -> set[str]:
     """Return exact positive forms for conservative predicate negations."""
     variants: set[str] = set()
+    predicate_forms = tuple({
+        form for pair in _CJK_NEGATED_PREDICATES for form in pair
+    })
     for negative, positive in _CJK_NEGATED_PREDICATES:
         start = 0
         while (index := text.find(negative, start)) >= 0:
-            variants.add(text[:index] + positive + text[index + len(negative):])
+            prefix = text[:index]
+            # A prior predicate makes this occurrence a nested/modifying
+            # proposition, not the assertion being compared. False negatives
+            # are safer than emitting a trust penalty for a modifier.
+            if not any(form in prefix for form in predicate_forms):
+                variants.add(
+                    text[:index] + positive + text[index + len(negative):]
+                )
             start = index + len(negative)
     return variants
 

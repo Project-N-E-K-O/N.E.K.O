@@ -1474,6 +1474,16 @@ class QQSessionMemoryService:
                                 )
                                 if fact_id
                             }
+                            later_fact_ids.update(
+                                str(row.get("id"))
+                                for later_result in segment_results[
+                                    segment_index + 1:
+                                ]
+                                if isinstance(later_result, dict)
+                                and later_result.get("status") == "ok"
+                                for row in (later_result.get("reconciled") or [])
+                                if isinstance(row, dict) and row.get("id")
+                            )
                             if later_fact_ids:
                                 for message in spec["messages"]:
                                     if not isinstance(message, dict):
@@ -1588,36 +1598,12 @@ class QQSessionMemoryService:
         deferred_batches = batches[batch_attempt_limit:]
         batches = batches[:batch_attempt_limit]
         try:
-            chains: list[list[list[dict]]] = []
-            sender_chains: dict[str, list[list[dict]]] = {}
-            has_owner_segment = any(
-                self._speaker_is_owner_for(
-                    str(spec.get("sender_id") or ""),
-                    spec.get("permission_level"),
-                )
-                for batch in batches for spec in batch
-            )
-            if has_owner_segment:
-                # Owner confirmation/correction signals consume facts created
-                # by earlier segments. Preserve the global authored order
-                # across request boundaries as well as inside each request.
-                chains.append(batches)
-            else:
-                for batch in batches:
-                    senders = {
-                        str(spec.get("sender_id") or "") for spec in batch
-                        if spec.get("sender_id")
-                    }
-                    if len(senders) == 1:
-                        sender_id = next(iter(senders))
-                        chain = sender_chains.get(sender_id)
-                        if chain is None:
-                            chain = []
-                            sender_chains[sender_id] = chain
-                            chains.append(chain)
-                        chain.append(batch)
-                    else:
-                        chains.append([batch])
+            # Completion time becomes fact chronology on the memory server.
+            # Keep every request boundary in authored order, including batches
+            # without an owner segment, so request latency cannot reverse two
+            # members' conflicting statements. The per-sweep serial cap below
+            # keeps the session-lock wait bounded; leftovers stay retryable.
+            chains: list[list[list[dict]]] = [batches]
 
             async def _flush_chain(chain: list[list[dict]]) -> list[str]:
                 failed: list[str] = []
