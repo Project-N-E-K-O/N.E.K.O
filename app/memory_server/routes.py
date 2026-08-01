@@ -1279,6 +1279,15 @@ async def _process_scoped_history_segments(
                     for fact in (result.get("created") or [])
                     if fact.get("id")
                 ],
+                # Exact/semantic dedup can update an existing fact without
+                # creating a row.  Return the affected identities as well so
+                # retry cutoffs can exclude facts introduced by later
+                # authored segments; the plugin needs IDs, not fact content.
+                "reconciled": [
+                    {"id": fact.get("id")}
+                    for fact in (result.get("reconciled") or [])
+                    if isinstance(fact, dict) and fact.get("id")
+                ],
                 "trust_events": (
                     list(segment.get("trust_events") or [])
                     if result.get("status") == "ok" else []

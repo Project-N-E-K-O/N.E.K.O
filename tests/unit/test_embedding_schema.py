@@ -378,6 +378,60 @@ async def test_correction_trust_does_not_override_keep_both(tmp_path):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("result", [
+    {"index": 0, "action": "retry"},
+    {"index": 0},
+])
+async def test_correction_trust_does_not_validate_malformed_actions(
+    tmp_path, result,
+):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "高信任旧记忆",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    correction = {
+        "old_text": "高信任旧记忆",
+        "new_text": "低信任新观察",
+        "entity": "master",
+        "old_speaker_id": "qq:2002",
+        "old_speaker_trust": 0.8,
+        "new_speaker_id": "qq:1001",
+        "new_speaker_trust": 0.3,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0}, [result],
+    ) == 0
+    persona = await pm.aensure_persona("Neko")
+    assert [
+        entry["text"] for entry in pm._get_section_facts(persona, "master")
+    ] == ["高信任旧记忆"]
+
+
+@pytest.mark.asyncio
+async def test_correction_action_normalization_precedes_trust_override(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "旧观察", speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    correction = {
+        "old_text": "旧观察", "new_text": "独立新观察", "entity": "master",
+        "old_speaker_id": "qq:2002", "old_speaker_trust": 0.8,
+        "new_speaker_id": "qq:1001", "new_speaker_trust": 0.3,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": " KEEP_BOTH "}],
+    ) == 1
+    persona = await pm.aensure_persona("Neko")
+    assert {
+        entry["text"] for entry in pm._get_section_facts(persona, "master")
+    } == {"旧观察", "独立新观察"}
+
+
+@pytest.mark.asyncio
 async def test_mixed_speaker_merge_clears_single_speaker_provenance(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

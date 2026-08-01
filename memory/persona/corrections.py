@@ -50,6 +50,11 @@ from ._shared import (
     logger,
 )
 
+_VALID_CORRECTION_ACTIONS = frozenset({
+    'merge', 'keep_new', 'keep_old', 'keep_both',
+})
+
+
 class CorrectionsMixin:
     @staticmethod
     def _build_correction_list(
@@ -431,7 +436,17 @@ class CorrectionsMixin:
             except (ValueError, TypeError):
                 continue
 
-            action = result.get('action', 'keep_both')
+            raw_action = result.get('action')
+            action = (
+                raw_action.strip().lower()
+                if isinstance(raw_action, str) else None
+            )
+            # Trust may choose between valid model alternatives, but it must
+            # never turn malformed model output into a destructive decision.
+            # Invalid/missing actions remain queued for the existing liveness
+            # retry/dead-letter path.
+            if action not in _VALID_CORRECTION_ACTIONS:
+                continue
             merged_text = result.get('text', item.get('new_text', ''))
             entity_raw = item.get('entity')
             entity = entity_raw.strip() if isinstance(entity_raw, str) else ''

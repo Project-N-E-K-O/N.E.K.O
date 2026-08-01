@@ -204,9 +204,13 @@ def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text()
 
 def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation("小明喜欢猫", "小明不喜欢猫") == "correction"
+    assert deterministic_relation("喜欢猫", "不喜欢猫") == "correction"
     assert deterministic_relation("小明喜欢猫", "小明不喜欢狗") is None
     assert deterministic_relation(
         "小明认识喜欢猫的人", "小明认识不喜欢猫的人",
+    ) is None
+    assert deterministic_relation(
+        "喜欢猫的人认识小明", "不喜欢猫的人认识小明",
     ) is None
     assert deterministic_relation("Alice is able", "Alice is notable") is None
     assert deterministic_relation("她来自锡山区", "她来自无锡山区") is None
@@ -431,6 +435,7 @@ async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
         )
 
     assert response["segments"][1]["trust_events"] == []
+    assert response["segments"][0]["reconciled"] == [{"id": "shared-fact"}]
 
 
 def test_model_shaped_fields_never_replace_request_provenance():

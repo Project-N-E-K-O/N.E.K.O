@@ -685,6 +685,51 @@ async def test_trust_merge_does_not_override_an_unscored_source(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_reflection_trust_winner_owns_semantic_metadata(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    low = _r_entry(
+        "low", "低信任旧说法", GROUP_A,
+        speaker_id="qq:1001", speaker_trust=0.3,
+        relation_type="habit", temporal_scope="past",
+        event_when_raw={"kind": "absolute", "value": "2026-01-01"},
+        event_start_at="2026-01-01T00:00:00",
+        event_end_at="2026-01-31T00:00:00",
+        schema_version=1,
+    )
+    high = _r_entry(
+        "high", "高信任当前说法", GROUP_A,
+        speaker_id="qq:2002", speaker_trust=0.9,
+        relation_type="preference", temporal_scope="current",
+        event_when_raw={"kind": "absolute", "value": "2026-06-01"},
+        event_start_at="2026-06-01T00:00:00",
+        event_end_at=None,
+        schema_version=2,
+    )
+    await re.asave_reflections("小天", [low, high])
+    cluster = [dict(row) for row in await re.aload_reflections("小天")]
+
+    assert await apply_scoped_reflection_merge(
+        re, "小天", GROUP_A, cluster, [{
+            "action": "merge", "source_ids": ["low", "high"],
+            "produce": {"text": "模型错误合并"},
+        }], "trust-metadata-hash",
+    ) == 1
+    full = await re._aload_reflections_full("小天")
+    merged = next(row for row in full if row.get("merged_from_ids"))
+    assert merged["text"] == "高信任当前说法"
+    assert merged["relation_type"] == "preference"
+    assert merged["temporal_scope"] == "current"
+    assert merged["event_when_raw"] == {
+        "kind": "absolute", "value": "2026-06-01",
+    }
+    assert merged["event_start_at"] == "2026-06-01T00:00:00"
+    assert merged["event_end_at"] is None
+    assert merged["schema_version"] == 2
+    assert set(merged["source_fact_ids"]) == {"fact_low", "fact_high"}
+    assert merged["merged_from_ids"] == ["low", "high"]
+
+
+@pytest.mark.asyncio
 async def test_apply_persona_merge_cannot_touch_other_scope_rows(tmp_path):
     """One section key may legally mix entries from different custom
     scopes; even if the LLM hallucinates another scope's id, that row

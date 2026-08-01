@@ -897,7 +897,13 @@ async def apply_scoped_reflection_merge(
                 continue
             sources = [by_id[sid] for sid in valid_ids]
             text, provenance_sources = _trust_weighted_merge_text(sources, text)
-            first = sources[0]
+            # A decisive trust arbitration narrows semantic content to one
+            # source.  Its ontology and event metadata must follow the same
+            # winner; all original sources remain below as audit provenance.
+            semantic_sources = (
+                provenance_sources if len(provenance_sources) == 1 else sources
+            )
+            semantic_source = semantic_sources[0]
             source_fact_ids: list[str] = []
             for src in sources:
                 for fid in src.get('source_fact_ids') or []:
@@ -908,9 +914,10 @@ async def apply_scoped_reflection_merge(
             # 按当前时段召回时会漏掉它。start 取最早；end 有任一源为 None
             # （pattern/进行中，无结束点）则并集也无结束点，否则取最晚。
             starts = [
-                s.get('event_start_at') for s in sources if s.get('event_start_at')
+                s.get('event_start_at') for s in semantic_sources
+                if s.get('event_start_at')
             ]
-            ends = [s.get('event_end_at') for s in sources]
+            ends = [s.get('event_end_at') for s in semantic_sources]
             merged_start = _pick_temporal_boundary(starts, latest=False)
             merged_end = (
                 None if (not ends or any(e is None for e in ends))
@@ -929,13 +936,13 @@ async def apply_scoped_reflection_merge(
                 'confirmed_at': now_iso,
                 'auto_confirmed': True,
                 'feedback': None,
-                'relation_type': first.get('relation_type'),
-                'temporal_scope': first.get('temporal_scope'),
-                'subject': first.get('subject'),
-                'event_when_raw': first.get('event_when_raw'),
+                'relation_type': semantic_source.get('relation_type'),
+                'temporal_scope': semantic_source.get('temporal_scope'),
+                'subject': semantic_source.get('subject'),
+                'event_when_raw': semantic_source.get('event_when_raw'),
                 'event_start_at': merged_start,
                 'event_end_at': merged_end,
-                'schema_version': first.get('schema_version', 1),
+                'schema_version': semantic_source.get('schema_version', 1),
                 'merged_from_ids': list(valid_ids),
             })
             # confirmed 渲染门要求 evidence_score > 0：继承源里最高的

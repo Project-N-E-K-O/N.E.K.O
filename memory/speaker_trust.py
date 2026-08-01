@@ -116,10 +116,15 @@ def _cjk_positive_variants(text: str) -> set[str]:
         start = 0
         while (index := text.find(negative, start)) >= 0:
             prefix = text[:index]
-            # A prior predicate makes this occurrence a nested/modifying
-            # proposition, not the assertion being compared. False negatives
-            # are safer than emitting a trust penalty for a modifier.
-            if not any(form in prefix for form in predicate_forms):
+            suffix = text[index + len(negative):]
+            # Another predicate on either side makes this occurrence a
+            # nested/modifying proposition rather than a safely identifiable
+            # asserted predicate.  This also catches leading modifiers such
+            # as ``不喜欢猫的人认识小明``. False negatives are safer than a
+            # fabricated trust penalty.
+            if not any(
+                form in prefix or form in suffix for form in predicate_forms
+            ):
                 variants.add(
                     text[:index] + positive + text[index + len(negative):]
                 )

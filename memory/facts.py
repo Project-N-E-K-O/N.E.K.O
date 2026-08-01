@@ -2364,15 +2364,29 @@ class FactStore:
             )
 
         results: list[dict] = []
+        chronological_predecessor_failed = False
         for position, (segment, segment_facts) in enumerate(
             zip(segments, per_segment), start=1,
         ):
             dropped = dropped_per_segment[position - 1]
             suspect = suspect_per_segment[position - 1]
+            if chronological_predecessor_failed:
+                # Segments are authored-order input.  Persisting a later
+                # segment after an earlier one failed would give the retry of
+                # that predecessor a newer created_at and invert chronology.
+                logger.warning(
+                    f"[FactStore] {lanlan_name}: 批抽取第 {position} 段因前序段"
+                    "失败而保留重试（未持久化）"
+                )
+                results.append(
+                    {'status': 'failed', 'created': [], 'dropped': dropped}
+                )
+                continue
             if segment_facts is None:
                 results.append(
                     {'status': 'failed', 'created': [], 'dropped': dropped}
                 )
+                chronological_predecessor_failed = True
                 continue
             if dropped:
                 logger.warning(
@@ -2407,11 +2421,12 @@ class FactStore:
                 except Exception as exc:
                     logger.error(
                         f"[FactStore] {lanlan_name}: 批抽取第 "
-                        f"{position} 段持久化失败（其余段不受连累）: {exc}"
+                        f"{position} 段持久化失败（后序段保留重试）: {exc}"
                     )
                     results.append(
                         {'status': 'failed', 'created': [], 'dropped': dropped}
                     )
+                    chronological_predecessor_failed = True
                     continue
             results.append(
                 {
@@ -2421,6 +2436,8 @@ class FactStore:
                     'dropped': dropped,
                 }
             )
+            if status != 'ok':
+                chronological_predecessor_failed = True
         return results
 
     # Source-tier 白名单。'user_observation' = path A 抽出的 user msg ground truth；

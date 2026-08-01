@@ -3116,8 +3116,7 @@ async def test_batch_extraction_fails_closed_when_nothing_attributable(tmp_path)
 
 @pytest.mark.asyncio
 async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
-    """一段 persist 失败不得连累其他段重来（fail_closed 改 per-段的核心
-    语义）：失败段报 failed（调用方保留那个桶），成功段正常 ok。"""  # noqa: DOCSTRING_CJK
+    """A later persist failure does not roll back an earlier committed segment."""
     mock_cm = _build_scope_mock_cm(str(tmp_path))
     fs = FactStore()
     fs._config_manager = mock_cm
@@ -3148,6 +3147,42 @@ async def test_batch_extraction_persist_failure_is_per_segment(tmp_path):
     assert [r["status"] for r in results] == ["ok", "failed"]
     assert [f["text"] for f in results[0]["created"]] == ["A 的事实"]
     assert results[1]["created"] == []
+
+
+@pytest.mark.asyncio
+async def test_batch_extraction_stops_after_chronological_failure(tmp_path):
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [
+            {"text": "较早事实", "importance": 5, "segment": 1},
+            {"text": "较晚事实", "importance": 5, "segment": 2},
+        ]
+
+    fs._allm_call_with_retries = _llm
+    segments = [
+        _batch_segment("7788", "1001", "Alice(1001)", ["earlier"]),
+        _batch_segment("7788", "1002", "Bob(1002)", ["later"]),
+    ]
+    real_persist = fs._apersist_new_facts
+    persisted_subjects = []
+
+    async def _first_persist_fails(lanlan_name, extracted, **kwargs):
+        subject_id = getattr(kwargs.get("subject"), "subject_id", "")
+        persisted_subjects.append(subject_id)
+        if subject_id == "qq:7788:1001":
+            raise RuntimeError("disk full")
+        return await real_persist(lanlan_name, extracted, **kwargs)
+
+    fs._apersist_new_facts = _first_persist_fails
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch(segments, "Neko")
+
+    assert [result["status"] for result in results] == ["failed", "failed"]
+    assert persisted_subjects == ["qq:7788:1001"]
+    assert await fs.aload_facts("Neko") == []
 
 
 @pytest.mark.asyncio
