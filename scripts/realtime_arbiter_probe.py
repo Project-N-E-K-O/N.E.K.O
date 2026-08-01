@@ -96,8 +96,15 @@ _FREE_MODEL = "free-model"
 
 # Short, boring and identical every turn: the point is to time the protocol,
 # not to explore the model. A varying prompt makes latencies incomparable.
-_PROMPT = "用一句话说说今天的天气。"
-_INSTRUCTIONS = "你是一个简短作答的助手，每次回答控制在一句话以内。"
+#
+# Chinese on purpose, and the reason is the measurement itself. What is being
+# timed is how long `response.done` takes, and that is driven by how much the
+# model says and how long its audio runs — both language-dependent. These are
+# the routes a Chinese-language product ships on, so an English prompt would
+# produce numbers that are precise about the wrong traffic. Not a user-facing
+# prompt: it never leaves this dev probe.
+_PROMPT = "用一句话说说今天的天气。"  # noqa: INLINE_PROMPT_NON_EN  # measurement realism, see above
+_INSTRUCTIONS = "你是一个简短作答的助手，每次回答控制在一句话以内。"  # noqa: INLINE_PROMPT_NON_EN
 
 
 @dataclass
