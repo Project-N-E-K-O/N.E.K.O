@@ -914,15 +914,31 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                     state = paths[0]
                     for path in paths[1:]:
                         state = merge(state, path)
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                body_state = dict(state)
+                for name in _assigned_names(node):
+                    for key in list(body_state):
+                        if key == name or key.startswith(f'{name}.'):
+                            body_state.pop(key, None)
+                state = merge(state, after(node.body, body_state))
+                state = after(node.orelse, state)
+            elif isinstance(node, ast.While):
                 state = merge(state, after(node.body, state))
                 state = after(node.orelse, state)
             elif isinstance(node, ast.With):
                 state = after(node.body, state)
             elif isinstance(node, ast.Try):
-                body_state = after(node.body, state)
+                prefix_states = [state]
+                body_state = state
+                for statement in node.body:
+                    body_state = after([statement], body_state)
+                    prefix_states.append(body_state)
                 paths = [after(node.orelse, body_state)]
-                paths.extend(after(handler.body, state) for handler in node.handlers)
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in node.handlers
+                    for prefix_state in prefix_states
+                )
                 merged = paths[0]
                 for path in paths[1:]:
                     merged = merge(merged, path)
@@ -3629,7 +3645,7 @@ _MUST_BE_CLAIMED = {
     'atomic_write_json',                  # 提交新 manifest，swap 的唯一提交点
     'rmtree',                             # 删掉整个目录
     # 预览图也是「Steam 会一起读走的字节」，跟那对参考语音没有区别。
-    'copy2', 'copyfile', 'copytree', 'move',
+    'copy', 'copy2', 'copyfile', 'copytree', 'move',
 }
 
 # These names are domain-specific enough to scan in every router module. The
@@ -3659,6 +3675,7 @@ _OS_CONTENT_PATH_MUTATION_ARGS = {
 }
 
 _COPY_CONTENT_PATH_ARGS = {
+    'copy': ((0, 'src'), (1, 'dst')),
     'copy2': ((0, 'src'), (1, 'dst')),
     'copyfile': ((0, 'src'), (1, 'dst')),
     'copytree': ((0, 'src'), (1, 'dst')),
@@ -3676,6 +3693,7 @@ _PACKAGE_OPERATION_CLAIMS = {
 
 _FOLDER_OPERATION_CLAIMS = {
     'rmtree': {'claim_content_folder'},
+    'copy': {'claim_content_folder'},
     'copy2': {'claim_content_folder'},
     'copyfile': {'claim_content_folder'},
     'copytree': {'claim_content_folder'},
@@ -3702,6 +3720,7 @@ _FOLDER_OPERATION_CLAIMS = {
 
 _FOLDER_OPERATION_ARGS = {
     'rmtree': 0,
+    'copy': 1,
     'copy2': 1,
     'copyfile': 1,
     'copytree': 1,
@@ -3718,6 +3737,7 @@ _PACKAGE_OPERATION_FOLDER_KEYWORDS = {
     '_publish_workshop_item': 'content_folder',
     '_cleanup_workshop_voice_reference': 'content_folder',
     'rmtree': 'path',
+    'copy': 'dst',
     'copy2': 'dst',
     'copyfile': 'dst',
     'copytree': 'dst',
@@ -4120,10 +4140,16 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
                     item.value for item in node.keywords if item.arg == 'mode'
                 ), None)
             )
-            writes = (
-                isinstance(mode, ast.Constant)
+            mode_values = (
+                {mode.value}
+                if isinstance(mode, ast.Constant)
                 and isinstance(mode.value, str)
-                and any(flag in mode.value for flag in 'wax+')
+                else _known_string_constants(func, node.lineno).get(mode.id, set())
+                if isinstance(mode, ast.Name)
+                else set()
+            )
+            writes = any(
+                flag in value for value in mode_values for flag in 'wax+'
             )
         if writes:
             path = (
@@ -5212,6 +5238,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
         'def keyword_copy2(content_folder):\n'
         '    shutil.copy2(src=source, dst=content_folder)\n'
         '\n'
+        'def keyword_copy(content_folder):\n'
+        '    shutil.copy(src=source, dst=content_folder)\n'
+        '\n'
         'def keyword_copyfile(content_folder):\n'
         '    shutil.copyfile(src=source, dst=content_folder)\n'
         '\n'
@@ -5294,6 +5323,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "    Path(content_folder, 'b').open('a')\n"
         "    os.open(os.path.join(content_folder, 'c'), os.O_CREAT | os.O_WRONLY)\n"
         '\n'
+        'def stored_open_mode(content_folder):\n'
+        "    mode = 'wb'\n"
+        "    open(os.path.join(content_folder, 'preview.png'), mode)\n"
+        '\n'
         'def aliased_os_open(content_folder):\n'
         '    import os as filesystem\n'
         '    filesystem.open(content_folder, filesystem.O_WRONLY)\n'
@@ -5362,7 +5395,8 @@ def test_the_claim_guard_discovers_content_path_mutations():
         functions['parent_traversal'], 'new_router'
     ), 'literal .. 逃出 claimed tree 时不能被当成受保护路径'
     for name in (
-        'keyword_rmtree', 'keyword_copy2', 'keyword_copyfile', 'keyword_copytree'
+        'keyword_rmtree', 'keyword_copy', 'keyword_copy2', 'keyword_copyfile',
+        'keyword_copytree',
     ):
         assert _unclaimed_folder_operations(functions[name], 'new_router'), (
             f'{name} 的 keyword target 也必须被 repository-wide guard 发现'
@@ -5421,6 +5455,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
         functions['open_writes'], 'new_router'
     )
     assert sum(item[3] == _OPEN_WRITE_OPERATION for item in open_offenders) == 3
+    assert _unclaimed_folder_operations(
+        functions['stored_open_mode'], 'new_router'
+    ), '局部变量保存的 write mode 也必须识别为 content-folder writer'
     assert _unclaimed_folder_operations(
         functions['aliased_os_open'], 'new_router'
     ), 'import os as ... 的 alias 也必须识别 os.open writer'
@@ -5588,6 +5625,25 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with factory(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    loop_target_factory = ast.parse(
+        'def publish(factories):\n'
+        '    factory = claim_content_folder\n'
+        '    for factory in factories:\n'
+        '        with factory(folder):\n'
+        '            _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    exceptional_prefix_restored_factory = ast.parse(
+        'def publish():\n'
+        '    factory = claim_content_folder\n'
+        '    try:\n'
+        '        factory = nullcontext\n'
+        '        may_raise()\n'
+        '        factory = claim_content_folder\n'
+        '    except Exception:\n'
+        '        pass\n'
+        '    with factory(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     while_reassigned_factory = ast.parse(
         'def publish(flag):\n'
         '    factory = claim_content_folder\n'
@@ -5668,6 +5724,12 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     assert _unclaimed_folder_operations(loop_reassigned_factory, 'publish'), (
         'claim factory alias 必须合并 zero/nonzero loop 路径'
     )
+    assert _unclaimed_folder_operations(loop_target_factory, 'publish'), (
+        'for target 绑定必须先清除同名 claim factory alias'
+    )
+    assert _unclaimed_folder_operations(
+        exceptional_prefix_restored_factory, 'publish'
+    ), 'try body 的任一异常前缀都必须保留 claim alias 失效状态'
     assert _unclaimed_folder_operations(while_reassigned_factory, 'publish'), (
         'claim factory alias 必须合并 while 的 zero/nonzero 路径'
     )
