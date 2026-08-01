@@ -391,7 +391,7 @@ async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry():
         facts_snapshot=[fact],
     ))[0]
 
-    assert await store.apersist_speaker_trust_events("Neko", [event]) == 1
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == [event]
     store.save_facts.assert_called_once_with("Neko", _fact_lock_held=True)
 
     fact.pop("speaker_id")
@@ -402,6 +402,17 @@ async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry():
         facts_snapshot=[fact],
     )
     assert replayed == [event]
+
+    unrelated = await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "Alice likes dogs"}],
+        subject=owner, speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=[fact],
+    )
+    assert unrelated == []
+
+    store._facts["Neko"] = []
+    store.aload_facts = AsyncMock(return_value=[])
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == []
 
 
 @pytest.mark.asyncio
@@ -708,6 +719,7 @@ async def test_scoped_route_returns_request_derived_events_when_no_fact_created(
     store = SimpleNamespace(
         aload_facts=AsyncMock(return_value=[]),
         aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
+        apersist_speaker_trust_events=AsyncMock(return_value=[event]),
         extract_facts=AsyncMock(return_value=[]),
     )
     request = ScopedHistoryRequest(
@@ -728,6 +740,56 @@ async def test_scoped_route_returns_request_derived_events_when_no_fact_created(
     kwargs = store.aevaluate_speaker_trust_events.await_args.kwargs
     assert kwargs["speaker_is_owner"] is True
     assert kwargs["speaker_provenance"]["speaker_id"] == "qq:9999"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("segmented", [False, True])
+async def test_scoped_route_returns_only_durably_attached_trust_events(segmented):
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    event = {
+        "kind": "confirmation",
+        "speaker_id": "qq:1001",
+        "event_id": "event-lost-to-forget",
+        "source_speaker_id": "qq:9999",
+        "source_fact_id": "forgotten-fact",
+        "observation_id": "observation-1",
+    }
+    segment = {
+        "input_history": json.dumps([{
+            "role": "user", "content": "Alice likes cats",
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(return_value=[]),
+        aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
+        apersist_speaker_trust_events=AsyncMock(return_value=[]),
+    )
+    if segmented:
+        store.extract_facts_batch = AsyncMock(return_value=[{
+            "status": "ok", "created": [], "dropped": 0,
+        }])
+        request = ScopedHistoryRequest(segments=[segment])
+    else:
+        store.extract_facts = AsyncMock(return_value=[])
+        request = ScopedHistoryRequest(**segment)
+
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    if segmented:
+        assert result["segments"][0]["trust_events"] == []
+    else:
+        assert result["trust_events"] == []
 
 
 @pytest.mark.asyncio

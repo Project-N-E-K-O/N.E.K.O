@@ -333,6 +333,12 @@ def trust_event_id(kind: str, source_fact_id: str, target_speaker_id: str) -> st
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:24]
 
 
+def trust_observation_id(text: str) -> str:
+    """Return a content-stable, non-plaintext identity for one owner message."""
+    normalized = " ".join(str(text or "").split()).casefold()
+    return hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:24]
+
+
 def observation_texts(messages: Iterable[Any]) -> list[str]:
     """Extract user-authored text without trusting any model-produced fields."""
     texts: list[str] = []

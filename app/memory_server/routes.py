@@ -1115,7 +1115,7 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 runtime.fact_store, 'apersist_speaker_trust_events', None,
             )
             if persist_events is not None:
-                await persist_events(lanlan_name, trust_events)
+                trust_events = await persist_events(lanlan_name, trust_events)
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
@@ -1395,7 +1395,9 @@ async def _process_scoped_history_segments(
                     runtime.fact_store, 'apersist_speaker_trust_events', None,
                 )
                 if persist_events is not None:
-                    await persist_events(lanlan_name, segment["trust_events"])
+                    segment["trust_events"] = await persist_events(
+                        lanlan_name, segment["trust_events"],
+                    )
     return {
         "status": "processed",
         "segments": [

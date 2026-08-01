@@ -1084,6 +1084,7 @@ class FactStore:
             observation_texts,
             stable_speaker_id,
             trust_event_id,
+            trust_observation_id,
         )
 
         source_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
@@ -1131,6 +1132,7 @@ class FactStore:
         events: list[dict] = []
         seen_event_ids: set[str] = set()
         for text in texts:
+            observation_id = trust_observation_id(text)
             for prior in facts:
                 if not isinstance(prior, dict) or not _in_signal_scope(prior):
                     continue
@@ -1144,6 +1146,7 @@ class FactStore:
                     if (
                         event_id
                         and event_id not in seen_event_ids
+                        and recorded.get('observation_id') == observation_id
                         and stable_speaker_id(
                             recorded.get('source_speaker_id')
                         ) == source_id
@@ -1197,13 +1200,14 @@ class FactStore:
                     'event_id': event_id,
                     'source_speaker_id': source_id,
                     'source_fact_id': source_fact_id,
+                    'observation_id': observation_id,
                 })
         return events
 
     async def apersist_speaker_trust_events(
         self, name: str, events: list[dict],
-    ) -> int:
-        """Durably attach issued owner signals to their source facts."""
+    ) -> list[dict]:
+        """Attach issued owner signals and return only durably backed events."""
         from memory.speaker_trust import stable_speaker_id
 
         valid_by_fact: dict[str, list[dict]] = {}
@@ -1214,10 +1218,12 @@ class FactStore:
             event_id = str(raw.get('event_id') or '').strip()[:96]
             speaker_id = stable_speaker_id(raw.get('speaker_id'))
             source_speaker_id = stable_speaker_id(raw.get('source_speaker_id'))
+            observation_id = str(raw.get('observation_id') or '').strip()[:96]
             kind = raw.get('kind')
             if (
                 not fact_id or not event_id or speaker_id is None
                 or source_speaker_id is None
+                or not observation_id
                 or kind not in {'confirmation', 'correction'}
             ):
                 continue
@@ -1227,15 +1233,17 @@ class FactStore:
                 'event_id': event_id,
                 'source_speaker_id': source_speaker_id,
                 'source_fact_id': fact_id,
+                'observation_id': observation_id,
             })
         if not valid_by_fact:
-            return 0
+            return []
 
         async with self._get_persist_alock(name):
             await self.aload_facts(name)
 
-            def _persist() -> int:
+            def _persist() -> list[dict]:
                 changed = 0
+                durable_events: list[dict] = []
                 with self._get_lock(name):
                     facts = self._facts.get(name) or []
                     for fact in facts:
@@ -1257,9 +1265,10 @@ class FactStore:
                                 recorded.append(event)
                                 known.add(event['event_id'])
                                 changed += 1
+                            durable_events.append(dict(event))
                     if changed:
                         self.save_facts(name, _fact_lock_held=True)
-                return changed
+                return durable_events
 
             persist_task = asyncio.create_task(asyncio.to_thread(_persist))
             try:
