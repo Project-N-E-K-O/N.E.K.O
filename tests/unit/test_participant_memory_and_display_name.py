@@ -1288,7 +1288,8 @@ async def test_participant_history_reset_rotates_activity_epoch():
         user_data, session_key="private:1001", context=context,
     )
     assert user_data["last_participant_digest_index"] == 1
-    assert user_data["_speaker_trust_activity_epoch"] != "old-epoch"
+    activity_epoch = user_data["_speaker_trust_activity_epoch"]
+    assert activity_epoch != "old-epoch"
 
     history.append(SimpleNamespace(type="human", content="same exchange"))
     memory_service = QQSessionMemoryService(plugin)
@@ -1301,7 +1302,7 @@ async def test_participant_history_reset_rotates_activity_epoch():
     identity = memory_service._apply_speaker_trust_update.await_args.kwargs[
         "activity_identity"
     ]
-    assert identity != "participant:Neko:old-epoch:1:2"
+    assert identity == f"participant:Neko:{activity_epoch}:1:2"
 
 
 # ---------------------------------------------------------------------------

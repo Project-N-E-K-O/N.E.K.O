@@ -1228,6 +1228,91 @@ async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_arbitration_uses_full_identity_for_duplicate_ids_across_scopes(
+    tmp_path,
+):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target_candidate_subject = MemorySubject.group_participant(
+        "qq", "target", "1001",
+    )
+    target_existing_subject = MemorySubject.group_participant(
+        "qq", "target", "1002",
+    )
+    foreign_candidate_subject = MemorySubject.group_participant(
+        "qq", "target", "2001",
+    )
+    foreign_existing_subject = MemorySubject.group_participant(
+        "qq", "target", "2002",
+    )
+    target_candidate = {
+        **_fact("c1", "target candidate", embedding=[1.0, 0.0]),
+        **target_candidate_subject.as_entry_fields(),
+    }
+    target_existing = {
+        **_fact("e1", "target existing", embedding=[0.99, 0.05]),
+        **target_existing_subject.as_entry_fields(),
+    }
+    foreign_candidate = {
+        **_fact("c1", "foreign candidate", embedding=[1.0, 0.0]),
+        **foreign_candidate_subject.as_entry_fields(),
+    }
+    foreign_existing = {
+        **_fact("e1", "foreign existing", embedding=[0.99, 0.05]),
+        **foreign_existing_subject.as_entry_fields(),
+    }
+    await _seed_facts(fs, "Neko", [
+        target_candidate, target_existing,
+        foreign_candidate, foreign_existing,
+    ])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    archive_path.write_text(json.dumps([{
+        **foreign_candidate,
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+    }]), encoding="utf-8")
+    assert await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "group_participant",
+        "subject_key": "@group_participant_arbitration:qq:target",
+        "scope": "@group_participant_arbitration:qq:target",
+        "candidate_subject_kind": target_candidate_subject.kind,
+        "candidate_subject_id": target_candidate_subject.subject_id,
+        "candidate_scope": target_candidate_subject.scope,
+        "existing_subject_kind": target_existing_subject.kind,
+        "existing_subject_id": target_existing_subject.subject_id,
+        "existing_scope": target_existing_subject.scope,
+        "cosine": 0.99,
+    }]) == 1
+
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+
+    active = await fs.aload_facts("Neko")
+    active_by_subject = {
+        (fact["subject_id"], fact["id"]): fact for fact in active
+    }
+    assert (target_candidate_subject.subject_id, "c1") not in active_by_subject
+    assert active_by_subject[
+        (target_existing_subject.subject_id, "e1")
+    ]["merged_from_ids"] == ["c1"]
+    assert active_by_subject[
+        (foreign_candidate_subject.subject_id, "c1")
+    ]["text"] == "foreign candidate"
+    assert active_by_subject[
+        (foreign_existing_subject.subject_id, "e1")
+    ]["text"] == "foreign existing"
+    archived = json.loads(
+        archive_path.read_text(encoding="utf-8")
+    )
+    assert [(fact["subject_id"], fact["id"]) for fact in archived] == [
+        (foreign_candidate_subject.subject_id, "c1"),
+        (target_candidate_subject.subject_id, "c1"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_path):
     fs, resolver = _install_resolver(str(tmp_path))
     candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])

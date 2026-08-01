@@ -67,7 +67,7 @@ import threading
 from datetime import datetime
 from typing import TYPE_CHECKING
 
-from memory.facts import safe_int_field
+from memory.facts import _fact_scoped_identity, safe_int_field
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.file_utils import (
     atomic_write_json_async,
@@ -77,6 +77,61 @@ from utils.file_utils import (
 
 if TYPE_CHECKING:
     from memory.facts import FactStore
+
+
+def _queue_identity(item: dict) -> tuple:
+    """Identify one queued pair inside its arbitration domain."""
+    return (
+        item.get('candidate_id'),
+        item.get('existing_id'),
+        item.get('subject_key'),
+        item.get('scope'),
+        item.get('candidate_subject_kind'),
+        item.get('candidate_subject_id'),
+        item.get('candidate_scope'),
+        item.get('existing_subject_kind'),
+        item.get('existing_subject_id'),
+        item.get('existing_scope'),
+    )
+
+
+def _fact_dedup_domain(entry: dict) -> tuple | None:
+    """Return the queue domain for a live fact row."""
+    from memory.scopes import is_legacy_private_entry, subject_from_entry
+
+    subject = subject_from_entry(entry)
+    if subject is not None:
+        if (
+            subject.kind == 'group_participant'
+            and subject.scope == f"{subject.kind}:{subject.subject_id}"
+            and ':' in subject.subject_id
+        ):
+            group_prefix = subject.subject_id.rsplit(':', 1)[0]
+            arbitration_key = f"@group_participant_arbitration:{group_prefix}"
+            return arbitration_key, arbitration_key
+        return subject.key, subject.scope
+    if is_legacy_private_entry(entry):
+        return None, None
+    return None
+
+
+def _find_queued_fact(
+    rows_by_id: dict[object, list[dict]], item: dict, side: str,
+) -> dict | None:
+    """Resolve a queued id to exactly one row in the queued scope."""
+    rows = rows_by_id.get(item.get(f'{side}_id'), [])
+    identity_fields = (
+        item.get(f'{side}_subject_kind'),
+        item.get(f'{side}_subject_id'),
+        item.get(f'{side}_scope'),
+    )
+    if all(value is not None for value in identity_fields):
+        expected = (str(item.get(f'{side}_id')), *identity_fields)
+        rows = [row for row in rows if _fact_scoped_identity(row) == expected]
+    elif 'subject_key' in item:
+        domain = item.get('subject_key'), item.get('scope')
+        rows = [row for row in rows if _fact_dedup_domain(row) == domain]
+    return rows[0] if len(rows) == 1 else None
 
 logger = logging.getLogger(__name__)
 
@@ -219,7 +274,7 @@ class FactDedupResolver:
     ) -> int:
         """Append candidate (candidate_id, existing_id, …) pairs to
         the queue. Returns count actually appended (de-duped against
-        existing pending items by (candidate_id, existing_id) pair).
+        existing pending items by id pair plus arbitration domain).
 
         Each pair dict must contain:
           * candidate_id / existing_id — stable fact ids
@@ -250,14 +305,12 @@ class FactDedupResolver:
                 p.get('subject_key') is not None or p.get('scope') is not None
                 for p in pairs
             )
-            live_facts_by_id: dict = {}
+            live_facts_by_id: dict[object, list[dict]] = {}
             if has_scoped_pairs:
                 live_facts = await self._fact_store.aload_facts(name)
-                live_facts_by_id = {
-                    row.get('id'): row
-                    for row in live_facts
-                    if isinstance(row, dict) and row.get('id')
-                }
+                for row in live_facts:
+                    if isinstance(row, dict) and row.get('id'):
+                        live_facts_by_id.setdefault(row.get('id'), []).append(row)
             existing = await self.aload_pending(name)
             # scrub 老 schema 条目的明文残留。即使本次没有新 pair 可追加
             # （全部撞去重），只要发生了 scrub 就必须重写队列文件——否则
@@ -269,27 +322,29 @@ class FactDedupResolver:
                     it.pop('existing_text', None)
                     scrubbed = True
             existing_keys = {
-                (it.get('candidate_id'), it.get('existing_id'))
-                for it in existing
+                _queue_identity(it) for it in existing
             }
             now_iso = datetime.now().isoformat()
             appended = 0
             for p in pairs:
-                key = (p.get('candidate_id'), p.get('existing_id'))
+                key = _queue_identity(p)
+                pair_rows = [
+                    _find_queued_fact(live_facts_by_id, p, side)
+                    for side in ('candidate', 'existing')
+                ]
                 real_subject_forget_active = any(
                     (
-                        subject := subject_from_entry(
-                            live_facts_by_id.get(fact_id, {}),
-                        )
+                        subject := subject_from_entry(row or {})
                     ) is not None
                     and self._fact_store._subject_forget_is_active(
                         name, subject,
                     )
-                    for fact_id in key
+                    for row in pair_rows
                 )
                 if (
                     key in existing_keys
-                    or None in key
+                    or key[0] is None
+                    or key[1] is None
                     or self._fact_store._subject_forget_fields_are_active(
                         name, p.get('subject_key'), p.get('scope'),
                     )
@@ -300,13 +355,13 @@ class FactDedupResolver:
                             or p.get('scope') is not None
                         )
                         and (
-                            key[0] not in live_facts_by_id
-                            or key[1] not in live_facts_by_id
+                            pair_rows[0] is None
+                            or pair_rows[1] is None
                         )
                     )
                 ):
                     continue
-                existing.append({
+                queued = {
                     'candidate_id': p.get('candidate_id'),
                     'existing_id': p.get('existing_id'),
                     'entity': p.get('entity'),
@@ -314,7 +369,15 @@ class FactDedupResolver:
                     'scope': p.get('scope'),
                     'cosine': float(p.get('cosine', 0.0)),
                     'queued_at': now_iso,
-                })
+                }
+                for field in (
+                    'candidate_subject_kind', 'candidate_subject_id',
+                    'candidate_scope', 'existing_subject_kind',
+                    'existing_subject_id', 'existing_scope',
+                ):
+                    if p.get(field) is not None:
+                        queued[field] = p[field]
+                existing.append(queued)
                 existing_keys.add(key)
                 appended += 1
             if scrubbed and not appended:
@@ -471,8 +534,6 @@ class FactDedupResolver:
         a paraphrase into an absorbed fact would resurrect it from the
         archive path, which is worse than the duplicate.
         """  # noqa: DOCSTRING_CJK
-        from memory.scopes import is_legacy_private_entry, subject_from_entry
-
         def _bucket_key(f: dict) -> tuple | None:
             """Entity + subject boundary; None → excluded from dedup.
 
@@ -484,28 +545,9 @@ class FactDedupResolver:
             are excluded from every read path, so pairing against them
             would resurrect invisible data — skip them entirely.
             """
-            subject = subject_from_entry(f)
             entity = f.get('entity') or 'master'
-            if subject is not None:
-                if (
-                    subject.kind == 'group_participant'
-                    and subject.scope == f"{subject.kind}:{subject.subject_id}"
-                    and ':' in subject.subject_id
-                ):
-                    # Participant rows remain stored under their exact
-                    # per-speaker subjects, but contradictions need one
-                    # arbitration domain per group or different speakers can
-                    # never meet.  The group prefix retains scoped isolation:
-                    # qq:A:* and qq:B:* can never share an LLM prompt.
-                    group_prefix = subject.subject_id.rsplit(':', 1)[0]
-                    arbitration_key = (
-                        f"@group_participant_arbitration:{group_prefix}"
-                    )
-                    return (entity, arbitration_key, arbitration_key)
-                return (entity, subject.key, subject.scope)
-            if is_legacy_private_entry(f):
-                return (entity, None, None)
-            return None
+            domain = _fact_dedup_domain(f)
+            return (entity, *domain) if domain is not None else None
 
         results: list[dict] = []
         # Pre-bucket by entity + subject so the inner loop only walks
@@ -610,6 +652,12 @@ class FactDedupResolver:
                 results.append({
                     'candidate_id': cid,
                     'existing_id': sib.get('id'),
+                    'candidate_subject_kind': f.get('subject_kind'),
+                    'candidate_subject_id': f.get('subject_id'),
+                    'candidate_scope': f.get('scope'),
+                    'existing_subject_kind': sib.get('subject_kind'),
+                    'existing_subject_id': sib.get('subject_id'),
+                    'existing_scope': sib.get('scope'),
                     'entity': entity,
                     # 隔离域随 pair 入队（legacy 为 None/None）：resolve 侧
                     # 按域锁批，跨隔离域的 fact 文本不得共现在同一个 prompt。
@@ -681,25 +729,25 @@ class FactDedupResolver:
         # prompt 文本按 id 从 facts.json 现取（队列 ids-only）：任一侧行已
         # 消失（被 absorb 归档 / 上一轮 merge 掉 / subject 归档）的 pair 按
         # 既有 disappeared-row 语义直接出队，不进任何 prompt（fail-closed）。
-        from memory.scopes import is_legacy_private_entry, subject_from_entry
+        from memory.scopes import subject_from_entry
 
         rows = await self._fact_store.aload_facts(name)
-        facts_by_id: dict = {
-            r.get('id'): r for r in rows if isinstance(r, dict) and r.get('id')
-        }
+        facts_by_id: dict[object, list[dict]] = {}
+        for row in rows:
+            if isinstance(row, dict) and row.get('id'):
+                facts_by_id.setdefault(row.get('id'), []).append(row)
 
         def _classify_domain(it: dict) -> tuple | None:
             if 'subject_key' in it:
                 return (it.get('subject_key'), it.get('scope'))
             for fid in (it.get('candidate_id'), it.get('existing_id')):
-                row = facts_by_id.get(fid)
+                matches = facts_by_id.get(fid, [])
+                row = matches[0] if len(matches) == 1 else None
                 if row is None:
                     continue
-                subject = subject_from_entry(row)
-                if subject is not None:
-                    return (subject.key, subject.scope)
-                if is_legacy_private_entry(row):
-                    return (None, None)
+                domain = _fact_dedup_domain(row)
+                if domain is not None:
+                    return domain
             return None
 
         batch: list[dict] = []
@@ -712,21 +760,21 @@ class FactDedupResolver:
         for it in pending:
             if safe_int_field(it, 'resolve_attempts') >= MEMORY_LIVENESS_MAX_ATTEMPTS:
                 continue
-            cand_row = facts_by_id.get(it.get('candidate_id'))
-            exist_row = facts_by_id.get(it.get('existing_id'))
+            cand_row = _find_queued_fact(facts_by_id, it, 'candidate')
+            exist_row = _find_queued_fact(facts_by_id, it, 'existing')
             if cand_row is None or exist_row is None:
-                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                stale_keys.add(_queue_identity(it))
                 continue
             if any(
                 (subject := subject_from_entry(row)) is not None
                 and self._fact_store._subject_forget_is_active(name, subject)
                 for row in (cand_row, exist_row)
             ):
-                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                stale_keys.add(_queue_identity(it))
                 continue
             domain = _classify_domain(it)
             if domain is None:
-                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                stale_keys.add(_queue_identity(it))
                 continue
             if batch_domain is None:
                 batch_domain = domain
@@ -741,7 +789,7 @@ class FactDedupResolver:
         if stale_keys:
             kept = [
                 it for it in pending
-                if (it.get('candidate_id'), it.get('existing_id')) not in stale_keys
+                if _queue_identity(it) not in stale_keys
             ]
             # 落盘失败（维护态）无妨：下一轮重新识别重新丢。
             await self._asave_pending(name, kept)
@@ -835,7 +883,7 @@ class FactDedupResolver:
         current = await self.aload_pending(name)
         remaining = [
             it for it in current
-            if (it.get('candidate_id'), it.get('existing_id')) not in processed_keys
+            if _queue_identity(it) not in processed_keys
         ]
         if not await self._asave_pending(name, remaining):
             # Maintenance-mode skip: queue cleanup didn't land on disk
@@ -877,16 +925,18 @@ class FactDedupResolver:
         if not batch_items:
             return
         bumped_keys = {
-            (it.get('candidate_id'), it.get('existing_id')) for it in batch_items
+            _queue_identity(it) for it in batch_items
         }
-        bumped_keys.discard((None, None))
+        bumped_keys = {
+            key for key in bumped_keys if key[0] is not None and key[1] is not None
+        }
         if not bumped_keys:
             return
         current = await self.aload_pending(name)
         kept: list[dict] = []
         dropped = 0
         for it in current:
-            key = (it.get('candidate_id'), it.get('existing_id'))
+            key = _queue_identity(it)
             if key in bumped_keys:
                 new_attempts = safe_int_field(it, 'resolve_attempts') + 1
                 if new_attempts >= MEMORY_LIVENESS_MAX_ATTEMPTS:
@@ -946,8 +996,8 @@ class FactDedupResolver:
         consumed (so the next round doesn't keep flagging it).
 
         Returns ``(applied_count, processed_pair_keys)``.  The set
-        contains the (candidate_id, existing_id) keys for queue
-        entries the caller should *remove* — exactly the entries we
+        contains the full scoped pair keys for queue entries the caller should
+        *remove* — exactly the entries we
         applied or consumed via the conflict guard, NOT the ones we
         skipped due to malformed LLM output (those stay queued for
         retry).
@@ -959,16 +1009,19 @@ class FactDedupResolver:
         # archive transaction validates the original survivor snapshots and
         # publishes these copies only after it owns the persistence lock.
         facts = [dict(f) if isinstance(f, dict) else f for f in live_facts]
-        by_id = {f.get('id'): f for f in facts if isinstance(f, dict) and f.get('id')}
-        original_by_id = {
-            f.get('id'): dict(f)
-            for f in live_facts
-            if isinstance(f, dict) and f.get('id')
+        rows_by_id: dict[object, list[dict]] = {}
+        for fact in facts:
+            if isinstance(fact, dict) and fact.get('id'):
+                rows_by_id.setdefault(fact.get('id'), []).append(fact)
+        originals_by_identity = {
+            identity: dict(fact)
+            for fact in live_facts
+            if (identity := _fact_scoped_identity(fact)) is not None
         }
         applied = 0
-        ids_to_remove: set[str] = set()
-        archive_specs: dict[str, dict] = {}
-        mutated_survivor_ids: set[str] = set()
+        identities_to_remove: set[tuple[str, str, str, str]] = set()
+        archive_specs: dict[tuple[str, str, str, str], dict] = {}
+        mutated_survivor_identities: set[tuple[str, str, str, str]] = set()
         processed_pairs: set[tuple] = set()
         seen_pairs: set[tuple] = set()
         for r in results:
@@ -990,7 +1043,7 @@ class FactDedupResolver:
             # decision on the SAME pair (CodeRabbit PR-956 Major).
             cand_id_dedup = item.get('candidate_id')
             exist_id_dedup = item.get('existing_id')
-            pair_key = (cand_id_dedup, exist_id_dedup)
+            pair_key = _queue_identity(item)
             if pair_key in seen_pairs:
                 logger.info(
                     "[FactDedup] %s: 跳过重复决策 cand=%s exist=%s (LLM 在同一批次返回多次)",
@@ -1021,13 +1074,18 @@ class FactDedupResolver:
             action = action_norm
             cand_id = item.get('candidate_id')
             exist_id = item.get('existing_id')
-            cand = by_id.get(cand_id)
-            existing = by_id.get(exist_id)
+            cand = _find_queued_fact(rows_by_id, item, 'candidate')
+            existing = _find_queued_fact(rows_by_id, item, 'existing')
             if cand is None or existing is None:
                 # One side disappeared between enqueue and resolve —
                 # not an error, just stale; consume the queue entry
                 # so it doesn't keep blocking subsequent batches.
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
+                continue
+            cand_identity = _fact_scoped_identity(cand)
+            exist_identity = _fact_scoped_identity(existing)
+            if cand_identity is None or exist_identity is None:
+                processed_pairs.add(pair_key)
                 continue
             from memory.speaker_trust import (
                 deterministic_relation,
@@ -1103,12 +1161,15 @@ class FactDedupResolver:
             # decision too would either delete both facts (merge after
             # replace) or mutate a row about to vanish.  Treat as
             # consumed so the queue entry clears, but skip the apply.
-            if cand_id in ids_to_remove or exist_id in ids_to_remove:
+            if (
+                cand_identity in identities_to_remove
+                or exist_identity in identities_to_remove
+            ):
                 logger.info(
                     "[FactDedup] %s: 跳过冲突决策 cand=%s exist=%s (一方已被前一决策处理)",
                     name, cand_id, exist_id,
                 )
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 applied += 1
                 continue
             if action == 'merge':
@@ -1129,13 +1190,13 @@ class FactDedupResolver:
                 # keep the selected winner attributable for later disputes.
                 if preference != 'old':
                     _fold_survivor_provenance(existing, cand)
-                mutated_survivor_ids.add(exist_id)
-                ids_to_remove.add(cand_id)
-                archive_specs[cand_id] = {
+                mutated_survivor_identities.add(exist_identity)
+                identities_to_remove.add(cand_identity)
+                archive_specs[cand_identity] = {
                     'reason': 'fact_dedup_merge',
                     'superseded_by': exist_id,
                 }
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 applied += 1
             elif action == 'replace':
                 # Mirror image: drop existing, keep candidate. Carry
@@ -1158,31 +1219,43 @@ class FactDedupResolver:
                 # corroborating it with the rejected row. Keep the selected
                 # author's provenance; the loser remains traceable through
                 # merged_from_ids and the archive record below.
-                mutated_survivor_ids.add(cand_id)
-                ids_to_remove.add(exist_id)
-                archive_specs[exist_id] = {
+                mutated_survivor_identities.add(cand_identity)
+                identities_to_remove.add(exist_identity)
+                archive_specs[exist_identity] = {
                     'reason': 'fact_dedup_replace',
                     'superseded_by': cand_id,
                 }
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 applied += 1
             else:  # keep_both
                 # No mutation, just count it as resolved so the queue
                 # entry is consumed.
-                processed_pairs.add((cand_id, exist_id))
+                processed_pairs.add(pair_key)
                 applied += 1
 
-        if ids_to_remove:
-            survivor_ids = mutated_survivor_ids - ids_to_remove
+        if identities_to_remove:
+            survivor_identities = (
+                mutated_survivor_identities - identities_to_remove
+            )
+            facts_by_identity = {
+                identity: fact
+                for fact in facts
+                if (identity := _fact_scoped_identity(fact)) is not None
+            }
             await self._fact_store.aarchive_arbitrated_facts(
                 name,
                 archive_specs,
-                survivor_updates={fid: by_id[fid] for fid in survivor_ids},
+                survivor_updates={
+                    identity: facts_by_identity[identity]
+                    for identity in survivor_identities
+                },
                 expected_survivors={
-                    fid: original_by_id[fid] for fid in survivor_ids
+                    identity: originals_by_identity[identity]
+                    for identity in survivor_identities
                 },
                 expected_losers={
-                    fid: original_by_id[fid] for fid in ids_to_remove
+                    identity: originals_by_identity[identity]
+                    for identity in identities_to_remove
                 },
             )
         elif applied:

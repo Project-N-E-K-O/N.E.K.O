@@ -178,15 +178,33 @@ def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | Non
     return str(fact_id), subject.kind, subject.subject_id, subject.scope
 
 
+def _fact_scoped_identity(entry: dict) -> tuple[str, str, str, str] | None:
+    """Return an archive-safe identity without collapsing scoped duplicate ids."""
+    if not isinstance(entry, dict):
+        return None
+    fact_id = _readable_fact_id(entry)
+    if fact_id is None:
+        return None
+    subject = subject_from_entry(entry)
+    if subject is not None:
+        return str(fact_id), subject.kind, subject.subject_id, subject.scope
+    return (
+        str(fact_id),
+        str(entry.get('subject_kind') or ''),
+        str(entry.get('subject_id') or ''),
+        str(entry.get('scope') or ''),
+    )
+
+
 def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
-    """Merge archive rows keyed by id: later occurrence wins, first slot kept.
+    """Merge archive rows by full scoped identity; later occurrence wins.
 
     facts_archive.json is appended by a two-file commit (archive first, then
     facts.json — see ``_archive_absorbed``). An interrupted commit leaves a row
     in BOTH files, so the next archive pass re-appends it. Keying on
-    ``_readable_fact_id`` makes that append idempotent, and merging ``existing``
-    against itself also heals duplicates an earlier half-commit already wrote to
-    a user's disk.
+    ``_fact_scoped_identity`` makes that append idempotent without folding two
+    subjects that happen to reuse the same fact id. Merging ``existing`` against
+    itself also heals duplicates an earlier half-commit already wrote to disk.
 
     Later wins because ``incoming`` is the live copy being archived right now —
     it may carry flag updates the older archived copy predates.
@@ -200,14 +218,14 @@ def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     for entry in list(existing) + list(incoming):
         if not isinstance(entry, dict):
             continue
-        fid = _readable_fact_id(entry)
-        if fid is None:
+        identity = _fact_scoped_identity(entry)
+        if identity is None:
             out.append(entry)
             continue
-        if fid in pos:
-            out[pos[fid]] = entry
+        if identity in pos:
+            out[pos[identity]] = entry
         else:
-            pos[fid] = len(out)
+            pos[identity] = len(out)
             out.append(entry)
     return out
 
@@ -964,11 +982,11 @@ class FactStore:
     async def aarchive_arbitrated_facts(
         self,
         name: str,
-        archive_specs: dict[str, dict],
+        archive_specs: dict[tuple[str, str, str, str], dict],
         *,
-        survivor_updates: dict[str, dict] | None = None,
-        expected_survivors: dict[str, dict] | None = None,
-        expected_losers: dict[str, dict] | None = None,
+        survivor_updates: dict[tuple[str, str, str, str], dict] | None = None,
+        expected_survivors: dict[tuple[str, str, str, str], dict] | None = None,
+        expected_losers: dict[tuple[str, str, str, str], dict] | None = None,
     ) -> int:
         """Archive trust/dedup losers with an archive-first two-file commit."""
         if not archive_specs:
@@ -991,11 +1009,47 @@ class FactStore:
                         target=f"memory/{name}/facts_archive.json",
                     )
                     facts = self._facts.get(name, [])
+
+                    def _normalize_keys(values: dict) -> dict:
+                        normalized = {}
+                        for key, value in values.items():
+                            if isinstance(key, tuple) and len(key) == 4:
+                                identity = tuple(str(part) for part in key)
+                            else:
+                                matches = [
+                                    candidate
+                                    for fact in facts
+                                    if isinstance(fact, dict)
+                                    and _readable_fact_id(fact) == key
+                                    and (
+                                        candidate := _fact_scoped_identity(fact)
+                                    ) is not None
+                                ]
+                                if len(matches) != 1:
+                                    raise RuntimeError(
+                                        "bare fact id is missing or ambiguous "
+                                        "during arbitration"
+                                    )
+                                identity = matches[0]
+                            normalized[identity] = value
+                        return normalized
+
+                    archive_specs_by_identity = _normalize_keys(archive_specs)
+                    survivor_updates_by_identity = _normalize_keys(
+                        survivor_updates,
+                    )
+                    expected_survivors_by_identity = _normalize_keys(
+                        expected_survivors,
+                    )
+                    expected_losers_by_identity = (
+                        _normalize_keys(expected_losers)
+                        if expected_losers is not None else None
+                    )
                     losers = [
                         fact for fact in facts
-                        if isinstance(fact, dict) and fact.get('id') in archive_specs
+                        if _fact_scoped_identity(fact) in archive_specs_by_identity
                     ]
-                    if len(losers) != len(archive_specs):
+                    if len(losers) != len(archive_specs_by_identity):
                         # The resolver mutates its selected survivor before
                         # entering this persistence lock.  A concurrent forget
                         # may remove either side in that window; treating a
@@ -1004,32 +1058,35 @@ class FactStore:
                         # exception path below evicts the cache atomically.
                         raise RuntimeError(
                             "fact arbitration archive mismatch: expected "
-                            f"{len(archive_specs)}, archived {len(losers)}"
+                            f"{len(archive_specs_by_identity)}, archived {len(losers)}"
                         )
-                    live_by_id = {
-                        fact.get('id'): fact
+                    live_by_identity = {
+                        identity: fact
                         for fact in facts
-                        if isinstance(fact, dict) and fact.get('id')
+                        if (identity := _fact_scoped_identity(fact)) is not None
                     }
                     stale_survivors = [
-                        fact_id for fact_id, expected in expected_survivors.items()
-                        if live_by_id.get(fact_id) != expected
+                        identity
+                        for identity, expected in (
+                            expected_survivors_by_identity.items()
+                        )
+                        if live_by_identity.get(identity) != expected
                     ]
                     if stale_survivors:
                         raise RuntimeError(
                             "fact arbitration survivor mismatch: "
-                            + ",".join(sorted(stale_survivors))
+                            + ",".join(map(str, sorted(stale_survivors)))
                         )
                     stale_losers = [
-                        fact_id for fact_id, expected in (
-                            expected_losers or {}
+                        identity for identity, expected in (
+                            expected_losers_by_identity or {}
                         ).items()
-                        if live_by_id.get(fact_id) != expected
+                        if live_by_identity.get(identity) != expected
                     ]
                     if stale_losers:
                         raise RuntimeError(
                             "fact arbitration loser mismatch: "
-                            + ",".join(sorted(stale_losers))
+                            + ",".join(map(str, sorted(stale_losers)))
                         )
                     archive_path = self._facts_archive_path(name)
                     archived: list[dict] = []
@@ -1050,7 +1107,9 @@ class FactStore:
                     stamped = []
                     for fact in losers:
                         copy = dict(fact)
-                        spec = archive_specs.get(fact.get('id')) or {}
+                        spec = archive_specs_by_identity.get(
+                            _fact_scoped_identity(fact),
+                        ) or {}
                         copy['arbitration_archived_at'] = now_iso
                         copy['arbitration_reason'] = str(
                             spec.get('reason') or 'dedup_arbitration'
@@ -1059,13 +1118,15 @@ class FactStore:
                             copy['superseded_by'] = spec['superseded_by']
                         stamped.append(copy)
                     merged_archive = _merge_archive_entries(archived, stamped)
-                    loser_ids = {fact.get('id') for fact in losers}
+                    loser_identities = {
+                        _fact_scoped_identity(fact) for fact in losers
+                    }
                     active = []
                     for fact in facts:
-                        fact_id = fact.get('id') if isinstance(fact, dict) else None
-                        if fact_id in loser_ids:
+                        identity = _fact_scoped_identity(fact)
+                        if identity in loser_identities:
                             continue
-                        replacement = survivor_updates.get(fact_id)
+                        replacement = survivor_updates_by_identity.get(identity)
                         active.append(
                             dict(replacement) if replacement is not None else fact
                         )
