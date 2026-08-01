@@ -636,6 +636,12 @@ async def test_trust_merge_does_not_arbitrate_one_speaker_against_itself(tmp_pat
     assert merged["text"] == proposed
     assert "speaker_id" not in merged
     assert "speaker_trust" not in merged
+    assert [item["speaker_id"] for item in merged["version_history"]] == [
+        "qq:1001", "qq:1001", "qq:1002",
+    ]
+    assert [item["speaker_trust"] for item in merged["version_history"]] == [
+        0.90, 0.70, 0.50,
+    ]
 
 
 @pytest.mark.asyncio
