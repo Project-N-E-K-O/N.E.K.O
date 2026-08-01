@@ -2180,7 +2180,7 @@ def _module_level_claiming_workers(trees):
                     for func in scope_functions[class_scope]
                     if func.name in next_class_claiming
                     and any(
-                        _reference_name(decorator) == 'property'
+                        _reference_name(decorator) in {'property', 'cached_property'}
                         for decorator in func.decorator_list
                     )
                 )
@@ -3095,6 +3095,13 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '        return callback\n'
         '    async def property_handler(self):\n'
         '        await asyncio.to_thread(self.property_worker)\n'
+        '    @functools.cached_property\n'
+        '    def cached_worker(self):\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        '        return callback\n'
+        '    async def cached_property_handler(self):\n'
+        '        await asyncio.to_thread(self.cached_worker)\n'
         '\n'
         'async def stored_method_direct():\n'
         '    service = Service()\n'
@@ -3366,6 +3373,10 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         functions['property_handler'],
         'synthetic', 'PropertyService', claiming, generators, aliases,
     ), 'property getter 会在 to_thread 收参前执行，不能算安全 offload'
+    assert _scope_claiming_names_called_on_loop(
+        functions['cached_property_handler'],
+        'synthetic', 'PropertyService', claiming, generators, aliases,
+    ), 'cached_property getter 也会在 to_thread 收参前在 event loop 执行'
     assert module_offenders('stored_method_direct'), (
         'stored class instance 的普通 claim-owning method 也必须解析'
     )
@@ -4257,11 +4268,48 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
             for name in set(left) | set(right)
         }
 
+    def eager_expressions(statement):
+        if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+            return [statement.value]
+        if isinstance(statement, ast.Expr):
+            return [statement.value]
+        if isinstance(statement, (ast.If, ast.While)):
+            return [statement.test]
+        if isinstance(statement, (ast.For, ast.AsyncFor)):
+            return [statement.iter]
+        if isinstance(statement, (ast.With, ast.AsyncWith)):
+            return [item.context_expr for item in statement.items]
+        if isinstance(statement, ast.Match):
+            return [statement.subject]
+        if isinstance(statement, ast.Assert):
+            return [statement.test, statement.msg]
+        if isinstance(statement, (ast.Return, ast.Yield, ast.YieldFrom, ast.Raise)):
+            return [getattr(statement, 'value', None)]
+        return []
+
+    def named_expressions(root):
+        stack = [root] if root is not None else []
+        while stack:
+            node = stack.pop()
+            if isinstance(node, ast.NamedExpr):
+                yield node
+            if isinstance(node, (ast.Lambda, ast.GeneratorExp)):
+                continue
+            stack.extend(ast.iter_child_nodes(node))
+
     def after(statements, state):
         state = {name: set(origins) for name, origins in state.items()}
         for statement in statements:
             if statement.lineno >= before_line:
                 continue
+            for root in eager_expressions(statement):
+                for named in named_expressions(root):
+                    origins = expression_origins(named.value, state)
+                    for name in _assigned_names(named):
+                        if origins:
+                            state[name] = origins
+                        else:
+                            state.pop(name, None)
             if isinstance(statement, (ast.Assign, ast.AnnAssign)):
                 origins = expression_origins(statement.value, state)
                 targets = (
@@ -4285,15 +4333,6 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                         else:
                             state.pop(name, None)
             elif isinstance(statement, (ast.If, ast.While)):
-                for named in ast.walk(statement.test):
-                    if not isinstance(named, ast.NamedExpr):
-                        continue
-                    origins = expression_origins(named.value, state)
-                    for name in _assigned_names(named):
-                        if origins:
-                            state[name] = origins
-                        else:
-                            state.pop(name, None)
                 if isinstance(statement, ast.If):
                     containing = next((
                         branch
@@ -4490,6 +4529,9 @@ def _known_open_flag_names(func, before_line: int) -> dict[str, set[str]]:
 
 def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
     write_flags = {'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC'}
+    handle_methods = {'write', 'writelines', 'truncate', 'flush', 'close'}
+    parents = _parent_map(func)
+    handle_paths = {}
     found = []
     for node in _walk_own_scope(func):
         if not isinstance(node, ast.Call):
@@ -4560,6 +4602,29 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
             origins = _expression_path_origins(path, func, node.lineno)
             if any(_looks_like_content_folder(origin) for origin in origins):
                 found.append((target, _OPEN_WRITE_OPERATION))
+                assignment = parents.get(id(node))
+                if isinstance(assignment, (ast.Assign, ast.AnnAssign)):
+                    targets = (
+                        assignment.targets
+                        if isinstance(assignment, ast.Assign)
+                        else [assignment.target]
+                    )
+                    for assigned in targets:
+                        if (key := _storage_key(assigned)) is not None:
+                            handle_paths[key] = (path, node.lineno)
+    for node in _walk_own_scope(func):
+        if (
+            not isinstance(node, ast.Call)
+            or not isinstance(node.func, ast.Attribute)
+            or node.func.attr not in handle_methods
+        ):
+            continue
+        key = _storage_key(node.func.value)
+        path_and_line = handle_paths.get(key)
+        if path_and_line is None or node.lineno <= path_and_line[1]:
+            continue
+        node.func._open_handle_path = path_and_line[0]
+        found.append((node.func, _OPEN_WRITE_OPERATION))
     return found
 
 
@@ -4982,10 +5047,20 @@ def _operation_folder_expressions(
 ) -> list:
     parent = parents.get(id(operation))
     reference = operation.value if isinstance(operation, ast.NamedExpr) else operation
+    if isinstance(parent, ast.Call) and _tail_name(parent) in _DEFERRAL_CALLS:
+        callable_index = 1 if _tail_name(parent) == 'run_in_executor' else 0
+        if (
+            len(parent.args) > callable_index
+            and parent.args[callable_index] is operation
+        ):
+            return list(parent.args[callable_index + 1:])
     bound_receivers = getattr(operation, '_bound_mutation_receivers', set())
     if name in _CONTENT_PATH_MUTATION_METHODS and bound_receivers:
         return list(bound_receivers)
     unpacked = list(getattr(operation, '_unpacked_folder_expressions', set()))
+    open_handle_path = getattr(operation, '_open_handle_path', None)
+    if name == _OPEN_WRITE_OPERATION and open_handle_path is not None:
+        return [open_handle_path]
     if (
         name == _OPEN_WRITE_OPERATION
         and isinstance(parent, ast.Call)
@@ -5792,6 +5867,10 @@ def test_the_claim_guard_sees_through_deferred_work():
         '    with claim_content_folder(folder, purpose=p):\n'
         '        executor.submit(_publish_workshop_item, folder)\n'
         '\n'
+        'def deferred_generic(content_folder):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        '        executor.submit(shutil.rmtree, content_folder)\n'
+        '\n'
         'def deferred_lambda():\n'
         '    with claim_content_folder(folder, purpose=p):\n'
         '        executor.submit(lambda: _publish_workshop_item(a, b, c, folder))\n'
@@ -5839,6 +5918,9 @@ def test_the_claim_guard_sees_through_deferred_work():
     assert _unclaimed_folder_operations(functions['deferred'], 'publish'), (
         '推迟执行的上传必须被报出来——占用早就放开了'
     )
+    assert _unclaimed_folder_operations(
+        functions['deferred_generic'], 'new_router'
+    ), 'generic folder operation 作为 deferred callback 时也必须保留 folder 参数'
     assert _unclaimed_folder_operations(functions['deferred_lambda'], 'publish'), (
         '藏在 deferred lambda 里的上传也必须被报出来'
     )
@@ -6144,6 +6226,17 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    content_folder = path\n'
         '    shutil.rmtree(content_folder)\n'
         '\n'
+        'def standalone_walrus(content_folder):\n'
+        '    observe(target := content_folder)\n'
+        '    shutil.rmtree(target)\n'
+        '\n'
+        'def escaped_write_handle(content_folder):\n'
+        "    path = Path(content_folder, 'preview.png')\n"
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        "        writer = open(path, 'wb')\n"
+        '    writer.write(data)\n'
+        '    writer.close()\n'
+        '\n'
         'def read_only_opens(content_folder):\n'
         "    open(os.path.join(content_folder, 'a'), 'r')\n"
         "    Path(content_folder, 'b').open()\n"
@@ -6304,6 +6397,15 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['explicit_content_local'], 'new_router'
     ), '显式 content_folder local 即使源参数泛化也必须保留语义 origin'
+    assert _unclaimed_folder_operations(
+        functions['standalone_walrus'], 'new_router'
+    ), '普通 eager expression 中的 walrus 也必须传播 content-folder origin'
+    escaped_handle_offenders = _unclaimed_folder_operations(
+        functions['escaped_write_handle'], 'new_router'
+    )
+    assert sum(
+        item[3] == _OPEN_WRITE_OPERATION for item in escaped_handle_offenders
+    ) >= 2, 'writable handle 的 write/close 逃出 claim 后必须继续被 guard 跟踪'
     assert _unclaimed_folder_operations(
         functions['read_only_opens'], 'new_router'
     ) == [], 'read-only open 不应被当成 content-folder writer'
