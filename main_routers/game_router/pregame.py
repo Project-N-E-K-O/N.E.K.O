@@ -480,6 +480,7 @@ async def _run_soccer_pregame_context_ai(
     recent_history: str,
     neko_initiated: bool,
     neko_invite_text: str,
+    prompt_locale: str | None = None,
 ) -> dict:
     char_info = _get_character_info(lanlan_name)
     return await _run_pregame_context_ai(
@@ -489,7 +490,9 @@ async def _run_soccer_pregame_context_ai(
         recent_history=recent_history,
         neko_initiated=neko_initiated,
         neko_invite_text=neko_invite_text,
-        prompt_template=get_soccer_pregame_context_prompt(char_info.get("user_language")),
+        prompt_template=get_soccer_pregame_context_prompt(
+            prompt_locale or char_info.get("user_language")
+        ),
         extra_payload={"gameType": "soccer"},
     )
 
@@ -504,13 +507,14 @@ async def _build_soccer_pregame_context(
     prompt_locale: str | None = None,
 ) -> tuple[dict, str, str]:
     char_info = _get_character_info(lanlan_name)
+    effective_prompt_locale = (
+        prompt_locale
+        or char_info.get("user_language_full")
+        or char_info.get("user_language")
+    )
     recent_history, history_error = await _fetch_recent_history_for_pregame(
         lanlan_name,
-        language=(
-            prompt_locale
-            or char_info.get("user_language_full")
-            or char_info.get("user_language")
-        ),
+        language=effective_prompt_locale,
     )
     _log_game_debug_material(
         "pregame_recent_history",
@@ -529,6 +533,7 @@ async def _build_soccer_pregame_context(
             recent_history=recent_history,
             neko_initiated=neko_initiated,
             neko_invite_text=neko_invite_text,
+            prompt_locale=effective_prompt_locale,
         )
     except ValueError as exc:
         logger.warning("🎮 开局上下文 JSON 非法，使用普通陪玩兜底: lanlan=%s err=%s", lanlan_name, exc)
@@ -571,13 +576,14 @@ async def _build_badminton_pregame_context(
 ) -> tuple[dict, str, str]:
     normalized_mode = _normalize_badminton_mode(mode)
     char_info = _get_character_info(lanlan_name)
+    effective_prompt_locale = (
+        prompt_locale
+        or char_info.get("user_language_full")
+        or char_info.get("user_language")
+    )
     recent_history, history_error = await _fetch_recent_history_for_pregame(
         lanlan_name,
-        language=(
-            prompt_locale
-            or char_info.get("user_language_full")
-            or char_info.get("user_language")
-        ),
+        language=effective_prompt_locale,
     )
     _log_game_debug_material(
         "pregame_recent_history",
@@ -596,7 +602,9 @@ async def _build_badminton_pregame_context(
             recent_history=recent_history,
             neko_initiated=neko_initiated,
             neko_invite_text=neko_invite_text,
-            prompt_template=get_badminton_pregame_context_prompt(char_info.get("user_language")),
+            prompt_template=get_badminton_pregame_context_prompt(
+                effective_prompt_locale
+            ),
             extra_payload={"gameType": game_type, "mode": normalized_mode},
         )
     except ValueError as exc:

@@ -136,7 +136,7 @@ async def test_spawn_outbox_preserves_route_admission_order(tmp_path):
         clear=False,
     ), patch.object(
         memory_server.locale_state,
-        "allocate_character_prompt_locale_order",
+        "capture_character_prompt_locale_order",
         side_effect=AssertionError("route admission order must be reused"),
     ):
         task = await memory_server._spawn_outbox_post_turn_signals(

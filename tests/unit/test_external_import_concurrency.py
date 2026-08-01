@@ -80,7 +80,7 @@ def wire(monkeypatch):
         monkeypatch.setattr(routes_mod, "validate_lanlan_name", lambda n: n)
         monkeypatch.setattr(
             routes_mod.locale_state,
-            "allocate_character_prompt_locale_order",
+            "capture_character_prompt_locale_order",
             lambda _name: 1,
         )
         monkeypatch.setattr(
@@ -202,7 +202,7 @@ async def test_external_import_persists_explicit_request_locale(
     allocated = []
     monkeypatch.setattr(
         routes_mod.locale_state,
-        "allocate_character_prompt_locale_order",
+        "capture_character_prompt_locale_order",
         lambda name: allocated.append(name) or 73,
     )
     monkeypatch.setattr(

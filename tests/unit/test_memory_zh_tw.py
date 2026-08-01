@@ -373,9 +373,22 @@ def test_holiday_context_uses_taiwan_calendar_for_traditional_locale(
         ("TW", today.year),
         [period],
     )
+    mainland_period = holiday_cache.HolidayPeriod(
+        "Holiday",
+        "中国假日",
+        today,
+        today,
+    )
+    monkeypatch.setitem(
+        holiday_cache._period_cache,
+        ("CN", today.year),
+        [mainland_period],
+    )
 
     assert holiday_cache._LANG_TO_COUNTRY["zh-TW"] == "TW"
+    assert holiday_cache._LANG_TO_COUNTRY["zh-CN"] == "CN"
     assert holiday_cache.get_holiday_context_line("zh-TW") == "臺灣假日"
+    assert holiday_cache.get_holiday_context_line("zh-CN") == "中国假日"
 
 
 @pytest.mark.parametrize(
@@ -681,22 +694,31 @@ async def test_game_archive_writer_omits_global_fallback_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_new_dialog_unknown_character_does_not_allocate_locale(monkeypatch):
+async def test_new_dialog_unknown_character_only_captures_locale_token(monkeypatch):
     from app.memory_server import locale_state, routes, runtime
 
     async def load_characters():
         return {"猫娘": {"Neko": {}}}
 
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    captured = []
     monkeypatch.setattr(
         locale_state,
-        "allocate_character_prompt_locale_order",
-        lambda _name: pytest.fail("unknown character must not allocate locale state"),
+        "capture_character_prompt_locale_order",
+        lambda name: captured.append(name) or 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda *_args, **_kwargs: pytest.fail(
+            "unknown character must not persist locale state"
+        ),
     )
 
     response = await routes._new_dialog("NotACharacter", "en")
 
     assert response.body == b""
+    assert captured == ["NotACharacter"]
 
 
 @pytest.mark.asyncio
@@ -706,7 +728,10 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
     class Recorded(RuntimeError):
         pass
 
+    events = []
+
     async def load_characters():
+        assert events == ["capture"]
         return {"猫娘": {"Neko": {}}}
 
     def record(name, language, *, order):
@@ -717,8 +742,8 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
     monkeypatch.setattr(
         locale_state,
-        "allocate_character_prompt_locale_order",
-        lambda _name: 42,
+        "capture_character_prompt_locale_order",
+        lambda _name: events.append("capture") or 42,
     )
     monkeypatch.setattr(
         locale_state,
@@ -767,7 +792,7 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
     monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
     monkeypatch.setattr(
         locale_state,
-        "allocate_character_prompt_locale_order",
+        "capture_character_prompt_locale_order",
         lambda _name: 42,
     )
     monkeypatch.setattr(
@@ -979,33 +1004,30 @@ async def test_new_dialog_locale_retry_retries_invalidated_write(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_new_dialog_locale_retry_backs_off_after_persistence_failure(monkeypatch):
-    from unittest.mock import AsyncMock, call
+async def test_new_dialog_locale_retry_propagates_persistence_failure(monkeypatch):
+    from unittest.mock import AsyncMock
 
     from app.memory_server import locale_state, routes
 
     generation = routes._new_dialog_locale_generations.get("BrokenNeko", 0) + 1
     routes._new_dialog_locale_generations["BrokenNeko"] = generation
     writer = AsyncMock(
-        side_effect=[
-            locale_state.PromptLocalePersistenceError("disk full"),
-            locale_state.PromptLocalePersistenceError("disk still full"),
-            None,
-        ]
+        side_effect=locale_state.PromptLocalePersistenceError("disk full")
     )
     sleep = AsyncMock()
     monkeypatch.setattr(routes, "_write_new_dialog_locale", writer)
     monkeypatch.setattr(routes.asyncio, "sleep", sleep)
 
-    await routes._retry_new_dialog_locale(
-        "BrokenNeko",
-        "zh-TW",
-        generation,
-        locale_admission_order=42,
-    )
+    with pytest.raises(locale_state.PromptLocalePersistenceError, match="disk full"):
+        await routes._retry_new_dialog_locale(
+            "BrokenNeko",
+            "zh-TW",
+            generation,
+            locale_admission_order=42,
+        )
 
-    assert writer.await_count == 3
-    assert sleep.await_args_list == [call(0.25), call(0.5)]
+    writer.assert_awaited_once()
+    sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1112,6 +1134,46 @@ def test_scoped_prompt_locale_survives_restart_and_rejects_stale_write(
     locale_state._subject_locale_cache.clear()
 
     assert locale_state.get_subject_prompt_locale("Neko", subject) == "zh-TW"
+
+
+def test_scoped_prompt_locale_admission_order_survives_reversed_workers(
+    monkeypatch,
+    tmp_path,
+):
+    from app.memory_server import locale_state
+    from memory.scopes import MemorySubject
+
+    name = "ReversedScopedNeko"
+    subject = MemorySubject.group_chat("qq", "7788")
+    locale_path = tmp_path / "scoped_prompt_locales.json"
+    monkeypatch.setattr(
+        locale_state,
+        "_subject_locale_path",
+        lambda _name: str(locale_path),
+    )
+    locale_state._subject_locale_cache.pop(name, None)
+    locale_state._subject_locale_admission_orders.pop((name, subject.key), None)
+
+    older = locale_state.allocate_subject_prompt_locale_order(name, subject)
+    newer = locale_state.allocate_subject_prompt_locale_order(name, subject)
+    assert older < newer
+
+    locale_state.reserve_subject_prompt_locale_order(name, subject, order=newer)
+    locale_state.record_subject_prompt_locale(
+        name,
+        subject,
+        "zh-TW",
+        order=newer,
+    )
+    locale_state.reserve_subject_prompt_locale_order(name, subject, order=older)
+    locale_state.record_subject_prompt_locale(
+        name,
+        subject,
+        "en",
+        order=older,
+    )
+
+    assert locale_state.get_subject_prompt_locale(name, subject) == "zh-TW"
 
 
 def test_scoped_prompt_locale_batch_persists_once_per_phase(monkeypatch, tmp_path):
@@ -1607,8 +1669,13 @@ async def test_scoped_facts_records_locale_before_persisting_facts(monkeypatch):
     monkeypatch.setattr(runtime, "fact_store", FactStore())
     monkeypatch.setattr(
         locale_state,
-        "reserve_subject_prompt_locale_order",
+        "allocate_subject_prompt_locale_order",
         lambda _name, _subject: 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_subject_prompt_locale_order",
+        lambda _name, _subject, *, order: order,
     )
     monkeypatch.setattr(
         locale_state,
@@ -1647,8 +1714,13 @@ async def test_scoped_history_persists_subject_locale(monkeypatch):
     monkeypatch.setattr(runtime, "fact_store", FactStore())
     monkeypatch.setattr(
         locale_state,
-        "reserve_subject_prompt_locale_order",
+        "allocate_subject_prompt_locale_order",
         lambda _name, _subject: 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_subject_prompt_locale_order",
+        lambda _name, _subject, *, order: order,
     )
     monkeypatch.setattr(
         locale_state,
@@ -1699,10 +1771,15 @@ async def test_scoped_history_batch_persists_each_admitted_subject_locale(
     monkeypatch.setattr(runtime, "fact_store", FactStore())
     monkeypatch.setattr(
         locale_state,
+        "allocate_subject_prompt_locale_orders",
+        lambda _name, _subjects: [41, 42],
+    )
+    monkeypatch.setattr(
+        locale_state,
         "reserve_subject_prompt_locale_orders",
-        lambda name, subjects: (
+        lambda name, subjects, *, orders: (
             reserved.append((name, [subject.key for subject in subjects]))
-            or [41, 42]
+            or orders
         ),
     )
     monkeypatch.setattr(

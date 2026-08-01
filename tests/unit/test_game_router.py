@@ -2397,6 +2397,75 @@ async def test_build_pregame_context_uses_empty_history_fallback(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_soccer_pregame_uses_request_prompt_locale(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢踢球。",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
+        return "", ""
+
+    async def fake_ai(**kwargs):
+        assert kwargs["prompt_locale"] == "zh-TW"
+        return {"gameStance": "neutral_play"}
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_soccer_pregame_context_ai", fake_ai)
+
+    await gr_pregame._build_soccer_pregame_context(
+        game_type="soccer",
+        session_id="match_locale",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+        prompt_locale="zh-TW",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_badminton_pregame_uses_request_prompt_locale(monkeypatch):
+    _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
+        "lanlan_name": "Lan",
+        "master_name": "玩家",
+        "lanlan_prompt": "喜欢打球。",
+        "user_language": "zh",
+        "user_language_full": "zh-CN",
+    })
+
+    async def fake_fetch(_lanlan_name, *, language=None):
+        assert language == "zh-TW"
+        return "", ""
+
+    async def fake_ai(**kwargs):
+        assert kwargs["prompt_template"] == "traditional-template"
+        return {"gameStance": "neutral_play"}
+
+    def fake_prompt(language):
+        assert language == "zh-TW"
+        return "traditional-template"
+
+    _gr_patch_all(monkeypatch, "_fetch_recent_history_for_pregame", fake_fetch)
+    _gr_patch_all(monkeypatch, "_run_pregame_context_ai", fake_ai)
+    _gr_patch_all(monkeypatch, "get_badminton_pregame_context_prompt", fake_prompt)
+
+    await gr_pregame._build_badminton_pregame_context(
+        game_type="badminton",
+        session_id="match_locale",
+        lanlan_name="Lan",
+        neko_initiated=False,
+        neko_invite_text="",
+        prompt_locale="zh-TW",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_build_pregame_context_invalid_json_falls_back(monkeypatch):
     _gr_patch_all(monkeypatch, "_get_current_character_info", lambda: {
         "lanlan_name": "Lan",

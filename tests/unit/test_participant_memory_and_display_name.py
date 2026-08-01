@@ -314,6 +314,10 @@ async def test_scoped_facts_route_records_locale_before_persist():
     store.apersist_scoped_facts = AsyncMock(side_effect=persist)
     with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
         memory_routes.locale_state,
+        "allocate_subject_prompt_locale_order",
+        return_value=42,
+    ), patch.object(
+        memory_routes.locale_state,
         "reserve_subject_prompt_locale_order",
         side_effect=reserve,
     ) as reserve_locale, patch.object(
@@ -336,7 +340,7 @@ async def test_scoped_facts_route_records_locale_before_persist():
     subject = reserve_locale.call_args.args[1]
     assert result["status"] == "stored"
     assert events == ["reserve", "record", "persist"]
-    reserve_locale.assert_called_once_with("Neko", subject)
+    reserve_locale.assert_called_once_with("Neko", subject, order=42)
     record_locale.assert_called_once_with(
         "Neko",
         subject,

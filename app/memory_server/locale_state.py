@@ -48,6 +48,8 @@ _locale_cache_generation = 0
 _subject_locale_forget_cutoffs: dict[tuple[str, str], int] = {}
 _subject_locale_forget_cutoffs_loaded = False
 _character_locale_admission_orders: dict[str, int] = {}
+_subject_locale_admission_orders: dict[tuple[str, str], int] = {}
+_locale_admission_orders_guard = threading.Lock()
 
 
 class PromptLocalePersistenceError(RuntimeError):
@@ -403,14 +405,20 @@ def allocate_character_prompt_locale_order(name: str) -> int:
     """Allocate a process-local causal order at request admission time."""
     with _locale_reload_guard, _get_locale_lock(name):
         language, order, reserved_order = _load_locale_state_unlocked(name)
-        high_water = max(
-            order or 0,
-            reserved_order or 0,
-            _character_locale_admission_orders.get(name, 0),
-        )
-        selected_order = max(time.time_ns(), high_water + 1)
-        _character_locale_admission_orders[name] = selected_order
+        with _locale_admission_orders_guard:
+            high_water = max(
+                order or 0,
+                reserved_order or 0,
+                _character_locale_admission_orders.get(name, 0),
+            )
+            selected_order = max(time.time_ns(), high_water + 1)
+            _character_locale_admission_orders[name] = selected_order
         return selected_order
+
+
+def capture_character_prompt_locale_order(name: str) -> int:
+    """Capture a durable-aware token without persisting request state."""
+    return allocate_character_prompt_locale_order(name)
 
 
 def reserve_character_prompt_locale_order(
@@ -427,10 +435,11 @@ def reserve_character_prompt_locale_order(
     with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("prompt_locale.json")
         language, current_order, reserved_order = _load_locale_state_unlocked(name)
-        _character_locale_admission_orders[name] = max(
-            _character_locale_admission_orders.get(name, 0),
-            selected_order,
-        )
+        with _locale_admission_orders_guard:
+            _character_locale_admission_orders[name] = max(
+                _character_locale_admission_orders.get(name, 0),
+                selected_order,
+            )
         if not _persist_locale_state_unlocked(
             name,
             language,
@@ -485,31 +494,89 @@ def get_character_prompt_locale(name: str) -> str | None:
         return selected
 
 
-def reserve_subject_prompt_locale_order(name: str, subject) -> int:
-    """Reserve the next durable causal order for one scoped memory owner."""
-    return reserve_subject_prompt_locale_orders(name, [subject])[0]
+def allocate_subject_prompt_locale_order(name: str, subject) -> int:
+    """Allocate a request-admission order for one scoped memory owner."""
+    return allocate_subject_prompt_locale_orders(name, [subject])[0]
 
 
-def reserve_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
-    """Reserve causal orders for multiple subjects with one sidecar write."""
+def allocate_subject_prompt_locale_orders(name: str, subjects) -> list[int]:
+    """Allocate request-admission orders for scoped memory owners."""
     keys = [_subject_locale_key(subject) for subject in subjects]
     if not keys:
         return []
     with _locale_reload_guard, _get_locale_lock(name):
+        _load_subject_locale_forget_cutoffs_unlocked()
+        states = _load_subject_locale_state_unlocked(name)
+        with _locale_admission_orders_guard:
+            selected_orders = []
+            for key in keys:
+                _language, order, reserved_order = states.get(
+                    key,
+                    (None, None, None),
+                )
+                high_water = max(
+                    order or 0,
+                    reserved_order or 0,
+                    _subject_locale_forget_cutoffs.get((name, key), 0),
+                    _subject_locale_admission_orders.get((name, key), 0),
+                )
+                selected_order = max(time.time_ns(), high_water + 1)
+                _subject_locale_admission_orders[(name, key)] = selected_order
+                selected_orders.append(selected_order)
+            return selected_orders
+
+
+def reserve_subject_prompt_locale_order(
+    name: str,
+    subject,
+    *,
+    order: int | None = None,
+) -> int:
+    """Reserve the next durable causal order for one scoped memory owner."""
+    orders = [order] if isinstance(order, int) and not isinstance(order, bool) else None
+    return reserve_subject_prompt_locale_orders(name, [subject], orders=orders)[0]
+
+
+def reserve_subject_prompt_locale_orders(
+    name: str,
+    subjects,
+    *,
+    orders: list[int] | None = None,
+) -> list[int]:
+    """Reserve causal orders for multiple subjects with one sidecar write."""
+    keys = [_subject_locale_key(subject) for subject in subjects]
+    if not keys:
+        return []
+    selected_orders = orders
+    if (
+        selected_orders is None
+        or len(selected_orders) != len(keys)
+        or any(
+            not isinstance(order, int) or isinstance(order, bool)
+            for order in selected_orders
+        )
+    ):
+        selected_orders = allocate_subject_prompt_locale_orders(name, subjects)
+    with _locale_reload_guard, _get_locale_lock(name):
         _assert_prompt_locale_writable("scoped_prompt_locales.json")
         _load_subject_locale_forget_cutoffs_unlocked()
         states = dict(_load_subject_locale_state_unlocked(name))
-        selected_orders = []
-        for key in keys:
+        for key, selected_order in zip(keys, selected_orders):
             language, order, reserved_order = states.get(
                 key,
                 (None, None, None),
             )
-            forget_cutoff = _subject_locale_forget_cutoffs.get((name, key), 0)
-            high_water = max(order or 0, reserved_order or 0, forget_cutoff)
-            selected_order = max(time.time_ns(), high_water + 1)
-            states[key] = (language, order, selected_order)
-            selected_orders.append(selected_order)
+            states[key] = (
+                language,
+                order,
+                max(reserved_order or selected_order, selected_order),
+            )
+        with _locale_admission_orders_guard:
+            for key, selected_order in zip(keys, selected_orders):
+                _subject_locale_admission_orders[(name, key)] = max(
+                    _subject_locale_admission_orders.get((name, key), 0),
+                    selected_order,
+                )
         if not _persist_subject_locale_state_unlocked(name, states):
             raise PromptLocalePersistenceError(
                 "scoped prompt locale order reservation was not persisted"

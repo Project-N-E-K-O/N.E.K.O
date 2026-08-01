@@ -59,6 +59,7 @@ logger = logging.getLogger(__name__)
 # ── language → country code mapping ──────────────────────────────────
 _LANG_TO_COUNTRY: dict[str, str] = {
     'zh': 'CN',
+    'zh-CN': 'CN',
     'zh-TW': 'TW',
     'en': 'US',
     'ja': 'JP',
@@ -331,7 +332,13 @@ async def _warm_all_once() -> None:
         except Exception as e:
             logger.info("Holiday cache fetch skipped for %s/%d: %s", country, year, e)
 
-    await asyncio.gather(*[_fetch_one(l, c) for l, c in _LANG_TO_COUNTRY.items()])
+    country_locales: dict[str, str] = {}
+    for lang, country in _LANG_TO_COUNTRY.items():
+        country_locales.setdefault(country, lang)
+    await asyncio.gather(*[
+        _fetch_one(lang, country)
+        for country, lang in country_locales.items()
+    ])
 
 
 async def _ensure_periods(country: str, year: int) -> list[HolidayPeriod]:

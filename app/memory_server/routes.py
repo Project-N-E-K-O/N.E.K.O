@@ -135,7 +135,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     if is_supported_language_code(request.language):
         explicit_language = normalize_language_code(request.language, format='full')
         locale_admission_order = (
-            locale_state.allocate_character_prompt_locale_order(name)
+            locale_state.capture_character_prompt_locale_order(name)
         )
 
     imported_at = datetime.now().astimezone().isoformat()
@@ -575,7 +575,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        locale_state.capture_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -609,7 +609,7 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        locale_state.capture_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -665,7 +665,7 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        locale_state.capture_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -725,7 +725,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
     locale_admission_order = (
-        locale_state.allocate_character_prompt_locale_order(lanlan_name)
+        locale_state.capture_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -1008,10 +1008,17 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
     subject = req.subject.to_domain()
     locale_order = None
     if is_supported_language_code(req.language):
+        locale_admission_order = (
+            locale_state.allocate_subject_prompt_locale_order(
+                lanlan_name,
+                subject,
+            )
+        )
         locale_order = await asyncio.to_thread(
             locale_state.reserve_subject_prompt_locale_order,
             lanlan_name,
             subject,
+            order=locale_admission_order,
         )
         await asyncio.to_thread(
             locale_state.record_subject_prompt_locale,
@@ -1097,10 +1104,17 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
     subject = req.subject.to_domain()
     locale_order = None
     if is_supported_language_code(req.language):
+        locale_admission_order = (
+            locale_state.allocate_subject_prompt_locale_order(
+                lanlan_name,
+                subject,
+            )
+        )
         locale_order = await asyncio.to_thread(
             locale_state.reserve_subject_prompt_locale_order,
             lanlan_name,
             subject,
+            order=locale_admission_order,
         )
         await asyncio.to_thread(
             locale_state.record_subject_prompt_locale,
@@ -1265,10 +1279,18 @@ async def _process_scoped_history_segments(
         )
     locale_orders: list[int | None]
     if is_supported_language_code(req.language):
+        subjects = [segment["subject"] for segment in parsed]
+        locale_admission_orders = (
+            locale_state.allocate_subject_prompt_locale_orders(
+                lanlan_name,
+                subjects,
+            )
+        )
         locale_orders = await asyncio.to_thread(
             locale_state.reserve_subject_prompt_locale_orders,
             lanlan_name,
-            [segment["subject"] for segment in parsed],
+            subjects,
+            orders=locale_admission_orders,
         )
         await asyncio.to_thread(
             locale_state.record_subject_prompt_locales,
@@ -1823,8 +1845,7 @@ async def _retry_new_dialog_locale(
     *,
     locale_admission_order: int,
 ) -> None:
-    """Retry a deferred locale write until it succeeds or becomes stale."""
-    persistence_retry_delay = 0.25
+    """Retry transient fences; let permanent failures reach the outbox."""
     maintenance_retry_delay = 0.25
     while (
         generation is None
@@ -1844,17 +1865,6 @@ async def _retry_new_dialog_locale(
             await asyncio.sleep(maintenance_retry_delay)
             maintenance_retry_delay = min(
                 maintenance_retry_delay * 2,
-                30.0,
-            )
-        except locale_state.PromptLocalePersistenceError as exc:
-            logger.warning(
-                "[PromptLocale] %s: new-dialog locale persistence failed; retrying: %s",
-                lanlan_name,
-                exc,
-            )
-            await asyncio.sleep(persistence_retry_delay)
-            persistence_retry_delay = min(
-                persistence_retry_delay * 2,
                 30.0,
             )
 
@@ -1918,6 +1928,11 @@ outbox_infra.register_outbox_handler(
 async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
+    locale_admission_order = None
+    if is_supported_language_code(language):
+        locale_admission_order = (
+            locale_state.capture_character_prompt_locale_order(lanlan_name)
+        )
 
     # 检查角色是否存在于配置中
     try:
@@ -1930,11 +1945,7 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
 
-    locale_admission_order = None
     if is_supported_language_code(language):
-        locale_admission_order = (
-            locale_state.allocate_character_prompt_locale_order(lanlan_name)
-        )
         generation = _new_dialog_locale_generations.get(lanlan_name, 0) + 1
         _new_dialog_locale_generations[lanlan_name] = generation
         try:
