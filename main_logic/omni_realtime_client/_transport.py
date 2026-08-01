@@ -1417,16 +1417,27 @@ class _TransportMixin:
             # successor has not announced itself yet, so it has produced no
             # output of its own to erase.
             self._reset_per_turn_output_state()
-            # The one per-turn flag the successor cannot clear for itself.
-            # `_interrupted` may be left to it because `response.created`
-            # resets it; `_skip_until_next_response` has no such reset, so
-            # leaving it here mutes every delta of the next turn until its own
-            # terminal. Unreachable today — nothing on the WebSocket path
-            # passes `skipped=True`, and `prime_context(skipped=True)` takes
-            # the session.update branch instead of `create_response` — so this
-            # closes a trap for the first caller that does, rather than fixing
-            # a live drop.
-            self._skip_until_next_response = False
+            # `_skip_until_next_response` is deliberately NOT touched here,
+            # and neither leaving it nor clearing it is right — which is the
+            # actual finding.
+            #
+            # Leaving it mutes the successor: `_interrupted` may be left for
+            # the next turn because `response.created` resets it, and this flag
+            # has no such reset, so the successor's every delta stays
+            # suppressed until its own terminal. But clearing it is not the
+            # answer either, because the flag may already belong to the
+            # successor: `create_response(skipped=True)` raises it BEFORE it
+            # enqueues (`_responses.py`), so a request queued behind the
+            # abandoned one owns it while it waits for the lane. Clearing would
+            # then un-skip a turn the caller explicitly asked to suppress.
+            #
+            # A flag with no owner cannot be correctly cleared or correctly
+            # left; picking a side is arbitrary. The fix is to give output
+            # suppression a per-turn identity, which is issue #2594. Until
+            # then this stays as it shipped rather than trading one wrong
+            # behaviour for another — the whole state is unreachable today
+            # (nothing on the WebSocket path passes `skipped=True`), so there
+            # is nothing to buy by guessing.
             # Both release paths raise it: the abandoned response may still be
             # streaming, and from here until the next response.created nothing
             # id-less can be attributed. Clearing _current_response_id above

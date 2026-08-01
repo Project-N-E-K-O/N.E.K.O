@@ -433,11 +433,15 @@ class _Probe:
 
     @staticmethod
     async def _wait_for_first_of(
-        first: asyncio.Event, second: asyncio.Event, timeout: float
+        *events_then_timeout: Any,
     ) -> None:
-        """Return as soon as either event is set, or the bound expires."""
+        """Return as soon as any of the events is set, or the bound expires."""
 
-        waiters = [asyncio.create_task(first.wait()), asyncio.create_task(second.wait())]
+        events = [e for e in events_then_timeout if isinstance(e, asyncio.Event)]
+        timeout = next(
+            (e for e in events_then_timeout if isinstance(e, (int, float))), 20.0
+        )
+        waiters = [asyncio.create_task(event.wait()) for event in events]
         try:
             await asyncio.wait(
                 waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
@@ -484,19 +488,27 @@ class _Probe:
         # what the provider does rather than from a per-route flag, for the same
         # reason the arbiter is: these proxies have changed which events they
         # emit.
+        # The terminal is a wake-up too. A turn can reach response.done with
+        # no output delta at all — tool-only, empty, or failed — and on a route
+        # that never announces, neither of the other two events would ever
+        # fire, so the probe would sleep out its whole budget after the turn
+        # had already finished.
         await self._wait_for_first_of(
             self._announced,
             self._first_delta,
             max(_ARBITER_BOUNDS["response_started"] * 4, 20.0),
+            self._terminal,
         )
         if not self._announced.is_set():
             self._log("(no response.created — this route does not announce)")
 
         if barge_in:
-            if not self._first_delta.is_set():
-                try:
-                    await asyncio.wait_for(self._first_delta.wait(), 15.0)
-                except asyncio.TimeoutError:
+            if not self._first_delta.is_set() and turn.done_at is None:
+                # Same reason as above: a turn that ends without producing any
+                # output would otherwise burn this whole budget before the
+                # already-finished check below.
+                await self._wait_for_first_of(self._first_delta, self._terminal, 15.0)
+                if not self._first_delta.is_set():
                     self._log("!! nothing streaming to barge in on")
             if turn.done_at is not None:
                 # It already finished. Cancelling now would time an idle
@@ -562,6 +574,12 @@ class _Probe:
         self._obs.idle_cancel_replies.extend(watch)
 
 
+def _clamp_at_zero(value: float | None) -> float | None:
+    if value is None:
+        return None
+    return max(value, 0.0)
+
+
 def _summarize(values: list[float | None]) -> dict[str, float] | None:
     clean = [v for v in values if v is not None]
     if not clean:
@@ -593,8 +611,19 @@ def _report(obs: _Observations) -> dict[str, Any]:
     # Each bound is timed from where the arbiter starts it — the outbound
     # frame — falling back to the caller's instant only when the frame was
     # never sent, in which case there is no bound to compare against anyway.
+    # Clamped at zero: on the item-triggered route this probe exists for, the
+    # announcement arrives while the request is still inside the item-ack
+    # barrier — BEFORE its own response.create goes out — so the subtraction is
+    # negative. The arbiter consumes none of the bound there (its `started`
+    # future is already resolved when the post-send wait begins), and an
+    # unclamped negative would be summarized as an unusually good margin.
     announce = [
-        _Turn._delta(t.create_sent_at if t.create_sent_at is not None else t.sent_at, t.created_at)
+        _clamp_at_zero(
+            _Turn._delta(
+                t.create_sent_at if t.create_sent_at is not None else t.sent_at,
+                t.created_at,
+            )
+        )
         for t in obs.turns
     ]
     # From the announcement when there is one, otherwise from the request
