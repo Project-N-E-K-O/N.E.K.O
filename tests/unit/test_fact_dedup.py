@@ -965,10 +965,35 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
     assert loser["superseded_by"] == "e1"
     assert loser["arbitration_reason"] == "fact_dedup_merge"
     assert loser["text"] == "low wording"
+    fs._facts.pop("Neko", None)
+    original_load_facts = fs.load_facts
+
+    def _load_only_before_lock(name):
+        assert not fs._get_lock(name).locked()
+        return original_load_facts(name)
+
+    fs.load_facts = _load_only_before_lock
     assert await fs.arestore_arbitrated_fact("Neko", "c1")
     assert {fact["id"] for fact in await fs.aload_facts("Neko")} == {"c1", "e1"}
     remaining_archive = json.loads(archive_path.read_text(encoding="utf-8"))
     assert all(fact.get("id") != "c1" for fact in remaining_archive)
+
+
+@pytest.mark.asyncio
+async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [
+        _fact("c1", "loser", embedding=[1.0, 0.0]),
+        _fact("e1", "survivor", embedding=[0.99, 0.05]),
+    ])
+    fs._facts["Neko"].append("legacy row")
+
+    assert await fs.aarchive_arbitrated_facts(
+        "Neko", {"c1": {"reason": "mutation_guard"}},
+    ) == 1
+    active = await fs.aload_facts("Neko")
+    assert "legacy row" in active
+    assert [row["id"] for row in active if isinstance(row, dict)] == ["e1"]
 
 
 @pytest.mark.asyncio

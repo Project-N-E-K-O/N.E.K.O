@@ -513,7 +513,13 @@ class CorrectionsMixin:
                     )
                 if item.get('new_speaker_id'):
                     new_entry['speaker_id'] = item['new_speaker_id']
-                    new_entry['speaker_trust'] = item.get('new_speaker_trust')
+                    trust = item.get('new_speaker_trust')
+                    if (
+                        isinstance(trust, (int, float))
+                        and not isinstance(trust, bool)
+                        and 0.0 <= float(trust) <= 1.0
+                    ):
+                        new_entry['speaker_trust'] = float(trust)
                 return new_entry
 
             def _history_snapshot(text_value: str, prefix: str, reason: str) -> dict:
@@ -526,9 +532,13 @@ class CorrectionsMixin:
                 speaker_id = item.get(f'{prefix}_speaker_id')
                 if speaker_id:
                     snapshot['speaker_id'] = speaker_id
-                    snapshot['speaker_trust'] = item.get(
-                        f'{prefix}_speaker_trust'
-                    )
+                    trust = item.get(f'{prefix}_speaker_trust')
+                    if (
+                        isinstance(trust, (int, float))
+                        and not isinstance(trust, bool)
+                        and 0.0 <= float(trust) <= 1.0
+                    ):
+                        snapshot['speaker_trust'] = float(trust)
                 return snapshot
 
             if action == 'merge':
@@ -618,8 +628,8 @@ class CorrectionsMixin:
                     )[-_VH_MAX:]
                 section_facts.append(replacement)
             elif action == 'keep_old':
-                # 新观察不能静默蒸发：嵌入赢家的 version_history，保留全文、
-                # speaker 与 trust，可人工回滚。
+                # trust 仲裁选中旧观察时，新观察不能静默蒸发：嵌入赢家的
+                # version_history，保留全文、speaker 与 trust，可人工回滚。
                 if preference == 'old':
                     from config import PERSONA_VERSION_HISTORY_MAX as _VH_MAX
                     for existing in section_facts:

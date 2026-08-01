@@ -971,7 +971,11 @@ class FactStore:
                     merged_archive = _merge_archive_entries(archived, stamped)
                     loser_ids = {fact.get('id') for fact in losers}
                     active = [
-                        fact for fact in facts if fact.get('id') not in loser_ids
+                        fact for fact in facts
+                        if not (
+                            isinstance(fact, dict)
+                            and fact.get('id') in loser_ids
+                        )
                     ]
                     # Never reverse: crash between writes leaves a recoverable
                     # duplicate, not an unrecoverable missing fact.
@@ -1058,7 +1062,22 @@ class FactStore:
             # members of that same group, but never a different group.
             current_prefix = memory_subject.subject_id.rsplit(':', 1)[0]
             candidate_prefix = candidate_subject.subject_id.rsplit(':', 1)[0]
-            return candidate_prefix == current_prefix
+            current_scope_is_default = memory_subject.scope == (
+                f"{memory_subject.kind}:{memory_subject.subject_id}"
+            )
+            candidate_scope_is_default = candidate_subject.scope == (
+                f"{candidate_subject.kind}:{candidate_subject.subject_id}"
+            )
+            return (
+                candidate_prefix == current_prefix
+                and (
+                    candidate_subject.scope == memory_subject.scope
+                    or (
+                        current_scope_is_default
+                        and candidate_scope_is_default
+                    )
+                )
+            )
 
         events: list[dict] = []
         seen_event_ids: set[str] = set()
@@ -1116,6 +1135,8 @@ class FactStore:
             return False
         async with self._get_persist_alock(name):
             def _restore() -> bool:
+                # Warm the non-reentrant cache lock before taking it below.
+                self.load_facts(name)
                 with self._get_lock(name):
                     assert_cloudsave_writable(
                         self._config_manager,
@@ -1142,9 +1163,7 @@ class FactStore:
                     ]
                     if not matches:
                         return False
-                    facts = self._facts.get(name)
-                    if facts is None:
-                        facts = self.load_facts(name)
+                    facts = self._facts.get(name, [])
                     active_ids = {
                         row.get('id') for row in facts if isinstance(row, dict)
                     }

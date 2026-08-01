@@ -11622,6 +11622,110 @@ async def test_member_flush_splits_oversized_permission_runs_in_order():
         segment["messages"][0]["content"]
         for call in calls for segment in call
     ] == [f"message-{index}" for index in range(9)]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_defers_owner_chain_beyond_join_timeout_waves():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages = [
+        {
+            "role": "user", "content": f"message-{index}",
+            "_speaker_permission_level": (
+                "admin" if index % 2 else "normal"
+            ),
+            "_speaker_sequence": index,
+        }
+        for index in range(17)
+    ]
+    user_data = {
+        "group_member_memory_messages": {"1001": messages},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+
+    async def _post(_name, segments, **_kwargs):
+        calls.append(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == ["1001"]
+    assert [len(call) for call in calls] == [8, 8]
+    assert user_data["group_member_memory_messages"]["1001"] == [messages[-1]]
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    assert [len(call) for call in calls] == [8, 8, 1]
+    assert user_data["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
+async def test_member_flush_defers_parallel_batches_beyond_join_timeout_waves():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    messages_by_sender = {"1001": [], "1002": []}
+    for index in range(65):
+        sender_id = "1001" if index % 2 == 0 else "1002"
+        messages_by_sender[sender_id].append({
+            "role": "user", "content": f"message-{index}",
+            "_speaker_permission_level": "normal",
+            "_speaker_sequence": index,
+        })
+    last_message = messages_by_sender["1001"][-1]
+    user_data = {
+        "group_member_memory_messages": messages_by_sender,
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "1002": "Bob(1002)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    calls = []
+
+    async def _post(_name, segments, **_kwargs):
+        calls.append(segments)
+        return {
+            "status": "processed",
+            "segments": [{"status": "ok"} for _ in segments],
+        }
+
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == ["1001"]
+    assert len(calls) == service.GROUP_MEMBER_MAX_PARTICIPANTS
+    assert user_data["group_member_memory_messages"] == {
+        "1001": [last_message],
+    }
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    assert len(calls) == service.GROUP_MEMBER_MAX_PARTICIPANTS + 1
     assert user_data["group_member_memory_messages"] == {}
 
 

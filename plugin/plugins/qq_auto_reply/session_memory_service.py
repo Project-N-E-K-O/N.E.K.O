@@ -43,11 +43,12 @@ class QQSessionMemoryService:
     # "整场会话"压到最多这么多轮。
     GROUP_DIGEST_BACKLOG_TRIGGER = 40
     # 一趟排空的形状：最多 GROUP_MEMBER_MAX_PARTICIPANTS 个桶，打包成若干
-    # **批**（每批 ≤200 条消息、≤8 段，见 _pack_member_batches），并发
+    # **批**（每批 ≤200 条消息、≤8 段，见 _pack_member_segment_groups），并发
     # MEMBER_FLUSH_CONCURRENCY，每批发一次 scoped history segments 请求
     # （那是一次 LLM 抽取，所以超时给得很宽）。批的单请求输入工作量上界
-    # 与旧的逐成员单发同口径（200 条），批数 ≤ 桶数 ≤ 名额，所以下面按
-    # "波数 × 单发超时"推导的等待上限在最坏情形下与逐成员时代一致。
+    # 与旧的逐成员单发同口径（200 条）。每趟最多尝试“名额数”个批，且
+    # 每条有序链最多尝试“波数”个批；剩余内容留桶重试，所以下面按
+    # "波数 × 单发超时"推导的等待上限仍覆盖一趟排空。
     # 别写死——这些数任何一个改了，等待上限必须跟着走。
     MEMBER_FLUSH_CONCURRENCY = 4
     # speaker_label 的长度上限，与 /scoped_history 路由的校验同一个数。
@@ -1579,6 +1580,13 @@ class QQSessionMemoryService:
         if not batches:
             self._finish_member_flush_generation(user_data)
             return []
+        # Chronological runs can outnumber participant buckets (for example,
+        # permission changes alternate one-message segments). Bound each sweep
+        # to the same two-wave contract used by the settlement join timeout;
+        # unattempted messages remain in their buckets for the next sweep.
+        batch_attempt_limit = self.GROUP_MEMBER_MAX_PARTICIPANTS
+        deferred_batches = batches[batch_attempt_limit:]
+        batches = batches[:batch_attempt_limit]
         try:
             chains: list[list[list[dict]]] = []
             sender_chains: dict[str, list[list[dict]]] = {}
@@ -1613,7 +1621,12 @@ class QQSessionMemoryService:
 
             async def _flush_chain(chain: list[list[dict]]) -> list[str]:
                 failed: list[str] = []
-                for batch_index, batch in enumerate(chain):
+                serial_attempt_limit = -(
+                    -self.GROUP_MEMBER_MAX_PARTICIPANTS
+                    // self.MEMBER_FLUSH_CONCURRENCY
+                )
+                attempted = chain[:serial_attempt_limit]
+                for batch_index, batch in enumerate(attempted):
                     batch_failed = await _flush_one_batch(batch)
                     failed.extend(batch_failed)
                     if batch_failed:
@@ -1626,12 +1639,42 @@ class QQSessionMemoryService:
                             for spec in later if spec.get("sender_id")
                         )
                         break
+                else:
+                    deferred_in_chain = chain[serial_attempt_limit:]
+                    if deferred_in_chain:
+                        failed.extend(
+                            str(spec.get("sender_id") or "")
+                            for later in deferred_in_chain
+                            for spec in later if spec.get("sender_id")
+                        )
                 return list(dict.fromkeys(failed))
 
             failed_lists = await asyncio.gather(
                 *(_flush_chain(chain) for chain in chains)
             )
-            return [sid for failed in failed_lists for sid in failed]
+            deferred_senders = [
+                str(spec.get("sender_id") or "")
+                for batch in deferred_batches for spec in batch
+                if spec.get("sender_id")
+            ]
+            deferred_count = len(deferred_batches) + sum(
+                max(0, len(chain) - (
+                    -self.GROUP_MEMBER_MAX_PARTICIPANTS
+                    // self.MEMBER_FLUSH_CONCURRENCY
+                ))
+                for chain in chains
+            )
+            if deferred_count:
+                self.plugin.logger.info(
+                    f"[{reason}] 群 {group_id} 为保持排空等待上限，"
+                    f"延后 {deferred_count} 个批次"
+                )
+            failed_senders = [
+                sid
+                for failed in failed_lists
+                for sid in failed
+            ]
+            return list(dict.fromkeys(failed_senders + deferred_senders))
         finally:
             self._finish_member_flush_generation(user_data)
 

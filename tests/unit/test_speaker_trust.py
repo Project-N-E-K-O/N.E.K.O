@@ -140,22 +140,30 @@ async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
     owner_b = MemorySubject.group_participant("qq", "8899", "9999")
     target_a = MemorySubject.group_participant("qq", "7788", "1001")
     target_b = MemorySubject.group_participant("qq", "8899", "1001")
+    target_other_scope = MemorySubject.create(
+        "group_participant", "qq:7788:1001", scope="custom:qq:7788",
+    )
     facts = [{
         "id": "same-id", "text": "小明喜欢猫", "speaker_id": "qq:1001",
         **target_a.as_entry_fields(),
     }, {
         "id": "same-id", "text": "小明喜欢猫", "speaker_id": "qq:1001",
         **target_b.as_entry_fields(),
+    }, {
+        "id": "other-scope", "text": "小明喜欢猫", "speaker_id": "qq:1001",
+        **target_other_scope.as_entry_fields(),
     }]
     store = object.__new__(FactStore)
     messages = [{"role": "user", "content": "小明喜欢猫"}]
     provenance = {"speaker_id": "qq:9999", "speaker_trust": 1.0}
 
-    event_a = (await store.aevaluate_speaker_trust_events(
+    events_a = await store.aevaluate_speaker_trust_events(
         "Neko", messages, subject=owner_a,
         speaker_provenance=provenance, speaker_is_owner=True,
         facts_snapshot=facts,
-    ))[0]
+    )
+    assert len(events_a) == 1
+    event_a = events_a[0]
     event_b = (await store.aevaluate_speaker_trust_events(
         "Neko", messages, subject=owner_b,
         speaker_provenance=provenance, speaker_is_owner=True,

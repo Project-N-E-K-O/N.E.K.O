@@ -90,6 +90,55 @@ def test_duplicate_partial_correction_does_not_invent_trust():
     assert "new_speaker_trust" not in corrections[0]
 
 
+@pytest.mark.asyncio
+async def test_correction_entries_omit_missing_speaker_trust(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(pm, "Neko", "旧观察", speaker_id="qq:2002")
+    await pm._aqueue_correction(
+        "Neko", "旧观察", "新观察", "master",
+        old_speaker_provenance={"speaker_id": "qq:2002"},
+        new_speaker_provenance={"speaker_id": "qq:1001"},
+    )
+    response = MagicMock()
+    response.content = json.dumps([{"index": 0, "action": "keep_new"}])
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock(return_value=response)
+    llm.aclose = AsyncMock()
+
+    with patch("utils.llm_client.create_chat_llm", return_value=llm):
+        assert await pm.resolve_corrections("Neko") == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    replacement = next(entry for entry in facts if entry["text"] == "新观察")
+    assert replacement["speaker_id"] == "qq:1001"
+    assert "speaker_trust" not in replacement
+
+    history_pm = _install_pm(str(tmp_path / "history"))
+    await _seed_master_fact(
+        history_pm, "Neko", "旧观察", speaker_id="qq:2002",
+    )
+    await history_pm._aqueue_correction(
+        "Neko", "旧观察", "新观察", "master",
+        old_speaker_provenance={"speaker_id": "qq:2002"},
+        new_speaker_provenance={"speaker_id": "qq:1001"},
+    )
+    response.content = json.dumps([{
+        "index": 0, "action": "merge", "text": "合并观察",
+    }])
+    with patch("utils.llm_client.create_chat_llm", return_value=llm):
+        assert await history_pm.resolve_corrections("Neko") == 1
+    history_facts = history_pm._get_section_facts(
+        await history_pm.aensure_persona("Neko"), "master",
+    )
+    merged = next(entry for entry in history_facts if entry["text"] == "合并观察")
+    assert "speaker_id" not in merged and "speaker_trust" not in merged
+    assert {item["speaker_id"] for item in merged["version_history"]} == {
+        "qq:1001", "qq:2002",
+    }
+    assert all(
+        "speaker_trust" not in item for item in merged["version_history"]
+    )
+
+
 def test_persona_normalize_entry_preserves_existing_embedding_payload():
     """If a dict already carries an embedding triple (e.g. loaded from
     disk), normalize must NOT clobber it — that's the warmup worker's
