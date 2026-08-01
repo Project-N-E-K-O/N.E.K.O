@@ -880,9 +880,43 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
             for key in list(state):
                 if key == name or key.startswith(f'{name}.'):
                     state.pop(key, None)
+        def bind(target, value):
+            canonical = state.get(value.id) if isinstance(value, ast.Name) else None
+            for nested in ast.walk(target):
+                if not isinstance(nested, ast.Name):
+                    continue
+                if nested is target and canonical:
+                    state[nested.id] = canonical
+                else:
+                    invalidate(nested.id)
+        def eager_named_expressions(statement):
+            roots = []
+            if isinstance(statement, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
+                roots = [statement.value]
+            elif isinstance(statement, ast.Expr):
+                roots = [statement.value]
+            elif isinstance(statement, (ast.If, ast.While)):
+                roots = [statement.test]
+            elif isinstance(statement, (ast.For, ast.AsyncFor)):
+                roots = [statement.iter]
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                roots = [item.context_expr for item in statement.items]
+            elif isinstance(statement, ast.Match):
+                roots = [statement.subject]
+            for root in roots:
+                stack = [root]
+                while stack:
+                    child = stack.pop()
+                    if isinstance(child, ast.NamedExpr):
+                        yield child
+                    if isinstance(child, (ast.Lambda, ast.GeneratorExp)):
+                        continue
+                    stack.extend(ast.iter_child_nodes(child))
         for node in statements:
             if before_line is not None and node.lineno >= before_line:
                 continue
+            for named in eager_named_expressions(node):
+                bind(named.target, named.value)
             if isinstance(node, ast.ImportFrom):
                 for imported in node.names:
                     canonical = state.get(imported.name)
@@ -896,18 +930,9 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                     invalidate(imported.asname or imported.name.split('.')[0])
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
-                canonical = state.get(value.id) if isinstance(value, ast.Name) else None
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
-                    if not isinstance(target, ast.Name):
-                        for nested in ast.walk(target):
-                            if isinstance(nested, ast.Name):
-                                invalidate(nested.id)
-                        continue
-                    if canonical:
-                        state[target.id] = canonical
-                    else:
-                        invalidate(target.id)
+                    bind(target, value)
             elif isinstance(
                 node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)
             ):
@@ -1310,7 +1335,12 @@ def _known_to_thread_names(
                     paths.append(names)
                 if paths:
                     names = set.intersection(*paths)
-            elif isinstance(node, (ast.For, ast.AsyncFor, ast.While)):
+            elif isinstance(node, (ast.For, ast.AsyncFor)):
+                body_names = set(names)
+                body_names.difference_update(_assigned_names(node))
+                names &= after(node.body, body_names)
+                names = after(node.orelse, names)
+            elif isinstance(node, ast.While):
                 names &= after(node.body, names)
                 names = after(node.orelse, names)
             elif isinstance(node, ast.Try):
@@ -2453,13 +2483,56 @@ def _scope_claiming_names_called_on_loop(
         def resolved_value(value, state):
             if isinstance(value, ast.Name):
                 return resolved_name(value.id, state)
+            if isinstance(value, ast.Attribute):
+                receiver_key = _storage_key(value.value)
+                stored_classes = instance_classes_before(
+                    receiver_key or '', value.lineno
+                )
+                if (
+                    isinstance(value.value, ast.Name)
+                    and value.value.id in {'self', 'cls'}
+                    and class_name
+                ):
+                    candidates = {((module, class_name), value.attr)}
+                elif stored_classes:
+                    candidates = {
+                        (stored_class, value.attr)
+                        for stored_class in stored_classes
+                    }
+                elif (constructed := constructed_class(value.value)) is not None:
+                    candidates = {(constructed, value.attr)}
+                elif (
+                    isinstance(value.value, ast.Name)
+                    and (module, value.value.id) in claiming_by_scope
+                ):
+                    candidates = {((module, value.value.id), value.attr)}
+                elif (
+                    isinstance(value.value, ast.Name)
+                    and value.value.id in local_class_aliases
+                ):
+                    candidates = {
+                        (local_class_aliases[value.value.id], value.attr)
+                    }
+                elif (
+                    isinstance(value.value, ast.Name)
+                    and value.value.id in local_module_aliases
+                ):
+                    candidates = {
+                        ((local_module_aliases[value.value.id], None), value.attr)
+                    }
+                else:
+                    candidates = set()
+                return {
+                    (scope, name)
+                    for scope, name in candidates
+                    if name in claiming_by_scope.get(scope, set())
+                }
             if (
                 isinstance(value, ast.Call)
                 and _tail_name(value) == 'partial'
                 and value.args
-                and isinstance(value.args[0], ast.Name)
             ):
-                return resolved_name(value.args[0].id, state)
+                return resolved_value(value.args[0], state)
             return set()
 
         def after(statements, state):
@@ -2534,10 +2607,16 @@ def _scope_claiming_names_called_on_loop(
             if isinstance(value, ast.Call)
             and _tail_name(value) == 'partial'
             and value.args
-            and isinstance(value.args[0], ast.Name)
             else value
         )
-        if not isinstance(source, ast.Name):
+        if not isinstance(source, (ast.Name, ast.Attribute)):
+            continue
+        targets = child.targets if isinstance(child, ast.Assign) else [child.target]
+        if isinstance(source, ast.Attribute):
+            if any(isinstance(target, ast.Name) for target in targets):
+                # Loading a bound method does not invoke it.  The local target
+                # is resolved by ``callable_aliases_before`` at each later use.
+                alias_source_ids.add(id(source))
             continue
         state = callable_aliases_before(child.lineno)
         candidate = (
@@ -2552,10 +2631,10 @@ def _scope_claiming_names_called_on_loop(
             alias_source_ids.add(id(source))
     offenders = []
     for node in own_scope:
+        if id(node) in alias_source_ids:
+            continue
         if isinstance(node, ast.Name):
             if not isinstance(node.ctx, ast.Load):
-                continue
-            if id(node) in alias_source_ids:
                 continue
             name = node.id
             protocol_claims = _class_protocol_claim(
@@ -2916,6 +2995,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    async def handler(self):\n'
         '        self.wrapper()\n'
         '\n'
+        'async def bound_alias_offloaded():\n'
+        '    service = Service()\n'
+        '    callback = service.worker\n'
+        '    await asyncio.to_thread(callback)\n'
+        '\n'
         'class Other:\n'
         '    def worker(self):\n'
         '        return 1\n'
@@ -3004,6 +3088,11 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    dispatch = offload\n'
         '    for item in items:\n'
         '        dispatch = dispatcher\n'
+        '    await dispatch(_claiming_worker)\n'
+        'async def loop_target_to_thread_alias(callbacks):\n'
+        '    dispatch = offload\n'
+        '    for dispatch in callbacks:\n'
+        '        pass\n'
         '    await dispatch(_claiming_worker)\n'
         'async def match_to_thread_alias(value):\n'
         '    dispatch = offload\n'
@@ -3311,10 +3400,16 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('loop_to_thread_alias'), (
         'local to_thread alias 必须合并 loop 的 zero/nonzero iteration paths'
     )
+    assert module_offenders('loop_target_to_thread_alias'), (
+        'for target 重绑定 local to_thread alias 后必须清除 offloader identity'
+    )
     assert module_offenders('match_to_thread_alias'), (
         'local to_thread alias 必须合并 match 的全部可达 case'
     )
     assert module_offenders('local_alias_offloaded') == []
+    assert module_offenders('bound_alias_offloaded') == [], (
+        'stored bound claim owner 作为 to_thread callback 不应在 assignment 处误报'
+    )
     assert module_offenders('local_alias_direct'), (
         'local callable alias 直调仍必须继承 claim owner 身份'
     )
@@ -3970,6 +4065,7 @@ _CONTENT_PATH_MUTATION_METHODS = {
 }
 
 _OS_CONTENT_PATH_MUTATION_ARGS = {
+    'link': ((1, 'dst'),),
     'mkdir': ((0, 'path'),),
     'makedirs': ((0, 'name'),),
     'remove': ((0, 'path'),),
@@ -3977,6 +4073,7 @@ _OS_CONTENT_PATH_MUTATION_ARGS = {
     'rmdir': ((0, 'path'),),
     'rename': ((0, 'src'), (1, 'dst')),
     'replace': ((0, 'src'), (1, 'dst')),
+    'symlink': ((1, 'dst'),),
     'truncate': ((0, 'path'),),
 }
 
@@ -4010,6 +4107,9 @@ _FOLDER_OPERATION_CLAIMS = {
     'remove': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
+    'link': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
     'mkdir': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
@@ -4017,6 +4117,9 @@ _FOLDER_OPERATION_CLAIMS = {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
     'truncate': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
+    'symlink': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
     _OPEN_WRITE_OPERATION: {
@@ -4265,8 +4368,11 @@ def _is_operation_alias_source(node, parents: dict[int, ast.AST]) -> bool:
     )
 
 
+_PROPAGATED_CONTENT_FOLDER = '<content-folder-argument>'
+
+
 def _looks_like_content_folder(name: str) -> bool:
-    return name == 'folder' or name == 'content_folder' or name.endswith(
+    return name in {'folder', 'content_folder', _PROPAGATED_CONTENT_FOLDER} or name.endswith(
         '_content_folder'
     )
 
@@ -4431,7 +4537,13 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
                 state = after(statement.finalbody, state)
         return state
 
-    return after(func.body, {name: {name} for name in arguments})
+    propagated = set(getattr(func, '_content_folder_parameters', set()))
+    return after(func.body, {
+        name: {name} | (
+            {_PROPAGATED_CONTENT_FOLDER} if name in propagated else set()
+        )
+        for name in arguments
+    })
 
 
 def _expression_path_origins(node, func, before_line: int) -> set[str]:
@@ -4455,7 +4567,57 @@ def _expression_argument_origins(node, func, before_line: int) -> set[str]:
     arguments.update(
         arg.arg for arg in (func.args.vararg, func.args.kwarg) if arg is not None
     )
-    return _expression_path_origins(node, func, before_line) & arguments
+    origins = _expression_path_origins(node, func, before_line)
+    return (origins & arguments) | (
+        {_PROPAGATED_CONTENT_FOLDER}
+        if _PROPAGATED_CONTENT_FOLDER in origins
+        else set()
+    )
+
+
+def _propagate_content_folder_parameters(functions) -> None:
+    """Mark helper parameters reached by local content-folder arguments."""
+    functions = list(functions)
+    by_name = {}
+    for func in functions:
+        by_name.setdefault(func.name, []).append(func)
+        func._content_folder_parameters = set()
+
+    changed = True
+    while changed:
+        changed = False
+        for caller in functions:
+            for call in _walk_own_scope(caller):
+                if not isinstance(call, ast.Call) or not isinstance(call.func, ast.Name):
+                    continue
+                candidates = by_name.get(call.func.id, [])
+                if len(candidates) != 1:
+                    continue
+                callee = candidates[0]
+                positional = list(callee.args.posonlyargs) + list(callee.args.args)
+                supplied = [
+                    (positional[index].arg, value)
+                    for index, value in enumerate(call.args[:len(positional)])
+                ]
+                keyword_parameters = {
+                    arg.arg
+                    for arg in positional + list(callee.args.kwonlyargs)
+                }
+                supplied.extend(
+                    (keyword.arg, keyword.value)
+                    for keyword in call.keywords
+                    if keyword.arg in keyword_parameters
+                )
+                for parameter, value in supplied:
+                    origins = _expression_path_origins(
+                        value, caller, call.lineno
+                    )
+                    if (
+                        any(_looks_like_content_folder(origin) for origin in origins)
+                        and parameter not in callee._content_folder_parameters
+                    ):
+                        callee._content_folder_parameters.add(parameter)
+                        changed = True
 
 
 def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
@@ -5315,6 +5477,38 @@ def _stays_within_claimed_tree(
     if not folders:
         return False
     constants = _known_string_constants(func, operation.lineno)
+    def component_is_proven_relative(node) -> bool:
+        values = (
+            {node.value}
+            if isinstance(node, ast.Constant) and isinstance(node.value, str)
+            else constants.get(node.id, set())
+            if isinstance(node, ast.Name)
+            else set()
+        )
+        return bool(values) and all(not _literal_path_escapes(value) for value in values)
+
+    def has_unproven_component(node) -> bool:
+        if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+            return (
+                has_unproven_component(node.left)
+                or not component_is_proven_relative(node.right)
+            )
+        if isinstance(node, ast.Call) and _tail_name(node) in {'Path', 'join'}:
+            return (
+                bool(node.args)
+                and has_unproven_component(node.args[0])
+            ) or any(
+                not component_is_proven_relative(component)
+                for component in node.args[1:]
+            )
+        if (
+            isinstance(node, ast.Call)
+            and _tail_name(node) == 'str'
+            and len(node.args) == 1
+        ):
+            return has_unproven_component(node.args[0])
+        return False
+
     return not any(
         (
             isinstance(node, ast.Attribute)
@@ -5332,7 +5526,7 @@ def _stays_within_claimed_tree(
         )
         for folder in folders
         for node in ast.walk(folder)
-    )
+    ) and not any(has_unproven_component(folder) for folder in folders)
 
 
 def _static_path_shape(node) -> tuple[str, tuple[str, ...]] | None:
@@ -6197,6 +6391,8 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    os.rename(content_folder, other_content_folder)\n'
         '    os.replace(content_folder, other_content_folder)\n'
         "    os.truncate(os.path.join(content_folder, 'preview.png'), 0)\n"
+        "    os.link(source, os.path.join(content_folder, 'hard-link'))\n"
+        "    os.symlink(source, os.path.join(content_folder, 'soft-link'))\n"
         '\n'
         'def aliased_os_mutations(content_folder):\n'
         '    remove_dir = os.rmdir\n'
@@ -6259,6 +6455,11 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    content_folder = path\n'
         '    shutil.rmtree(content_folder)\n'
         '\n'
+        'def erase(path):\n'
+        '    shutil.rmtree(path)\n'
+        'def erase_via_helper(content_folder):\n'
+        '    erase(content_folder)\n'
+        '\n'
         'def standalone_walrus(content_folder):\n'
         '    observe(target := content_folder)\n'
         '    shutil.rmtree(target)\n'
@@ -6309,6 +6510,10 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    with claim_partial_writer(content_folder, purpose=p):\n'
         '        Path(content_folder, segment).write_text(data)\n'
         '\n'
+        'def dynamic_component_escape(content_folder, segment):\n'
+        '    with claim_partial_writer(content_folder, purpose=p):\n'
+        '        Path(content_folder, segment).write_text(data)\n'
+        '\n'
         'def exceptional_absolute_escape(content_folder):\n'
         "    segment = 'safe'\n"
         '    try:\n'
@@ -6333,6 +6538,7 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "        shutil.rmtree(Path(content_folder) / 'child')\n"
     )
     functions = {node.name: node for node in tree.body}
+    _propagate_content_folder_parameters(functions.values())
 
     assert _unclaimed_folder_operations(functions['direct'], 'new_router')
     assert _unclaimed_folder_operations(functions['assigned'], 'new_router')
@@ -6380,7 +6586,7 @@ def test_the_claim_guard_discovers_content_path_mutations():
         item[3] for item in os_offenders
     } >= {
         'mkdir', 'makedirs', 'remove', 'unlink', 'rmdir', 'rename', 'replace',
-        'truncate',
+        'truncate', 'link', 'symlink',
     }, (
         'os-level content-path mutations 必须全部进入 repository-wide guard'
     )
@@ -6434,6 +6640,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
         functions['explicit_content_local'], 'new_router'
     ), '显式 content_folder local 即使源参数泛化也必须保留语义 origin'
     assert _unclaimed_folder_operations(
+        functions['erase'], 'new_router'
+    ), 'caller 的 content-folder origin 必须传播到 local helper 参数'
+    assert _unclaimed_folder_operations(
         functions['standalone_walrus'], 'new_router'
     ), '普通 eager expression 中的 walrus 也必须传播 content-folder origin'
     escaped_handle_offenders = _unclaimed_folder_operations(
@@ -6469,6 +6678,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['assigned_absolute_escape'], 'new_router'
     ), '赋给局部变量的 absolute segment 也不能逃出 claimed tree'
+    assert _unclaimed_folder_operations(
+        functions['dynamic_component_escape'], 'new_router'
+    ), '无法证明为相对路径的 runtime component 不能算留在 claimed tree 内'
     assert _unclaimed_folder_operations(
         functions['exceptional_absolute_escape'], 'new_router'
     ), 'try body 异常前缀中的 absolute segment 也不能逃出 claimed tree'
@@ -6526,6 +6738,13 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         'def publish():\n'
         '    factory = claim_content_folder\n'
         '    (factory,) = (nullcontext,)\n'
+        '    with factory(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    walrus_reassigned_factory = ast.parse(
+        'def publish():\n'
+        '    factory = claim_content_folder\n'
+        '    (factory := nullcontext)\n'
         '    with factory(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
@@ -6711,6 +6930,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(unpacked_reassigned_factory, 'publish'), (
         'destructuring target 重绑定后也必须清除 claim factory identity'
+    )
+    assert _unclaimed_folder_operations(walrus_reassigned_factory, 'publish'), (
+        'standalone walrus 重绑定后也必须清除 claim factory identity'
     )
     assert _unclaimed_folder_operations(conditional_factory, 'publish'), (
         'claim factory alias 必须在所有 statement-level 分支上一致'
@@ -6997,7 +7219,9 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
             node for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
-        for node in [*functions, *lambda_functions, module_function]:
+        analysis_functions = [*functions, *lambda_functions, module_function]
+        _propagate_content_folder_parameters(analysis_functions)
+        for node in analysis_functions:
             if _is_allowed_unclaimed(
                 short,
                 node.name,
