@@ -158,7 +158,68 @@ async def test_spawn_outbox_survives_post_commit_locale_reservation_fence(tmp_pa
     _name, payload = calls[0]
     assert payload["language"] == "zh-TW"
     assert "locale_order" not in payload
+    assert payload["locale_order_deferred"] is True
     assert await ob.apending_ops("小天") == []
+
+
+@pytest.mark.asyncio
+async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
+    """Deferred locale allocation must resume after the cloud fence clears."""
+    from app import memory_server
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    attempts = 0
+
+    def reserve(_name):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MaintenanceModeError(
+                "maintenance_readonly",
+                operation="save",
+                target="prompt_locale.json",
+            )
+        return 42
+
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        reserve,
+    )
+    monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
+
+    locale_order = await memory_server.post_turn._wait_for_character_prompt_locale_order(
+        "小天",
+    )
+
+    assert locale_order == 42
+    assert attempts == 2
+    sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
+async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
+    """A durable deferred marker must reserve an order before signal writes."""
+    from app import memory_server
+    from utils.llm_client import messages_to_dict
+
+    runner = AsyncMock(return_value=None)
+    payload = {
+        "messages": messages_to_dict([HumanMessage(content="請記住我喜歡草莓")]),
+        "language": "zh-TW",
+        "locale_order_deferred": True,
+    }
+
+    with patch(
+        "app.memory_server.post_turn._run_post_turn_signals_after_locale_reservation",
+        runner,
+    ):
+        await memory_server._outbox_post_turn_signals_handler("小天", payload)
+
+    runner.assert_awaited_once()
+    assert runner.await_args.args[1] == "小天"
+    assert runner.await_args.kwargs["language"] == "zh-TW"
 
 
 @pytest.mark.asyncio

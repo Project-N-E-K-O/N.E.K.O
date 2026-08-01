@@ -92,7 +92,8 @@ async def _spawn_outbox_post_turn_signals(
         # The conversation rows may already be durable when a cloud operation
         # closes the write fence. Locale ordering is auxiliary metadata, so a
         # late fence must not report the whole turn as failed and make the main
-        # server resend it. Replay without an order uses the legacy-safe path.
+        # server resend it. The durable outbox marker retries the reservation
+        # before any locale-bearing maintenance signal is allowed to complete.
         logger.info(
             "[PromptLocale] %s: reservation deferred while cloudsave is fenced: %s",
             lanlan_name,
@@ -104,6 +105,8 @@ async def _spawn_outbox_post_turn_signals(
     }
     if locale_order is not None:
         payload['locale_order'] = locale_order
+    else:
+        payload['locale_order_deferred'] = True
     if language:
         # Persist the locale with the work item: after a memory_server restart,
         # replay must not re-resolve from a neutral process locale and switch
@@ -124,16 +127,52 @@ async def _spawn_outbox_post_turn_signals(
             f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
             f"{type(e).__name__}: {e}"
         )
-        return runtime._spawn_background_task(
-            _run_post_turn_signals(
+        if locale_order is None:
+            operation = _run_post_turn_signals_after_locale_reservation(
+                messages,
+                lanlan_name,
+                language=language,
+            )
+        else:
+            operation = _run_post_turn_signals(
                 messages,
                 lanlan_name,
                 language=language,
                 locale_order=locale_order,
             )
-        )
+        return runtime._spawn_background_task(operation)
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
     return runtime._spawn_background_task(outbox_infra._run_outbox_op(lanlan_name, op))
+
+
+async def _wait_for_character_prompt_locale_order(lanlan_name: str) -> int:
+    """Wait until a cloud fence permits the deferred locale reservation."""
+    from .locale_state import reserve_character_prompt_locale_order
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    while True:
+        try:
+            return await asyncio.to_thread(
+                reserve_character_prompt_locale_order,
+                lanlan_name,
+            )
+        except MaintenanceModeError:
+            await asyncio.sleep(0.25)
+
+
+async def _run_post_turn_signals_after_locale_reservation(
+    messages: list,
+    lanlan_name: str,
+    *,
+    language: str | None = None,
+):
+    locale_order = await _wait_for_character_prompt_locale_order(lanlan_name)
+    return await _run_post_turn_signals(
+        messages,
+        lanlan_name,
+        language=language,
+        locale_order=locale_order,
+    )
 
 
 async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
@@ -361,10 +400,18 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     messages = messages_from_dict(raw)
     if not messages:
         return
+    language = payload.get('language')
+    if payload.get('locale_order_deferred'):
+        await _run_post_turn_signals_after_locale_reservation(
+            messages,
+            lanlan_name,
+            language=language,
+        )
+        return
     await _run_post_turn_signals(
         messages,
         lanlan_name,
-        language=payload.get('language'),
+        language=language,
         locale_order=payload.get('locale_order'),
     )
 

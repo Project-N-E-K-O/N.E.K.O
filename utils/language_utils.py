@@ -1704,7 +1704,14 @@ def detect_prompt_language(
             # Reads a context var, then a process-level cache filled on first
             # call, so this stays cheap on a per-request path.
             configured = get_global_language_full()
-        return 'zh-TW' if configured == 'zh-TW' else detected
+        if configured == 'zh-TW':
+            return 'zh-TW'
+        if normalize_language_code(configured, format='short') == 'ja':
+            # Han-only Japanese has no kana signal, so the lightweight detector
+            # cannot distinguish it from Chinese. The explicit session locale is
+            # the only orthographic evidence available for this ambiguous case.
+            return 'ja'
+        return detected
     except Exception:
         return detected
 

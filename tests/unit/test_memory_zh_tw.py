@@ -1255,6 +1255,8 @@ def test_synthesis_keeps_ascii_ui_language(ui_language, text, expected):
     ("zh-TW", "I prefer quiet afternoons at home.", "en"),
     ("es", "Me gusta el cafe", "es"),
     ("pt", "Eu gosto de cafe", "pt"),
+    ("ja", "仕事終了", "ja"),
+    ("ja", "体調不良", "ja"),
 ])
 async def test_fact_extractors_detect_prompt_locale_from_message_text(
     monkeypatch, ui_language, message_text, expected,
