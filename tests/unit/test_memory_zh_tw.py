@@ -1866,7 +1866,7 @@ async def test_post_turn_counter_stays_on_loop_and_locale_persistence_offloads(
 
 
 @pytest.mark.asyncio
-async def test_post_turn_locale_failure_still_exposes_signal_counter(monkeypatch):
+async def test_post_turn_locale_failure_does_not_expose_signal_counter(monkeypatch):
     from app.memory_server import gates, post_turn, signal_extraction
     from utils.llm_client import HumanMessage
 
@@ -1898,7 +1898,7 @@ async def test_post_turn_locale_failure_still_exposes_signal_counter(monkeypatch
             locale_order=123,
         )
 
-    assert events == ["locale_failed", "counter"]
+    assert events == ["locale_failed"]
 
 
 @pytest.mark.asyncio

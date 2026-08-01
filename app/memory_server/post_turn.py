@@ -237,15 +237,13 @@ async def _run_post_turn_signals(
     # keeping the counter mutation itself on the event-loop thread.
     try:
         if user_msgs:
-            try:
-                await asyncio.to_thread(
-                    signal_extraction._signal_check_persist_locale,
-                    lanlan_name,
-                    language=language,
-                    locale_order=locale_order,
-                )
-            finally:
-                signal_extraction._signal_check_record_turn(lanlan_name)
+            await asyncio.to_thread(
+                signal_extraction._signal_check_persist_locale,
+                lanlan_name,
+                language=language,
+                locale_order=locale_order,
+            )
+            signal_extraction._signal_check_record_turn(lanlan_name)
     except Exception as e:
         # Best-effort counter bump; a failure here only delays the next
         # signal-extraction cycle — not worth interrupting conversation flow.
