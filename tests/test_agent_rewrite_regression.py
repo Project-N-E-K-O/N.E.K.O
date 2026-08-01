@@ -3605,6 +3605,27 @@ def test_agent_llm_check_marks_browser_use_unloaded_instead_of_pending():
     assert '_set_capability("browser_use", False, "AGENT_BU_MODULE_NOT_LOADED")' in func_src
 
 
+def test_openfang_startup_capability_transitions_emit_status_snapshots():
+    source, func = _find_agent_server_function("startup", ast.AsyncFunctionDef)
+    func_src = ast.get_source_segment(source, func) or ""
+    init_src = func_src.split("async def _init_openfang_background():", 1)[1].split(
+        "_openfang_task = asyncio.create_task", 1
+    )[0]
+
+    assert init_src.count("await _emit_agent_status_update()") == 3
+
+
+def test_agent_popup_refetches_snapshot_after_openclaw_probe_settles():
+    source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
+    popup_src = source.split(
+        "window.addEventListener('neko-popup-opening'", 1
+    )[1].split("window.addEventListener('neko-popup-closed'", 1)[0]
+
+    assert "refreshOpenClawAvailability()" in popup_src
+    assert ".finally(() => {" in popup_src
+    assert "if (state.popupOpen) fetchSnapshot().catch(() => {});" in popup_src
+
+
 def test_agent_ui_v2_free_warning_accepts_command_gate_shape():
     source = Path("static/js/agent_ui_v2.js").read_text(encoding="utf-8")
 

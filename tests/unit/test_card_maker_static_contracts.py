@@ -334,6 +334,23 @@ def test_card_maker_rejects_remote_pngtuber_assets_before_export():
     assert "assertExportablePNGTuberDrawable(source);" in script
 
 
+def test_card_maker_uses_full_resolution_layered_pngtuber_snapshot_for_final_export():
+    script = CARD_MAKER_JS.read_text(encoding="utf-8")
+    get_canvas_block = script[
+        script.index("    function getModelCanvas(options = {})"):
+        script.index("    /**\n     * 在截图前确保渲染器输出最新帧")
+    ]
+    export_block = script[
+        script.index("    async function renderFinalPortrait(options = {})"):
+        script.index("    async function renderFullCard(options = {})")
+    ]
+
+    assert "if (options.fullResolution && mgr?.isLayeredActive?.())" in get_canvas_block
+    assert "mgr.renderLayeredSnapshotCanvas?.()" in get_canvas_block
+    assert "if (snapshot) return snapshot;" in get_canvas_block
+    assert "getModelCanvas({ fullResolution: currentModelType === 'pngtuber' })" in export_block
+
+
 def test_model_manager_parameter_save_restores_unsaved_and_offers_card_face():
     script = read_model_manager_source()
     parameter_editor = (PROJECT_ROOT / "static" / "js" / "live2d_parameter_editor.js").read_text(encoding="utf-8")

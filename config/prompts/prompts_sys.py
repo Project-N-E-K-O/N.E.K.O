@@ -34,13 +34,26 @@ ability to solve the problem and think insightfully"""
 # =====================================================================
 
 def _loc(d: dict, lang: str) -> str:
-    """Resolve a value from a multi-language dict by lang, falling back to 'en' when missing.
-    Prompt modules should explicitly provide every currently supported language;
-    the fallback is only an exceptional safety net.
+    """Resolve a localized value with Chinese-aware safety fallbacks.
+
+    Prompt modules should explicitly provide every supported locale. If a
+    locale-specific key is nevertheless absent, Chinese variants use the
+    Simplified Chinese template while every other locale uses English.
     """
     if lang not in d:
         print(f"WARNING: Unexpected lang code {lang}")
-    return d.get(lang, d['en'])
+    else:
+        return d[lang]
+
+    from config.prompts._locale import prompt_locale_fallback_key
+
+    fallback = prompt_locale_fallback_key(lang)
+    if fallback == "zh":
+        if "zh" in d:
+            return d["zh"]
+        if "zh-CN" in d:
+            return d["zh-CN"]
+    return d["en"]
 
 
 

@@ -1093,7 +1093,7 @@
     /**
      * 获取当前活跃模型的渲染画布
      */
-    function getModelCanvas() {
+    function getModelCanvas(options = {}) {
         if (currentModelType === 'live2d') {
             const mgr = window.live2dManager;
             if (mgr?.pixi_app?.renderer?.view) return mgr.pixi_app.renderer.view;
@@ -1110,6 +1110,11 @@
             return document.getElementById('mmd-canvas');
         }
         if (currentModelType === 'pngtuber') {
+            const mgr = window.cardMakerPNGTuberManager;
+            if (options.fullResolution && mgr?.isLayeredActive?.()) {
+                const snapshot = mgr.renderLayeredSnapshotCanvas?.();
+                if (snapshot) return snapshot;
+            }
             return getPNGTuberDrawableSource();
         }
         return null;
@@ -1528,7 +1533,7 @@
         }
         ensureRender();
 
-        const srcCanvas = getModelCanvas();
+        const srcCanvas = getModelCanvas({ fullResolution: currentModelType === 'pngtuber' });
         const srcSize = getDrawableSourceSize(srcCanvas);
         if (!srcCanvas || srcSize.width <= 0 || srcSize.height <= 0) {
             if (activeModelSourceScale !== previousSourceScale) {

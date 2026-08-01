@@ -1876,6 +1876,32 @@ def test_export_snapshot_includes_prompt_locale_sidecars(tmp_path):
 
 
 @pytest.mark.unit
+def test_export_snapshot_includes_subject_forget_tombstones(tmp_path):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import export_local_cloudsave_snapshot
+
+    _write_runtime_state(cm, character_name="小满")
+    payload = [{
+        "subject_kind": "participant",
+        "subject_id": "qq:1001",
+        "scope": "participant:qq:1001",
+        "forgotten_at": "2026-08-01T00:00:00",
+    }]
+    atomic_write_json(
+        Path(cm.memory_dir) / "小满" / "subject_forget_tombstones.json",
+        payload, ensure_ascii=False, indent=2,
+    )
+    export_local_cloudsave_snapshot(cm)
+
+    staged = (
+        cm.cloudsave_dir / "characters" / "小满" / "memory"
+        / "subject_forget_tombstones.json"
+    )
+    assert json.loads(staged.read_text(encoding="utf-8")) == payload
+
+
+@pytest.mark.unit
 def test_export_cloudsave_character_unit_updates_only_single_character_scope(tmp_path):
     cm = _make_config_manager(tmp_path)
 

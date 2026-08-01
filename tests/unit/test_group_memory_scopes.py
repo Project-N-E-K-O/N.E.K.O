@@ -3081,6 +3081,43 @@ async def test_llm_output_cannot_spoof_speaker_provenance(tmp_path):
     assert fact["speaker_trust"] == 0.3
 
 
+@pytest.mark.asyncio
+async def test_ai_disclosure_does_not_inherit_participant_provenance(tmp_path):
+    """Participant provenance describes the human observation only; an AI
+    disclosure extracted from the same digest must remain separately sourced."""
+    mock_cm = _build_scope_mock_cm(str(tmp_path))
+    fs = FactStore()
+    fs._config_manager = mock_cm
+
+    async def _llm(prompt, lanlan_name, **kwargs):
+        return [{
+            "segment": 1,
+            "facts": [
+                {
+                    "text": "用户喜欢爵士乐", "importance": 5,
+                    "source": "user_observation",
+                },
+                {
+                    "text": "助手说自己喜欢雨天", "importance": 5,
+                    "source": "ai_disclosure",
+                },
+            ],
+        }]
+
+    fs._allm_call_with_retries = _llm
+    segment = _batch_segment(
+        "7788", "1001", "Alice(1001)", ["聊音乐"], trust=0.3,
+    )
+    with patch("memory.facts.get_global_language_full", return_value="zh"):
+        results = await fs.extract_facts_batch([segment], "Neko")
+
+    human, ai = results[0]["created"]
+    assert human["speaker_label"] == "Alice(1001)"
+    assert human["speaker_trust"] == 0.3
+    assert "speaker_label" not in ai
+    assert "speaker_trust" not in ai
+
+
 _REAL_HEADER_RE = re.compile(
     r'^\[SEGMENT (\d+):([0-9a-f]{8,}) \| speaker: (.*)\]$', re.MULTILINE,
 )
@@ -4429,7 +4466,10 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     )
     runner = QQReplyPipelineRunner(plugin)
     context = SimpleNamespace(is_group=True, group_id="7788")
-    outcome = QQReplyOutcome(action="reply", reply_text="回复")
+    originating_row = SimpleNamespace(type="ai", content="回复")
+    outcome = QQReplyOutcome(
+        action="reply", reply_text="回复", history_ai_row=originating_row,
+    )
     plan = QQDeliveryPlan(
         target_type="group", target_id="7788",
         blocks=[QQMessageBlock(text="回复")],
@@ -4467,6 +4507,8 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     )
     plugin.session_memory_service = SimpleNamespace(
         record_tail_undelivered_ai_row=MagicMock(),
+        record_provisional_ai_row=MagicMock(),
+        settle_provisional_ai_row=MagicMock(),
     )
     from plugin.plugins.qq_auto_reply.pipeline_models import QQReplyRequest
 
@@ -4476,7 +4518,7 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     await runner._run_delivery(plan, failed_request, outcome, context=context)
     plugin.reply_generation_service.record_scoped_mentions_on_delivery.assert_not_awaited()
     plugin.session_memory_service.record_tail_undelivered_ai_row.assert_called_once_with(
-        "group:7788"
+        "group:7788", originating_row,
     )
     # Fallback replies have no history row: nothing to mark.
     plugin.session_memory_service.record_tail_undelivered_ai_row.reset_mock()
@@ -4498,7 +4540,7 @@ async def test_run_delivery_direct_branch_records_mentions_on_success():
     with pytest.raises(RuntimeError):
         await runner._run_delivery(plan, failed_request, outcome, context=context)
     plugin.session_memory_service.record_tail_undelivered_ai_row.assert_called_once_with(
-        "group:7788"
+        "group:7788", originating_row,
     )
 
 
@@ -7805,8 +7847,8 @@ async def test_discard_session_salvages_group_buffers_first():
 
     # A queued OFF settlement (pending_disable_settle) protects the buffers
     # even when a later turn primed memory_enabled=False from the live
-    # setting: the salvage path must run, and — finalize declining on the
-    # False flag — keep the session for the transition task to settle.
+    # setting: discard temporarily restores the flag so finalize can really
+    # retry; a failed retry keeps the session for a later attempt.
     plugin.session_memory_service = SimpleNamespace(
         finalize_user_memory_session=_finalize_fail,
     )
@@ -7878,6 +7920,23 @@ async def test_login_change_bootstrap_keeps_session_when_discard_fails():
     # Character switch + failed salvage: the turn must NOT run on the old
     # character's session — its rows would settle into the old character's
     # memory store when the sticky retry finally succeeds.
+    assert result is None
+    assert plugin._user_sessions["group:7788"] is existing
+
+    # A permission-change settlement failure also preserves the only history
+    # copy, but unlike a login mismatch it must not handle even one new turn
+    # in its frozen participant/admin mode.
+    existing.pop("pending_identity_discard", None)
+    existing["her_name"] = "新角色"
+    existing["login_self_id"] = "new"
+    existing["pending_permission_discard"] = True
+    result = await service.ensure_generation_session(
+        SimpleNamespace(
+            ephemeral_session=False, login_self_id="new", her_name="新角色",
+        ),
+        "group:7788",
+    )
+    assert plugin.session_runtime_service.discard_session.await_count == 4
     assert result is None
     assert plugin._user_sessions["group:7788"] is existing
 
@@ -8797,7 +8856,7 @@ async def test_direct_delivery_gated_on_consent_at_send_time():
     )
     deliver.assert_not_awaited()
     assert result.delivered is False
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
 
     # Consent intact: delivery proceeds as usual.
     plugin._qq_settings["group_memory_enabled"] = True
@@ -9367,6 +9426,9 @@ async def test_memory_free_turn_keeps_its_empty_consent_snapshot():
     assert schedule.await_args.kwargs["consent_snapshot"] == {
         "group_memory_enabled": True,
         "group_member_memory_enabled": True,
+        # fallback 采样必须覆盖全部 consent 键：漏一个键，该开关的
+        # 发送前撤销复检对"没走完生成"的轮次就是盲区。
+        "private_participant_memory_enabled": False,
         "allow_cross_group_context": True,
     }
 
@@ -10320,7 +10382,7 @@ async def test_cancelled_delivery_marks_the_history_row():
                 is_group=True, group_id="7788", consent_snapshot={},
             ),
         )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
 
     # A fallback reply has no history row of its own: nothing to mark.
     mark.reset_mock()
@@ -10331,6 +10393,78 @@ async def test_cancelled_delivery_marks_the_history_row():
             context=None,
         )
     mark.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_direct_delivery_fences_history_row_until_send_settles():
+    """A concurrent digest must see the direct-send row as provisional for
+    the entire network await, then retain it as undelivered on failure."""
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQDeliveryPlan,
+        QQDeliveryResult,
+        QQMessageBlock,
+        QQReplyOutcome,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import (
+        QQReplyPipelineRunner,
+    )
+
+    ai_row = SimpleNamespace(type="ai", content="在途回复")
+    provisional = MagicMock()
+    settle = MagicMock()
+    mark = MagicMock()
+
+    async def _deliver(*args, **kwargs):
+        provisional.assert_called_once_with("group:7788", ai_row)
+        settle.assert_not_called()
+        return QQDeliveryResult(
+            delivered=False, target_type="group", target_id="7788",
+            reply_text=None,
+        )
+
+    plugin = SimpleNamespace(
+        reply_buffer_service=None,
+        reply_delivery_node=SimpleNamespace(deliver=AsyncMock(side_effect=_deliver)),
+        reply_generation_service=SimpleNamespace(
+            record_scoped_mentions_on_delivery=AsyncMock(),
+            append_fallback_ai_row=MagicMock(),
+        ),
+        session_memory_service=SimpleNamespace(
+            record_provisional_ai_row=provisional,
+            settle_provisional_ai_row=settle,
+            record_tail_undelivered_ai_row=mark,
+        ),
+        _build_session_key=(
+            lambda *, sender_id, is_group, group_id: f"group:{group_id}"
+        ),
+        _qq_settings={"group_memory_enabled": True},
+        logger=MagicMock(),
+    )
+    runner = QQReplyPipelineRunner(plugin)
+    request = QQReplyRequest(
+        message_text="hi", sender_id="2046", is_group=True, group_id="7788",
+    )
+    outcome = QQReplyOutcome(
+        action="reply", reply_text="在途回复", history_ai_row=ai_row,
+    )
+
+    result = await runner._run_delivery(
+        QQDeliveryPlan(
+            target_type="group", target_id="7788",
+            blocks=[QQMessageBlock(text="在途回复")],
+        ),
+        request, outcome,
+        context=SimpleNamespace(
+            is_group=True, group_id="7788", consent_snapshot={},
+        ),
+    )
+
+    assert result.delivered is False
+    settle.assert_called_once_with(
+        "group:7788", ai_row, delivered=False,
+    )
+    mark.assert_called_once_with("group:7788", ai_row)
 
 
 @pytest.mark.asyncio
@@ -11496,7 +11630,7 @@ async def test_default_reply_replaces_the_unsent_primary_row():
         ),
         context=context,
     )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
     # ...and what the user actually received takes its place in history.
     assert append.call_args.args[1] == "嗯嗯~"
 
@@ -11641,7 +11775,7 @@ async def test_buffered_default_reply_still_replaces_the_primary_row():
             is_group=True, group_id="7788", consent_snapshot={},
         ),
     )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
     # ...and the buffered delivery knows it has to append what was sent.
     assert schedule.await_args.kwargs["used_fallback_reply"] is True
 
@@ -11924,6 +12058,32 @@ async def test_undelivered_marking_uses_this_turns_row_identity():
     marked = ud["undelivered_draft_rows"]
     assert len(marked) == 1 and marked[0] is this_turn
 
+    # Delivery of this turn can finish after a later generation replaced the
+    # mutable pointer. An explicitly carried row must win over that newer row.
+    next_turn = SimpleNamespace(type="ai", content="后一轮已生成的回复")
+    history.append(next_turn)
+    ud["current_turn_ai_row"] = next_turn
+    ud["undelivered_draft_rows"] = []
+    service.record_tail_undelivered_ai_row("group:7788", this_turn)
+    assert ud["undelivered_draft_rows"] == [this_turn]
+    history.pop()
+
+    # Direct sends fence the exact row before their network await. Success
+    # removes both marks; failure converts the fence into a final exclusion.
+    ud["undelivered_draft_rows"] = []
+    service.record_provisional_ai_row("group:7788", this_turn)
+    assert ud["undelivered_draft_rows"] == [this_turn]
+    assert ud["provisional_draft_rows"] == [this_turn]
+    service.settle_provisional_ai_row(
+        "group:7788", this_turn, delivered=True,
+    )
+    assert ud["undelivered_draft_rows"] == []
+    assert ud["provisional_draft_rows"] == []
+    service.record_provisional_ai_row("group:7788", this_turn)
+    service.record_tail_undelivered_ai_row("group:7788", this_turn)
+    assert ud["undelivered_draft_rows"] == [this_turn]
+    assert ud["provisional_draft_rows"] == []
+
     # This turn wrote no ai row at all: nothing may be marked.
     ud["undelivered_draft_rows"] = []
     ud["current_turn_ai_row"] = None
@@ -11995,7 +12155,7 @@ async def test_mixed_block_primary_row_is_replaced_with_what_was_sent():
         QQReplyOutcome(action="reply", reply_text="没送出去的文本"),
         context=context,
     )
-    mark.assert_called_once_with("group:7788")
+    mark.assert_called_once_with("group:7788", None)
     assert append.call_args.args[1] == "用户听到的语音"
 
     # An ordinary text-only reply is left alone: its row IS what went out.
@@ -12363,6 +12523,23 @@ async def test_private_prompt_is_refreshed_after_cross_group_opt_out():
         reply_chunks=[],
     )
     assert applied == [False]
+
+    # A participant session can still cache its pre-opt-out bootstrap prompt
+    # even though the new context is already empty. The frozen settlement mode
+    # identifies that stale session and forces the sanitized prompt swap.
+    applied.clear()
+    service.plugin._qq_settings["private_participant_memory_enabled"] = False
+    await service._run_session_generation(
+        context=context, session_key="private:2046",
+        user_data={
+            "lock": asyncio.Lock(), "private_memory_mode": "participant",
+        },
+        user_session=SimpleNamespace(
+            stream_text=_stream, _conversation_history=[],
+        ),
+        reply_chunks=[],
+    )
+    assert applied == [True]
 
 
 @pytest.mark.asyncio
@@ -12789,6 +12966,9 @@ async def test_region_wait_covers_every_session_rebuild_trigger(monkeypatch):
         ("login identity changed", {**reusable, "login_self_id": "20000"}),
         ("character switched", {**reusable, "her_name": "旧角色"}),
         ("settle retry pending", {**reusable, "pending_identity_discard": True}),
+        ("permission retry pending", {
+            **reusable, "pending_permission_discard": True,
+        }),
         ("no session yet", None),
     ):
         plugin._user_sessions = {} if entry is None else {"group:7788": entry}

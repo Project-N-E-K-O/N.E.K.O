@@ -582,6 +582,7 @@ async def startup():
             if not adapter.init_ok:
                 logger.warning("[OpenFang] not reachable after 30s")
                 _set_capability("openfang", False, "OPENFANG_DAEMON_UNREACHABLE")
+                await _emit_agent_status_update()
                 return
 
             # 同步 API Key + 写 config.toml（允许失败 — 用户可能尚未配置 Key）
@@ -627,9 +628,11 @@ async def startup():
             _set_capability("openfang", True, "")
             logger.info("[OpenFang] Ready (init_ok=%s, agent=%s, tools=%d)",
                         adapter.init_ok, agent_id, adapter._cached_tools_count or 0)
+            await _emit_agent_status_update()
         except Exception as exc:
             logger.error("[OpenFang] background init failed: %s", exc)
             _set_capability("openfang", False, str(exc))
+            await _emit_agent_status_update()
 
     # BrowserUse stays unloaded until its toggle, availability endpoint, or
     # direct run is requested.  OpenFang remains an independent background

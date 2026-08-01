@@ -66,6 +66,30 @@ async def resolve_group_recall_subjects(
     return subjects, len(subjects) > 1
 
 
+def resolve_participant_recall_subjects(
+    plugin: Any, *, memory_sender_id: str,
+) -> list[dict[str, str]]:
+    """One place for the private participant read path's subject list.
+
+    与 resolve_group_recall_subjects 同一角色：tool handler、回落召回、
+    bootstrap 核心记忆段三条读路径必须授权完全一致的域。返回 ``[]`` 表示
+    fail-closed（sender 缺失 / 开关已关）——bridge 对空列表直接空结果，
+    **绝不**允许调用方把它换成 None（None = legacy 私聊主人语料）。
+    同步函数：不需要像群版那样读 backlog 扩容。"""
+    sender = str(memory_sender_id or "").strip()
+    if not sender:
+        return []
+    if not bool(
+        (getattr(plugin, "_qq_settings", {}) or {}).get(
+            "private_participant_memory_enabled", False,
+        )
+    ):
+        # 读点实时复检（对偶群版的 member 开关复检）：opt-out 之后不得
+        # 再召回 participant 域。
+        return []
+    return [plugin.memory_bridge.participant_subject(sender)]
+
+
 async def _recent_other_speakers(
     plugin: Any, *, group_id: str, exclude: str,
 ) -> list[str]:
@@ -242,6 +266,10 @@ class QQMemoryToolService:
             return no_result, {}
 
         is_group = bool(getattr(context, "is_group", False))
+        participant_turn = bool(
+            not is_group
+            and getattr(context, "participant_memory_enabled", False)
+        )
         subjects: list[dict[str, str]] | None = None
         used_member = False
         if is_group:
@@ -259,8 +287,24 @@ class QQMemoryToolService:
                 group_id=group_id,
                 memory_sender_id=self._turn_memory_sender(context),
             )
-        # 私聊（use_memory_context 已按政策解析，默认 admin-only）：
-        # subjects=None 走 legacy 私聊主人语料，与回落路径一致。
+        elif participant_turn:
+            # 私聊 participant 轮：subjects 只可能是 [对方的 participant
+            # 域] 或空列表（fail-closed）。合成轮的名义 sender 不是真实
+            # 发言人，同样 fail-closed——**这条分支绝不落回 None**：
+            # None 是 legacy 私聊主人语料，把它交给一个非 admin 好友等于
+            # 把主人的私聊记忆读给陌生人。
+            sender = (
+                ""
+                if is_synthetic_source(getattr(context, "source_kind", ""))
+                else str(getattr(context, "sender_id", "") or "").strip()
+            )
+            subjects = resolve_participant_recall_subjects(
+                self.plugin, memory_sender_id=sender,
+            )
+            if not subjects:
+                return no_result, {}
+        # 私聊 admin（use_memory_context 已按政策解析）：subjects=None 走
+        # legacy 私聊主人语料，与回落路径一致。
 
         try:
             result = await self.plugin.memory_bridge.query_relevant_memory(
@@ -289,6 +333,12 @@ class QQMemoryToolService:
             if not bool(live.get("group_memory_enabled", False)):
                 # 群侧读后复检：同上，数据已读回也要丢弃。
                 return no_result, {}
+        elif participant_turn and not bool(
+            self._live_settings().get("private_participant_memory_enabled", False)
+        ):
+            # participant 侧读后复检（对偶群侧）：opt-out 落在 HTTP 飞行
+            # 期间时，已读回的数据也不交给模型。
+            return no_result, {}
 
         # INFO 只落元数据（命中数/耗时/是否带 time），原始 query 与召回原文
         # 走 DEBUG——与本体 handler 的隐私分层一致。
@@ -314,6 +364,10 @@ class QQMemoryToolService:
             consumed["group_memory_enabled"] = True
             if used_member:
                 consumed["group_member_memory_enabled"] = True
+        elif participant_turn:
+            # 同上：participant 域内容真的进了模型，本轮回复依赖该开关，
+            # 发送前的撤销复检要覆盖到它。
+            consumed["private_participant_memory_enabled"] = True
         # 回填给 direct fallback：主会话空回复时 fallback 只带
         # context.recalled_memory_text——本轮模型真的调过工具、读到了内容，
         # 这份召回就该跟着 fallback 一起用（内容仍来自 tool call，不是

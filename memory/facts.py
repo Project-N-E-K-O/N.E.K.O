@@ -29,6 +29,7 @@ import re
 import asyncio
 import secrets
 import threading
+from contextlib import nullcontext
 from datetime import datetime
 from typing import TYPE_CHECKING
 
@@ -231,6 +232,19 @@ class FactStore:
         self._locks: dict[str, threading.Lock] = {}  # per-character 文件锁
         self._locks_guard = threading.Lock()  # 保护 _locks 字典本身
         self._persist_alocks: dict[str, asyncio.Lock] = {}
+        # Per-character, per-subject erase generations. Scoped extraction
+        # captures one before its LLM call and rechecks it under the persistence
+        # lock, so an in-flight pre-forget request cannot recreate erased facts.
+        self._subject_forget_generations: dict[tuple[str, str, str], int] = {}
+        self._active_subject_forgets: set[tuple[str, str, str]] = set()
+        # Restore and forget are multi-store transactions.  A dedicated
+        # per-subject lock prevents restore from re-appending an archive shard
+        # between the individual store erases.  runtime reload deliberately
+        # shares this registry with the replacement FactStore so requests that
+        # captured the old instance participate in the same transaction.
+        self._subject_forget_transaction_locks: dict[
+            tuple[str, str, str], asyncio.Lock
+        ] = {}
 
     def _get_lock(self, name: str) -> threading.Lock:
         """Get the character-specific file lock (lazily created)"""
@@ -247,6 +261,104 @@ class FactStore:
                 if name not in self._persist_alocks:
                     self._persist_alocks[name] = asyncio.Lock()
         return self._persist_alocks[name]
+
+    def _subject_forget_generation(
+        self, name: str, subject: MemorySubject,
+    ) -> int:
+        generations = getattr(self, '_subject_forget_generations', None)
+        if generations is None:
+            # Some focused tests construct FactStore via __new__.
+            generations = {}
+            self._subject_forget_generations = generations
+        return generations.get((name, subject.key, subject.scope), 0)
+
+    def _bump_subject_forget_generation(
+        self, name: str, subject: MemorySubject,
+    ) -> int:
+        generations = getattr(self, '_subject_forget_generations', None)
+        if generations is None:
+            generations = {}
+            self._subject_forget_generations = generations
+        key = (name, subject.key, subject.scope)
+        generations[key] = generations.get(key, 0) + 1
+        return generations[key]
+
+    @staticmethod
+    def _subject_forget_key(
+        name: str, subject: MemorySubject,
+    ) -> tuple[str, str, str]:
+        return (name, subject.key, subject.scope)
+
+    def _subject_forget_is_active(
+        self, name: str, subject: MemorySubject,
+    ) -> bool:
+        active = getattr(self, '_active_subject_forgets', None)
+        return bool(
+            active is not None
+            and self._subject_forget_key(name, subject) in active
+        )
+
+    def _subject_forget_fields_are_active(
+        self, name: str, subject_key: object, scope: object,
+    ) -> bool:
+        """Check a queue row's stamped isolation fields against tombstones."""
+        if not isinstance(subject_key, str) or not isinstance(scope, str):
+            return False
+        active = getattr(self, '_active_subject_forgets', None)
+        return bool(active and (name, subject_key, scope) in active)
+
+    def _get_subject_forget_transaction_lock(
+        self, name: str, subject,
+    ) -> asyncio.Lock:
+        """Return the cross-store restore/forget lock for one subject."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("subject transaction requires an explicit subject")
+        locks = getattr(self, '_subject_forget_transaction_locks', None)
+        if locks is None:
+            # Focused tests may construct FactStore via __new__.
+            locks = {}
+            self._subject_forget_transaction_locks = locks
+        key = self._subject_forget_key(name, memory_subject)
+        if key not in locks:
+            guard = getattr(self, '_locks_guard', None)
+            if guard is None:
+                guard = threading.Lock()
+                self._locks_guard = guard
+            with guard:
+                if key not in locks:
+                    locks[key] = asyncio.Lock()
+        return locks[key]
+
+    async def abegin_subject_forget(self, name: str, subject) -> None:
+        """Open a fact-write tombstone for the complete scoped-forget route."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("abegin_subject_forget requires an explicit subject")
+        async with self._get_persist_alock(name):
+            active = getattr(self, '_active_subject_forgets', None)
+            if active is None:
+                active = set()
+                self._active_subject_forgets = active
+            key = self._subject_forget_key(name, memory_subject)
+            if key in active:
+                raise RuntimeError("subject forget is already active")
+            active.add(key)
+            self._bump_subject_forget_generation(name, memory_subject)
+
+    async def aend_subject_forget(self, name: str, subject) -> None:
+        """Close the route tombstone and invalidate work started inside it."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aend_subject_forget requires an explicit subject")
+        async with self._get_persist_alock(name):
+            active = getattr(self, '_active_subject_forgets', None)
+            if active is None:
+                return
+            key = self._subject_forget_key(name, memory_subject)
+            if key in active:
+                self._bump_subject_forget_generation(name, memory_subject)
+                active.remove(key)
 
     # ── persistence ──────────────────────────────────────────────────
 
@@ -368,8 +480,11 @@ class FactStore:
                 changed = True
         return changed
 
-    def save_facts(self, name: str) -> None:
-        with self._get_lock(name):
+    def save_facts(self, name: str, *, _fact_lock_held: bool = False) -> None:
+        lock_context = (
+            nullcontext() if _fact_lock_held else self._get_lock(name)
+        )
+        with lock_context:
             try:
                 assert_cloudsave_writable(
                     self._config_manager,
@@ -528,12 +643,280 @@ class FactStore:
                     f"[FactStore] {name}: 归档冷却判定失败", exc_info=True,
                 )
 
-    async def asave_facts(self, name: str) -> None:
-        await asyncio.to_thread(self.save_facts, name)
+    async def asave_facts(
+        self, name: str, *, _fact_lock_held: bool = False,
+    ) -> None:
+        await asyncio.to_thread(
+            self.save_facts, name, _fact_lock_held=_fact_lock_held,
+        )
+
+    async def aforget_subject(self, lanlan_name: str, subject) -> dict:
+        """Run scoped erasure as one transaction against archive sweeps."""
+        # Lock order is persist -> fact everywhere. Extraction already holds
+        # persist when save_facts takes the fact lock; reversing that order
+        # here would deadlock against an in-flight persistence task.
+        async with self._get_persist_alock(lanlan_name):
+            fact_lock = self._get_lock(lanlan_name)
+            acquire_task = asyncio.create_task(
+                asyncio.to_thread(fact_lock.acquire)
+            )
+            try:
+                await asyncio.shield(acquire_task)
+            except asyncio.CancelledError:
+                # to_thread keeps running after its awaiter is cancelled. Let
+                # it acquire, then release, so cancellation cannot strand the
+                # per-character lock forever.
+                acquired = await acquire_task
+                if acquired:
+                    fact_lock.release()
+                raise
+            try:
+                return await self._aforget_subject_with_fact_lock(
+                    lanlan_name, subject, _persist_lock_held=True,
+                )
+            finally:
+                fact_lock.release()
+
+    async def _aforget_subject_with_fact_lock(
+        self, lanlan_name: str, subject, *, _persist_lock_held: bool = False,
+    ) -> dict:
+        """Delete every fact belonging to one exact (subject, scope) domain.
+
+        撤回入口（删好友/退群后清档）：活跃 facts、facts_archive、FTS 索引
+        三处一起清。匹配用 entry_matches_subject 的精确 (key, scope) 相等
+        ——legacy 无戳条目与其它 scope 的条目绝不落入删除面（fail-closed
+        方向与读侧过滤一致）。幂等：目标为空时是 no-op。
+
+        FTS 使用严格删除并排在 JSON 变更之前：无法确认索引清理时整次
+        forget 失败，保留主存中的 id 供重试；逐 id 的成功删除是幂等的。
+        """  # noqa: DOCSTRING_CJK
+        from memory.scopes import coerce_subject, entry_matches_subject
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("aforget_subject requires an explicit subject")
+        removed_active = 0
+        removed_archive = 0
+        removed_from_archive: list[dict] = []
+        persist_context = (
+            nullcontext()
+            if _persist_lock_held else self._get_persist_alock(lanlan_name)
+        )
+        async with persist_context:
+            # Fence every scoped extraction that captured the previous
+            # generation before this critical section.
+            self._bump_subject_forget_generation(lanlan_name, memory_subject)
+            # Never trust the cache here. The normal loader is deliberately
+            # best-effort and may already have cached [] after a malformed or
+            # transiently unreadable facts.json. Re-read the authoritative
+            # file on every forget attempt so a repaired file can be erased
+            # without restarting the process.
+            facts_path = self._facts_path(lanlan_name)
+            facts: list = []
+            if await asyncio.to_thread(os.path.exists, facts_path):
+                def _read_active_facts() -> object:
+                    with open(facts_path, encoding='utf-8') as f:
+                        return json.load(f)
+
+                try:
+                    facts_data = await asyncio.to_thread(_read_active_facts)
+                except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+                    raise RuntimeError(
+                        f"facts state unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(facts_data, list):
+                    raise RuntimeError(
+                        "facts state is not a list during forget"
+                    )
+                facts = facts_data
+            else:
+                # A freshly-created in-process store may have durable work
+                # pending in its cache before the first file appears.
+                facts = self._facts.get(lanlan_name, [])
+            self._facts[lanlan_name] = facts
+            removed = [
+                f for f in facts
+                if isinstance(f, dict) and entry_matches_subject(f, memory_subject)
+            ]
+
+            # Strictly inspect and prepare the archive before changing active
+            # facts. Otherwise a corrupt/transiently unreadable archive raises
+            # only after facts.json has already been durably deleted, yielding
+            # a permanent partial forget.
+            archive_path = self._facts_archive_path(lanlan_name)
+            archived: list = []
+            archive_exists = await asyncio.to_thread(
+                os.path.exists, archive_path,
+            )
+            kept_archive: list = []
+            if archive_exists:
+                def _read_archive() -> object:
+                    with open(archive_path, encoding='utf-8') as f:
+                        return json.load(f)
+
+                try:
+                    archived = await asyncio.to_thread(_read_archive)
+                except (json.JSONDecodeError, OSError) as exc:
+                    # 归档损坏时明确失败：静默跳过会让"已删干净"的响应
+                    # 掩盖一份仍可被 BM25 召回的副本。
+                    raise RuntimeError(
+                        f"facts_archive unreadable during forget: {exc}"
+                    ) from exc
+                if not isinstance(archived, list):
+                    raise RuntimeError(
+                        "facts_archive is not a list during forget"
+                    )
+                removed_from_archive = [
+                    f for f in archived
+                    if (
+                        isinstance(f, dict)
+                        and entry_matches_subject(f, memory_subject)
+                    )
+                ]
+                kept_archive = [
+                    f for f in archived
+                    if not (
+                        isinstance(f, dict)
+                        and entry_matches_subject(f, memory_subject)
+                    )
+                ]
+                removed_archive = len(removed_from_archive)
+
+            # Persist the privacy boundary before deleting any recoverable
+            # copy. Reflection/persona archive events can recreate their shard
+            # snapshots during a later full replay; restore must still know
+            # that every snapshot at or before this point is erased history.
+            await asyncio.to_thread(
+                self._record_subject_forget_tombstone_locked,
+                lanlan_name,
+                memory_subject,
+                datetime.now().isoformat(),
+            )
+
+            # Privacy erasure must fail closed.  The normal FTS helper is
+            # deliberately best-effort, so request strict propagation here
+            # while the authoritative JSON rows still preserve every id for
+            # a retry.  A partial multi-id FTS deletion is harmless because
+            # DELETE is idempotent and no JSON state has changed yet.
+            if self._time_indexed is not None:
+                deleted_fact_ids: set = set()
+                for fact in removed + removed_from_archive:
+                    fact_id = _readable_fact_id(fact)
+                    if fact_id is None or fact_id in deleted_fact_ids:
+                        continue
+                    deleted_fact_ids.add(fact_id)
+                    await self._time_indexed.adelete_fact_from_index(
+                        lanlan_name, fact_id, strict=True,
+                    )
+
+            # Archive first: if the later active write fails, facts.json still
+            # contains enough subject-stamped rows for a retry. The reverse
+            # order is the irrecoverable half-commit reported by Greptile.
+            if removed_archive:
+                assert_cloudsave_writable(
+                    self._config_manager,
+                    operation="save",
+                    target=f"memory/{lanlan_name}/facts_archive.json",
+                )
+                await asyncio.to_thread(
+                    atomic_write_json, archive_path, kept_archive,
+                    indent=2, ensure_ascii=False,
+                )
+
+            if removed:
+                removed_active = len(removed)
+                removed_identities = {id(f) for f in removed}
+                previous_facts = list(facts)
+                facts[:] = [
+                    f for f in facts if id(f) not in removed_identities
+                ]
+                try:
+                    await self.asave_facts(
+                        lanlan_name, _fact_lock_held=True,
+                    )
+                except Exception:
+                    # Keep the in-memory cache aligned with the unchanged
+                    # active file so the retry can still find the subject.
+                    facts[:] = previous_facts
+                    raise
+        if removed_active or removed_archive:
+            logger.info(
+                f"[FactStore] {lanlan_name}: forget "
+                f"{memory_subject.key}/{memory_subject.scope}: "
+                f"active={removed_active} archive={removed_archive}"
+            )
+        return {"facts": removed_active, "facts_archive": removed_archive}
 
     def _facts_archive_path(self, name: str) -> str:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
+
+    def _subject_forget_tombstones_path(self, name: str) -> str:
+        return os.path.join(
+            os.path.dirname(self._facts_path(name)),
+            'subject_forget_tombstones.json',
+        )
+
+    def _load_subject_forget_tombstones_strict(self, name: str) -> list[dict]:
+        """Load persistent scoped-forget cutoffs without best-effort fallback."""
+        path = self._subject_forget_tombstones_path(name)
+        if not os.path.exists(path):
+            return []
+        try:
+            with open(path, encoding='utf-8') as fh:
+                rows = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            raise RuntimeError(
+                f"subject forget tombstones unreadable: {exc}"
+            ) from exc
+        if not isinstance(rows, list):
+            raise RuntimeError("subject forget tombstones are not a list")
+        return [row for row in rows if isinstance(row, dict)]
+
+    def _record_subject_forget_tombstone_locked(
+        self, name: str, subject: MemorySubject, forgotten_at: str,
+    ) -> None:
+        """Persist the latest erasure cutoff while the fact lock is held."""
+        rows = self._load_subject_forget_tombstones_strict(name)
+        kept = [row for row in rows if not entry_matches_subject(row, subject)]
+        kept.append({**subject.as_entry_fields(), 'forgotten_at': forgotten_at})
+        assert_cloudsave_writable(
+            self._config_manager,
+            operation="save",
+            target=f"memory/{name}/subject_forget_tombstones.json",
+        )
+        atomic_write_json(
+            self._subject_forget_tombstones_path(name), kept,
+            indent=2, ensure_ascii=False,
+        )
+
+    def subject_forget_cutoff(
+        self, name: str, subject: MemorySubject,
+    ) -> str | None:
+        """Return the latest persistent erasure cutoff for one exact scope."""
+        cutoffs = [
+            str(row.get('forgotten_at') or '')
+            for row in self._load_subject_forget_tombstones_strict(name)
+            if entry_matches_subject(row, subject) and row.get('forgotten_at')
+        ]
+        return max(cutoffs, default=None)
+
+    async def asubject_forget_cutoff(
+        self, name: str, subject: MemorySubject,
+    ) -> str | None:
+        return await asyncio.to_thread(self.subject_forget_cutoff, name, subject)
+
+    async def afinalize_subject_forget(
+        self, name: str, subject: MemorySubject,
+    ) -> None:
+        """Advance the durable cutoff after the other stores have drained."""
+        async with self._get_persist_alock(name):
+            def _record_under_fact_lock() -> None:
+                with self._get_lock(name):
+                    self._record_subject_forget_tombstone_locked(
+                        name, subject, datetime.now().isoformat(),
+                    )
+
+            await asyncio.to_thread(_record_under_fact_lock)
 
     def _archive_absorbed(self, name: str) -> int:
         """Move facts that are absorbed and older than _ARCHIVE_AGE_DAYS into the archive file."""
@@ -753,6 +1136,7 @@ class FactStore:
     def _restore_subject_facts(
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
+        archived_after_iso: str | None = None,
     ) -> int | None:
         """Move a subject's ``subject_archived_at`` rows back into facts.json.
 
@@ -803,6 +1187,10 @@ class FactStore:
                 return (
                     isinstance(f, dict)
                     and f.get('subject_archived_at')
+                    and (
+                        archived_after_iso is None
+                        or str(f.get('subject_archived_at')) > archived_after_iso
+                    )
                     and entry_matches_subject(f, subject)
                 )
 
@@ -845,9 +1233,11 @@ class FactStore:
     async def arestore_subject_facts(
         self, name: str, subject: MemorySubject,
         restored_at_iso: str | None = None,
+        archived_after_iso: str | None = None,
     ) -> int | None:
         return await asyncio.to_thread(
             self._restore_subject_facts, name, subject, restored_at_iso,
+            archived_after_iso,
         )
 
     # ── extraction ───────────────────────────────────────────────────
@@ -1733,6 +2123,15 @@ class FactStore:
         if not segments:
             return []
 
+        segment_generations = [
+            (
+                self._subject_forget_generation(lanlan_name, memory_subject)
+                if (memory_subject := coerce_subject(segment.get('subject')))
+                is not None
+                else None
+            )
+            for segment in segments
+        ]
         extracted = await self._allm_extract_facts_batch(lanlan_name, segments)
         if extracted is None:
             raise FactExtractionFailed(
@@ -1808,6 +2207,9 @@ class FactStore:
                         segment_facts,
                         subject=segment.get('subject'),
                         speaker_provenance=self._speaker_provenance_of(segment),
+                        expected_subject_generation=(
+                            segment_generations[position - 1]
+                        ),
                     )
                 except Exception as exc:
                     logger.error(
@@ -1861,8 +2263,30 @@ class FactStore:
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
+        expected_subject_generation: int | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
+            memory_subject = coerce_subject(subject)
+            if (
+                memory_subject is not None
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or (
+                        expected_subject_generation is not None
+                        and self._subject_forget_generation(
+                            lanlan_name, memory_subject,
+                        ) != expected_subject_generation
+                    )
+                )
+            ):
+                logger.info(
+                    f"[FactStore] {lanlan_name}: 丢弃撤回期间完成的 scoped "
+                    f"fact extraction ({memory_subject.key}/"
+                    f"{memory_subject.scope})"
+                )
+                return []
             return await self._apersist_new_facts_locked(
                 lanlan_name,
                 extracted,
@@ -1880,10 +2304,21 @@ class FactStore:
         subject: MemorySubject | dict,
     ) -> list[dict]:
         """Persist already extracted facts for an explicitly scoped adapter request."""
+        memory_subject = coerce_subject(subject)
+        if memory_subject is None:
+            raise ValueError("apersist_scoped_facts requires an explicit subject")
+        # Capture before waiting for the per-character persistence lock. If
+        # a queued tombstone close wins that lock first, its generation bump
+        # must still invalidate this request even though the active marker is
+        # gone by the time persistence enters its critical section.
+        expected_subject_generation = self._subject_forget_generation(
+            lanlan_name, memory_subject,
+        )
         return await self._apersist_new_facts(
             lanlan_name,
             extracted,
-            subject=subject,
+            subject=memory_subject,
+            expected_subject_generation=expected_subject_generation,
         )
 
     async def _apersist_new_facts_locked(
@@ -1915,9 +2350,10 @@ class FactStore:
         corroboration is irreversible.
 
         ``speaker_provenance``: 发言人来源标识（{'speaker_label', 'speaker_
-        trust'} 子集），盖在本批每条**新建** fact 上。只落字段不接消费
-        （信赖度阶段一）；来自调用方（scoped_history 请求段），绝不读
-        extracted 元素里的同名键——LLM 输出无法伪造它。
+        trust'} 子集），只盖在本批**新建 user_observation** fact 上；AI
+        disclosure 不冒用参与者 provenance。字段只落盘不接消费（信赖度
+        阶段一）；来自调用方（scoped_history 请求段），绝不读 extracted
+        元素里的同名键——LLM 输出无法伪造它。
         """  # noqa: DOCSTRING_CJK
         if default_source not in self._SOURCE_VALUES:
             default_source = self._SOURCE_DEFAULT
@@ -2194,7 +2630,7 @@ class FactStore:
             }
             if memory_subject is not None:
                 fact_entry.update(memory_subject.as_entry_fields())
-            if speaker_provenance:
+            if speaker_provenance and source == 'user_observation':
                 # 只挑白名单键（防调用方 dict 形状漂移把任意键写进磁盘）。
                 label = str(speaker_provenance.get('speaker_label') or '').strip()
                 if label:
@@ -2797,12 +3233,18 @@ class FactStore:
         ``speaker_label`` is forwarded to the extraction prompt — see
         :meth:`_allm_extract_facts`.
 
-        ``speaker_provenance``: stamped onto每条新建 fact（speaker_label /
-        speaker_trust，信赖度阶段一只落字段）。与 ``speaker_label`` 分开传：
-        后者影响 prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——
-        那种"无单一发言人"的调用不该在 fact 上落 provenance，由调用方
-        决定是否给本参数。
+        ``speaker_provenance``: stamped onto新建 user_observation fact
+        （speaker_label / speaker_trust，信赖度阶段一只落字段）；AI
+        disclosure 保持独立来源。与 ``speaker_label`` 分开传：后者影响
+        prompt 渲染，且群 digest 路由会为它填集体描述符缺省值——那种
+        "无单一发言人"的调用不该在 fact 上落 provenance，由调用方决定
+        是否给本参数。
         """  # noqa: DOCSTRING_CJK
+        memory_subject = coerce_subject(subject)
+        expected_subject_generation = (
+            self._subject_forget_generation(lanlan_name, memory_subject)
+            if memory_subject is not None else None
+        )
         extracted = await self._allm_extract_facts(
             lanlan_name, messages,
             treat_malformed_as_failure=fail_closed,
@@ -2835,6 +3277,7 @@ class FactStore:
         return await self._apersist_new_facts(
             lanlan_name, extracted, subject=subject,
             speaker_provenance=speaker_provenance,
+            expected_subject_generation=expected_subject_generation,
         )
 
     # ── external import state (sidecar) ──────────────────────────────

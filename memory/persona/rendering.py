@@ -78,6 +78,7 @@ class RenderingMixin:
             SCOPED_PERSONA_PREFIX,
             normalize_subjects,
             persona_subject_from_section,
+            subject_from_entry,
         )
         allowed = normalize_subjects(subjects)
         if include_legacy_private is None:
@@ -116,6 +117,19 @@ class RenderingMixin:
                     continue
                 filtered = dict(section)
                 filtered['facts'] = scoped_facts
+                rendered_subjects = {
+                    (entry_subject.key, entry_subject.scope)
+                    for entry in scoped_facts
+                    if (entry_subject := subject_from_entry(entry)) is not None
+                }
+                if rendered_subjects != {
+                    (scoped_subject.key, scoped_subject.scope),
+                }:
+                    # Section metadata belongs to the last writer, while this
+                    # view is authorized entry-by-entry. Do not carry that
+                    # writer's label into another scope's rendered header (or
+                    # into a mixed-scope header where no single label applies).
+                    filtered.pop('display_name', None)
                 view[section_key] = filtered
             elif (scoped_subject.key, scoped_subject.scope) in allowed_keys:
                 view[section_key] = section
@@ -668,8 +682,17 @@ class RenderingMixin:
                     from config.prompts.prompts_memory import (
                         get_scoped_persona_section_header,
                     )
+                    from memory.facts import FactStore
+                    # display_name 是不可信用户输入（群名/群名片），路由入口
+                    # 已中和过一次，这里再过一次——渲染是唯一把它拼进 prompt
+                    # 的地方，而 persona.json 可被手改（与 speaker_label 的
+                    # 双侧中和同一道理，#2605）。中和后为空按无名回退。
+                    display_name = FactStore.sanitize_speaker_label(
+                        section_meta.get('display_name'),
+                    )
                     header = get_scoped_persona_section_header(
                         subject_kind, subject_id, render_lang,
+                        display_name=display_name or None,
                     )
                 else:
                     header = _headers.get(entity_key, entity_key)

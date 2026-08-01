@@ -187,6 +187,10 @@ class SynthesisMixin:
 
         from memory.scopes import coerce_subject
         memory_subject = coerce_subject(subject)
+        forget_epoch = (
+            self._subject_forget_epoch(lanlan_name, memory_subject)
+            if memory_subject is not None else None
+        )
         if memory_subject is None:
             unabsorbed = await self._fact_store.aget_unabsorbed_facts(lanlan_name)
         else:
@@ -455,6 +459,26 @@ class SynthesisMixin:
 
         # ── LOCK 仅护住 re-load + dedup append + save ──
         async with self._get_alock(lanlan_name):
+            if (
+                memory_subject is not None
+                and (
+                    self._subject_forget_is_active(
+                        lanlan_name, memory_subject,
+                    )
+                    or self._subject_forget_epoch(
+                        lanlan_name, memory_subject,
+                    ) != forget_epoch
+                )
+            ):
+                # The source facts were erased while the LLM was in flight.
+                # A late result must not recreate an immediately recallable
+                # scoped reflection after the forget response.
+                logger.info(
+                    f"[Reflection] {lanlan_name}: subject forget overlapped "
+                    f"synthesis for {memory_subject.key}/"
+                    f"{memory_subject.scope}; dropping late result"
+                )
+                return []
             # 再次 load：LLM 调用期间可能有并发 synth；用最新 list 做 id dedup 追加
             reflections = await self.aload_reflections(lanlan_name)
             created = False

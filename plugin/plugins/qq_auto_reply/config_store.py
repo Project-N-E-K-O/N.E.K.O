@@ -132,6 +132,10 @@ class QQAutoReplyConfigStore:
             # 因此独立开关且默认关闭。
             "group_memory_enabled": False,
             "group_member_memory_enabled": False,
+            # 非管理员私聊的 participant 记忆：以对方为主体单独建档
+            # （participant scope），绝不进管理员的 legacy 私聊语料。
+            # 同为显式 opt-in，默认关闭。
+            "private_participant_memory_enabled": False,
             # 跨群实时话题不是长期记忆的一部分，默认严格隔离。
             "allow_cross_group_context": False,
             # 提示词编辑器覆盖值（locale → layer_id → text）

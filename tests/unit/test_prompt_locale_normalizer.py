@@ -37,6 +37,7 @@ from config.prompts.prompts_chara import _normalize_lang
 from config.prompts.prompts_memory import _normalize_memory_prompt_lang
 from config.prompts.prompts_minigame_common import _normalize_prompt_lang
 from config.prompts.prompts_proactive import _normalize_prompt_language
+from config.prompts.prompts_sys import _loc
 
 PROMPTS_DIR = pathlib.Path(__file__).resolve().parents[2] / "config" / "prompts"
 
@@ -201,9 +202,9 @@ def test_none_takes_module_default():
 def test_keep_traditional_false_collapses_to_simplified():
     """keep_traditional=False must route Traditional Chinese to `simplified`.
 
-    This is what protects Traditional Chinese users in modules whose prompt
-    dicts have no 'zh-TW' template: resolving to zh-TW there would miss the key
-    and drop to the English fallback in `_loc`.
+    This keeps modules without Traditional templates on their declared
+    Simplified key. `_loc` provides the same Chinese-family behavior as a
+    secondary missing-key safety net.
     """
     for raw in ("zh-TW", "zh-Hant", "zh-HK", "tchinese"):
         assert normalize_prompt_locale(raw, keep_traditional=False) == "zh"
@@ -214,6 +215,39 @@ def test_keep_traditional_false_collapses_to_simplified():
             )
             == "zh-CN"
         )
+
+
+@pytest.mark.parametrize(
+    "locale",
+    ("zh", "zh-CN", "zh-TW", "zh-HK", "zh-Hant", "schinese", "tchinese"),
+)
+def test_loc_missing_chinese_variant_falls_back_to_simplified(locale):
+    templates = {"zh": "simplified", "en": "english"}
+
+    assert _loc(templates, locale) == "simplified"
+
+
+def test_loc_missing_chinese_variant_supports_full_simplified_key():
+    templates = {"zh-CN": "simplified", "en": "english"}
+
+    assert _loc(templates, "zh-TW") == "simplified"
+
+
+@pytest.mark.parametrize("locale", ("fr", "klingon", "esperanto"))
+def test_loc_missing_non_chinese_or_unknown_locale_falls_back_to_english(locale):
+    templates = {"zh": "simplified", "en": "english"}
+
+    assert _loc(templates, locale) == "english"
+
+
+def test_loc_prefers_an_exact_traditional_template():
+    templates = {
+        "zh": "simplified",
+        "zh-TW": "traditional",
+        "en": "english",
+    }
+
+    assert _loc(templates, "zh-TW") == "traditional"
 
 
 def test_default_only_applies_to_empty_input():

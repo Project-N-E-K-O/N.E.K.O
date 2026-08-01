@@ -194,6 +194,47 @@ _memory_storage_blocked_after_init = False
 _memory_background_tasks_started = False
 
 
+def _share_subject_forget_state(old_component, new_component) -> None:
+    """Keep scoped-erasure fences alive across a component hot reload."""
+    if old_component is None:
+        return
+    for attr in (
+        "_subject_forget_generations",
+        "_subject_forget_epochs",
+        "_active_subject_forgets",
+        "_subject_forget_transaction_locks",
+    ):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
+def _share_fact_store_write_state(old_component, new_component) -> None:
+    """Keep full-file fact writers serialized and cache-coherent on reload."""
+    if old_component is None:
+        return
+    for attr in ("_locks", "_locks_guard", "_persist_alocks", "_facts"):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
+def _share_reflection_write_locks(old_component, new_component) -> None:
+    """Keep reflection and surfaced full-file writers serialized on reload."""
+    if old_component is None:
+        return
+    for attr in ("_alocks", "_alocks_guard"):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
+def _share_persona_write_state(old_component, new_component) -> None:
+    """Keep persona writes and their cache coherent across a hot reload."""
+    if old_component is None:
+        return
+    for attr in ("_alocks", "_resolve_alocks", "_alocks_guard", "_personas"):
+        if hasattr(old_component, attr) and hasattr(new_component, attr):
+            setattr(new_component, attr, getattr(old_component, attr))
+
+
 def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
     """Defer cleanup of the old TimeIndexedMemory until process shutdown, so concurrent requests in the switchover window don't hit a released handle."""
     if manager is None:
@@ -234,6 +275,16 @@ async def reload_memory_components():
             new_event_log = event_log if event_log is not None else EventLog()
             new_persona = PersonaManager(event_log=new_event_log)
             new_reflection = ReflectionEngine(new_facts, new_persona, event_log=new_event_log)
+            # Requests may have captured the old managers before entering a
+            # long out-of-lock LLM call.  Sharing these process-local fences
+            # lets a forget on the replacement generation invalidate those
+            # late writes and keeps restore/forget mutually exclusive across
+            # the swap.
+            _share_subject_forget_state(fact_store, new_facts)
+            _share_subject_forget_state(reflection_engine, new_reflection)
+            _share_fact_store_write_state(fact_store, new_facts)
+            _share_reflection_write_locks(reflection_engine, new_reflection)
+            _share_persona_write_state(persona_manager, new_persona)
             new_cursor_store = CursorStore()
             new_outbox = Outbox()
             new_reconciler = Reconciler(new_event_log)
@@ -413,11 +464,10 @@ async def _bootstrap_embedding_worker() -> None:
     instances. Passing parameters would let the closure capture the startup-era
     old instances, bypassing the worker's designed reload-staleness protection.
     """
-    global embedding_warmup_worker, fact_dedup_resolver
+    global embedding_warmup_worker
     try:
         def _build():
             from memory.embedding_worker import EmbeddingWarmupWorker
-            from memory.fact_dedup import FactDedupResolver
             from config import VECTORS_WARMUP_DELAY_SECONDS
 
             def _current_catgirl_names() -> list[str]:
@@ -427,8 +477,6 @@ async def _bootstrap_embedding_worker() -> None:
                 except Exception:
                     return []
 
-            bound_fact_store = fact_store
-            resolver = FactDedupResolver(bound_fact_store)
             worker = EmbeddingWarmupWorker(
                 get_persona_manager=lambda: persona_manager,
                 get_reflection_engine=lambda: reflection_engine,
@@ -436,28 +484,21 @@ async def _bootstrap_embedding_worker() -> None:
                 get_character_names=_current_catgirl_names,
                 warmup_delay_seconds=VECTORS_WARMUP_DELAY_SECONDS,
                 get_dedup_resolver=lambda: fact_dedup_resolver,
+                # The same barrier brackets reload and scoped forget. A sweep
+                # that captured old managers must finish saving before either
+                # operation can erase through replacement instances.
+                get_sweep_barrier=lambda: _reload_lock,
             )
-            return worker, resolver, bound_fact_store
+            return worker
 
-        worker, resolver, bound_fact_store = await asyncio.to_thread(_build)
-        # worker 用 getter 读全局，天然 reload-safe，直接发布。
+        worker = await asyncio.to_thread(_build)
+        # worker 与 resolver 都用 getter 读全局，天然 reload-safe。
         embedding_warmup_worker = worker
-        # 但 resolver 是绑定到具体 fact_store 的实例：若 await（重 import + 构造）期间
-        # reload_memory_components() 换了 fact_store 并重绑了 fact_dedup_resolver，
-        # 这里再无条件赋值会用绑旧 store 的 resolver 覆盖掉 reload 的新 resolver，
-        # 导致 worker 的 get_fact_store 读新 store、get_dedup_resolver 读旧 resolver 错配。
-        # 因此只在当前全局 fact_store 仍是 resolver 绑定的那个时才发布。
-        if fact_store is bound_fact_store:
-            fact_dedup_resolver = resolver
-        else:
-            logger.info("[Memory] embedding worker bootstrap 与 reload 竞争，沿用 reload 已重绑的 fact_dedup_resolver")
         embedding_warmup_worker.start()
     except Exception as e:
         logger.warning(f"[Memory] embedding worker bootstrap failed: {e}")
         embedding_warmup_worker = None
-        # 不清 fact_dedup_resolver：若 await 期间 reload 已重绑了一个绑定新 store 的
-        # resolver，这里清成 None 会把 reload 的成果抹掉。bootstrap 失败本就只代表
-        # "没有 warmup worker"，resolver 该保留（None 维持原样，reload 设的则保留）。
+        # Resolver 已在核心初始化中发布；可选 worker 失败不得影响删除队列。
 
 
 async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
@@ -499,6 +540,12 @@ async def ensure_memory_server_runtime_initialized(*, reason: str = "") -> bool:
         settings_manager = ImportantSettingsManager()
         time_manager = TimeIndexedMemory(recent_history_manager)
         fact_store = FactStore(time_indexed_memory=time_manager)
+        # Queue erasure is part of the privacy runtime, not the optional
+        # vector worker. Construct the lightweight resolver before ready so
+        # scoped_forget remains available while embedding bootstrap is still
+        # running or when that best-effort bootstrap fails.
+        from memory.fact_dedup import FactDedupResolver
+        fact_dedup_resolver = FactDedupResolver(fact_store)
         event_log = EventLog()
         persona_manager = PersonaManager(event_log=event_log)
         reflection_engine = ReflectionEngine(fact_store, persona_manager, event_log=event_log)

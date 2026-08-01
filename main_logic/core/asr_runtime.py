@@ -42,6 +42,7 @@ from main_logic.voice_turn.contracts import (
     VoiceTranscriptEvent,
     VoiceTurnToken,
 )
+from main_logic.voice_turn.activity_evidence import RnnoiseEvidence
 from main_logic.voice_turn.audio_input import (
     ProcessedVoiceFrame,
     VoiceInputAudioPipeline,
@@ -159,6 +160,7 @@ class _HotSwapAudioFrame:
     token: VoiceIngressToken
     speech_probability: float | None = None
     rnnoise_available: bool = False
+    rnnoise_evidence: RnnoiseEvidence | None = None
     audio_stream_epoch: int = 0
     ingress_sequence: int = 0
 
@@ -1460,6 +1462,7 @@ class AsrRuntimeMixin:
                             token=ingress_token,
                             speech_probability=processed_frame.speech_probability,
                             rnnoise_available=processed_frame.rnnoise_available,
+                            rnnoise_evidence=processed_frame.rnnoise_evidence,
                             audio_stream_epoch=audio_epoch,
                             ingress_sequence=ingress_sequence,
                         )
@@ -1483,6 +1486,7 @@ class AsrRuntimeMixin:
                 sample_rate_hz=processed_frame.sample_rate_hz,
                 speech_probability=processed_frame.speech_probability,
                 rnnoise_available=processed_frame.rnnoise_available,
+                rnnoise_evidence=processed_frame.rnnoise_evidence,
                 ingress_token=ingress_token,
             )
         except struct.error:
@@ -1502,6 +1506,7 @@ class AsrRuntimeMixin:
         sample_rate_hz: int,
         speech_probability: float | None = None,
         rnnoise_available: bool | None = None,
+        rnnoise_evidence: RnnoiseEvidence | None = None,
         ingress_token: VoiceIngressToken | None = None,
     ) -> bool:
         route_mode = self._asr_route_mode
@@ -1602,6 +1607,7 @@ class AsrRuntimeMixin:
                 sample_rate_hz=sample_rate_hz,
                 speech_probability=speech_probability,
                 rnnoise_available=bool(rnnoise_available),
+                rnnoise_evidence=rnnoise_evidence,
             ),
             ingress_token=token,
         )
@@ -1724,6 +1730,7 @@ class AsrRuntimeMixin:
                             sample_rate_hz=16_000,
                             speech_probability=frame.speech_probability,
                             rnnoise_available=frame.rnnoise_available,
+                            rnnoise_evidence=frame.rnnoise_evidence,
                             ingress_token=token,
                         )
                     except asyncio.CancelledError:

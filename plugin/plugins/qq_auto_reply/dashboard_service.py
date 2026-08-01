@@ -70,6 +70,7 @@ class QQDashboardService:
                 "sticker_cooldown_messages": int(settings.get("sticker_cooldown_messages", 5) or 5),
                 "group_memory_enabled": bool(settings.get("group_memory_enabled", False)),
                 "group_member_memory_enabled": bool(settings.get("group_member_memory_enabled", False)),
+                "private_participant_memory_enabled": bool(settings.get("private_participant_memory_enabled", False)),
                 "allow_cross_group_context": bool(settings.get("allow_cross_group_context", False)),
             },
             "guide": {
@@ -169,6 +170,7 @@ class QQDashboardService:
         retroactive_review_max_reply: Optional[int] = None,
         group_memory_enabled: Optional[bool] = None,
         group_member_memory_enabled: Optional[bool] = None,
+        private_participant_memory_enabled: Optional[bool] = None,
         allow_cross_group_context: Optional[bool] = None,
         strategy_mode: Optional[str] = None,
         qq_connection_mode: Optional[str] = None,
@@ -194,6 +196,7 @@ class QQDashboardService:
                 retroactive_review_max_reply=retroactive_review_max_reply,
                 group_memory_enabled=group_memory_enabled,
                 group_member_memory_enabled=group_member_memory_enabled,
+                private_participant_memory_enabled=private_participant_memory_enabled,
                 allow_cross_group_context=allow_cross_group_context,
                 strategy_mode=strategy_mode,
                 qq_connection_mode=qq_connection_mode,

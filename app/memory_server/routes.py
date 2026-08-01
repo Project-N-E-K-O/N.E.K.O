@@ -816,6 +816,12 @@ class ScopedFactInput(BaseModel):
 class ScopedFactsWriteRequest(BaseModel):
     subject: MemorySubjectRequest
     facts: list[ScopedFactInput]
+    # Optional human-readable name for the subject (group name / member
+    # nickname). Untrusted user data: sanitized like speaker_label, then
+    # stamped onto the subject's existing persona section metadata so the
+    # rendered section header can show a name instead of the bare id.
+    # Purely cosmetic — never part of the isolation key.
+    display_name: str | None = None
 
 
 class ScopedHistorySegment(BaseModel):
@@ -830,6 +836,9 @@ class ScopedHistorySegment(BaseModel):
     # Stage one of the speaker-trust mechanism: stored on each fact,
     # consumed by nothing yet.
     speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Optional display name for this segment's subject (see
+    # ScopedFactsWriteRequest.display_name).
+    display_name: str | None = None
 
 
 class ScopedHistoryRequest(BaseModel):
@@ -840,11 +849,21 @@ class ScopedHistoryRequest(BaseModel):
     input_history: str | None = None
     subject: MemorySubjectRequest | None = None
     # Optional speaker identity for single-speaker batches (group-member
-    # buckets). The extraction prompt otherwise renders every 'user' turn as
-    # the configured private-chat master and extracts facts about the master,
-    # misattributing member statements. Group digests omit it — their turns
-    # already carry per-message speaker headers in the content.
+    # buckets, private participant digests). The extraction prompt otherwise
+    # renders every 'user' turn as the configured private-chat master and
+    # extracts facts about the master, misattributing member statements.
+    # Group digests omit it — their turns already carry per-message speaker
+    # headers in the content.
     speaker_label: str | None = None
+    # Optional 0..1 initial trust for the single speaker (same field the
+    # batched segments carry; stage one of the speaker-trust mechanism).
+    # Only meaningful alongside speaker_label — without a speaker there is
+    # no one to trust, so the handler drops it when the label is absent.
+    speaker_trust: float | None = Field(default=None, ge=0.0, le=1.0)
+    # Optional display name for the single-subject shape's subject (see
+    # ScopedFactsWriteRequest.display_name). Group digests pass the group
+    # name here.
+    display_name: str | None = None
     # Batched multi-speaker shape: one extraction call covers every segment,
     # each dispatched back to its own subject. Mutually exclusive with the
     # legacy fields. Internal endpoint (the QQ plugin is the only caller,
@@ -886,6 +905,50 @@ class QueryMemoryRequest(BaseModel):
     language: str | None = None
 
 
+def _sanitized_display_name(raw: str | None, *, context: str) -> str | None:
+    """Normalize an untrusted display_name from a scoped write request.
+
+    Same length contract as speaker_label (>64 is a caller bug, fail loud);
+    same structural-character neutralization (the value ends up in a prompt
+    section header, the exact attack surface #2605 closed for speaker_label).
+    Unlike speaker_label there is no fallback when sanitization empties it:
+    the name is cosmetic, absent is a valid state.
+    """
+    if raw is None:
+        return None
+    value = raw.strip()
+    if not value:
+        return None
+    if len(value) > 64:
+        raise HTTPException(
+            status_code=422,
+            detail=f"{context}: display_name must contain at most 64 characters",
+        )
+    from memory.facts import FactStore
+
+    return FactStore.sanitize_speaker_label(value) or None
+
+
+async def _stamp_subject_display_name(
+    lanlan_name: str, subject, display_name: str | None,
+) -> None:
+    """Best-effort display-name refresh after a successful scoped write.
+
+    Never fails the write: the facts are already persisted, and a display
+    name is metadata the next write can supply again.
+    """
+    if not display_name or runtime.persona_manager is None:
+        return
+    try:
+        await runtime.persona_manager.aupdate_subject_display_name(
+            lanlan_name, subject, display_name,
+        )
+    except Exception as exc:
+        logger.warning(
+            f"[scoped] display_name 刷新失败（忽略，写入已完成）: {exc}"
+        )
+
+
 @app.post("/internal/memory/{lanlan_name}/scoped_facts")
 async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
     """Append already-extracted facts to one explicit group/member subject.
@@ -917,11 +980,15 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             "source": item.source,
         })
     subject = req.subject.to_domain()
+    display_name = _sanitized_display_name(
+        req.display_name, context="scoped_facts",
+    )
     created = await runtime.fact_store.apersist_scoped_facts(
         lanlan_name,
         extracted,
         subject=subject,
     )
+    await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "stored",
         "subject": subject.as_entry_fields(),
@@ -960,17 +1027,33 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             status_code=422,
             detail="input_history must contain 1..200 messages",
         )
-    speaker_label = (req.speaker_label or "").strip() or None
-    if speaker_label and len(speaker_label) > 64:
+    raw_speaker_label = (req.speaker_label or "").strip() or None
+    if raw_speaker_label and len(raw_speaker_label) > 64:
         raise HTTPException(
             status_code=422,
             detail="speaker_label must contain at most 64 characters",
         )
-    # provenance 只认调用方真给的 label（信赖度阶段一：谁说的）。必须在
-    # 下面的群 digest 缺省填充**之前**定格——集体描述符不是发言人。
-    speaker_provenance = (
-        {"speaker_label": speaker_label} if speaker_label else None
+    from memory.facts import FactExtractionFailed, FactStore
+
+    speaker_label = (
+        FactStore.sanitize_speaker_label(raw_speaker_label)
+        if raw_speaker_label else None
     )
+    if raw_speaker_label and not speaker_label:
+        raise HTTPException(
+            status_code=422,
+            detail="speaker_label must contain non-structural characters",
+        )
+    # provenance 只认调用方真给的 label（信赖度阶段一：谁说的）。必须在
+    # 下面的群 digest 缺省填充**之前**定格——集体描述符不是发言人。trust
+    # 挂在 label 上：没有发言人就没有可信赖的对象（群 digest 无 label 时
+    # 即便调用方误传 trust 也丢弃）；trust 缺省时不放键，provenance 形状
+    # 与批段路径的 _speaker_provenance_of 一致。
+    speaker_provenance = None
+    if speaker_label:
+        speaker_provenance = {"speaker_label": speaker_label}
+        if req.speaker_trust is not None:
+            speaker_provenance["speaker_trust"] = req.speaker_trust
     subject = req.subject.to_domain()
     locale_order = None
     if is_supported_language_code(req.language):
@@ -979,6 +1062,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             lanlan_name,
             subject,
         )
+    display_name = _sanitized_display_name(
+        req.display_name, context="scoped_history",
+    )
     if speaker_label is None and subject.kind == "group_chat":
         # 群 digest 无单一发言人：不给 label 时 legacy prompt 会把提取
         # 框定为"只找关于私聊主人的事实"，成员自述被当空提取 checkpoint
@@ -988,8 +1074,6 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         from config.prompts.prompts_memory import get_group_digest_speaker_label
         from utils.language_utils import get_global_language_full
         speaker_label = get_group_digest_speaker_label(get_global_language_full())
-    from memory.facts import FactExtractionFailed
-
     # fail_closed：调用方（QQ 插件 finalize/focus-shift）在成功响应后会推进
     # 游标、丢弃 member bucket——这些历史只存在于调用方内存里，没有像 legacy
     # /process 那样先落 time_indexed.db。抽取失败必须以 HTTP 错误暴露出去
@@ -1016,6 +1100,7 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             req.language,
             order=locale_order,
         )
+    await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
@@ -1049,6 +1134,8 @@ async def _process_scoped_history_segments(
         req.input_history is not None
         or req.subject is not None
         or req.speaker_label is not None
+        or req.speaker_trust is not None
+        or req.display_name is not None
     ):
         raise HTTPException(
             status_code=422,
@@ -1123,6 +1210,9 @@ async def _process_scoped_history_segments(
             "subject": subject,
             "speaker_label": speaker_label,
             "speaker_trust": segment.speaker_trust,
+            "display_name": _sanitized_display_name(
+                segment.display_name, context=f"segment {position}",
+            ),
         })
     if total_messages > SCOPED_HISTORY_BATCH_MAX_MESSAGES:
         # 单批的 LLM 输入工作量上界与 legacy 单发同一口径：调用方按这个
@@ -1179,6 +1269,13 @@ async def _process_scoped_history_segments(
             lanlan_name,
             locale_updates,
         )
+    for segment, result in zip(parsed, segment_results):
+        # 只给「模型对这一段给出了结论」的段刷新显示名：失败段整桶保留
+        # 重试，下次照样带名字来，不必在失败路径上碰 persona。
+        if result.get("status") == "ok":
+            await _stamp_subject_display_name(
+                lanlan_name, segment["subject"], segment.get("display_name"),
+            )
     return {
         "status": "processed",
         "segments": [
@@ -1278,6 +1375,112 @@ async def _get_scoped_context(lanlan_name: str, req: ScopedContextRequest):
         include_legacy_private=False,
     )
     return PlainTextResponse(rendered)
+
+
+class ScopedForgetRequest(BaseModel):
+    subject: MemorySubjectRequest
+
+
+@app.post("/internal/memory/{lanlan_name}/scoped_forget")
+async def forget_scoped_subject(lanlan_name: str, req: ScopedForgetRequest):
+    """Delete every stored memory of one exact (subject, scope) domain.
+
+    撤回入口：删好友/退群之后，该 subject 的 facts（活跃 + 归档）、
+    reflections（含 surfaced 引用）、persona section（含 display_name）、
+    pending corrections 一次清干净——此前四个 scoped 端点只进不出，
+    建档没有任何撤回路径。精确匹配 (key, scope)：legacy 无戳语料与其它
+    scope 永不落入删除面。幂等：重复调用报 0。部分失败以 500 暴露，
+    重试安全（已删的不会复活）。reflection/persona 归档分片作为事件溯源
+    留底；持久化 forget 水位确保其即使被事件重放重建，也不能再被 restore。
+    """  # noqa: DOCSTRING_CJK
+    lanlan_name = validate_lanlan_name(lanlan_name)
+    if (
+        runtime.fact_store is None
+        or runtime.fact_dedup_resolver is None
+        or runtime.persona_manager is None
+        or runtime.reflection_engine is None
+    ):
+        raise HTTPException(
+            status_code=503,
+            detail="memory_server not fully initialized (limited mode or startup incomplete)",
+        )
+    subject = req.subject.to_domain()
+    stats: dict = {}
+    fact_forget_started = False
+    reflection_forget_started = False
+    # Component references are atomically replaced under this lock. Keep the
+    # same generation alive until every tombstone is closed, otherwise reload
+    # can split one forget transaction across old and new managers.
+    await runtime._reload_lock.acquire()
+    subject_transaction_lock = None
+    subject_transaction_acquired = False
+    try:
+        subject_transaction_lock = (
+            runtime.fact_store._get_subject_forget_transaction_lock(
+                lanlan_name, subject,
+            )
+        )
+        await subject_transaction_lock.acquire()
+        subject_transaction_acquired = True
+        # Bracket the whole multi-store transaction on both write paths.
+        # Fact extraction and reflection synthesis release their locks during
+        # LLM calls; work that starts before *or anywhere inside* this interval
+        # must not write after the endpoint reports forgotten.
+        await runtime.fact_store.abegin_subject_forget(lanlan_name, subject)
+        fact_forget_started = True
+        await runtime.reflection_engine.abegin_subject_forget(
+            lanlan_name, subject,
+        )
+        reflection_forget_started = True
+        stats.update(
+            await runtime.fact_dedup_resolver.aforget_subject(
+                lanlan_name, subject,
+            )
+        )
+        stats.update(await runtime.fact_store.aforget_subject(lanlan_name, subject))
+        stats.update(
+            await runtime.reflection_engine.aforget_subject(lanlan_name, subject)
+        )
+        stats.update(
+            await runtime.persona_manager.aforget_subject(lanlan_name, subject)
+        )
+        # Reflection/persona archive writers take their store locks. Their
+        # forget calls above therefore drain any writer that had already
+        # snapshotted this subject. Advance the persistent cutoff only now,
+        # while both write tombstones are still open, so a snapshot archived
+        # after the initial facts erase cannot become restore-eligible.
+        await runtime.fact_store.afinalize_subject_forget(
+            lanlan_name, subject,
+        )
+    except Exception as exc:
+        logger.error(f"[scoped_forget] {lanlan_name}: 删除失败: {exc}")
+        raise HTTPException(
+            status_code=500,
+            detail="scoped forget failed; retry is safe and idempotent",
+        ) from exc
+    finally:
+        try:
+            try:
+                if reflection_forget_started:
+                    await runtime.reflection_engine.aend_subject_forget(
+                        lanlan_name, subject,
+                    )
+            finally:
+                # Never strand the fact-write tombstone if the independent
+                # reflection close encounters an unexpected failure.
+                if fact_forget_started:
+                    await runtime.fact_store.aend_subject_forget(
+                        lanlan_name, subject,
+                    )
+        finally:
+            if subject_transaction_acquired:
+                subject_transaction_lock.release()
+            runtime._reload_lock.release()
+    return {
+        "status": "forgotten",
+        "subject": subject.as_entry_fields(),
+        **stats,
+    }
 
 
 @app.post("/internal/memory/{lanlan_name}/scoped_mentions")
