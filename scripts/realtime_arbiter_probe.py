@@ -415,7 +415,13 @@ class _Probe:
             # signalling on them made the barge-in cancel a reply that had
             # produced nothing — the 0.05s figure that measured was
             # cancellation of silence, not interruption.
-            if etype in _OUTPUT_DELTA_TYPES:
+            # Gated to the turn that is actually open. A cancelled earlier
+            # response can emit buffered deltas after the next turn has begun,
+            # and `_resolve` correctly attributes them to the OLD turn — but
+            # setting the shared event anyway told the new turn its own reply
+            # had started, so a barge-in would cancel a response that was still
+            # silent.
+            if etype in _OUTPUT_DELTA_TYPES and turn is not None and turn is self._open:
                 self._first_delta.set()
 
     @staticmethod

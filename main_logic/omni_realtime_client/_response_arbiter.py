@@ -1763,9 +1763,17 @@ class RealtimeResponseArbiter:
 
             if queued.item_ack is not None:
                 try:
-                    await asyncio.wait_for(
-                        asyncio.shield(queued.item_ack), queued.item_ack_timeout
-                    )
+                    # The one bound that was not instrumented, which made
+                    # "no wait spent half its allowance" a claim nothing could
+                    # back for it. It is also the bound I once mis-reported as
+                    # over budget from outside the arbiter, so leaving it
+                    # unmeasured from inside was the worst possible gap.
+                    with self._report_wait_margin(
+                        "conversation item ack", queued.item_ack_timeout
+                    ):
+                        await asyncio.wait_for(
+                            asyncio.shield(queued.item_ack), queued.item_ack_timeout
+                        )
                     item_acked = True
                     queued.item_acked = True
                 except asyncio.TimeoutError:

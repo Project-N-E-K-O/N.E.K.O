@@ -1,4 +1,5 @@
 import asyncio
+import logging
 import gc
 import json
 from types import MethodType
@@ -3338,3 +3339,47 @@ async def test_a_barge_in_cancels_a_response_whose_id_is_zero():
     assert "response.cancel" in sent, (
         "id 0 names a live response; the barge-in must actually cancel it"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_the_item_ack_wait_reports_what_it_spent(caplog):
+    # Six of the arbiter's seven bounded waits were instrumented; the item ack
+    # was not. That made "no wait spent half its allowance" a claim nothing
+    # could back for it — and it is the same bound I once reported as over
+    # budget from OUTSIDE the arbiter, which is exactly the measurement this
+    # instrumentation exists to replace.
+    sent = []
+
+    async def send(event):
+        sent.append(dict(event))
+        # The ack is never delivered, so the wait burns its whole allowance.
+
+    arbiter = RealtimeResponseArbiter(send)
+    with caplog.at_level(
+        logging.INFO, logger="main_logic.omni_realtime_client._response_arbiter"
+    ):
+        ticket = await arbiter.enqueue(
+            source="external_asr",
+            events_before_response=(
+                {
+                    "type": "conversation.item.create",
+                    "item": {"id": "item-ours", "role": "user"},
+                },
+            ),
+            response_event={"type": "response.create"},
+            ack_expected=True,
+            expected_item_id="item-ours",
+            expected_item_role="user",
+            item_ack_timeout=0.05,
+            response_started_timeout=0.05,
+            cancel_timeout=0.05,
+        )
+        await asyncio.wait_for(ticket.sent, 1.0)
+        await asyncio.sleep(0.1)
+
+    assert any(
+        "conversation item ack waited" in record.getMessage()
+        for record in caplog.records
+    ), "an item-ack wait that spends its allowance must say so"
+    await arbiter.shutdown()
