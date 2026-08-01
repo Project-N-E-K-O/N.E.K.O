@@ -1835,6 +1835,7 @@ async def _retry_new_dialog_locale(
     locale_admission_order: int,
 ) -> None:
     """Retry a deferred locale write until it succeeds or becomes stale."""
+    persistence_retry_delay = 0.25
     while _new_dialog_locale_generations.get(lanlan_name) == generation:
         try:
             await _write_new_dialog_locale(
@@ -1851,11 +1852,15 @@ async def _retry_new_dialog_locale(
             await asyncio.sleep(0.25)
         except locale_state.PromptLocalePersistenceError as exc:
             logger.warning(
-                "[PromptLocale] %s: new-dialog locale persistence failed: %s",
+                "[PromptLocale] %s: new-dialog locale persistence failed; retrying: %s",
                 lanlan_name,
                 exc,
             )
-            return
+            await asyncio.sleep(persistence_retry_delay)
+            persistence_retry_delay = min(
+                persistence_retry_delay * 2,
+                30.0,
+            )
 
 
 async def _new_dialog(lanlan_name: str, language: str | None = None):

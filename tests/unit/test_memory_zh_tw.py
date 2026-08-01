@@ -869,27 +869,22 @@ async def test_new_dialog_locale_retry_retries_invalidated_write(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_new_dialog_locale_retry_stops_after_permanent_failure(monkeypatch):
-    from unittest.mock import AsyncMock
+async def test_new_dialog_locale_retry_backs_off_after_persistence_failure(monkeypatch):
+    from unittest.mock import AsyncMock, call
 
     from app.memory_server import locale_state, routes
 
-    attempts = 0
-
-    def reserve(_name, *, order):
-        nonlocal attempts
-        assert order == 42
-        attempts += 1
-        raise locale_state.PromptLocalePersistenceError("disk full")
-
     generation = routes._new_dialog_locale_generations.get("BrokenNeko", 0) + 1
     routes._new_dialog_locale_generations["BrokenNeko"] = generation
-    sleep = AsyncMock()
-    monkeypatch.setattr(
-        locale_state,
-        "reserve_character_prompt_locale_order",
-        reserve,
+    writer = AsyncMock(
+        side_effect=[
+            locale_state.PromptLocalePersistenceError("disk full"),
+            locale_state.PromptLocalePersistenceError("disk still full"),
+            None,
+        ]
     )
+    sleep = AsyncMock()
+    monkeypatch.setattr(routes, "_write_new_dialog_locale", writer)
     monkeypatch.setattr(routes.asyncio, "sleep", sleep)
 
     await routes._retry_new_dialog_locale(
@@ -899,8 +894,8 @@ async def test_new_dialog_locale_retry_stops_after_permanent_failure(monkeypatch
         locale_admission_order=42,
     )
 
-    assert attempts == 1
-    sleep.assert_not_awaited()
+    assert writer.await_count == 3
+    assert sleep.await_args_list == [call(0.25), call(0.5)]
 
 
 @pytest.mark.asyncio
