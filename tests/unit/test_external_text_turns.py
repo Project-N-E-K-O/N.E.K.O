@@ -3242,3 +3242,67 @@ async def test_the_release_does_not_guess_who_owns_the_skip_flag():
         "the release must not guess: the flag may already belong to a queued "
         "successor that asked to be skipped"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_zero_id_is_still_an_identity_to_the_stale_filter():
+    # The arbiter half of this is
+    # test_a_response_id_of_zero_is_an_identity_not_an_absence. Without the
+    # transport half the arbiter's correction is useless: the stale filter kept
+    # its own truthiness test, so once response `0` was followed by a
+    # successor, `0`'s late deltas, tool events and terminal slipped through —
+    # and a late terminal reaching the ordinary finalization path would end the
+    # SUCCESSOR's turn.
+    import json as _json
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _Socket:
+        def __init__(self, frames):
+            self._frames = frames
+
+        async def __aiter__(self):
+            for frame in self._frames:
+                yield _json.dumps(frame)
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+        async def send(self, *_a, **_k):
+            return None
+
+        async def close(self, *_a, **_k):
+            return None
+
+    fired = []
+
+    async def _on_done():
+        fired.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    client._fatal_error_occurred = False
+    client.ws = _Socket(
+        [
+            {"type": "response.created", "response": {"id": 0}},
+            {"type": "response.created", "response": {"id": 1}},
+            # Response 0's terminal, arriving after 1 became current.
+            {"type": "response.done", "response": {"id": 0, "status": "completed"}},
+        ]
+    )
+    try:
+        await asyncio.wait_for(client.handle_messages(), 1)
+    except (asyncio.TimeoutError, Exception):
+        # The socket parks after its frames; the bound expiring is the end of
+        # the scenario, and the assertions below judge it.
+        pass
+
+    assert fired == [], (
+        "response 0's terminal must not finalize the turn response 1 owns"
+    )
+    assert client._current_response_id == 1

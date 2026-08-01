@@ -1619,14 +1619,25 @@ class _TransportMixin:
                 # include response identity let us reject those late events
                 # without changing the legacy behaviour of id-less proxies.
                 if event_type != "response.created":
+                    # Presence, not truthiness, on both reads — the same
+                    # correction the arbiter's `_event_response_id` gets in this
+                    # PR, and useless without it. A provider numbering from zero
+                    # would have response `0`'s late deltas, tool events and
+                    # terminal slip past this filter once a successor is
+                    # current, and a late terminal would then run the ordinary
+                    # host finalization against that successor.
                     event_response_id = event.get("response_id")
-                    if event_type == "response.done" and not event_response_id:
+                    if event_response_id is None and event_type == "response.done":
                         response = event.get("response")
                         if isinstance(response, dict):
                             event_response_id = response.get("id")
+                    if event_response_id is not None:
+                        event_response_id = str(event_response_id) or None
+                    tracked = self._current_response_id
+                    tracked_text = None if tracked is None else str(tracked)
                     if (
-                        event_response_id
-                        and event_response_id != self._current_response_id
+                        event_response_id is not None
+                        and event_response_id != tracked_text
                         # ...unless this connection has never announced a
                         # response at all. A provider that omits
                         # response.created never writes _current_response_id,
