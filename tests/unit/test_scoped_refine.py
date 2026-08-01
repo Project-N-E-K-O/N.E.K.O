@@ -576,6 +576,16 @@ async def test_apply_persona_merge_stamps_subject_and_consumes_sources(tmp_path)
     assert by_id['p2']['last_refine_cluster_hash'] == "hash123"
 
 
+def test_scoped_refine_prompt_hides_residual_mixed_trust():
+    from app.memory_server.refine_loops import _scoped_prompt_trust_band
+
+    assert _scoped_prompt_trust_band({
+        "speaker_trust": 0.9,
+        "speaker_provenance_mixed": True,
+    }) == "unknown"
+    assert _scoped_prompt_trust_band({"speaker_trust": 0.9}) == "high"
+
+
 @pytest.mark.asyncio
 async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_path):
     fs, pm, re = _install(str(tmp_path))

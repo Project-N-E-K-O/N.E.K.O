@@ -1134,6 +1134,26 @@ class FactStore:
             for prior in facts:
                 if not isinstance(prior, dict) or not _in_signal_scope(prior):
                     continue
+                # A server-issued signal is persisted before the response is
+                # returned.  Re-deliver it after a lost response; the plugin's
+                # durable event-id ledger makes this replay idempotent.
+                for recorded in prior.get('_speaker_trust_signal_events') or []:
+                    if not isinstance(recorded, dict):
+                        continue
+                    event_id = str(recorded.get('event_id') or '').strip()[:96]
+                    if (
+                        event_id
+                        and event_id not in seen_event_ids
+                        and stable_speaker_id(
+                            recorded.get('source_speaker_id')
+                        ) == source_id
+                        and recorded.get('kind') in {
+                            'confirmation', 'correction',
+                        }
+                        and stable_speaker_id(recorded.get('speaker_id'))
+                    ):
+                        seen_event_ids.add(event_id)
+                        events.append(dict(recorded))
                 if prior.get('speaker_provenance_mixed') is True:
                     continue
                 target_id = stable_speaker_id(prior.get('speaker_id'))
@@ -1179,6 +1199,74 @@ class FactStore:
                     'source_fact_id': source_fact_id,
                 })
         return events
+
+    async def apersist_speaker_trust_events(
+        self, name: str, events: list[dict],
+    ) -> int:
+        """Durably attach issued owner signals to their source facts."""
+        from memory.speaker_trust import stable_speaker_id
+
+        valid_by_fact: dict[str, list[dict]] = {}
+        for raw in events or []:
+            if not isinstance(raw, dict):
+                continue
+            fact_id = str(raw.get('source_fact_id') or '').strip()
+            event_id = str(raw.get('event_id') or '').strip()[:96]
+            speaker_id = stable_speaker_id(raw.get('speaker_id'))
+            source_speaker_id = stable_speaker_id(raw.get('source_speaker_id'))
+            kind = raw.get('kind')
+            if (
+                not fact_id or not event_id or speaker_id is None
+                or source_speaker_id is None
+                or kind not in {'confirmation', 'correction'}
+            ):
+                continue
+            valid_by_fact.setdefault(fact_id, []).append({
+                'kind': kind,
+                'speaker_id': speaker_id,
+                'event_id': event_id,
+                'source_speaker_id': source_speaker_id,
+                'source_fact_id': fact_id,
+            })
+        if not valid_by_fact:
+            return 0
+
+        async with self._get_persist_alock(name):
+            await self.aload_facts(name)
+
+            def _persist() -> int:
+                changed = 0
+                with self._get_lock(name):
+                    facts = self._facts.get(name) or []
+                    for fact in facts:
+                        if not isinstance(fact, dict):
+                            continue
+                        additions = valid_by_fact.get(str(fact.get('id') or ''))
+                        if not additions:
+                            continue
+                        recorded = fact.get('_speaker_trust_signal_events')
+                        if not isinstance(recorded, list):
+                            recorded = []
+                            fact['_speaker_trust_signal_events'] = recorded
+                        known = {
+                            str(item.get('event_id') or '')
+                            for item in recorded if isinstance(item, dict)
+                        }
+                        for event in additions:
+                            if event['event_id'] not in known:
+                                recorded.append(event)
+                                known.add(event['event_id'])
+                                changed += 1
+                    if changed:
+                        self.save_facts(name, _fact_lock_held=True)
+                return changed
+
+            persist_task = asyncio.create_task(asyncio.to_thread(_persist))
+            try:
+                return await asyncio.shield(persist_task)
+            except asyncio.CancelledError:
+                await persist_task
+                raise
 
     async def arestore_arbitrated_fact(self, name: str, fact_id: str) -> bool:
         """Restore one arbitration archive row by its logged fact id."""

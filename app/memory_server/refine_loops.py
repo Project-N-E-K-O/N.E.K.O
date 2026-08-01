@@ -36,6 +36,15 @@ from .gates import (
 )
 
 
+def _scoped_prompt_trust_band(entry: dict) -> str:
+    """Render mixed-source rows as unknown in LLM-facing refine prompts."""
+    from memory.speaker_trust import trust_band
+
+    if entry.get('speaker_provenance_mixed') is True:
+        return 'unknown'
+    return trust_band(entry.get('speaker_trust'))
+
+
 # ── Phase A-4 / A-5: MemoryRefineEngine 接 cron ─────────────────────
 
 
@@ -314,7 +323,6 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
                 engine_ref, character, bucket.subject, cluster, cluster_hash,
             )
 
-    from memory.speaker_trust import trust_band
     result = await lite.refine_pass(
         buckets,
         apply_fn=_apply,
@@ -322,7 +330,7 @@ async def _run_scoped_refine_for_character(character: str) -> bool:
         failure_fn=_failure,
         start_after=_scoped_refine_cursor.get(character),
         # prompt 只看 coarse band；精确值仅供 apply 的代码侧 margin 仲裁。
-        trust_of=lambda entry: trust_band(entry.get('speaker_trust')),
+        trust_of=_scoped_prompt_trust_band,
     )
     if result.get('served') is not None:
         _scoped_refine_cursor[character] = result['served']

@@ -163,7 +163,6 @@ class PermissionManager:
     @staticmethod
     def _normalize_speaker_profile(value: Dict[str, Any] | None) -> Dict[str, Any]:
         from config import (
-            SPEAKER_TRUST_ADJUSTMENT_LIMIT,
             SPEAKER_TRUST_EVENT_HISTORY_LIMIT,
         )
 
@@ -174,10 +173,6 @@ class PermissionManager:
             adjustment = 0.0
         if not math.isfinite(adjustment):
             adjustment = 0.0
-        adjustment = max(
-            -SPEAKER_TRUST_ADJUSTMENT_LIMIT,
-            min(SPEAKER_TRUST_ADJUSTMENT_LIMIT, adjustment),
-        )
         try:
             message_count = max(0, int(raw.get("message_count", 0) or 0))
         except (TypeError, ValueError, OverflowError):
@@ -238,6 +233,7 @@ class PermissionManager:
     ) -> float:
         """Global per-QQ trust shared by every group and private participant."""
         from config import (
+            SPEAKER_TRUST_ADJUSTMENT_LIMIT,
             SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
             SPEAKER_TRUST_ACTIVITY_WEIGHT,
             SPEAKER_TRUST_BY_PERMISSION_LEVEL,
@@ -251,7 +247,11 @@ class PermissionManager:
         level = permission_level or self.get_permission_level(qq)
         base = SPEAKER_TRUST_BY_PERMISSION_LEVEL.get(level, SPEAKER_TRUST_DEFAULT)
         profile = self._speaker_trust_profiles.get(qq) or {}
-        adjustment = float(profile.get("adjustment", 0.0) or 0.0)
+        raw_adjustment = float(profile.get("adjustment", 0.0) or 0.0)
+        adjustment = max(
+            -SPEAKER_TRUST_ADJUSTMENT_LIMIT,
+            min(SPEAKER_TRUST_ADJUSTMENT_LIMIT, raw_adjustment),
+        )
         activity = min(
             SPEAKER_TRUST_ACTIVITY_MAX_BONUS,
             max(0, int(profile.get("message_count", 0) or 0))
@@ -282,7 +282,6 @@ class PermissionManager:
     def apply_speaker_trust_events(self, events: list[dict]) -> int:
         """Apply only server-issued deterministic owner signals, idempotently."""
         from config import (
-            SPEAKER_TRUST_ADJUSTMENT_LIMIT,
             SPEAKER_TRUST_CONFIRMATION_DELTA,
             SPEAKER_TRUST_CORRECTION_DELTA,
         )
@@ -314,12 +313,12 @@ class PermissionManager:
                 if kind == "confirmation"
                 else -SPEAKER_TRUST_CORRECTION_DELTA
             )
-            profile["adjustment"] = max(
-                -SPEAKER_TRUST_ADJUSTMENT_LIMIT,
-                min(
-                    SPEAKER_TRUST_ADJUSTMENT_LIMIT,
-                    float(profile.get("adjustment", 0.0) or 0.0) + delta,
-                ),
+            # Keep the authored signal sum lossless.  Clamping each write is
+            # non-commutative near the cap, so concurrent session completion
+            # order could change the final trust.  The effective adjustment is
+            # capped in get_speaker_trust() instead.
+            profile["adjustment"] = (
+                float(profile.get("adjustment", 0.0) or 0.0) + delta
             )
             applied += 1
         return applied

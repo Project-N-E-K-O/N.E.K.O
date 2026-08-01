@@ -227,6 +227,9 @@ class FactsMixin:
             entry.update(subject.as_entry_fields())
         if speaker_provenance:
             from memory.speaker_trust import normalize_trust, stable_speaker_id
+            if speaker_provenance.get('speaker_provenance_mixed') is True:
+                entry['speaker_provenance_mixed'] = True
+                return entry
             speaker_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
             if speaker_id is not None:
                 entry['speaker_id'] = speaker_id

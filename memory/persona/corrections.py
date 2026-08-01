@@ -78,10 +78,17 @@ class CorrectionsMixin:
                 ):
                     if not isinstance(provenance, dict):
                         continue
+                    mixed_key = f'{prefix}_speaker_provenance_mixed'
+                    if provenance.get('speaker_provenance_mixed') is True:
+                        existing.pop(f'{prefix}_speaker_id', None)
+                        existing.pop(f'{prefix}_speaker_trust', None)
+                        if existing.get(mixed_key) is not True:
+                            existing[mixed_key] = True
+                            changed = True
+                        continue
                     speaker_id = stable_speaker_id(provenance.get('speaker_id'))
                     if speaker_id is None:
                         continue
-                    mixed_key = f'{prefix}_speaker_provenance_mixed'
                     if existing.get(mixed_key) is True:
                         continue
                     raw_trust = provenance.get('speaker_trust')
@@ -135,6 +142,9 @@ class CorrectionsMixin:
             ('new', new_speaker_provenance),
         ):
             if not isinstance(provenance, dict):
+                continue
+            if provenance.get('speaker_provenance_mixed') is True:
+                item[f'{prefix}_speaker_provenance_mixed'] = True
                 continue
             speaker_id = stable_speaker_id(provenance.get('speaker_id'))
             if speaker_id is not None:

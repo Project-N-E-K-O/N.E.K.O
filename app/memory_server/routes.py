@@ -1110,6 +1110,12 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_is_owner=True,
             facts_snapshot=active_signal_facts,
         )
+        if trust_events:
+            persist_events = getattr(
+                runtime.fact_store, 'apersist_speaker_trust_events', None,
+            )
+            if persist_events is not None:
+                await persist_events(lanlan_name, trust_events)
     return {
         "status": "processed",
         "subject": subject.as_entry_fields(),
@@ -1384,6 +1390,12 @@ async def _process_scoped_history_segments(
                     facts_snapshot=active_signal_facts,
                 )
             )
+            if segment["trust_events"]:
+                persist_events = getattr(
+                    runtime.fact_store, 'apersist_speaker_trust_events', None,
+                )
+                if persist_events is not None:
+                    await persist_events(lanlan_name, segment["trust_events"])
     return {
         "status": "processed",
         "segments": [

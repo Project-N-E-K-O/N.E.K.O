@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import threading
 import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -93,6 +94,46 @@ def test_owner_signal_replay_ledger_survives_history_limit():
         speaker_trust_profiles={"1001": before},
     )
     assert reloaded.apply_speaker_trust_events([signals[0]]) == 0
+
+
+def test_owner_signal_adjustment_is_independent_of_writer_completion_order():
+    from config import SPEAKER_TRUST_ADJUSTMENT_LIMIT
+
+    signals = [
+        {"kind": "confirmation", "speaker_id": "qq:1001", "event_id": "c1"},
+        {"kind": "correction", "speaker_id": "qq:1001", "event_id": "x1"},
+    ]
+    forward = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={
+            "1001": {"adjustment": SPEAKER_TRUST_ADJUSTMENT_LIMIT},
+        },
+    )
+    reverse = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={
+            "1001": {"adjustment": SPEAKER_TRUST_ADJUSTMENT_LIMIT},
+        },
+    )
+
+    forward.apply_speaker_trust_events(signals)
+    reverse.apply_speaker_trust_events(list(reversed(signals)))
+
+    forward_profile = forward.speaker_trust_profiles()["1001"]
+    reverse_profile = reverse.speaker_trust_profiles()["1001"]
+    assert forward_profile["adjustment"] == pytest.approx(
+        reverse_profile["adjustment"]
+    )
+    assert forward.get_speaker_trust("1001") == pytest.approx(
+        reverse.get_speaker_trust("1001")
+    )
+    reloaded = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={"1001": forward_profile},
+    )
+    assert reloaded.speaker_trust_profiles()["1001"]["adjustment"] == pytest.approx(
+        forward_profile["adjustment"]
+    )
 
 
 def test_durable_signal_ledger_normalizes_in_linear_time():
@@ -326,6 +367,44 @@ async def test_mixed_fact_with_residual_speaker_id_emits_no_owner_signal():
 
 
 @pytest.mark.asyncio
+async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry():
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    fact = {
+        "id": "smart", "text": "Alice is smart", "speaker_id": "qq:1001",
+        **target.as_entry_fields(),
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [fact]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store.aload_facts = AsyncMock(return_value=[fact])
+    store.save_facts = MagicMock()
+    messages = [{"role": "user", "content": "Alice is not smart"}]
+    provenance = {"speaker_id": "qq:9999", "speaker_trust": 1.0}
+    event = (await store.aevaluate_speaker_trust_events(
+        "Neko", messages, subject=owner,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=[fact],
+    ))[0]
+
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == 1
+    store.save_facts.assert_called_once_with("Neko", _fact_lock_held=True)
+
+    fact.pop("speaker_id")
+    fact["speaker_provenance_mixed"] = True
+    replayed = await store.aevaluate_speaker_trust_events(
+        "Neko", messages, subject=owner,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=[fact],
+    )
+    assert replayed == [event]
+
+
+@pytest.mark.asyncio
 async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
     from memory.facts import FactStore
 
@@ -408,6 +487,25 @@ def test_fresh_persona_entry_preserves_non_finite_trust_as_unknown(invalid_trust
         speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.7},
     )
     assert finite_entry["speaker_trust"] == pytest.approx(0.7)
+
+
+def test_fresh_persona_entry_rejects_residual_mixed_provenance():
+    from memory.persona.facts import FactsMixin
+
+    entry = FactsMixin()._build_fact_entry(
+        "mixed reflection", source="reflection", source_id="ref-mixed",
+        speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.9,
+            "speaker_label": "Alice(1001)",
+            "speaker_provenance_mixed": True,
+        },
+    )
+
+    assert entry["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in entry
+    assert "speaker_trust" not in entry
+    assert "speaker_label" not in entry
 
 
 def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text():
@@ -514,6 +612,24 @@ def test_duplicate_correction_backfills_missing_trust_for_same_speaker():
 
     assert queued[0]["old_speaker_id"] == "qq:1001"
     assert queued[0]["old_speaker_trust"] == pytest.approx(0.7)
+
+
+def test_correction_queue_rejects_residual_mixed_provenance():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        new_speaker_provenance={
+            "speaker_id": "qq:1001",
+            "speaker_trust": 0.9,
+            "speaker_provenance_mixed": True,
+        },
+    )
+
+    assert queued[0]["new_speaker_provenance_mixed"] is True
+    assert "new_speaker_id" not in queued[0]
+    assert "new_speaker_trust" not in queued[0]
 
 
 @pytest.mark.parametrize("invalid_trust", [float("nan"), float("inf")])
@@ -1772,6 +1888,9 @@ def test_epistemic_modal_negations_never_emit_correction():
         "Alice clicked the may button and will attend",
         "Alice clicked the may button and will not attend",
     ) == "correction"
+    assert deterministic_relation(
+        "Alice might possibly attend", "Alice might possibly not attend",
+    ) is None
 
 
 @pytest.mark.parametrize("modal", ["might", "may", "could"])
