@@ -41,12 +41,29 @@ from memory.scoped_refine import (
     apply_scoped_persona_merge,
     apply_scoped_reflection_merge,
     gather_scoped_refine_buckets,
+    _trust_weighted_merge_text,
 )
 
 
 GROUP_A = MemorySubject.group_chat("qq", "111")
 GROUP_B = MemorySubject.group_chat("qq", "222")
 MODEL_ID = "test-model"
+
+
+def test_trust_merge_margin_is_stable_at_decimal_boundary():
+    high = {
+        "text": "小明喜欢猫",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.60,
+    }
+    low = {
+        "text": "小明不喜欢猫",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.45,
+    }
+    text, sources = _trust_weighted_merge_text([low, high], "模型合并")
+    assert text == "小明喜欢猫"
+    assert sources == [high]
 
 
 def _stamped(entry: dict, vec: list[float]) -> dict:

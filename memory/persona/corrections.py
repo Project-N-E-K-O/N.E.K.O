@@ -385,6 +385,7 @@ class CorrectionsMixin:
             # ── 短临界 2: load fresh persona + apply + save ──
             resolved = await self._apply_correction_results(
                 name, corrections, allowed_indices, results,
+                refresh_pending=True,
             )
             # 对偶 fact_dedup：LLM 返了 list 但 ``_apply_correction_results_locked``
             # 没消费任何 correction（全 invalid index / 全 unknown action），
@@ -407,12 +408,19 @@ class CorrectionsMixin:
         corrections: list[dict],
         allowed_indices: set,
         results: list,
+        *,
+        refresh_pending: bool = False,
     ) -> int:
         """The post-LLM apply phase of resolve_corrections. Runs inside the data lock."""
         async with self._get_alock(name):
             persona = await self._aensure_persona_locked(name)
+            fresh_corrections = (
+                await self.aload_pending_corrections(name)
+                if refresh_pending else None
+            )
             return await self._apply_correction_results_locked(
                 name, persona, corrections, allowed_indices, results,
+                fresh_corrections=fresh_corrections,
             )
 
     async def _apply_correction_results_locked(
@@ -422,10 +430,19 @@ class CorrectionsMixin:
         corrections: list[dict],
         allowed_indices: set,
         results: list,
+        *,
+        fresh_corrections: list[dict] | None = None,
     ) -> int:
         """Apply implementation for when the data lock is already held."""
         resolved = 0
         resolved_indices: set[int] = set()
+        fresh_by_created_at = None
+        if fresh_corrections is not None:
+            fresh_by_created_at = {
+                item.get('created_at'): item
+                for item in fresh_corrections
+                if isinstance(item, dict) and item.get('created_at')
+            }
         for result in results:
             if not isinstance(result, dict):
                 continue
@@ -434,6 +451,12 @@ class CorrectionsMixin:
                 if idx < 0 or idx >= len(corrections) or idx not in allowed_indices:
                     continue
                 item = corrections[idx]
+                if fresh_by_created_at is not None:
+                    item = fresh_by_created_at.get(item.get('created_at'))
+                    if item is None:
+                        # Removed while the model was running: its stale
+                        # snapshot must not be applied or trusted.
+                        continue
             except (ValueError, TypeError):
                 continue
 

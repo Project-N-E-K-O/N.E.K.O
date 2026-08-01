@@ -609,6 +609,47 @@ async def test_duplicate_pending_correction_marks_different_sources_mixed(tmp_pa
 
 
 @pytest.mark.asyncio
+async def test_correction_apply_refreshes_provenance_after_llm_window(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明喜欢猫",
+        speaker_id="qq:9000", speaker_trust=0.8,
+    )
+    common_old = {"speaker_id": "qq:9000", "speaker_trust": 0.8}
+    await pm._aqueue_correction(
+        "Neko", "小明喜欢猫", "小明不喜欢猫", "master",
+        old_speaker_provenance=common_old,
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+    )
+    stale = [dict(item) for item in await pm.aload_pending_corrections("Neko")]
+    await pm._aqueue_correction(
+        "Neko", "小明喜欢猫", "小明不喜欢猫", "master",
+        old_speaker_provenance=common_old,
+        new_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.7,
+        },
+    )
+    current = await pm.aload_pending_corrections("Neko")
+    assert current[0]["new_speaker_provenance_mixed"] is True
+    assert "new_speaker_id" not in current[0]
+    assert "new_speaker_trust" not in current[0]
+
+    assert await pm._apply_correction_results(
+        "Neko", stale, {0}, [{
+            "index": 0,
+            "action": "merge",
+            "text": "模型保留的合并结论",
+        }],
+        refresh_pending=True,
+    ) == 1
+    persona = await pm.aensure_persona("Neko")
+    facts = pm._get_section_facts(persona, "master")
+    assert [item["text"] for item in facts] == ["模型保留的合并结论"]
+
+
+@pytest.mark.asyncio
 async def test_aadd_fact_carries_both_speakers_into_correction_queue(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

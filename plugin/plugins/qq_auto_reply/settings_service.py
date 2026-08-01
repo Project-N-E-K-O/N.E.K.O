@@ -582,19 +582,29 @@ class QQSettingsService:
         try:
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
-            self.plugin._qq_settings["speaker_trust_profiles"] = (
+            live_trust_profiles = (
                 self.plugin.permission_mgr.speaker_trust_profiles()
                 if self.plugin.permission_mgr else {}
+            )
+            self.plugin._qq_settings["speaker_trust_profiles"] = live_trust_profiles
+            staged_trust_profiles = getattr(
+                self, "_staged_speaker_trust_profiles", None,
             )
             pre_publish = {
                 key: bool(self.plugin._qq_settings.get(key, False))
                 for key in (overlay or {})
             }
             payload = dict(self.plugin._qq_settings)
+            if isinstance(staged_trust_profiles, dict):
+                payload["speaker_trust_profiles"] = staged_trust_profiles
             payload.update(overlay or {})
             saved = await self.plugin.config_store.save(payload)
             for key, value in pre_publish.items():
                 saved[key] = value
+            if isinstance(staged_trust_profiles, dict):
+                # The durable writer may publish the staged profile only
+                # after save succeeds; readers keep seeing the live snapshot.
+                saved["speaker_trust_profiles"] = live_trust_profiles
             self.plugin._qq_settings = saved
             self.plugin.backlog_store = self.plugin._create_backlog_store_from_settings(self.plugin._qq_settings)
             return True
@@ -667,15 +677,22 @@ class QQSettingsService:
                 if manager is None:
                     return False
                 before = manager.speaker_trust_profiles()
-                changed = manager.record_speaker_activity(
+                staged_manager = PermissionManager(
+                    speaker_trust_profiles=before,
+                )
+                changed = staged_manager.record_speaker_activity(
                     sender_id, message_count, activity_event_id,
                 )
                 changed = (
-                    bool(manager.apply_speaker_trust_events(trust_events or []))
+                    bool(staged_manager.apply_speaker_trust_events(
+                        trust_events or [],
+                    ))
                     or changed
                 )
                 if not changed:
                     return True
+                after = staged_manager.speaker_trust_profiles()
+                self._staged_speaker_trust_profiles = after
                 save_task = asyncio.ensure_future(
                     self._persist_business_config_locked()
                 )
@@ -691,17 +708,25 @@ class QQSettingsService:
                             f"取消期间的 speaker trust 写盘失败: {exc}"
                         )
                         persisted = False
-                    if not persisted:
-                        manager.replace_speaker_trust_profiles(before)
-                        runtime_settings = getattr(
-                            self.plugin, '_qq_settings', None,
-                        )
+                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
+                    if persisted:
+                        manager.replace_speaker_trust_profiles(after)
                         if isinstance(runtime_settings, dict):
-                            runtime_settings['speaker_trust_profiles'] = before
+                            runtime_settings['speaker_trust_profiles'] = after
+                    elif isinstance(runtime_settings, dict):
+                        runtime_settings['speaker_trust_profiles'] = before
+                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
                     raise
+                except Exception:
+                    self.__dict__.pop('_staged_speaker_trust_profiles', None)
+                    raise
+                self.__dict__.pop('_staged_speaker_trust_profiles', None)
                 if persisted:
+                    manager.replace_speaker_trust_profiles(after)
+                    runtime_settings = getattr(self.plugin, '_qq_settings', None)
+                    if isinstance(runtime_settings, dict):
+                        runtime_settings['speaker_trust_profiles'] = after
                     return True
-                manager.replace_speaker_trust_profiles(before)
                 runtime_settings = getattr(self.plugin, '_qq_settings', None)
                 if isinstance(runtime_settings, dict):
                     runtime_settings['speaker_trust_profiles'] = before

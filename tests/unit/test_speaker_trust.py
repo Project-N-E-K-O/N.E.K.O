@@ -110,12 +110,14 @@ def test_malformed_replay_ledgers_are_dropped_without_splitting_strings():
             "1001": {
                 "processed_activity_events": "activity-id",
                 "processed_signal_events": 5,
+                "message_count": float("inf"),
             },
         },
     )
     profile = manager.speaker_trust_profiles()["1001"]
     assert profile["processed_activity_events"] == []
     assert profile["processed_signal_events"] == []
+    assert profile["message_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -593,6 +595,49 @@ async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
     )
     assert manager.speaker_trust_profiles() == before
     assert plugin._qq_settings["speaker_trust_profiles"] == before
+
+
+@pytest.mark.asyncio
+async def test_unpersisted_trust_is_invisible_during_slow_failed_save():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    plugin = SimpleNamespace(
+        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
+    )
+    service = QQSettingsService(plugin)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _persist():
+        started.set()
+        await release.wait()
+        return False
+
+    service._persist_business_config_locked = _persist
+    before = manager.get_speaker_trust("1001")
+    writer = asyncio.create_task(service.apply_speaker_trust_update(
+        sender_id="1001", message_count=0,
+        activity_event_id="slow-failed-save",
+        trust_events=[{
+            "kind": "confirmation",
+            "speaker_id": "qq:1001",
+            "event_id": "confirmation-during-slow-save",
+        }],
+    ))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+
+    memory_service = QQSessionMemoryService(SimpleNamespace(
+        permission_mgr=manager,
+    ))
+    assert memory_service._speaker_trust_for("1001", "normal") == before
+
+    release.set()
+    assert not await writer
+    assert memory_service._speaker_trust_for("1001", "normal") == before
 
 
 @pytest.mark.asyncio

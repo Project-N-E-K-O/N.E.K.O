@@ -180,7 +180,7 @@ class PermissionManager:
         )
         try:
             message_count = max(0, int(raw.get("message_count", 0) or 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             message_count = 0
         def _event_ids(key: str, *, durable: bool = False) -> list[str]:
             raw_events = raw.get(key)
