@@ -257,6 +257,31 @@ async def test_correction_trust_overrides_model_and_archives_rejected_text(tmp_p
 
 
 @pytest.mark.asyncio
+async def test_correction_trust_does_not_override_keep_both(tmp_path):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "Alice likes cats",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    await pm._aqueue_correction(
+        "Neko", "Alice likes cats", "Alice likes dogs", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.8,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+    )
+    fake_llm = _make_llm_mock([{"index": 0, "action": "keep_both"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=fake_llm):
+        assert await pm.resolve_corrections("Neko") == 1
+    persona = await pm.aensure_persona("Neko")
+    assert {
+        entry["text"] for entry in pm._get_section_facts(persona, "master")
+    } == {"Alice likes cats", "Alice likes dogs"}
+
+
+@pytest.mark.asyncio
 async def test_mixed_speaker_merge_clears_single_speaker_provenance(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

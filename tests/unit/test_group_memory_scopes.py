@@ -11164,6 +11164,7 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
         "segments": [
             {"status": "ok", "created": 0, "fact_ids": []},
             {"status": "ok", "created": 0, "fact_ids": []},
+            {"status": "ok", "created": 0, "fact_ids": []},
         ],
     })
     current_level = {"value": "normal"}
@@ -11201,12 +11202,18 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
             **base, message="成为主人后说的", permission_level="trusted",
         ),
     )
+    current_level["value"] = "normal"
+    service.record_group_member_turn(
+        user_data, SimpleNamespace(
+            **base, message="恢复普通后说的", permission_level="trusted",
+        ),
+    )
 
     assert await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
     ) == []
     segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
-    assert len(segments) == 2
+    assert len(segments) == 3
     assert segments[0].get("speaker_is_owner") is None
     assert segments[0]["speaker_trust"] == pytest.approx(
         SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"]
@@ -11215,8 +11222,61 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
     assert segments[1]["speaker_trust"] == pytest.approx(
         SPEAKER_TRUST_BY_PERMISSION_LEVEL["admin"]
     )
+    assert segments[2].get("speaker_is_owner") is None
+    assert segments[2]["speaker_trust"] == pytest.approx(
+        SPEAKER_TRUST_BY_PERMISSION_LEVEL["normal"]
+    )
     assert segments[0]["messages"][0]["content"][0]["text"] == "普通时说的"
     assert segments[1]["messages"][0]["content"][0]["text"] == "成为主人后说的"
+    assert segments[2]["messages"][0]["content"][0]["text"] == "恢复普通后说的"
+
+
+@pytest.mark.asyncio
+async def test_member_flush_retries_only_the_failed_permission_segment():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    normal = {
+        "role": "user", "content": "normal message",
+        "_speaker_permission_level": "normal",
+    }
+    admin = {
+        "role": "user", "content": "admin message",
+        "_speaker_permission_level": "admin",
+    }
+    user_data = {
+        "group_member_memory_messages": {"1001": [normal, admin]},
+        "group_member_memory_labels": {"1001": "Alice(1001)"},
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [{"status": "ok"}, {"status": "failed"}],
+    })
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+    ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == ["1001"]
+    assert user_data["group_member_memory_messages"]["1001"] == [admin]
+    assert user_data["group_member_memory_labels"]["1001"] == "Alice(1001)"
+
+    bridge.post_scoped_memory_history_batch.reset_mock()
+    bridge.post_scoped_memory_history_batch.return_value = {
+        "status": "processed", "segments": [{"status": "ok"}],
+    }
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert len(retried) == 1
+    assert retried[0]["messages"] == [admin]
 
 
 @pytest.mark.asyncio

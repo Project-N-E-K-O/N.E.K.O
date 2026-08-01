@@ -113,6 +113,7 @@ def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text()
 def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation("小明喜欢猫", "小明不喜欢猫") == "correction"
     assert deterministic_relation("小明喜欢猫", "小明不喜欢狗") is None
+    assert deterministic_relation("Alice is able", "Alice is notable") is None
 
 
 def test_derived_provenance_rejects_partially_attributed_sources():
@@ -120,6 +121,13 @@ def test_derived_provenance_rejects_partially_attributed_sources():
         {"speaker_id": "qq:1001", "speaker_trust": 0.8},
         {"text": "legacy source without provenance"},
     ]) == {}
+
+
+def test_derived_provenance_does_not_borrow_an_omitted_trust_value():
+    assert provenance_of_entries([
+        {"speaker_id": "qq:1001", "speaker_trust": 0.8},
+        {"speaker_id": "qq:1001", "text": "unscored source"},
+    ]) == {"speaker_id": "qq:1001"}
 
 
 @pytest.mark.asyncio
@@ -221,6 +229,42 @@ async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
     )
     assert manager.speaker_trust_profiles() == before
     assert plugin._qq_settings["speaker_trust_profiles"] == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("persisted", [False, True])
+async def test_cancelled_trust_writer_waits_for_the_inflight_save(persisted):
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    plugin = SimpleNamespace(
+        permission_mgr=manager, logger=MagicMock(), _qq_settings={},
+    )
+    service = QQSettingsService(plugin)
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def _persist():
+        started.set()
+        await release.wait()
+        return persisted
+
+    service.persist_business_config = _persist
+    task = asyncio.create_task(service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id=f"cancelled-{persisted}", trust_events=[],
+    ))
+    await asyncio.wait_for(started.wait(), timeout=5.0)
+    task.cancel()
+    release.set()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    profiles = manager.speaker_trust_profiles()
+    if persisted:
+        assert profiles["1001"]["message_count"] == 1
+    else:
+        assert profiles == {}
+        assert plugin._qq_settings["speaker_trust_profiles"] == {}
 
 
 @pytest.mark.asyncio

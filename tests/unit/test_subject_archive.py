@@ -830,6 +830,40 @@ async def test_restore_roundtrip_all_three_stores(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_subject_restore_never_resurrects_an_arbitration_loser(tmp_path):
+    _, fs, _, _, _, _ = _install(str(tmp_path))
+    fs._facts["小天"] = []
+    await fs.asave_facts("小天")
+    loser = _scoped_fact(
+        "loser", "rejected fact", SUBJ_STALE, created_at=_iso(120),
+    )
+    loser["arbitration_archived_at"] = _iso(1)
+    loser["arbitration_reason"] = "trust_preferred_existing"
+
+    from utils.file_utils import atomic_write_json
+    archive_path = fs._facts_archive_path("小天")
+    atomic_write_json(archive_path, [loser], indent=2, ensure_ascii=False)
+    assert fs._archive_subject_facts(
+        "小天", SUBJ_STALE, NOW.isoformat(), NOW,
+    ) == 0
+    with open(archive_path, encoding="utf-8") as handle:
+        rows = json.load(handle)
+    assert "subject_archived_at" not in rows[0]
+
+    rows[0]["subject_archived_at"] = NOW.isoformat()
+    atomic_write_json(archive_path, rows, indent=2, ensure_ascii=False)
+    assert fs._restore_subject_facts(
+        "小天", SUBJ_STALE, (NOW + timedelta(seconds=1)).isoformat(),
+    ) == 0
+    assert await fs.aload_facts("小天") == []
+    with open(archive_path, encoding="utf-8") as handle:
+        remaining = json.load(handle)
+    assert remaining[0]["id"] == "loser"
+    assert remaining[0]["arbitration_archived_at"]
+    assert remaining[0]["subject_archived_at"]
+
+
+@pytest.mark.asyncio
 async def test_restore_does_not_revive_snapshots_preceding_scoped_forget(tmp_path):
     """A persistent forget cutoff must outlive replay-recreated shard copies."""
     _, fs, pm, re, _, _ = _install(str(tmp_path))

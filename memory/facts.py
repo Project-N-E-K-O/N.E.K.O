@@ -1336,6 +1336,7 @@ class FactStore:
                 if (
                     isinstance(f, dict)
                     and not f.get('subject_archived_at')
+                    and not f.get('arbitration_archived_at')
                     and entry_matches_subject(f, subject)
                 ):
                     f['subject_archived_at'] = archived_at_iso
@@ -1426,6 +1427,7 @@ class FactStore:
                 return (
                     isinstance(f, dict)
                     and f.get('subject_archived_at')
+                    and not f.get('arbitration_archived_at')
                     and (
                         archived_after_iso is None
                         or str(f.get('subject_archived_at')) > archived_after_iso

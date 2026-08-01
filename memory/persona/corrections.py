@@ -423,7 +423,7 @@ class CorrectionsMixin:
                     item.get('old_speaker_trust'),
                     item.get('new_speaker_trust'),
                 )
-            if preference is not None:
+            if preference is not None and action != 'keep_both':
                 forced = 'keep_old' if preference == 'old' else 'keep_new'
                 if action != forced:
                     logger.info(

@@ -1269,7 +1269,7 @@ class QQSessionMemoryService:
         member_flush_sem = asyncio.Semaphore(self.MEMBER_FLUSH_CONCURRENCY)
 
         def _speaker_segment_group(sender_id: str) -> list[dict[str, Any]]:
-            by_level: dict[str, list[dict]] = {}
+            segments: list[dict[str, Any]] = []
             fallback = self._speaker_permission_level_for(sender_id)
             for message in list(member_buckets.get(sender_id) or []):
                 raw_level = (
@@ -1279,16 +1279,14 @@ class QQSessionMemoryService:
                 level = self._speaker_permission_level_for(
                     sender_id, raw_level or fallback,
                 )
-                by_level.setdefault(level, []).append(message)
-            return [
-                {
-                    "sender_id": sender_id,
-                    "permission_level": level,
-                    "messages": messages,
-                }
-                for level, messages in by_level.items()
-                if messages
-            ]
+                if not segments or segments[-1]["permission_level"] != level:
+                    segments.append({
+                        "sender_id": sender_id,
+                        "permission_level": level,
+                        "messages": [],
+                    })
+                segments[-1]["messages"].append(message)
+            return segments
 
         speaker_segment_groups = [
             group
@@ -1389,6 +1387,7 @@ class QQSessionMemoryService:
                     )
                     return list(batch_senders)
                 failed: set[str] = set()
+                successful_message_ids: dict[str, set[int]] = {}
                 for spec, segment_result in zip(
                     batch_specs, segment_results,
                 ):
@@ -1417,6 +1416,9 @@ class QQSessionMemoryService:
                                 group_id, spec,
                             ),
                         )
+                        successful_message_ids.setdefault(sender_id, set()).update(
+                            id(message) for message in spec["messages"]
+                        )
                         continue
                     self.plugin.logger.error(
                         f"[{reason}] 群 {group_id} 成员 {sender_id} "
@@ -1424,7 +1426,14 @@ class QQSessionMemoryService:
                     )
                     failed.add(sender_id)
                 for sender_id in batch_senders:
-                    if sender_id in failed:
+                    succeeded = successful_message_ids.get(sender_id, set())
+                    if succeeded and sender_id in member_buckets:
+                        member_buckets[sender_id] = [
+                            message
+                            for message in member_buckets[sender_id]
+                            if id(message) not in succeeded
+                        ]
+                    if member_buckets.get(sender_id):
                         continue
                     member_buckets.pop(sender_id, None)
                     # label 与 bucket 同生命周期：只弹 bucket 的话，活跃

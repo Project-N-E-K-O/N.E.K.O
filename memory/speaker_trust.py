@@ -15,10 +15,12 @@ from config import SPEAKER_TRUST_ARBITRATION_MARGIN, SPEAKER_TRUST_DEFAULT
 from utils.llm_client import HumanMessage
 
 
-_NEGATION_MARKERS = (
+_CJK_NEGATION_MARKERS = (
     "不", "没", "无", "未", "否", "讨厌", "拒绝", "错误", "假的",
-    "not", "never", "no ", "hate", "dislike", "false", "wrong",
 )
+_WORD_NEGATION_MARKERS = frozenset({
+    "not", "never", "no", "hate", "dislike", "false", "wrong",
+})
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
@@ -69,15 +71,18 @@ def _tokens(text: str) -> set[str]:
 
 def _polarity(text: str) -> bool:
     lowered = str(text or "").lower()
-    return any(marker in lowered for marker in _NEGATION_MARKERS)
+    return (
+        any(marker in lowered for marker in _CJK_NEGATION_MARKERS)
+        or bool(_tokens(lowered) & _WORD_NEGATION_MARKERS)
+    )
 
 
 def _proposition_tokens(text: str) -> set[str]:
     """Return content tokens after removing explicit polarity markers."""
     cleaned = str(text or "").lower()
-    for marker in sorted(_NEGATION_MARKERS, key=len, reverse=True):
+    for marker in sorted(_CJK_NEGATION_MARKERS, key=len, reverse=True):
         cleaned = cleaned.replace(marker, " ")
-    return _tokens(cleaned)
+    return _tokens(cleaned) - _WORD_NEGATION_MARKERS
 
 
 def deterministic_relation(old_text: str, new_text: str) -> str | None:
@@ -149,7 +154,7 @@ def provenance_of_entries(entries: Iterable[dict]) -> dict:
         and not isinstance(entry.get("speaker_trust"), bool)
     ]
     result = {"speaker_id": speaker_id}
-    if trusts:
+    if len(trusts) == len(rows):
         result["speaker_trust"] = min(trusts)
     labels = {
         str(entry.get("speaker_label") or "").strip() for entry in rows

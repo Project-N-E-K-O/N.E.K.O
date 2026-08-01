@@ -641,7 +641,28 @@ class QQSettingsService:
                 )
                 if not changed:
                     return True
-                if await self.persist_business_config():
+                save_task = asyncio.ensure_future(self.persist_business_config())
+                try:
+                    persisted = await asyncio.shield(save_task)
+                except asyncio.CancelledError:
+                    try:
+                        persisted = await save_task
+                    except asyncio.CancelledError:
+                        persisted = False
+                    except Exception as exc:
+                        self.plugin.logger.error(
+                            f"取消期间的 speaker trust 写盘失败: {exc}"
+                        )
+                        persisted = False
+                    if not persisted:
+                        manager.replace_speaker_trust_profiles(before)
+                        runtime_settings = getattr(
+                            self.plugin, '_qq_settings', None,
+                        )
+                        if isinstance(runtime_settings, dict):
+                            runtime_settings['speaker_trust_profiles'] = before
+                    raise
+                if persisted:
                     return True
                 manager.replace_speaker_trust_profiles(before)
                 runtime_settings = getattr(self.plugin, '_qq_settings', None)
