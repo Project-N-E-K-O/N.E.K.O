@@ -836,6 +836,53 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
 
 
 @pytest.mark.asyncio
+async def test_new_dialog_rejects_if_locale_and_outbox_are_both_unwritable(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from fastapi import HTTPException
+
+    from app.memory_server import locale_state, routes, runtime
+
+    async def load_characters():
+        return {"猫娘": {"Neko": {}}}
+
+    append_pending = AsyncMock(side_effect=OSError("outbox disk full"))
+
+    def spawn(_operation):
+        pytest.fail("an unpersisted locale intent must not be scheduled as accepted")
+
+    monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(
+        locale_state,
+        "capture_character_prompt_locale_order",
+        lambda _name: 42,
+    )
+    monkeypatch.setattr(
+        routes,
+        "_write_new_dialog_locale",
+        AsyncMock(
+            side_effect=locale_state.PromptLocalePersistenceError("disk full")
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "outbox",
+        SimpleNamespace(aappend_pending=append_pending),
+    )
+    monkeypatch.setattr(runtime, "_spawn_background_task", spawn)
+
+    with pytest.raises(HTTPException) as exc_info:
+        await routes._new_dialog("Neko", "zh-TW")
+
+    assert exc_info.value.status_code == 503
+    assert exc_info.value.detail == "Prompt locale persistence is unavailable"
+    append_pending.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_new_dialog_locale_outbox_replays_after_restart(monkeypatch):
     from unittest.mock import AsyncMock
 

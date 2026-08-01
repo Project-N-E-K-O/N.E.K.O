@@ -1979,18 +1979,16 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                     payload,
                 )
             except Exception as outbox_exc:
-                logger.warning(
+                logger.error(
                     "[PromptLocale] %s: durable locale retry registration failed; "
-                    "falling back to process-local retry: %s",
+                    "rejecting new-dialog admission: %s",
                     lanlan_name,
                     outbox_exc,
                 )
-                operation = _retry_new_dialog_locale(
-                    lanlan_name,
-                    language,
-                    generation,
-                    locale_admission_order=locale_admission_order,
-                )
+                raise HTTPException(
+                    status_code=503,
+                    detail="Prompt locale persistence is unavailable",
+                ) from outbox_exc
             else:
                 operation = _run_durable_new_dialog_locale_retry(
                     lanlan_name,
@@ -1999,7 +1997,7 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                     locale_admission_order=locale_admission_order,
                     op_id=op_id,
                 )
-            runtime._spawn_background_task(operation)
+                runtime._spawn_background_task(operation)
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
     # cacheable 机会，记进来反而污染 per_char 分布。
