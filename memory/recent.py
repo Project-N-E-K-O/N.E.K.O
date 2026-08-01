@@ -733,7 +733,7 @@ class CompressedRecentHistoryManager:
                         detailed,
                         admission_generation,
                     )
-        except MaintenanceModeError:
+        except (MaintenanceModeError, recent_file.RecentFileDeletedError):
             raise
         except Exception as e:
             logger.error(f"[RecentHistory] 更新历史记录时出错: {e}", exc_info=True)

@@ -307,10 +307,15 @@ def test_waiting_writer_is_rejected_after_character_delete(tmp_path):
     _write_disk(path, [HumanMessage(content="old")])
     lock = recent_file.recent_file_lock(path)
     lock.acquire()
+    errors = []
+
     def _waiting_writer():
-        asyncio.run(mgr.update_history(
-            [HumanMessage(content="stale-writer")], name, compress=False,
-        ))
+        try:
+            asyncio.run(mgr.update_history(
+                [HumanMessage(content="stale-writer")], name, compress=False,
+            ))
+        except recent_file.RecentFileDeletedError as exc:
+            errors.append(exc)
 
     writer = threading.Thread(target=_waiting_writer)
     writer.start()
@@ -321,6 +326,7 @@ def test_waiting_writer_is_rejected_after_character_delete(tmp_path):
     writer.join(3)
 
     assert not writer.is_alive()
+    assert len(errors) == 1
     assert not Path(path).exists()
     with recent_file.recent_file_lock(path):
         assert recent_file.get_recent_pending_unlocked(path) == []
@@ -417,11 +423,17 @@ def test_update_captures_generation_before_first_await(tmp_path):
             return await super().aget_character_data()
 
     mgr._config_manager = _BlockingConfig(name, path)
-    writer = threading.Thread(
-        target=lambda: asyncio.run(mgr.update_history(
-            [HumanMessage(content="pre-activation-turn")], name, compress=False,
-        )),
-    )
+    errors = []
+
+    def _waiting_writer():
+        try:
+            asyncio.run(mgr.update_history(
+                [HumanMessage(content="pre-activation-turn")], name, compress=False,
+            ))
+        except recent_file.RecentFileDeletedError as exc:
+            errors.append(exc)
+
+    writer = threading.Thread(target=_waiting_writer)
     writer.start()
     assert config_entered.wait(3)
 
@@ -433,6 +445,7 @@ def test_update_captures_generation_before_first_await(tmp_path):
     writer.join(3)
 
     assert not writer.is_alive()
+    assert len(errors) == 1
     assert [message.content for message in _read_disk(path)] == ["authoritative-import"]
     assert recent_file.get_recent_pending(path) == []
 
@@ -2354,6 +2367,136 @@ async def test_recent_file_route_rejects_same_bytes_from_a_new_identity(
     assert response.status_code == 409
     assert json.loads(response.body)["code"] == "RECENT_FILE_CONFLICT"
     assert json.loads(recent_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_recent_file_route_maps_generation_race_to_conflict(
+    tmp_path, monkeypatch,
+):
+    """An identity replacement after admission returns current CAS tokens."""
+    from main_routers import memory_router
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    recent_file.write_recent_payload(recent_path, [])
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [{"role": "human", "text": "stale-editor"}],
+                "fingerprint": loaded["fingerprint"],
+                "identity_token": loaded["identity_token"],
+            }
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *a, **k: None)
+    loaded = await memory_router.get_recent_file("recent_Role.json")
+    original_write = memory_router._write_recent_browser_payload
+
+    def _replace_identity_before_lock(*args, **kwargs):
+        recent_file.activate_recent_paths([recent_path])
+        recent_file.write_recent_payload(
+            recent_path,
+            [{"type": "human", "data": {"content": "replacement"}}],
+        )
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(
+        memory_router,
+        "_write_recent_browser_payload",
+        _replace_identity_before_lock,
+    )
+
+    response = await memory_router.save_recent_file(_Request())
+    payload = json.loads(response.body)
+
+    assert response.status_code == 409
+    assert payload["code"] == "RECENT_FILE_CONFLICT"
+    assert payload["fingerprint"] == memory_router._recent_browser_fingerprint(
+        memory_router._read_recent_browser_text(recent_path)
+    )
+    assert payload["identity_token"] == memory_router._recent_browser_identity_token(
+        recent_path
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_stale_browser_save_does_not_recreate_deleted_character_directory(
+    tmp_path, monkeypatch,
+):
+    """A stale editor must fail CAS before any parent directory is created."""
+    from main_routers import memory_router
+    import shutil
+    from utils.character_memory import character_memory_exists
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir()
+    recent_file.write_recent_payload(recent_path, [])
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [{"role": "human", "text": "stale-editor"}],
+                "fingerprint": loaded["fingerprint"],
+                "identity_token": loaded["identity_token"],
+            }
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *a, **k: None)
+    loaded = await memory_router.get_recent_file("recent_Role.json")
+    original_capture = memory_router.capture_recent_generation
+
+    def _delete_after_admission(path):
+        generation = original_capture(path)
+        shutil.rmtree(recent_path.parent)
+        recent_file.activate_recent_paths([recent_path])
+        return generation
+
+    monkeypatch.setattr(
+        memory_router,
+        "capture_recent_generation",
+        _delete_after_admission,
+    )
+
+    response = await memory_router.save_recent_file(_Request())
+
+    assert response.status_code == 409
+    assert json.loads(response.body)["code"] == "RECENT_FILE_CONFLICT"
+    assert not recent_path.parent.exists()
+    assert not character_memory_exists(_Config(), "Role")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_update_history_propagates_stale_identity_rejection(tmp_path, monkeypatch):
+    """A rejected recent append must abort the caller's remaining persistence."""
+    mgr, name, _path = _make_manager(tmp_path)
+
+    def _reject(*_args, **_kwargs):
+        raise recent_file.RecentFileDeletedError("identity replaced")
+
+    monkeypatch.setattr(mgr, "_append_and_persist_locked", _reject)
+
+    with pytest.raises(recent_file.RecentFileDeletedError):
+        await mgr.update_history(
+            [HumanMessage(content="stale turn")],
+            name,
+            compress=False,
+        )
 
 
 @pytest.mark.unit

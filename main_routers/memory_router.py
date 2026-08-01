@@ -415,6 +415,34 @@ def _write_recent_browser_payload(
         )
 
 
+def _read_recent_browser_conflict_tokens(
+    path: Path,
+) -> tuple[str | None, str | None]:
+    """Best-effort current tokens for a generation-race conflict response."""
+    try:
+        content, identity_token = _read_recent_browser_snapshot(path)
+    except Exception:
+        return None, None
+    return _recent_browser_fingerprint(content), identity_token
+
+
+def _recent_browser_conflict_response(
+    fingerprint: str | None,
+    identity_token: str | None,
+) -> JSONResponse:
+    """Return the browser editor's uniform optimistic-concurrency conflict."""
+    return JSONResponse(
+        {
+            "success": False,
+            "code": "RECENT_FILE_CONFLICT",
+            "error": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
+            "fingerprint": fingerprint,
+            "identity_token": identity_token,
+        },
+        status_code=409,
+    )
+
+
 @router.get('/recent_files')
 async def get_recent_files():
     """List all recent*.json filenames under the memory directory."""
@@ -530,8 +558,6 @@ async def save_recent_file(request: Request):
         target=f"memory/{catgirl_name}/recent.json",
     )
 
-    await asyncio.to_thread(resolved_path.parent.mkdir, parents=True, exist_ok=True)
-
     arr = []
     for msg in chat:
         t = msg.get('role')
@@ -550,24 +576,28 @@ async def save_recent_file(request: Request):
             }
         })
     async def _commit_browser_save():
-        saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
-            _write_recent_browser_payload,
-            resolved_path,
-            arr,
-            expected_fingerprint=snapshot_fingerprint,
-            expected_identity_token=snapshot_identity_token,
-            expected_generation=admission_generation,
-        )
+        try:
+            saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _write_recent_browser_payload,
+                resolved_path,
+                arr,
+                expected_fingerprint=snapshot_fingerprint,
+                expected_identity_token=snapshot_identity_token,
+                expected_generation=admission_generation,
+            )
+        except RecentFileDeletedError:
+            saved_fingerprint, saved_identity_token = await asyncio.to_thread(
+                _read_recent_browser_conflict_tokens,
+                resolved_path,
+            )
+            return _recent_browser_conflict_response(
+                saved_fingerprint,
+                saved_identity_token,
+            )
         if not saved:
-            return JSONResponse(
-                {
-                    "success": False,
-                    "code": "RECENT_FILE_CONFLICT",
-                    "error": "近期记忆已在其他任务中更新，请重新加载并合并后再保存",
-                    "fingerprint": saved_fingerprint,
-                    "identity_token": saved_identity_token,
-                },
-                status_code=409,
+            return _recent_browser_conflict_response(
+                saved_fingerprint,
+                saved_identity_token,
             )
         
         if catgirl_name:

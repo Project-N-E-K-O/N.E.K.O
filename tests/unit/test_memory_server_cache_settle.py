@@ -75,6 +75,58 @@ async def test_cache_endpoint_writes_time_indexed_db():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "endpoint_name",
+    [
+        "cache_conversation",
+        "process_conversation",
+        "process_conversation_for_renew",
+    ],
+)
+async def test_stale_recent_identity_aborts_downstream_persistence(endpoint_name):
+    """A stale recent append must not reach time-indexed or outbox storage."""
+    from app import memory_server
+    from utils.recent_file import RecentFileDeletedError
+
+    fake_config = MagicMock()
+    fake_config.aload_characters = AsyncMock(return_value={"猫娘": {"测试角色": {}}})
+    fake_recent_history_manager = MagicMock()
+    fake_recent_history_manager.update_history = AsyncMock(
+        side_effect=RecentFileDeletedError("identity replaced")
+    )
+    fake_time_manager = MagicMock()
+    fake_time_manager.astore_conversation = AsyncMock(return_value=None)
+    fake_spawn_outbox = AsyncMock(return_value=None)
+    payload = _build_history_request_payload([
+        {"role": "human", "content": "stale turn"},
+    ])
+    request = memory_server.HistoryRequest(input_history=payload)
+
+    with patch.object(memory_server.runtime, "_config_manager", fake_config), \
+         patch.object(memory_server.runtime, "embedding_warmup_worker", None), \
+         patch.object(memory_server.runtime, "time_manager", fake_time_manager), \
+         patch.object(
+             memory_server.runtime,
+             "recent_history_manager",
+             fake_recent_history_manager,
+         ), patch.object(
+             memory_server.post_turn,
+             "_spawn_outbox_post_turn_signals",
+             fake_spawn_outbox,
+         ), patch.object(
+             memory_server.gates,
+             "_aclear_review_clean",
+             AsyncMock(return_value=None),
+         ):
+        result = await getattr(memory_server, endpoint_name)(request, "测试角色")
+
+    assert result["status"] == "error"
+    fake_time_manager.astore_conversation.assert_not_awaited()
+    fake_spawn_outbox.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cache_endpoint_spawns_outbox_post_turn_signals():
     """/cache 端点必须登记 outbox op，让 events.ndjson / outbox.ndjson 这条
     链能动起来——op handler 跑 counter bump + 复读嗅探 + check_feedback。
