@@ -129,8 +129,16 @@ def _message_prompt_role(message) -> str:
 
 
 def _review_prompt_locale_text(messages: list) -> str:
-    """Return raw message content without speaker labels."""
-    return '\n\n'.join(_message_locale_text(message) for message in messages)
+    """Prefer user turns as locale evidence for the review prompt."""
+    user_messages = [
+        message
+        for message in messages
+        if _message_prompt_role(message) in {'human', 'user'}
+    ]
+    locale_messages = user_messages or messages
+    return '\n\n'.join(
+        _message_locale_text(message) for message in locale_messages
+    )
 
 
 async def _await_recent_mutation_to_completion(func, *args):

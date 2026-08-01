@@ -5424,7 +5424,7 @@ async def test_game_end_uses_direct_response_for_gemini_postgame(monkeypatch, _f
     assert len(session.create_response_calls) == 1
     assert "[Game Module Postgame Context]" in session.create_response_calls[0]
     assert "[Game Module Postgame Proactive Greeting]" in session.create_response_calls[0]
-    assert "不要继续扮演游戏仍在进行" in session.create_response_calls[0]
+    assert "do not keep acting as if the game is still in progress" in session.create_response_calls[0]
 
 
 class _FakePostgameState:

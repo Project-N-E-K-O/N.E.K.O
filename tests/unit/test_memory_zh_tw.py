@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from collections import Counter
 from contextlib import contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -13,6 +15,40 @@ from config.prompts import prompts_memory
 
 _FORMAT_FIELD_RE = re.compile(r"(?<!{){([A-Za-z_][A-Za-z0-9_]*)}(?!})")
 _PERCENT_FIELD_RE = re.compile(r"%(?:\([A-Za-z_][A-Za-z0-9_]*\))?[a-zA-Z]")
+
+
+def test_traditional_memo_prefix_matches_memory_editor_contract():
+    from config.prompts.prompts_sys import MEMORY_MEMO_WITH_SUMMARY
+
+    locale = json.loads(
+        (Path(__file__).parents[2] / "static/locales/zh-TW.json").read_text(
+            encoding="utf-8",
+        )
+    )
+
+    assert MEMORY_MEMO_WITH_SUMMARY["zh-TW"].format(summary="內容") == (
+        locale["memory"]["previousMemo"] + "內容"
+    )
+
+
+def test_review_locale_evidence_prefers_user_turns():
+    from memory.recent import (
+        _detect_recent_prompt_language,
+        _review_prompt_locale_text,
+    )
+    from utils.language_utils import language_context
+    from utils.llm_client import AIMessage, HumanMessage
+
+    with language_context("zh-TW"):
+        locale_text = _review_prompt_locale_text(
+            [
+                HumanMessage(content="這很好"),
+                AIMessage(content="A long English assistant response. " * 80),
+            ]
+        )
+        assert _detect_recent_prompt_language(locale_text) == "zh-TW"
+
+    assert locale_text == "這很好"
 
 
 def _localized_tables() -> list[tuple[str, dict[str, str]]]:
@@ -179,7 +215,7 @@ async def test_compressed_memo_wrapper_keeps_traditional_locale():
         )
 
     assert summary == "使用者喜歡貓。"
-    assert memo.content == "先前對話的備忘錄：使用者喜歡貓。"
+    assert memo.content == "先前對話的備忘錄: 使用者喜歡貓。"
 
 
 @pytest.mark.asyncio
@@ -251,7 +287,7 @@ async def test_summary_locale_prefers_user_turn_over_long_assistant_reply():
 
     assert "資訊豐富" in prompts[0]
     assert summary == "使用者說好。"
-    assert memo.content == "先前對話的備忘錄：使用者說好。"
+    assert memo.content == "先前對話的備忘錄: 使用者說好。"
 
 
 def test_traditional_stale_summary_hint_uses_traditional_delimiters():
@@ -629,6 +665,25 @@ async def test_game_archive_writer_omits_global_fallback_locale(monkeypatch):
     assert game_archive["user_language"] == "en"
     assert game_archive["user_language_source"] == "global"
     assert "language" not in calls[0][1]["json"]
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_unknown_character_does_not_allocate_locale(monkeypatch):
+    from app.memory_server import locale_state, routes, runtime
+
+    async def load_characters():
+        return {"猫娘": {"Neko": {}}}
+
+    monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(
+        locale_state,
+        "allocate_character_prompt_locale_order",
+        lambda _name: pytest.fail("unknown character must not allocate locale state"),
+    )
+
+    response = await routes._new_dialog("NotACharacter", "en")
+
+    assert response.body == b""
 
 
 @pytest.mark.asyncio

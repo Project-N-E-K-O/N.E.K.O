@@ -1853,12 +1853,6 @@ async def _retry_new_dialog_locale(
 async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
-    locale_admission_order = None
-    if is_supported_language_code(language):
-        locale_admission_order = await asyncio.to_thread(
-            locale_state.allocate_character_prompt_locale_order,
-            lanlan_name,
-        )
 
     # 检查角色是否存在于配置中
     try:
@@ -1871,7 +1865,12 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
 
+    locale_admission_order = None
     if is_supported_language_code(language):
+        locale_admission_order = await asyncio.to_thread(
+            locale_state.allocate_character_prompt_locale_order,
+            lanlan_name,
+        )
         generation = _new_dialog_locale_generations.get(lanlan_name, 0) + 1
         _new_dialog_locale_generations[lanlan_name] = generation
         try:
