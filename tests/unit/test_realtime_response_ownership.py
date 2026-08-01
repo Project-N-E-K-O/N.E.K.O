@@ -1194,6 +1194,7 @@ async def test_adoption_keeps_transport_generation_and_ticket_suppression():
                 break
             await asyncio.sleep(0.005)
         assert client._skip_until_next_response is True
+        committed_before = client._input_audio_committed_total
         socket.push(
             {
                 "type": "response.text.delta",
@@ -1201,7 +1202,15 @@ async def test_adoption_keeps_transport_generation_and_ticket_suppression():
                 "delta": "MUST_STAY_SILENT",
             }
         )
-        await asyncio.sleep(0.02)
+        # The receive loop consumes socket events in order.  Observing this
+        # marker proves the preceding delta was handled before we assert that
+        # suppression kept it out of the delivery callback.
+        socket.push({"type": "input_audio_buffer.committed"})
+        for _ in range(40):
+            if client._input_audio_committed_total > committed_before:
+                break
+            await asyncio.sleep(0.005)
+        assert client._input_audio_committed_total == committed_before + 1
         assert delivered == []
 
         socket.push(
