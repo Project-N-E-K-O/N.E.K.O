@@ -853,6 +853,47 @@ async def test_workshop_resume_exception_is_not_swallowed():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_resume_failure_retries_owned_claim_until_acknowledged(
+    monkeypatch,
+):
+    """A transient reload failure must retain and retry the owned claim token."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}}}
+
+    monkeypatch.setattr(
+        unsubscribe,
+        "_RESUME_RETRY_INITIAL_DELAY_SECONDS",
+        0,
+    )
+    reload_memory = AsyncMock(side_effect=[False, True])
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        reload_memory,
+    ):
+        with pytest.raises(
+            RuntimeError,
+            match="notify_memory_server_reload returned False",
+        ):
+            await unsubscribe._resume_released_derived_tasks(
+                _Config(), {"StillHere": "claim-a"}, 42,
+            )
+
+        tasks = list(unsubscribe._released_derived_task_resume_tasks.values())
+        await asyncio.gather(*tasks)
+
+    assert reload_memory.await_count == 2
+    for call in reload_memory.await_args_list:
+        assert call.kwargs["release_derived_task_claims"] == {
+            "StillHere": ("claim-a",),
+        }
+    assert unsubscribe._released_derived_task_resume_tasks == {}
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_workshop_release_timeout_retains_claim_for_reconciliation():
     """An indeterminate HTTP timeout must keep the client-owned claim token."""
     unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")

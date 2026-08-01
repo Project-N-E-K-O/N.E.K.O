@@ -34,6 +34,54 @@ from ..shared_state import ensure_steamworks as get_steamworks, get_config_manag
 from utils.config_manager import get_reserved
 
 
+_RESUME_RETRY_INITIAL_DELAY_SECONDS = 1.0
+_RESUME_RETRY_MAX_DELAY_SECONDS = 30.0
+_released_derived_task_resume_tasks: dict[
+    tuple[int, tuple[tuple[str, str], ...]], asyncio.Task[None]
+] = {}
+
+
+def _schedule_released_derived_task_resume_retry(
+    config_mgr, released_claims: dict[str, str], item_id: int,
+) -> None:
+    """Keep retrying one failed admission recovery until it is acknowledged."""
+    claims = dict(released_claims)
+    key = (item_id, tuple(sorted(claims.items())))
+    existing = _released_derived_task_resume_tasks.get(key)
+    if existing is not None and not existing.done():
+        return
+
+    async def _retry() -> None:
+        delay = _RESUME_RETRY_INITIAL_DELAY_SECONDS
+        while True:
+            await asyncio.sleep(delay)
+            try:
+                await _resume_released_derived_tasks(
+                    config_mgr,
+                    claims,
+                    item_id,
+                    schedule_retry=False,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "取消订阅派生任务恢复重试失败: item_id=%s err=%s",
+                    item_id,
+                    exc,
+                )
+                delay = min(delay * 2, _RESUME_RETRY_MAX_DELAY_SECONDS)
+                continue
+            return
+
+    task = asyncio.create_task(_retry())
+    _released_derived_task_resume_tasks[key] = task
+
+    def _discard(done: asyncio.Task[None]) -> None:
+        if _released_derived_task_resume_tasks.get(key) is done:
+            _released_derived_task_resume_tasks.pop(key, None)
+
+    task.add_done_callback(_discard)
+
+
 async def _await_thread_call_to_completion(func, *args, **kwargs):
     """Finish a thread-owned transaction before propagating cancellation."""
     operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
@@ -83,6 +131,8 @@ async def _finish_resume_preserving_cancellation(coro) -> None:
 
 async def _resume_released_derived_tasks(
     config_mgr, released_claims: dict[str, str], item_id: int,
+    *,
+    schedule_retry: bool = True,
 ) -> bool:
     """Resume only released identities that still exist after unsubscribe cleanup."""
     try:
@@ -110,6 +160,12 @@ async def _resume_released_derived_tasks(
             raise RuntimeError("notify_memory_server_reload returned False")
         return True
     except Exception as exc:
+        if schedule_retry:
+            _schedule_released_derived_task_resume_retry(
+                config_mgr,
+                released_claims,
+                item_id,
+            )
         logger.warning(
             "取消订阅流程结束后恢复角色派生任务失败: item_id=%s err=%s",
             item_id,
