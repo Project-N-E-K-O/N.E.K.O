@@ -927,12 +927,18 @@ class FactStore:
         *,
         survivor_updates: dict[str, dict] | None = None,
         expected_survivors: dict[str, dict] | None = None,
+        expected_losers: dict[str, dict] | None = None,
     ) -> int:
         """Archive trust/dedup losers with an archive-first two-file commit."""
         if not archive_specs:
             return 0
         survivor_updates = survivor_updates or {}
         expected_survivors = expected_survivors or {}
+        if (
+            expected_losers is not None
+            and set(expected_losers) != set(archive_specs)
+        ):
+            raise ValueError("loser snapshots must match archive specs")
         if set(survivor_updates) != set(expected_survivors):
             raise ValueError("survivor updates require matching expected snapshots")
         async with self._get_persist_alock(name):
@@ -972,6 +978,17 @@ class FactStore:
                         raise RuntimeError(
                             "fact arbitration survivor mismatch: "
                             + ",".join(sorted(stale_survivors))
+                        )
+                    stale_losers = [
+                        fact_id for fact_id, expected in (
+                            expected_losers or {}
+                        ).items()
+                        if live_by_id.get(fact_id) != expected
+                    ]
+                    if stale_losers:
+                        raise RuntimeError(
+                            "fact arbitration loser mismatch: "
+                            + ",".join(sorted(stale_losers))
                         )
                     archive_path = self._facts_archive_path(name)
                     archived: list[dict] = []

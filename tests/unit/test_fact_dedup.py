@@ -1337,6 +1337,42 @@ async def test_concurrent_forget_archive_mismatch_invalidates_mutated_cache(tmp_
     assert by_id["e1"].get("merged_from_ids") == []
 
 
+@pytest.mark.asyncio
+async def test_concurrent_loser_provenance_drift_aborts_trust_override(tmp_path):
+    fs, resolver = _install_resolver(str(tmp_path))
+    candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
+    candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
+    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing.update(speaker_id="qq:1001", speaker_trust=0.3)
+    await _seed_facts(fs, "Neko", [candidate, existing])
+    await resolver.aenqueue_candidates("Neko", [{
+        "candidate_id": "c1", "existing_id": "e1",
+        "entity": "master", "cosine": 0.99,
+    }])
+
+    original_archive = fs.aarchive_arbitrated_facts
+
+    async def _reconcile_loser_before_archive(name, specs, **kwargs):
+        loser = next(row for row in fs._facts[name] if row.get("id") == "e1")
+        loser.pop("speaker_id")
+        loser.pop("speaker_trust")
+        loser["speaker_provenance_mixed"] = True
+        await fs.asave_facts(name)
+        return await original_archive(name, specs, **kwargs)
+
+    fs.aarchive_arbitrated_facts = _reconcile_loser_before_archive
+    model = _make_llm_mock([{"index": 0, "action": "merge"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        with pytest.raises(RuntimeError, match="loser mismatch"):
+            await resolver.aresolve("Neko")
+
+    reloaded = await fs.aload_facts("Neko")
+    by_id = {fact["id"]: fact for fact in reloaded}
+    assert set(by_id) == {"c1", "e1"}
+    assert by_id["e1"]["speaker_provenance_mixed"] is True
+    assert not (tmp_path / "Neko" / "facts_archive.json").exists()
+
+
 # ── ids-only queue（隐私收口：成员衍生原文不落 sidecar） ─────────────
 
 

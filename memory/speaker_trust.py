@@ -46,6 +46,9 @@ _NEGATION_AUXILIARIES = frozenset({
     "have", "is", "may", "might", "must", "shall", "should", "was",
     "were", "will", "would",
 })
+_EMBEDDED_CLAUSE_MARKERS = frozenset({
+    "that", "when", "where", "which", "who", "whom", "whose",
+})
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
@@ -154,6 +157,19 @@ def _proposition_tokens(text: str) -> tuple[str, ...]:
     )
 
 
+def _has_embedded_clause_negation(text: str) -> bool:
+    """Reject word negations after a relative or embedded-clause marker."""
+    tokens = _word_tokens(text)
+    marker_indices = [
+        index for index, token in enumerate(tokens)
+        if token in _EMBEDDED_CLAUSE_MARKERS
+    ]
+    return bool(marker_indices) and any(
+        index > marker_indices[0] and _is_word_negation(tokens, index)
+        for index in range(len(tokens))
+    )
+
+
 def _cjk_positive_variants(text: str) -> set[str]:
     """Return exact positive forms for conservative predicate negations."""
     variants: set[str] = set()
@@ -207,6 +223,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         old_tokens
         and old_tokens == new_tokens
         and _polarity(old_norm) != _polarity(new_norm)
+        and not _has_embedded_clause_negation(old_norm)
+        and not _has_embedded_clause_negation(new_norm)
     ):
         return "correction"
     return None

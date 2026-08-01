@@ -1177,6 +1177,9 @@ class FactDedupResolver:
                 expected_survivors={
                     fid: original_by_id[fid] for fid in survivor_ids
                 },
+                expected_losers={
+                    fid: original_by_id[fid] for fid in ids_to_remove
+                },
             )
         elif applied:
             # Even pure keep_both rounds may have nudged nothing on

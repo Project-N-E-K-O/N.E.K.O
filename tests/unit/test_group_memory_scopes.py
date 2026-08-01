@@ -8444,6 +8444,40 @@ async def test_correction_domains_and_apply_respect_custom_scope(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_persona_trust_override_revalidates_current_old_provenance(tmp_path):
+    from memory.persona import PersonaManager
+
+    pm = PersonaManager()
+    pm._config_manager = _build_scope_mock_cm(str(tmp_path))
+    name = "neko_corr_provenance_drift"
+    persona = await pm.aensure_persona(name)
+    persona["master"] = {"facts": [{
+        "id": "old", "text": "Alice is smart",
+        "speaker_provenance_mixed": True,
+    }]}
+    await pm.asave_persona(name, persona)
+    items = [{
+        "old_text": "Alice is smart",
+        "new_text": "Alice is not smart",
+        "entity": "master",
+        "created_at": "2026-08-02T00:00:00",
+        "old_speaker_id": "qq:1001",
+        "old_speaker_trust": 0.9,
+        "new_speaker_id": "qq:2002",
+        "new_speaker_trust": 0.2,
+    }]
+
+    resolved = await pm._apply_correction_results(
+        name, items, {0}, [{"index": 0, "action": "keep_new"}],
+    )
+
+    assert resolved == 1
+    facts = (await pm.aensure_persona(name))["master"]["facts"]
+    assert [fact["text"] for fact in facts] == ["Alice is not smart"]
+    assert facts[0]["speaker_id"] == "qq:2002"
+
+
+@pytest.mark.asyncio
 async def test_member_toggle_off_settles_buckets_before_clearing():
     """Turning group_member_memory_enabled off (group memory still on) must
     settle already-collected member buckets before clearing them — finalize

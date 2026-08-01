@@ -1456,6 +1456,16 @@ def test_correction_relation_preserves_argument_order():
     assert deterministic_relation("小明喜欢小红", "小红不喜欢小明") is None
 
 
+def test_relative_clause_negation_never_emits_correction():
+    assert deterministic_relation(
+        "A girl who is smart lives in Paris",
+        "A girl who is not smart lives in Paris",
+    ) is None
+    assert deterministic_relation(
+        "Alice is smart", "Alice is not smart",
+    ) == "correction"
+
+
 @pytest.mark.asyncio
 async def test_malformed_participant_scope_cannot_emit_trust_events():
     from memory.facts import FactStore

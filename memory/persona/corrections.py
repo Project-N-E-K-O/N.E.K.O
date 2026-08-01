@@ -508,15 +508,6 @@ class CorrectionsMixin:
                 preference = preferred_by_trust(
                     old_trust, new_trust,
                 )
-            if preference is not None and action != 'keep_both':
-                forced = 'keep_old' if preference == 'old' else 'keep_new'
-                if action != forced:
-                    logger.info(
-                        f"[Persona] {name}: trust 仲裁覆盖模型动作 "
-                        f"entity={entity} old_speaker={old_speaker_id} "
-                        f"new_speaker={new_speaker_id} action={action!r}->{forced}"
-                    )
-                action = forced
             section_facts = self._get_section_facts(persona, entity)
 
             # scoped correction 的一切匹配/删除/新建都限定在 item 自己的
@@ -549,6 +540,41 @@ class CorrectionsMixin:
                 if _subj is None:
                     return True
                 return isinstance(entry, dict) and entry_matches_subject(entry, _subj)
+
+            if preference is not None:
+                current_old_entries = [
+                    entry for entry in section_facts
+                    if isinstance(entry, dict)
+                    and entry.get('text', '') == old_text
+                    and _entry_in_scope(entry)
+                ]
+                current_old = (
+                    current_old_entries[0]
+                    if len(current_old_entries) == 1 else None
+                )
+                current_old_trust = (
+                    current_old.get('speaker_trust')
+                    if current_old is not None else None
+                )
+                if (
+                    current_old is None
+                    or current_old.get('speaker_provenance_mixed') is True
+                    or stable_speaker_id(current_old.get('speaker_id'))
+                    != stable_old_speaker_id
+                    or not isinstance(current_old_trust, (int, float))
+                    or isinstance(current_old_trust, bool)
+                    or float(current_old_trust) != float(old_trust)
+                ):
+                    preference = None
+            if preference is not None and action != 'keep_both':
+                forced = 'keep_old' if preference == 'old' else 'keep_new'
+                if action != forced:
+                    logger.info(
+                        f"[Persona] {name}: trust 仲裁覆盖模型动作 "
+                        f"entity={entity} old_speaker={old_speaker_id} "
+                        f"new_speaker={new_speaker_id} action={action!r}->{forced}"
+                    )
+                action = forced
 
             def _stamped_new_entry(text_value, _subj=item_subject) -> dict:
                 new_entry = self._normalize_entry_for_section(
