@@ -466,6 +466,44 @@ async def test_selected_provider_event_is_observed_once_across_pipeline_handoff(
     assert rows[0]["selected"] is True
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("platform", ["douyin", "twitch"])
+@pytest.mark.parametrize("provider_event_id", ["", "token=unsafe"])
+async def test_selected_provider_event_is_observed_once_when_normalizer_sanitizes_handoff(
+    runtime: LiveRuntime,
+    platform: str,
+    provider_event_id: str,
+) -> None:
+    runtime.config.live_platform = platform
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 1
+    runtime.live_events.ctx = runtime
+
+    payload = {
+        "nickname": "synthetic",
+        "text": "synthetic question?",
+    }
+    if provider_event_id:
+        payload["provider_event_id"] = provider_event_id
+    runtime.live_events.submit(
+        LiveEvent(
+            type="danmaku",
+            uid="synthetic-viewer",
+            payload=payload,
+            session_generation=1,
+        )
+    )
+    for _ in range(5):
+        pending = [task for task in runtime.live_events._tasks if not task.done()]
+        if not pending:
+            break
+        await asyncio.gather(*pending)
+
+    rows = runtime.live_events.recent_chat_snapshot(limit=3)
+    assert len(rows) == 1
+    assert rows[0]["selected"] is True
+
+
 def test_douyin_normalize_preserves_internal_session_generation(
     runtime: LiveRuntime,
 ) -> None:

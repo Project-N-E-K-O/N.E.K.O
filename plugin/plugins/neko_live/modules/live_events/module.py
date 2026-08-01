@@ -30,6 +30,7 @@ from typing import Any
 from .._base import BaseModule
 from ...core.active_hook_answers import is_active_hook_answer_event
 from ...core.contracts import ViewerEvent
+from ...core.runtime_live_input import mark_recent_chat_observed
 from ...core.runtime_timeline import record_payload_timeline
 from .ambient_context import AmbientRoomContext
 from .ambient_hook import AMBIENT_HOOK_SCAN_LIMIT, select_ambient_hook
@@ -1314,7 +1315,7 @@ class LiveEventsModule(BaseModule):
         if selected_event_type == "danmaku" and recent_chat_seq > 0:
             # submit() already recorded this exact provider event before the
             # selected payload re-enters the shared runtime pipeline.
-            payload["_recent_chat_observed"] = True
+            payload = mark_recent_chat_observed(payload)
         record_payload_timeline(
             self.ctx,
             payload,

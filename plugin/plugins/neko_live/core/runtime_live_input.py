@@ -11,6 +11,16 @@ from .runtime_timeline import ensure_trace_id, record_timeline, timeline_for_tra
 from .runtime_live_session import is_current_live_session_event
 
 
+class _RecentChatObservedPayload(dict[str, Any]):
+    """Internal handoff marker that provider payloads cannot spoof by key."""
+
+
+def mark_recent_chat_observed(payload: dict[str, Any]) -> dict[str, Any]:
+    """Tag a selected payload before provider normalization copies its fields."""
+
+    return _RecentChatObservedPayload(payload)
+
+
 def record_result(runtime: Any, result: InteractionResult) -> None:
     if result.event.source == "developer_sandbox":
         payload = result.to_sandbox_dict()
@@ -80,6 +90,7 @@ def _public_metadata_text(value: Any) -> str:
 
 
 async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> InteractionResult:
+    recent_chat_observed = isinstance(payload, _RecentChatObservedPayload)
     event = runtime.live_provider.normalize(payload)
     signal_event_type = _signal_event_type(event)
     ensure_trace_id(event)
@@ -89,7 +100,7 @@ async def handle_live_payload(runtime: Any, payload: dict[str, Any]) -> Interact
     if is_current_live_session_event(runtime, event):
         remember_live_danmaku_seen(runtime, event)
         raw = event.raw if isinstance(event.raw, dict) else {}
-        if raw.get("_recent_chat_observed") is not True:
+        if not recent_chat_observed and raw.get("_recent_chat_observed") is not True:
             observe_live_danmaku(runtime, event)
     record_timeline(
         runtime,
