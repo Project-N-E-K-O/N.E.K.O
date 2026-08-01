@@ -1,6 +1,6 @@
 # NEKO Live UI / UX Research Log
 
-Date: 2026-07-13  
+Date: 2026-07-13
 Scope: `plugin/plugins/neko_live` only
 Audience: product, UI, runtime, privacy, and test maintainers
 

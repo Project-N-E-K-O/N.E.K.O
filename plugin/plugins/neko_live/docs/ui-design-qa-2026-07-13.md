@@ -1,6 +1,6 @@
 # NEKO Live Console Design QA
 
-Date: 2026-07-13  
+Date: 2026-07-13
 Scope: `plugin/plugins/neko_live` only
 
 This record captures the acceptance criteria used for the streamer-first console refactor. Screenshot artifacts are intentionally not referenced by local absolute paths so the document remains portable across workstations.
