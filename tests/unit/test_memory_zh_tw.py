@@ -987,6 +987,66 @@ def test_captured_locale_orders_rebase_future_durable_state_without_reordering(
     assert older < newer
 
 
+def test_captured_locale_order_stays_below_intervening_process_write(monkeypatch):
+    from app.memory_server import locale_state
+
+    name = "InterveningWriteNeko"
+    locale_state._character_locale_admission_orders[name] = 200
+    locale_state._character_locale_capture_offsets.pop(name, None)
+    monkeypatch.setattr(
+        locale_state,
+        "_load_locale_state_unlocked",
+        lambda _name: ("zh-TW", 200, 200),
+    )
+
+    rebased = locale_state.rebase_character_prompt_locale_order(name, 100)
+
+    assert rebased == 199
+    assert locale_state._character_locale_admission_orders[name] == 200
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_without_language_restores_durable_locale(monkeypatch):
+    from app.memory_server import locale_state, routes, runtime
+
+    class StopAfterLocale(RuntimeError):
+        pass
+
+    class Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"猫娘": {"Neko": {}}}
+
+        async def aget_character_data(self):
+            return ("Master", None, None, None, {}, None, None, None, None)
+
+    observed = []
+
+    def activate(language):
+        observed.append(language)
+        raise StopAfterLocale
+
+    monkeypatch.setattr(runtime, "_config_manager", ConfigManager())
+    monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: Lock())
+    monkeypatch.setattr(
+        locale_state,
+        "get_character_prompt_locale",
+        lambda _name: "zh-TW",
+    )
+    monkeypatch.setattr(routes, "_activate_request_language", activate)
+
+    with pytest.raises(StopAfterLocale):
+        await routes._new_dialog("Neko", None)
+
+    assert observed == ["zh-TW"]
+
+
 @pytest.mark.asyncio
 async def test_new_dialog_generation_follows_admission_not_validation_order(
     monkeypatch,

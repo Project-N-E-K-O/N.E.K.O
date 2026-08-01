@@ -1935,8 +1935,9 @@ outbox_infra.register_outbox_handler(
 async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
+    has_explicit_language = is_supported_language_code(language)
     locale_admission_order = None
-    if is_supported_language_code(language):
+    if has_explicit_language:
         locale_admission_order = (
             locale_state.capture_character_prompt_locale_order(lanlan_name)
         )
@@ -1952,7 +1953,13 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         logger.error(f"检查角色配置失败: {e}")
         return PlainTextResponse("")
 
-    if is_supported_language_code(language):
+    if not has_explicit_language:
+        language = await asyncio.to_thread(
+            locale_state.get_character_prompt_locale,
+            lanlan_name,
+        )
+
+    if has_explicit_language:
         locale_admission_order = await asyncio.to_thread(
             locale_state.rebase_character_prompt_locale_order,
             lanlan_name,

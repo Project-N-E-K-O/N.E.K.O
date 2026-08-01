@@ -448,12 +448,17 @@ def rebase_character_prompt_locale_order(name: str, captured_order: int) -> int:
     out of order.  Cache invalidation clears the offset because a cloud restore
     may install a different durable high-water mark.
     """
+    global _character_locale_capture_order
     if not isinstance(captured_order, int) or isinstance(captured_order, bool):
         raise ValueError("invalid captured prompt locale order")
 
     with _locale_reload_guard, _get_locale_lock(name):
         _language, order, reserved_order = _load_locale_state_unlocked(name)
         with _locale_admission_orders_guard:
+            process_local_high_water = _character_locale_admission_orders.get(
+                name,
+                0,
+            )
             offset = _character_locale_capture_offsets.get(name)
             if offset is None:
                 high_water = max(
@@ -464,8 +469,21 @@ def rebase_character_prompt_locale_order(name: str, captured_order: int) -> int:
                 offset = max(0, high_water + 1 - captured_order)
                 _character_locale_capture_offsets[name] = offset
             selected_order = captured_order + offset
+            if process_local_high_water > captured_order:
+                # A later process-local admission already owns this character's
+                # high-water mark.  Rebase the older captured request below it
+                # instead of letting a durable offset turn the old request into
+                # the newest writer.
+                selected_order = min(
+                    selected_order,
+                    process_local_high_water - 1,
+                )
             _character_locale_admission_orders[name] = max(
-                _character_locale_admission_orders.get(name, 0),
+                process_local_high_water,
+                selected_order,
+            )
+            _character_locale_capture_order = max(
+                _character_locale_capture_order,
                 selected_order,
             )
             return selected_order
