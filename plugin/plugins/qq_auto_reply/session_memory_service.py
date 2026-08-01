@@ -1370,11 +1370,21 @@ class QQSessionMemoryService:
                     sender_id = spec["sender_id"]
                     permission_level = spec["permission_level"]
                     messages = []
+                    excluded_fact_ids: set[str] = set()
                     for message in spec["messages"]:
                         if (
                             isinstance(message, dict)
                             and "_trust_signal_excluded_fact_ids" in message
                         ):
+                            excluded_fact_ids.update(
+                                str(fact_id)
+                                for fact_id in (
+                                    message.get(
+                                        "_trust_signal_excluded_fact_ids"
+                                    ) or []
+                                )
+                                if fact_id
+                            )
                             message = dict(message)
                             message.pop("_trust_signal_excluded_fact_ids", None)
                         messages.append(message)
@@ -1399,6 +1409,10 @@ class QQSessionMemoryService:
                         sender_id, permission_level,
                     ):
                         segment["speaker_is_owner"] = True
+                        if excluded_fact_ids:
+                            segment["trust_signal_excluded_fact_ids"] = sorted(
+                                excluded_fact_ids
+                            )
                     # 显示名 = label 剥掉 "(sender_id)" 后缀的昵称本体
                     # （persona 标题里 subject_id 已含数字 id，不重复）。
                     # label 退化成纯 id 时不加键，标题回退裸 id 形态。

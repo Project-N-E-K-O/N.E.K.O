@@ -350,6 +350,9 @@ class QQMemoryBridge:
                 wire["speaker_id"] = speaker_id
             if segment.get("speaker_is_owner"):
                 wire["speaker_is_owner"] = True
+            excluded_fact_ids = segment.get("trust_signal_excluded_fact_ids")
+            if excluded_fact_ids:
+                wire["trust_signal_excluded_fact_ids"] = list(excluded_fact_ids)
             display_name = segment.get("display_name")
             if display_name:
                 wire["display_name"] = display_name

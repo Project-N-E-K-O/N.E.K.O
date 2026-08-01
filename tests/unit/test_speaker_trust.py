@@ -902,6 +902,58 @@ async def test_scoped_route_returns_only_durably_attached_trust_events(segmented
 
 
 @pytest.mark.asyncio
+async def test_scoped_batch_excludes_post_observation_events_before_persistence():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    event = {
+        "kind": "correction",
+        "speaker_id": "qq:1001",
+        "event_id": "post-observation-event",
+        "source_fact_id": "later-fact",
+    }
+    later_fact = {
+        "id": "later-fact",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(return_value=[later_fact]),
+        extract_facts_batch=AsyncMock(return_value=[{
+            "status": "ok", "created": [], "dropped": 0,
+        }]),
+        aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(
+            return_value=[later_fact],
+        ),
+        apersist_speaker_trust_events=AsyncMock(return_value=[event]),
+    )
+    request = ScopedHistoryRequest(segments=[{
+        "input_history": json.dumps([{
+            "role": "user", "content": "owner retry",
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_is_owner": True,
+        "trust_signal_excluded_fact_ids": ["later-fact"],
+    }])
+
+    with patch.object(routes.runtime, "fact_store", store):
+        result = await routes.process_scoped_history("Neko", request)
+
+    assert result["segments"][0]["trust_events"] == []
+    kwargs = store.aevaluate_speaker_trust_events.await_args.kwargs
+    assert kwargs["facts_snapshot"] == []
+    assert kwargs["replay_facts_snapshot"] == []
+    store.apersist_speaker_trust_events.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_scoped_route_revalidates_trust_signals_after_concurrent_forget():
     from app.memory_server import routes
     from app.memory_server.routes import ScopedHistoryRequest
@@ -2085,6 +2137,25 @@ def test_epistemic_modal_negations_never_emit_correction():
     ) == "correction"
     assert deterministic_relation(
         "Alice might possibly attend", "Alice might possibly not attend",
+    ) is None
+
+
+@pytest.mark.parametrize("marker", ["Maybe", "Perhaps", "Possibly", "Probably"])
+def test_english_lexical_uncertainty_never_emits_correction(marker):
+    assert deterministic_relation(
+        f"{marker} Alice is smart",
+        f"{marker} Alice is not smart",
+    ) is None
+    assert deterministic_relation(
+        "Alice is smart", "Alice is not smart",
+    ) == "correction"
+
+
+@pytest.mark.parametrize("verb", ["said", "reported", "claimed", "believed"])
+def test_bare_reported_speech_complements_never_emit_correction(verb):
+    assert deterministic_relation(
+        f"Alice sometimes {verb} Bob is smart",
+        f"Alice sometimes {verb} Bob is not smart",
     ) is None
 
 

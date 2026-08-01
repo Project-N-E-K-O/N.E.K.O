@@ -50,6 +50,14 @@ _CONDITIONAL_CLAUSE_MARKERS = frozenset({
     "assuming", "if", "provided", "supposing", "unless", "whether",
 })
 _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
+_EPISTEMIC_LEXICAL_MARKERS = frozenset({
+    "maybe", "perhaps", "possibly", "probably",
+})
+_REPORTING_VERBS = frozenset({
+    "believe", "believed", "believes", "claim", "claimed", "claims",
+    "report", "reported", "reports", "say", "said", "says", "tell",
+    "tells", "told", "think", "thinks", "thought",
+})
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
 })
@@ -190,7 +198,7 @@ def _has_embedded_clause_negation(text: str) -> bool:
         return True
     marker_indices = [
         index for index, token in enumerate(tokens)
-        if token in _EMBEDDED_CLAUSE_MARKERS
+        if token in _EMBEDDED_CLAUSE_MARKERS or token in _REPORTING_VERBS
     ]
     return bool(marker_indices) and any(
         index > marker_indices[0] for index in negation_indices
@@ -216,6 +224,20 @@ def _has_epistemic_modal_negation(text: str) -> bool:
         re.search(rf"\b{modal}\b\s*{re.escape(negative)}", text, re.IGNORECASE)
         for modal in _EPISTEMIC_MODALS
         for negative, _ in _CJK_NEGATED_PREDICATES
+    )
+
+
+def _has_lexical_epistemic_negation(text: str) -> bool:
+    """Reject lexical uncertainty markers that govern a later negation."""
+    tokens = _word_tokens(text)
+    marker_indices = [
+        index for index, token in enumerate(tokens)
+        if token in _EPISTEMIC_LEXICAL_MARKERS
+    ]
+    return bool(marker_indices) and any(
+        index > marker_indices[0]
+        and _is_word_negation(tokens, index)
+        for index in range(len(tokens))
     )
 
 
@@ -309,6 +331,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         and not _has_cjk_epistemic_negation(new_norm)
         and not _has_epistemic_modal_negation(old_norm)
         and not _has_epistemic_modal_negation(new_norm)
+        and not _has_lexical_epistemic_negation(old_norm)
+        and not _has_lexical_epistemic_negation(new_norm)
     ):
         return "correction"
     old_tokens = _proposition_tokens(old_norm)
@@ -321,6 +345,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         and not _has_embedded_clause_negation(new_norm)
         and not _has_epistemic_modal_negation(old_norm)
         and not _has_epistemic_modal_negation(new_norm)
+        and not _has_lexical_epistemic_negation(old_norm)
+        and not _has_lexical_epistemic_negation(new_norm)
         and not _has_cjk_epistemic_negation(old_norm)
         and not _has_cjk_epistemic_negation(new_norm)
     ):

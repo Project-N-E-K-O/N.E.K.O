@@ -452,6 +452,7 @@ async def _drive_every_endpoint(bridge) -> None:
             },
             "speaker_label": "2046",
             "speaker_trust": 0.5,
+            "trust_signal_excluded_fact_ids": ["later-fact"],
         }],
     )
 
@@ -487,6 +488,14 @@ async def test_memory_bridge_keeps_per_endpoint_timeouts_on_shared_client(
         ("internal/memory/Neko/scoped_history", 30.0),   # legacy 单发
         ("internal/memory/Neko/scoped_history", 30.0),   # segments 批
     ])
+    batch_payload = next(
+        kwargs["json"]
+        for _method, _url, kwargs in recorder.calls
+        if kwargs.get("json", {}).get("segments")
+    )
+    assert batch_payload["segments"][0][
+        "trust_signal_excluded_fact_ids"
+    ] == ["later-fact"]
 
 
 @pytest.mark.asyncio

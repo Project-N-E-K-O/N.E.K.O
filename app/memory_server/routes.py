@@ -793,6 +793,9 @@ class ScopedHistorySegment(BaseModel):
     # Request-side authorization bit. It is never rendered or copied from LLM
     # output; only owner-authored raw text may evolve another speaker's trust.
     speaker_is_owner: bool = False
+    # Fact ids that were authored after this retained owner's observation.
+    # They remain absent from both evaluation and durable event attachment.
+    trust_signal_excluded_fact_ids: list[str] = Field(default_factory=list)
     # Optional display name for this segment's subject (see
     # ScopedFactsWriteRequest.display_name).
     display_name: str | None = None
@@ -1241,6 +1244,11 @@ async def _process_scoped_history_segments(
             "speaker_trust": segment.speaker_trust,
             "speaker_id": segment.speaker_id,
             "speaker_is_owner": bool(segment.speaker_is_owner),
+            "trust_signal_excluded_fact_ids": {
+                str(fact_id).strip()
+                for fact_id in segment.trust_signal_excluded_fact_ids
+                if str(fact_id).strip()
+            },
             "display_name": _sanitized_display_name(
                 segment.display_name, context=f"segment {position}",
             ),
@@ -1380,8 +1388,11 @@ async def _process_scoped_history_segments(
             archived_signal_facts = await load_archived_signals(lanlan_name)
         for job in owner_signal_jobs:
             segment = job["segment"]
+            excluded_fact_ids = segment["trust_signal_excluded_fact_ids"]
             active_signal_facts = []
             for key, authored_fact in job["facts_by_key"].items():
+                if key[0] in excluded_fact_ids:
+                    continue
                 current_fact = current_by_key.get(key)
                 if current_fact is None:
                     continue
@@ -1395,23 +1406,29 @@ async def _process_scoped_history_segments(
                     )
                     else current_fact
                 )
-            segment["trust_events"] = (
-                await runtime.fact_store.aevaluate_speaker_trust_events(
-                    lanlan_name,
-                    segment["messages"],
-                    subject=segment["subject"],
-                    speaker_provenance={
-                        "speaker_id": segment.get("speaker_id"),
-                        "speaker_trust": segment.get("speaker_trust"),
-                        "speaker_label": segment.get("speaker_label"),
-                    },
-                    speaker_is_owner=True,
-                    facts_snapshot=active_signal_facts,
-                    replay_facts_snapshot=(
-                        active_signal_facts + archived_signal_facts
-                    ),
+            replay_signal_facts = active_signal_facts + [
+                fact for fact in archived_signal_facts
+                if str(fact.get("id") or "") not in excluded_fact_ids
+            ]
+            segment["trust_events"] = [
+                event for event in (
+                    await runtime.fact_store.aevaluate_speaker_trust_events(
+                        lanlan_name,
+                        segment["messages"],
+                        subject=segment["subject"],
+                        speaker_provenance={
+                            "speaker_id": segment.get("speaker_id"),
+                            "speaker_trust": segment.get("speaker_trust"),
+                            "speaker_label": segment.get("speaker_label"),
+                        },
+                        speaker_is_owner=True,
+                        facts_snapshot=active_signal_facts,
+                        replay_facts_snapshot=replay_signal_facts,
+                    )
                 )
-            )
+                if str(event.get("source_fact_id") or "")
+                not in excluded_fact_ids
+            ]
             if segment["trust_events"]:
                 persist_events = getattr(
                     runtime.fact_store, 'apersist_speaker_trust_events', None,
