@@ -3420,3 +3420,79 @@ def test_every_bounded_wait_is_measured_or_says_why_not():
         "every bounded wait needs `_report_wait_margin` or a written reason; "
         f"these have neither: {unmeasured}"
     )
+
+
+@pytest.mark.unit
+def test_a_response_id_is_absent_only_when_it_names_nothing():
+    # Both halves of this were wrong once, one commit apart. The original
+    # truthiness test dropped a numeric `0`; replacing it with a bare
+    # `is None` check then stopped an empty top-level `response_id` from
+    # falling back to the nested `response.id`, so a late terminal of that
+    # shape skipped the stale filter and finalized whatever turn was current.
+    from main_logic.omni_realtime_client._transport import _response_id_text
+
+    assert _response_id_text(0) == "0", "zero names a response"
+    assert _response_id_text(1) == "1"
+    assert _response_id_text("resp-1") == "resp-1"
+    assert _response_id_text("") is None, "an empty id names nothing"
+    assert _response_id_text(None) is None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_empty_top_level_id_still_reads_the_nested_one():
+    # The exact frame shape: `response_id: ""` alongside a real `response.id`.
+    # Without the fallback this terminal bypasses the stale filter entirely and
+    # runs ordinary finalization against the successor's turn.
+    import json as _json
+
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    class _Socket:
+        def __init__(self, frames):
+            self._frames = frames
+
+        async def __aiter__(self):
+            for frame in self._frames:
+                yield _json.dumps(frame)
+                await asyncio.sleep(0)
+            await asyncio.Event().wait()
+
+        async def send(self, *_a, **_k):
+            return None
+
+        async def close(self, *_a, **_k):
+            return None
+
+    fired = []
+
+    async def _on_done():
+        fired.append("done")
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_response_done=_on_done,
+    )
+    client._fatal_error_occurred = False
+    client.ws = _Socket(
+        [
+            {"type": "response.created", "response": {"id": "resp-old"}},
+            {"type": "response.created", "response": {"id": "resp-new"}},
+            {
+                "type": "response.done",
+                "response_id": "",
+                "response": {"id": "resp-old", "status": "completed"},
+            },
+        ]
+    )
+    with pytest.raises(asyncio.TimeoutError):
+        await asyncio.wait_for(client.handle_messages(), 1)
+
+    assert fired == [], (
+        "an empty top-level id must not hide the nested one and let an old "
+        "terminal finalize the current turn"
+    )
+    assert client._current_response_id == "resp-new"

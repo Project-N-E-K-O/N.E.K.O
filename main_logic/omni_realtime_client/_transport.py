@@ -41,6 +41,28 @@ from ._shared import (
 )
 
 
+def _response_id_text(value: Any) -> str | None:
+    """One reading of "does this name a response", used by both id sources.
+
+    Absent is ``None`` or the empty string — neither names anything, and
+    admitting the empty one would collapse every unidentified response onto a
+    shared identity. Zero is PRESENT: a provider numbering from zero names its
+    first response perfectly well.
+
+    Both halves matter and I got each wrong once. The original truthiness test
+    dropped `0`; replacing it with a bare ``is None`` check then stopped an
+    empty top-level ``response_id`` from falling back to the nested
+    ``response.id``, so a late terminal of that shape skipped the stale filter
+    and finalized whatever turn was current. Reading it in one place is what
+    keeps the two sources from disagreeing again.
+    """
+
+    if value is None:
+        return None
+    text = str(value)
+    return text or None
+
+
 _ATTACHED_TRANSPORT = object()
 
 # Ceiling on each host step inside a fail-open release that may be cut short.
@@ -1631,13 +1653,11 @@ class _TransportMixin:
                     # terminal slip past this filter once a successor is
                     # current, and a late terminal would then run the ordinary
                     # host finalization against that successor.
-                    event_response_id = event.get("response_id")
+                    event_response_id = _response_id_text(event.get("response_id"))
                     if event_response_id is None and event_type == "response.done":
                         response = event.get("response")
                         if isinstance(response, dict):
-                            event_response_id = response.get("id")
-                    if event_response_id is not None:
-                        event_response_id = str(event_response_id) or None
+                            event_response_id = _response_id_text(response.get("id"))
                     tracked = self._current_response_id
                     tracked_text = None if tracked is None else str(tracked)
                     if (
