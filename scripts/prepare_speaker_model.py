@@ -97,9 +97,11 @@ def _download_verified(
             )
             os.replace(temporary, destination)
             return
-        except CampPlusAssetError:
+        except CampPlusAssetError as exc:
             temporary.unlink(missing_ok=True)
-            raise
+            if exc.args != ("asset_size_mismatch",) or attempt == 2:
+                raise
+            time.sleep(1 << attempt)
         except (OSError, TimeoutError, URLError) as exc:
             last_error = exc
             temporary.unlink(missing_ok=True)

@@ -15,6 +15,7 @@ import pytest
 import scripts.evaluate_campplus_shadow as evaluator
 import scripts.prepare_speaker_model as preparer
 from main_logic.asr_client.speaker_shadow.asset_manifest import CampPlusAssetError
+from tests.fake_clock import patch_module_clock
 
 
 ROOT = Path(__file__).resolve().parents[4]
@@ -74,6 +75,34 @@ def test_preparer_downloads_atomically_and_verifies_size_and_sha(
     prepared = preparer.prepare_speaker_model(tmp_path)
 
     assert prepared.read_bytes() == payload
+    assert not (tmp_path / f"{MODEL_FILENAME}.part").exists()
+
+
+def test_preparer_retries_truncated_download(tmp_path, monkeypatch) -> None:
+    payload = b"reviewed model"
+    _manifest(tmp_path, payload=payload)
+    monkeypatch.setattr(
+        preparer._asset_manifest,
+        "_EXPECTED_MANIFEST",
+        preparer._asset_manifest.CampPlusManifest(
+            **json.loads((tmp_path / "manifest.json").read_text(encoding="utf-8"))
+        ),
+    )
+    responses = iter((b"truncated", payload))
+    attempts: list[bytes] = []
+
+    def urlopen(*_args, **_kwargs):
+        downloaded = next(responses)
+        attempts.append(downloaded)
+        return _Response(downloaded)
+
+    monkeypatch.setattr(preparer.urllib.request, "urlopen", urlopen)
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _seconds: None)
+
+    prepared = preparer.prepare_speaker_model(tmp_path)
+
+    assert prepared.read_bytes() == payload
+    assert attempts == [b"truncated", payload]
     assert not (tmp_path / f"{MODEL_FILENAME}.part").exists()
 
 
@@ -150,6 +179,7 @@ def test_preparer_removes_partial_file_after_bad_download(
         "urlopen",
         lambda *_args, **_kwargs: _Response(downloaded),
     )
+    patch_module_clock(monkeypatch, preparer, sleep=lambda _seconds: None)
 
     with pytest.raises(CampPlusAssetError, match=expected_reason):
         preparer.prepare_speaker_model(tmp_path)
