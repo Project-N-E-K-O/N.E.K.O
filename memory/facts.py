@@ -1061,7 +1061,7 @@ class FactStore:
             return candidate_prefix == current_prefix
 
         events: list[dict] = []
-        seen: set[tuple[str, str]] = set()
+        seen_event_ids: set[str] = set()
         for prior in facts:
             if not isinstance(prior, dict) or not _in_signal_scope(prior):
                 continue
@@ -1070,21 +1070,23 @@ class FactStore:
                 continue
             for text in texts:
                 relation = deterministic_relation(prior.get('text', ''), text)
-                key = (relation or '', target_id)
-                if relation is None or key in seen:
+                if relation is None:
                     continue
-                seen.add(key)
                 observation_key = hashlib.sha256(
                     f"{source_id}|{' '.join(text.split()).casefold()}".encode(
                         'utf-8'
                     )
                 ).hexdigest()[:24]
+                event_id = trust_event_id(
+                    relation, observation_key, target_id,
+                )
+                if event_id in seen_event_ids:
+                    continue
+                seen_event_ids.add(event_id)
                 events.append({
                     'kind': relation,
                     'speaker_id': target_id,
-                    'event_id': trust_event_id(
-                        relation, observation_key, target_id,
-                    ),
+                    'event_id': event_id,
                     'source_speaker_id': source_id,
                 })
         return events
@@ -2526,18 +2528,21 @@ class FactStore:
             )
             if request_speaker_id is not None:
                 request_provenance['speaker_id'] = request_speaker_id
-                label = str(
-                    speaker_provenance.get('speaker_label') or ''
-                ).strip()
-                if label:
-                    request_provenance['speaker_label'] = label[:64]
-                trust = speaker_provenance.get('speaker_trust')
-                if (
-                    isinstance(trust, (int, float))
-                    and not isinstance(trust, bool)
-                    and 0.0 <= float(trust) <= 1.0
-                ):
-                    request_provenance['speaker_trust'] = float(trust)
+            # label/trust predate stable speaker_id and remain valid request-
+            # derived provenance on legacy callers.  Keep them independent:
+            # model output still never enters this mapping.
+            label = str(
+                speaker_provenance.get('speaker_label') or ''
+            ).strip()
+            if label:
+                request_provenance['speaker_label'] = label[:64]
+            trust = speaker_provenance.get('speaker_trust')
+            if (
+                isinstance(trust, (int, float))
+                and not isinstance(trust, bool)
+                and 0.0 <= float(trust) <= 1.0
+            ):
+                request_provenance['speaker_trust'] = float(trust)
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -2651,11 +2656,19 @@ class FactStore:
                     )
                     provenance_keys = (
                         'speaker_id', 'speaker_label', 'speaker_trust',
+                        'speaker_provenance_mixed',
                     )
                     existing_speaker_id = stable_speaker_id(
                         existing.get('speaker_id')
                     )
-                    if existing_speaker_id is None:
+                    if existing.get('speaker_provenance_mixed') is True:
+                        # A previous exact observation deliberately cleared
+                        # this row's single-speaker claim.  A third observer
+                        # must not take ownership of the mixed-source fact.
+                        desired_provenance = {
+                            'speaker_provenance_mixed': True,
+                        }
+                    elif existing_speaker_id is None:
                         desired_provenance = dict(request_provenance)
                     elif existing_speaker_id == request_provenance['speaker_id']:
                         desired_provenance = provenance_of_entries((
@@ -2665,7 +2678,9 @@ class FactStore:
                         # Identical content now has multiple independently
                         # attributed sources. Never let it borrow the strongest
                         # speaker's weight; clear the single-source claim.
-                        desired_provenance = {}
+                        desired_provenance = {
+                            'speaker_provenance_mixed': True,
+                        }
                     current_provenance = {
                         key: existing[key]
                         for key in provenance_keys if key in existing
@@ -4090,7 +4105,10 @@ class FactStore:
             else:
                 entry['signal_processed'] = prev_signal
         for entry, previous in reversed(provenance_snapshots or []):
-            for key in ('speaker_id', 'speaker_label', 'speaker_trust'):
+            for key in (
+                'speaker_id', 'speaker_label', 'speaker_trust',
+                'speaker_provenance_mixed',
+            ):
                 entry.pop(key, None)
             entry.update(previous)
         added_ids = {

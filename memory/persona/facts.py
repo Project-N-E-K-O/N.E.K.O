@@ -229,9 +229,12 @@ class FactsMixin:
             speaker_id = stable_speaker_id(speaker_provenance.get('speaker_id'))
             if speaker_id is not None:
                 entry['speaker_id'] = speaker_id
-                entry['speaker_trust'] = normalize_trust(
-                    speaker_provenance.get('speaker_trust')
-                )
+                trust = speaker_provenance.get('speaker_trust')
+                if (
+                    isinstance(trust, (int, float))
+                    and not isinstance(trust, bool)
+                ):
+                    entry['speaker_trust'] = normalize_trust(trust)
             label = str(speaker_provenance.get('speaker_label') or '').strip()
             if label:
                 entry['speaker_label'] = label[:64]

@@ -973,6 +973,32 @@ async def test_participant_digest_uses_session_permission_snapshot():
 
 
 @pytest.mark.asyncio
+async def test_open_private_tier_resolves_unknown_participant_to_none_trust():
+    from config import SPEAKER_TRUST_BY_PERMISSION_LEVEL
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    history = [SimpleNamespace(type="human", content="陌生人的话")]
+    plugin, user_data, bridge = _participant_session_plugin(history)
+    user_data["permission_level"] = "open"
+    plugin.permission_mgr.get_permission_level = lambda _sender_id: "none"
+    service = QQSessionMemoryService(plugin)
+
+    assert await service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=0,
+    )
+
+    kwargs = bridge.post_scoped_memory_history.await_args.kwargs
+    assert kwargs["speaker_trust"] == pytest.approx(
+        SPEAKER_TRUST_BY_PERMISSION_LEVEL["none"]
+    )
+    assert "speaker_is_owner" not in kwargs
+
+
+@pytest.mark.asyncio
 async def test_participant_digest_freezes_history_before_first_post():
     """Rows appended after opt-out while the first batch awaits are outside
     the authorized snapshot and cannot leak into the second batch."""

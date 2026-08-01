@@ -806,6 +806,7 @@ async def test_exact_dedup_reconciles_request_sources_conservatively():
     )
     assert first[0]["speaker_id"] == "qq:1001"
     assert first[0]["speaker_trust"] == pytest.approx(0.3)
+    assert "speaker_provenance_mixed" not in first[0]
     await harness._apersist_new_facts(
         "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
         speaker_provenance={
@@ -813,6 +814,19 @@ async def test_exact_dedup_reconciles_request_sources_conservatively():
             "speaker_label": "Bob",
         },
     )
+    assert all(
+        key not in first[0]
+        for key in ("speaker_id", "speaker_trust", "speaker_label")
+    )
+    assert first[0]["speaker_provenance_mixed"] is True
+    await harness._apersist_new_facts(
+        "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
+        speaker_provenance={
+            "speaker_id": "qq:3003", "speaker_trust": 1.0,
+            "speaker_label": "Carol",
+        },
+    )
+    assert first[0]["speaker_provenance_mixed"] is True
     assert all(
         key not in first[0]
         for key in ("speaker_id", "speaker_trust", "speaker_label")
@@ -838,6 +852,7 @@ async def test_exact_dedup_provenance_rolls_back_when_save_fails():
         )
     assert first[0]["speaker_id"] == "qq:1001"
     assert first[0]["speaker_trust"] == pytest.approx(0.3)
+    assert "speaker_provenance_mixed" not in first[0]
 
 
 @pytest.mark.asyncio
@@ -11388,6 +11403,77 @@ async def test_member_flush_retries_only_the_failed_permission_segment():
     retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
     assert len(retried) == 1
     assert retried[0]["messages"] == [admin]
+
+
+@pytest.mark.asyncio
+async def test_member_flush_retries_owner_after_failed_chronological_predecessor():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    member = {
+        "role": "user", "content": "member fact",
+        "_speaker_permission_level": "normal",
+    }
+    owner = {
+        "role": "user", "content": "owner confirms member fact",
+        "_speaker_permission_level": "admin",
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "1001": [member], "9999": [owner],
+        },
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "9999": "Owner(9999)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "failed"},
+            {"status": "ok", "trust_events": [{"kind": "confirmation"}]},
+        ],
+    })
+    settings = SimpleNamespace(
+        apply_speaker_trust_update=AsyncMock(return_value=True),
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+        settings_service=settings,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+
+    assert set(failed) == {"1001", "9999"}
+    assert user_data["group_member_memory_messages"] == {
+        "1001": [member], "9999": [owner],
+    }
+    settings.apply_speaker_trust_update.assert_not_awaited()
+
+    bridge.post_scoped_memory_history_batch.return_value = {
+        "status": "processed",
+        "segments": [
+            {"status": "ok"},
+            {"status": "ok", "trust_events": [{"kind": "confirmation"}]},
+        ],
+    }
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [segment["messages"] for segment in retried] == [[member], [owner]]
+    assert user_data["group_member_memory_messages"] == {}
+    owner_update = next(
+        call for call in settings.apply_speaker_trust_update.await_args_list
+        if call.kwargs["sender_id"] == "9999"
+    )
+    assert owner_update.kwargs["trust_events"] == [{"kind": "confirmation"}]
 
 
 @pytest.mark.asyncio

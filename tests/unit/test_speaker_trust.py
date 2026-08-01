@@ -103,6 +103,49 @@ async def test_only_owner_request_provenance_can_emit_trust_events():
     assert owner_events[0]["source_speaker_id"] == "qq:9999"
 
 
+@pytest.mark.asyncio
+async def test_distinct_owner_observations_emit_distinct_trust_events():
+    from memory.facts import FactStore
+
+    subject = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    store = object.__new__(FactStore)
+    store.aload_facts = AsyncMock(return_value=[{
+        "id": "cats", "text": "小明喜欢猫", "speaker_id": "qq:1001",
+        **target.as_entry_fields(),
+    }, {
+        "id": "dogs", "text": "小明喜欢狗", "speaker_id": "qq:1001",
+        **target.as_entry_fields(),
+    }])
+
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko",
+        [{"role": "user", "content": "小明喜欢猫"},
+         {"role": "user", "content": "小明喜欢狗"}],
+        subject=subject,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+    )
+
+    assert len(events) == 2
+    assert len({event["event_id"] for event in events}) == 2
+
+
+def test_fresh_persona_entry_preserves_missing_speaker_trust():
+    from memory.persona.facts import FactsMixin
+
+    entry = FactsMixin()._build_fact_entry(
+        "unscored reflection", source="reflection", source_id="ref-1",
+        speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_label": "Alice(1001)",
+        },
+    )
+
+    assert entry["speaker_id"] == "qq:1001"
+    assert entry["speaker_label"] == "Alice(1001)"
+    assert "speaker_trust" not in entry
+
+
 def test_observation_texts_accepts_runtime_messages_and_rejects_assistant_text():
     assert observation_texts([
         HumanMessage(content="  owner confirmation  "),

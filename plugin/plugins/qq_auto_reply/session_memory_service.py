@@ -913,11 +913,12 @@ class QQSessionMemoryService:
         display_name = QQDisplayNameService.display_name_from_label(
             speaker_label, sender_id,
         )
-        speaker_trust = self._speaker_trust_for(
+        permission_level = self._speaker_permission_level_for(
             sender_id, user_data.get("permission_level"),
         )
+        speaker_trust = self._speaker_trust_for(sender_id, permission_level)
         speaker_is_owner = self._speaker_is_owner_for(
-            sender_id, user_data.get("permission_level"),
+            sender_id, permission_level,
         )
         subject = self.plugin.memory_bridge.participant_subject(sender_id)
         while True:
@@ -1427,6 +1428,7 @@ class QQSessionMemoryService:
                     return list(batch_senders)
                 failed: set[str] = set()
                 successful_message_ids: dict[str, set[int]] = {}
+                chronological_predecessor_failed = False
                 for spec, segment_result in zip(
                     batch_specs, segment_results,
                 ):
@@ -1435,6 +1437,23 @@ class QQSessionMemoryService:
                         isinstance(segment_result, dict)
                         and segment_result.get("status") == "ok"
                     ):
+                        if (
+                            chronological_predecessor_failed
+                            and self._speaker_is_owner_for(
+                                sender_id, spec.get("permission_level"),
+                            )
+                        ):
+                            # The server persisted this segment, but could not
+                            # derive its owner signals from a predecessor that
+                            # failed in the same request.  Retain the messages
+                            # and retry after the missing fact has landed;
+                            # exact dedup keeps the fact write idempotent.
+                            self.plugin.logger.warning(
+                                f"[{reason}] 群 {group_id} 主人 {sender_id} "
+                                "的前序段失败，保留本段重试信任信号"
+                            )
+                            failed.add(sender_id)
+                            continue
                         try:
                             dropped = int(segment_result.get("dropped") or 0)
                         except (TypeError, ValueError):
@@ -1464,6 +1483,7 @@ class QQSessionMemoryService:
                         f"记忆结算失败（批内单段失败）"
                     )
                     failed.add(sender_id)
+                    chronological_predecessor_failed = True
                 for sender_id in batch_senders:
                     succeeded = successful_message_ids.get(sender_id, set())
                     if succeeded and sender_id in member_buckets:
