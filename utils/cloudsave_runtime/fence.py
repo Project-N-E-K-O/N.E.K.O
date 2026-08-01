@@ -149,7 +149,7 @@ def _cloud_apply_mutex_name(config_manager) -> str:
     return rf"Global\NEKO_CLOUD_APPLY_LOCK_{digest}"
 
 
-def acquire_cloud_apply_lock(config_manager) -> bool:
+def acquire_cloud_apply_lock(config_manager, *, blocking: bool = False) -> bool:
     """Acquire the cross-process cloud apply lock used by maintenance mode."""
     global _cloud_apply_lock_handle, _cloud_apply_lock_file
 
@@ -159,15 +159,20 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
-            ERROR_ALREADY_EXISTS = 183
-            handle = kernel32.CreateMutexW(None, True, _cloud_apply_mutex_name(config_manager))
-            last_err = kernel32.GetLastError()
-            if handle != 0:
-                if last_err != ERROR_ALREADY_EXISTS:
-                    _cloud_apply_lock_handle = handle
-                    return True
-                kernel32.CloseHandle(handle)
+            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            handle = kernel32.CreateMutexW(
+                None,
+                False,
+                _cloud_apply_mutex_name(config_manager),
+            )
+            if not handle:
                 return False
+            wait_ms = 0xFFFFFFFF if blocking else 0
+            wait_result = kernel32.WaitForSingleObject(handle, wait_ms)
+            if wait_result in {0x00000000, 0x00000080}:
+                _cloud_apply_lock_handle = handle
+                return True
+            kernel32.CloseHandle(handle)
             return False
         except Exception:
             return True
@@ -179,7 +184,10 @@ def acquire_cloud_apply_lock(config_manager) -> bool:
         lock_path = config_manager.local_state_dir / "cloud_apply.lock"
         lock_file = open(lock_path, "w", encoding="utf-8")
         try:
-            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            flags = fcntl.LOCK_EX
+            if not blocking:
+                flags |= fcntl.LOCK_NB
+            fcntl.flock(lock_file.fileno(), flags)
             lock_file.write(str(os.getpid()))
             lock_file.flush()
         except (OSError, IOError):
@@ -311,7 +319,7 @@ def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READO
     _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
 
     with _cloud_apply_process_guard:
-        if not acquire_cloud_apply_lock(config_manager):
+        if not acquire_cloud_apply_lock(config_manager, blocking=True):
             raise MaintenanceModeError(
                 get_root_mode(config_manager),
                 operation="acquire_lock",

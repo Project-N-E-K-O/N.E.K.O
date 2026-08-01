@@ -453,6 +453,50 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypatch):
+    from app.memory_server import locale_state, routes, runtime
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    class ReachedContextRead(RuntimeError):
+        pass
+
+    class ContextReadLock:
+        async def __aenter__(self):
+            raise ReachedContextRead
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    async def load_characters():
+        return {"猫娘": {"Neko": {}}}
+
+    def blocked_reservation(_name):
+        raise MaintenanceModeError(
+            "maintenance_readonly",
+            operation="save",
+            target="prompt_locale.json",
+        )
+
+    monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        blocked_reservation,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "record_character_prompt_locale",
+        lambda *_args, **_kwargs: pytest.fail(
+            "record must be skipped after a fenced reservation"
+        ),
+    )
+    monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: ContextReadLock())
+
+    with pytest.raises(ReachedContextRead):
+        await routes._new_dialog("Neko", "zh-TW")
+
+
+@pytest.mark.asyncio
 async def test_scoped_context_activates_request_locale(monkeypatch):
     from app.memory_server import routes
     from utils.language_utils import get_global_language_full
@@ -1193,6 +1237,8 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
     [
         ("es", "Me gusta el cafe", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
+        ("es", "I prefer quiet afternoons at home.", "en"),
+        ("pt", "I prefer quiet afternoons at home.", "en"),
         ("zh-TW", "I like coffee", "en"),
     ],
 )

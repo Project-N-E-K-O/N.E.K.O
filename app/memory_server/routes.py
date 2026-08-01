@@ -54,7 +54,7 @@ from utils.language_utils import (
 )
 from utils.llm_client import convert_to_messages
 from utils.time_format import format_elapsed as _format_elapsed
-from utils.cloudsave_runtime import assert_cloudsave_writable
+from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from memory.external_markdown_import import MAX_ENTRIES, MAX_ENTRY_CHARS
 from memory.persona.fusion import ExternalMemoryImportTooLargeError
 
@@ -1791,16 +1791,26 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if is_supported_language_code(language):
-        locale_order = await asyncio.to_thread(
-            locale_state.reserve_character_prompt_locale_order,
-            lanlan_name,
-        )
-        await asyncio.to_thread(
-            locale_state.record_character_prompt_locale,
-            lanlan_name,
-            language,
-            order=locale_order,
-        )
+        try:
+            locale_order = await asyncio.to_thread(
+                locale_state.reserve_character_prompt_locale_order,
+                lanlan_name,
+            )
+            await asyncio.to_thread(
+                locale_state.record_character_prompt_locale,
+                lanlan_name,
+                language,
+                order=locale_order,
+            )
+        except MaintenanceModeError as exc:
+            # /new_dialog is a read path. The request-scoped language context is
+            # already active, so a cloud snapshot should only defer the durable
+            # locale hint instead of preventing a new conversation from opening.
+            logger.info(
+                "[PromptLocale] %s: new-dialog locale persistence deferred: %s",
+                lanlan_name,
+                exc,
+            )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成
     # cacheable 机会，记进来反而污染 per_char 分布。

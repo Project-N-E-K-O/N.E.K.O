@@ -1714,7 +1714,7 @@ def detect_prompt_language_with_ascii_fallback(
     default: str = 'zh',
     ui_language: Optional[str] = None,
 ) -> str:
-    """Keep Spanish or Portuguese when ASCII-only text looks English."""
+    """Keep Spanish or Portuguese when English detection has locale evidence."""
     active_ui_language = ui_language or get_global_language_full()
     detected = detect_prompt_language(
         text,
@@ -1722,8 +1722,20 @@ def detect_prompt_language_with_ascii_fallback(
         ui_language=active_ui_language,
     )
     ui_short = normalize_language_code(active_ui_language, format='short')
-    if detected == 'en' and ui_short in {'es', 'pt'}:
-        return ui_short
+    if detected == 'en':
+        folded = str(text or '').casefold()
+        if ui_short == 'es' and re.search(
+            r'\b(?:me\s+gusta|yo\s+(?:quiero|tengo|estoy|soy)|'
+            r'(?:quiero|tengo|estoy|gracias)\b)',
+            folded,
+        ):
+            return ui_short
+        if ui_short == 'pt' and re.search(
+            r'\b(?:eu\s+(?:gosto|quero|tenho|estou|sou)|'
+            r'(?:obrigado|obrigada|tenho|estou)\b)',
+            folded,
+        ):
+            return ui_short
     return detected
 
 

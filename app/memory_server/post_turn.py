@@ -80,16 +80,30 @@ async def _spawn_outbox_post_turn_signals(
     conversation serialized via messages_to_dict, replayable at restart.
     """
     from .locale_state import reserve_character_prompt_locale_order
+    from utils.cloudsave_runtime import MaintenanceModeError
     from utils.llm_client import messages_to_dict
 
-    locale_order = await asyncio.to_thread(
-        reserve_character_prompt_locale_order,
-        lanlan_name,
-    )
+    try:
+        locale_order = await asyncio.to_thread(
+            reserve_character_prompt_locale_order,
+            lanlan_name,
+        )
+    except MaintenanceModeError as exc:
+        # The conversation rows may already be durable when a cloud operation
+        # closes the write fence. Locale ordering is auxiliary metadata, so a
+        # late fence must not report the whole turn as failed and make the main
+        # server resend it. Replay without an order uses the legacy-safe path.
+        logger.info(
+            "[PromptLocale] %s: reservation deferred while cloudsave is fenced: %s",
+            lanlan_name,
+            exc,
+        )
+        locale_order = None
     payload = {
         'messages': messages_to_dict(messages),
-        'locale_order': locale_order,
     }
+    if locale_order is not None:
+        payload['locale_order'] = locale_order
     if language:
         # Persist the locale with the work item: after a memory_server restart,
         # replay must not re-resolve from a neutral process locale and switch

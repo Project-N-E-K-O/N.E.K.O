@@ -119,6 +119,49 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_spawn_outbox_survives_post_commit_locale_reservation_fence(tmp_path):
+    """A late locale fence must not make the durable conversation retry."""
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from memory.outbox import OP_POST_TURN_SIGNALS
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    calls: list[tuple[str, dict]] = []
+
+    async def _fake_handler(name: str, payload: dict):
+        calls.append((name, payload))
+
+    def blocked_reservation(_name):
+        raise MaintenanceModeError(
+            "maintenance_readonly",
+            operation="save",
+            target="prompt_locale.json",
+        )
+
+    with patch.dict(
+        memory_server._OUTBOX_HANDLERS,
+        {OP_POST_TURN_SIGNALS: _fake_handler},
+        clear=False,
+    ), patch.object(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        side_effect=blocked_reservation,
+    ):
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天",
+            [HumanMessage(content="喵")],
+            language="zh-TW",
+        )
+        await task
+
+    assert len(calls) == 1
+    _name, payload = calls[0]
+    assert payload["language"] == "zh-TW"
+    assert "locale_order" not in payload
+    assert await ob.apending_ops("小天") == []
+
+
+@pytest.mark.asyncio
 async def test_replay_without_recorded_language_defers_locale_resolution():
     """Legacy entries leave locale selection to the post-turn operation wrapper."""
     # 这是升级用户唯一会走的路径：#1542 之前入队的条目都没有这个键。

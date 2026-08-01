@@ -1010,6 +1010,27 @@ def test_cloud_apply_fence_waits_for_writable_transaction(tmp_path):
 
 
 @pytest.mark.unit
+def test_cloud_apply_fence_requests_a_blocking_cross_process_lock(tmp_path, monkeypatch):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import fence as fence_module
+
+    blocking_modes: list[bool] = []
+
+    def acquire(_config_manager, *, blocking=False):
+        blocking_modes.append(blocking)
+        return True
+
+    monkeypatch.setattr(fence_module, "acquire_cloud_apply_lock", acquire)
+    monkeypatch.setattr(fence_module, "release_cloud_apply_lock", lambda _cm: None)
+
+    with fence_module.cloud_apply_fence(cm):
+        pass
+
+    assert blocking_modes == [True]
+
+
+@pytest.mark.unit
 def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     cm = _make_config_manager(tmp_path)
 
