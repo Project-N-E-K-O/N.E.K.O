@@ -198,7 +198,7 @@ class QQSettingsService:
         # 直接按"没写成"回滚会让磁盘与运行时永久相反（重启后才暴露）。
         # 取消时先把 task 等出真实结果，再决定是否回滚，然后再抛。
         save_task = asyncio.ensure_future(
-            self.persist_business_config(overlay=deferred_opt_ins)
+            self._persist_business_config_locked(overlay=deferred_opt_ins)
         )
         try:
             success = await asyncio.shield(save_task)
@@ -552,6 +552,14 @@ class QQSettingsService:
         开关自己弹回去），而运行时要等写盘成功、由调用方显式发布。save()
         会返回规范化后的新 dict 并顶替 _qq_settings——发布之前得把这些键
         按旧值压回去，不然"延迟"会被这次顶替悄悄抵消。"""
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                return await self._persist_business_config_locked(overlay)
+
+    async def _persist_business_config_locked(
+        self, overlay: dict[str, Any] | None = None,
+    ) -> bool:
+        """Persist while the shared settings writer locks are already held."""
         try:
             self.plugin._qq_settings["trusted_users"] = self.plugin.permission_mgr.list_users() if self.plugin.permission_mgr else []
             self.plugin._qq_settings["trusted_groups"] = self.plugin.group_permission_mgr.list_groups() if self.plugin.group_permission_mgr else []
@@ -649,7 +657,9 @@ class QQSettingsService:
                 )
                 if not changed:
                     return True
-                save_task = asyncio.ensure_future(self.persist_business_config())
+                save_task = asyncio.ensure_future(
+                    self._persist_business_config_locked()
+                )
                 try:
                     persisted = await asyncio.shield(save_task)
                 except asyncio.CancelledError:
@@ -689,8 +699,9 @@ class QQSettingsService:
         url, token, reply mode, probabilities) are silently dropped when
         the winner replaces the dict, and the consent rollback cannot
         reason about a `before` value another request already changed."""
-        async with self._consent_transaction_lock:
-            return await self._save_settings_locked(**kwargs)
+        async with self._speaker_trust_write_lock:
+            async with self._consent_transaction_lock:
+                return await self._save_settings_locked(**kwargs)
 
     async def _save_settings_locked(self, **kwargs: Any) -> dict[str, Any]:
         onebot_url = kwargs.get("onebot_url")

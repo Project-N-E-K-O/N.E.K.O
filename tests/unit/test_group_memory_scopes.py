@@ -797,28 +797,34 @@ async def test_exact_dedup_reconciles_request_sources_conservatively():
             "speaker_label": "Alice",
         },
     )
+    same_speaker_reconciled = []
     await harness._apersist_new_facts(
         "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
         speaker_provenance={
             "speaker_id": "qq:1001", "speaker_trust": 0.3,
             "speaker_label": "Alice",
         },
+        reconciled_facts=same_speaker_reconciled,
     )
     assert first[0]["speaker_id"] == "qq:1001"
     assert first[0]["speaker_trust"] == pytest.approx(0.3)
     assert "speaker_provenance_mixed" not in first[0]
+    assert same_speaker_reconciled == [first[0]]
+    mixed_reconciled = []
     await harness._apersist_new_facts(
         "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
         speaker_provenance={
             "speaker_id": "qq:2002", "speaker_trust": 0.9,
             "speaker_label": "Bob",
         },
+        reconciled_facts=mixed_reconciled,
     )
     assert all(
         key not in first[0]
         for key in ("speaker_id", "speaker_trust", "speaker_label")
     )
     assert first[0]["speaker_provenance_mixed"] is True
+    assert mixed_reconciled == [first[0]]
     await harness._apersist_new_facts(
         "Neko", [_fact("同一事实")], subject=subject, semantic_dedup=False,
         speaker_provenance={

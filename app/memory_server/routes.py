@@ -1241,6 +1241,16 @@ async def _process_scoped_history_segments(
                 )
             )
         if signal_facts is not None:
+            reconciled_by_id = {
+                str(fact.get("id")): dict(fact)
+                for fact in (result.get("reconciled") or [])
+                if isinstance(fact, dict) and fact.get("id")
+            }
+            if reconciled_by_id:
+                signal_facts[:] = [
+                    reconciled_by_id.get(str(fact.get("id")), fact)
+                    for fact in signal_facts
+                ]
             signal_facts.extend(
                 dict(fact)
                 for fact in (result.get("created") or [])

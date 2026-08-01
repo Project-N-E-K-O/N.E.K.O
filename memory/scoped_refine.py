@@ -125,7 +125,16 @@ def _trust_weighted_merge_text(
     # unscored legacy/mixed row could disappear behind a scored winner.
     if len(usable) != len(sources):
         return proposed_text, sources
-    if len({stable_speaker_id(source.get('speaker_id')) for source in usable}) < 2:
+    speaker_ids = [
+        stable_speaker_id(source.get('speaker_id')) for source in usable
+    ]
+    if len(set(speaker_ids)) < 2:
+        return proposed_text, sources
+    # Multiple snapshots from one speaker are content that still needs the
+    # model merge.  Trust is per speaker, so score drift between their rows
+    # must not make an older statement beat their own later statement and a
+    # different speaker at once.
+    if len(speaker_ids) != len(set(speaker_ids)):
         return proposed_text, sources
     ordered = sorted(
         usable, key=lambda source: normalize_trust(source.get('speaker_trust')),

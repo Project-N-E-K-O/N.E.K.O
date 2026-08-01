@@ -15,8 +15,26 @@ from config import SPEAKER_TRUST_ARBITRATION_MARGIN, SPEAKER_TRUST_DEFAULT
 from utils.llm_client import HumanMessage
 
 
-_CJK_NEGATION_MARKERS = (
-    "不", "没", "无", "未", "否", "讨厌", "拒绝", "错误", "假的",
+# Only high-confidence predicate forms participate in code-side CJK
+# corrections.  Single characters such as ``无`` are lexical inside names
+# (for example, 无锡), so removing them as arbitrary substrings can fabricate
+# a contradiction and unfairly lower a speaker's trust.
+_CJK_NEGATED_PREDICATES = (
+    ("不喜欢", "喜欢"),
+    ("不爱", "爱"),
+    ("不是", "是"),
+    ("没有", "有"),
+    ("没在", "在"),
+    ("不会", "会"),
+    ("不能", "能"),
+    ("不想", "想"),
+    ("不需要", "需要"),
+    ("不支持", "支持"),
+    ("不同意", "同意"),
+    ("不接受", "接受"),
+    ("不相信", "相信"),
+    ("不认识", "认识"),
+    ("不住", "住"),
 )
 _WORD_NEGATION_MARKERS = frozenset({
     "not", "never", "no", "hate", "dislike", "false", "wrong",
@@ -74,21 +92,29 @@ def _tokens(text: str) -> set[str]:
 def _polarity(text: str) -> bool:
     lowered = str(text or "").lower()
     return (
-        any(marker in lowered for marker in _CJK_NEGATION_MARKERS)
+        any(negative in lowered for negative, _ in _CJK_NEGATED_PREDICATES)
         or bool(_tokens(lowered) & _WORD_NEGATION_MARKERS)
     )
 
 
 def _proposition_tokens(text: str) -> tuple[str, ...]:
     """Return content tokens after removing explicit polarity markers."""
-    cleaned = str(text or "").lower()
-    for marker in sorted(_CJK_NEGATION_MARKERS, key=len, reverse=True):
-        cleaned = cleaned.replace(marker, " ")
     return tuple(
         match.group(0).lower()
-        for match in _WORD_RE.finditer(cleaned)
+        for match in _WORD_RE.finditer(str(text or "").lower())
         if match.group(0).lower() not in _WORD_NEGATION_MARKERS
     )
+
+
+def _cjk_positive_variants(text: str) -> set[str]:
+    """Return exact positive forms for conservative predicate negations."""
+    variants: set[str] = set()
+    for negative, positive in _CJK_NEGATED_PREDICATES:
+        start = 0
+        while (index := text.find(negative, start)) >= 0:
+            variants.add(text[:index] + positive + text[index + len(negative):])
+            start = index + len(negative)
+    return variants
 
 
 def deterministic_relation(old_text: str, new_text: str) -> str | None:
@@ -99,6 +125,11 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         return None
     if old_norm == new_norm:
         return "confirmation"
+    if (
+        old_norm in _cjk_positive_variants(new_norm)
+        or new_norm in _cjk_positive_variants(old_norm)
+    ):
+        return "correction"
     old_tokens = _proposition_tokens(old_norm)
     new_tokens = _proposition_tokens(new_norm)
     if (

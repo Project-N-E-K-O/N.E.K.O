@@ -597,6 +597,48 @@ async def test_trust_merge_leader_must_beat_runner_up_not_weakest(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trust_merge_does_not_arbitrate_one_speaker_against_itself(tmp_path):
+    fs, pm, re = _install(str(tmp_path))
+    persona = await pm.aensure_persona("Neko")
+    section = pm._get_section_facts(persona, GROUP_A.kind, subject=GROUP_A)
+    sources = []
+    for fact_id, text, speaker_id, trust in (
+        ("a-old", "甲的早期说法", "qq:1001", 0.90),
+        ("a-new", "甲的后续补充", "qq:1001", 0.70),
+        ("b", "乙的独立信息", "qq:1002", 0.50),
+    ):
+        entry = pm._build_fact_entry(
+            text, "manual", None, subject=GROUP_A,
+            speaker_provenance={
+                "speaker_id": speaker_id, "speaker_trust": trust,
+            },
+        )
+        entry["id"] = fact_id
+        sources.append(entry)
+    section.extend(sources)
+    await pm.asave_persona("Neko", persona)
+
+    proposed = "模型合并保留甲的补充与乙的信息"
+    assert await apply_scoped_persona_merge(
+        pm, "Neko", GROUP_A, [dict(entry) for entry in sources],
+        [{
+            "action": "merge",
+            "source_ids": ["a-old", "a-new", "b"],
+            "produce": {"text": proposed},
+        }],
+        "same-speaker-snapshots-hash",
+    ) == 1
+    persona = await pm.aensure_persona("Neko")
+    merged = next(
+        entry for entry in persona[GROUP_A.persona_section_key]["facts"]
+        if entry.get("merged_from_ids")
+    )
+    assert merged["text"] == proposed
+    assert "speaker_id" not in merged
+    assert "speaker_trust" not in merged
+
+
+@pytest.mark.asyncio
 async def test_trust_merge_does_not_override_an_unscored_source(tmp_path):
     fs, pm, re = _install(str(tmp_path))
     persona = await pm.aensure_persona("Neko")

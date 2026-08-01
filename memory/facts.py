@@ -2391,6 +2391,7 @@ class FactStore:
                 )
                 status = 'failed'
             created: list[dict] = []
+            reconciled: list[dict] = []
             if segment_facts:
                 try:
                     created = await self._apersist_new_facts(
@@ -2401,6 +2402,7 @@ class FactStore:
                         expected_subject_generation=(
                             segment_generations[position - 1]
                         ),
+                        reconciled_facts=reconciled,
                     )
                 except Exception as exc:
                     logger.error(
@@ -2412,7 +2414,12 @@ class FactStore:
                     )
                     continue
             results.append(
-                {'status': status, 'created': created, 'dropped': dropped}
+                {
+                    'status': status,
+                    'created': created,
+                    'reconciled': reconciled,
+                    'dropped': dropped,
+                }
             )
         return results
 
@@ -2455,6 +2462,7 @@ class FactStore:
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
         expected_subject_generation: int | None = None,
+        reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
         async with self._get_persist_alock(lanlan_name):
             memory_subject = coerce_subject(subject)
@@ -2485,6 +2493,7 @@ class FactStore:
                 semantic_dedup=semantic_dedup,
                 subject=subject,
                 speaker_provenance=speaker_provenance,
+                reconciled_facts=reconciled_facts,
             )
 
     async def apersist_scoped_facts(
@@ -2519,6 +2528,7 @@ class FactStore:
         semantic_dedup: bool = True,
         subject: MemorySubject | dict | None = None,
         speaker_provenance: dict | None = None,
+        reconciled_facts: list[dict] | None = None,
     ) -> list[dict]:
         """Dedup (SHA-256 + FTS5) + persist. importance < 5 facts are KEPT
         (RFC §3.1.3)—downstream `get_unabsorbed_facts(min_importance=5)`
@@ -2981,6 +2991,13 @@ class FactStore:
                 f"[FactStore] {lanlan_name}: reconciled provenance for "
                 f"{provenance_updated_count} exact facts"
             )
+            if reconciled_facts is not None:
+                reconciled_by_id = {
+                    str(entry.get('id')): dict(entry)
+                    for entry, _before in provenance_snapshots
+                    if entry.get('id')
+                }
+                reconciled_facts.extend(reconciled_by_id.values())
 
         return new_facts
 

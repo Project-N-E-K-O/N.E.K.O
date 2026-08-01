@@ -206,6 +206,8 @@ def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation("小明喜欢猫", "小明不喜欢猫") == "correction"
     assert deterministic_relation("小明喜欢猫", "小明不喜欢狗") is None
     assert deterministic_relation("Alice is able", "Alice is notable") is None
+    assert deterministic_relation("她来自锡山区", "她来自无锡山区") is None
+    assert deterministic_relation("她认识不二同学", "她认识二同学") is None
 
 
 def test_derived_provenance_rejects_partially_attributed_sources():
@@ -298,7 +300,7 @@ async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
         "speaker_id": "qq:1001",
         "subject_kind": "group_participant",
         "subject_id": "qq:7788:1001",
-        "scope": "group",
+        "scope": "group_participant:qq:7788:1001",
     }
     segments = [member, owner] if member_first else [owner, member]
     results = (
@@ -331,6 +333,72 @@ async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
         assert events[0]["speaker_id"] == "qq:1001"
     else:
         assert events == []
+
+
+@pytest.mark.asyncio
+async def test_batch_owner_signal_replays_exact_dedup_provenance_changes():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    member = {
+        "input_history": json.dumps([{
+            "role": "user", "content": [{"type": "text", "text": "共同事实"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:2002",
+        },
+        "speaker_label": "Member(2002)",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+    }
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user", "content": [{"type": "text", "text": "共同事实"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    existing = {
+        "id": "shared-fact",
+        "text": "共同事实",
+        "speaker_id": "qq:1001",
+        "speaker_trust": 0.8,
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    reconciled = dict(existing)
+    reconciled.pop("speaker_id")
+    reconciled.pop("speaker_trust")
+    reconciled["speaker_provenance_mixed"] = True
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(return_value=[existing]),
+        extract_facts_batch=AsyncMock(return_value=[
+            {
+                "status": "ok", "created": [],
+                "reconciled": [reconciled], "dropped": 0,
+            },
+            {"status": "ok", "created": [], "dropped": 0},
+        ]),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[member, owner]),
+        )
+
+    assert response["segments"][1]["trust_events"] == []
 
 
 def test_model_shaped_fields_never_replace_request_provenance():
@@ -375,7 +443,7 @@ async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
         active -= 1
         return True
 
-    service.persist_business_config = _persist
+    service._persist_business_config_locked = _persist
     await asyncio.gather(
         service.apply_speaker_trust_update(
             sender_id="1001", message_count=1,
@@ -390,7 +458,7 @@ async def test_trust_updates_have_one_writer_and_roll_back_failed_persist():
     assert manager.speaker_trust_profiles()["1001"]["message_count"] == 2
 
     before = manager.speaker_trust_profiles()
-    service.persist_business_config = AsyncMock(return_value=False)
+    service._persist_business_config_locked = AsyncMock(return_value=False)
     assert not await service.apply_speaker_trust_update(
         sender_id="1001", message_count=9,
         activity_event_id="activity-failed", trust_events=[],
@@ -417,7 +485,7 @@ async def test_cancelled_trust_writer_waits_for_the_inflight_save(persisted):
         await release.wait()
         return persisted
 
-    service.persist_business_config = _persist
+    service._persist_business_config_locked = _persist
     task = asyncio.create_task(service.apply_speaker_trust_update(
         sender_id="1001", message_count=1,
         activity_event_id=f"cancelled-{persisted}", trust_events=[],
@@ -443,16 +511,16 @@ async def test_trust_writer_is_mutexed_with_dashboard_settings_transaction():
     service = QQSettingsService(SimpleNamespace(
         permission_mgr=manager, logger=MagicMock(),
     ))
-    service.persist_business_config = AsyncMock(return_value=True)
+    service._persist_business_config_locked = AsyncMock(return_value=True)
     async with service._consent_transaction_lock:
         task = asyncio.create_task(service.apply_speaker_trust_update(
             sender_id="1001", message_count=1,
             activity_event_id="blocked-by-dashboard", trust_events=[],
         ))
         await asyncio.sleep(0)
-        service.persist_business_config.assert_not_awaited()
+        service._persist_business_config_locked.assert_not_awaited()
     assert await task
-    service.persist_business_config.assert_awaited_once()
+    service._persist_business_config_locked.assert_awaited_once()
 
 
 @pytest.mark.asyncio
@@ -464,7 +532,7 @@ async def test_trust_writer_resolves_manager_after_dashboard_rebuild():
         permission_mgr=old_manager, logger=MagicMock(), _qq_settings={},
     )
     service = QQSettingsService(plugin)
-    service.persist_business_config = AsyncMock(return_value=True)
+    service._persist_business_config_locked = AsyncMock(return_value=True)
     async with service._consent_transaction_lock:
         task = asyncio.create_task(service.apply_speaker_trust_update(
             sender_id="1001", message_count=1,
@@ -476,6 +544,73 @@ async def test_trust_writer_resolves_manager_after_dashboard_rebuild():
     assert await task
     assert old_manager.speaker_trust_profiles() == {}
     assert replacement.speaker_trust_profiles()["1001"]["message_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_direct_settings_save_waits_for_failed_trust_transaction():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    manager = PermissionManager([{"qq": "1001", "level": "normal"}])
+    save_started = asyncio.Event()
+    save_release = asyncio.Event()
+    payloads = []
+
+    async def _save(payload):
+        payloads.append(dict(payload))
+        if len(payloads) == 1:
+            save_started.set()
+            await save_release.wait()
+            raise OSError("disk full")
+        return dict(payload)
+
+    plugin = SimpleNamespace(
+        permission_mgr=manager,
+        group_permission_mgr=None,
+        logger=MagicMock(),
+        _qq_settings={},
+        config_store=SimpleNamespace(save=_save),
+        _create_backlog_store_from_settings=lambda _settings: None,
+    )
+    service = QQSettingsService(plugin)
+    writer = asyncio.create_task(service.apply_speaker_trust_update(
+        sender_id="1001", message_count=1,
+        activity_event_id="failed-before-dashboard", trust_events=[],
+    ))
+    await asyncio.wait_for(save_started.wait(), timeout=5.0)
+
+    dashboard_save = asyncio.create_task(service.persist_business_config())
+    await asyncio.sleep(0)
+    assert len(payloads) == 1
+    save_release.set()
+
+    assert not await writer
+    assert await dashboard_save
+    assert payloads[1]["speaker_trust_profiles"] == {}
+
+
+@pytest.mark.asyncio
+async def test_all_settings_writers_acquire_both_transaction_locks():
+    from plugin.plugins.qq_auto_reply.settings_service import QQSettingsService
+
+    service = QQSettingsService(SimpleNamespace())
+    service._persist_business_config_locked = AsyncMock(return_value=True)
+    service._save_settings_locked = AsyncMock(return_value={})
+
+    async with service._speaker_trust_write_lock:
+        direct = asyncio.create_task(service.persist_business_config())
+        settings = asyncio.create_task(service.save_settings())
+        await asyncio.sleep(0)
+        service._persist_business_config_locked.assert_not_awaited()
+        service._save_settings_locked.assert_not_awaited()
+    assert await direct
+    assert await settings == {}
+
+    service._persist_business_config_locked.reset_mock()
+    async with service._consent_transaction_lock:
+        direct = asyncio.create_task(service.persist_business_config())
+        await asyncio.sleep(0)
+        service._persist_business_config_locked.assert_not_awaited()
+    assert await direct
 
 
 @pytest.mark.asyncio
@@ -595,7 +730,7 @@ async def test_dashboard_reload_waits_before_reading_trust_config():
             "speaker_trust_profiles": dict(stored["speaker_trust_profiles"]),
         }
 
-    settings.persist_business_config = _persist
+    settings._persist_business_config_locked = _persist
     settings.load_business_config = _load
     settings.apply_runtime_settings = MagicMock()
     dashboard = QQDashboardService(plugin)
