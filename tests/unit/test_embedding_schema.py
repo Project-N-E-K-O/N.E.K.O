@@ -353,6 +353,73 @@ async def test_correction_trust_overrides_model_and_archives_rejected_text(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("new_speaker_id", ["QQ:1001", "legacy-user"])
+async def test_invalid_or_same_canonical_persona_speaker_cannot_drive_trust(
+    tmp_path, new_speaker_id,
+):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明喜欢猫",
+        speaker_id="qq:1001", speaker_trust=0.8,
+    )
+    correction = {
+        "old_text": "小明喜欢猫", "new_text": "小明不喜欢猫",
+        "entity": "master",
+        "old_speaker_id": "qq:1001", "old_speaker_trust": 0.8,
+        "new_speaker_id": new_speaker_id, "new_speaker_trust": 0.3,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "keep_new"}],
+    ) == 1
+
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    assert [entry["text"] for entry in facts] == ["小明不喜欢猫"]
+
+
+@pytest.mark.asyncio
+async def test_trust_rejected_history_is_idempotent_after_queue_write_failure(
+    tmp_path,
+):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明喜欢猫",
+        speaker_id="qq:2002", speaker_trust=0.8,
+    )
+    await pm._aqueue_correction(
+        "Neko", "小明喜欢猫", "小明不喜欢猫", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:2002", "speaker_trust": 0.8,
+        },
+        new_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.3,
+        },
+    )
+    correction = (await pm.aload_pending_corrections("Neko"))[0]
+    result = [{"index": 0, "action": "keep_new"}]
+
+    with patch(
+        "memory.persona.corrections.atomic_write_json_async",
+        side_effect=OSError("queue write failed"),
+    ):
+        with pytest.raises(OSError, match="queue write failed"):
+            await pm._apply_correction_results("Neko", [correction], {0}, result)
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0}, result,
+    ) == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    rejected = [
+        item for item in facts[0].get("version_history", [])
+        if item.get("reason") == "trust_rejected_observation"
+    ]
+    assert len(rejected) == 1
+    assert rejected[0]["text"] == "小明不喜欢猫"
+    assert rejected[0].get("correction_id")
+
+
+@pytest.mark.asyncio
 async def test_correction_trust_does_not_override_merge_without_conflict(tmp_path):
     pm = _install_pm(str(tmp_path))
     await _seed_master_fact(

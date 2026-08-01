@@ -1071,6 +1071,7 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
     assert [fact["id"] for fact in active] == ["e1"]
     assert active[0]["speaker_id"] == "qq:2002"
     assert active[0]["speaker_trust"] == pytest.approx(0.8)
+    assert active[0]["importance"] == 5
     assert active[0].get("speaker_provenance_mixed") is not True
     archive_path = tmp_path / "Neko" / "facts_archive.json"
     archived = json.loads(archive_path.read_text(encoding="utf-8"))
@@ -1156,7 +1157,9 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
     fs, resolver = _install_resolver(str(tmp_path))
     candidate = _fact("c1", "小明喜欢猫", embedding=[1.0, 0.0])
     candidate.update(speaker_id="qq:2002", speaker_trust=0.8)
-    existing = _fact("e1", "小明不喜欢猫", embedding=[0.99, 0.05])
+    existing = _fact(
+        "e1", "小明不喜欢猫", embedding=[0.99, 0.05], importance=9,
+    )
     existing.update(speaker_id="qq:1001", speaker_trust=0.3)
     await _seed_facts(fs, "Neko", [candidate, existing])
     await resolver.aenqueue_candidates("Neko", [{
@@ -1170,6 +1173,7 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
     assert [fact["id"] for fact in active] == ["c1"]
     assert active[0]["speaker_id"] == "qq:2002"
     assert active[0]["speaker_trust"] == pytest.approx(0.8)
+    assert active[0]["importance"] == 5
     assert active[0].get("speaker_provenance_mixed") is not True
     archived = json.loads(
         (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")

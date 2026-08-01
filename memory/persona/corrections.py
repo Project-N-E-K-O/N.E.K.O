@@ -486,15 +486,19 @@ class CorrectionsMixin:
             from memory.speaker_trust import (
                 deterministic_relation,
                 preferred_by_trust,
+                stable_speaker_id,
             )
             old_speaker_id = item.get('old_speaker_id')
             new_speaker_id = item.get('new_speaker_id')
+            stable_old_speaker_id = stable_speaker_id(old_speaker_id)
+            stable_new_speaker_id = stable_speaker_id(new_speaker_id)
             preference = None
             old_trust = item.get('old_speaker_trust')
             new_trust = item.get('new_speaker_trust')
             if (
-                old_speaker_id and new_speaker_id
-                and old_speaker_id != new_speaker_id
+                stable_old_speaker_id is not None
+                and stable_new_speaker_id is not None
+                and stable_old_speaker_id != stable_new_speaker_id
                 and isinstance(old_trust, (int, float))
                 and not isinstance(old_trust, bool)
                 and isinstance(new_trust, (int, float))
@@ -695,14 +699,35 @@ class CorrectionsMixin:
                     for existing in section_facts:
                         et = existing.get('text', '') if isinstance(existing, dict) else str(existing)
                         if et == old_text and _entry_in_scope(existing) and isinstance(existing, dict):
-                            existing['version_history'] = (
-                                list(existing.get('version_history') or []) + [
-                                    _history_snapshot(
-                                        new_text, 'new',
-                                        'trust_rejected_observation',
-                                    )
-                                ]
-                            )[-_VH_MAX:]
+                            history = list(existing.get('version_history') or [])
+                            correction_identity = hashlib.sha256('|'.join((
+                                str(item.get('created_at') or ''),
+                                entity,
+                                old_text,
+                                new_text,
+                                str(item.get('subject_kind') or ''),
+                                str(item.get('subject_id') or ''),
+                                str(item.get('scope') or ''),
+                            )).encode('utf-8')).hexdigest()[:24]
+                            already_recorded = any(
+                                isinstance(snapshot, dict)
+                                and snapshot.get('reason') == (
+                                    'trust_rejected_observation'
+                                )
+                                and snapshot.get('correction_id') == (
+                                    correction_identity
+                                )
+                                for snapshot in history
+                            )
+                            if not already_recorded:
+                                rejected = _history_snapshot(
+                                    new_text, 'new',
+                                    'trust_rejected_observation',
+                                )
+                                rejected['correction_id'] = correction_identity
+                                existing['version_history'] = (
+                                    history + [rejected]
+                                )[-_VH_MAX:]
                             break
             else:  # keep_both
                 existing_texts = {

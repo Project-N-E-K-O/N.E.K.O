@@ -1097,8 +1097,9 @@ class FactDedupResolver:
                 if cand_id not in merged:
                     merged.append(cand_id)
                 existing['merged_from_ids'] = merged
-                cur_imp = int(existing.get('importance', 5) or 5)
-                existing['importance'] = min(10, cur_imp + 1)
+                if preference != 'old':
+                    cur_imp = int(existing.get('importance', 5) or 5)
+                    existing['importance'] = min(10, cur_imp + 1)
                 # A trust-arbitrated correction is replacement semantics even
                 # when the surviving side is represented by ``merge``.  The
                 # rejected contradiction is not corroborating provenance;
@@ -1126,9 +1127,10 @@ class FactDedupResolver:
                 cand['merged_from_ids'] = merged
                 # Importance: max of the two so a "replace" doesn't
                 # silently demote a high-importance row.
-                cur = int(cand.get('importance', 5) or 5)
-                old = int(existing.get('importance', 5) or 5)
-                cand['importance'] = max(cur, old)
+                if preference != 'new':
+                    cur = int(cand.get('importance', 5) or 5)
+                    old = int(existing.get('importance', 5) or 5)
+                    cand['importance'] = max(cur, old)
                 if preference != 'new':
                     _fold_survivor_provenance(cand, existing)
                 mutated_survivor_ids.add(cand_id)
