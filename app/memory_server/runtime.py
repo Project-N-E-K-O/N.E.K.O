@@ -342,6 +342,7 @@ async def release_character_resources(
                 "cancelled_derived_tasks": cancelled_tasks,
             }
         except Exception as exc:
+            await review.resume_character_derived_task_admission(lanlan_name)
             logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
             return JSONResponse(
                 {"status": "error", "character_name": lanlan_name, "message": str(exc)},

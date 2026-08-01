@@ -569,6 +569,25 @@ async def post_cloudsave_character_download(name: str, request: Request):
     overwrite = overwrite_val
     backup_before_overwrite = backup_val
     force_val = (body or {}).get("force", False)
+    released_memory_handle = False
+    release_needs_resume = False
+
+    local_exists = _local_character_exists(config_manager, name)
+    if local_exists and not overwrite:
+        cloud_detail = build_cloudsave_character_detail(config_manager, name)
+        if cloud_detail is None:
+            return _cloudsave_error_response(
+                "CLOUD_CHARACTER_NOT_FOUND",
+                f"cloud character not found: {name}",
+                status_code=404,
+                character_name=name,
+            )
+        return _cloudsave_error_response(
+            "LOCAL_CHARACTER_EXISTS",
+            f"local character already exists: {name}",
+            status_code=409,
+            character_name=name,
+        )
 
     block_reason = _active_session_block_reason(name)
     if block_reason:
@@ -600,24 +619,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 status_code=503,
                 character_name=name,
             )
-
-    local_exists = _local_character_exists(config_manager, name)
-    if local_exists and not overwrite:
-        cloud_detail = build_cloudsave_character_detail(config_manager, name)
-        if cloud_detail is None:
-            return _cloudsave_error_response(
-                "CLOUD_CHARACTER_NOT_FOUND",
-                f"cloud character not found: {name}",
-                status_code=404,
-                character_name=name,
-            )
-        return _cloudsave_error_response(
-            "LOCAL_CHARACTER_EXISTS",
-            f"local character already exists: {name}",
-            status_code=409,
-            character_name=name,
-        )
-
+        release_needs_resume = True
     if local_exists and overwrite and not force_val:
         released_memory_handle = await release_memory_server_character(
             name,
@@ -630,6 +632,7 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 status_code=503,
                 character_name=name,
             )
+        release_needs_resume = True
 
     try:
         # Windows mutex ownership is thread-affine. This non-blocking acquire and
@@ -653,6 +656,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
                     _complete_cloudsave_character_download(config_manager, name, result),
                 )
             )
+            if reload_error_response is None:
+                release_needs_resume = False
     except MaintenanceModeError as exc:
         return _maintenance_mode_error_response(exc, character_name=name)
     except CloudsaveOperationError as exc:
@@ -670,6 +675,16 @@ async def post_cloudsave_character_download(name: str, request: Request):
             status_code=500,
             character_name=name,
         )
+    finally:
+        if release_needs_resume:
+            _, resume_cancelled = await _await_coroutine_to_completion(
+                notify_memory_server_reload(
+                    reason=f"云存档下载中止，恢复角色派生任务: {name}",
+                    resume_derived_task_names=(name,),
+                )
+            )
+            if resume_cancelled:
+                raise asyncio.CancelledError
 
     if import_cancelled or completion_cancelled:
         raise asyncio.CancelledError

@@ -48,6 +48,7 @@ __all__ = [
     "fence_recent_deletions_and_clear_redirects",
     "get_recent_pending",
     "get_recent_pending_unlocked",
+    "get_recent_content_version_unlocked",
     "recent_file_lock",
     "recent_file_access",
     "recent_file_locks",
@@ -106,6 +107,7 @@ _PENDING_GUARD = threading.Lock()
 _REDIRECTS: dict[str, str] = {}
 _DELETED: set[str] = set()
 _GENERATIONS: dict[str, int] = {}
+_CONTENT_VERSIONS: dict[str, int] = {}
 _NEXT_GENERATION = 1
 
 
@@ -282,6 +284,13 @@ def set_recent_pending_unlocked(path: Any, messages: list[Any]) -> None:
             _PENDING.pop(key, None)
 
 
+def get_recent_content_version_unlocked(path: Any) -> int:
+    """Return the process-local successful-write version while the file lock is held."""
+    with _LOCKS_GUARD:
+        key = _resolve_key_unlocked(_lock_key(path))
+        return _CONTENT_VERSIONS.get(key, 0)
+
+
 def merge_recent_pending_snapshot(snapshot: dict[Any, list[Any]]) -> None:
     """Restore pre-transaction messages without dropping batches queued later."""
     with recent_file_locks(list(snapshot)):
@@ -445,6 +454,9 @@ def write_recent_payload_unlocked(path: Any, payload: Any) -> None:
     any deduplication.
     """
     atomic_write_json(path, payload, indent=2, ensure_ascii=False)
+    with _LOCKS_GUARD:
+        key = _resolve_key_unlocked(_lock_key(path))
+        _CONTENT_VERSIONS[key] = _CONTENT_VERSIONS.get(key, 0) + 1
 
 
 def write_recent_payload(

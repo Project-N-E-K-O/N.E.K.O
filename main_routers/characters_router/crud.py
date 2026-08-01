@@ -381,11 +381,20 @@ async def _await_thread_call_to_completion(func, *args, **kwargs):
 
 async def _await_cleanup_to_completion(coro):
     """Finish rollback despite repeated cancellation requests."""
+    result, _ = await _await_coroutine_to_completion(coro)
+    return result
+
+
+async def _await_coroutine_to_completion(coro):
+    """Return a coroutine result and whether cancellation arrived while it ran."""
     operation = asyncio.create_task(coro)
-    while not operation.done():
-        with suppress(asyncio.CancelledError):
-            await asyncio.wait({operation})
-    return operation.result()
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        return operation.result(), True
 
 
 async def _await_thread_mutation(func, *args, **kwargs):
@@ -793,28 +802,40 @@ async def rename_catgirl(old_name: str, request: Request):
                 )
             raise
         except MaintenanceModeError as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                recent_rename_result=memory_rename_result,
-                recent_transaction=recent_transaction,
-                resume_derived_task_names=(old_name,),
-                reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        resume_derived_task_names=(old_name,),
+                        reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             if rollback_error:
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                recent_rename_result=memory_rename_result,
-                recent_transaction=recent_transaction,
-                resume_derived_task_names=(old_name,),
-                reason=f"角色重命名回滚: {old_name} -> {new_name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        recent_rename_result=memory_rename_result,
+                        recent_transaction=recent_transaction,
+                        resume_derived_task_names=(old_name,),
+                        reason=f"角色重命名回滚: {old_name} -> {new_name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             logger.exception("重命名角色失败，已尝试回滚: %s -> %s", old_name, new_name)
             error_message = f"重命名角色失败: {exc}"
             if rollback_error:
@@ -1522,30 +1543,42 @@ async def _delete_catgirl_by_name(name: str):
                 )
             raise
         except MaintenanceModeError as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                tombstone_snapshot=tombstone_snapshot,
-                recent_delete_result=recent_delete_result,
-                recent_transaction=recent_transaction,
-                resume_derived_task_names=(name,),
-                reason=f"维护模式：删除角色回滚 {name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        resume_derived_task_names=(name,),
+                        reason=f"维护模式：删除角色回滚 {name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             if rollback_error:
                 raise exc from RuntimeError(rollback_error)
             raise
         except Exception as exc:
-            rollback_error = await _rollback_character_operation(
-                _config_manager,
-                characters_snapshot=characters_snapshot,
-                memory_snapshot_records=memory_snapshot_records,
-                tombstone_snapshot=tombstone_snapshot,
-                recent_delete_result=recent_delete_result,
-                recent_transaction=recent_transaction,
-                resume_derived_task_names=(name,),
-                reason=f"删除角色回滚: {name}",
+            rollback_error, rollback_cancelled = (
+                await _await_coroutine_to_completion(
+                    _rollback_character_operation(
+                        _config_manager,
+                        characters_snapshot=characters_snapshot,
+                        memory_snapshot_records=memory_snapshot_records,
+                        tombstone_snapshot=tombstone_snapshot,
+                        recent_delete_result=recent_delete_result,
+                        recent_transaction=recent_transaction,
+                        resume_derived_task_names=(name,),
+                        reason=f"删除角色回滚: {name}",
+                    )
+                )
             )
+            if rollback_cancelled:
+                raise asyncio.CancelledError
             logger.exception("删除角色失败，已尝试回滚: %s", name)
             error_message = f"删除角色失败: {exc}"
             if rollback_error:

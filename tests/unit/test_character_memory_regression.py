@@ -455,6 +455,12 @@ async def test_save_character_card_activates_reused_name_before_publish(
         "_refresh_catgirl_context_after_profile_change",
         AsyncMock(return_value={"context_refreshed": True}),
     )
+    reload_memory = AsyncMock(return_value=True)
+    monkeypatch.setattr(
+        cards_module,
+        "notify_memory_server_reload",
+        reload_memory,
+    )
 
     result = await cards_module.save_character_card(_DummyRequest({
         "character_card_name": reused_name,
@@ -463,6 +469,71 @@ async def test_save_character_card_activates_reused_name_before_publish(
 
     assert result["success"] is True
     assert result["context_refreshed"] is True
+    reload_memory.assert_awaited_once_with(
+        reason=f"角色卡保存新角色: {reused_name}",
+        resume_derived_task_names=(reused_name,),
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_rename_cancellation_waits_for_worker_completion(monkeypatch):
+    """The compatibility rename route must not detach its multi-file worker."""
+    memory_router = reload_module("main_routers.memory_router")
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+
+    def _rename(*_args):
+        worker_entered.set()
+        assert release_worker.wait(3)
+        return {"changed": True, "exists_after": True}
+
+    class _Config:
+        pass
+
+    monkeypatch.setattr(memory_router, "get_module_logger", lambda *_: None)
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: _Config(),
+    )
+    monkeypatch.setattr(memory_router, "character_memory_exists", lambda *_: False)
+    monkeypatch.setattr(memory_router, "rename_character_memory_storage", _rename)
+
+    operation = asyncio.create_task(memory_router.update_catgirl_name(
+        _DummyRequest({"old_name": "Old", "new_name": "New"})
+    ))
+    assert await asyncio.to_thread(worker_entered.wait, 3)
+    operation.cancel()
+    await asyncio.sleep(0.05)
+    assert not operation.done()
+
+    release_worker.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_abort_resumes_only_released_names_still_active():
+    """Workshop cleanup must reopen admission for identities it did not delete."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}, "Unrelated": {}}}
+
+    reload_memory = AsyncMock(return_value=True)
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        reload_memory,
+    ):
+        await unsubscribe._resume_released_derived_tasks(
+            _Config(), {"StillHere", "Deleted"}, 42,
+        )
+
+    reload_memory.assert_awaited_once_with(
+        reason="取消订阅流程结束，恢复仍存在角色: 42",
+        resume_derived_task_names=["StillHere"],
+    )
 
 
 class _DummyGetRequest:
@@ -1488,6 +1559,67 @@ async def test_rename_catgirl_maintenance_error_preserves_original_exception_typ
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_error_rollback_finishes_when_request_is_cancelled(tmp_path):
+    """Cancellation arriving in an error handler must not detach rollback."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+
+        rollback_entered = asyncio.Event()
+        release_rollback = asyncio.Event()
+
+        async def _rollback(*_args, **_kwargs):
+            rollback_entered.set()
+            await release_rollback.wait()
+            return ""
+
+        with patch.object(
+            crud,
+            "release_memory_server_character",
+            AsyncMock(return_value=True),
+        ), patch.object(
+            cm,
+            "save_characters",
+            side_effect=OSError("primary publish failed"),
+        ), patch.object(
+            crud,
+            "_rollback_character_operation",
+            side_effect=_rollback,
+        ):
+            operation = asyncio.create_task(crud.rename_catgirl(
+                "Old", _DummyRequest({"new_name": "New"})
+            ))
+            await asyncio.wait_for(rollback_entered.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+
+            release_rollback.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names():
     with TemporaryDirectory() as td:
         cm = _make_config_manager(Path(td))
@@ -1528,6 +1660,7 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
                     encoding="utf-8",
                 )
 
+            reload_memory = AsyncMock(return_value=True)
             with patch.object(
                 workshop_router_module,
                 "get_subscribed_workshop_items",
@@ -1542,6 +1675,9 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
                         ],
                     }
                 ),
+            ), patch(
+                "main_routers.characters_router.notify_memory_server_reload",
+                reload_memory,
             ):
                 sync_result = await workshop_router_module.sync_workshop_character_cards(
                     target_item_id="123456",
@@ -1555,6 +1691,10 @@ async def test_workshop_sync_imports_legacy_dotted_name_but_rejects_unsafe_names
             assert ".." not in current_catgirls
             assert "角色." not in current_catgirls
             assert "角色/子目录" not in current_catgirls
+            reload_memory.assert_awaited_once_with(
+                reason="创意工坊角色卡同步",
+                resume_derived_task_names=["N.E.K.O"],
+            )
 
 
 @pytest.mark.unit

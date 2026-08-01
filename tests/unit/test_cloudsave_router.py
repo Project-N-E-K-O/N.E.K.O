@@ -1416,6 +1416,44 @@ async def test_download_active_session_force_memory_release_fail():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_download_import_failure_resumes_released_character():
+    """An overwrite that aborts after release must reopen derived-task admission."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module(
+                "main_routers.cloudsave_router"
+            )
+            reload_memory = AsyncMock(return_value=True)
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                AsyncMock(return_value=True),
+            ), patch.object(
+                cloudsave_router_module,
+                "import_cloudsave_character_unit",
+                side_effect=OSError("corrupt cloud unit"),
+            ), patch.object(
+                cloudsave_router_module,
+                "notify_memory_server_reload",
+                reload_memory,
+            ):
+                response = await cloudsave_router_module.post_cloudsave_character_download(
+                    "小满",
+                    _DummyRequest({"overwrite": True}),
+                )
+
+        assert response.status_code == 500
+        reload_memory.assert_awaited_once_with(
+            reason="云存档下载中止，恢复角色派生任务: 小满",
+            resume_derived_task_names=("小满",),
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_download_no_active_session_force_ignored():
     """No active session + force=true → normal download (force ignored)."""
     with TemporaryDirectory() as td:

@@ -48,12 +48,14 @@ def _reset_recent_file_locks():
     recent_file._REDIRECTS.clear()
     recent_file._DELETED.clear()
     recent_file._GENERATIONS.clear()
+    recent_file._CONTENT_VERSIONS.clear()
     yield
     recent_file._LOCKS.clear()
     recent_file._PENDING.clear()
     recent_file._REDIRECTS.clear()
     recent_file._DELETED.clear()
     recent_file._GENERATIONS.clear()
+    recent_file._CONTENT_VERSIONS.clear()
 
 
 @pytest.fixture(autouse=True)
@@ -95,6 +97,55 @@ def _make_manager(tmp_path: Path, lanlan_name: str = "Xiaoba", *, path: str | No
 def _write_disk(path: str, messages: list) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(messages_to_dict(messages), f, ensure_ascii=False)
+
+
+@pytest.mark.unit
+def test_authoritative_replace_invalidates_unreadable_manager_cache(
+    tmp_path, monkeypatch,
+):
+    """A transient read failure must not resurrect content removed by another writer."""
+    mgr, name, path = _make_manager(tmp_path)
+    _write_disk(path, [HumanMessage(content="removed-by-browser")])
+    assert [m.content for m in asyncio.run(mgr.aget_recent_history(name))] == [
+        "removed-by-browser"
+    ]
+
+    recent_file.write_recent_payload(path, [])
+    monkeypatch.setattr(
+        recent_file,
+        "read_recent_text_unlocked",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            PermissionError("simulated sharing violation")
+        ),
+    )
+
+    assert asyncio.run(mgr.aget_recent_history(name)) == []
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_cancelled_recent_mutation_waits_for_worker_completion():
+    """Cancelling the awaiter must not detach a submitted file mutation."""
+    from memory.recent import _await_recent_mutation_to_completion
+
+    worker_entered = threading.Event()
+    release_worker = threading.Event()
+
+    def _mutation():
+        worker_entered.set()
+        assert release_worker.wait(3)
+
+    operation = asyncio.create_task(
+        _await_recent_mutation_to_completion(_mutation)
+    )
+    assert await asyncio.to_thread(worker_entered.wait, 3)
+    operation.cancel()
+    await asyncio.sleep(0.05)
+    assert not operation.done()
+
+    release_worker.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
 
 
 def _read_disk(path: str) -> list:

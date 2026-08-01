@@ -42,6 +42,7 @@ from .pngtuber_assets import (
     _restore_imported_pngtuber_avatar_config,
     _rewrite_imported_pngtuber_refs,
 )
+from .notify import notify_memory_server_reload
 
 import json
 import io
@@ -269,10 +270,18 @@ async def save_character_card(request: Request):
                 "session_restarted": False,
             }
 
+        memory_server_reloaded = True
+        if is_new_character:
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"角色卡保存新角色: {chara_name}",
+                resume_derived_task_names=(chara_name,),
+            )
+
         logger.info(f"角色卡已成功保存到characters.json: {chara_name}")
         result: dict = {
             "success": True,
             "character_card_name": chara_name,
+            "memory_server_reloaded": memory_server_reloaded,
             **context_refresh_result,
         }
         if not pending_mark_ok:
@@ -1012,6 +1021,10 @@ async def import_character_card(
             initialize_character_data = get_initialize_character_data()
             if initialize_character_data:
                 await initialize_character_data()
+            memory_server_reloaded = await notify_memory_server_reload(
+                reason=f"导入角色卡: {character_name}",
+                resume_derived_task_names=(character_name,),
+            )
 
             # 写入卡面元数据 sidecar（origin=imported）
             try:
@@ -1043,6 +1056,7 @@ async def import_character_card(
                     "card_meta_saved": False,
                     "character_name": character_name,
                     "pending_mark_ok": pending_mark_ok,
+                    "memory_server_reloaded": memory_server_reloaded,
                 }
                 if not pending_mark_ok:
                     partial_result["pending_mark_failed"] = True
@@ -1091,6 +1105,7 @@ async def import_character_card(
             'success': True,
             'character_name': character_name,
             'message': f'角色卡 "{character_name}" 导入成功',
+            'memory_server_reloaded': memory_server_reloaded,
         }
         if not pending_mark_ok:
             import_result['partial_success'] = True

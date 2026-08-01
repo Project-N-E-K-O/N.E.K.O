@@ -716,6 +716,13 @@ async def sync_workshop_character_cards(
                         logger.info("sync_workshop_character_cards: 已重新加载角色配置")
                 except Exception as e:
                     logger.warning(f"sync_workshop_character_cards: 重新加载角色配置失败: {e}")
+                if actually_added_names:
+                    from ..characters_router import notify_memory_server_reload
+
+                    await notify_memory_server_reload(
+                        reason="创意工坊角色卡同步",
+                        resume_derived_task_names=actually_added_names,
+                    )
             else:
                 blocked_result = await _clear_restored_existing_tombstones()
                 if blocked_result is not None:

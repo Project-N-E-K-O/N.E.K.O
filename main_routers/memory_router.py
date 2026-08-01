@@ -33,6 +33,7 @@ import hashlib
 import os
 import re
 import json
+from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -71,6 +72,20 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+
+
+async def _await_thread_mutation(func, *args, **kwargs):
+    """Finish a worker mutation before propagating caller cancellation."""
+    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        with suppress(BaseException):
+            operation.result()
+        raise
 
 
 def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
@@ -623,7 +638,9 @@ async def update_catgirl_name(request: Request):
         # to_thread：改名路径里的 recent.json 读写现在要拿文件锁，在事件循环
         # 线程上取锁会把整个循环挡住（而且 file_utils 的 busy-retry 在循环线程上
         # 会主动放弃，第一次 busy 就抛）。
-        result = await asyncio.to_thread(rename_character_memory_storage, cm, old_name, new_name)
+        result = await _await_thread_mutation(
+            rename_character_memory_storage, cm, old_name, new_name,
+        )
         logger.info(
             "已更新猫娘名称从 '%s' 到 '%s' 的记忆文件，changed=%s",
             old_name,

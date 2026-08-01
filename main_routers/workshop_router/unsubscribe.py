@@ -33,6 +33,35 @@ from ..shared_state import ensure_steamworks as get_steamworks, get_config_manag
 from utils.config_manager import get_reserved
 
 
+async def _resume_released_derived_tasks(
+    config_mgr, released_names: set[str], item_id: int,
+) -> None:
+    """Resume only released identities that still exist after unsubscribe cleanup."""
+    try:
+        characters_after = await config_mgr.aload_characters()
+        catgirls_after = (
+            characters_after.get('猫娘')
+            if isinstance(characters_after, dict)
+            else None
+        )
+        active_names = set(catgirls_after) if isinstance(catgirls_after, dict) else set()
+        resume_names = sorted(released_names.intersection(active_names))
+        if not resume_names:
+            return
+        from ..characters_router import notify_memory_server_reload
+
+        await notify_memory_server_reload(
+            reason=f"取消订阅流程结束，恢复仍存在角色: {item_id}",
+            resume_derived_task_names=resume_names,
+        )
+    except Exception as exc:
+        logger.warning(
+            "取消订阅流程结束后恢复角色派生任务失败: item_id=%s err=%s",
+            item_id,
+            exc,
+        )
+
+
 def _collect_character_names_by_workshop_item_id(config_mgr, item_id: int) -> list[str]:
     """
     Reverse-look up, via character_origin.source_id in characters.json, the names
@@ -216,6 +245,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
     Accepts a POST request containing the item ID.
     """
     steamworks = get_steamworks()
+    released_derived_task_names: set[str] = set()
 
     # 检查Steamworks是否初始化成功
     if steamworks is None:
@@ -405,6 +435,7 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
 
             for name, ok, err in release_results:
                 if ok:
+                    released_derived_task_names.add(name)
                     continue
                 release_warnings.append(name)
                 logger.info(
@@ -551,8 +582,8 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             recent_delete_transactions: list[dict] = []
             catgirl_map = characters_mut['猫娘']  # 上面 isinstance 已守卫
             target_item_id_str = str(item_id_int)
-            # 从首个不可逆的 memory 删除起，外层会完成本地提交与 Steam 请求，
-            # 再把请求取消传播给调用方，避免丢失 recent 删除事务 token。
+            # characters.json 是第一项不可逆提交。外层从这里开始会完成本地提交
+            # 与 Steam 请求，再把请求取消传播给调用方。
             commit_started.set()
             for name in candidate_names:
                 if not name:
@@ -597,63 +628,6 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                         )
                         cleanup_summary.setdefault("skipped_unverified_characters", []).append(name)
                         continue
-
-                # 三步独立：并发执行
-                results = await asyncio.gather(
-                    _delete_memory_with_retry(name),
-                    _write_tombstone(name),
-                    _remove_one(name),
-                    return_exceptions=True,
-                )
-                rm_paths_or_exc, tombstone_or_exc, remove_or_exc = results
-
-                # delete_memory 结果
-                if isinstance(rm_paths_or_exc, Exception):
-                    logger.error(
-                        f"取消订阅同步清理: delete_memory({name}) 失败: {rm_paths_or_exc}",
-                        exc_info=rm_paths_or_exc,
-                    )
-                    cleanup_summary["errors"].append({
-                        "character": name,
-                        "stage": "delete_memory",
-                        "error": str(rm_paths_or_exc),
-                    })
-                else:
-                    removed_paths, recent_transaction = rm_paths_or_exc
-                    recent_delete_transactions.append(recent_transaction)
-                    for entry_path in removed_paths:
-                        logger.info(f"取消订阅同步清理: 已删除记忆 {entry_path}")
-                        cleanup_summary["removed_memory_paths"].append(str(entry_path))
-                    if not removed_paths:
-                        logger.warning(
-                            f"取消订阅同步清理: delete_memory({name}) 未返回任何路径 "
-                            f"(memory_dir={getattr(config_mgr, 'memory_dir', None)})"
-                        )
-
-                # tombstone 结果
-                if isinstance(tombstone_or_exc, Exception):
-                    logger.error(
-                        f"取消订阅同步清理: tombstone({name}) 失败: {tombstone_or_exc}",
-                        exc_info=tombstone_or_exc,
-                    )
-                    cleanup_summary["errors"].append({
-                        "character": name,
-                        "stage": "tombstone",
-                        "error": str(tombstone_or_exc),
-                    })
-                else:
-                    logger.info(f"取消订阅同步清理: 已写入 tombstone -> {name}")
-
-                # remove_one_catgirl 结果
-                if isinstance(remove_or_exc, Exception):
-                    logger.warning(
-                        f"取消订阅同步清理: remove_one_catgirl({name}) 失败: {remove_or_exc}"
-                    )
-                    cleanup_summary["errors"].append({
-                        "character": name,
-                        "stage": "remove_one_catgirl",
-                        "error": str(remove_or_exc),
-                    })
 
                 # characters.json 条目仅做内存删除，循环结束一次性批量写盘。
                 # 复用前面捕获的 catgirl_map 引用（上面 isinstance 已守卫），
@@ -726,6 +700,63 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
                     "error": "本地角色配置清理失败，已取消本次 Steam 退订请求，请修复后重试。",
                     "cleanup_summary": cleanup_summary,
                 }, status_code=500)
+
+            # 配置先成功发布，再做不可逆的记忆、tombstone 与运行时清理。
+            # 若配置写失败，用户的记忆文件仍原样保留，不会出现回滚 registry
+            # 成功但文件已经被 shutil.rmtree 永久删除的假回滚。
+            for name in pending_del_names:
+                results = await asyncio.gather(
+                    _delete_memory_with_retry(name),
+                    _write_tombstone(name),
+                    _remove_one(name),
+                    return_exceptions=True,
+                )
+                rm_paths_or_exc, tombstone_or_exc, remove_or_exc = results
+
+                if isinstance(rm_paths_or_exc, BaseException):
+                    logger.error(
+                        f"取消订阅同步清理: delete_memory({name}) 失败: {rm_paths_or_exc}",
+                        exc_info=rm_paths_or_exc,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "delete_memory",
+                        "error": str(rm_paths_or_exc),
+                    })
+                else:
+                    removed_paths, recent_transaction = rm_paths_or_exc
+                    recent_delete_transactions.append(recent_transaction)
+                    for entry_path in removed_paths:
+                        logger.info(f"取消订阅同步清理: 已删除记忆 {entry_path}")
+                        cleanup_summary["removed_memory_paths"].append(str(entry_path))
+                    if not removed_paths:
+                        logger.warning(
+                            f"取消订阅同步清理: delete_memory({name}) 未返回任何路径 "
+                            f"(memory_dir={getattr(config_mgr, 'memory_dir', None)})"
+                        )
+
+                if isinstance(tombstone_or_exc, BaseException):
+                    logger.error(
+                        f"取消订阅同步清理: tombstone({name}) 失败: {tombstone_or_exc}",
+                        exc_info=tombstone_or_exc,
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "tombstone",
+                        "error": str(tombstone_or_exc),
+                    })
+                else:
+                    logger.info(f"取消订阅同步清理: 已写入 tombstone -> {name}")
+
+                if isinstance(remove_or_exc, BaseException):
+                    logger.warning(
+                        f"取消订阅同步清理: remove_one_catgirl({name}) 失败: {remove_or_exc}"
+                    )
+                    cleanup_summary["errors"].append({
+                        "character": name,
+                        "stage": "remove_one_catgirl",
+                        "error": str(remove_or_exc),
+                    })
 
             for transaction in recent_delete_transactions:
                 try:
@@ -985,3 +1016,15 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             "error": "服务器内部错误",
             "message": f"取消订阅过程中发生错误: {str(e)}"
         }, status_code=500)
+    finally:
+        if released_derived_task_names:
+            resume_task = asyncio.create_task(_resume_released_derived_tasks(
+                config_mgr,
+                released_derived_task_names,
+                item_id_int,
+            ))
+            while not resume_task.done():
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait({resume_task})
+            with suppress(Exception):
+                resume_task.result()

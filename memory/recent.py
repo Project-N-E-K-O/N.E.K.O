@@ -21,6 +21,7 @@ import os
 import asyncio
 import hashlib
 import logging
+from contextlib import suppress
 
 from config.prompts.prompts_memory import (
     get_recent_history_manager_prompt, get_detailed_recent_history_manager_prompt,
@@ -55,6 +56,20 @@ MAX_SUMMARY_TOKENS = RECENT_SUMMARY_MAX_TOKENS
 # 抗碰撞（连续 3 条 mixed user+ai 几乎不会误命中）和定位精度。
 REVIEW_FINGERPRINT_K = 3
 REVIEW_FINGERPRINT_CONTENT_PREFIX = 50
+
+
+async def _await_recent_mutation_to_completion(func, *args):
+    """Wait for a submitted recent-file mutation before propagating cancellation."""
+    operation = asyncio.create_task(asyncio.to_thread(func, *args))
+    try:
+        return await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        with suppress(BaseException):
+            operation.result()
+        raise
 
 
 async def review_context_token_count(messages: list) -> int:
@@ -260,6 +275,9 @@ class CompressedRecentHistoryManager:
         # 单独记录尾部 pending 的长度，读盘失败时才能精确替换它，而不是靠内容去重
         # （用户连续发送相同消息是合法的）。
         self._cached_pending_counts = {}
+        # A successful write from another producer invalidates the cached disk
+        # baseline even when the next physical read is transiently unavailable.
+        self._cached_disk_versions = {}
 
     # ── 未落盘批次账本 ────────────────────────────────────────────────
     def _pending_batches(self, lanlan_name: str) -> list:
@@ -355,7 +373,9 @@ class CompressedRecentHistoryManager:
             logger.warning(f"读取 {lanlan_name} 的历史记录文件失败: {e}，本轮视为读不到（不覆盖）")
             return (RECENT_READ_UNREADABLE, [])
 
-    def _cache_history_view(self, lanlan_name, disk_history, pending=()) -> list:
+    def _cache_history_view(
+        self, file_path, lanlan_name, disk_history, pending=(),
+    ) -> list:
         """Cache and return a visible disk-plus-pending history view."""
         visible = list(disk_history) + list(pending)
         self.user_histories[lanlan_name] = visible
@@ -363,6 +383,12 @@ class CompressedRecentHistoryManager:
         if pending_counts is None:
             pending_counts = self._cached_pending_counts = {}
         pending_counts[lanlan_name] = len(pending)
+        disk_versions = getattr(self, "_cached_disk_versions", None)
+        if disk_versions is None:
+            disk_versions = self._cached_disk_versions = {}
+        disk_versions[lanlan_name] = (
+            recent_file.get_recent_content_version_unlocked(file_path)
+        )
         return visible
 
     def _cached_disk_history(self, lanlan_name) -> list:
@@ -372,6 +398,16 @@ class CompressedRecentHistoryManager:
         if pending_count:
             return cached[:-pending_count]
         return cached
+
+    def _current_cached_disk_history(self, file_path, lanlan_name) -> list:
+        """Return the cached disk base only when no successful write superseded it."""
+        current_version = recent_file.get_recent_content_version_unlocked(file_path)
+        cached_version = getattr(
+            self, "_cached_disk_versions", {},
+        ).get(lanlan_name)
+        if cached_version != current_version:
+            return []
+        return self._cached_disk_history(lanlan_name)
 
     def _read_history_locked(
         self, file_path, lanlan_name, expected_generation=None,
@@ -387,11 +423,16 @@ class CompressedRecentHistoryManager:
                 # 落盘就会拿这批新消息覆盖整段读不出来的历史。磁盘基线保持既有缓存，
                 # 但 process-wide pending 仍是 prompt 必须看见的已接受消息。
                 return self._cache_history_view(
-                    lanlan_name, self._cached_disk_history(lanlan_name), pending,
+                    file_path,
+                    lanlan_name,
+                    self._current_cached_disk_history(file_path, lanlan_name),
+                    pending,
                 )
             # 写失败留下的 process-wide pending 也是当前可见历史的一部分。无论
             # recent.json 尚未创建还是仍停在旧版本，普通读取都不能把它从内存视图抹掉。
-            return self._cache_history_view(lanlan_name, history, pending)
+            return self._cache_history_view(
+                file_path, lanlan_name, history, pending,
+            )
 
     def _commit_hard_cap_locked(
         self, file_path, lanlan_name, expected_history, new_history,
@@ -419,7 +460,7 @@ class CompressedRecentHistoryManager:
                 )
                 return 'failed'
             recent_file.set_recent_pending_unlocked(file_path, [])
-            self._cache_history_view(lanlan_name, new_history)
+            self._cache_history_view(file_path, lanlan_name, new_history)
             return 'committed'
 
     def _merge_backup_memo_locked(
@@ -452,7 +493,10 @@ class CompressedRecentHistoryManager:
                     exc_info=True,
                 )
                 return ('failed', len(current), len(current))
-            self._cache_history_view(lanlan_name, new_history)
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            self._cache_history_view(
+                file_path, lanlan_name, new_history, pending,
+            )
             return ('merged', len(current), len(new_history))
 
 
@@ -526,7 +570,10 @@ class CompressedRecentHistoryManager:
                 )
                 return (
                     self._cache_history_view(
-                        lanlan_name, self._cached_disk_history(lanlan_name), updated_pending,
+                        file_path,
+                        lanlan_name,
+                        self._current_cached_disk_history(file_path, lanlan_name),
+                        updated_pending,
                     ),
                     False,
                 )
@@ -544,13 +591,16 @@ class CompressedRecentHistoryManager:
                     lanlan_name, list(pending) + list(new_messages), file_path,
                 )
                 self._cache_history_view(
-                    lanlan_name, history, list(pending) + list(new_messages),
+                    file_path,
+                    lanlan_name,
+                    history,
+                    list(pending) + list(new_messages),
                 )
                 logger.error(f"[RecentHistory] 保存历史记录失败: {e}", exc_info=True)
                 return (merged, False)
 
             self._set_pending_batches(lanlan_name, [], file_path)
-            self._cache_history_view(lanlan_name, merged)
+            self._cache_history_view(file_path, lanlan_name, merged)
             return (merged, True)
 
     def _splice_compressed_locked(
@@ -594,7 +644,10 @@ class CompressedRecentHistoryManager:
             except Exception as e:
                 logger.error(f"[RecentHistory] {lanlan_name} 压缩结果落盘失败: {e}", exc_info=True)
                 return 'failed'
-            self._cache_history_view(lanlan_name, new_history)
+            pending = recent_file.get_recent_pending_unlocked(file_path)
+            self._cache_history_view(
+                file_path, lanlan_name, new_history, pending,
+            )
             return 'merged'
 
     async def update_history(self, new_messages, lanlan_name, detailed=False, compress=True, on_compress_done=None):
@@ -619,7 +672,7 @@ class CompressedRecentHistoryManager:
             # CS-1：读盘 + 合并未落盘批次 + append + 落盘，一个临界区。
             # 先把未压缩状态落盘再进耗时的 compress_history：后者走 LLM，数秒到
             # 数十秒，期间进程崩溃或 task 被 cancel 会导致本批 new_messages 丢失。
-            history, persisted = await asyncio.to_thread(
+            history, persisted = await _await_recent_mutation_to_completion(
                 self._append_and_persist_locked,
                 file_path,
                 lanlan_name,
@@ -666,7 +719,7 @@ class CompressedRecentHistoryManager:
                     )
                 else:
                     # CS-2：读盘 + 定位 + splice + 落盘，一个临界区。
-                    splice_status = await asyncio.to_thread(
+                    splice_status = await _await_recent_mutation_to_completion(
                         self._splice_compressed_locked,
                         file_path, lanlan_name, snapshot, compressed_result[0],
                         admission_generation,
@@ -1100,7 +1153,7 @@ class CompressedRecentHistoryManager:
                 target=f"memory/{lanlan_name}/recent.json",
             )
             try:
-                commit_status = await asyncio.to_thread(
+                commit_status = await _await_recent_mutation_to_completion(
                     self._commit_hard_cap_locked,
                     file_path,
                     lanlan_name,
@@ -1157,7 +1210,7 @@ class CompressedRecentHistoryManager:
                 self._config_manager, operation="save",
                 target=f"memory/{lanlan_name}/recent.json",
             )
-            status, before_count, after_count = await asyncio.to_thread(
+            status, before_count, after_count = await _await_recent_mutation_to_completion(
                 self._merge_backup_memo_locked,
                 file_path,
                 lanlan_name,
@@ -1346,7 +1399,7 @@ class CompressedRecentHistoryManager:
             recent_file.write_recent_payload_unlocked(
                 file_path, messages_to_dict(new_history),
             )
-            self._cache_history_view(lanlan_name, new_history)
+            self._cache_history_view(file_path, lanlan_name, new_history)
 
             # ── Issue #3 修复：基于 patched 后的 new_history 算新 fingerprint ──
             # patched 区在 new_history 里的范围是 [patched_start, patched_end]：
@@ -1602,13 +1655,15 @@ class CompressedRecentHistoryManager:
                 # 这四步中间隔着两次 await，review LLM 跑完到落盘之间涌进来的
                 # /cache 批次会被整体覆盖。
                 try:
-                    commit_status, new_fingerprint, detail = await asyncio.to_thread(
-                        self._commit_review_locked,
-                        file_path,
-                        lanlan_name,
-                        snapshot,
-                        corrected_messages,
-                        admission_generation,
+                    commit_status, new_fingerprint, detail = (
+                        await _await_recent_mutation_to_completion(
+                            self._commit_review_locked,
+                            file_path,
+                            lanlan_name,
+                            snapshot,
+                            corrected_messages,
+                            admission_generation,
+                        )
                     )
                 except recent_file.RecentFileDeletedError:
                     return ('failed', None)

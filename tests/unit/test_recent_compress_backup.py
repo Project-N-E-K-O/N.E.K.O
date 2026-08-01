@@ -64,6 +64,29 @@ async def test_release_character_drains_old_identity_review_and_backup_tasks():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_release_failure_restores_derived_task_admission():
+    """A failed resource release must not permanently retire an active name."""
+    from app import memory_server
+
+    name = "释放失败角色"
+    memory_server.review._retired_derived_task_names.discard(name)
+    memory_server.review._publication_held_derived_task_names.discard(name)
+    fake_time_manager = MagicMock()
+    fake_time_manager.dispose_engine.side_effect = OSError("busy")
+
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
+        result = await memory_server.runtime.release_character_resources(
+            name,
+            hold_derived_task_admission=True,
+        )
+
+    assert result.status_code == 500
+    assert name not in memory_server.review._retired_derived_task_names
+    assert name not in memory_server.review._publication_held_derived_task_names
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_release_blocks_review_respawn_until_published_identity_reload():
     from app import memory_server
 

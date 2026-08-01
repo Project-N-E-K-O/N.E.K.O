@@ -155,6 +155,13 @@ async def cancel_character_derived_tasks(
         return await _cancel_character_derived_tasks_unlocked(lanlan_name)
 
 
+async def resume_character_derived_task_admission(lanlan_name: str) -> None:
+    """Undo retirement when the operation that requested a drain did not commit."""
+    async with _get_review_spawn_lock(lanlan_name):
+        _publication_held_derived_task_names.discard(lanlan_name)
+        _retired_derived_task_names.discard(lanlan_name)
+
+
 async def reconcile_character_derived_task_admission(
     active_names: set[str],
     *,
