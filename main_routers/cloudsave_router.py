@@ -34,6 +34,7 @@ from fastapi.responses import JSONResponse
 
 from .shared_state import ensure_steamworks, get_config_manager, get_initialize_character_data, get_role_state, get_session_manager
 from .characters_router import (
+    create_derived_task_claim_token,
     notify_memory_server_reload,
     release_memory_server_character,
     send_reload_page_notice,
@@ -342,11 +343,19 @@ def _maintenance_mode_error_response(exc: MaintenanceModeError, *, character_nam
     )
 
 
-async def _reload_after_character_download(character_name: str) -> tuple[bool, str]:
+async def _reload_after_character_download(
+    character_name: str,
+    release_claim_token: str | None = None,
+) -> tuple[bool, str]:
     initialize_character_data = get_initialize_character_data()
     await initialize_character_data()
     memory_server_reloaded = await notify_memory_server_reload(
         reason=f"云存档下载角色: {character_name}",
+        release_derived_task_claims=(
+            {character_name: (release_claim_token,)}
+            if release_claim_token
+            else None
+        ),
     )
     if not memory_server_reloaded:
         return False, "memory_server reload failed"
@@ -504,11 +513,19 @@ async def _rollback_failed_character_download(
     )
 
 
-async def _complete_cloudsave_character_download(config_manager, name: str, result: dict):
+async def _complete_cloudsave_character_download(
+    config_manager,
+    name: str,
+    result: dict,
+    release_claim_token: str | None = None,
+):
     """Reload an applied import or roll it back, then release its retained lock."""
     try:
         try:
-            reload_ok, reload_error = await _reload_after_character_download(name)
+            reload_ok, reload_error = await _reload_after_character_download(
+                name,
+                release_claim_token,
+            )
             if not reload_ok:
                 raise RuntimeError(reload_error or "reload failed")
         except asyncio.CancelledError as exc:
@@ -571,6 +588,35 @@ async def post_cloudsave_character_download(name: str, request: Request):
     force_val = (body or {}).get("force", False)
     released_memory_handle = False
     release_needs_resume = False
+    release_claim_token = create_derived_task_claim_token()
+
+    async def _release_local_handle(reason: str) -> bool:
+        nonlocal release_needs_resume
+        # The token is client-owned before the request starts. If cancellation
+        # arrives while HTTP is in flight, wait for its terminal result and
+        # withdraw this exact claim before propagating cancellation.
+        release_needs_resume = True
+        released, release_cancelled = await _await_coroutine_to_completion(
+            release_memory_server_character(
+                name,
+                reason=reason,
+                derived_task_claim_token=release_claim_token,
+            )
+        )
+        if released and not release_cancelled:
+            return True
+        _, resume_cancelled = await _await_coroutine_to_completion(
+            notify_memory_server_reload(
+                reason=f"{reason}（release 失败或取消补偿）",
+                release_derived_task_claims={
+                    name: (release_claim_token,),
+                },
+            )
+        )
+        release_needs_resume = False
+        if release_cancelled or resume_cancelled:
+            raise asyncio.CancelledError
+        return False
 
     local_exists = _local_character_exists(config_manager, name)
     if local_exists and not overwrite:
@@ -608,9 +654,8 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 character_name=name,
                 message_params={"message": terminate_msg},
             )
-        released_memory_handle = await release_memory_server_character(
-            name,
-            reason=f"云存档强制下载前释放 SQLite 句柄: {name}",
+        released_memory_handle = await _release_local_handle(
+            f"云存档强制下载前释放 SQLite 句柄: {name}",
         )
         if not released_memory_handle:
             return _cloudsave_error_response(
@@ -619,11 +664,9 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 status_code=503,
                 character_name=name,
             )
-        release_needs_resume = True
     if local_exists and overwrite and not force_val:
-        released_memory_handle = await release_memory_server_character(
-            name,
-            reason=f"云存档下载前释放 SQLite 句柄: {name}",
+        released_memory_handle = await _release_local_handle(
+            f"云存档下载前释放 SQLite 句柄: {name}",
         )
         if not released_memory_handle:
             return _cloudsave_error_response(
@@ -632,7 +675,6 @@ async def post_cloudsave_character_download(name: str, request: Request):
                 status_code=503,
                 character_name=name,
             )
-        release_needs_resume = True
 
     try:
         # Windows mutex ownership is thread-affine. This non-blocking acquire and
@@ -653,7 +695,12 @@ async def post_cloudsave_character_download(name: str, request: Request):
             )
             reload_error_response, completion_cancelled = (
                 await _await_coroutine_to_completion(
-                    _complete_cloudsave_character_download(config_manager, name, result),
+                    _complete_cloudsave_character_download(
+                        config_manager,
+                        name,
+                        result,
+                        release_claim_token,
+                    ),
                 )
             )
             if reload_error_response is None:
@@ -680,7 +727,9 @@ async def post_cloudsave_character_download(name: str, request: Request):
             _, resume_cancelled = await _await_coroutine_to_completion(
                 notify_memory_server_reload(
                     reason=f"云存档下载中止，恢复角色派生任务: {name}",
-                    resume_derived_task_names=(name,),
+                    release_derived_task_claims={
+                        name: (release_claim_token,),
+                    },
                 )
             )
             if resume_cancelled:

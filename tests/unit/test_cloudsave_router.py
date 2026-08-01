@@ -1122,7 +1122,7 @@ async def test_directly_cancelled_download_completion_rolls_back_before_release(
         "_recent_import_transaction": {"held_locks": []},
     }
 
-    async def _blocked_reload(_name):
+    async def _blocked_reload(_name, _release_claim_token=None):
         reload_started.set()
         await asyncio.Event().wait()
 
@@ -1431,7 +1431,7 @@ async def test_download_import_failure_resumes_released_character():
                 cloudsave_router_module,
                 "release_memory_server_character",
                 AsyncMock(return_value=True),
-            ), patch.object(
+            ) as release_memory, patch.object(
                 cloudsave_router_module,
                 "import_cloudsave_character_unit",
                 side_effect=OSError("corrupt cloud unit"),
@@ -1446,9 +1446,65 @@ async def test_download_import_failure_resumes_released_character():
                 )
 
         assert response.status_code == 500
+        claim_token = release_memory.await_args.kwargs[
+            "derived_task_claim_token"
+        ]
         reload_memory.assert_awaited_once_with(
             reason="云存档下载中止，恢复角色派生任务: 小满",
-            resume_derived_task_names=("小满",),
+            release_derived_task_claims={"小满": (claim_token,)},
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_download_cancellation_during_release_withdraws_exact_claim():
+    """Cancellation during release waits for its result, compensates, then propagates."""
+    with TemporaryDirectory() as td:
+        cm = _setup_force_test_env(Path(td))
+        _write_runtime_state(cm, character_name="小满")
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+
+        async def _release(_name, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch("utils.config_manager._config_manager", cm):
+            cloudsave_router_module = importlib.import_module(
+                "main_routers.cloudsave_router"
+            )
+            reload_memory = AsyncMock(return_value=True)
+            with patch.object(
+                cloudsave_router_module,
+                "release_memory_server_character",
+                side_effect=_release,
+            ) as release_memory, patch.object(
+                cloudsave_router_module,
+                "notify_memory_server_reload",
+                reload_memory,
+            ):
+                operation = asyncio.create_task(
+                    cloudsave_router_module.post_cloudsave_character_download(
+                        "小满",
+                        _DummyRequest({"overwrite": True}),
+                    )
+                )
+                await release_started.wait()
+                operation.cancel()
+                finish_release.set()
+                with pytest.raises(asyncio.CancelledError):
+                    await operation
+
+        claim_token = release_memory.await_args.kwargs[
+            "derived_task_claim_token"
+        ]
+        reload_memory.assert_awaited_once_with(
+            reason=(
+                "云存档下载前释放 SQLite 句柄: 小满"
+                "（release 失败或取消补偿）"
+            ),
+            release_derived_task_claims={"小满": (claim_token,)},
         )
 
 
@@ -1673,7 +1729,7 @@ async def test_download_keeps_cloud_fence_through_reload_and_lock_finalize():
         export_local_cloudsave_snapshot(cm)
         observed_modes = []
 
-        async def _reload(name):
+        async def _reload(name, _release_claim_token=None):
             observed_modes.append(("reload", get_root_mode(cm)))
             with pytest.raises(MaintenanceModeError):
                 assert_cloudsave_writable(
@@ -1762,6 +1818,9 @@ async def test_cancelled_download_finishes_reload_before_propagating_cancel():
                 with pytest.raises(asyncio.CancelledError):
                     await operation
 
-        reload_mock.assert_awaited_once_with("小满")
+        reload_mock.assert_awaited_once()
+        assert reload_mock.await_args.args[0] == "小满"
+        assert isinstance(reload_mock.await_args.args[1], str)
+        assert reload_mock.await_args.args[1]
         assert finalized_modes == [ROOT_MODE_BOOTSTRAP_IMPORTING]
         assert get_root_mode(cm) != ROOT_MODE_BOOTSTRAP_IMPORTING

@@ -29,7 +29,12 @@ from ._shared import (
     logger,
     router,
 )
-from .notify import notify_memory_server_reload, release_memory_server_character, send_reload_page_notice
+from .notify import (
+    create_derived_task_claim_token,
+    notify_memory_server_reload,
+    release_memory_server_character,
+    send_reload_page_notice,
+)
 from .voice_registry import _is_current_catgirl_voice_session_starting, _voice_session_starting_response
 
 import json
@@ -405,12 +410,17 @@ async def _await_thread_mutation(func, *args, **kwargs):
     return result
 
 
-async def _resume_released_character_admission(name: str, *, reason: str) -> str:
+async def _resume_released_character_admission(
+    name: str,
+    claim_token: str,
+    *,
+    reason: str,
+) -> str:
     """Resume one released identity and return a diagnostic on failure."""
     try:
         resumed = await notify_memory_server_reload(
             reason=reason,
-            resume_derived_task_names=(name,),
+            release_derived_task_claims={name: (claim_token,)},
         )
     except Exception as exc:
         return f"notify_memory_server_reload failed: {exc}"
@@ -480,6 +490,7 @@ async def _rollback_character_operation(
     recent_rename_result: dict | None = None,
     recent_transaction: dict | None = None,
     resume_derived_task_names: tuple[str, ...] = (),
+    release_derived_task_claims: dict[str, tuple[str, ...]] | None = None,
     reason: str,
 ) -> str:
     rollback_errors: list[str] = []
@@ -532,6 +543,7 @@ async def _rollback_character_operation(
         reload_notified = await notify_memory_server_reload(
             reason=reason,
             resume_derived_task_names=resume_derived_task_names,
+            release_derived_task_claims=release_derived_task_claims,
         )
         if not reload_notified:
             rollback_errors.append("notify_memory_server_reload failed: returned False")
@@ -677,6 +689,7 @@ async def rename_catgirl(old_name: str, request: Request):
     memory_snapshot_records = []
     rename_committed = False
     released_memory_handle = False
+    release_claim_token = create_derived_task_claim_token()
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
         try:
@@ -686,6 +699,7 @@ async def rename_catgirl(old_name: str, request: Request):
                         old_name,
                         reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
                         hold_derived_task_admission=True,
+                        derived_task_claim_token=release_claim_token,
                     )
                 )
             )
@@ -696,6 +710,7 @@ async def rename_catgirl(old_name: str, request: Request):
                     await _await_coroutine_to_completion(
                         _resume_released_character_admission(
                             old_name,
+                            release_claim_token,
                             reason=f"角色重命名 release 失败补偿: {old_name} -> {new_name}",
                         )
                     )
@@ -795,7 +810,9 @@ async def rename_catgirl(old_name: str, request: Request):
                     memory_snapshot_records=memory_snapshot_records,
                     recent_rename_result=memory_rename_result,
                     recent_transaction=recent_transaction,
-                    resume_derived_task_names=(old_name,),
+                    release_derived_task_claims={
+                        old_name: (release_claim_token,),
+                    },
                     reason=f"角色重命名回滚（memory_server 重载失败）: {old_name} -> {new_name}",
                 )
                 logger.error(
@@ -835,7 +852,9 @@ async def rename_catgirl(old_name: str, request: Request):
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
-                        resume_derived_task_names=(old_name,),
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
                         reason=f"任务取消：角色重命名回滚 {old_name} -> {new_name}",
                     )
                 )
@@ -849,7 +868,9 @@ async def rename_catgirl(old_name: str, request: Request):
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
-                        resume_derived_task_names=(old_name,),
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
                         reason=f"维护模式：角色重命名回滚 {old_name} -> {new_name}",
                     )
                 )
@@ -868,7 +889,9 @@ async def rename_catgirl(old_name: str, request: Request):
                         memory_snapshot_records=memory_snapshot_records,
                         recent_rename_result=memory_rename_result,
                         recent_transaction=recent_transaction,
-                        resume_derived_task_names=(old_name,),
+                        release_derived_task_claims={
+                            old_name: (release_claim_token,),
+                        },
                         reason=f"角色重命名回滚: {old_name} -> {new_name}",
                     )
                 )
@@ -1480,6 +1503,7 @@ async def _delete_catgirl_by_name(name: str):
         memory_server_reloaded = False
         delete_committed = False
         released_memory_handle = False
+        release_claim_token = create_derived_task_claim_token()
         try:
             released_memory_handle, release_cancelled = (
                 await _await_coroutine_to_completion(
@@ -1487,6 +1511,7 @@ async def _delete_catgirl_by_name(name: str):
                         name,
                         reason=f"角色删除前释放 SQLite 句柄: {name}",
                         hold_derived_task_admission=True,
+                        derived_task_claim_token=release_claim_token,
                     )
                 )
             )
@@ -1497,6 +1522,7 @@ async def _delete_catgirl_by_name(name: str):
                     await _await_coroutine_to_completion(
                         _resume_released_character_admission(
                             name,
+                            release_claim_token,
                             reason=f"角色删除 release 失败补偿: {name}",
                         )
                     )
@@ -1600,7 +1626,9 @@ async def _delete_catgirl_by_name(name: str):
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
                         recent_transaction=recent_transaction,
-                        resume_derived_task_names=(name,),
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
                         reason=f"任务取消：删除角色回滚 {name}",
                     )
                 )
@@ -1615,7 +1643,9 @@ async def _delete_catgirl_by_name(name: str):
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
                         recent_transaction=recent_transaction,
-                        resume_derived_task_names=(name,),
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
                         reason=f"维护模式：删除角色回滚 {name}",
                     )
                 )
@@ -1635,7 +1665,9 @@ async def _delete_catgirl_by_name(name: str):
                         tombstone_snapshot=tombstone_snapshot,
                         recent_delete_result=recent_delete_result,
                         recent_transaction=recent_transaction,
-                        resume_derived_task_names=(name,),
+                        release_derived_task_claims={
+                            name: (release_claim_token,),
+                        },
                         reason=f"删除角色回滚: {name}",
                     )
                 )

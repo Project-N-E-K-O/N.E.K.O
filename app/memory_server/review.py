@@ -31,6 +31,8 @@ before the mutator is handed over.
 
 import asyncio
 import functools
+import os
+from collections import OrderedDict
 from datetime import datetime
 
 from . import gates, runtime
@@ -55,6 +57,50 @@ correction_cancel_flags = {}  # {lanlan_name: asyncio.Event}
 _review_spawn_locks: dict[str, asyncio.Lock] = {}
 _retired_derived_task_names: set[str] = set()
 _publication_held_derived_task_names: set[str] = set()
+_derived_task_admission_claims: dict[
+    str, dict[str, tuple[bool, int | None]]
+] = {}
+_released_derived_task_claim_tokens: OrderedDict[tuple[str, str], None] = (
+    OrderedDict()
+)
+_RELEASED_DERIVED_TASK_CLAIM_TOKEN_LIMIT = 4096
+
+
+def _capture_character_admission_generation(lanlan_name: str) -> int | None:
+    """Return the main-process identity generation for one character path."""
+    config_manager = getattr(runtime, "_config_manager", None)
+    memory_dir = getattr(config_manager, "memory_dir", None)
+    if not memory_dir:
+        return None
+    path = os.path.join(memory_dir, lanlan_name, "recent.json")
+    return capture_recent_generation(path)[1]
+
+
+def _recompute_derived_task_admission_unlocked(lanlan_name: str) -> None:
+    claims = _derived_task_admission_claims.get(lanlan_name)
+    if claims:
+        _retired_derived_task_names.add(lanlan_name)
+        if any(hold for hold, _ in claims.values()):
+            _publication_held_derived_task_names.add(lanlan_name)
+        else:
+            _publication_held_derived_task_names.discard(lanlan_name)
+        return
+    _derived_task_admission_claims.pop(lanlan_name, None)
+    _publication_held_derived_task_names.discard(lanlan_name)
+    _retired_derived_task_names.discard(lanlan_name)
+
+
+def _remember_released_claim_token_unlocked(
+    lanlan_name: str, claim_token: str,
+) -> None:
+    key = (lanlan_name, claim_token)
+    _released_derived_task_claim_tokens[key] = None
+    _released_derived_task_claim_tokens.move_to_end(key)
+    while (
+        len(_released_derived_task_claim_tokens)
+        > _RELEASED_DERIVED_TASK_CLAIM_TOKEN_LIMIT
+    ):
+        _released_derived_task_claim_tokens.popitem(last=False)
 
 
 async def _cancel_character_derived_tasks_unlocked(lanlan_name: str) -> int:
@@ -146,35 +192,91 @@ async def cancel_character_derived_tasks(
     lanlan_name: str,
     *,
     hold_until_publication: bool = False,
-) -> int:
+    claim_token: str | None = None,
+    claim_generation: int | None = None,
+) -> int | None:
     """Retire derived-task admission, then cancel and drain existing work."""
     async with _get_review_spawn_lock(lanlan_name):
+        if claim_token:
+            released_key = (lanlan_name, claim_token)
+            if released_key in _released_derived_task_claim_tokens:
+                _released_derived_task_claim_tokens.move_to_end(released_key)
+                return None
+            claims = _derived_task_admission_claims.setdefault(lanlan_name, {})
+            previous = claims.get(claim_token)
+            claims[claim_token] = (
+                bool((previous and previous[0]) or hold_until_publication),
+                previous[1] if previous else (
+                    claim_generation
+                    if claim_generation is not None
+                    else _capture_character_admission_generation(lanlan_name)
+                ),
+            )
         _retired_derived_task_names.add(lanlan_name)
         if hold_until_publication:
             _publication_held_derived_task_names.add(lanlan_name)
         return await _cancel_character_derived_tasks_unlocked(lanlan_name)
 
 
-async def resume_character_derived_task_admission(lanlan_name: str) -> None:
-    """Undo retirement when the operation that requested a drain did not commit."""
+async def release_character_derived_task_admission_claim(
+    lanlan_name: str,
+    claim_token: str,
+) -> None:
+    """Release only the admission claim owned by one lifecycle operation."""
     async with _get_review_spawn_lock(lanlan_name):
-        _publication_held_derived_task_names.discard(lanlan_name)
-        _retired_derived_task_names.discard(lanlan_name)
+        _remember_released_claim_token_unlocked(lanlan_name, claim_token)
+        claims = _derived_task_admission_claims.get(lanlan_name)
+        if not claims or claim_token not in claims:
+            return
+        claims.pop(claim_token)
+        _recompute_derived_task_admission_unlocked(lanlan_name)
+
+
+async def resume_character_derived_task_admission(
+    lanlan_name: str,
+    published_generation: int | None = None,
+) -> None:
+    """Open a published identity without clearing same-generation claims."""
+    async with _get_review_spawn_lock(lanlan_name):
+        generation = (
+            published_generation
+            if published_generation is not None
+            else _capture_character_admission_generation(lanlan_name)
+        )
+        claims = _derived_task_admission_claims.get(lanlan_name)
+        if claims:
+            for token, (_, claim_generation) in list(claims.items()):
+                if generation is None or claim_generation != generation:
+                    claims.pop(token, None)
+        _recompute_derived_task_admission_unlocked(lanlan_name)
 
 
 async def reconcile_character_derived_task_admission(
     active_names: set[str],
     *,
     resume_names: set[str] | None = None,
+    resume_generations: dict[str, int] | None = None,
 ) -> None:
     """Re-enable a retired name only after reload observes a published identity."""
     explicit_resume = resume_names or set()
     for name in sorted(_retired_derived_task_names.intersection(active_names)):
         async with _get_review_spawn_lock(name):
-            if (
-                name in _publication_held_derived_task_names
-                and name not in explicit_resume
-            ):
+            if name in explicit_resume:
+                generation = (resume_generations or {}).get(name)
+                if generation is None:
+                    generation = _capture_character_admission_generation(name)
+                claims = _derived_task_admission_claims.get(name)
+                if claims:
+                    for token, (_, claim_generation) in list(claims.items()):
+                        if generation is None or claim_generation != generation:
+                            claims.pop(token, None)
+                _recompute_derived_task_admission_unlocked(name)
+                continue
+            # Token-owned holds survive unrelated reloads. Only their owner can
+            # release them; a newly published identity uses explicit_resume.
+            if _derived_task_admission_claims.get(name):
+                continue
+            if name in _publication_held_derived_task_names:
                 continue
             _publication_held_derived_task_names.discard(name)
             _retired_derived_task_names.discard(name)

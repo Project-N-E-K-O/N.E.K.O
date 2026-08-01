@@ -48,7 +48,11 @@ async def test_release_character_drains_old_identity_review_and_backup_tasks():
     fake_time_manager = MagicMock()
 
     with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
-        result = await memory_server.runtime.release_character_resources(name)
+        result = await memory_server.runtime.release_character_resources(
+            name,
+            derived_task_claim_token="drain-claim",
+            derived_task_claim_generation=0,
+        )
 
     assert result["status"] == "success"
     assert result["cancelled_derived_tasks"] == 2
@@ -78,6 +82,8 @@ async def test_release_failure_restores_derived_task_admission():
         result = await memory_server.runtime.release_character_resources(
             name,
             hold_derived_task_admission=True,
+            derived_task_claim_token="failure-claim",
+            derived_task_claim_generation=0,
         )
 
     assert result.status_code == 500
@@ -142,6 +148,140 @@ async def test_publication_hold_survives_unrelated_reload_until_explicit_resume(
 
     memory_server.review._publication_held_derived_task_names.discard(name)
     memory_server.review._retired_derived_task_names.discard(name)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_releasing_one_admission_claim_preserves_concurrent_publication_hold():
+    """An abort may release only its own claim for a shared character name."""
+    from app import memory_server
+
+    name = "并发准入持有角色"
+    await memory_server.review.cancel_character_derived_tasks(
+        name,
+        hold_until_publication=True,
+        claim_token="rename-claim",
+    )
+    await memory_server.review.cancel_character_derived_tasks(
+        name,
+        claim_token="cloud-claim",
+    )
+
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name,
+        "cloud-claim",
+    )
+
+    assert name in memory_server.review._retired_derived_task_names
+    assert name in memory_server.review._publication_held_derived_task_names
+    assert memory_server.review._derived_task_admission_claims[name] == {
+        "rename-claim": (True, 0),
+    }
+
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name,
+        "rename-claim",
+    )
+    assert name not in memory_server.review._retired_derived_task_names
+    assert name not in memory_server.review._publication_held_derived_task_names
+    assert name not in memory_server.review._derived_task_admission_claims
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_publication_resume_preserves_same_generation_claim():
+    """Publishing an identity may clear old claims, never a later new-identity claim."""
+    from app import memory_server
+
+    name = "发布后并发准入角色"
+    await memory_server.review.cancel_character_derived_tasks(
+        name,
+        hold_until_publication=True,
+        claim_token="old-generation",
+        claim_generation=11,
+    )
+    await memory_server.review.cancel_character_derived_tasks(
+        name,
+        claim_token="new-generation",
+        claim_generation=12,
+    )
+
+    await memory_server.review.resume_character_derived_task_admission(
+        name,
+        published_generation=12,
+    )
+
+    assert memory_server.review._derived_task_admission_claims[name] == {
+        "new-generation": (False, 12),
+    }
+    assert name in memory_server.review._retired_derived_task_names
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name,
+        "new-generation",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_released_token_tombstone_aborts_late_release_registration():
+    """A compensation arriving first must make a late release endpoint a no-op."""
+    from app import memory_server
+
+    name = "乱序释放角色"
+    token = "withdrawn-before-register"
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name,
+        token,
+    )
+    fake_time_manager = MagicMock()
+
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
+        result = await memory_server.runtime.release_character_resources(
+            name,
+            derived_task_claim_token=token,
+            derived_task_claim_generation=0,
+        )
+
+    assert result.status_code == 409
+    fake_time_manager.dispose_engine.assert_not_called()
+    assert name not in memory_server.review._retired_derived_task_names
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_released_registered_token_rejects_every_replay():
+    """Withdrawing a registered token must make later duplicate releases no-ops."""
+    from app import memory_server
+
+    name = "重复晚到释放角色"
+    token = "registered-then-withdrawn"
+    await memory_server.review.cancel_character_derived_tasks(
+        name,
+        claim_token=token,
+        claim_generation=0,
+    )
+    await memory_server.review.release_character_derived_task_admission_claim(
+        name,
+        token,
+    )
+    fake_time_manager = MagicMock()
+
+    with patch.object(memory_server.runtime, "time_manager", fake_time_manager):
+        first = await memory_server.runtime.release_character_resources(
+            name,
+            derived_task_claim_token=token,
+            derived_task_claim_generation=0,
+        )
+        second = await memory_server.runtime.release_character_resources(
+            name,
+            derived_task_claim_token=token,
+            derived_task_claim_generation=0,
+        )
+
+    assert first.status_code == 409
+    assert second.status_code == 409
+    fake_time_manager.dispose_engine.assert_not_called()
+    assert name not in memory_server.review._retired_derived_task_names
 
 
 @pytest.mark.unit

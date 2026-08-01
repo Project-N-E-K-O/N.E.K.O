@@ -206,6 +206,8 @@ def _defer_time_manager_cleanup(manager: TimeIndexedMemory | None) -> None:
 async def reload_memory_components(
     *,
     resume_derived_task_names: set[str] | None = None,
+    resume_derived_task_generations: dict[str, int] | None = None,
+    release_derived_task_claims: dict[str, set[str]] | None = None,
 ):
     """Reload memory component config (used after a new character is created)
 
@@ -223,6 +225,12 @@ async def reload_memory_components(
     """
     global recent_history_manager, settings_manager, time_manager, fact_store, persona_manager, reflection_engine, cursor_store, outbox, event_log, reconciler, fact_dedup_resolver
     requested_resume_names = set(resume_derived_task_names or ())
+    requested_resume_generations = dict(resume_derived_task_generations or {})
+    requested_claim_releases = {
+        name: set(tokens)
+        for name, tokens in (release_derived_task_claims or {}).items()
+        if name and tokens
+    }
     async with _reload_lock:
         logger.info("[MemoryServer] 开始重新加载记忆组件配置...")
         old_time_manager = time_manager
@@ -289,6 +297,7 @@ async def reload_memory_components(
                 await review.reconcile_character_derived_task_admission(
                     active_names,
                     resume_names=requested_resume_names,
+                    resume_generations=requested_resume_generations,
                 )
             except Exception as reconcile_exc:
                 # 组件引用已经完成原子替换；协调失败不能把真实成功的 reload
@@ -304,18 +313,29 @@ async def reload_memory_components(
             logger.error(f"[MemoryServer] ❌ 重新加载记忆组件配置失败: {e}", exc_info=True)
             return False
         finally:
-            if requested_resume_names:
-                # 显式 resume 是 release 事务的补偿动作，不能依赖组件 reload 成功。
-                # 否则构造新 manager 失败会把仍存在的角色永久留在 retired 集合。
+            if requested_claim_releases or requested_resume_names:
+                # claim 释放与新身份显式 resume 都是 release 事务的收尾，不能
+                # 依赖 manager reload 成功。claim 必须按 token 释放，不能误清
+                # 同名并发事务仍持有的 publication hold。
                 from . import review
 
                 try:
+                    for name in sorted(requested_claim_releases):
+                        for token in sorted(requested_claim_releases[name]):
+                            await review.release_character_derived_task_admission_claim(
+                                name,
+                                token,
+                            )
                     for name in sorted(requested_resume_names):
-                        await review.resume_character_derived_task_admission(name)
+                        await review.resume_character_derived_task_admission(
+                            name,
+                            requested_resume_generations.get(name),
+                        )
                 except Exception as resume_exc:
                     logger.error(
-                        "[MemoryServer] reload 收尾恢复派生任务准入失败: names=%s err=%s",
+                        "[MemoryServer] reload 收尾恢复派生任务准入失败: names=%s claims=%s err=%s",
                         sorted(requested_resume_names),
+                        sorted(requested_claim_releases),
                         resume_exc,
                         exc_info=True,
                     )
@@ -325,6 +345,8 @@ async def reload_memory_components(
 async def release_character_resources(
     lanlan_name: str,
     hold_derived_task_admission: bool = False,
+    derived_task_claim_token: str | None = None,
+    derived_task_claim_generation: int | None = None,
 ):
     """Proactively release the corresponding SQLite handles before a character rename/delete."""
     try:
@@ -341,10 +363,31 @@ async def release_character_resources(
     # 会沿 recent redirect 把旧名字生成的 memo/correction 写进新角色。
     from . import review
 
+    if not derived_task_claim_token or derived_task_claim_generation is None:
+        return JSONResponse(
+            {
+                "status": "error",
+                "character_name": lanlan_name,
+                "message": "derived task claim token and generation are required",
+            },
+            status_code=400,
+        )
+
     cancelled_tasks = await review.cancel_character_derived_tasks(
         lanlan_name,
         hold_until_publication=hold_derived_task_admission,
+        claim_token=derived_task_claim_token,
+        claim_generation=derived_task_claim_generation,
     )
+    if cancelled_tasks is None:
+        return JSONResponse(
+            {
+                "status": "cancelled",
+                "character_name": lanlan_name,
+                "message": "release claim was already withdrawn",
+            },
+            status_code=409,
+        )
     async with _reload_lock:
         try:
             time_manager.dispose_engine(lanlan_name)
@@ -357,9 +400,14 @@ async def release_character_resources(
                 "status": "success",
                 "character_name": lanlan_name,
                 "cancelled_derived_tasks": cancelled_tasks,
+                "derived_task_claim_token": derived_task_claim_token,
             }
         except Exception as exc:
-            await review.resume_character_derived_task_admission(lanlan_name)
+            if derived_task_claim_token:
+                await review.release_character_derived_task_admission_claim(
+                    lanlan_name,
+                    derived_task_claim_token,
+                )
             logger.warning("[MemoryServer] 释放角色 %s 的 SQLite 引擎失败: %s", lanlan_name, exc)
             return JSONResponse(
                 {"status": "error", "character_name": lanlan_name, "message": str(exc)},
@@ -864,8 +912,42 @@ async def reload_config(request: Request):
             name for name in raw_resume_names
             if isinstance(name, str) and name
         } if isinstance(raw_resume_names, list) else set()
+        raw_resume_generations = (
+            payload.get("resume_derived_task_generations", {})
+            if isinstance(payload, dict)
+            else {}
+        )
+        resume_generations = {
+            name: generation
+            for name, generation in raw_resume_generations.items()
+            if (
+                isinstance(name, str)
+                and name
+                and isinstance(generation, int)
+                and generation >= 0
+            )
+        } if isinstance(raw_resume_generations, dict) else {}
+        raw_claim_releases = (
+            payload.get("release_derived_task_claims", {})
+            if isinstance(payload, dict)
+            else {}
+        )
+        claim_releases = {
+            name: {
+                token for token in tokens
+                if isinstance(token, str) and token
+            }
+            for name, tokens in raw_claim_releases.items()
+            if (
+                isinstance(name, str)
+                and name
+                and isinstance(tokens, list)
+            )
+        } if isinstance(raw_claim_releases, dict) else {}
         success = await reload_memory_components(
             resume_derived_task_names=resume_names,
+            resume_derived_task_generations=resume_generations,
+            release_derived_task_claims=claim_releases,
         )
         if success:
             return {"status": "success", "message": "配置已重新加载"}

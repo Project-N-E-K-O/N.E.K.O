@@ -23,9 +23,25 @@ from ._shared import logger
 
 import json
 import httpx
+import uuid
+from pathlib import Path
 from config import (
     MEMORY_SERVER_PORT,
 )
+
+
+def create_derived_task_claim_token() -> str:
+    """Create an opaque token identifying one derived-task admission claim."""
+    return uuid.uuid4().hex
+
+
+def _capture_derived_task_claim_generation(character_name: str) -> int:
+    from ..shared_state import get_config_manager
+    from utils.recent_file import capture_recent_generation
+
+    config_manager = get_config_manager()
+    recent_path = Path(config_manager.memory_dir) / character_name / "recent.json"
+    return capture_recent_generation(recent_path)[1]
 
 
 def _resolve_reload_page_notice_code(message_text: str, message_code: str | None = None) -> str:
@@ -86,15 +102,24 @@ async def notify_memory_server_reload(
     *,
     reason: str = "",
     resume_derived_task_names: list[str] | tuple[str, ...] = (),
+    release_derived_task_claims: dict[str, list[str] | tuple[str, ...]] | None = None,
 ) -> bool:
     try:
+        resume_names = sorted(set(resume_derived_task_names))
         async with httpx.AsyncClient(proxy=None, trust_env=False) as client:
             response = await client.post(
                 f"http://127.0.0.1:{MEMORY_SERVER_PORT}/reload",
                 json={
-                    "resume_derived_task_names": sorted(
-                        set(resume_derived_task_names)
-                    ),
+                    "resume_derived_task_names": resume_names,
+                    "resume_derived_task_generations": {
+                        name: _capture_derived_task_claim_generation(name)
+                        for name in resume_names
+                    },
+                    "release_derived_task_claims": {
+                        name: sorted(set(tokens))
+                        for name, tokens in (release_derived_task_claims or {}).items()
+                        if name and tokens
+                    },
                 },
                 timeout=5.0,
             )
@@ -126,11 +151,14 @@ async def release_memory_server_character(
     *,
     reason: str = "",
     hold_derived_task_admission: bool = False,
+    derived_task_claim_token: str | None = None,
 ) -> bool:
     from urllib.parse import quote
     from utils.internal_http_client import get_internal_http_client
 
     try:
+        claim_token = derived_task_claim_token or create_derived_task_claim_token()
+        claim_generation = _capture_derived_task_claim_generation(character_name)
         encoded_name = quote(character_name, safe="")
         # 复用进程级单例避免 per-call SSLContext 冷启动（实测 ~1.1s/次）。
         # 单例在 on_shutdown 末尾由 aclose_internal_http_client 统一关闭，
@@ -142,6 +170,8 @@ async def release_memory_server_character(
                 "hold_derived_task_admission": str(
                     hold_derived_task_admission
                 ).lower(),
+                "derived_task_claim_token": claim_token,
+                "derived_task_claim_generation": claim_generation,
             },
             timeout=5.0,
         )

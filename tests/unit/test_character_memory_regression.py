@@ -1,5 +1,7 @@
 import asyncio
+import ast
 import importlib
+import inspect
 import json
 import os
 import threading
@@ -160,7 +162,9 @@ async def test_rename_cancellation_during_release_runs_admission_rollback(tmp_pa
             with pytest.raises(asyncio.CancelledError):
                 await operation
 
-        assert rollback.await_args.kwargs["resume_derived_task_names"] == ("Old",)
+        claims = rollback.await_args.kwargs["release_derived_task_claims"]
+        assert set(claims) == {"Old"}
+        assert len(claims["Old"]) == 1
 
 
 @pytest.mark.unit
@@ -210,7 +214,9 @@ async def test_delete_cancellation_during_release_runs_admission_rollback(tmp_pa
             with pytest.raises(asyncio.CancelledError):
                 await operation
 
-        assert rollback.await_args.kwargs["resume_derived_task_names"] == ("DeleteMe",)
+        claims = rollback.await_args.kwargs["release_derived_task_claims"]
+        assert set(claims) == {"DeleteMe"}
+        assert len(claims["DeleteMe"]) == 1
 
 
 @pytest.mark.unit
@@ -274,7 +280,9 @@ async def test_release_false_compensation_preserves_cancellation(tmp_path, opera
             with pytest.raises(asyncio.CancelledError):
                 await operation
 
-        assert rollback.await_args.kwargs["resume_derived_task_names"] == (name,)
+        claims = rollback.await_args.kwargs["release_derived_task_claims"]
+        assert set(claims) == {name}
+        assert len(claims[name]) == 1
 
 
 @pytest.mark.unit
@@ -795,13 +803,13 @@ async def test_workshop_abort_resumes_only_released_names_still_active():
         reload_memory,
     ):
         resumed = await unsubscribe._resume_released_derived_tasks(
-            _Config(), {"StillHere", "Deleted"}, 42,
+            _Config(), {"StillHere": "claim-a", "Deleted": "claim-b"}, 42,
         )
 
     assert resumed is True
     reload_memory.assert_awaited_once_with(
         reason="取消订阅流程结束，恢复仍存在角色: 42",
-        resume_derived_task_names=["StillHere"],
+        release_derived_task_claims={"StillHere": ("claim-a",)},
     )
 
 
@@ -820,7 +828,7 @@ async def test_workshop_abort_surfaces_derived_task_resume_failure():
         AsyncMock(return_value=False),
     ), pytest.raises(RuntimeError, match="notify_memory_server_reload returned False"):
         await unsubscribe._resume_released_derived_tasks(
-            _Config(), {"StillHere"}, 42,
+            _Config(), {"StillHere": "claim-a"}, 42,
         )
 
 
@@ -839,32 +847,147 @@ async def test_workshop_resume_exception_is_not_swallowed():
         AsyncMock(side_effect=OSError("reload unavailable")),
     ), pytest.raises(OSError, match="reload unavailable"):
         await unsubscribe._resume_released_derived_tasks(
-            _Config(), {"StillHere"}, 42,
+            _Config(), {"StillHere": "claim-a"}, 42,
         )
 
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_release_timeout_retains_claim_for_reconciliation():
+    """An indeterminate HTTP timeout must keep the client-owned claim token."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    release_started = asyncio.Event()
+    received_tokens = {}
+
+    async def _release(name, **kwargs):
+        received_tokens[name] = kwargs["derived_task_claim_token"]
+        release_started.set()
+        await asyncio.Event().wait()
+
+    claims = {}
+    results = await unsubscribe._release_workshop_character_handles(
+        ["StillHere"],
+        42,
+        _release,
+        lambda: "claim-timeout",
+        claims,
+        per_call_timeout=0.01,
+        overall_timeout=0.1,
+    )
+
+    assert release_started.is_set()
+    assert claims == {"StillHere": "claim-timeout"}
+    assert received_tokens == claims
+    assert results[0][0:2] == ("StillHere", False)
+
+
+@pytest.mark.unit
+def test_workshop_recent_delete_finalizes_inside_each_iteration():
+    """Workshop must not retain one character lock while acquiring the next."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    tree = ast.parse(inspect.getsource(unsubscribe))
+    delete_helpers = [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef)
+        and node.name == "_delete_memory_with_retry_sync"
+    ]
+    assert len(delete_helpers) == 1
+    helper_calls = {
+        node.func.id
+        for node in ast.walk(delete_helpers[0])
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+    assert "finalize_character_recent_delete" in helper_calls
+    assert "recent_delete_transactions" not in inspect.getsource(unsubscribe)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_thread_transaction_finishes_before_cancellation_returns():
+    """Cancellation cannot abandon or outlive a thread-owned recent transaction."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    started = threading.Event()
+    finish = threading.Event()
+
+    def _worker():
+        started.set()
+        assert finish.wait(timeout=2)
+        return "done"
+
+    operation = asyncio.create_task(
+        unsubscribe._await_thread_call_to_completion(_worker)
+    )
+    while not started.is_set():
+        await asyncio.sleep(0)
+    operation.cancel()
+    await asyncio.sleep(0)
+    assert not operation.done()
+    finish.set()
+
+    result, cancelled = await operation
+    assert result == "done"
+    assert cancelled is True
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_thread_failure_cannot_replace_caller_cancellation():
+    """A worker failure after cancellation remains diagnostic, not terminal."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    started = threading.Event()
+    finish = threading.Event()
+
+    def _worker():
+        started.set()
+        assert finish.wait(timeout=2)
+        raise RuntimeError("worker failed after cancellation")
+
+    operation = asyncio.create_task(
+        unsubscribe._await_thread_call_to_completion(_worker)
+    )
+    while not started.is_set():
+        await asyncio.sleep(0)
+    operation.cancel()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await operation
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_reload_failure_still_resumes_requested_admission():
-    """Explicit compensation must not depend on rebuilding every manager."""
+    """Reload failure releases only the requested claim, preserving its peer."""
     from app.memory_server import review, runtime
 
-    resume_admission = AsyncMock()
+    name = "ReloadFailureClaimOwner"
+    await review.resume_character_derived_task_admission(name)
+    await review.cancel_character_derived_tasks(
+        name,
+        hold_until_publication=True,
+        claim_token="rename-claim",
+    )
+    await review.cancel_character_derived_tasks(
+        name,
+        claim_token="workshop-claim",
+    )
     with patch.object(
         runtime,
         "CompressedRecentHistoryManager",
         side_effect=RuntimeError("reload failed"),
-    ), patch.object(
-        review,
-        "resume_character_derived_task_admission",
-        resume_admission,
     ):
         reloaded = await runtime.reload_memory_components(
-            resume_derived_task_names={"StillHere"},
+            release_derived_task_claims={name: {"workshop-claim"}},
         )
 
     assert reloaded is False
-    resume_admission.assert_awaited_once_with("StillHere")
+    assert review._derived_task_admission_claims[name] == {
+        "rename-claim": (True, 0),
+    }
+    assert name in review._retired_derived_task_names
+    assert name in review._publication_held_derived_task_names
+    await review.resume_character_derived_task_admission(name)
 
 
 @pytest.mark.unit
@@ -1837,9 +1960,14 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
             assert payload["success"] is False
             assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
             mock_release.assert_awaited_once()
+            claim_token = mock_release.await_args.kwargs[
+                "derived_task_claim_token"
+            ]
             resume_memory.assert_awaited_once_with(
                 reason="角色重命名 release 失败补偿: 旧角色 -> 新角色",
-                resume_derived_task_names=("旧角色",),
+                release_derived_task_claims={
+                    "旧角色": (claim_token,),
+                },
             )
 
             current_characters = cm.load_characters()
