@@ -1225,26 +1225,30 @@ async def _process_scoped_history_segments(
     owner_signal_jobs = []
     for segment, result in zip(parsed, segment_results):
         segment["trust_events"] = []
-        owner_signal_keys = None
         if (
             signal_facts is not None
             and segment.get("speaker_is_owner")
             and result.get("status") == "ok"
         ):
-            # Freeze only the authored-order allow-list. The rows themselves
-            # must be refreshed after every remaining await so a concurrent
-            # dedup/reconcile cannot leave stale speaker provenance behind.
-            owner_signal_keys = [
-                (
-                    str(fact.get("id")),
-                    fact.get("subject_kind"),
-                    fact.get("subject_id"),
-                    fact.get("scope"),
-                )
-                for fact in signal_facts
-                if isinstance(fact, dict) and fact.get("id") is not None
-            ]
-            owner_signal_jobs.append((segment, owner_signal_keys))
+            # Freeze the authored-order rows as well as their allow-list.
+            # The final reload below still revalidates concurrent changes,
+            # except for ids reconciled by this or a later request segment:
+            # those changes occurred after this owner's observation and must
+            # not flow backward into its trust decision.
+            owner_signal_jobs.append({
+                "segment": segment,
+                "facts_by_key": {
+                    (
+                        str(fact.get("id")),
+                        fact.get("subject_kind"),
+                        fact.get("subject_id"),
+                        fact.get("scope"),
+                    ): dict(fact)
+                    for fact in signal_facts
+                    if isinstance(fact, dict) and fact.get("id") is not None
+                },
+                "later_reconciled_ids": set(),
+            })
         if signal_facts is not None:
             reconciled_by_id = {
                 str(fact.get("id")): dict(fact)
@@ -1252,6 +1256,8 @@ async def _process_scoped_history_segments(
                 if isinstance(fact, dict) and fact.get("id")
             }
             if reconciled_by_id:
+                for job in owner_signal_jobs:
+                    job["later_reconciled_ids"].update(reconciled_by_id)
                 signal_facts[:] = [
                     reconciled_by_id.get(str(fact.get("id")), fact)
                     for fact in signal_facts
@@ -1281,12 +1287,18 @@ async def _process_scoped_history_segments(
             for fact in await runtime.fact_store.aload_facts(lanlan_name)
             if isinstance(fact, dict) and fact.get("id") is not None
         }
-        for segment, owner_signal_keys in owner_signal_jobs:
-            active_signal_facts = [
-                current_by_key[key]
-                for key in owner_signal_keys
-                if key in current_by_key
-            ]
+        for job in owner_signal_jobs:
+            segment = job["segment"]
+            active_signal_facts = []
+            for key, authored_fact in job["facts_by_key"].items():
+                current_fact = current_by_key.get(key)
+                if current_fact is None:
+                    continue
+                active_signal_facts.append(
+                    authored_fact
+                    if key[0] in job["later_reconciled_ids"]
+                    else current_fact
+                )
             segment["trust_events"] = (
                 await runtime.fact_store.aevaluate_speaker_trust_events(
                     lanlan_name,

@@ -1113,13 +1113,13 @@ class FactStore:
 
         events: list[dict] = []
         seen_event_ids: set[str] = set()
-        for prior in facts:
-            if not isinstance(prior, dict) or not _in_signal_scope(prior):
-                continue
-            target_id = stable_speaker_id(prior.get('speaker_id'))
-            if target_id is None or target_id == source_id:
-                continue
-            for text in texts:
+        for text in texts:
+            for prior in facts:
+                if not isinstance(prior, dict) or not _in_signal_scope(prior):
+                    continue
+                target_id = stable_speaker_id(prior.get('speaker_id'))
+                if target_id is None or target_id == source_id:
+                    continue
                 relation = deterministic_relation(prior.get('text', ''), text)
                 if relation is None:
                     continue

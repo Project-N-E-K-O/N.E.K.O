@@ -214,6 +214,38 @@ async def test_distinct_owner_observations_emit_distinct_trust_events():
 
 
 @pytest.mark.asyncio
+async def test_owner_trust_events_preserve_authored_message_order():
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    store = object.__new__(FactStore)
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko",
+        [
+            {"role": "user", "content": "小明喜欢猫"},
+            {"role": "user", "content": "小明不喜欢狗"},
+        ],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[
+            {
+                "id": "dogs", "text": "小明喜欢狗", "speaker_id": "qq:1001",
+                **target.as_entry_fields(),
+            },
+            {
+                "id": "cats", "text": "小明喜欢猫", "speaker_id": "qq:1001",
+                **target.as_entry_fields(),
+            },
+        ],
+    )
+
+    assert [event["kind"] for event in events] == ["confirmation", "correction"]
+    assert [event["source_fact_id"] for event in events] == ["cats", "dogs"]
+
+
+@pytest.mark.asyncio
 async def test_owner_signal_deduplicates_spelling_variants_for_one_fact():
     from memory.facts import FactStore
 
@@ -580,6 +612,77 @@ async def test_batch_owner_signal_sees_only_earlier_segments(member_first):
         assert events[0]["speaker_id"] == "qq:1001"
     else:
         assert events == []
+
+
+@pytest.mark.asyncio
+async def test_batch_owner_signal_ignores_later_segment_reconciliation():
+    from app.memory_server import routes
+    from app.memory_server.routes import ScopedHistoryRequest
+    from memory.facts import FactStore
+
+    owner = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:9999",
+        },
+        "speaker_label": "Owner(9999)",
+        "speaker_id": "qq:9999",
+        "speaker_trust": 1.0,
+        "speaker_is_owner": True,
+    }
+    member = {
+        "input_history": json.dumps([{
+            "role": "user",
+            "content": [{"type": "text", "text": "Alice likes cats"}],
+        }]),
+        "subject": {
+            "subject_kind": "group_participant",
+            "subject_id": "qq:7788:2002",
+        },
+        "speaker_label": "Member(2002)",
+        "speaker_id": "qq:2002",
+        "speaker_trust": 0.3,
+    }
+    prior = {
+        "id": "prior-fact",
+        "text": "Alice likes cats",
+        "speaker_id": "qq:1001",
+        "subject_kind": "group_participant",
+        "subject_id": "qq:7788:1001",
+        "scope": "group_participant:qq:7788:1001",
+    }
+    reconciled = {
+        **prior,
+        "speaker_provenance_mixed": True,
+    }
+    reconciled.pop("speaker_id")
+    store = SimpleNamespace(
+        aload_facts=AsyncMock(side_effect=[[prior], [reconciled]]),
+        extract_facts_batch=AsyncMock(return_value=[
+            {"status": "ok", "created": [], "dropped": 0},
+            {
+                "status": "ok", "created": [],
+                "reconciled": [reconciled], "dropped": 0,
+            },
+        ]),
+    )
+    store.aevaluate_speaker_trust_events = (
+        FactStore.aevaluate_speaker_trust_events.__get__(store, FactStore)
+    )
+
+    with patch.object(routes.runtime, "fact_store", store):
+        response = await routes.process_scoped_history(
+            "Neko", ScopedHistoryRequest(segments=[owner, member]),
+        )
+
+    events = response["segments"][0]["trust_events"]
+    assert len(events) == 1
+    assert events[0]["kind"] == "confirmation"
+    assert events[0]["speaker_id"] == "qq:1001"
 
 
 @pytest.mark.asyncio
