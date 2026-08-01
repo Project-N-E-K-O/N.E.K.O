@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 # id matters solely while its response is still live, so a small bound
 # prevents unbounded growth on long sessions.
 _SERVER_RESPONSE_ID_LIMIT = 32
+# Bound on the "have I ever seen this id" set. Larger than the live-set bound
+# because its entries outlive the responses they name — it exists precisely to
+# still recognise an id after the live set has given up on it.
+_SEEN_RESPONSE_ID_LIMIT = 128
 
 # Default running-time allowance for a single response, shared by owned
 # responses (the ``enqueue`` ``response_done_timeout`` default) and
@@ -119,6 +123,13 @@ class _QueuedResponse:
     completed: asyncio.Future[None] | None = field(default=None, compare=False)
     bypass_count: int = field(default=0, compare=False)
     response_send_started: bool = field(default=False, compare=False)
+    # Evidence this request collected for itself, so both the terminal path
+    # and the started-timeout path can judge an adoption from the same facts.
+    # Captured immediately before its pre-response events go out.
+    adoption_serial: int = field(default=-1, compare=False)
+    adoption_vad_epoch: int = field(default=-1, compare=False)
+    item_acked: bool = field(default=False, compare=False)
+    item_created_seen: bool = field(default=False, compare=False)
     server_vad_won_during_response_send: bool = field(
         default=False,
         compare=False,
@@ -163,6 +174,34 @@ class RealtimeResponseArbiter:
         # True while the queue consumer is suspended inside a transport
         # write; only the worker's own sends set it.
         self._worker_send_in_flight = False
+        # Every response id this connection has ever attributed to anyone —
+        # announced, adopted, or released. Distinct from
+        # ``_server_response_ids``, which holds only ids believed LIVE and
+        # therefore loses entries while the response is still running (the
+        # staleness eviction, the LRU bound, and a fail-open release all drop
+        # ids that may still produce events). Attribution needs the opposite
+        # question — "have I ever seen this id?" — and answering it from the
+        # live set credits a still-running response's terminal to whoever owns
+        # the lane by then.
+        self._seen_response_ids: dict[str, float] = {}
+        # The single unowned ``response.created`` a request may adopt, and a
+        # serial that counts every unowned announcement. A request captures the
+        # serial before it sends its pre-response events; adoption requires the
+        # serial to have advanced exactly once, so two announcements in the
+        # window are ambiguous and neither is adoptable.
+        self._adoptable_announcement: str | None = None
+        self._adoptable_serial = 0
+        # Set when the adoptable announcement's own terminal arrives
+        # before anyone claimed it. Adoption stays deferred to the started
+        # timeout, so the claim has to be able to complete a lifecycle that
+        # has already ended.
+        self._adoptable_terminal_status: str | None = None
+        # Bumped whenever the server-VAD correlation state changes in a way
+        # that could put an automatic response in the unowned bucket: the
+        # pending marker being armed, and the backstop giving up on it. A
+        # request that observed a different epoch than the one it started with
+        # cannot know whose announcement it is looking at.
+        self._vad_epoch = 0
         self._queue: asyncio.PriorityQueue[_QueuedResponse] = asyncio.PriorityQueue()
         self._queued_by_ticket: dict[int, _QueuedResponse] = {}
         self._sequence = itertools.count()
@@ -409,7 +448,16 @@ class RealtimeResponseArbiter:
 
     def notify_item_created(self, event: dict[str, Any]) -> None:
         current = self._current
-        if current is None or current.item_ack is None or current.item_ack.done():
+        if current is None:
+            return
+        # Recorded before the id match, and separately from the ack, because a
+        # provider that assigns its own item ids never satisfies the match —
+        # the free routes do exactly that. "The provider acknowledged an item
+        # while this request held the lane" is weaker than "it acknowledged
+        # MINE", but it is real evidence and it is the only such evidence
+        # those providers offer.
+        current.item_created_seen = True
+        if current.item_ack is None or current.item_ack.done():
             return
         item = event.get("item")
         if not isinstance(item, dict):
@@ -434,6 +482,146 @@ class RealtimeResponseArbiter:
         while len(self._server_response_ids) > _SERVER_RESPONSE_ID_LIMIT:
             del self._server_response_ids[next(iter(self._server_response_ids))]
         self._arm_stale_release_timer()
+
+    def _remember_seen_response_id(self, response_id: str | None) -> None:
+        """Record that this id has been attributed to someone, ever.
+
+        Bounded like the live set, and for the same reason; unlike the live
+        set, an entry leaving here is only ever the LRU giving up, never a
+        judgement that the response ended.
+        """
+
+        if response_id is None:
+            return
+        self._seen_response_ids.pop(response_id, None)
+        self._seen_response_ids[response_id] = asyncio.get_running_loop().time()
+        while len(self._seen_response_ids) > _SEEN_RESPONSE_ID_LIMIT:
+            del self._seen_response_ids[next(iter(self._seen_response_ids))]
+
+    def _note_unowned_announcement(self, response_id: str | None) -> None:
+        """Offer an announcement nobody claimed as adoptable, exactly once.
+
+        The serial advances for every unowned announcement including the
+        id-less ones, so a request that cannot name what it saw refuses to
+        adopt rather than guessing.
+        """
+
+        self._adoptable_serial += 1
+        self._adoptable_announcement = response_id
+        self._adoptable_terminal_status = None
+
+    def _bump_vad_epoch(self) -> None:
+        self._vad_epoch += 1
+
+    def _adoptable_id_for(self, queued: _QueuedResponse) -> str | None:
+        """The announcement this request may claim as its own, or None.
+
+        Some providers begin answering when they receive the conversation
+        item and never wait for ``response.create``. Their announcement then
+        arrives while ``_process`` still holds the item-ack barrier, with no
+        owner assigned, and is booked as server-initiated — after which the
+        request's own create is never announced and its started timeout tears
+        the transport down. Every turn, on every such provider.
+
+        Never consulted before this request's own ``response.create`` has gone
+        out and produced nothing. That is the discriminator, and nothing
+        cheaper works: an announcement arriving between our item and its ack
+        is, on the evidence available at that instant, identical whether it is
+        our own echo or an automatic response the user triggered. What
+        separates them is what our create then does — a provider already busy
+        with someone else's response REJECTS it, and a provider that accepts it
+        ANNOUNCES it. Either resolves ``started`` and this is never reached.
+        Only the create that was silently redundant leaves us here.
+
+        Both moments that qualify ask the same question, because a provider
+        that answers the item directly may finish before our started allowance
+        expires: the unclaimed announcement's own terminal, and the started
+        timeout itself.
+
+        Claiming it back is still only safe against evidence this request
+        collected itself, so all of the following must also hold:
+
+        - **The provider acknowledged an item while this request held the
+          lane.** ``conversation.item.created`` is the only positive sign the
+          announcement answers something this request sent. Deliberately not
+          the item ACK: providers that assign their own item ids never match
+          it, and the free routes are exactly those — requiring the ack would
+          disqualify every request on the only providers that need this.
+        - **Exactly one unowned announcement arrived in the window.** Two is
+          ambiguous, and an id-less one cannot be named at all; the serial
+          counts both, so either refuses adoption.
+        - **The server-VAD correlation state did not move.** An automatic
+          response announced across this window is the user's, not ours — and
+          the pending marker being armed or its backstop expiring both mean
+          exactly that.
+        - **The id is still believed live.** An announcement whose terminal
+          already arrived is finished business; adopting it would resolve this
+          request against a response that has already ended.
+        """
+
+        if not queued.response_send_started or queued.response_id is not None:
+            return None
+        if not queued.ack_expected or not queued.item_created_seen:
+            return None
+        if (
+            self._server_vad_response_pending
+            or self._vad_epoch != queued.adoption_vad_epoch
+        ):
+            return None
+        if self._adoptable_serial != queued.adoption_serial + 1:
+            return None
+        adopted = self._adoptable_announcement
+        if adopted is None:
+            return None
+        if (
+            adopted not in self._server_response_ids
+            and self._adoptable_terminal_status is None
+        ):
+            # Neither live nor known-finished: its terminal was handled as
+            # somebody else's, so it is not this request's to take.
+            return None
+        return adopted
+
+    def _adopt_announcement(self, queued: _QueuedResponse, response_id: str) -> None:
+        """Transfer an unowned announcement to this request.
+
+        A MOVE, not a copy. Leaving the id in ``_server_response_ids`` would
+        leave the lane held by a response the owner is simultaneously
+        answering for, so the owner's own terminal could not reopen it and
+        every adopted turn would wedge dispatch until the staleness bound
+        expired — worse than the failure this repairs. Afterwards the state is
+        the one ``notify_response_created``'s owner branch would have produced
+        had the announcement arrived a moment later.
+        """
+
+        self._server_response_ids.pop(response_id, None)
+        if not self._server_response_ids:
+            self._cancel_stale_release_timer()
+        queued.response_id = response_id
+        self._remember_seen_response_id(response_id)
+        terminal_status = self._adoptable_terminal_status
+        self._adoptable_announcement = None
+        self._adoptable_terminal_status = None
+        if not queued.ticket.started.done():
+            queued.ticket.started.set_result(None)
+        if terminal_status is not None:
+            # It finished while the owner was still waiting to be told it had
+            # started. Adopting only the announcement would leave the owner
+            # waiting out its full response_done allowance for a terminal that
+            # already came and went.
+            if terminal_status not in {"completed", "success", "succeeded"}:
+                queued.terminal_error = RuntimeError(
+                    f"response.done status={terminal_status}"
+                )
+            if queued.terminal is not None and not queued.terminal.done():
+                queued.terminal.set_result(None)
+        logger.info(
+            "adopted unowned response.created %s for %s (%s): this provider "
+            "answers the conversation item without waiting for response.create",
+            response_id,
+            queued.source,
+            "already terminated" if terminal_status is not None else "still live",
+        )
 
     def _cancel_stale_release_timer(self) -> None:
         handle, self._stale_release_handle = self._stale_release_handle, None
@@ -460,6 +648,12 @@ class RealtimeResponseArbiter:
         if not self._server_vad_response_pending:
             return
         self._server_vad_response_pending = False
+        # The backstop is a guess, not evidence the automatic response was
+        # abandoned: past this point a genuine VAD response.created can still
+        # arrive and will land in the unowned bucket. Advancing the epoch is
+        # what stops a request that started before this moment from adopting
+        # it.
+        self._bump_vad_epoch()
         logger.warning(
             "released pending server-VAD response with no response.created "
             "after %.1fs",
@@ -542,8 +736,13 @@ class RealtimeResponseArbiter:
             self._cancel_server_vad_pending_timer()
             self._server_vad_response_pending = False
             response_id = self._event_response_id(event)
+            self._remember_seen_response_id(response_id)
             if response_id is not None:
                 self._remember_server_response_id(response_id)
+            # Deliberately NOT offered for adoption. This branch is the one
+            # announcement the arbiter positively knows is the provider's own
+            # automatic response, so it is the last thing a queued request
+            # should be allowed to claim.
             return
         owner = self._response_owner
         if owner is not None and not owner.ticket.started.done():
@@ -552,6 +751,7 @@ class RealtimeResponseArbiter:
             # provider supplies one) so only that response's terminal event
             # can release the lane.
             owner.response_id = self._event_response_id(event)
+            self._remember_seen_response_id(owner.response_id)
             owner.ticket.started.set_result(None)
             return
         # This created event cannot be credited to a waiting owner (the owner
@@ -560,8 +760,16 @@ class RealtimeResponseArbiter:
         # recognized as an orphan even when the owner's own response.created
         # carried no id.
         response_id = self._event_response_id(event)
+        self._remember_seen_response_id(response_id)
         if response_id is not None:
             self._remember_server_response_id(response_id)
+        # Offer it for adoption. On a provider that starts answering as soon
+        # as it receives the conversation item — rather than waiting for
+        # response.create — this IS the request's own announcement, arriving
+        # while the item-ack barrier still holds the owner slot empty. Nothing
+        # here decides that; ``_adoptable_id_for`` does, against evidence the
+        # dispatching request captured for itself.
+        self._note_unowned_announcement(response_id)
 
     def notify_server_vad_started(self) -> None:
         """Deliberately leave ownership unchanged until speech_stopped.
@@ -612,6 +820,7 @@ class RealtimeResponseArbiter:
                     )
                 )
         self._server_vad_response_pending = True
+        self._bump_vad_epoch()
         self._server_response_active = True
         self._idle.clear()
         if arm_timeout:
@@ -643,21 +852,74 @@ class RealtimeResponseArbiter:
         )
         if owner is not None and response_id is not None:
             if not owner.ticket.started.done():
-                # The owner has not seen its response.created yet, and a
-                # response's terminal event never precedes its created event,
-                # so an id-bearing terminal here belongs to another
-                # (server-initiated) response. Keep waiting for the owner's
-                # own lifecycle instead of failing it.
-                self._server_response_ids.pop(response_id, None)
-                if not self._server_response_ids:
-                    # The separately tracked server turn has ended. The
-                    # pending owner still holds dispatch serialization, but a
-                    # later response.create rejection must be able to detach
-                    # it instead of mistaking this already-terminal turn for
-                    # a live id-less response.
-                    self._cancel_stale_release_timer()
-                    self._server_response_active = False
-                return
+                # The owner has not seen its response.created yet. On a
+                # provider that announces responses, a terminal never precedes
+                # its own created event, so this belongs to another
+                # (server-initiated) response and the owner keeps waiting.
+                #
+                # That premise is a property of the PROVIDER, not a law: some
+                # never send response.created at all, and there the very same
+                # shape is the owner's own terminal — indefinitely withheld
+                # from it, until the started timeout tears the transport down.
+                # The two readings are told apart by whether this id was ever
+                # announced. Deciding it from observed behaviour rather than a
+                # configured flag matters: these proxies have changed which
+                # events they emit, and a flag that says "never announces"
+                # about a route that started announcing guarantees the
+                # teardown it was meant to prevent.
+                never_announced = (
+                    owner.response_send_started
+                    and owner.response_id is None
+                    and response_id not in self._server_response_ids
+                    and response_id not in self._seen_response_ids
+                )
+                # The other shape, and the reason this is checked here at all:
+                # a provider that answers the conversation item directly can
+                # finish the whole response before the owner's started
+                # allowance expires, so its terminal — not the timeout — is
+                # where the adoption has to happen. Same evidence either way.
+                if response_id == self._adoptable_announcement:
+                    # Deliberately NOT adopted here. A provider that answers
+                    # the item directly finishes before the owner's started
+                    # allowance expires, so it is tempting to claim it now —
+                    # but at this instant this is still indistinguishable from
+                    # an automatic response the user triggered, whose terminal
+                    # can equally land while the owner's create is in flight.
+                    # What tells them apart is what that create does, and it
+                    # has not done it yet. Remember the outcome so the started
+                    # timeout can still claim it once nothing has answered.
+                    self._adoptable_terminal_status = response_status or "completed"
+                if never_announced:
+                    # Attribution is one act, not two: the id and the
+                    # announcement both belong to the owner now. Resolving
+                    # only the terminal would leave the fall-through below to
+                    # stamp started with "response terminated before
+                    # response.created" — no teardown, but every turn on such
+                    # a provider still reported as a failure.
+                    owner.response_id = response_id
+                    self._remember_seen_response_id(response_id)
+                    owner.ticket.started.set_result(None)
+                    logger.info(
+                        "terminal %s claimed by %s: this connection has never "
+                        "announced a response",
+                        response_id,
+                        owner.source,
+                    )
+                    # Deliberately no ``return``: this IS the owner's terminal,
+                    # so it must reach the resolution below. Returning here
+                    # would leave the lifecycle waiter unresolved and the
+                    # started timeout would tear the transport down anyway.
+                else:
+                    self._server_response_ids.pop(response_id, None)
+                    if not self._server_response_ids:
+                        # The separately tracked server turn has ended. The
+                        # pending owner still holds dispatch serialization,
+                        # but a later response.create rejection must be able
+                        # to detach it instead of mistaking this
+                        # already-terminal turn for a live id-less response.
+                        self._cancel_stale_release_timer()
+                        self._server_response_active = False
+                    return
             if owner.response_id is not None:
                 if response_id != owner.response_id:
                     # A server-initiated response finished while the owner's
@@ -842,6 +1104,13 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
+        # Response ids are scoped to a connection: a provider that restarts
+        # its numbering would otherwise have the new session's first terminal
+        # recognised as one this arbiter has "already seen" and withheld from
+        # its owner.
+        self._seen_response_ids.clear()
+        self._adoptable_announcement = None
+        self._adoptable_terminal_status = None
         self._server_vad_response_pending = False
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
@@ -1133,6 +1402,12 @@ class RealtimeResponseArbiter:
         # never resolve its ticket.
         released_owner = owner
         released_id = owner.response_id if owner is not None else None
+        # The release gives up this turn's bookkeeping, but the response it
+        # names may still be running and may still deliver its terminal. Keep
+        # the id in the seen set so that terminal is recognised as already
+        # attributed instead of looking like one this connection never
+        # announced — which a successor owner would otherwise claim.
+        self._remember_seen_response_id(released_id)
         # Only a released OWNER is a turn the host should end. Two escalation
         # routes reach here without one — cancel_current()'s unowned branch,
         # and an idle-wait timeout on a request that is still queued — and in
@@ -1341,6 +1616,7 @@ class RealtimeResponseArbiter:
         self._current = queued
         loop = asyncio.get_running_loop()
         item_acked = not queued.ack_expected
+        queued.item_acked = item_acked
         requeued = False
 
         try:
@@ -1360,6 +1636,12 @@ class RealtimeResponseArbiter:
             self._idle.clear()
             if queued.ack_expected:
                 queued.item_ack = loop.create_future()
+            # Captured before the first pre-response event goes out, so
+            # anything the provider announces from here on is inside this
+            # request's own window. Adoption is refused unless both are still
+            # what this request saw.
+            queued.adoption_serial = self._adoptable_serial
+            queued.adoption_vad_epoch = self._vad_epoch
             for event in queued.events_before_response:
                 if queued.interrupted:
                     raise RuntimeError("response dispatch interrupted")
@@ -1371,8 +1653,10 @@ class RealtimeResponseArbiter:
                         asyncio.shield(queued.item_ack), queued.item_ack_timeout
                     )
                     item_acked = True
+                    queued.item_acked = True
                 except asyncio.TimeoutError:
                     item_acked = False
+                    queued.item_acked = False
                     queued.item_ack.cancel()
 
             if queued.interrupted:
@@ -1464,7 +1748,18 @@ class RealtimeResponseArbiter:
                         queued.response_started_timeout,
                     )
             except asyncio.TimeoutError as started_timeout:
-                await self._cancel_after_timeout(queued, started_timeout)
+                # Before giving up: the create may have produced nothing
+                # because this provider had already started answering the
+                # conversation item. Expiring here is what makes that
+                # distinguishable — an announcement that belonged to someone
+                # else would have left this request's own create to be
+                # rejected or announced, and either resolves ``started``
+                # instead of timing out.
+                adopted_id = self._adoptable_id_for(queued)
+                if adopted_id is not None:
+                    self._adopt_announcement(queued, adopted_id)
+                else:
+                    await self._cancel_after_timeout(queued, started_timeout)
             try:
                 with self._report_wait_margin(
                     "response completion", queued.response_done_timeout
