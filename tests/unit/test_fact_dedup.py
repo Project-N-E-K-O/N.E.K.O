@@ -1024,6 +1024,25 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_restore_arbitrated_fact_normalizes_legacy_numeric_ids(tmp_path):
+    fs, _resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", [_fact("active", "survivor")])
+    archive_path = tmp_path / "Neko" / "facts_archive.json"
+    legacy = _fact("5", "legacy loser")
+    legacy["id"] = 5
+    archive_path.write_text(json.dumps([{
+        **legacy,
+        "arbitration_archived_at": "2026-08-01T00:00:00",
+        "arbitration_reason": "fact_dedup_merge",
+    }]), encoding="utf-8")
+
+    assert await fs.arestore_arbitrated_fact("Neko", "5")
+    restored = await fs.aload_facts("Neko")
+    assert {fact["id"] for fact in restored} == {"active", 5}
+    assert json.loads(archive_path.read_text(encoding="utf-8")) == []
+
+
+@pytest.mark.asyncio
 async def test_arbitration_archive_preserves_non_dict_legacy_rows(tmp_path):
     fs, _resolver = _install_resolver(str(tmp_path))
     await _seed_facts(fs, "Neko", [

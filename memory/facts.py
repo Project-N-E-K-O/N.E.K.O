@@ -1160,17 +1160,26 @@ class FactStore:
                         ) from exc
                     if not isinstance(archived, list):
                         raise RuntimeError('facts_archive is not a list during restore')
+
+                    def _restore_id(row: dict) -> str | None:
+                        readable = _readable_fact_id(row)
+                        if readable is None:
+                            return None
+                        normalized = str(readable).strip()
+                        return normalized or None
+
                     matches = [
                         row for row in archived
                         if isinstance(row, dict)
-                        and row.get('id') == target_id
+                        and _restore_id(row) == target_id
                         and row.get('arbitration_archived_at')
                     ]
                     if not matches:
                         return False
                     facts = self._facts.get(name, [])
                     active_ids = {
-                        row.get('id') for row in facts if isinstance(row, dict)
+                        restored_id for row in facts if isinstance(row, dict)
+                        if (restored_id := _restore_id(row)) is not None
                     }
                     restored = dict(matches[-1])
                     for key in (
@@ -1186,7 +1195,7 @@ class FactStore:
                         row for row in archived
                         if not (
                             isinstance(row, dict)
-                            and row.get('id') == target_id
+                            and _restore_id(row) == target_id
                             and row.get('arbitration_archived_at')
                         )
                     ]

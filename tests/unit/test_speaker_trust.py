@@ -306,6 +306,18 @@ def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation(
         "Alice has no cats", "Alice has cats",
     ) == "correction"
+    assert deterministic_relation(
+        "Alice did not click the button", "Alice did click the button",
+    ) == "correction"
+    assert deterministic_relation(
+        "Alice has never clicked the button", "Alice has clicked the button",
+    ) == "correction"
+    assert deterministic_relation(
+        "Alice clicked the dislike button", "Alice clicked the button",
+    ) is None
+    assert deterministic_relation(
+        "Alice clicked the never button", "Alice clicked the button",
+    ) is None
     assert deterministic_relation("她来自锡山区", "她来自无锡山区") is None
     assert deterministic_relation("她认识不二同学", "她认识二同学") is None
 
@@ -893,7 +905,9 @@ async def test_dashboard_reload_waits_before_reading_trust_config():
     async def _persist():
         persist_started.set()
         await persist_release.wait()
-        stored["speaker_trust_profiles"] = manager.speaker_trust_profiles()
+        stored["speaker_trust_profiles"] = dict(
+            settings._staged_speaker_trust_profiles
+        )
         return True
 
     async def _load():

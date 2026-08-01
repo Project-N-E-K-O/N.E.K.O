@@ -39,7 +39,12 @@ _CJK_NEGATED_PREDICATES = (
     ("不住", "住"),
 )
 _WORD_NEGATION_MARKERS = frozenset({
-    "not", "never", "no", "hate", "dislike",
+    "not", "never", "no",
+})
+_NEGATION_AUXILIARIES = frozenset({
+    "am", "are", "can", "could", "did", "do", "does", "had", "has",
+    "have", "is", "may", "might", "must", "shall", "should", "was",
+    "were", "will", "would",
 })
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
@@ -105,10 +110,15 @@ def _is_word_negation(tokens: tuple[str, ...], index: int) -> bool:
     marker = tokens[index]
     if marker not in _WORD_NEGATION_MARKERS:
         return False
-    if marker != "no":
-        return True
-    # ``No 5 Main Street`` is numbering metadata, not clause negation.
-    return index + 1 < len(tokens) and not tokens[index + 1].isdigit()
+    if marker == "no":
+        # ``No 5 Main Street`` is numbering metadata, not clause negation.
+        return index + 1 < len(tokens) and not tokens[index + 1].isdigit()
+    # Bare lexical occurrences are unsafe: ``the never button`` and
+    # ``the not operator`` are modifiers, while hate/dislike are independent
+    # predicates rather than removable polarity markers.  Restrict the two
+    # remaining adverbs to explicit auxiliary-predicate forms.  False
+    # negatives are safer than fabricating a trust penalty.
+    return index > 0 and tokens[index - 1] in _NEGATION_AUXILIARIES
 
 
 def _polarity(text: str) -> bool:
