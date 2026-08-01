@@ -113,6 +113,212 @@ async def test_cancelled_thread_call_returns_retained_lock_transaction():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_rename_cancellation_during_release_runs_admission_rollback(tmp_path):
+    """Cancellation in the release response window must restore old admission."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _release(*_args, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=_release,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            operation = asyncio.create_task(
+                crud.rename_catgirl("Old", _DummyRequest({"new_name": "New"}))
+            )
+            await asyncio.wait_for(release_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            finish_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        assert rollback.await_args.kwargs["resume_derived_task_names"] == ("Old",)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_delete_cancellation_during_release_runs_admission_rollback(tmp_path):
+    """Delete must also compensate a completed release before cancellation."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["DeleteMe"] = {"昵称": "DeleteMe"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_started = asyncio.Event()
+        finish_release = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _release(*_args, **_kwargs):
+            release_started.set()
+            await finish_release.wait()
+            return True
+
+        with patch.object(
+            crud, "release_memory_server_character", side_effect=_release,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            operation = asyncio.create_task(crud.delete_catgirl("DeleteMe"))
+            await asyncio.wait_for(release_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            finish_release.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        assert rollback.await_args.kwargs["resume_derived_task_names"] == ("DeleteMe",)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+@pytest.mark.parametrize("operation_kind", ["rename", "delete"])
+async def test_release_false_compensation_preserves_cancellation(tmp_path, operation_kind):
+    """Cancellation during release compensation must propagate after cleanup."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    name = "Old" if operation_kind == "rename" else "DeleteMe"
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})[name] = {"昵称": name}
+        cm.save_characters(characters, bypass_write_fence=True)
+        compensation_started = asyncio.Event()
+        finish_compensation = asyncio.Event()
+        rollback = AsyncMock(return_value="")
+
+        async def _compensate(*_args, **_kwargs):
+            compensation_started.set()
+            await finish_compensation.wait()
+            return ""
+
+        with patch.object(
+            crud,
+            "release_memory_server_character",
+            AsyncMock(return_value=False),
+        ), patch.object(
+            crud,
+            "_resume_released_character_admission",
+            side_effect=_compensate,
+        ), patch.object(crud, "_rollback_character_operation", rollback):
+            if operation_kind == "rename":
+                operation = asyncio.create_task(
+                    crud.rename_catgirl(name, _DummyRequest({"new_name": "New"}))
+                )
+            else:
+                operation = asyncio.create_task(crud.delete_catgirl(name))
+
+            await asyncio.wait_for(compensation_started.wait(), timeout=3)
+            operation.cancel()
+            await asyncio.sleep(0.05)
+            assert not operation.done()
+            finish_compensation.set()
+            with pytest.raises(asyncio.CancelledError):
+                await operation
+
+        assert rollback.await_args.kwargs["resume_derived_task_names"] == (name,)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_rename_backup_setup_failure_happens_before_release(tmp_path):
+    """Backup setup errors must occur before derived-task admission is held."""
+    cm = _make_config_manager(tmp_path)
+    bootstrap_local_cloudsave_environment(cm)
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    with patch("utils.config_manager._config_manager", cm):
+        init_shared_state(
+            role_state={},
+            steamworks=None,
+            templates=None,
+            config_manager=cm,
+            logger=None,
+            initialize_character_data=_noop,
+            switch_current_catgirl_fast=_noop,
+            init_one_catgirl=_noop,
+            remove_one_catgirl=_noop,
+        )
+        crud = reload_module("main_routers.characters_router.crud")
+        characters = cm.load_characters()
+        characters.setdefault("猫娘", {})["Old"] = {"昵称": "Old"}
+        cm.save_characters(characters, bypass_write_fence=True)
+        release_memory = AsyncMock(return_value=True)
+
+        with patch.object(
+            crud, "_create_character_operation_backup_dir", side_effect=OSError("disk full"),
+        ), patch.object(
+            crud, "release_memory_server_character", release_memory,
+        ), pytest.raises(OSError, match="disk full"):
+            await crud.rename_catgirl(
+                "Old", _DummyRequest({"new_name": "New"}),
+            )
+
+        release_memory.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_rename_cancellation_waits_for_config_worker_before_rollback(tmp_path):
     """A late config publish must not overwrite the cancellation rollback."""
     cm = _make_config_manager(tmp_path)
@@ -477,38 +683,100 @@ async def test_save_character_card_activates_reused_name_before_publish(
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_memory_rename_cancellation_waits_for_worker_completion(monkeypatch):
-    """The compatibility rename route must not detach its multi-file worker."""
+async def test_memory_rename_delegates_to_canonical_character_lifecycle(monkeypatch):
+    """The compatibility route must reuse the canonical rename transaction."""
     memory_router = reload_module("main_routers.memory_router")
-    worker_entered = threading.Event()
-    release_worker = threading.Event()
-
-    def _rename(*_args):
-        worker_entered.set()
-        assert release_worker.wait(3)
-        return {"changed": True, "exists_after": True}
 
     class _Config:
-        pass
+        async def aload_characters(self):
+            return {"猫娘": {"Old": {}}}
 
-    monkeypatch.setattr(memory_router, "get_module_logger", lambda *_: None)
     monkeypatch.setattr(
         "utils.config_manager.get_config_manager", lambda: _Config(),
     )
-    monkeypatch.setattr(memory_router, "character_memory_exists", lambda *_: False)
-    monkeypatch.setattr(memory_router, "rename_character_memory_storage", _rename)
+    canonical_result = {"success": True, "memory_renamed": True}
+    canonical_rename = AsyncMock(return_value=canonical_result)
+    monkeypatch.setattr(
+        "main_routers.characters_router.crud.rename_catgirl",
+        canonical_rename,
+    )
+    request = _DummyRequest({"old_name": "Old", "new_name": "New"})
 
-    operation = asyncio.create_task(memory_router.update_catgirl_name(
+    result = await memory_router.update_catgirl_name(request)
+
+    assert result is canonical_result
+    canonical_rename.assert_awaited_once_with("Old", request)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_rename_is_idempotent_after_canonical_rename(monkeypatch):
+    """Legacy follow-up calls should succeed after the canonical rename committed."""
+    memory_router = reload_module("main_routers.memory_router")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"New": {}}}
+
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: _Config(),
+    )
+    monkeypatch.setattr(
+        memory_router,
+        "character_memory_exists",
+        lambda _config, name: name == "New",
+    )
+    canonical_rename = AsyncMock()
+    monkeypatch.setattr(
+        "main_routers.characters_router.crud.rename_catgirl",
+        canonical_rename,
+    )
+
+    result = await memory_router.update_catgirl_name(
         _DummyRequest({"old_name": "Old", "new_name": "New"})
-    ))
-    assert await asyncio.to_thread(worker_entered.wait, 3)
-    operation.cancel()
-    await asyncio.sleep(0.05)
-    assert not operation.done()
+    )
 
-    release_worker.set()
-    with pytest.raises(asyncio.CancelledError):
-        await operation
+    assert result == {
+        "success": True,
+        "changed": False,
+        "exists_after": True,
+        "already_renamed": True,
+    }
+    canonical_rename.assert_not_awaited()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_memory_rename_rejects_published_name_with_old_storage(monkeypatch):
+    """An idempotent response must not hide a partially migrated storage tree."""
+    memory_router = reload_module("main_routers.memory_router")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"New": {}}}
+
+    monkeypatch.setattr(
+        "utils.config_manager.get_config_manager", lambda: _Config(),
+    )
+    monkeypatch.setattr(
+        memory_router,
+        "character_memory_exists",
+        lambda _config, name: name == "Old",
+    )
+    canonical_rename = AsyncMock()
+    monkeypatch.setattr(
+        "main_routers.characters_router.crud.rename_catgirl",
+        canonical_rename,
+    )
+
+    result = await memory_router.update_catgirl_name(
+        _DummyRequest({"old_name": "Old", "new_name": "New"})
+    )
+
+    assert result.status_code == 409
+    payload = json.loads(result.body.decode("utf-8"))
+    assert payload["success"] is False
+    canonical_rename.assert_not_awaited()
 
 
 @pytest.mark.unit
@@ -526,14 +794,79 @@ async def test_workshop_abort_resumes_only_released_names_still_active():
         "main_routers.characters_router.notify_memory_server_reload",
         reload_memory,
     ):
-        await unsubscribe._resume_released_derived_tasks(
+        resumed = await unsubscribe._resume_released_derived_tasks(
             _Config(), {"StillHere", "Deleted"}, 42,
         )
 
+    assert resumed is True
     reload_memory.assert_awaited_once_with(
         reason="取消订阅流程结束，恢复仍存在角色: 42",
         resume_derived_task_names=["StillHere"],
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_abort_surfaces_derived_task_resume_failure():
+    """A failed reload must not masquerade as a completed rollback."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}}}
+
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        AsyncMock(return_value=False),
+    ), pytest.raises(RuntimeError, match="notify_memory_server_reload returned False"):
+        await unsubscribe._resume_released_derived_tasks(
+            _Config(), {"StillHere"}, 42,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_resume_exception_is_not_swallowed():
+    """Transport exceptions must remain visible on a non-cancelled request."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+
+    class _Config:
+        async def aload_characters(self):
+            return {"猫娘": {"StillHere": {}}}
+
+    with patch(
+        "main_routers.characters_router.notify_memory_server_reload",
+        AsyncMock(side_effect=OSError("reload unavailable")),
+    ), pytest.raises(OSError, match="reload unavailable"):
+        await unsubscribe._resume_released_derived_tasks(
+            _Config(), {"StillHere"}, 42,
+        )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_workshop_request_cancellation_survives_late_resume_failure(monkeypatch):
+    """A late transaction error must not replace caller cancellation."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    inner_started = asyncio.Event()
+    finish_inner = asyncio.Event()
+
+    async def _failing_operation(_request, commit_started):
+        commit_started.set()
+        inner_started.set()
+        await finish_inner.wait()
+        raise RuntimeError("resume failed")
+
+    monkeypatch.setattr(unsubscribe, "_unsubscribe_workshop_item", _failing_operation)
+    operation = asyncio.create_task(unsubscribe.unsubscribe_workshop_item(object()))
+    await asyncio.wait_for(inner_started.wait(), timeout=3)
+    operation.cancel()
+    await asyncio.sleep(0.05)
+    assert not operation.done()
+
+    finish_inner.set()
+    with pytest.raises(asyncio.CancelledError):
+        await operation
 
 
 class _DummyGetRequest:
@@ -1460,11 +1793,16 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
                 encoding="utf-8",
             )
 
+            resume_memory = AsyncMock(return_value=True)
             with patch.object(
                 characters_router_module,
                 "release_memory_server_character",
                 AsyncMock(return_value=False),
-            ) as mock_release:
+            ) as mock_release, patch.object(
+                characters_router_module,
+                "notify_memory_server_reload",
+                resume_memory,
+            ):
                 rename_result = await characters_router_module.rename_catgirl(
                     "旧角色",
                     _DummyRequest({"new_name": "新角色"}),
@@ -1475,6 +1813,10 @@ async def test_rename_catgirl_returns_503_and_keeps_disk_unchanged_when_memory_r
             assert payload["success"] is False
             assert payload["code"] == "MEMORY_SERVER_RELEASE_FAILED"
             mock_release.assert_awaited_once()
+            resume_memory.assert_awaited_once_with(
+                reason="角色重命名 release 失败补偿: 旧角色 -> 新角色",
+                resume_derived_task_names=("旧角色",),
+            )
 
             current_characters = cm.load_characters()
             assert "旧角色" in current_characters.get("猫娘", {})
@@ -3429,6 +3771,11 @@ async def test_delete_catgirl_returns_503_when_memory_handle_release_fails_befor
                     characters_router_module,
                     "release_memory_server_character",
                     AsyncMock(return_value=False),
+                ),
+                patch.object(
+                    characters_router_module,
+                    "notify_memory_server_reload",
+                    AsyncMock(return_value=True),
                 ),
                 patch.object(characters_router_module, "delete_character_memory_storage") as mock_delete_memory,
             ):

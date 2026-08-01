@@ -33,14 +33,12 @@ import hashlib
 import os
 import re
 import json
-from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, Request
 from utils.character_name import validate_character_name
 from utils.character_memory import (
     character_memory_exists,
-    rename_character_memory_storage,
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.logger_config import get_module_logger
@@ -72,20 +70,6 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
-
-
-async def _await_thread_mutation(func, *args, **kwargs):
-    """Finish a worker mutation before propagating caller cancellation."""
-    operation = asyncio.create_task(asyncio.to_thread(func, *args, **kwargs))
-    try:
-        return await asyncio.shield(operation)
-    except asyncio.CancelledError:
-        while not operation.done():
-            with suppress(asyncio.CancelledError):
-                await asyncio.wait({operation})
-        with suppress(BaseException):
-            operation.result()
-        raise
 
 
 def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
@@ -628,35 +612,36 @@ async def update_catgirl_name(request: Request):
     try:
         from utils.config_manager import get_config_manager
         cm = get_config_manager()
-        if character_memory_exists(cm, old_name) or character_memory_exists(cm, new_name):
-            assert_cloudsave_writable(
-                cm,
-                operation="rename",
-                target=f"memory/{old_name} -> memory/{new_name}",
-            )
+        characters = await cm.aload_characters()
+        catgirls = characters.get('猫娘', {}) if isinstance(characters, dict) else {}
 
-        # to_thread：改名路径里的 recent.json 读写现在要拿文件锁，在事件循环
-        # 线程上取锁会把整个循环挡住（而且 file_utils 的 busy-retry 在循环线程上
-        # 会主动放弃，第一次 busy 就抛）。
-        result = await _await_thread_mutation(
-            rename_character_memory_storage, cm, old_name, new_name,
-        )
-        logger.info(
-            "已更新猫娘名称从 '%s' 到 '%s' 的记忆文件，changed=%s",
-            old_name,
-            new_name,
-            result.get("changed", False),
-        )
-        return {
-            "success": True,
-            "changed": bool(result.get("changed", False)),
-            "exists_after": bool(result.get("exists_after", False)),
-        }
+        # 兼容旧客户端在 canonical rename 成功后重复调用本端点的幂等路径。
+        if old_name not in catgirls and new_name in catgirls:
+            if character_memory_exists(cm, old_name):
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "error": "角色配置已改名但旧记忆仍存在，请通过角色管理接口修复",
+                    },
+                    status_code=409,
+                )
+            return {
+                "success": True,
+                "changed": False,
+                "exists_after": character_memory_exists(cm, new_name),
+                "already_renamed": True,
+            }
+
+        # 单独移动 memory 会绕过角色改名事务的 task drain、配置发布和回滚。
+        # 统一委托 canonical route，避免旧派生任务沿 recent redirect 写进新角色。
+        from .characters_router.crud import rename_catgirl
+
+        return await rename_catgirl(old_name, request)
     except MaintenanceModeError:
         raise
-    except Exception as e:
+    except Exception as exc:
         logger.exception("更新猫娘名称失败")
-        return {"success": False, "error": str(e)}
+        return {"success": False, "error": str(exc)}
 
 
 @router.get('/review_config')

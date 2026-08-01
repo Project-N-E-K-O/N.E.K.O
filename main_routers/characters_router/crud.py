@@ -405,6 +405,20 @@ async def _await_thread_mutation(func, *args, **kwargs):
     return result
 
 
+async def _resume_released_character_admission(name: str, *, reason: str) -> str:
+    """Resume one released identity and return a diagnostic on failure."""
+    try:
+        resumed = await notify_memory_server_reload(
+            reason=reason,
+            resume_derived_task_names=(name,),
+        )
+    except Exception as exc:
+        return f"notify_memory_server_reload failed: {exc}"
+    if not resumed:
+        return "notify_memory_server_reload failed: returned False"
+    return ""
+
+
 def _restore_snapshot_paths(records) -> None:
     for record in sorted(records, key=lambda item: len(item["target"].parts), reverse=True):
         target_path = record["target"]
@@ -644,23 +658,6 @@ async def rename_catgirl(old_name: str, request: Request):
         target=f"characters/{old_name} -> {new_name}",
     )
 
-    released_memory_handle = await release_memory_server_character(
-        old_name,
-        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
-        hold_derived_task_admission=True,
-    )
-    if not released_memory_handle:
-        logger.warning("角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s", old_name, new_name)
-        return JSONResponse(
-            {
-                "success": False,
-                "code": "MEMORY_SERVER_RELEASE_FAILED",
-                "error": "释放角色记忆句柄失败，已阻止重命名，请稍后重试",
-                "memory_server_released": False,
-            },
-            status_code=503,
-        )
-
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, old_name)
     memory_targets.extend(list_character_memory_paths(_config_manager, new_name))
@@ -679,9 +676,51 @@ async def rename_catgirl(old_name: str, request: Request):
     recent_transaction = None
     memory_snapshot_records = []
     rename_committed = False
+    released_memory_handle = False
 
     with _create_character_operation_backup_dir(_config_manager, "neko-rename-character-") as temp_dir:
         try:
+            released_memory_handle, release_cancelled = (
+                await _await_coroutine_to_completion(
+                    release_memory_server_character(
+                        old_name,
+                        reason=f"角色重命名前释放 SQLite 句柄: {old_name} -> {new_name}",
+                        hold_derived_task_admission=True,
+                    )
+                )
+            )
+            if release_cancelled:
+                raise asyncio.CancelledError
+            if not released_memory_handle:
+                resume_error, resume_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _resume_released_character_admission(
+                            old_name,
+                            reason=f"角色重命名 release 失败补偿: {old_name} -> {new_name}",
+                        )
+                    )
+                )
+                if resume_cancelled:
+                    raise asyncio.CancelledError
+                logger.warning(
+                    "角色重命名前释放记忆服务器句柄失败，已阻止重命名: %s -> %s%s",
+                    old_name,
+                    new_name,
+                    f"；补偿失败: {resume_error}" if resume_error else "",
+                )
+                error_message = "释放角色记忆句柄失败，已阻止重命名，请稍后重试"
+                if resume_error:
+                    error_message = f"{error_message}; {resume_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "code": "MEMORY_SERVER_RELEASE_FAILED",
+                        "error": error_message,
+                        "memory_server_released": False,
+                    },
+                    status_code=503,
+                )
+
             recent_transaction, acquire_cancelled = await _await_thread_call_to_completion(
                 begin_character_recent_transaction,
                 _config_manager,
@@ -1426,23 +1465,6 @@ async def _delete_catgirl_by_name(name: str):
             "memory_server_reloaded": memory_server_reloaded,
         }
 
-    released_memory_handle = await release_memory_server_character(
-        name,
-        reason=f"角色删除前释放 SQLite 句柄: {name}",
-        hold_derived_task_admission=True,
-    )
-    if not released_memory_handle:
-        logger.warning("角色删除前释放记忆服务器句柄失败，已阻止删除: %s", name)
-        return JSONResponse(
-            {
-                "success": False,
-                "code": "MEMORY_SERVER_RELEASE_FAILED",
-                "error": "释放角色记忆句柄失败，已阻止删除，请稍后重试",
-                "memory_server_released": False,
-            },
-            status_code=503,
-        )
-
     characters_snapshot = copy.deepcopy(characters)
     memory_targets = list_character_memory_paths(_config_manager, name)
     face_path = _config_manager.card_faces_dir / f"{name}.png"
@@ -1457,7 +1479,48 @@ async def _delete_catgirl_by_name(name: str):
         recent_transaction = None
         memory_server_reloaded = False
         delete_committed = False
+        released_memory_handle = False
         try:
+            released_memory_handle, release_cancelled = (
+                await _await_coroutine_to_completion(
+                    release_memory_server_character(
+                        name,
+                        reason=f"角色删除前释放 SQLite 句柄: {name}",
+                        hold_derived_task_admission=True,
+                    )
+                )
+            )
+            if release_cancelled:
+                raise asyncio.CancelledError
+            if not released_memory_handle:
+                resume_error, resume_cancelled = (
+                    await _await_coroutine_to_completion(
+                        _resume_released_character_admission(
+                            name,
+                            reason=f"角色删除 release 失败补偿: {name}",
+                        )
+                    )
+                )
+                if resume_cancelled:
+                    raise asyncio.CancelledError
+                logger.warning(
+                    "角色删除前释放记忆服务器句柄失败，已阻止删除: %s%s",
+                    name,
+                    f"；补偿失败: {resume_error}" if resume_error else "",
+                )
+                error_message = "释放角色记忆句柄失败，已阻止删除，请稍后重试"
+                if resume_error:
+                    error_message = f"{error_message}; {resume_error}"
+                return JSONResponse(
+                    {
+                        "success": False,
+                        "code": "MEMORY_SERVER_RELEASE_FAILED",
+                        "error": error_message,
+                        "memory_server_released": False,
+                    },
+                    status_code=503,
+                )
+
             recent_transaction, acquire_cancelled = await _await_thread_call_to_completion(
                 begin_character_recent_transaction,
                 _config_manager,

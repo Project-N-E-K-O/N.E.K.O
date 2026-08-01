@@ -35,7 +35,7 @@ from utils.config_manager import get_reserved
 
 async def _resume_released_derived_tasks(
     config_mgr, released_names: set[str], item_id: int,
-) -> None:
+) -> bool:
     """Resume only released identities that still exist after unsubscribe cleanup."""
     try:
         characters_after = await config_mgr.aload_characters()
@@ -47,19 +47,23 @@ async def _resume_released_derived_tasks(
         active_names = set(catgirls_after) if isinstance(catgirls_after, dict) else set()
         resume_names = sorted(released_names.intersection(active_names))
         if not resume_names:
-            return
+            return True
         from ..characters_router import notify_memory_server_reload
 
-        await notify_memory_server_reload(
+        resumed = await notify_memory_server_reload(
             reason=f"取消订阅流程结束，恢复仍存在角色: {item_id}",
             resume_derived_task_names=resume_names,
         )
+        if not resumed:
+            raise RuntimeError("notify_memory_server_reload returned False")
+        return True
     except Exception as exc:
         logger.warning(
             "取消订阅流程结束后恢复角色派生任务失败: item_id=%s err=%s",
             item_id,
             exc,
         )
+        raise
 
 
 def _collect_character_names_by_workshop_item_id(config_mgr, item_id: int) -> list[str]:
@@ -232,7 +236,14 @@ async def unsubscribe_workshop_item(request: Request):
             with suppress(asyncio.CancelledError):
                 await asyncio.wait({operation})
         if commit_started.is_set():
-            operation.result()
+            try:
+                operation.result()
+            except Exception as exc:
+                logger.error(
+                    "取消订阅请求取消后，已开始的事务最终失败: %s",
+                    exc,
+                    exc_info=True,
+                )
         else:
             with suppress(asyncio.CancelledError):
                 operation.result()
@@ -1026,5 +1037,4 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
             while not resume_task.done():
                 with suppress(asyncio.CancelledError):
                     await asyncio.wait({resume_task})
-            with suppress(Exception):
-                resume_task.result()
+            resume_task.result()
