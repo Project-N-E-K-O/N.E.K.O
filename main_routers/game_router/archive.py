@@ -120,11 +120,13 @@ def _build_game_archive(state: dict) -> dict:
     if not final_score and isinstance(last_state.get("score"), dict):
         final_score = dict(last_state.get("score") or {})
     organizer = _normalize_game_context_organizer_state(state.get("game_context_organizer"))
+    archive_language, archive_language_source = _current_route_prompt_language_with_source(state)
     return {
         "game_type": state.get("game_type"),
         "session_id": state.get("session_id"),
         "lanlan_name": state.get("lanlan_name"),
-        "user_language": _current_route_prompt_language(state),
+        "user_language": archive_language,
+        "user_language_source": archive_language_source,
         "dialog_count": len(dialog),
         "full_dialogues": dialog,
         "last_full_dialogues": dialog[-keep_last:],
@@ -179,8 +181,7 @@ def _archive_prompt_language(archive: dict) -> str:
     return get_global_language_full()
 
 
-def _current_route_prompt_language(state: dict) -> str:
-    """Resolve the live session locale before freezing a game archive."""
+def _current_route_prompt_language_with_source(state: dict) -> tuple[str, str]:
     lanlan_name = str(state.get("lanlan_name") or "").strip()
     if lanlan_name:
         try:
@@ -192,14 +193,38 @@ def _current_route_prompt_language(state: dict) -> str:
             )
             language = str(getattr(manager, "user_language", "") or "").strip()
             if language:
-                return normalize_language_code(language, format="full") or language
+                return normalize_language_code(language, format="full") or language, "session"
         except Exception:
             logger.debug("赛后归档实时语言解析失败，使用路由状态语言", exc_info=True)
-    return _archive_prompt_language(state)
+    language = str(state.get("user_language") or "").strip()
+    if language:
+        return normalize_language_code(language, format="full") or language, "route"
+    return get_global_language_full(), "global"
 
 
-def _archive_memory_language(archive: dict) -> str:
-    return _archive_prompt_language(archive)
+def _current_route_prompt_language(state: dict) -> str:
+    """Resolve the live session locale before freezing a game archive."""
+    return _current_route_prompt_language_with_source(state)[0]
+
+
+def _archive_memory_language(archive: dict) -> str | None:
+    if archive.get("user_language_source") == "global":
+        return None
+    language = str(archive.get("user_language") or "").strip()
+    if language:
+        return normalize_language_code(language, format="full") or language
+    lanlan_name = str(archive.get("lanlan_name") or "").strip()
+    if not lanlan_name:
+        return None
+    try:
+        session_manager = get_session_manager()
+        manager = session_manager.get(lanlan_name) if hasattr(session_manager, "get") else None
+        language = str(getattr(manager, "user_language", "") or "").strip()
+        if language:
+            return normalize_language_code(language, format="full") or language
+    except Exception:
+        logger.debug("赛后归档记忆语言解析失败，省略持久化语言", exc_info=True)
+    return None
 
 
 def _build_game_archive_memory_text(archive: dict) -> str:
@@ -661,12 +686,13 @@ async def _submit_game_archive_to_memory(archive: dict) -> dict:
             source="memory_server_cache",
         )
         client = get_internal_http_client()
+        payload = {"input_history": json.dumps(messages, ensure_ascii=False)}
+        memory_language = _archive_memory_language(archive)
+        if memory_language:
+            payload["language"] = memory_language
         response = await client.post(
             f"http://127.0.0.1:{MEMORY_SERVER_PORT}/cache/{lanlan_name}",
-            json={
-                "input_history": json.dumps(messages, ensure_ascii=False),
-                "language": _archive_memory_language(archive),
-            },
+            json=payload,
             timeout=8.0,
         )
         data = response.json() if response.content else {}

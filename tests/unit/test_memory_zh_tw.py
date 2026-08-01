@@ -426,6 +426,60 @@ async def test_game_archive_writer_forwards_full_session_locale(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_game_archive_writer_omits_global_fallback_locale(monkeypatch):
+    from main_routers.game_router import archive
+    from utils import internal_http_client
+    from utils.language_utils import language_context
+
+    calls = []
+
+    class SessionManager:
+        @staticmethod
+        def get(_name):
+            return None
+
+    class Response:
+        content = b"{}"
+        is_success = True
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {}
+
+    class Client:
+        async def post(self, url, **kwargs):
+            calls.append((url, kwargs))
+            return Response()
+
+    async def highlights(_archive):
+        return {}
+
+    monkeypatch.setattr(archive, "get_session_manager", SessionManager)
+    monkeypatch.setattr(archive, "_ensure_game_archive_memory_highlights", highlights)
+    monkeypatch.setattr(
+        archive,
+        "_build_game_archive_memory_messages",
+        lambda _archive: [{"role": "user", "content": "好"}],
+    )
+    monkeypatch.setattr(internal_http_client, "get_internal_http_client", Client)
+
+    with language_context("en"):
+        game_archive = archive._build_game_archive({
+            "lanlan_name": "Neko",
+            "session_id": "game-1",
+            "game_type": "soccer",
+            "soccer_game_memory_archive_enabled": True,
+        })
+        result = await archive._submit_game_archive_to_memory(game_archive)
+
+    assert result["ok"] is True
+    assert game_archive["user_language"] == "en"
+    assert game_archive["user_language_source"] == "global"
+    assert "language" not in calls[0][1]["json"]
+
+
+@pytest.mark.asyncio
 async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
     from app.memory_server import locale_state, routes, runtime
 
