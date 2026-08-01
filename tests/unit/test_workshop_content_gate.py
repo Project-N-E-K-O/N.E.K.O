@@ -3548,6 +3548,34 @@ def _workshop_router_trees(package_dir: Path | None = None):
     ]
 
 
+def _module_lambda_functions(tree) -> list[ast.FunctionDef]:
+    """Expose module-level lambda bodies to the folder-operation guard."""
+    functions = []
+    for statement in _walk_module_scope(tree.body):
+        if not isinstance(statement, (ast.Assign, ast.AnnAssign)):
+            continue
+        value = statement.value
+        if not isinstance(value, ast.Lambda):
+            continue
+        targets = statement.targets if isinstance(statement, ast.Assign) else [statement.target]
+        name = next(
+            (_storage_key(target) for target in targets if _storage_key(target)),
+            f'<lambda@{value.lineno}>',
+        )
+        expression = ast.copy_location(ast.Expr(value=value.body), value.body)
+        function = ast.copy_location(
+            ast.FunctionDef(
+                name=name,
+                args=value.args,
+                body=[expression],
+                decorator_list=[],
+            ),
+            value,
+        )
+        functions.append(ast.fix_missing_locations(function))
+    return functions
+
+
 def test_nested_router_imports_preserve_claim_ownership():
     source = ast.parse(
         'def owner():\n'
@@ -3809,6 +3837,15 @@ def test_workshop_router_discovery_is_recursive(tmp_path):
     assert _unclaimed_folder_operations(nested_purge, 'workers.cleanup'), (
         'nested router module 也必须启用 generic folder operations'
     )
+
+    lambda_tree = ast.parse(
+        'purge = lambda content_folder: shutil.rmtree(content_folder)\n'
+    )
+    lambda_functions = _module_lambda_functions(lambda_tree)
+    assert len(lambda_functions) == 1
+    assert _unclaimed_folder_operations(
+        lambda_functions[0], 'workers.cleanup'
+    ), 'module-level lambda body 也必须进入 folder-operation guard'
 
 
 def test_no_claim_is_ever_taken_on_the_event_loop():
@@ -4723,6 +4760,18 @@ def _operation_nodes(
             else set(canonical_values)
         )
         for canonical in canonicals:
+            keyword_name = _PACKAGE_OPERATION_FOLDER_KEYWORDS.get(canonical)
+            parent_call = parents.get(id(node))
+            if (
+                keyword_name is not None
+                and isinstance(parent_call, ast.Call)
+                and parent_call.func is node
+            ):
+                unpacked = _unpacked_keyword_expressions(
+                    parent_call, keyword_name, func
+                )
+                if unpacked:
+                    node._unpacked_folder_expressions = unpacked
             if canonical in _CONTENT_PATH_MUTATION_METHODS:
                 receivers = _known_bound_mutation_receivers(
                     func, node.lineno
@@ -4783,6 +4832,10 @@ def _assigned_names(node) -> set[str]:
         targets = node.targets if isinstance(node, ast.Assign) else [node.target]
     elif isinstance(node, (ast.For, ast.AsyncFor)):
         targets = [node.target]
+    elif isinstance(node, (ast.With, ast.AsyncWith)):
+        targets = [
+            item.optional_vars for item in node.items if item.optional_vars is not None
+        ]
     elif isinstance(node, ast.comprehension):
         targets = [node.target]
     elif isinstance(node, ast.NamedExpr):
@@ -4808,6 +4861,122 @@ def _walk_rebinding_scope(root):
         stack.extend(ast.iter_child_nodes(node))
 
 
+def _known_keyword_mappings(func, before_line: int):
+    """Possible string-keyed mapping entries held by local variables."""
+    def mapping(value, state):
+        if isinstance(value, ast.Name):
+            return {
+                key: set(expressions)
+                for key, expressions in state.get(value.id, {}).items()
+            }
+        entries = {}
+        if isinstance(value, ast.Dict):
+            pairs = zip(value.keys, value.values)
+        elif isinstance(value, ast.Call) and _tail_name(value) == 'dict':
+            pairs = (
+                (ast.Constant(keyword.arg), keyword.value)
+                for keyword in value.keywords
+                if keyword.arg is not None
+            )
+        else:
+            return entries
+        for key, expression in pairs:
+            if isinstance(key, ast.Constant) and isinstance(key.value, str):
+                entries.setdefault(key.value, set()).add(expression)
+        return entries
+
+    def merge(*states):
+        names = set().union(*(set(state) for state in states))
+        return {
+            name: {
+                key: set().union(*(
+                    state.get(name, {}).get(key, set()) for state in states
+                ))
+                for key in set().union(*(
+                    set(state.get(name, {})) for state in states
+                ))
+            }
+            for name in names
+        }
+
+    def after(statements, state):
+        state = {
+            name: {key: set(values) for key, values in entries.items()}
+            for name, entries in state.items()
+        }
+        for statement in statements:
+            if statement.lineno >= before_line:
+                continue
+            if isinstance(statement, (ast.Assign, ast.AnnAssign)):
+                entries = mapping(statement.value, state)
+                targets = (
+                    statement.targets
+                    if isinstance(statement, ast.Assign)
+                    else [statement.target]
+                )
+                for target in targets:
+                    if not isinstance(target, ast.Name):
+                        continue
+                    if entries:
+                        state[target.id] = {
+                            key: set(values) for key, values in entries.items()
+                        }
+                    else:
+                        state.pop(target.id, None)
+            elif isinstance(statement, ast.If):
+                state = merge(
+                    after(statement.body, state), after(statement.orelse, state)
+                )
+            elif isinstance(statement, ast.Match):
+                paths = [after(case.body, state) for case in statement.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in statement.cases
+                )
+                if not exhaustive:
+                    paths.append(state)
+                state = merge(*paths)
+            elif isinstance(statement, (ast.For, ast.AsyncFor, ast.While)):
+                state = merge(state, after(statement.body, state))
+                state = after(statement.orelse, state)
+            elif isinstance(statement, (ast.With, ast.AsyncWith)):
+                state = after(statement.body, state)
+            elif isinstance(statement, ast.Try):
+                prefix_states = [state]
+                body_state = state
+                for nested in statement.body:
+                    body_state = after([nested], body_state)
+                    prefix_states.append(body_state)
+                paths = [after(statement.orelse, body_state)]
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in statement.handlers
+                    for prefix_state in prefix_states
+                )
+                state = after(statement.finalbody, merge(*paths))
+        return state
+
+    return after(func.body, {})
+
+
+def _unpacked_keyword_expressions(call, keyword_name: str, func) -> set[ast.AST]:
+    mappings = _known_keyword_mappings(func, call.lineno)
+    expressions = set()
+    for keyword in call.keywords:
+        if keyword.arg is not None:
+            continue
+        value = keyword.value
+        if isinstance(value, ast.Dict):
+            for key, expression in zip(value.keys, value.values):
+                if isinstance(key, ast.Constant) and key.value == keyword_name:
+                    expressions.add(expression)
+        elif isinstance(value, ast.Name):
+            expressions.update(mappings.get(value.id, {}).get(keyword_name, set()))
+    return expressions
+
+
 def _operation_folder_expressions(
     operation, name: str, parents: dict[int, ast.AST]
 ) -> list:
@@ -4816,6 +4985,7 @@ def _operation_folder_expressions(
     bound_receivers = getattr(operation, '_bound_mutation_receivers', set())
     if name in _CONTENT_PATH_MUTATION_METHODS and bound_receivers:
         return list(bound_receivers)
+    unpacked = list(getattr(operation, '_unpacked_folder_expressions', set()))
     if (
         name == _OPEN_WRITE_OPERATION
         and isinstance(parent, ast.Call)
@@ -4893,16 +5063,16 @@ def _operation_folder_expressions(
         name, _FOLDER_OPERATION_ARGS.get(name)
     )
     if index is None or not isinstance(parent, ast.Call) or parent.func is not operation:
-        return []
+        return unpacked
     if len(parent.args) > index:
-        return [parent.args[index]]
+        return [parent.args[index], *unpacked]
     keyword_name = _PACKAGE_OPERATION_FOLDER_KEYWORDS.get(name)
     if keyword_name is None:
-        return []
+        return unpacked
     keyword = next(
         (item for item in parent.keywords if item.arg == keyword_name), None
     )
-    return [keyword.value] if keyword else []
+    return [keyword.value, *unpacked] if keyword else unpacked
 
 
 def _operation_folder_expression(
@@ -5845,6 +6015,13 @@ def test_the_claim_guard_discovers_content_path_mutations():
         'def keyword_rmtree(content_folder):\n'
         '    shutil.rmtree(path=content_folder)\n'
         '\n'
+        'def unpacked_keyword_rmtree(content_folder):\n'
+        "    shutil.rmtree(**{'path': content_folder})\n"
+        '\n'
+        'def stored_unpacked_keyword_rmtree(content_folder):\n'
+        "    options = {'path': content_folder}\n"
+        '    shutil.rmtree(**options)\n'
+        '\n'
         'def keyword_copy2(content_folder):\n'
         '    shutil.copy2(src=source, dst=content_folder)\n'
         '\n'
@@ -6043,7 +6220,8 @@ def test_the_claim_guard_discovers_content_path_mutations():
     ), 'literal .. 逃出 claimed tree 时不能被当成受保护路径'
     for name in (
         'keyword_rmtree', 'keyword_copy', 'keyword_copy2', 'keyword_copyfile',
-        'keyword_copytree',
+        'keyword_copytree', 'unpacked_keyword_rmtree',
+        'stored_unpacked_keyword_rmtree',
     ):
         assert _unclaimed_folder_operations(functions[name], 'new_router'), (
             f'{name} 的 keyword target 也必须被 repository-wide guard 发现'
@@ -6597,6 +6775,12 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
         '            folder = other\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    with_rebound_folder = ast.parse(
+        'def delete(content_folder, provider):\n'
+        '    with claim_content_folder(content_folder, purpose=p):\n'
+        '        with provider as content_folder:\n'
+        '            shutil.rmtree(content_folder)\n'
+    ).body[0]
 
     assert _unclaimed_folder_operations(matching, 'publish') == []
     assert _unclaimed_folder_operations(wrong_kind, 'publish'), (
@@ -6640,6 +6824,9 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
     assert _unclaimed_folder_operations(nested_scope_rebinding, 'publish') == [], (
         'nested helper 的 local binding 不能污染 enclosing claim scope'
     )
+    assert _unclaimed_folder_operations(with_rebound_folder, 'publish'), (
+        'with optional target 重绑定 claimed folder 后必须让目录身份失效'
+    )
 
 
 def test_every_folder_consuming_call_sits_inside_a_claim():
@@ -6656,11 +6843,16 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
     offenders = []
     for short, tree in _workshop_router_trees():
         module_aliases = _operation_aliases(tree.body)
-        for node in ast.walk(tree):
-            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
-                continue
+        lambda_functions = _module_lambda_functions(tree)
+        functions = [
+            node for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+        ]
+        for node in [*functions, *lambda_functions]:
             if _is_allowed_unclaimed(
-                short, node.name, top_level=node in tree.body
+                short,
+                node.name,
+                top_level=node in tree.body or node in lambda_functions,
             ):
                 continue
             offenders.extend(_unclaimed_folder_operations(node, short, module_aliases))
