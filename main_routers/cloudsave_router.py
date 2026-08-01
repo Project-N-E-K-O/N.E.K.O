@@ -351,6 +351,7 @@ async def _reload_after_character_download(
     await initialize_character_data()
     memory_server_reloaded = await notify_memory_server_reload(
         reason=f"云存档下载角色: {character_name}",
+        resume_derived_task_names=(character_name,),
         release_derived_task_claims=(
             {character_name: (release_claim_token,)}
             if release_claim_token

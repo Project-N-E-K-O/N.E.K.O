@@ -2208,6 +2208,77 @@ async def test_recent_file_route_rejects_stale_browser_snapshot(tmp_path, monkey
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cancelled_browser_save_finishes_commit_and_correction_cancel(
+    tmp_path, monkeypatch,
+):
+    """A cancelled request must not detach its file worker or post-save cleanup."""
+    from main_routers import memory_router
+    import httpx
+    import utils.config_manager as config_manager_module
+
+    recent_path = tmp_path / "Role" / "recent.json"
+    recent_path.parent.mkdir(parents=True)
+    recent_file.write_recent_payload(
+        recent_path,
+        [{"type": "human", "data": {"content": "disk"}}],
+    )
+
+    class _Config:
+        memory_dir = tmp_path
+        project_memory_dir = tmp_path
+
+    class _Request:
+        async def json(self):
+            return {
+                "filename": "recent_Role.json",
+                "chat": [{"role": "human", "text": "edited"}],
+                "fingerprint": loaded["fingerprint"],
+                "identity_token": loaded["identity_token"],
+            }
+
+    posted = []
+
+    class _Client:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+        async def post(self, url, **_kwargs):
+            posted.append(url)
+
+    monkeypatch.setattr(config_manager_module, "get_config_manager", lambda: _Config())
+    monkeypatch.setattr(memory_router, "assert_cloudsave_writable", lambda *a, **k: None)
+    loaded = await memory_router.get_recent_file("recent_Role.json")
+    worker_started = threading.Event()
+    finish_worker = threading.Event()
+    original_write = memory_router._write_recent_browser_payload
+
+    def _blocked_write(*args, **kwargs):
+        worker_started.set()
+        assert finish_worker.wait(timeout=3)
+        return original_write(*args, **kwargs)
+
+    monkeypatch.setattr(memory_router, "_write_recent_browser_payload", _blocked_write)
+    monkeypatch.setattr(httpx, "AsyncClient", lambda **_kwargs: _Client())
+
+    operation = asyncio.create_task(memory_router.save_recent_file(_Request()))
+    while not worker_started.is_set():
+        await asyncio.sleep(0)
+    operation.cancel()
+    await asyncio.sleep(0)
+    assert not operation.done()
+    finish_worker.set()
+
+    with pytest.raises(asyncio.CancelledError):
+        await operation
+    assert json.loads(recent_path.read_text(encoding="utf-8"))[0]["data"]["content"] == "edited"
+    assert posted and posted[0].endswith("/cancel_correction/Role")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_recent_file_route_saves_the_resolved_legacy_layout(
     tmp_path, monkeypatch,
 ):

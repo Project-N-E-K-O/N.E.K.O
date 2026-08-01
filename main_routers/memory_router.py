@@ -33,6 +33,7 @@ import hashlib
 import os
 import re
 import json
+from contextlib import suppress
 from pathlib import Path
 
 from fastapi import APIRouter, Request
@@ -70,6 +71,22 @@ router = APIRouter(prefix="/api/memory", tags=["memory"])
 VALID_RECENT_FILENAME_PATTERN = re.compile(r'^recent_.+\.json$')
 PATH_ERROR_INVALID_REQUEST = "INVALID_REQUEST"
 PATH_ERROR_NOT_FOUND = "NOT_FOUND"
+
+
+async def _await_browser_save_transaction(coro):
+    """Finish a committed browser save before propagating request cancellation."""
+    operation = asyncio.create_task(coro)
+    try:
+        return await asyncio.shield(operation), False
+    except asyncio.CancelledError:
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+        try:
+            result = operation.result()
+        except BaseException as exc:
+            raise asyncio.CancelledError from exc
+        return result, True
 
 
 def extract_catgirl_name_from_recent_filename(filename: str) -> str | None:
@@ -532,7 +549,7 @@ async def save_recent_file(request: Request):
                 **({"tool_calls": [], "invalid_tool_calls": [], "usage_metadata": None} if t == "ai" else {})
             }
         })
-    try:
+    async def _commit_browser_save():
         saved, saved_fingerprint, saved_identity_token = await asyncio.to_thread(
             _write_recent_browser_payload,
             resolved_path,
@@ -576,6 +593,14 @@ async def save_recent_file(request: Request):
             "fingerprint": saved_fingerprint,
             "identity_token": saved_identity_token,
         }
+
+    try:
+        result, save_cancelled = await _await_browser_save_transaction(
+            _commit_browser_save()
+        )
+        if save_cancelled:
+            raise asyncio.CancelledError
+        return result
     except MaintenanceModeError:
         raise
     except Exception as e:

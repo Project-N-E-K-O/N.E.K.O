@@ -55,6 +55,32 @@ async def _await_thread_call_to_completion(func, *args, **kwargs):
         return result, True
 
 
+async def _finish_resume_preserving_cancellation(coro) -> None:
+    """Finish admission recovery without replacing or swallowing cancellation."""
+    current = asyncio.current_task()
+    cancellation_pending = bool(current and current.cancelling())
+    operation = asyncio.create_task(coro)
+    try:
+        await asyncio.shield(operation)
+    except asyncio.CancelledError:
+        cancellation_pending = True
+        while not operation.done():
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait({operation})
+    except BaseException as exc:
+        if cancellation_pending:
+            raise asyncio.CancelledError from exc
+        raise
+    try:
+        operation.result()
+    except BaseException as exc:
+        if cancellation_pending:
+            raise asyncio.CancelledError from exc
+        raise
+    if cancellation_pending:
+        raise asyncio.CancelledError
+
+
 async def _resume_released_derived_tasks(
     config_mgr, released_claims: dict[str, str], item_id: int,
 ) -> bool:
@@ -1059,12 +1085,10 @@ async def _unsubscribe_workshop_item(request: Request, commit_started: asyncio.E
         }, status_code=500)
     finally:
         if released_derived_task_claims:
-            resume_task = asyncio.create_task(_resume_released_derived_tasks(
-                config_mgr,
-                released_derived_task_claims,
-                item_id_int,
-            ))
-            while not resume_task.done():
-                with suppress(asyncio.CancelledError):
-                    await asyncio.wait({resume_task})
-            resume_task.result()
+            await _finish_resume_preserving_cancellation(
+                _resume_released_derived_tasks(
+                    config_mgr,
+                    released_derived_task_claims,
+                    item_id_int,
+                )
+            )

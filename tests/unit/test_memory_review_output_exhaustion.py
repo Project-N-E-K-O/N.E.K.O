@@ -170,12 +170,14 @@ async def test_output_exhaustion_gate_waits_for_context_to_shrink():
 
     name = "output-limit-gate"
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_output_exhaustion_attempts": (
             MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         ),
         "review_output_exhaustion_min_context_tokens": 1000,
         "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(generation),
     }
 
     await _drive_review_gate(memory_server, name, _history(14))
@@ -317,12 +319,14 @@ async def test_recovery_that_loses_the_race_does_not_spawn_a_review():
 
     name = "output-limit-lost-race"
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_output_exhaustion_attempts": (
             MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         ),
         "review_output_exhaustion_min_context_tokens": 1000,
         "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(generation),
     }
 
     def count_while_a_concurrent_writer_arms_a_newer_breaker(rows):

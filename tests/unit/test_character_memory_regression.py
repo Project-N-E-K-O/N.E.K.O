@@ -957,6 +957,38 @@ async def test_workshop_thread_failure_cannot_replace_caller_cancellation():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_workshop_resume_failure_cannot_replace_active_cancellation():
+    """A failing finally recovery remains the cause of request cancellation."""
+    unsubscribe = reload_module("main_routers.workshop_router.unsubscribe")
+    started = asyncio.Event()
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def _resume():
+        entered.set()
+        await finish.wait()
+        raise RuntimeError("resume failed in finally")
+
+    async def _operation():
+        try:
+            started.set()
+            await asyncio.Event().wait()
+        finally:
+            await unsubscribe._finish_resume_preserving_cancellation(_resume())
+
+    operation = asyncio.create_task(_operation())
+    await started.wait()
+    operation.cancel()
+    await entered.wait()
+    finish.set()
+
+    with pytest.raises(asyncio.CancelledError) as exc_info:
+        await operation
+    assert isinstance(exc_info.value.__cause__, RuntimeError)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_memory_reload_failure_still_resumes_requested_admission():
     """Reload failure releases only the requested claim, preserving its peer."""
     from app.memory_server import review, runtime

@@ -150,15 +150,36 @@ def _clear_review_output_exhaustion_state(state: dict) -> bool:
         bool(state.get('review_output_exhaustion_attempts'))
         or state.get('review_output_exhaustion_min_context_tokens') is not None
         or bool(state.get('review_output_exhaustion_blocked'))
+        or state.get('review_output_exhaustion_generation') is not None
     )
     state['review_output_exhaustion_attempts'] = 0
     state['review_output_exhaustion_min_context_tokens'] = None
     state['review_output_exhaustion_blocked'] = False
+    state['review_output_exhaustion_generation'] = None
     return changed
 
 
+def _mutate_align_output_exhaustion_generation(
+    admission_generation,
+    state: dict,
+) -> tuple[bool, bool]:
+    """Discard an inherited breaker before gating a newly activated identity."""
+    if not _generation_is_current(admission_generation):
+        return False, False
+    generation_marker = _generation_marker(admission_generation)
+    if state.get('review_output_exhaustion_generation') == generation_marker:
+        return False, True
+    _clear_review_output_exhaustion_state(state)
+    state['review_output_exhaustion_generation'] = generation_marker
+    return True, True
+
+
 def _mutate_clear_output_exhaustion(
-    state: dict, *, seen_attempts: int, seen_min_tokens: int
+    state: dict,
+    *,
+    seen_attempts: int,
+    seen_min_tokens: int,
+    seen_generation=None,
 ) -> tuple[bool, bool]:
     """Mutator: clear the output-exhaustion breaker, unless a newer failure was armed."""
     # Gate 6a 的恢复判定必须在锁外做（token 计数是 async，进不了同步 mutator），所以
@@ -171,7 +192,11 @@ def _mutate_clear_output_exhaustion(
     except (TypeError, ValueError):
         current_min = 0
     current_attempts = state.get('review_output_exhaustion_attempts', 0) or 0
-    if current_min != seen_min_tokens or current_attempts != seen_attempts:
+    if (
+        current_min != seen_min_tokens
+        or current_attempts != seen_attempts
+        or state.get('review_output_exhaustion_generation') != seen_generation
+    ):
         return False, False
     _clear_review_output_exhaustion_state(state)
     # value 把「恢复是否成立」带给调用方（这正是 (dirty, value) 里 value 的用途）。
@@ -371,6 +396,18 @@ async def maybe_spawn_review(name: str) -> None:
         from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
         from memory.recent import review_context_token_count
         view = gates._maint_view(name)
+        generation_marker = _generation_marker(admission_generation)
+        if view.get('review_output_exhaustion_generation') != generation_marker:
+            aligned = await gates._amutate_maint_state(
+                name,
+                functools.partial(
+                    _mutate_align_output_exhaustion_generation,
+                    admission_generation,
+                ),
+            )
+            if not aligned:
+                return
+            view = gates._maint_view(name)
         exhaustion_attempts = view.get('review_output_exhaustion_attempts', 0) or 0
         exhaustion_blocked = bool(view.get('review_output_exhaustion_blocked'))
         if (
@@ -397,6 +434,7 @@ async def maybe_spawn_review(name: str) -> None:
                     _mutate_clear_output_exhaustion,
                     seen_attempts=exhaustion_attempts,
                     seen_min_tokens=failed_min_tokens,
+                    seen_generation=generation_marker,
                 ),
             )
             if not cleared:
@@ -432,9 +470,14 @@ async def maybe_spawn_review(name: str) -> None:
             decision = await gates._amutate_maint_state(
                 name,
                 functools.partial(
-                    _mutate_reset_review_fail_backoff, cur_fp, MEMORY_LIVENESS_MAX_ATTEMPTS,
+                    _mutate_reset_review_fail_backoff,
+                    cur_fp,
+                    MEMORY_LIVENESS_MAX_ATTEMPTS,
+                    admission_generation=admission_generation,
                 ),
             )
+            if decision == 'stale':
+                return
             if decision == 'dead_letter':
                 logger.debug(
                     f"[Review/spawn] {name}: 失败退避 dead-letter "
@@ -457,13 +500,27 @@ async def maybe_spawn_review(name: str) -> None:
         correction_tasks[name] = task
 
 
-def _mutate_reset_review_fail_backoff(cur_fp, max_attempts: int, state: dict) -> tuple[bool, str]:
+def _mutate_reset_review_fail_backoff(
+    cur_fp,
+    max_attempts: int,
+    state: dict,
+    *,
+    admission_generation=None,
+) -> tuple[bool, str]:
     """Mutator: re-check Gate 6b under lock and expire the backoff if the input changed.
 
     Returns ``'dead_letter'`` (caller must skip this spawn) or ``'proceed'``.
     """
     # 配置常量由调用方在锁外取好传进来：mutator 跑在临界区里，不该在里面碰 import
     # machinery（本仓库这些 config import 都是函数内 lazy import）。
+    if not _generation_is_current(admission_generation):
+        return False, 'stale'
+    generation_marker = _generation_marker(admission_generation)
+    if state.get('review_fail_generation') != generation_marker:
+        state['review_fail_attempts'] = 0
+        state['review_fail_fp'] = None
+        state['review_fail_generation'] = generation_marker
+        return True, 'proceed'
     attempts = state.get('review_fail_attempts', 0) or 0
     if attempts < max_attempts:
         # 锁外快筛之后另一个写者已经把计数清了（如成功的 review）→ 直接放行。
@@ -472,6 +529,7 @@ def _mutate_reset_review_fail_backoff(cur_fp, max_attempts: int, state: dict) ->
         return False, 'dead_letter'
     state['review_fail_attempts'] = 0
     state['review_fail_fp'] = None
+    state['review_fail_generation'] = generation_marker
     return True, 'proceed'
 
 
@@ -481,10 +539,15 @@ def _mutate_record_review_failure(
     """Mutator: bump the review failure counter and break the output-exhaustion streak."""
     if not _generation_is_current(admission_generation):
         return False, None
-    if state.get('review_fail_fp') != cur_fp:
+    generation_marker = _generation_marker(admission_generation)
+    if (
+        state.get('review_fail_fp') != cur_fp
+        or state.get('review_fail_generation') != generation_marker
+    ):
         state['review_fail_attempts'] = 0
     state['review_fail_attempts'] = (state.get('review_fail_attempts', 0) or 0) + 1
     state['review_fail_fp'] = cur_fp
+    state['review_fail_generation'] = generation_marker
     # 普通失败会中断"连续输出耗尽"序列，不能让两类失败交错累计后误开断路器。这一步
     # 必须和 bump 同在一个临界区、同一次落盘里：重构前它靠调用方先改内存、再靠本函数
     # 的 save 顺带持久化，拆成两次落盘会留下"清了但没写"的窗口。
@@ -521,6 +584,10 @@ def _mutate_record_output_exhaustion(
     """Mutator: fold one output-limit failure into the breaker, tracking the minimum context."""
     if not _generation_is_current(admission_generation):
         return False, None
+    generation_marker = _generation_marker(admission_generation)
+    if state.get('review_output_exhaustion_generation') != generation_marker:
+        _clear_review_output_exhaustion_state(state)
+        state['review_output_exhaustion_generation'] = generation_marker
     previous_min = state.get('review_output_exhaustion_min_context_tokens')
     try:
         previous_min = int(previous_min or 0)
@@ -538,6 +605,7 @@ def _mutate_record_output_exhaustion(
     state['review_output_exhaustion_attempts'] = attempts
     state['review_output_exhaustion_min_context_tokens'] = minimum_tokens
     state['review_output_exhaustion_blocked'] = attempts >= max_attempts
+    state['review_output_exhaustion_generation'] = generation_marker
     return True, (attempts, minimum_tokens)
 
 
@@ -884,6 +952,7 @@ def _mutate_review_patched(
     # 成功 → 清掉失败退避计数（Gate 6）
     state['review_fail_attempts'] = 0
     state['review_fail_fp'] = None
+    state['review_fail_generation'] = None
     _clear_review_output_exhaustion_state(state)
     return True, True
 
@@ -898,6 +967,7 @@ def _mutate_review_white(admission_generation, state: dict) -> tuple[bool, bool]
     # 白 review 是 cutoff 失配（输入实际已变）而非失败，清退避计数允许立即重建锚点。
     state['review_fail_attempts'] = 0
     state['review_fail_fp'] = None
+    state['review_fail_generation'] = None
     _clear_review_output_exhaustion_state(state)
     return True, True
 

@@ -1457,6 +1457,42 @@ async def test_download_import_failure_resumes_released_character():
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_download_reload_explicitly_resumes_a_reused_character_name():
+    """A recreated name must discard admission claims owned by its old identity."""
+    cloudsave_router_module = importlib.import_module("main_routers.cloudsave_router")
+
+    async def _initialize():
+        return None
+
+    session_manager = SimpleNamespace(get=lambda _name: None)
+    reload_memory = AsyncMock(return_value=True)
+    with patch.object(
+        cloudsave_router_module,
+        "get_initialize_character_data",
+        return_value=_initialize,
+    ), patch.object(
+        cloudsave_router_module,
+        "notify_memory_server_reload",
+        reload_memory,
+    ), patch.object(
+        cloudsave_router_module,
+        "get_session_manager",
+        return_value=session_manager,
+    ):
+        result = await cloudsave_router_module._reload_after_character_download(
+            "复用名",
+        )
+
+    assert result == (True, "")
+    reload_memory.assert_awaited_once_with(
+        reason="云存档下载角色: 复用名",
+        resume_derived_task_names=("复用名",),
+        release_derived_task_claims=None,
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_download_cancellation_during_release_withdraws_exact_claim():
     """Cancellation during release waits for its result, compensates, then propagates."""
     with TemporaryDirectory() as td:

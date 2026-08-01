@@ -274,15 +274,71 @@ async def test_gate6_skips_when_dead_lettered_and_input_unchanged():
     name = "测试角色G6"
     history = _history(12)
     memory_server.correction_tasks.pop(name, None)
+    generation = recent_file.capture_recent_generation("review-test-recent.json")
     memory_server.gates._maint_state[name] = {
         "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
         "review_fail_fp": build_review_fingerprint(history),
+        "review_fail_generation": list(generation),
     }
 
     await _drive_spawn(memory_server, name, history)
 
     assert name not in memory_server.correction_tasks or memory_server.correction_tasks[name] is None, \
         "dead-letter + 输入未变时不应 spawn 新 review"
+    memory_server.gates._maint_state.pop(name, None)
+    memory_server.correction_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reused_identity_does_not_inherit_review_dead_letter():
+    """A same-fingerprint new generation must clear the old identity's backoff."""
+    from app import memory_server
+    from config import MEMORY_LIVENESS_MAX_ATTEMPTS
+    from memory.recent import build_review_fingerprint
+
+    name = "测试角色G6-generation-reuse"
+    history = _history(12)
+    path = "review-test-recent.json"
+    old_generation = recent_file.capture_recent_generation(path)
+    memory_server.gates._maint_state[name] = {
+        "review_fail_attempts": MEMORY_LIVENESS_MAX_ATTEMPTS,
+        "review_fail_fp": build_review_fingerprint(history),
+        "review_fail_generation": list(old_generation),
+    }
+    recent_file.activate_recent_paths([path])
+
+    fake_mgr = await _drive_spawn(memory_server, name, history)
+
+    fake_mgr.review_history.assert_awaited_once()
+    memory_server.gates._maint_state.pop(name, None)
+    memory_server.correction_tasks.pop(name, None)
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_reused_identity_does_not_inherit_output_exhaustion_breaker():
+    """A new generation must not inherit the previous identity's token breaker."""
+    from app import memory_server
+    from config import MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+
+    name = "测试角色G6a-generation-reuse"
+    history = _history(12)
+    path = "review-test-recent.json"
+    old_generation = recent_file.capture_recent_generation(path)
+    memory_server.gates._maint_state[name] = {
+        "review_output_exhaustion_attempts": (
+            MEMORY_REVIEW_OUTPUT_EXHAUSTION_MAX_ATTEMPTS
+        ),
+        "review_output_exhaustion_min_context_tokens": 1,
+        "review_output_exhaustion_blocked": True,
+        "review_output_exhaustion_generation": list(old_generation),
+    }
+    recent_file.activate_recent_paths([path])
+
+    fake_mgr = await _drive_spawn(memory_server, name, history)
+
+    fake_mgr.review_history.assert_awaited_once()
     memory_server.gates._maint_state.pop(name, None)
     memory_server.correction_tasks.pop(name, None)
 
