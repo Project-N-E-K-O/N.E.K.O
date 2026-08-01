@@ -1379,8 +1379,19 @@ class _TransportMixin:
             # successor has not announced itself yet, so it has produced no
             # output of its own to erase.
             self._reset_per_turn_output_state()
+            # Both release paths raise it: the abandoned response may still be
+            # streaming, and from here until the next response.created nothing
+            # id-less can be attributed. Clearing _current_response_id above
+            # quarantines its ID-BEARING events; this covers the rest.
+            self._idless_quarantine = True
             return
         logger.info("Ending abandoned turn after arbiter release: %s", reason)
+        # Both release paths raise it: the abandoned response may still be
+        # streaming, and from here until the next response.created nothing
+        # id-less can be attributed. Clearing _current_response_id above
+        # quarantines its ID-BEARING events; this covers the rest.
+        self._idless_quarantine = True
+
         # Captured before the reset, which is what clears the buffer: a stalled
         # lifecycle is exactly the case where the terminal that would normally
         # flush it never arrives.
@@ -1618,6 +1629,30 @@ class _TransportMixin:
                         if delta:
                             slot["arguments"] += delta
                 elif event_type == "response.function_call_arguments.done":
+                    if self._idless_quarantine and not event.get("response_id"):
+                        # A fail-open release abandoned a turn, and this event
+                        # names no response — so it cannot be told apart from
+                        # the successor's. Content that leaks is a wrong
+                        # sentence; a tool call that leaks is a side effect
+                        # executed on behalf of a turn nobody is having.
+                        #
+                        # Bounded, not blanket: the window closes at the next
+                        # response.created (see below), which on the only
+                        # providers that can reach here is guaranteed to carry
+                        # an id — a release requires the abandoned response to
+                        # have had one, and ids are written only from
+                        # response.created. The successor's announcement
+                        # therefore always precedes its own id-less events on
+                        # this single ordered socket, so nothing of the
+                        # successor's is ever suppressed.
+                        logger.warning(
+                            "quarantined an id-less tool call arriving after a "
+                            "stuck-turn release (call_id=%s name=%s)",
+                            event.get("call_id") or "?",
+                            event.get("name") or "?",
+                        )
+                        self._inflight_tool_args.pop(event.get("call_id") or "", None)
+                        continue
                     name = event.get("name") or ""
                     raw_args = event.get("arguments") or ""
                     call_id = event.get("call_id") or ""
@@ -1697,6 +1732,13 @@ class _TransportMixin:
                     self._turn_epoch += 1
                     self._current_turn_epoch = self._turn_epoch
                     self._interrupted = False  # Clear interruption flag on new response
+                    # Closes the id-less quarantine a fail-open release opened.
+                    # Safe as the sole exit: a release only happens when the
+                    # abandoned response HAD an id, ids are written only here,
+                    # and this socket is consumed by one ordered ``async for`` —
+                    # so a successor's announcement always precedes its own
+                    # id-less events and none of them are ever suppressed.
+                    self._idless_quarantine = False
                     self._is_first_text_chunk = self._is_first_transcript_chunk = True
                     # 清空转录 buffer，防止累积旧内容
                     self._output_transcript_buffer = ""

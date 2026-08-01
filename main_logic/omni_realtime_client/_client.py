@@ -174,6 +174,12 @@ class OmniRealtimeClient(_ToolingMixin, _AudioMixin, _TransportMixin, _ResponseM
         self._input_audio_committed_total = 0  # diagnostic: audio buffer commits observed
         self._last_input_audio_committed_time = 0.0
         self._response_created_total = 0  # diagnostic: response.created events observed
+        # Raised by a fail-open release, lowered by the next response.created.
+        # Inside that window an id-less event cannot be told apart from the
+        # successor's, and a tool call is the one kind whose leak has side
+        # effects rather than merely wrong words. Never set on the default
+        # fail-closed path, which has no release.
+        self._idless_quarantine = False
         self._last_response_created_time = 0.0
         self._response_done_total = 0  # diagnostic: response.done events observed
         # Response ids whose token usage has already been booked, so a

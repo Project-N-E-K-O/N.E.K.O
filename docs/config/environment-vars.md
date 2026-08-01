@@ -124,12 +124,28 @@ indistinguishable from the next turn's, so they are delivered as the next
 turn's. Keeping the connection is what exposes this: the default teardown
 takes the socket with it, and those late events never arrive.
 
-Nothing in the arbiter can pre-empt it, because the events it would have to
-judge are the ones it has not received yet, and suppressing id-less events
-after a release would suppress the successor's too — on such a provider they
-are id-less as well. So if you enable this on a provider whose streaming
-events lack `response_id`, treat a stuck turn as possibly leaking into the
-next one. Tracked in issue #2611.
+The window is bounded, though — an earlier version of this note claimed it
+could not be narrowed at all, and that was wrong. A release only happens when
+the abandoned response HAD an id, and ids come only from `response.created`,
+so any provider that can reach this state does announce identified responses.
+The successor's own announcement therefore always arrives before the
+successor's id-less events, on one ordered socket. The leak is confined to the
+gap between the release and that announcement.
+
+Tool calls are gated in exactly that gap, because a leaked sentence is wrong
+words while a leaked tool call is a side effect executed for a turn nobody is
+having. You will see:
+
+```text
+quarantined an id-less tool call arriving after a stuck-turn release
+```
+
+Audio and text are deliberately NOT gated there: suppressing them risks a mute
+host on a provider that never announces the successor, which is a worse
+failure than a stray half-sentence. So if you enable this on a provider whose
+streaming events lack `response_id`, still treat a stuck turn as possibly
+leaking its remaining words into the next one — just not its side effects.
+Tracked in issue #2611.
 
 ### A third line: kept, but nothing was released
 

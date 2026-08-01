@@ -50,6 +50,7 @@ findings collapse into five invariants once they are read together.
 """
 
 import asyncio
+import json
 import logging
 
 import pytest
@@ -2617,3 +2618,89 @@ async def test_a_genuinely_different_id_is_still_rejected():
 
     assert done_calls == [], "a different response is not this release's to end"
     assert client._current_response_id == 456
+
+
+class _ScriptedSocket:
+    """Feeds a fixed frame list through the real receive loop, then stops."""
+
+    def __init__(self, frames):
+        self._frames = frames
+        self.sent = []
+
+    async def __aiter__(self):
+        for frame in self._frames:
+            yield json.dumps(frame)
+            await asyncio.sleep(0)
+        # Park instead of ending: a stream that ends fails every in-flight
+        # ticket with ConnectionError, which would drown the assertion under a
+        # harness artifact. The caller bounds this with wait_for.
+        await asyncio.Event().wait()
+
+    async def send(self, *_args, **_kwargs):
+        return None
+
+    async def close(self, *_args, **_kwargs):
+        return None
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_id_less_tool_call_after_a_release_is_quarantined():
+    # The escape hatch keeps a connection alive after abandoning a turn, and on
+    # a provider whose streaming events carry no response id the abandoned
+    # response's late events cannot be told from the successor's. A leaked
+    # sentence is wrong words; a leaked tool call is a side effect executed for
+    # a turn nobody is having.
+    #
+    # The window is bounded by the next response.created — which such a release
+    # guarantees exists, because a release only happens when the abandoned
+    # response HAD an id and ids come only from that event. So the successor's
+    # own tool calls are never suppressed, and the second half of this test is
+    # what pins that.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    executed = []
+
+    async def _on_tool_call(call):
+        executed.append(call.name)
+        return {"ok": True}
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+        on_tool_call=_on_tool_call,
+    )
+    client._idless_quarantine = True
+    client._fatal_error_occurred = False
+    client.ws = _ScriptedSocket(
+        [
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "leaked_tool",
+                "arguments": "{}",
+                "call_id": "call-leaked",
+            },
+            {"type": "response.created", "response": {"id": "resp-successor"}},
+            {
+                "type": "response.function_call_arguments.done",
+                "name": "successor_tool",
+                "arguments": "{}",
+                "call_id": "call-successor",
+            },
+        ]
+    )
+    try:
+        await asyncio.wait_for(client.handle_messages(), 2)
+    except (asyncio.TimeoutError, Exception):
+        pass
+    await asyncio.sleep(0.05)
+
+    assert "leaked_tool" not in executed, (
+        "an id-less tool call inside the release window must not execute"
+    )
+    assert "successor_tool" in executed, (
+        "response.created closes the window; the successor's own tools must run"
+    )
+    assert client._idless_quarantine is False
