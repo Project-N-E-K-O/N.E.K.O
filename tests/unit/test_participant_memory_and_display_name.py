@@ -2569,6 +2569,11 @@ async def test_scoped_forget_route_wires_all_three_stores():
     assert result["persona_entries"] == 3
     assert result["pending_dedup"] == 1
     assert result["prompt_locale"] == 1
+    forget_locale.assert_called_once()
+    locale_name, locale_subject = forget_locale.call_args.args
+    assert locale_name == "Neko"
+    assert locale_subject.kind == "participant"
+    assert locale_subject.subject_id == "qq:1001"
     assert calls == [
         "fact_begin", "reflection_begin", "dedup", "facts", "reflections",
         "persona", "prompt_locale", "fact_finalize", "reflection_end", "fact_end",
