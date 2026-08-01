@@ -1063,6 +1063,22 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
         assert detect_prompt_language(raw_text, ui_language="zh-TW") == "zh-TW"
 
 
+@pytest.mark.parametrize(
+    ("ui_language", "text", "expected"),
+    [
+        ("es", "Me gusta el cafe", "es"),
+        ("pt", "Eu gosto de cafe", "pt"),
+        ("zh-TW", "I like coffee", "en"),
+    ],
+)
+def test_synthesis_keeps_ascii_ui_language(ui_language, text, expected):
+    from memory.reflection.synthesis import _detect_synthesis_prompt_language
+    from utils.language_utils import language_context
+
+    with language_context(ui_language):
+        assert _detect_synthesis_prompt_language(text) == expected
+
+
 @pytest.mark.asyncio
 @pytest.mark.parametrize(("ui_language", "message_text", "expected"), [
     ("zh-TW", "I prefer quiet afternoons at home.", "en"),

@@ -34,6 +34,11 @@ from utils.file_utils import (
 
 
 from utils.token_tracker import set_call_type
+from utils.language_utils import (
+    detect_prompt_language,
+    get_global_language_full,
+    normalize_language_code,
+)
 
 
 
@@ -53,6 +58,16 @@ from ._shared import (
     MIN_FACTS_FOR_REFLECTION,
     REFLECTION_COOLDOWN_MINUTES,
 )
+
+
+def _detect_synthesis_prompt_language(text: str) -> str:
+    ui_language = get_global_language_full()
+    detected = detect_prompt_language(text, ui_language=ui_language)
+    ui_short = normalize_language_code(ui_language, format="short")
+    if detected == "en" and ui_short in {"es", "pt"}:
+        return ui_short
+    return detected
+
 
 class SynthesisMixin:
     @staticmethod
@@ -275,10 +290,8 @@ class SynthesisMixin:
         else:
             master_name = name_mapping.get('human', '主人')
 
-        from utils.language_utils import detect_prompt_language, get_global_language_full
-        prompt_lang = detect_prompt_language(
+        prompt_lang = _detect_synthesis_prompt_language(
             self._synthesis_locale_text(unabsorbed),
-            ui_language=get_global_language_full(),
         )
         facts_text = "\n".join(f"- {f['text']} (importance: {f.get('importance', 5)})" for f in unabsorbed)
         related_block = await self._build_related_context_block(
