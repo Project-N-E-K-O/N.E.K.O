@@ -60,7 +60,6 @@ from memory.evidence import evidence_score
 from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import (
-    detect_prompt_language,
     detect_prompt_language_with_ascii_fallback,
     get_global_language_full,
 )
