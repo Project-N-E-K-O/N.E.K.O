@@ -1185,6 +1185,18 @@ def _known_event_loop_names(func, before_line: int) -> set[str]:
                         names.discard(target.id)
             elif isinstance(node, ast.If):
                 names = after(node.body, names) & after(node.orelse, names)
+            elif isinstance(node, ast.Match):
+                paths = [after(case.body, names) for case in node.cases]
+                exhaustive = any(
+                    case.guard is None
+                    and isinstance(case.pattern, ast.MatchAs)
+                    and case.pattern.pattern is None
+                    for case in node.cases
+                )
+                if not exhaustive:
+                    paths.append(names)
+                if paths:
+                    names = set.intersection(*paths)
             elif isinstance(node, ast.Try):
                 if node.lineno < before_line <= node.end_lineno:
                     containing = next((
@@ -1719,7 +1731,7 @@ def _function_claims_via_nested_helpers(func, memo=None, visiting=None) -> bool:
         helpers = [
             node
             for node in _walk_own_scope(func)
-            if isinstance(node, ast.FunctionDef)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
         nested_claiming = {
             helper.name
@@ -1747,7 +1759,7 @@ def _claiming_helpers_called_on_loop(
     helpers = [
         node
         for node in _walk_own_scope(func)
-        if isinstance(node, ast.FunctionDef)
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
     ]
     if not helpers:
         return []
@@ -1898,9 +1910,17 @@ def _module_to_thread_aliases(tree) -> set[str]:
             elif isinstance(node, ast.With):
                 state = after(node.body, state)
             elif isinstance(node, ast.Try):
-                body_state = after(node.body, state)
+                prefix_states = [state]
+                body_state = state
+                for statement in node.body:
+                    body_state = after([statement], body_state)
+                    prefix_states.append(body_state)
                 paths = [after(node.orelse, body_state)]
-                paths.extend(after(handler.body, state) for handler in node.handlers)
+                paths.extend(
+                    after(handler.body, prefix_state)
+                    for handler in node.handlers
+                    for prefix_state in prefix_states
+                )
                 merged = paths[0]
                 for path in paths[1:]:
                     merged = merge(merged, path)
@@ -2442,11 +2462,16 @@ def _scope_claiming_names_called_on_loop(
                 elif isinstance(statement, ast.With):
                     state = after(statement.body, state)
                 elif isinstance(statement, ast.Try):
-                    body_state = after(statement.body, state)
+                    prefix_states = [state]
+                    body_state = state
+                    for nested in statement.body:
+                        body_state = after([nested], body_state)
+                        prefix_states.append(body_state)
                     paths = [after(statement.orelse, body_state)]
                     paths.extend(
-                        after(handler.body, state)
+                        after(handler.body, prefix_state)
                         for handler in statement.handlers
+                        for prefix_state in prefix_states
                     )
                     state = after(
                         statement.finalbody, merge_callable_states(*paths)
@@ -2484,6 +2509,8 @@ def _scope_claiming_names_called_on_loop(
     offenders = []
     for node in own_scope:
         if isinstance(node, ast.Name):
+            if not isinstance(node.ctx, ast.Load):
+                continue
             if id(node) in alias_source_ids:
                 continue
             name = node.id
@@ -2632,6 +2659,11 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
         '                pass\n'
         '        owner()\n'
         '    wrapper()\n'
+        'async def nested_async_helper():\n'
+        '    async def helper():\n'
+        '        with claim_content_folder(folder, purpose=p):\n'
+        '            pass\n'
+        '    await helper()\n'
     )
     functions = {node.name: node for node in tree.body}
 
@@ -2654,6 +2686,9 @@ def test_the_event_loop_guard_prunes_nested_worker_bodies():
     assert _claiming_helpers_called_on_loop(functions['offloaded_wrapper']) == []
     assert _claiming_helpers_called_on_loop(functions['deeply_nested_wrapper']), (
         'wrapper 内部定义并调用的 claim owner 也必须传递到外层 handler'
+    )
+    assert _claiming_helpers_called_on_loop(functions['nested_async_helper']), (
+        'nested async claim helper 在 event loop 上 await 时也必须被发现'
     )
 
 
@@ -2736,12 +2771,21 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'match register:\n'
         '    case _:\n'
         '        match_dispatch = dispatcher\n'
+        'try_dispatch = offload\n'
+        'try:\n'
+        '    try_dispatch = dispatcher\n'
+        '    may_raise()\n'
+        '    try_dispatch = offload\n'
+        'except Exception:\n'
+        '    pass\n'
         'async def rebound_imported_to_thread():\n'
         '    await dispatch(_claiming_wrapper)\n'
         'async def module_loop_to_thread_alias():\n'
         '    await loop_dispatch(_claiming_wrapper)\n'
         'async def module_match_to_thread_alias():\n'
         '    await match_dispatch(_claiming_wrapper)\n'
+        'async def module_try_to_thread_alias():\n'
+        '    await try_dispatch(_claiming_wrapper)\n'
         'async def nested_module_owners_direct():\n'
         '    _while_claiming_worker()\n'
         '    _match_claiming_worker()\n'
@@ -2891,6 +2935,12 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '    else:\n'
         '        loop = asyncio.get_running_loop()\n'
         '    loop.run_in_executor(None, _claiming_worker)\n'
+        'async def match_run_in_executor(value):\n'
+        '    loop = asyncio.get_running_loop()\n'
+        '    match value:\n'
+        '        case _:\n'
+        '            loop = dispatcher\n'
+        '    loop.run_in_executor(None, _claiming_worker)\n'
         'async def try_run_in_executor():\n'
         '    try:\n'
         '        loop = asyncio.get_running_loop()\n'
@@ -2954,6 +3004,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         '        case _:\n'
         '            callback = _claiming_worker\n'
         '    callback()\n'
+        'async def overwritten_local_alias():\n'
+        '    callback = _claiming_worker\n'
+        '    callback = harmless\n'
         'async def exceptional_prefix_local_alias():\n'
         '    callback = harmless\n'
         '    try:\n'
@@ -3084,6 +3137,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('module_match_to_thread_alias'), (
         'module-level to_thread alias 必须合并 match 的全部可达 case'
     )
+    assert module_offenders('module_try_to_thread_alias'), (
+        'module-level to_thread alias 必须合并 try body 的全部异常前缀'
+    )
     assert len(module_offenders('nested_module_owners_direct')) == 2, (
         'while 和 match 下定义的 module claim owners 都必须被发现'
     )
@@ -3189,6 +3245,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('conditional_run_in_executor'), (
         '只有所有 if 分支都证明是 event loop receiver 才能接受 offload'
     )
+    assert module_offenders('match_run_in_executor'), (
+        'match case 重绑定 event-loop receiver 后不能保留 offload 身份'
+    )
     assert module_offenders('try_run_in_executor'), (
         'event-loop receiver 必须合并 try/except 的所有退出路径'
     )
@@ -3229,6 +3288,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     )
     assert module_offenders('match_local_alias'), (
         'local callable owner alias 必须合并 match 的全部可达 case'
+    )
+    assert module_offenders('overwritten_local_alias') == [], (
+        '只保存后安全覆盖的 callable owner 不应把 Store target 当成调用'
     )
     assert module_offenders('exceptional_prefix_local_alias'), (
         'try body 的任一异常前缀都必须保留 local callable owner identity'
@@ -3962,24 +4024,19 @@ def _operation_aliases(
                     else value
                 )
                 reference_name = _operation_name(reference) or ''
-                if (
-                    isinstance(reference, ast.Attribute)
-                    and isinstance(reference.value, ast.Name)
-                ):
-                    qualified = f'{reference.value.id}.{reference.attr}'
-                else:
-                    qualified = reference_name
+                qualified = _storage_key(reference) or reference_name
                 canonical = operation_set(
                     state.get(qualified, state.get(reference_name, reference_name))
                 )
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
-                    if not isinstance(target, ast.Name):
+                    target_key = _storage_key(target)
+                    if target_key is None:
                         continue
                     if canonical:
-                        state[target.id] = canonical
+                        state[target_key] = canonical
                     else:
-                        state.pop(target.id, None)
+                        state.pop(target_key, None)
             elif isinstance(node, ast.If):
                 state = merge_possible(
                     after(node.body, state), after(node.orelse, state)
@@ -4403,12 +4460,7 @@ def _operation_nodes(
             func.body, seed_aliases, before_line=getattr(node, 'lineno', None)
         )
         reference = node.value if isinstance(node, ast.NamedExpr) else node
-        qualified = (
-            f'{reference.value.id}.{reference.attr}'
-            if isinstance(reference, ast.Attribute)
-            and isinstance(reference.value, ast.Name)
-            else None
-        )
+        qualified = _storage_key(reference) if isinstance(reference, ast.Attribute) else None
         canonical_values = aliases_at_node.get(
             qualified,
             aliases_at_node.get(name, frozenset({name}) if name else frozenset()),
@@ -4944,11 +4996,16 @@ def _unclaimed_folder_operations(
                 )
                 state = claim_state_after(statement.orelse, state)
             elif isinstance(statement, ast.Try):
-                body_state = claim_state_after(statement.body, state)
+                prefix_states = [state]
+                body_state = state
+                for nested in statement.body:
+                    body_state = claim_state_after([nested], body_state)
+                    prefix_states.append(body_state)
                 paths = [claim_state_after(statement.orelse, body_state)]
                 paths.extend(
-                    claim_state_after(handler.body, state)
+                    claim_state_after(handler.body, prefix_state)
                     for handler in statement.handlers
+                    for prefix_state in prefix_states
                 )
                 merged = paths[0]
                 for path in paths[1:]:
@@ -5478,6 +5535,14 @@ def test_the_claim_guard_resolves_operation_aliases():
     assert _unclaimed_folder_operations(walrus_alias, 'publish'), (
         'walrus 绑定并立即调用的 protected operation alias 必须被发现'
     )
+    attribute_alias = ast.parse(
+        'def delete(self, content_folder):\n'
+        '    self.op = shutil.rmtree\n'
+        '    self.op(content_folder)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(attribute_alias, 'publish'), (
+        'attribute storage 上的 protected operation alias 必须被发现'
+    )
 
 
 def test_the_claim_guard_discovers_content_path_mutations():
@@ -5928,6 +5993,18 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         '    with claim:\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
+    exceptional_prefix_restored_context = ast.parse(
+        'def publish():\n'
+        "    claim = claim_content_folder(folder, purpose='publish')\n"
+        '    try:\n'
+        '        claim = nullcontext()\n'
+        '        may_raise()\n'
+        "        claim = claim_content_folder(folder, purpose='publish')\n"
+        '    except Exception:\n'
+        '        pass\n'
+        '    with claim:\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
     match_reassigned_context = ast.parse(
         'def publish(value):\n'
         "    guard = claim_content_folder(folder, purpose='publish')\n"
@@ -6048,6 +6125,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     assert _unclaimed_folder_operations(try_reassigned_context, 'publish'), (
         'stored claim context 必须在 try 的全部可达路径上一致'
     )
+    assert _unclaimed_folder_operations(
+        exceptional_prefix_restored_context, 'publish'
+    ), 'stored claim context 必须合并 try body 的全部异常前缀'
     assert _unclaimed_folder_operations(match_reassigned_context, 'publish'), (
         'stored claim context 必须合并 match 的全部可达 case'
     )
