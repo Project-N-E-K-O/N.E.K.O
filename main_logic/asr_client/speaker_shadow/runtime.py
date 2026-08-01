@@ -229,14 +229,14 @@ class _BackendProcessHost:
         if self.alive and not await self._wait_for_exit(timeout_seconds):
             success = False
             await self.terminate()
-        self._dispose_handles()
+        await asyncio.to_thread(self._dispose_handles)
         return success
 
     async def terminate(self) -> None:
         process = self._process
         self.loaded = False
         if process is None:
-            self._dispose_handles()
+            await asyncio.to_thread(self._dispose_handles)
             return
         if process.is_alive():
             self.was_terminated = True
@@ -245,7 +245,7 @@ class _BackendProcessHost:
                 process.kill()
                 if not await self._wait_for_exit(self._terminate_timeout_seconds):
                     raise _BackendHostError("backend host could not be terminated")
-        self._dispose_handles()
+        await asyncio.to_thread(self._dispose_handles)
 
     async def _request(
         self,
@@ -256,7 +256,7 @@ class _BackendProcessHost:
         connection = self._connection
         process = self._process
         if connection is None or process is None or not process.is_alive():
-            self._dispose_handles()
+            await asyncio.to_thread(self._dispose_handles)
             raise _BackendHostError("backend host is not alive")
         try:
             connection.send((operation, *payload))
@@ -279,7 +279,7 @@ class _BackendProcessHost:
                         return value
                     raise _BackendHostError(f"backend operation failed: {value}")
                 if not process.is_alive():
-                    self._dispose_handles()
+                    await asyncio.to_thread(self._dispose_handles)
                     raise _BackendHostError("backend host exited without a response")
                 remaining = deadline - asyncio.get_running_loop().time()
                 if remaining <= 0:
@@ -301,7 +301,7 @@ class _BackendProcessHost:
             if remaining <= 0:
                 return False
             await asyncio.sleep(min(_HOST_POLL_INTERVAL_SECONDS, remaining))
-        process.join(timeout=0)
+        await asyncio.to_thread(process.join, 0)
         return True
 
     def _dispose_handles(self) -> None:
@@ -737,8 +737,9 @@ class SpeakerShadowRuntime:
     async def _run(self) -> None:
         while True:
             try:
+                work_items = self._queue
                 item = await asyncio.wait_for(
-                    self._queue.get(),
+                    work_items.get(),
                     timeout=self._config.idle_unload_seconds,
                 )
             except asyncio.TimeoutError:
