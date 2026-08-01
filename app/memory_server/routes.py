@@ -129,6 +129,15 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
         target=f"memory/{name}/external-markdown",
     )
 
+    explicit_language = None
+    locale_admission_order = None
+    if is_supported_language_code(request.language):
+        explicit_language = normalize_language_code(request.language, format='full')
+        locale_admission_order = await asyncio.to_thread(
+            locale_state.allocate_character_prompt_locale_order,
+            name,
+        )
+
     imported_at = datetime.now().astimezone().isoformat()
     # persona 候选按 entity(master / neko) 分组各自送 LLM 融合；facts 里 MEMORY.md
     # 走纯追加，daily 日记(带 event_date)走 LLM 事实抽取。
@@ -187,12 +196,11 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
                 },
             })
 
-    explicit_language = None
-    if is_supported_language_code(request.language):
-        explicit_language = normalize_language_code(request.language, format='full')
+    if explicit_language is not None:
         locale_order = await asyncio.to_thread(
             locale_state.reserve_character_prompt_locale_order,
             name,
+            order=locale_admission_order,
         )
         await asyncio.to_thread(
             locale_state.record_character_prompt_locale,

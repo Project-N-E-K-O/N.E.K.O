@@ -66,6 +66,15 @@ _LANG_TO_COUNTRY: dict[str, str] = {
     'ru': 'RU',
 }
 
+
+def _holiday_hint_language_key(lang: str, table: dict[str, str]) -> str:
+    """Select a template locale while keeping Chinese-family fallback."""
+    if lang in table:
+        return lang
+    if str(lang).lower().startswith('zh') and 'zh' in table:
+        return 'zh'
+    return 'en'
+
 # ── types ────────────────────────────────────────────────────────────
 
 class HolidayEntry(TypedDict):
@@ -589,7 +598,7 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
             return None
 
         name = proximity.period.display_name
-        lang_key = lang if lang in HOLIDAY_HINT_TODAY else 'en'
+        lang_key = _holiday_hint_language_key(lang, HOLIDAY_HINT_TODAY)
 
         if proximity.is_today:
             tpl = HOLIDAY_HINT_TODAY.get(lang_key, HOLIDAY_HINT_TODAY['en'])
@@ -605,7 +614,8 @@ async def get_holiday_or_weekend_hint(lang: str, character: str) -> str | None:
     if datetime.now().weekday() >= 5:
         if not try_consume_weekend(character):
             return None
-        return WEEKEND_HINT.get(lang, WEEKEND_HINT.get('en', ''))
+        lang_key = _holiday_hint_language_key(lang, WEEKEND_HINT)
+        return WEEKEND_HINT.get(lang_key, WEEKEND_HINT.get('en', ''))
 
     return None
 
@@ -643,7 +653,7 @@ def _has_weekend_budget(character: str) -> bool:
 def _build_holiday_hint_text(lang: str, proximity: HolidayProximity) -> str:
     """Build hint text from a proximity object (no side effects)."""
     name = proximity.period.display_name
-    lang_key = lang if lang in HOLIDAY_HINT_TODAY else 'en'
+    lang_key = _holiday_hint_language_key(lang, HOLIDAY_HINT_TODAY)
     if proximity.is_today:
         tpl = HOLIDAY_HINT_TODAY.get(lang_key, HOLIDAY_HINT_TODAY['en'])
         return tpl.format(name=name)
@@ -677,7 +687,8 @@ async def preview_holiday_or_weekend_hint(
     if datetime.now().weekday() >= 5:
         if not _has_weekend_budget(character):
             return None, None
-        text = WEEKEND_HINT.get(lang, WEEKEND_HINT.get('en', ''))
+        lang_key = _holiday_hint_language_key(lang, WEEKEND_HINT)
+        text = WEEKEND_HINT.get(lang_key, WEEKEND_HINT.get('en', ''))
         return text, ("weekend",)
 
     return None, None

@@ -51,6 +51,19 @@ def test_review_locale_evidence_prefers_user_turns():
     assert locale_text == "這很好"
 
 
+def test_greeting_preserves_full_locale_for_holiday_selection():
+    from main_logic.core.greeting import _greeting_locale_keys
+
+    assert _greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
+
+
+def test_traditional_holiday_prompt_falls_back_to_simplified_chinese():
+    from config.prompts.prompts_proactive import HOLIDAY_HINT_TODAY
+    from utils.holiday_cache import _holiday_hint_language_key
+
+    assert _holiday_hint_language_key("zh-TW", HOLIDAY_HINT_TODAY) == "zh"
+
+
 def _localized_tables() -> list[tuple[str, dict[str, str]]]:
     found: list[tuple[str, dict[str, str]]] = []
     seen: set[int] = set()

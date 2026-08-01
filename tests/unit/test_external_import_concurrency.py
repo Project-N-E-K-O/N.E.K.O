@@ -78,6 +78,21 @@ def wire(monkeypatch):
         monkeypatch.setattr(routes_mod.runtime, "_config_manager", object(), raising=False)
         monkeypatch.setattr(routes_mod, "assert_cloudsave_writable", lambda *a, **k: None)
         monkeypatch.setattr(routes_mod, "validate_lanlan_name", lambda n: n)
+        monkeypatch.setattr(
+            routes_mod.locale_state,
+            "allocate_character_prompt_locale_order",
+            lambda _name: 1,
+        )
+        monkeypatch.setattr(
+            routes_mod.locale_state,
+            "reserve_character_prompt_locale_order",
+            lambda _name, *, order: order,
+        )
+        monkeypatch.setattr(
+            routes_mod.locale_state,
+            "record_character_prompt_locale",
+            lambda *_args, **_kwargs: None,
+        )
     return _wire
 
 
@@ -179,11 +194,21 @@ async def test_external_import_persists_explicit_request_locale(
     wire,
     monkeypatch,
 ):
+    wire(_FakePersonaManager({
+        "master": {"added": 1, "skipped": 0, "fused": True},
+        "neko": {"added": 1, "skipped": 0, "fused": True},
+    }))
     recorded = []
+    allocated = []
+    monkeypatch.setattr(
+        routes_mod.locale_state,
+        "allocate_character_prompt_locale_order",
+        lambda name: allocated.append(name) or 73,
+    )
     monkeypatch.setattr(
         routes_mod.locale_state,
         "reserve_character_prompt_locale_order",
-        lambda name: 73,
+        lambda name, *, order: order,
     )
     monkeypatch.setattr(
         routes_mod.locale_state,
@@ -192,16 +217,12 @@ async def test_external_import_persists_explicit_request_locale(
             (name, language, order)
         ),
     )
-    wire(_FakePersonaManager({
-        "master": {"added": 1, "skipped": 0, "fused": True},
-        "neko": {"added": 1, "skipped": 0, "fused": True},
-    }))
-
     result = await routes_mod.import_external_markdown(
         _request(language="zh-TW")
     )
 
     assert result["status"] == "success"
+    assert allocated == ["Neko"]
     assert recorded == [("Neko", "zh-TW", 73)]
 
 
