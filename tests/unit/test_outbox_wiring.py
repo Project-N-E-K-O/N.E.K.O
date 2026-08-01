@@ -743,6 +743,46 @@ async def test_append_pending_failure_falls_back_to_in_memory(tmp_path):
     assert not os.path.exists(ob._outbox_path("小天"))
 
 
+@pytest.mark.asyncio
+async def test_deferred_append_failure_preserves_locale_admission_order(tmp_path):
+    ob, _ = _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    async def _boom(*_args, **_kwargs):
+        raise OSError("disk full")
+
+    def blocked_reservation(_name, *, order=None):
+        assert isinstance(order, int)
+        raise MaintenanceModeError(
+            "maintenance_readonly",
+            operation="save",
+            target="prompt_locale.json",
+        )
+
+    ob.aappend_pending = _boom  # type: ignore[assignment]
+    fallback = AsyncMock(return_value=None)
+    with patch.object(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+        side_effect=blocked_reservation,
+    ), patch(
+        "app.memory_server.post_turn._run_post_turn_signals_after_locale_reservation",
+        fallback,
+    ):
+        task = await memory_server._spawn_outbox_post_turn_signals(
+            "小天",
+            [HumanMessage(content="hi")],
+            language="zh-TW",
+        )
+        await task
+
+    fallback.assert_awaited_once()
+    assert fallback.await_args.kwargs["language"] == "zh-TW"
+    assert isinstance(fallback.await_args.kwargs["admission_order"], int)
+    assert not os.path.exists(ob._outbox_path("小天"))
+
+
 # ── startup ordering: reconcile must finish before the outbox is resumed ──
 
 

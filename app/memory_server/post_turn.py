@@ -143,6 +143,7 @@ async def _spawn_outbox_post_turn_signals(
                 messages,
                 lanlan_name,
                 language=language,
+                admission_order=locale_admission_order,
             )
         else:
             operation = _run_post_turn_signals(

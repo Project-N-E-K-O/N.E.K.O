@@ -606,6 +606,35 @@ async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_new_dialog_locale_retry_stops_after_permanent_failure(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import locale_state, routes
+
+    attempts = 0
+
+    def reserve(_name):
+        nonlocal attempts
+        attempts += 1
+        raise locale_state.PromptLocalePersistenceError("disk full")
+
+    generation = routes._new_dialog_locale_generations.get("BrokenNeko", 0) + 1
+    routes._new_dialog_locale_generations["BrokenNeko"] = generation
+    sleep = AsyncMock()
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        reserve,
+    )
+    monkeypatch.setattr(routes.asyncio, "sleep", sleep)
+
+    await routes._retry_new_dialog_locale("BrokenNeko", "zh-TW", generation)
+
+    assert attempts == 1
+    sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_new_dialog_stale_locale_retry_cannot_overwrite_newer_request(
     monkeypatch,
 ):

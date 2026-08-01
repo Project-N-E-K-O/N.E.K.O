@@ -1806,11 +1806,15 @@ async def _retry_new_dialog_locale(
         try:
             await _write_new_dialog_locale(lanlan_name, language, generation)
             return
-        except (
-            MaintenanceModeError,
-            locale_state.PromptLocalePersistenceError,
-        ):
+        except MaintenanceModeError:
             await asyncio.sleep(0.25)
+        except locale_state.PromptLocalePersistenceError as exc:
+            logger.warning(
+                "[PromptLocale] %s: new-dialog locale persistence failed: %s",
+                lanlan_name,
+                exc,
+            )
+            return
 
 
 async def _new_dialog(lanlan_name: str, language: str | None = None):
