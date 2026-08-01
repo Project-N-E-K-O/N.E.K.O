@@ -900,6 +900,9 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                 targets = node.targets if isinstance(node, ast.Assign) else [node.target]
                 for target in targets:
                     if not isinstance(target, ast.Name):
+                        for nested in ast.walk(target):
+                            if isinstance(nested, ast.Name):
+                                invalidate(nested.id)
                         continue
                     if canonical:
                         state[target.id] = canonical
@@ -1049,6 +1052,10 @@ def _walk_own_scope(func):
     while stack:
         node = stack.pop()
         yield node
+        if isinstance(node, ast.Lambda) and getattr(
+            func, '_prune_lambda_bodies', False
+        ):
+            continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # The body runs later, but decorators/defaults/annotations run now.
             stack.extend(_eager_definition_nodes(node))
@@ -3587,6 +3594,21 @@ def _module_lambda_functions(tree) -> list[ast.FunctionDef]:
     return functions
 
 
+def _module_executable_function(tree) -> ast.FunctionDef:
+    """Represent import-time module/class statements without deferred bodies."""
+    function = ast.FunctionDef(
+        name='<module>',
+        args=ast.arguments(
+            posonlyargs=[], args=[], vararg=None, kwonlyargs=[],
+            kw_defaults=[], kwarg=None, defaults=[]
+        ),
+        body=tree.body,
+        decorator_list=[],
+    )
+    function._prune_lambda_bodies = True
+    return ast.fix_missing_locations(function)
+
+
 def test_nested_router_imports_preserve_claim_ownership():
     source = ast.parse(
         'def owner():\n'
@@ -3857,6 +3879,14 @@ def test_workshop_router_discovery_is_recursive(tmp_path):
     assert _unclaimed_folder_operations(
         lambda_functions[0], 'workers.cleanup'
     ), 'module-level lambda body 也必须进入 folder-operation guard'
+
+    executable_tree = ast.parse(
+        "content_folder = os.environ['WORKSHOP_FOLDER']\n"
+        'shutil.rmtree(content_folder)\n'
+    )
+    assert _unclaimed_folder_operations(
+        _module_executable_function(executable_tree), 'workers.cleanup'
+    ), 'module import-time executable operations 也必须进入 folder-operation guard'
 
 
 def test_no_claim_is_ever_taken_on_the_event_loop():
@@ -4584,9 +4614,9 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
                 if isinstance(mode, ast.Name)
                 else set()
             )
-            writes = any(
-                flag in value for value in mode_values for flag in 'wax+'
-            )
+            writes = (
+                mode is not None and not mode_values
+            ) or any(flag in value for value in mode_values for flag in 'wax+')
         if writes:
             path = (
                 target.value
@@ -6207,6 +6237,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
         "    mode = 'wb'\n"
         "    open(os.path.join(content_folder, 'preview.png'), mode)\n"
         '\n'
+        'def dynamic_open_mode(content_folder, mode):\n'
+        "    open(Path(content_folder, 'preview.png'), mode).write(data)\n"
+        '\n'
         'def aliased_builtin_open(content_folder):\n'
         '    writer = open\n'
         "    writer(os.path.join(content_folder, 'preview.png'), 'wb')\n"
@@ -6383,6 +6416,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
         functions['stored_open_mode'], 'new_router'
     ), '局部变量保存的 write mode 也必须识别为 content-folder writer'
     assert _unclaimed_folder_operations(
+        functions['dynamic_open_mode'], 'new_router'
+    ), '显式但无法静态解析的 open mode 必须保守视为潜在 writer'
+    assert _unclaimed_folder_operations(
         functions['aliased_builtin_open'], 'new_router'
     ), 'builtin open 的 callable alias 也必须识别为 content-folder writer'
     assert _unclaimed_folder_operations(
@@ -6483,6 +6519,13 @@ def test_the_claim_guard_resolves_claim_context_aliases():
         'def publish():\n'
         '    factory = claim_content_folder\n'
         '    factory = nullcontext\n'
+        '    with factory(folder):\n'
+        '        _publish_workshop_item(a, b, c, folder)\n'
+    ).body[0]
+    unpacked_reassigned_factory = ast.parse(
+        'def publish():\n'
+        '    factory = claim_content_folder\n'
+        '    (factory,) = (nullcontext,)\n'
         '    with factory(folder):\n'
         '        _publish_workshop_item(a, b, c, folder)\n'
     ).body[0]
@@ -6665,6 +6708,9 @@ def test_the_claim_guard_resolves_claim_context_aliases():
     )
     assert _unclaimed_folder_operations(reassigned_factory, 'publish'), (
         'claim factory alias 被普通 callable 重赋值后必须失效'
+    )
+    assert _unclaimed_folder_operations(unpacked_reassigned_factory, 'publish'), (
+        'destructuring target 重绑定后也必须清除 claim factory identity'
     )
     assert _unclaimed_folder_operations(conditional_factory, 'publish'), (
         'claim factory alias 必须在所有 statement-level 分支上一致'
@@ -6946,15 +6992,20 @@ def test_every_folder_consuming_call_sits_inside_a_claim():
     for short, tree in _workshop_router_trees():
         module_aliases = _operation_aliases(tree.body)
         lambda_functions = _module_lambda_functions(tree)
+        module_function = _module_executable_function(tree)
         functions = [
             node for node in ast.walk(tree)
             if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
         ]
-        for node in [*functions, *lambda_functions]:
+        for node in [*functions, *lambda_functions, module_function]:
             if _is_allowed_unclaimed(
                 short,
                 node.name,
-                top_level=node in tree.body or node in lambda_functions,
+                top_level=(
+                    node in tree.body
+                    or node in lambda_functions
+                    or node is module_function
+                ),
             ):
                 continue
             offenders.extend(_unclaimed_folder_operations(node, short, module_aliases))
