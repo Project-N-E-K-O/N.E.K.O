@@ -206,19 +206,17 @@ def _has_epistemic_modal_negation(text: str) -> bool:
 
 def _has_cjk_epistemic_negation(text: str) -> bool:
     """Reject uncertain CJK markers that precede a negated predicate."""
-    marker_indices = [
-        text.find(marker)
-        for marker in _CJK_EPISTEMIC_MARKERS
-        if marker in text
-    ]
-    if not marker_indices:
-        return False
-    return any(
-        text.find(negative) > marker_index
-        for marker_index in marker_indices
-        for negative, _positive in _CJK_NEGATED_PREDICATES
-        if negative in text
-    )
+    for marker in _CJK_EPISTEMIC_MARKERS:
+        marker_index = text.find(marker)
+        if marker_index < 0:
+            continue
+        suffix = text[marker_index + len(marker):]
+        if any(negative in suffix for negative, _ in _CJK_NEGATED_PREDICATES):
+            return True
+        tokens = _word_tokens(suffix)
+        if any(_is_word_negation(tokens, index) for index in range(len(tokens))):
+            return True
+    return False
 
 
 def _cjk_positive_variants(text: str) -> set[str]:
@@ -296,6 +294,8 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
         and not _has_embedded_clause_negation(new_norm)
         and not _has_epistemic_modal_negation(old_norm)
         and not _has_epistemic_modal_negation(new_norm)
+        and not _has_cjk_epistemic_negation(old_norm)
+        and not _has_cjk_epistemic_negation(new_norm)
     ):
         return "correction"
     return None

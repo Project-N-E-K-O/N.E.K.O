@@ -1688,6 +1688,16 @@ def test_cjk_epistemic_negations_never_emit_correction(
     ) is None
 
 
+def test_cjk_epistemic_marker_rejects_only_asserted_english_negation():
+    from memory.speaker_trust import _has_cjk_epistemic_negation
+
+    assert deterministic_relation(
+        "可能 Alice will attend", "可能 Alice will not attend",
+    ) is None
+    assert _has_cjk_epistemic_negation("可能 Alice will not attend") is True
+    assert _has_cjk_epistemic_negation("可能 Alice clicked the not operator") is False
+
+
 @pytest.mark.asyncio
 async def test_malformed_participant_scope_cannot_emit_trust_events():
     from memory.facts import FactStore
