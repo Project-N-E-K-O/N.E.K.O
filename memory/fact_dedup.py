@@ -81,6 +81,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _detect_fact_dedup_prompt_language(
+    text: str,
+    *,
+    ui_language: str,
+) -> str:
+    from utils.language_utils import detect_prompt_language_with_ascii_fallback
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language,
+    )
+
+
 def cosine_similarity(left, right) -> float:
     """Load the optional vector implementation only when detection runs."""
     try:
@@ -615,7 +628,7 @@ class FactDedupResolver:
     async def _aresolve_locked(self, name: str, *, prompt_locale_resolver=None) -> int:
         from config import MEMORY_LIVENESS_MAX_ATTEMPTS
         from config.prompts.prompts_memory import get_fact_dedup_prompt
-        from utils.language_utils import detect_prompt_language, get_global_language_full
+        from utils.language_utils import get_global_language_full
         from utils.llm_client import create_chat_llm_async
         from utils.token_tracker import set_call_type
 
@@ -755,7 +768,7 @@ class FactDedupResolver:
         )
         prompt = (
             get_fact_dedup_prompt(
-                detect_prompt_language(
+                _detect_fact_dedup_prompt_language(
                     self._locale_text(batch_texts),
                     ui_language=prompt_ui_language,
                 )

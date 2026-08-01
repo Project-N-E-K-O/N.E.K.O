@@ -2673,6 +2673,7 @@ def test_remaining_memory_mutations_keep_ascii_ui_language(
     text,
     expected,
 ):
+    from memory.fact_dedup import _detect_fact_dedup_prompt_language
     from memory.recent import _detect_recent_prompt_language
     from memory.refine import _detect_refine_prompt_language
     from memory.reflection.promotion_merge import (
@@ -2686,6 +2687,10 @@ def test_remaining_memory_mutations_keep_ascii_ui_language(
         _detect_refine_prompt_language,
         _detect_scoped_refine_prompt_language,
         _detect_promotion_prompt_language,
+        lambda value: _detect_fact_dedup_prompt_language(
+            value,
+            ui_language=ui_language,
+        ),
     )
     with language_context(ui_language):
         assert [resolver(text) for resolver in resolvers] == [expected] * len(

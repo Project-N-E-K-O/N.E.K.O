@@ -1222,8 +1222,12 @@ async def test_resolve_detects_locale_from_hydrated_fact_text(tmp_path):
         async def aclose(self):
             return None
 
-    def detect(text, *, ui_language):
-        selected = real_detect_prompt_language(text, ui_language=ui_language)
+    def detect(text, *, default="zh", ui_language):
+        selected = real_detect_prompt_language(
+            text,
+            default=default,
+            ui_language=ui_language,
+        )
         observed.append((text, ui_language, selected))
         return selected
 
