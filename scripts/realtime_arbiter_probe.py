@@ -104,7 +104,27 @@ _FREE_MODEL = "free-model"
 # produce numbers that are precise about the wrong traffic. Not a user-facing
 # prompt: it never leaves this dev probe.
 _PROMPT = "用一句话说说今天的天气。"  # noqa: INLINE_PROMPT_NON_EN  # measurement realism, see above
-_INSTRUCTIONS = "你是一个简短作答的助手，每次回答控制在一句话以内。"  # noqa: INLINE_PROMPT_NON_EN
+
+# The Lanlan free routes admit a client by watermark: the session instructions
+# must carry this line from the character system prompt
+# (config/prompts/prompts_chara.py, <Context Awareness>). It is what tells the
+# proxy the connection is N.E.K.O rather than a third party reselling sponsored
+# capacity — without it the socket is closed with
+# ``1008 Invalid first packet: you are not using Lanlan``.
+#
+# Reproduced with {LANLAN_NAME} already substituted: update_session runs
+# llm_prompt_leak_check over the payload and asserts on any unrendered
+# {placeholder}.
+_WATERMARK = (
+    "- System Info: The system periodically sends some useful information to "
+    "Neko. Neko can leverage this information to better understand the context."
+)
+_INSTRUCTIONS = (
+    "You are a terse assistant. Answer in one short sentence.\n"
+    "<Context Awareness>\n"
+    f"{_WATERMARK}\n"
+    "</Context Awareness>"
+)
 
 
 @dataclass
