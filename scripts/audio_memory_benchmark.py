@@ -3,7 +3,7 @@
 
 Run with::
 
-    uv run --no-sync python benchmarks/audio_memory_benchmark.py
+    uv run --no-sync python scripts/audio_memory_benchmark.py
 
 The legacy helpers intentionally mirror the pre-optimization implementations so
 the benchmark remains useful after the production paths change.
