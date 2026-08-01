@@ -2438,3 +2438,34 @@ async def test_archive_pick_excludes_rows_still_present_in_active_facts(
     assert payload["archiveFilteredCount"] == 0, payload["archiveFilteredCount"]
     sources = [fact["sourceCollection"] for fact in payload["facts"]]
     assert "facts_archive" not in sources, sources
+
+
+@pytest.mark.asyncio
+async def test_archive_pick_excludes_trust_arbitration_losers(
+    tmp_path, monkeypatch,
+):
+    facts_path = tmp_path / "facts.json"
+    archive_path = tmp_path / "facts_archive.json"
+    facts_path.write_text("[]", encoding="utf-8")
+    archive_path.write_text(json.dumps([{
+        "id": "rejected",
+        "text": "rejected high importance claim",
+        "importance": 10,
+        "created_at": "2020-01-01T00:00:00Z",
+        "arbitration_archived_at": "2026-08-01T00:00:00Z",
+        "arbitration_reason": "trust_superseded",
+    }]), encoding="utf-8")
+
+    async def fake_context(*_args, **_kwargs):
+        return ActiveNekoContext(
+            master_name="Master", lanlan_name="Lanlan",
+            memory_dir=tmp_path, facts_path=facts_path, source="test",
+        )
+
+    monkeypatch.setattr(F, "resolve_active_neko_context", fake_context)
+    payload = await build_forge_facts_payload(
+        runtime_character_hint="Lanlan", min_importance=0, limit=5,
+    )
+    assert payload["facts"] == []
+    assert payload["archiveRawCount"] == 1
+    assert payload["archiveFilteredCount"] == 0

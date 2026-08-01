@@ -179,8 +179,11 @@ class PermissionManager:
         except (TypeError, ValueError):
             message_count = 0
         def _event_ids(key: str, *, durable: bool = False) -> list[str]:
+            raw_events = raw.get(key)
+            if not isinstance(raw_events, list):
+                return []
             events: list[str] = []
-            for event_id in raw.get(key) or []:
+            for event_id in raw_events:
                 normalized = str(event_id or "").strip()
                 if normalized and normalized not in events:
                     events.append(normalized[:96])

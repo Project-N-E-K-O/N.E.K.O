@@ -862,6 +862,33 @@ async def test_exact_dedup_provenance_rolls_back_when_save_fails():
 
 
 @pytest.mark.asyncio
+async def test_fts_dedup_reconciles_request_sources_conservatively():
+    index = _FakeTimeIndexed()
+    harness = _PersistHarness(index)
+    subject = MemorySubject.group_participant("qq", "7788", "1001")
+    first = await harness._apersist_new_facts(
+        "Neko", [_fact("Alice likes cats")], subject=subject,
+        semantic_dedup=False,
+        speaker_provenance={"speaker_id": "qq:1001", "speaker_trust": 0.3},
+    )
+    index.hits = [(first[0]["id"], -10.0)]
+    reconciled = []
+    duplicate = await harness._apersist_new_facts(
+        "Neko", [_fact("Alice really likes cats")], subject=subject,
+        semantic_dedup=True,
+        speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.9},
+        reconciled_facts=reconciled,
+    )
+    assert duplicate == []
+    assert first[0]["speaker_provenance_mixed"] is True
+    assert all(
+        key not in first[0]
+        for key in ("speaker_id", "speaker_trust", "speaker_label")
+    )
+    assert reconciled == [first[0]]
+
+
+@pytest.mark.asyncio
 async def test_member_flush_preserves_cross_speaker_authored_order():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

@@ -84,6 +84,21 @@ def test_global_qq_profile_is_shared_by_group_and_private_callers():
     assert set(manager.speaker_trust_profiles()) == {"1001"}
 
 
+def test_malformed_replay_ledgers_are_dropped_without_splitting_strings():
+    manager = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={
+            "1001": {
+                "processed_activity_events": "activity-id",
+                "processed_signal_events": 5,
+            },
+        },
+    )
+    profile = manager.speaker_trust_profiles()["1001"]
+    assert profile["processed_activity_events"] == []
+    assert profile["processed_signal_events"] == []
+
+
 @pytest.mark.asyncio
 async def test_only_owner_request_provenance_can_emit_trust_events():
     from memory.facts import FactStore

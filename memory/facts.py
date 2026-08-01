@@ -2607,6 +2607,53 @@ class FactStore:
                 and 0.0 <= float(trust) <= 1.0
             ):
                 request_provenance['speaker_trust'] = float(trust)
+
+        def _reconcile_existing_provenance(
+            existing: dict | None, *, dedup_stage: str,
+        ) -> None:
+            nonlocal provenance_updated_count
+            if (
+                existing is None
+                or source != 'user_observation'
+                or not request_provenance.get('speaker_id')
+            ):
+                return
+            from memory.speaker_trust import (
+                provenance_of_entries,
+                stable_speaker_id,
+            )
+            provenance_keys = (
+                'speaker_id', 'speaker_label', 'speaker_trust',
+                'speaker_provenance_mixed',
+            )
+            existing_speaker_id = stable_speaker_id(existing.get('speaker_id'))
+            if existing.get('speaker_provenance_mixed') is True:
+                desired_provenance = {'speaker_provenance_mixed': True}
+            elif existing_speaker_id is None:
+                desired_provenance = dict(request_provenance)
+            elif existing_speaker_id == request_provenance['speaker_id']:
+                desired_provenance = provenance_of_entries((
+                    existing, request_provenance,
+                ))
+            else:
+                desired_provenance = {'speaker_provenance_mixed': True}
+            current_provenance = {
+                key: existing[key]
+                for key in provenance_keys if key in existing
+            }
+            if current_provenance == desired_provenance:
+                return
+            provenance_snapshots.append((existing, current_provenance))
+            for key in provenance_keys:
+                existing.pop(key, None)
+            existing.update(desired_provenance)
+            provenance_updated_count += 1
+            logger.info(
+                f"[FactStore] {lanlan_name}: {dedup_stage} fact provenance "
+                f"reconciled fact_id={existing.get('id')} "
+                f"existing_speaker={existing_speaker_id or '-'} "
+                f"incoming_speaker={request_provenance['speaker_id']}"
+            )
         existing_facts = await self.aload_facts(lanlan_name)
         existing_hashes = {f.get('hash') for f in existing_facts if f.get('hash')}
         # hash → fact 的快查表（仅 upgrade 路径用）。aload_facts 已经 in-place
@@ -2709,60 +2756,9 @@ class FactStore:
                     if existing.get('signal_processed') is False:
                         existing[self._SIGNAL_RESET_PENDING] = True
                     upgraded_count += 1
-                if (
-                    existing is not None
-                    and source == 'user_observation'
-                    and request_provenance.get('speaker_id')
-                ):
-                    from memory.speaker_trust import (
-                        provenance_of_entries,
-                        stable_speaker_id,
-                    )
-                    provenance_keys = (
-                        'speaker_id', 'speaker_label', 'speaker_trust',
-                        'speaker_provenance_mixed',
-                    )
-                    existing_speaker_id = stable_speaker_id(
-                        existing.get('speaker_id')
-                    )
-                    if existing.get('speaker_provenance_mixed') is True:
-                        # A previous exact observation deliberately cleared
-                        # this row's single-speaker claim.  A third observer
-                        # must not take ownership of the mixed-source fact.
-                        desired_provenance = {
-                            'speaker_provenance_mixed': True,
-                        }
-                    elif existing_speaker_id is None:
-                        desired_provenance = dict(request_provenance)
-                    elif existing_speaker_id == request_provenance['speaker_id']:
-                        desired_provenance = provenance_of_entries((
-                            existing, request_provenance,
-                        ))
-                    else:
-                        # Identical content now has multiple independently
-                        # attributed sources. Never let it borrow the strongest
-                        # speaker's weight; clear the single-source claim.
-                        desired_provenance = {
-                            'speaker_provenance_mixed': True,
-                        }
-                    current_provenance = {
-                        key: existing[key]
-                        for key in provenance_keys if key in existing
-                    }
-                    if current_provenance != desired_provenance:
-                        provenance_snapshots.append((
-                            existing, current_provenance,
-                        ))
-                        for key in provenance_keys:
-                            existing.pop(key, None)
-                        existing.update(desired_provenance)
-                        provenance_updated_count += 1
-                        logger.info(
-                            f"[FactStore] {lanlan_name}: exact fact provenance "
-                            f"reconciled fact_id={existing.get('id')} "
-                            f"existing_speaker={existing_speaker_id or '-'} "
-                            f"incoming_speaker={request_provenance['speaker_id']}"
-                        )
+                _reconcile_existing_provenance(
+                    existing, dedup_stage='exact',
+                )
                 continue
 
             # Stage 2: FTS5 semantic dedup (lightweight, no LLM)
@@ -2778,6 +2774,7 @@ class FactStore:
                 # 一次性扩窗到 200 重扫；仍不足就放行（>200 条命中意味着
                 # 文本本身是退化的口水句，去重已无意义）。
                 is_dup = False
+                duplicate_hit: dict | None = None
                 raw_limit = 10
                 archived_by_id: dict | None = None
 
@@ -2851,6 +2848,7 @@ class FactStore:
                             if hit_date and hit_date != daily_event_date:
                                 continue
                         is_dup = True
+                        duplicate_hit = hit
                         break
                     if (
                         is_dup
@@ -2861,6 +2859,15 @@ class FactStore:
                         break
                     raw_limit = 200
                 if is_dup:
+                    # Archived absorbed rows are outside this active-facts
+                    # commit; only an active survivor can be reconciled here.
+                    if (
+                        duplicate_hit is not None
+                        and duplicate_hit.get('id') in facts_by_id
+                    ):
+                        _reconcile_existing_provenance(
+                            duplicate_hit, dedup_stage='semantic',
+                        )
                     continue
 
             created_at_iso = datetime.now().isoformat()
