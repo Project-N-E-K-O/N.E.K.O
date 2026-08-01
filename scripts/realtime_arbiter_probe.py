@@ -92,6 +92,18 @@ _ROUTES = {
 }
 
 _FREE_API_KEY = "free-access"
+
+# What counts as the reply having started speaking. Metadata frames
+# (`response.output_item.added`, `response.content_part.added`) are excluded on
+# purpose — see the barge-in signal below.
+_OUTPUT_DELTA_TYPES = {
+    "response.text.delta",
+    "response.output_text.delta",
+    "response.audio.delta",
+    "response.output_audio.delta",
+    "response.audio_transcript.delta",
+    "response.output_audio_transcript.delta",
+}
 _FREE_MODEL = "free-model"
 
 # Short, boring and identical every turn: the point is to time the protocol,
@@ -138,6 +150,10 @@ class _Turn:
     item_acked_at: float | None = None
     first_delta_at: float | None = None
     cancel_sent_at: float | None = None
+    # When each outbound frame actually left, i.e. where the matching
+    # arbiter bound starts counting.
+    item_sent_at: float | None = None
+    create_sent_at: float | None = None
     response_id: str | None = None
     status: str | None = None
     # An id-less streaming provider is the case the escape hatch documents as
@@ -178,9 +194,21 @@ class _TappedSocket:
     Everything else is delegated, including ``send`` and ``close``.
     """
 
-    def __init__(self, inner: Any, on_frame: Any) -> None:
+    def __init__(self, inner: Any, on_frame: Any, on_send: Any = None) -> None:
         self._inner = inner
         self._on_frame = on_frame
+        self._on_send = on_send
+
+    async def send(self, message: Any, *args: Any, **kwargs: Any) -> Any:
+        # Outbound frames are timestamped because every arbiter bound starts
+        # when its own send COMPLETES, not when the caller decided to make a
+        # request. Timing from the caller's instant folds in queueing and the
+        # wait for the lane, which inflates every percentage in the report —
+        # exactly the kind of error that argues for loosening a timeout that
+        # was never actually exceeded.
+        if self._on_send is not None:
+            self._on_send(message)
+        return await self._inner.send(message, *args, **kwargs)
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
@@ -235,7 +263,7 @@ class _Probe:
             on_connection_error=_on_connection_error,
         )
         await client.connect(_INSTRUCTIONS)
-        client.ws = _TappedSocket(client.ws, self._on_frame)
+        client.ws = _TappedSocket(client.ws, self._on_frame, self._on_send)
 
         # Wrap the arbiter's own teardown callback. `create_response()` returns
         # at `ticket.sent`, while the missing-announcement and missing-terminal
@@ -279,6 +307,24 @@ class _Probe:
                 pass
 
     # -- observation ------------------------------------------------------
+
+    def _on_send(self, raw: Any) -> None:
+        """Stamp the instant a frame this probe cares about left the socket."""
+
+        turn = self._open
+        if turn is None:
+            return
+        try:
+            etype = json.loads(raw).get("type")
+        except (TypeError, ValueError):
+            return
+        now = self._stamp()
+        if etype == "conversation.item.create" and turn.item_sent_at is None:
+            turn.item_sent_at = now
+        elif etype == "response.create" and turn.create_sent_at is None:
+            turn.create_sent_at = now
+        elif etype == "response.cancel" and turn.cancel_sent_at is None:
+            turn.cancel_sent_at = now
 
     def _on_frame(self, raw: Any) -> None:
         self._obs.frames_in += 1
@@ -353,7 +399,14 @@ class _Probe:
                     turn.stream_events_with_id += 1
                 if turn.first_delta_at is None:
                     turn.first_delta_at = now
-            self._first_delta.set()
+            # Only actual output counts as "it has started speaking".
+            # `response.output_item.added` and `response.content_part.added`
+            # are metadata and arrive first on the announcing route, so
+            # signalling on them made the barge-in cancel a reply that had
+            # produced nothing — the 0.05s figure that measured was
+            # cancellation of silence, not interruption.
+            if etype in _OUTPUT_DELTA_TYPES:
+                self._first_delta.set()
 
     @staticmethod
     def _response_id_of(event: dict[str, Any]) -> str | None:
@@ -446,7 +499,10 @@ class _Probe:
                 self._open = None
                 self._obs.turns.append(turn)
                 return turn
-            turn.cancel_sent_at = self._stamp()
+            # NOT stamped here: the outbound tap records the instant the
+            # frame actually left, which is where the arbiter's cancel bound
+            # starts. Stamping from the caller would charge the send itself to
+            # the bound.
             # Exactly what the production barge-in does: cancel_response(wait=True)
             # is cancel_current(), the 3s bound whose expiry tears the socket down.
             # Swallow its TimeoutError here — that IS the measurement.
@@ -528,7 +584,13 @@ def _margin_line(name: str, stats: dict[str, float] | None, bound: float) -> str
 
 
 def _report(obs: _Observations) -> dict[str, Any]:
-    announce = [_Turn._delta(t.sent_at, t.created_at) for t in obs.turns]
+    # Each bound is timed from where the arbiter starts it — the outbound
+    # frame — falling back to the caller's instant only when the frame was
+    # never sent, in which case there is no bound to compare against anyway.
+    announce = [
+        _Turn._delta(t.create_sent_at if t.create_sent_at is not None else t.sent_at, t.created_at)
+        for t in obs.turns
+    ]
     # From the announcement when there is one, otherwise from the request
     # itself. One of the two routes this probe exists for never announces,
     # so keying completion on created_at alone reported 'no observations'
@@ -538,14 +600,25 @@ def _report(obs: _Observations) -> dict[str, Any]:
         _Turn._delta(t.created_at if t.created_at is not None else t.sent_at, t.done_at)
         for t in obs.turns
     ]
-    item_ack = [_Turn._delta(t.sent_at, t.item_acked_at) for t in obs.turns]
+    item_ack = [
+        _Turn._delta(t.item_sent_at if t.item_sent_at is not None else t.sent_at, t.item_acked_at)
+        for t in obs.turns
+    ]
     cancel = [
         _Turn._delta(t.cancel_sent_at, t.done_at)
         for t in obs.turns
         if t.cancel_sent_at is not None
     ]
     missing = [t.label for t in obs.turns if t.done_at is None]
-    idless = [t.label for t in obs.turns if t.stream_events and not t.stream_events_with_id]
+    # ANY id-less streaming event, not only an all-id-less turn: one
+    # unattributable late tool event is enough for issue #2611 to apply,
+    # and a turn that identifies most of its deltas would otherwise be
+    # reported as safe.
+    idless = [
+        t.label
+        for t in obs.turns
+        if t.stream_events and t.stream_events_with_id < t.stream_events
+    ]
 
     stats = {
         "item_ack": _summarize(item_ack),
