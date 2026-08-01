@@ -62,6 +62,7 @@ from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writa
 from utils.language_utils import (
     detect_prompt_language,
     get_global_language_full,
+    normalize_language_code,
 )
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -75,6 +76,20 @@ if TYPE_CHECKING:
     from memory.timeindex import TimeIndexedMemory
 
 logger = get_module_logger(__name__, "Memory")
+
+
+def _detect_fact_extraction_prompt_language(
+    text: str,
+    *,
+    ui_language: str | None = None,
+) -> str:
+    """Resolve Stage-1 prompt language without losing ASCII es/pt input."""
+    active_ui_language = ui_language or get_global_language_full()
+    detected = detect_prompt_language(text, ui_language=active_ui_language)
+    ui_short = normalize_language_code(active_ui_language, format="short")
+    if detected == "en" and ui_short in {"es", "pt"}:
+        return ui_short
+    return detected
 
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档
@@ -1569,7 +1584,10 @@ class FactStore:
             cls._messages_locale_text(segment.get('messages') or [])
             for segment in segments
         )
-        lang = detect_prompt_language(locale_text, ui_language=ui_lang)
+        lang = _detect_fact_extraction_prompt_language(
+            locale_text,
+            ui_language=ui_lang,
+        )
 
         # Re-run the cap when its localized marker changes. Locale detection
         # then sees the same retained head/tail bodies as the rendered prompt,
@@ -1602,7 +1620,7 @@ class FactStore:
             )
             for marker in generated_markers:
                 capped_locale_text = capped_locale_text.replace(marker, '')
-            detected = detect_prompt_language(
+            detected = _detect_fact_extraction_prompt_language(
                 capped_locale_text,
                 ui_language=ui_lang,
             )
@@ -1743,7 +1761,7 @@ class FactStore:
         if speaker_label:
             name_mapping['human'] = speaker_label
         conversation_text = self._format_conversation(messages, name_mapping)
-        prompt_lang = detect_prompt_language(
+        prompt_lang = _detect_fact_extraction_prompt_language(
             self._messages_locale_text(messages),
             ui_language=get_global_language_full(),
         )
@@ -3812,7 +3830,7 @@ class FactStore:
         _, _, _, _, name_mapping, _, _, _, _ = await self._config_manager.aget_character_data()
         name_mapping['ai'] = lanlan_name
         conversation_text = self._format_conversation(messages, name_mapping)
-        prompt_lang = detect_prompt_language(
+        prompt_lang = _detect_fact_extraction_prompt_language(
             self._messages_locale_text(messages),
             ui_language=get_global_language_full(),
         )

@@ -290,6 +290,62 @@ async def test_scoped_facts_route_stamps_sanitized_display_name():
 
 
 @pytest.mark.asyncio
+async def test_scoped_facts_route_records_locale_after_persist():
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import (
+        ScopedFactInput,
+        ScopedFactsWriteRequest,
+    )
+
+    events = []
+    store = MagicMock()
+
+    async def persist(*args, **kwargs):
+        events.append("persist")
+        return [{"id": "f1"}]
+
+    def reserve(*args, **kwargs):
+        events.append("reserve")
+        return 42
+
+    def record(*args, **kwargs):
+        events.append("record")
+
+    store.apersist_scoped_facts = AsyncMock(side_effect=persist)
+    with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
+        memory_routes.locale_state,
+        "reserve_subject_prompt_locale_order",
+        side_effect=reserve,
+    ) as reserve_locale, patch.object(
+        memory_routes.locale_state,
+        "record_subject_prompt_locale",
+        side_effect=record,
+    ) as record_locale:
+        result = await memory_routes.append_scoped_facts(
+            "Neko",
+            ScopedFactsWriteRequest(
+                subject={
+                    "subject_kind": "group_chat",
+                    "subject_id": "qq:1",
+                },
+                facts=[ScopedFactInput(text="喜歡貓")],
+                language="zh-TW",
+            ),
+        )
+
+    subject = reserve_locale.call_args.args[1]
+    assert result["status"] == "stored"
+    assert events == ["reserve", "persist", "record"]
+    reserve_locale.assert_called_once_with("Neko", subject)
+    record_locale.assert_called_once_with(
+        "Neko",
+        subject,
+        "zh-TW",
+        order=42,
+    )
+
+
+@pytest.mark.asyncio
 async def test_scoped_history_segments_stamp_only_ok_segments():
     """批段路径：只有模型给出结论（ok）的段刷新显示名；failed 段整桶保留
     重试，下次照样带名字来。"""  # noqa: DOCSTRING_CJK

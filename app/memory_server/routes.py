@@ -816,6 +816,7 @@ class ScopedFactInput(BaseModel):
 class ScopedFactsWriteRequest(BaseModel):
     subject: MemorySubjectRequest
     facts: list[ScopedFactInput]
+    language: str | None = None
     # Optional human-readable name for the subject (group name / member
     # nickname). Untrusted user data: sanitized like speaker_label, then
     # stamped onto the subject's existing persona section metadata so the
@@ -980,6 +981,13 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             "source": item.source,
         })
     subject = req.subject.to_domain()
+    locale_order = None
+    if is_supported_language_code(req.language):
+        locale_order = await asyncio.to_thread(
+            locale_state.reserve_subject_prompt_locale_order,
+            lanlan_name,
+            subject,
+        )
     display_name = _sanitized_display_name(
         req.display_name, context="scoped_facts",
     )
@@ -988,6 +996,14 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
         extracted,
         subject=subject,
     )
+    if locale_order is not None:
+        await asyncio.to_thread(
+            locale_state.record_subject_prompt_locale,
+            lanlan_name,
+            subject,
+            req.language,
+            order=locale_order,
+        )
     await _stamp_subject_display_name(lanlan_name, subject, display_name)
     return {
         "status": "stored",

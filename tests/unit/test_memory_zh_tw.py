@@ -1064,7 +1064,14 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
 
 
 @pytest.mark.asyncio
-async def test_fact_extractors_detect_prompt_locale_from_message_text(monkeypatch):
+@pytest.mark.parametrize(("ui_language", "message_text", "expected"), [
+    ("zh-TW", "I prefer quiet afternoons at home.", "en"),
+    ("es", "Me gusta el cafe", "es"),
+    ("pt", "Eu gosto de cafe", "pt"),
+])
+async def test_fact_extractors_detect_prompt_locale_from_message_text(
+    monkeypatch, ui_language, message_text, expected,
+):
     from unittest.mock import AsyncMock
 
     from config.prompts import prompts_memory as prompt_module
@@ -1093,7 +1100,7 @@ async def test_fact_extractors_detect_prompt_locale_from_message_text(monkeypatc
     store = object.__new__(facts.FactStore)
     store._config_manager = ConfigManager()
     store._allm_call_with_retries = AsyncMock(return_value=[])
-    messages = [HumanMessage(content="I prefer quiet afternoons at home.")]
+    messages = [HumanMessage(content=message_text)]
 
     monkeypatch.setattr(facts, "get_fact_extraction_prompt", basic_prompt)
     monkeypatch.setattr(facts, "get_fact_extraction_batch_prompt", batch_prompt)
@@ -1103,7 +1110,7 @@ async def test_fact_extractors_detect_prompt_locale_from_message_text(monkeypatc
         aware_prompt,
     )
 
-    with language_context("zh-TW"):
+    with language_context(ui_language):
         await store._allm_extract_facts("Neko", messages)
         await store._allm_extract_facts_batch(
             "Neko",
@@ -1116,9 +1123,9 @@ async def test_fact_extractors_detect_prompt_locale_from_message_text(monkeypatc
         )
 
     assert selected == [
-        ("basic", "en"),
-        ("batch", "en"),
-        ("aware", "en"),
+        ("basic", expected),
+        ("batch", expected),
+        ("aware", expected),
     ]
 
 
