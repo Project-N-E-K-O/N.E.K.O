@@ -8,6 +8,29 @@ from .contracts import LiveConfig
 from .runtime_live_listener import refresh_live_room_context
 
 
+def _flush_runtime_log(runtime: Any, reason: str) -> None:
+    """Emit one session-boundary summary. Never let diagnostics break connect
+    or disconnect — a missing log line is recoverable, a failed disconnect is
+    not."""
+    runtime_log = getattr(runtime, "runtime_log", None)
+    if runtime_log is None:
+        return
+    try:
+        runtime_log.flush(runtime, reason)
+    except Exception:
+        pass
+
+
+def _reset_runtime_log(runtime: Any) -> None:
+    runtime_log = getattr(runtime, "runtime_log", None)
+    if runtime_log is None:
+        return
+    try:
+        runtime_log.reset()
+    except Exception:
+        pass
+
+
 def pause(runtime: Any) -> None:
     runtime.safety_guard.pause("manual pause from control panel")
 
@@ -205,6 +228,10 @@ async def connect_live_room(
     started = await runtime._start_live_listener(target_room_ref)
     if not started:
         runtime.live_connection_auth_mode = "unknown"
+    # Reset counters at the connect boundary so a summary always describes one
+    # listening session rather than accumulating across reconnects.
+    _reset_runtime_log(runtime)
+    _flush_runtime_log(runtime, "connect" if started else "connect_failed")
     await runtime.sync_live_instructions()
     runtime.audit.record(
         "live_connected" if started else "live_connect_failed",
@@ -313,6 +340,11 @@ async def disconnect_live_room(runtime: Any) -> dict[str, Any]:
         await runtime._stop_live_listener(mark_disabled=True)
     finally:
         runtime.live_connection_auth_mode = "unknown"
+    # Session-boundary summary. A disconnect line reporting zero records is
+    # itself the diagnosis: it separates "the room was quiet" from "events
+    # arrived but were silently dropped", which a log bundle could not
+    # distinguish before.
+    _flush_runtime_log(runtime, "disconnect")
     runtime.audit.record(
         "live_disconnected",
         "live ingest marked disconnected",

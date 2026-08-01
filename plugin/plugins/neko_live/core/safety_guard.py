@@ -96,7 +96,12 @@ class SafetyGuard:
     def after_event(self) -> None:
         self.queue_size = max(0, self.queue_size - 1)
 
-    def before_output(self, event: ViewerEvent | None = None) -> SafetyDecision:
+    def before_output(
+        self,
+        event: ViewerEvent | None = None,
+        *,
+        consume_cooldown: bool = True,
+    ) -> SafetyDecision:
         if _requires_live_connection(event) and not self.connected:
             return SafetyDecision(
                 False, "disconnected", "live output source is disconnected"
@@ -105,9 +110,10 @@ class SafetyGuard:
             return SafetyDecision(False, "paused", "output is manually paused")
         if self.auto_paused:
             return SafetyDecision(False, "tripped", "automatic safety stop is active")
-        cooldown_decision = safety_guard_cooldown.before_output_cooldown(self, event)
-        if cooldown_decision is not None:
-            return cooldown_decision
+        if consume_cooldown:
+            cooldown_decision = safety_guard_cooldown.before_output_cooldown(self, event)
+            if cooldown_decision is not None:
+                return cooldown_decision
         return SafetyDecision(True, self.status(), "")
 
     def output_cooldown_remaining(self, now: float | None = None) -> float:

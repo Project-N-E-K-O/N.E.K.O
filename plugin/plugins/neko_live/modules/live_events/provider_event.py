@@ -116,6 +116,17 @@ def event_room_ref(event: Any) -> str:
     return text if _is_safe_public_token(text, pattern=_SAFE_ROOM_REF_RE) else ""
 
 
+def event_provider_event_id(event: Any) -> str:
+    """Return a stable, public delivery id without deriving a content fingerprint."""
+
+    value = _field(event, "provider_event_id")
+    if value is None:
+        raw = _field(event, "raw")
+        value = raw.get("provider_event_id") if isinstance(raw, dict) else None
+    text = _public_token_text(value, allow_positive_int=True)
+    return text if _is_safe_public_token(text) else ""
+
+
 def event_guard_level(event: Any) -> int:
     return _optional_non_negative_int(_field(event, "guard_level")) or 0
 
@@ -141,6 +152,21 @@ def event_session_generation(event: Any) -> int:
         return max(0, int(value or 0))
     except (TypeError, ValueError):
         return 0
+
+
+def event_is_current_session(event: Any, runtime: Any) -> bool:
+    """Reject a provider event explicitly bound to an older live session."""
+
+    generation = event_session_generation(event)
+    if generation <= 0 or runtime is None:
+        return True
+    if not hasattr(runtime, "_live_session_generation"):
+        return True
+    current = int(getattr(runtime, "_live_session_generation", 0) or 0)
+    return (
+        bool(getattr(runtime, "_accepting_live_events", False))
+        and generation == current
+    )
 
 
 def event_signal_fields(event: Any) -> dict[str, Any]:

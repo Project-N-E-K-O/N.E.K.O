@@ -1,79 +1,146 @@
 # NEKO Live Runtime Observability
 
-运行态观测的目标是回答：**事件走到哪一步、为什么没有输出、主播下一步该做什么**。观测字段不是第二套业务状态，也不能携带 raw 数据。
+This document is the canonical source for NEKO Live runtime observability language. It defines what code, reviews, monitor views, and dashboard surfaces must be able to explain. The plugin ships `tools/monitor_live.ps1` as a read-only evidence helper; it does not replace Dashboard projections, recent results, `live_explain`, or backend logs as runtime sources of truth. Gift / SC / Guard behavior is currently implemented by `live_support_events`.
 
-## 三层视图
+## Purpose
+
+Runtime observability must answer five questions:
+
+- Did the live event enter NEKO Live?
+- Which stage handled it last?
+- Why was it selected, skipped, failed, degraded, or pushed?
+- Did the dispatcher actually send output, dry-run it, or skip it?
+- What can Dashboard show without exposing private data?
+
+## Non-goals
+
+- Do not define a concrete Dashboard layout.
+- Do not require a new storage backend.
+- The current support scheduler exposes bounded in-memory counters only; it does not write a persistent gift ledger or diagnostic event log.
+- Do not replace `stores/audit_store.py` or existing `PipelineStep` / `InteractionResult` fields in this phase.
+- Do not turn Monitor into a separate source of truth; it must read runtime projections.
+- Do not add contribution ranking, reward, or ceremony behavior for Gift / SC / Guard events.
+- Do not introduce a Scenario state machine, Detector / Arbiter architecture, critical hard preemption, general FIFO output queue, or output path that bypasses the NEKO Live main chain. The bounded `live_support_events` pending scheduler is a local exception for verified support events only; it remains upstream of Pipeline and never interrupts active output.
+
+## Reference Principles
+
+NEKO Live may borrow decision-chain principles from the Warthunder reference project, but it must not copy the battle logic or adopt its runtime architecture.
+
+Core rule: 每次猫猫只该说一句；这句话为什么是它，系统必须解释得清楚。
+
+Phase 2B uses three reference principles:
+
+- No general FIFO output queue: ordinary live events remain real-time input and must not become a stale replay list. Verified Gift / SC / Guard events use a separate bounded, priority-ordered pending scheduler so paid milestones are not lost behind lower-value support packets.
+- High-value events may rank higher: SC, Guard, and important gift events may receive higher selection priority than ordinary danmaku. High priority must not bypass Safety Guard, directly call Dispatcher, skip cooldown policy, or ignore `dry_run`.
+- `dry_run` must explain the complete chain: even without real output, runtime observability must record whether the event was received, entered Selection, who won, who lost, why candidates lost, whether Pipeline started, whether Safety Guard passed, and whether Dispatcher ended as `dry_run`, `pushed`, or `failed`.
+
+NEKO Live may also borrow the health rows observation model from the Warthunder reference project, but it must not copy Warthunder refresh groups such as `fast`, `map`, `events`, or `mapimg`. Health rows in NEKO Live must describe the NEKO Live main chain: Live Ingest -> EventBus -> Selection -> Pipeline -> Safety Guard -> Dispatcher -> Config Store.
+
+## Implementation Checkpoint
+
+Updated: 2026-07-16
+
+Phase 2C has reached a stable backend-observability checkpoint. The implementation below is complete enough for offline review; packaged UI and real-stream evidence remain part of the deferred release validation rather than unfinished observability architecture:
+
+- Completed: Dispatcher Outcome standardization distinguishes `dispatcher.dry_run`, `dispatcher.pushed`, `dispatcher.failed`, and `dispatcher.skipped`.
+- Completed: Selection Decision Chain records the selected candidate and privacy-safe dropped candidates with skip reasons.
+- Completed: Runtime Health Rows are built in `core/runtime_dashboard.py` and exposed from `runtime.dashboard_state()` as `health_rows`.
+- Completed: Event-level `trace_id` flows through live payload normalization, `ViewerEvent`, `InteractionResult`, `recent_results`, and `live_explain`.
+- Completed: Runtime Timeline Projection is exposed as an in-memory, bounded, privacy-safe projection from `runtime.dashboard_state()["live_explain"]["timeline"]`.
+- Completed: Dashboard renders the latest event chain and runtime timeline using the read-only `live_explain` projection.
+- Completed: Monitor snapshot emission exposes `latest_trace_id` and compact timeline stage/status/route/reason fields from the same read-only projection.
+- Completed: Gift / SC / Guard support events route through `live_support_events`, preserving Pipeline -> Safety Guard -> Dispatcher and privacy-safe support metadata projection.
+- Completed: Bilibili Gift / SC / Guard events receive a privacy-safe `trace_id` at `ingest`, retain it across `event_bus` and `live_support_events`, and expose only bounded listener health facts (`reconnect_count`, `last_packet_at`, terminal outcome) rather than raw packets or viewer text.
+- Completed: Plugin-owned output policy metadata is emitted with live requests so hosted UI and Monitor can review route, trace, length mode, and response-shape intent without requiring host/core final-output hooks.
+- Completed: Plugin-owned prompt material metadata now includes optional meme hints from `data/meme_knowledge.json` and idle host beat material from `data/idle_hosting_beats.json`; Dashboard and Monitor may use fields such as `meme_hint_ids`, `meme_hint_tags`, and `host_beat_*` only as review clues.
+
+Future Runtime Timeline work must continue to use `trace_id`. Runtime Timeline Projection must not be implemented by guessing with UID, event type, or timestamp proximity.
+
+## Canonical Concepts
 
 ### Runtime Timeline
 
-按 `trace_id` 记录单个事件经过的阶段。每条记录只保留：
+Runtime Timeline is the ordered explanation of one event across the runtime. It should be derivable from existing facts such as `LiveEvent`, audit records, `PipelineStep`, `InteractionResult`, and future monitor signals.
 
-- `trace_id`：随机、短生命周期关联 ID；
-- `at`：时间戳；
-- `stage`：稳定处理阶段；
-- `status`：该阶段结果；
-- `reason`：白名单化原因码；
-- `route`：安全模块或路由名；
-- `uid`：会话盐 HMAC 得到的 `viewer_<12hex>`；
-- `source`：安全、截断后的来源。
+Timeline entries should use stable stage names, an outcome, an optional skip reason, and a short privacy-safe message.
 
-Timeline 不记录昵称、原文、头像 URL、cookie、token 或 provider raw。
+Runtime Timeline is a projection of runtime facts. It must not become a second source of truth or a separate event-routing system.
 
-### Recent Results / Dashboard
+Current implementation status: implemented as a lightweight in-memory projection in `core/runtime_timeline.py`. It records bounded stage summaries keyed by privacy-safe `trace_id`; it does not persist timeline entries or route events.
 
-Recent results 展示有界的 pipeline 结果摘要；Dashboard 把连接、开播准备、模块、最近活动和本场数据投影为主播可理解的状态。两者都只能从 runtime/audit 的安全事实派生。
+Final spoken-text replay is not owned by host/core in this phase. The plugin passes `trace_id` and plugin-owned review metadata through output metadata; hosted UI and Monitor may use that opaque metadata plus backend text logs for troubleshooting, but they must not require host/core to shape, suppress, audit, or rewrite NEKO Live speech.
 
-### Monitor
+### Runtime Timeline Projection
 
-`tools/monitor_live.ps1` 用于真机复盘。它读取安全投影并生成稳定告警分类，不是业务控制面，也不替代 Dashboard、recent results 和后端日志的人工核对。
+Runtime Timeline Projection is the privacy-safe view assembled from existing runtime facts for reviewers, monitor views, and Dashboard surfaces.
 
-## Stage 命名
+Projection rules:
 
-当前主链路常见 stage：
+- Project from the NEKO Live main chain: EventBus -> Selection -> Pipeline -> Runtime -> Dashboard.
+- Include enough information to explain why exactly one event became the spoken candidate.
+- Include losing candidates only as redacted candidate metadata, outcome, and skip reason.
+- Preserve `dry_run` as a full lifecycle explanation, not as a shortcut around the chain.
+- Do not project raw payloads, full prompt text, cookies, tokens, signatures, avatar bytes, or private chat content.
+- Store timeline entries in memory only, with bounded retention.
 
-| Stage | 含义 |
-|---|---|
-| `ingest` | provider 收到、清洗或丢弃事件 |
-| `event_bus` | 安全事件已发布 |
-| `live_events.select` | 候选窗口选择了事件 |
-| `live_events.signal` | 事件只作为信号，不进入普通回复 |
-| `live_support_events.receive` | 支持事件模块接收可信候选 |
-| `live_input.normalize` | runtime 把输入归一为 pipeline 事件 |
-| `live_input.signal_only` | 明确为不触发 AI 的状态信号 |
-| `pipeline.received` | pipeline 开始处理 |
-| `permission_gate` | 来源权限检查 |
-| `live_status_gate` | 直播状态、暂停和连接门禁 |
-| `safety_guard.before_event` | 事件级安全检查 |
-| provider identity stage | 解析安全观众身份 |
-| `viewer_profile` | 读取或更新受控档案 |
-| `module_gate` | 功能开关检查 |
-| `pipeline.route` | 选择响应模块 |
-| `request.build` | 构造受控请求 |
-| `live_session` | 会话代际检查 |
-| `safety_guard.before_output` | 输出级安全检查 |
-| `dispatcher.push` | dry-run、跳过、失败或真实派发 |
-| `result.record` | 结果写入有界 recent results |
+### Stage
 
-新增 stage 应表示新的稳定责任边界，而不是把每个函数名都暴露到 Timeline。
+Stage is the stable name of a point in the event lifecycle. Stage names are for developers, reviewers, tests, monitor signals, and future Dashboard labels.
 
-## Status 与 Outcome
+Initial stage names:
 
-Stage status 使用简短稳定值，例如 `received`、`published`、`ok`、`selected`、`skipped`、`blocked`、`failed`、`pushed`、`dropped`。
+- `ingest`
+- `event_bus`
+- `selection`
+- `pipeline`
+- `safety_guard`
+- `dispatcher`
+- `config_store`
+- `runtime`
+- `dashboard`
 
-Pipeline 的最终状态至少能区分：
+### Event Outcome
 
-- `ok`：完成真实输出或预期动作；
-- `dry_run`：完整链路成功但未真实开口；
-- `skipped`：按策略预期不输出；
-- `blocked`：被权限、直播状态或安全门阻止；
-- `failed`：非预期异常或依赖失败；
-- `signal_only`：只更新状态，不进入 AI 输出。
+Event Outcome describes what happened at a stage.
 
-不要把“没有开口”都报成失败，也不要把异常吞成普通 skipped。
+Initial outcomes:
 
-## Reason Code
+- `received`: event entered a stage.
+- `published`: event was emitted to the next boundary.
+- `selected`: event won a selection window.
+- `dropped`: event lost a selection window or was intentionally ignored before pipeline.
+- `skipped`: expected guardrail stop; no output should happen.
+- `failed`: unexpected error or broken dependency.
+- `degraded`: fallback path was used, but the system kept running.
+- `pushed`: dispatcher handed a real output request to the host.
+- `dry_run`: dispatcher intentionally did not produce real output.
+- `queued`: the request entered a plugin or host queue and has not reached the dispatcher boundary.
 
-Reason 必须是稳定机器码，不能直接写异常文本或用户数据。当前常见族：
+Use `skipped` for expected policy decisions and `failed` for exceptional behavior.
+
+#### `pushed` consumer rules
+
+`pushed` is a **host handoff**, not an audible-output or playback-completion event.
+Consumers must use it according to these categories:
+
+- Allowed conservative bookkeeping: output cooldown/pacing, anti-repeat spent-material
+  tracking, and recent-context exclusion may treat handed-off text as already spent. This
+  intentionally prefers silence or novelty over immediately repeating a line that might
+  have been interrupted.
+- Allowed dispatch health: Pipeline, Dispatcher, health rows, and runtime timelines may
+  use `pushed` to mean that the plugin-to-host boundary accepted the request.
+- Conservative product behavior: RoomVerdict deliberately suppresses ballot opening
+  after host handoff and records `delivery_unconfirmed`; it requires correlated playback
+  confirmation before the tally can become reachable. Active-hook answer recognition and
+  solo scene-state progression still use host handoff as a provisional proxy and must not
+  be presented as proof that viewers heard the prompt.
+- Forbidden claims: dashboards, monitors, counters, docs, and UI labels must not translate
+  `pushed` into "spoken", "played", "heard", "completed", or an actual reply count.
+
+Compatibility field names such as `last_output_age_sec`, `neko_output_count`, and
+`neko_reply_count` currently remain stable for consumers, but their displayed labels and
+documentation must describe **host handoffs** until a correlated playback lifecycle is
+available.
 
 - 准备与控制：`room_not_configured`、`live_room_offline`、`live_disabled`、`manual_paused`、`output_channel_unavailable`；
 - 安全与限流：`cooldown`、`safety_degraded`、`safety_tripped`；
@@ -83,9 +150,9 @@ Reason 必须是稳定机器码，不能直接写异常文本或用户数据。�
 - signal/support：`signal_only.<type>`、`support.<type>`；
 - 会话：使用稳定的 stale-session reason，区分旧会话事件。
 
-新增原因前先判断是否能复用已有语义；新增后同步代码白名单、测试、Dashboard/monitor 解释和本文。
+### Selection Decision Chain
 
-未知 reason 不应原样投影。异常最多归一为安全类别，详细堆栈只留在不含隐私的开发日志中。
+Selection Decision Chain is the ordered explanation of how one candidate wins a selection window and why the other candidates lose.
 
 ### 人猫同播参与策略
 
@@ -106,38 +173,405 @@ Dashboard 可投影能力 ID、requested/effective participation level、activat
 
 ## Freshness
 
-Dashboard 必须区分：
+- Selection must choose at most one winner per window for the roast pipeline.
+- Selection must not behave like a FIFO queue of stale live events.
+- Losing candidates should receive a stable skip reason.
+- Priority may influence ranking, but it must remain inside the normal Selection -> Pipeline -> Safety Guard -> Dispatcher path.
+- The chain should be compact enough for Dashboard and reviewers to answer: who won, who lost, and why.
 
-- 当前事实的产生时间；
-- 最后成功刷新时间；
-- 当前请求是否 pending；
-- 状态是否可能过期。
+### Skip Reason
 
-刷新失败不能清空最近成功状态，也不能把已成功的开始/结束动作改报失败。超出可接受新鲜度时显示 stale，而不是假装实时。
+Skip Reason is a stable key explaining why a stage did not continue toward output. It is not user-facing copy. UI may map it to localized labels later.
 
-## Monitor 告警分组
+Rules:
 
-告警用于复盘，不直接改变业务行为：
+- Use lowercase dot-separated keys.
+- Keep reasons stable once published.
+- Prefer specific but reusable reasons.
+- Do not include raw payloads, nicknames, cookies, tokens, avatar bytes, or base64.
+- If a reason is only meaningful inside one stage, prefix it with that stage or boundary.
 
-- 连接与准备：`live_disconnected`、`live_not_ready`、`live_disabled`、`latest_stale`；
-- 结果与延迟：`latest_failed`、`recent_failed`、`latency_warn`、`latency_slow`；
-- 输出质量：`long_reply`、`reply_repeat`、`generic_host_prompt`、`reply_quality_fallback*`；
-- 锐评与主题：`avatar_repeat`、`avatar_bias`、`topic_repeat` 及 topic/host beat 偏置告警；
-- 主持节奏：`warmup_repeat`、`idle_missing`、`active_missing`、`active_blocks_idle`；
-- 污染与播放：`contamination_*`、`playback_watchdog`；
-- 测试态：`dry_run`、`test_isolation`。
+Initial skip reasons:
 
-告警只说明“值得复核”，不是自动判定 bug。真机结论要结合对应时间段的 Dashboard、recent results、Timeline 和脱敏日志。
+- `input.uid_required`
+- `ingest.duplicate_support_event`
+- `permission.developer_tools_disabled`
+- `runtime.disconnected`
+- `safety.paused`
+- `safety.tripped`
+- `safety.queue_limit`
+- `safety.rate_limited`
+- `viewer.already_roasted`
+- `selection.lower_score`
+- `selection.lower_priority`
+- `selection.low_value_danmaku`
+- `selection.quiet_low_priority`
+- `selection.window_reset`
+- `selection.flush_failed`
+- `pipeline.identity_failed`
+- `pipeline.request_failed`
+- `dispatcher.dry_run`
+- `dispatcher.non_deliverable`
+- `dispatcher.push_failed`
+- `profile.mark_roasted_failed`
+- `config.persist_timeout`
+- `config.persist_failed`
 
-## 新路径检查清单
+Co-stream participation policy reason codes are also stable runtime facts. They
+cover allow, defer, skip, and downgrade decisions rather than only terminal
+skips:
 
-新增或修改事件路径时确认：
+- `co_stream.policy.solo_passthrough`
+- `co_stream.policy.capability_off`
+- `co_stream.policy.host_speaking`
+- `co_stream.policy.host_holding`
+- `co_stream.policy.turn_yielded`
+- `co_stream.policy.turn_unknown`
+- `co_stream.policy.host_support_only`
+- `co_stream.policy.nonverbal_safe`
 
-1. 起点有 trace_id，跨 EventBus/Pipeline 保持同一 ID。
-2. 每个责任边界有合适 stage，但没有函数级噪音。
-3. 预期不输出有稳定 skip reason。
-4. SafetyGuard 与 Dispatcher 阶段仍可见。
-5. 最终 result 能映射到 status/outcome。
-6. UID 已不可逆关联化，其他私密字段未进入投影。
-7. 容器有硬上限，会话结束后能清理。
-8. Dashboard 和 monitor 能解释新状态，并有负例测试。
+These reasons may be projected with capability id, requested/effective
+participation level, activation mode, bounded priority, host-turn state,
+reliability, confidence, and signal source. Do not project captured audio,
+transcripts, raw platform payloads, viewer text, or private conversation
+context. The policy decision is an explanation of a boundary; it is not a
+second dispatcher and must not itself produce output.
+
+There is no enforced co-stream speech path in this phase. The runtime has no
+manual handoff action, dedicated output module, or Pipeline route. No audio,
+transcript, or raw host-turn payload is added to timeline or audit data.
+
+`conditional_auto` keeps the saved choice separate from enforcement consent.
+The capability projection exposes `effective_activation` and
+`auto_enforcement_confirmed`; a preview selection without the exact current
+consent version is evaluated as `off`. Generic config updates cannot write the
+consent version. A future host-runtime integration must obtain a new explicit
+confirmation before automatic speech becomes possible.
+
+During the read-only wiring phase, dashboard state exposes these facts under
+`co_stream_participation`. The projection must keep `read_only=true` and
+`enforced=false`, must not consume or mutate the latest normalized host signal,
+and must not be interpreted as an Event Outcome or Dispatcher Outcome. `solo_stream` may show
+`co_stream.policy.solo_passthrough` in this projection solely to prove the
+isolation contract; the projection does not gate or alter the solo path.
+
+### Dispatcher Outcome
+
+Dispatcher Outcome is the final output-boundary result for an event that reaches Dispatcher.
+
+Initial dispatcher outcomes:
+
+- `dry_run`: Dispatcher was reached, but real output was intentionally disabled.
+- `pushed`: Dispatcher handed a real output request to the host through the approved output boundary. It does not assert that the host spoke it.
+- `skipped`: Dispatcher intentionally produced no output for a known policy reason.
+- `failed`: Dispatcher attempted the output boundary and hit an unexpected error.
+
+In co-stream, the request may additionally declare forward-compatible delivery metadata
+(`delivery_ttl_seconds`, `interrupt_policy`, `delivery_key`, `compensation_text`,
+`compensation_ttl_seconds`, `brief_text`). These are declarations, not outcomes. The
+current `neko-live` host safely ignores these unknown fields and does not expose lifecycle,
+floor-selection, or compensation results. The narrowed
+[RFC #2491](https://github.com/Project-N-E-K-O/N.E.K.O/issues/2491) adds only generic
+per-cue TTL plus host-internal voice/ownership safety; it does not define a plugin-visible
+lifecycle or consume the other five fields. Until that host change lands, TTL is still a
+declaration rather than an observed outcome. See `modules/live_support_events.md`
+「Delivery Policy」.
+
+High-value events must still end in one of these outcomes. They must not directly produce output outside Dispatcher.
+
+### High-value Event Priority Contract
+
+High-value Event Priority Contract defines how SC, Guard, and important gift events may influence Selection without bypassing NEKO Live guardrails.
+
+Contract:
+
+- High-value events may receive higher ranking weight than ordinary danmaku.
+- Inside `live_support_events`, priority also orders pending verified support events: milestone, high, medium, then light; equal priorities keep submission order.
+- Priority never cancels the support reply currently in Pipeline or TTS.
+- Provider event ID dedupe, one-second combo finalization, bounded backpressure, and session reset happen before the normal Pipeline call.
+- Higher priority does not bypass Safety Guard, cooldown policy, `dry_run`, Dispatcher, or privacy rules.
+- Higher priority does not create critical hard preemption.
+- Higher priority must still produce explainable winner and loser records through the Selection Decision Chain.
+
+### Monitor Signal
+
+Monitor Signal is a stable operational event name or snapshot field that future monitor code may emit or derive. Current reviews derive the same vocabulary from privacy-safe hosted-ui context, recent results, and backend logs.
+
+Initial monitor signals:
+
+- `live.listener_started`
+- `live.listener_stopped`
+- `live.listener_error`
+- `event.received`
+- `event.published`
+- `event.no_subscriber`
+- `event.handler_failed`
+- `selection.candidate_buffered`
+- `selection.decision_recorded`
+- `selection.selected`
+- `selection.dropped`
+- `selection.flush_failed`
+- `pipeline.started`
+- `pipeline.skipped`
+- `pipeline.failed`
+- `pipeline.pushed`
+- `safety.paused`
+- `safety.resumed`
+- `safety.tripped`
+- `safety.degraded`
+- `dispatcher.dry_run`
+- `dispatcher.pushed`
+- `dispatcher.failed`
+- `runtime.config_changed`
+- `runtime.config_persist_timeout`
+- `runtime.config_persist_failed`
+
+### Runtime Health Row
+
+Runtime Health Row is the compact status projection for one critical runtime boundary. It answers whether that boundary is still refreshing and where the chain appears to be stuck. It is inspired by Warthunder-style health rows, but NEKO Live defines rows around its own main chain rather than Warthunder polling groups.
+
+Runtime Health Row is not a new execution model, queue, scheduler, or source of truth. It must be derived from existing runtime facts, audit records, interaction results, and future monitor signals.
+
+Current implementation status: backend projection implemented in `core/runtime_dashboard.py`. `runtime.dashboard_state()` exposes the initial rows as `health_rows`, and Dashboard consumes the same facts through `live_explain.chain`, including the latest `trace_id` plus compact timeline stage/status/route/reason fields from the same read-only projection.
+
+Initial health rows:
+
+- `live_ingest`: `last_event_age`
+- `event_bus`: `last_publish_age`
+- `selection`: `last_decision_age`
+- `pipeline`: `last_run_age`
+- `safety_guard`: `current_state`, `cooldown_remaining`
+- `dispatcher`: `last_outcome_age`
+- `config_store`: `last_persist_age`, `last_error`
+
+Initial row fields:
+
+- `id`: stable row id.
+- `stage`: matching lifecycle stage when applicable.
+- `status`: compact state such as `healthy`, `idle`, `degraded`, `blocked`, or `failed`.
+- `count`: optional monotonic count for successful refreshes or observations.
+- `age_sec`: optional age since the last successful refresh or relevant observation.
+- `last_outcome`: optional latest outcome key.
+- `last_skip_reason`: optional latest skip reason key.
+- `reply_selection_policy`: optional selection-row debug field derived from `activity_level`; it is not a separate config knob.
+- `last_error`: optional redacted error category or reason key.
+- `privacy_safe_summary`: optional short redacted summary.
+
+Dashboard and Monitor surfaces may render these rows in any layout, but they must preserve the meaning: each row explains whether one critical NEKO Live boundary is refreshing, stale, blocked, degraded, or failed.
+
+### Dashboard Visibility
+
+Dashboard Visibility defines what the Dashboard must eventually be able to explain, not how it must look.
+
+Dashboard should be able to answer:
+
+- Is NEKO Live listening to a room?
+- Is output paused, tripped, degraded, dry-run, or live?
+- What was the latest event type and lifecycle stage?
+- Why did the latest event not produce output?
+- Which event won Selection, and why were other candidates dropped?
+- Did Pipeline reach Safety Guard and Dispatcher?
+- Did Dispatcher push, dry-run, skip, or fail?
+- Is each critical health row refreshing, and which row appears stuck?
+
+Dashboard must not show raw payloads, cookies, tokens, avatar bytes, base64 images, or unredacted private data.
+
+## Event Lifecycle
+
+### ingest
+
+Provider ingest modules such as `bili_live_ingest` and `douyin_live_ingest` receive provider live data and normalize it into `LiveEvent`. Every provider projects the same lifecycle outcomes below, and this stage should explain whether its listener is started, stopped, errored, or receiving events.
+
+For Bilibili support events, `LiveEvent.type` is the authoritative route classification. The rich `raw` object may enrich public support fields, but a missing inner type must not erase an outer `gift`, `super_chat`, or `guard` classification. Duplicate rich/lightweight callbacks use `ingest.duplicate_support_event`; the timeline keeps the shared opaque `trace_id` and never stores the raw packet, nickname, or original message.
+
+Expected outcomes: `received`, `published`, `failed`, `degraded`.
+
+### EventBus
+
+`core/event_bus.py` publishes `LiveEvent` by type to subscribers. This stage should explain whether an event was published, had no subscriber, or hit an isolated handler failure.
+
+Expected outcomes: `published`, `failed`, `dropped`.
+
+### Selection
+
+`modules/live_events` buffers candidates during the cooldown window and selects one event for the roast pipeline. This stage should explain selected candidates, dropped candidates, scoring failures, reset windows, and flush failures.
+
+Selection is not a FIFO queue. It should explain the Selection Decision Chain for the window: the winning candidate, losing candidates, priority or score differences, and stable skip reasons.
+
+Selection may also intentionally skip a low-value danmaku before pipeline after updating room-topic context. This is plugin-owned live behavior, not host/core output suppression. `selection.low_value_danmaku` covers low-information danmaku such as bare reactions or repeated digits; `selection.quiet_low_priority` covers additional plain low-priority danmaku when `activity_level=quiet`. Module status may expose `reply_selection_policy` as a read-only derived policy for Dashboard / Monitor debugging; it must not be treated as a separate user-facing config knob.
+
+`live_events.status()` also exposes read-only `RoomPulse v0` diagnostics derived lazily from the existing 45-second / 80-candidate room-topic window. These fields are aggregate status facts, not Event Outcomes, speaking permissions, scheduling inputs, or a second selection path:
+
+- `room_pulse_version`: projection contract version; currently `0`.
+- `room_pulse_candidate_count` and `room_pulse_unique_viewer_count`: bounded retained-message and distinct stable-viewer counts.
+- `room_pulse_low_value_ratio`: low-value candidate count divided by candidate count, rounded to three decimals.
+- `room_pulse_question_pressure` / `room_pulse_reaction_pressure`: `none`, `low`, or `high`, based on distinct-viewer support; corresponding `*_support` fields expose the bounded count.
+- `room_pulse_activity_band`: `quiet` for zero or one candidate in the newest 10 seconds, `steady` for two through four, and `burst` for five or more.
+- `room_pulse_dominant_theme_key` and `room_pulse_dominant_theme_support`: the existing top theme and distinct-viewer support. Data-derived `topic:*` keys are collapsed to `other_topic` before status exposure.
+- `room_pulse_repeated_signal_kind` and `room_pulse_repeated_signal_support`: empty when no cross-viewer repetition exists, otherwise `reaction` or `content` plus distinct-viewer support. The repeated text itself is never projected.
+
+RoomPulse adds no raw payload, nickname, UID, query, or representative danmaku text to status or audit. Its aggregate projection creates no timer, queue, persistence, network request, model call, or output route. Session reset clears its source window.
+
+The co-stream passive-context validation path exposes only bounded lifecycle counters and stable reasons; it never exposes the rendered snapshot, nickname, viewer text, support message, provider event id, or target role:
+
+- `ambient_support_count` / `ambient_support_capacity`: current verified support tail size and its fixed limit of two.
+- `ambient_support_retention_seconds`: local verified-support retention, currently 90 seconds.
+- `ambient_support_delivery_id_count`: bounded provider-id dedupe count; ids themselves are never exposed.
+- `ambient_publish_count`: non-expired passive snapshots queued in the current session, including the explicit empty authoritative state.
+- `ambient_expiry_count`: session-boundary invalidation markers queued for the previous session key; there is no timer-driven expiry.
+- `ambient_publish_suppressed_count`: snapshot attempts omitted by live, session, Safety Guard, output-channel, unchanged-content, or failure gates.
+- `ambient_publish_last_reason`: latest stable gate/result reason such as `queued`, `unchanged`, `live_disabled`, `dry_run`, `not_accepting_live_events`, `dispatcher_unavailable`, `output_channel_unavailable`, or a bounded failure type.
+- `ambient_hook_candidate_reads` / `ambient_hook_candidate_hits`: bounded local callback-selection evaluations and successful winners.
+- `ambient_hook_last_reason`: one allowlisted selector outcome: `selected.chorus`, `selected.continuity`, `selected.question`, `selected.mood`, `selected.complete`, `no_candidates`, `already_replied`, `duplicate_or_flood`, `low_value`, `fragment`, or `no_suitable`.
+- `ambient_hook_last_score` / `ambient_hook_last_candidate_count`: non-negative integer winner score and eligible-candidate count. They expose neither rank input nor viewer content.
+
+These fields are diagnostics, not proof that the model consumed the context or that an active support acknowledgement was audible. No callback text, nickname, UID, assistant output, summary, viewer profile, or historical memory is copied into status or audit. Plugin `push_message` confirms only that the dispatch request was queued. Session-reset clearing uses the previous session's coalescing key and does not copy viewer text into audit.
+
+The compact prompt renderer reuses the same source window only for an already scheduled response. It creates no timer, queue, persistence, network request, model call, or output route. The block is capped at 240 characters and is never copied into status or audit. `live_events.status()` exposes only resettable operational counters and stable reason metadata:
+
+- `room_pulse_prompt_uses`: number of non-empty prompt projections since the current module/session reset.
+- `room_pulse_prompt_omits`: number of empty projections since reset.
+- `room_pulse_prompt_last_chars`: character count of the latest projection, always `0..240`.
+- `room_pulse_prompt_last_reason`: one of `rendered`, `no_candidates`, `weak_evidence`, `context_unavailable`, `character_budget`, `inactive`, `safety_not_running`, or `safety_queue_pressure`.
+
+These are diagnostics, not Event Outcomes or speaking permissions. They must never include the rendered block or its representative example.
+
+`live_events.status()` also exposes bounded solo `SceneState v0` diagnostics. SceneState reads the existing privacy-safe `result` event but advances only for `status=pushed`; it never copies output, viewer text, topic title, hook, UID, or nickname:
+
+- `scene_state_version`: projection contract version; currently `0`.
+- `scene_state_active`: true only for an unexpired solo scene in an actionable phase.
+- `scene_state_phase`: `setup`, `develop`, `viewer_choice`, `callback`, or `close` while active; otherwise `idle`.
+- `scene_state_thread_key`: an allowlisted interaction shape such as `either_or`, `tiny_choice`, or `soft_observation`; empty when unavailable or inactive.
+- `scene_state_viewer_turn_count`: successful viewer-response turns in the current scene, bounded to three.
+- `scene_state_viewer_response_count`: explicit active-hook answers observed in the current scene.
+- `scene_state_transition_count` / `scene_state_expired_count`: resettable lifecycle counters.
+- `scene_state_prompt_uses` / `scene_state_prompt_omits`: rendered and empty scene projections since reset.
+- `scene_state_prompt_last_chars`: latest SceneState projection length, always `0..160`.
+- `scene_state_prompt_last_reason`: `rendered`, `inactive_mode`, `unsupported_event`, `no_scene`, `character_budget`, or the upstream `inactive` / `safety_not_running` / `safety_queue_pressure` suppression reason.
+
+SceneState is not an Event Outcome, transcript store, scheduler, or co-stream permission. RoomPulse plus SceneState prompt material is consolidated under 400 characters and remains on the existing selected-output path.
+
+Expected outcomes: `selected`, `dropped`, `skipped`, `failed`.
+
+### Pipeline
+
+`core/pipeline.py` handles permission, identity resolution, profile write, once-per-UID gate, request building, safety output gate, dispatcher call, and result recording.
+
+Support events route to `live_support_events` during request building. This route still uses the same pipeline stages and only exposes support summary metadata such as event type, tier, label, gift count, coin total, or guard level.
+
+Expected outcomes: `skipped`, `failed`, `pushed`, `degraded`.
+
+### Safety Guard
+
+`core/safety_guard.py` is the mandatory guard for connection state, pause state, automatic trips, queue limits, and rate limits.
+
+Expected outcomes: `skipped`, `degraded`, `failed`.
+
+### Dispatcher
+
+`adapters/neko_dispatcher.py` is the only output boundary. It must explain whether output was pushed, dry-run, skipped as non-deliverable, degraded to text-only, or failed.
+
+Plugin-owned output-contract helpers are split by concern: `core/live_reply_contract.py` defines structured metadata, `core/live_output_quality.py` owns quality fallback rules, `core/live_output_shape.py` owns final text shaping, `core/live_output_memory.py` owns recent-output negative examples, and `core/live_output_contract_prompt.py` renders prompt-contract text and merges callback metadata. These helpers may shape plugin-owned live output metadata and prompts, but they must not bypass Dispatcher or patch host/core final output paths.
+
+`dry_run` is a Dispatcher Outcome, not an early exit. A `dry_run` event should still explain the earlier lifecycle stages that led to Dispatcher.
+
+Expected outcomes: `pushed`, `dry_run`, `skipped`, `failed`, `degraded`.
+
+### Runtime
+
+`core/runtime.py` owns lifecycle, hosted-ui context, and public runtime API compatibility. It keeps those APIs stable, but delegates mutable runtime cache initialization to `core/runtime_state.py`, real module instantiation / registration plus import-failure `ReservedModule` fallback / pipeline assembly to `core/runtime_modules.py`, and legacy runtime action/helper compatibility to focused `core/runtime_*_api.py` mixins. The implementation owners remain `core/runtime_bili_auth.py`, `core/runtime_config.py`, `core/runtime_live_controls.py`, `core/runtime_instructions.py`, `core/runtime_live_input.py`, `core/runtime_developer_tools.py`, `core/runtime_dashboard.py`, `core/live_hosting_director.py`, and `core/runtime_active_engagement.py`.
+
+Expected outcomes: `received`, `skipped`, `failed`, `degraded`.
+
+### Dashboard
+
+Dashboard consumes the read-only projection from `core/runtime_dashboard.py`; live-state timing helpers live in `core/live_status_timing.py`, idle/active eligibility and Live Director next-action decisions live in `core/live_status_director.py`, and Solo Test Readiness / speech explanation projections live in `core/live_status_readiness.py`. Dashboard should explain the current state and latest event path without becoming the source of truth.
+
+Dashboard should eventually be able to show Runtime Health Rows so operators can distinguish "current config is set" from "each critical boundary is still refreshing".
+
+Expected outcomes: read-only visibility only.
+
+### Prompt Material Metadata
+
+`core/meme_knowledge.py` and `core/live_content_host_catalog.py` are plugin-owned prompt material sources. They may explain why a request carried an optional meme hint or host beat direction, but they are not runtime routes, live-ingest sources, online trend fetchers, or host/core output hooks.
+
+Dashboard and Monitor may surface `meme_hint_ids`, `meme_hint_tags`, `host_beat_key`, `host_beat_shape`, `host_beat_fun_axis`, `host_beat_reply_affordance`, and `host_beat_family` to help reviewers understand live feel, repetition, and handoff material. These fields must remain privacy-safe and compact. They must not be used to infer event identity, force the final spoken text, bypass Safety Guard, or replace `trace_id` timeline reasoning.
+
+## Privacy Rules
+
+- Do not expose raw live payloads in monitor signals or Dashboard state.
+- Do not expose cookies, tokens, login credentials, or encrypted credential material.
+- Do not expose avatar bytes or base64 data.
+- Prefer UID, event type, stage, outcome, reason key, and redacted short messages.
+- Audit and monitor data should be enough to debug the lifecycle without reconstructing private chat content.
+
+## Reviewer Checklist
+
+For any future PR touching runtime behavior, event handling, output, monitor, or dashboard visibility, reviewers should check:
+
+- Every new event path has a stage and outcome.
+- Expected non-output paths use a stable skip reason.
+- Unexpected failures use `failed`, not `skipped`.
+- Safety Guard and Dispatcher remain explicit lifecycle stages.
+- Dashboard visibility is derived from runtime state, not raw payloads.
+- Privacy rules are preserved.
+- New reasons or signals are added to this document before use.
+
+## Future Extension Rules
+
+- Gift / SC / Guard handlers must reuse the same stage, outcome, skip reason, and monitor signal language.
+- Gift / SC / Guard priority must follow the High-value Event Priority Contract.
+- New event types may add skip reasons only when existing reasons are too vague.
+- New monitor signals should be stage-prefixed and privacy-safe.
+- Runtime Timeline should remain compact enough for a reviewer to inspect in one PR.
+- Runtime Timeline Projection must stay keyed by `trace_id`; do not infer event identity only from UID, event type, or timestamp proximity.
+- Runtime Health Rows should stay aligned with the NEKO Live main chain and must not copy Warthunder polling group names.
+- Dashboard may choose any layout, but it must answer the Dashboard Visibility questions above.
+- Future designs must not add FIFO output queues, Scenario state machines, Detector / Arbiter routing, critical hard preemption, or direct output paths that bypass the NEKO Live main chain without a separate architecture review.
+
+### RitualMemory Diagnostics
+
+`live_events.status()` exposes bounded RitualMemory counters. These are diagnostics, not Event Outcomes, speaking permissions, or a second selection path:
+
+- `ritual_memory_version`: projection version.
+- `ritual_tracked_count` / `ritual_confirmed_count` / `ritual_retired_count`: bounded population (at most 8 tracked).
+- `ritual_callback_offers` / `ritual_callback_uses`: how often a callback line was offered and handed to a prompt in this session.
+- `ritual_last_skip_reason`: stable reason code — `no_ritual`, `unconfirmed`, `too_soon`, `same_context`, or `retired`.
+- `ritual_oldest_confirmed_age_seconds`: age of the longest-lived confirmed ritual.
+
+The ritual phrase itself is prompt-only. It must never appear in status, audit, monitor output, or Dashboard, matching the RoomPulse representative-example boundary.
+
+### RoomVerdict Diagnostics
+
+`live_events.status()` exposes bounded collective-answer counters. These are diagnostics, not Event Outcomes or speaking permissions:
+
+- `room_verdict_version`: projection version.
+- `room_verdict_ballot_open`: whether a choice-shaped beat currently has an open, unexpired ballot.
+- `room_verdict_ballots_opened` / `room_verdict_announced_count`: session totals.
+- `room_verdict_delivery_unconfirmed_count`: choice-shaped host handoffs suppressed because playback was not confirmed.
+- `room_verdict_current_voters` / `room_verdict_current_options`: bounded ballot size (at most 64 voters, 6 options).
+- `room_verdict_last_reason`: stable reason code — `delivery_unconfirmed`, `no_ballot`, `too_few_voters`, `already_announced`, or `expired`.
+
+Until correlated playback backflow exists, normal runtime handoffs leave
+`room_verdict_ballot_open=false`; the tally implementation remains bounded and independently
+tested but unreachable from `pushed`. The answer token is prompt-only. It must never appear in
+status, audit, monitor output, or Dashboard.
+
+### Runtime Log
+
+Runtime observability was previously in-memory only: Dashboard projections, recent results and `live_explain` all live in the plugin process, so none of it reached the log files a tester can actually send back. Across 281 modules the runtime held 3 `logger` call sites, all in adapters/ingest, leaving pipeline, dispatcher, selection, safety guard and the support scheduler silent.
+
+The measured consequence: a bundle covering roughly 40 minutes of live-room connection contained no line about danmaku received, selected, skipped or dispatched, so "the room was quiet" and "events arrived but were silently dropped" were indistinguishable, and no effect change could be verified.
+
+`core/runtime_log.py` closes that gap by consuming the records `core/runtime_timeline.py` already builds. Those records are sanitized by construction — HMAC-hashed uid, allowlisted reason codes, truncated stage/status — so the log inherits the same guarantees and opens no new privacy surface. Message text, nicknames, raw payloads and credentials cannot reach a log line through this path.
+
+Volume is bounded without a timer:
+
+- **Immediate lines** for rare, decisive events: dispatcher outcomes (already rate-limited by the output cooldown) and `failed` / `degraded` outcomes (logged at warning).
+- **Counted, not printed**, for everything else, flushed as one bounded summary every 60 records or at a session boundary.
+
+Because the flush is driven by record count rather than a clock, this adds no background task, no periodic wakeup, and no work while the room is silent.
+
+Session boundaries always flush, including when nothing happened. A `connect` summary followed by a `disconnect` summary reading `records=0` is itself the diagnosis, and is the specific evidence the earlier bundle could not provide.
+
+Status exposes `runtime_log_records` and `runtime_log_pending` only. Diagnostics must never break the live path: a logger that raises is dropped silently, and a missing logger is a no-op.

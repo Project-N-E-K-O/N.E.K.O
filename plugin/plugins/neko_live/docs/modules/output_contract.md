@@ -1,31 +1,41 @@
-# output_contract
+# Output Contract And Danmaku Response
 
 ## Purpose
 
-定义直播回复在真正派发前的内容形状：短、自然、知道在回应谁、适合 TTS，并避免模板主持、舞台指令、伪礼物致谢和换词复读。
+The output-contract slice keeps NEKO Live speech short, attributable, and safe before the host transports it. It also owns normal danmaku request classification and prompt construction.
 
-## Ownership
+## Ownership And Contracts
 
-- request metadata / prompt contract：`core/live_reply_contract.py`、`core/live_output_contract_prompt.py`；
-- 回复策略与质量整形：`core/live_reply_policy.py`、`core/live_output_policy.py`、`core/live_output_quality.py`、`core/live_output_shape.py`；
-- 最终派发：`adapters/neko_dispatcher.py`。
+- `modules/danmaku_response/module.py` classifies the current public danmaku and builds an `InteractionRequest`; `core/danmaku_text_rules.py` owns its small reaction and mention classifiers without depending on the later active-topic slice.
+- `adapters/output_contract_bridge.py` maps that request to plugin-owned reply metadata.
+- `core/live_reply_contract.py` declares route limits and reply modes.
+- `core/live_output_contract_prompt.py`, `core/live_output_quality.py`, and `core/live_output_shape.py` render, validate, and shape the final spoken line.
+- `adapters/neko_dispatcher.py` is the only output boundary. The host receives opaque metadata and does not own NEKO Live wording policy.
 
-模块只提供安全请求内容，不在各自 handler 里复制最终输出规则。
+## Data Flow And Safety
 
-## Rules
+Live and sandbox input still enter `core/pipeline.py`. The pipeline applies the permission gate and `core/safety_guard.py` before dispatch. Normal danmaku responses read the current public event, sanitized viewer profile context, recent plugin output, and the configured live theme. They do not write a new store and do not bypass the audit, pipeline, or dispatcher boundaries.
 
-- 普通弹幕接话不重复描述头像；
-- 看不到头像时只使用昵称或安全 META；
-- 支持事件致谢不索要更多礼物；
-- 主持输出不说“有人吗”“大家发弹幕”，不输出导演式舞台指令；
-- 回复过长、悬空选项、泛化问句或近期复读应被整形、替换或跳过；
-- 图片超出 message-plane 预算时降级纯文字；
-- dry-run 与跳过必须返回可解释结果。
+Viewer-supplied nicknames, named targets, and short danmaku anchors may be interpolated into the output contract so the reply remains attributable. They are always marked as untrusted public data, never instructions; embedded requests to change rules, reveal context, or perform actions must not be followed.
+
+The pure shaper can remove stage directions and internal-context leaks, reject unsafe or unfulfilled reply shapes, enforce a route character ceiling, and record shaping reasons in plugin metadata. The current host SDK does not expose the generated reply to the plugin before TTS, so live delivery currently relies on the injected prompt contract and opaque metadata; hard post-generation shaping is reserved for a future generic host callback. Hosting coalescing uses the target, hosting source, and stable beat identifier so duplicate delivery can collapse without merging different beats.
 
 ## Testing
 
-为每种 route 提供正常例、长度边界、复读、伪礼物、舞台指令、泛化主持、看不到头像和 Dispatcher 降级负例。输出质量告警属于复盘信号，不应绕过 pipeline 自动重试造成重复发言。
+Run:
 
-## Rollback
+```powershell
+uv run pytest plugin/plugins/neko_live/tests/test_output_contract.py -q
+uv run pytest plugin/plugins/neko_live/tests -q --maxfail=1
+uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
+```
 
-质量规则异常时回滚到上一组已验证规则，保留唯一 Dispatcher、短句上限和敏感内容边界。不得用关闭所有安全整形作为临时修复。
+Coverage includes reply length, fulfilled content requests, hosting coalescing, named-target parsing, and adversarial viewer fields remaining data rather than control instructions.
+
+## Limitations And Degrade Behavior
+
+- Reply quality checks are deterministic heuristics; uncertain text falls back to a short safe line.
+- Generic words are not accepted as named roast targets. A public nickname or explicit mention is required.
+- The host currently treats output-contract metadata as opaque transport metadata and provides no plugin-owned post-generation or pre-TTS transform hook. Character ceilings are therefore prompt-level best effort on the live delivery path until that generic host capability exists.
+
+To roll back this slice, remove the output-contract bridge from the dispatcher and restore the previous danmaku module registration. The EventBus, pipeline, safety guard, and viewer stores remain compatible because their public contracts are unchanged.

@@ -32,6 +32,13 @@ def test_plugin_code_does_not_import_host_core():
     assert offenders == []
 
 
+def test_packaged_plugin_does_not_import_host_utils():
+    source = _source("adapters/twitch_auth_service.py")
+
+    assert "from " + "utils." not in source
+    assert "import " + "utils." not in source
+
+
 def test_pipeline_routing_stays_pure():
     source = _source("core/pipeline_routing.py")
 

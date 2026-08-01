@@ -257,7 +257,7 @@ def test_console_modal_close_callback_stays_stable_while_typing() -> None:
         assert 'onClose={() => { setInteractionDialog("") }}' not in source
 
 
-def test_console_uses_viewport_fixed_live_control_with_priority_readiness_tooltip() -> None:
+def test_console_keeps_live_control_inline_with_priority_readiness_hint() -> None:
     root = Path(__file__).resolve().parents[1]
 
     for name in ("panel.tsx", "panel_compat.tsx"):
@@ -265,10 +265,7 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         runtime_source = source.split('<Card title={t("panel.console.runtimeTitle")}>', 1)[1].split(
             '<Card title={t("panel.console.sessionTitle")}>', 1
         )[0]
-        dock_source = source.split('className="neko-live-live-fab"', 1)[1].split(">\n        {", 1)[0]
-        live_control_source = source.split('className="neko-live-live-fab"', 1)[1].split(
-            "const renderConfigField", 1
-        )[0]
+        live_control_source = runtime_source.split('className="neko-live-inline-control"', 1)[1]
         settings_source = source.split("const advancedSection = (", 1)[1].split("const dataSection = (", 1)[0]
         toolbar_source = source.split("<Toolbar>", 1)[1].split("</Toolbar>", 1)[0]
 
@@ -284,23 +281,12 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         assert 'overflow: "visible"' in source
         assert 'height: "calc(100vh - 190px)"' not in source
         assert 'className="neko-live-console-dock"' not in source
-        assert 'position: "fixed"' in dock_source
-        assert 'right: "24px"' in dock_source
-        assert 'bottom: "24px"' in dock_source
-        assert 'background: "rgba(103, 194, 58, 0.1)"' in live_control_source
-        assert 'borderColor: "rgba(103, 194, 58, 0.38)"' in live_control_source
-        assert 'color: "var(--success)"' in live_control_source
-        assert 'minWidth: "188px"' in live_control_source
-        assert 'minHeight: "56px"' in live_control_source
-        assert 'borderRadius: "16px"' in live_control_source
-        assert 'fontSize: "22px"' in live_control_source
-        assert "fontWeight: 700" in live_control_source
-        assert "opacity: 1" in live_control_source
-        assert "!simpleActionPending" in live_control_source
+        assert 'className="neko-live-inline-control"' in runtime_source
+        assert 'className="neko-live-live-fab"' not in source
+        assert 'position: "fixed"' not in live_control_source
+        assert 'disabled={connectPending || !!simpleActionPending}' in live_control_source
         assert 't("panel.actions.connect")' in live_control_source
-        assert "<Tooltip" in source
-        assert 'placement="top"' in source
-        assert 'content={readinessReason}' in source
+        assert "title={!started && !canStart && !connectPending ? readinessReason : undefined}" in live_control_source
         assert "readinessTooltip" not in source
         readiness_source = source.split("const readinessReason =", 1)[1].split(
             "const primaryStatusLabel", 1
@@ -344,8 +330,6 @@ def test_console_uses_viewport_fixed_live_control_with_priority_readiness_toolti
         assert 't("panel.pacing.standard")' in source
         assert 't("panel.pacing.slow")' in source
         assert "void connectRoom()" in source
-        assert 'callSimple("clear_queue")' not in dock_source
-        assert 'callSimple("pause_roast")' not in dock_source
         assert 'const canStart = roomConfigured' in source
         assert "primaryStatusLabel" in toolbar_source
         assert "primaryStatusTone" in toolbar_source
@@ -1105,6 +1089,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.summary.temporarily_not_speaking",
         "panel.speechExplanation.summary.cannot_stream",
         "panel.speechExplanation.summary.waiting_for_activity",
+        "panel.speechExplanation.summary.recently_handed_off",
         "panel.speechExplanation.summary.recently_spoke",
         "panel.speechExplanation.summary.recently_skipped",
         "panel.speechExplanation.summary.failed",
@@ -1123,6 +1108,7 @@ def test_all_locales_define_live_status_summary_labels():
         "panel.speechExplanation.reason.quiet_activity_gap",
         "panel.speechExplanation.reason.no_recent_activity",
         "panel.speechExplanation.reason.waiting_for_viewer_or_idle_slot",
+        "panel.speechExplanation.reason.host_handoff",
         "panel.speechExplanation.reason.recent_output",
         "panel.speechExplanation.reason.recently_skipped",
         "panel.speechExplanation.reason.failed",

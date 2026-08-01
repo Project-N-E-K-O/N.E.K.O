@@ -22,7 +22,6 @@ import {
   Tabs,
   Text,
   Textarea,
-  Tooltip,
   Toolbar,
   ToolbarGroup,
   useCallback,
@@ -184,14 +183,18 @@ function liveStateTone(state: string): "success" | "warning" | "danger" | "defau
 }
 
 function recentResultTone(status: string): "success" | "warning" | "danger" | "default" {
+  // "pushed"/"queued" only mean the request was handed to the host
+  // (submitted/awaiting), not that the cat actually spoke on stream —
+  // keep "queued" neutral, never a warning.
   if (status === "pushed") return "success"
+  if (status === "queued") return "default"
   if (status === "failed") return "danger"
   if (status === "skipped") return "warning"
   return "default"
 }
 
 function speechExplanationTone(summary: string): "success" | "warning" | "danger" | "default" {
-  if (summary === "ready" || summary === "recently_spoke") return "success"
+  if (summary === "ready" || summary === "recently_handed_off" || summary === "recently_spoke") return "success"
   if (summary === "cannot_stream" || summary === "failed") return "danger"
   if (summary === "test_only" || summary === "temporarily_not_speaking" || summary === "waiting_for_activity" || summary === "recently_skipped") return "warning"
   return "default"
@@ -290,7 +293,8 @@ function labelFallback(group: string, value: string): string {
       temporarily_not_speaking: "NEKO 暂时不会说话",
       cannot_stream: "NEKO 还不能开播",
       waiting_for_activity: "正在等合适的开口时机",
-      recently_spoke: "NEKO 刚刚说过话",
+      recently_handed_off: "最近请求已交给宿主",
+      recently_spoke: "最近请求已交给宿主",
       recently_skipped: "最近事件没有输出",
       failed: "最近输出失败",
       waiting: "正在等待合适时机",
@@ -310,7 +314,8 @@ function labelFallback(group: string, value: string): string {
       quiet_activity_gap: "直播间已经安静了一小会。",
       no_recent_activity: "最近没有新的互动。",
       waiting_for_viewer_or_idle_slot: "正在等待观众接话或冷场补位时机。",
-      recent_output: "NEKO 刚刚已经输出过。",
+      host_handoff: "最近请求已交给宿主；尚未确认播放完成。",
+      recent_output: "最近请求已交给宿主；尚未确认播放完成。",
       recently_skipped: "最近事件被策略跳过。",
       failed: "最近输出链路失败。",
       "dispatcher.dry_run": "Dispatcher 以 dry_run 完成。",
@@ -2527,6 +2532,39 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
             <Button tone="default" onClick={() => { openConsoleDialog("theme") }}>{t("panel.streamTheme.title")}</Button>
             <Button tone="default" onClick={() => { openConsoleDialog("pacing") }}>{t("panel.pacing.title")}</Button>
           </Grid>
+          <div
+            className="neko-live-inline-control"
+            aria-label={t("panel.console.runtimeTitle")}
+            title={!started && !canStart && !connectPending ? readinessReason : undefined}
+          >
+            {!started && !canStart && !connectPending ? (
+              <button
+                type="button"
+                className="neko-button"
+                data-tone="default"
+                disabled
+                style={{ width: "100%", minHeight: "48px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", cursor: "not-allowed" }}
+              >
+                <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: "var(--warning)" }} />
+                {t("panel.console.preparation.notReady")}
+              </button>
+            ) : (
+              <button
+                type="button"
+                className="neko-button"
+                data-tone={started ? "danger" : "success"}
+                disabled={connectPending || !!simpleActionPending}
+                onClick={() => {
+                  if (started) setStopConfirmOpen(true)
+                  else if (canStart) setStartConfirmOpen(true)
+                }}
+                style={{ width: "100%", minHeight: "48px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px" }}
+              >
+                <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: started ? "var(--danger)" : connectPending ? "var(--primary)" : "var(--success)" }} />
+                {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
+              </button>
+            )}
+          </div>
         </Stack>
       </Card>
 
@@ -2803,65 +2841,6 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
         onCancel={() => { setStopConfirmOpen(false) }}
       />
         </Stack>
-      </div>
-      <div
-        className="neko-live-live-fab"
-        aria-label={t("panel.console.runtimeTitle")}
-        style={{ position: "fixed", right: "24px", bottom: "24px", zIndex: 100, display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-      >
-        {!started && !canStart && !connectPending ? (
-          <Tooltip content={readinessReason} placement="top">
-            <span tabIndex={0} style={{ display: "inline-flex" }}>
-              <button
-              type="button"
-              className="neko-button"
-              data-tone="default"
-              disabled
-              style={{ minWidth: "148px", minHeight: "48px", borderRadius: "999px", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: "8px", cursor: "not-allowed", boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)" }}
-            >
-              <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: "var(--warning)" }} />
-              {t("panel.console.preparation.notReady")}
-              </button>
-            </span>
-          </Tooltip>
-        ) : (
-          <button
-            type="button"
-            className="neko-button"
-            data-tone={started ? "danger" : "success"}
-            disabled={connectPending || !!simpleActionPending}
-            onClick={() => {
-              if (started) setStopConfirmOpen(true)
-              else if (canStart) setStartConfirmOpen(true)
-            }}
-            style={{
-              minWidth: "148px",
-              minHeight: "48px",
-              borderRadius: "999px",
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "8px",
-              boxShadow: "0 10px 28px rgba(15, 23, 42, 0.16)",
-              ...(!started && canStart && !simpleActionPending
-                ? {
-                    minWidth: "188px",
-                    minHeight: "56px",
-                    borderRadius: "16px",
-                    background: "rgba(103, 194, 58, 0.1)",
-                    borderColor: "rgba(103, 194, 58, 0.38)",
-                    color: "var(--success)",
-                    fontSize: "22px",
-                    fontWeight: 700,
-                    opacity: 1,
-                  }
-                : {}),
-            }}
-          >
-            <span aria-hidden="true" style={{ width: "8px", height: "8px", borderRadius: "999px", background: started ? "var(--danger)" : connectPending ? "var(--primary)" : "var(--success)" }} />
-            {connectPending ? t("panel.console.state.connecting") : started ? t("panel.actions.disconnect") : t("panel.actions.connect")}
-          </button>
-        )}
       </div>
     </div>
   )
@@ -3595,7 +3574,7 @@ export default function NekoLivePanel(props: CompatPluginSurfaceProps<DashboardS
                       columns={[
                         { key: "uid", label: "UID", render: (row: any) => row.uid || "-" },
                         { key: "nickname", label: t("panel.columns.nickname"), render: (row: any) => row.nickname || "-" },
-                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : "warning"} label={localizedStatusCode(t, String(row.status || ""))} /> },
+                        { key: "status", label: t("panel.columns.status"), render: (row: any) => <StatusBadge tone={row.status === "pushed" ? "success" : row.status === "queued" ? "default" : "warning"} label={localizedStatusCode(t, String(row.status || ""))} /> },
                         { key: "reason", label: t("panel.columns.reason"), render: (row: any) => row.reason || row.output || "-" },
                       ]}
                     />

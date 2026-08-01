@@ -58,6 +58,22 @@ async def test_start_live_listener_starts_fresh_session_state(runtime: LiveRunti
 
 
 @pytest.mark.asyncio
+async def test_start_live_listener_schedules_current_session_fact_guard(
+    runtime: LiveRuntime,
+) -> None:
+    calls = 0
+
+    def schedule() -> None:
+        nonlocal calls
+        calls += 1
+
+    runtime.live_events.schedule_session_context_refresh = schedule  # type: ignore[method-assign]
+
+    assert await start_live_listener(runtime, 123) is True
+    assert calls == 1
+
+
+@pytest.mark.asyncio
 async def test_late_result_from_previous_session_is_discarded(runtime: LiveRuntime) -> None:
     assert await start_live_listener(runtime, 123) is True
     old_generation = runtime._live_session_generation
@@ -273,6 +289,161 @@ def test_live_event_generation_survives_payload_projection(
         fallback_event=support_event,
     )
     assert support_payload["_live_session_generation"] == 23
+
+
+def test_stale_support_event_cannot_repopulate_current_passive_context(
+    runtime: LiveRuntime,
+) -> None:
+    remembered: list[int] = []
+    runtime.config.live_mode = "co_stream"
+    runtime.config.live_support_events_enabled = True
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_events.remember_support_context = (  # type: ignore[method-assign]
+        lambda payload, *, tier: remembered.append(
+            int(payload["_live_session_generation"])
+        )
+        or True
+    )
+
+    runtime.live_support_events._on_bus_event(
+        LiveEvent(
+            type="gift",
+            uid="synthetic-viewer",
+            payload={
+                "nickname": "synthetic",
+                "gift_name": "synthetic-gift",
+                "gift_value": 1,
+                "coin_type": "gold",
+                "support_verified": True,
+                "support_evidence": "manual_live_simulation",
+                "provider_event_id": "old-event",
+                "provider_event_type": "SEND_GIFT",
+            },
+            session_generation=1,
+        )
+    )
+
+    assert remembered == []
+
+
+def test_stale_signal_event_cannot_enter_live_events_active_path(
+    runtime: LiveRuntime,
+) -> None:
+    spawned: list[object] = []
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_events.ctx = runtime
+
+    def capture_spawn(coro: object) -> None:
+        spawned.append(coro)
+        coro.close()  # type: ignore[attr-defined]
+
+    runtime.live_events._spawn = capture_spawn  # type: ignore[method-assign]
+    runtime.live_events.submit(
+        LiveEvent(
+            type="gift",
+            uid="synthetic-viewer",
+            payload={"gift_name": "synthetic-gift"},
+            session_generation=1,
+        )
+    )
+
+    assert spawned == []
+
+
+def test_stale_event_cannot_contaminate_current_audience_summary(
+    runtime: LiveRuntime,
+) -> None:
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_audience_session.ctx = runtime
+    runtime.live_audience_session.start_session()
+
+    runtime.live_audience_session._on_live_event(
+        LiveEvent(
+            type="danmaku",
+            uid="synthetic-viewer",
+            payload={"nickname": "synthetic", "text": "old-session"},
+            session_generation=1,
+        )
+    )
+
+    snapshot = runtime.live_audience_session.snapshot()
+    assert snapshot["danmaku_count"] == 0
+    assert snapshot["interaction_viewer_count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_stale_normalized_payload_has_no_pre_pipeline_live_side_effects(
+    runtime: LiveRuntime,
+) -> None:
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 2
+    runtime.live_events.ctx = runtime
+    stale = ViewerEvent(
+        uid="synthetic-viewer",
+        nickname="synthetic",
+        danmaku_text="old-session",
+        source="live_danmaku",
+        raw={
+            "event_type": "danmaku",
+            "_live_session_generation": 1,
+        },
+    )
+    original_normalize = runtime.live_provider.normalize
+    runtime.live_provider.normalize = lambda _payload: stale  # type: ignore[method-assign]
+    try:
+        await runtime.handle_live_payload({})
+    finally:
+        runtime.live_provider.normalize = original_normalize  # type: ignore[method-assign]
+
+    assert runtime.live_events.recent_chat_snapshot(limit=3) == []
+    assert runtime._last_live_danmaku_seen_at == 0.0
+    assert runtime._last_live_danmaku_seen_type == ""
+
+
+@pytest.mark.asyncio
+async def test_selected_provider_event_is_observed_once_across_pipeline_handoff(
+    runtime: LiveRuntime,
+) -> None:
+    runtime._accepting_live_events = True
+    runtime._live_session_generation = 1
+    runtime.live_events.ctx = runtime
+    original_normalize = runtime.live_provider.normalize
+    runtime.live_provider.normalize = (  # type: ignore[method-assign]
+        lambda payload: ViewerEvent(
+            uid=str(payload.get("uid") or ""),
+            nickname=str(payload.get("nickname") or ""),
+            danmaku_text=str(payload.get("danmaku_text") or ""),
+            source="live_danmaku",
+            raw=dict(payload),
+        )
+    )
+    try:
+        runtime.live_events.submit(
+            LiveEvent(
+                type="danmaku",
+                uid="synthetic-viewer",
+                payload={
+                    "nickname": "synthetic",
+                    "text": "synthetic question?",
+                    "provider_event_id": "provider-event-1",
+                },
+                session_generation=1,
+            )
+        )
+        for _ in range(5):
+            pending = [task for task in runtime.live_events._tasks if not task.done()]
+            if not pending:
+                break
+            await asyncio.gather(*pending)
+    finally:
+        runtime.live_provider.normalize = original_normalize  # type: ignore[method-assign]
+
+    rows = runtime.live_events.recent_chat_snapshot(limit=3)
+    assert len(rows) == 1
+    assert rows[0]["selected"] is True
 
 
 def test_douyin_normalize_preserves_internal_session_generation(

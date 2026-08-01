@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from plugin.sdk.plugin import Err, NekoPluginBase, Ok, SdkError, lifecycle, neko_plugin, plugin_entry, tr, ui
+
+if TYPE_CHECKING:
+    from .core.runtime import LiveRuntime
 
 
 @neko_plugin
@@ -70,6 +73,7 @@ class NekoLivePlugin(NekoPluginBase):
     async def shutdown(self, **_):
         if self.runtime:
             await self.runtime.stop()
+        self._set_recent_chat_tool_enabled(False)
         return Ok({"status": "stopped"})
 
     async def _on_command_loop_start(self) -> None:
@@ -101,7 +105,22 @@ class NekoLivePlugin(NekoPluginBase):
             else:
                 self.disable_entry(entry_id)
 
+    def _set_recent_chat_tool_enabled(self, enabled: bool) -> bool:
+        from .modules.live_events.recent_chat_tool import set_recent_chat_tool_enabled
 
+        return set_recent_chat_tool_enabled(self, enabled)
+
+    async def _get_recent_live_chat_tool(
+        self,
+        query: Any = "",
+        **_,
+    ) -> dict[str, Any]:
+        from .modules.live_events.recent_chat_tool import recent_chat_tool_result
+
+        return recent_chat_tool_result(
+            self,
+            query=query,
+        )
     @ui.context(id="dashboard", title=tr("panel.title", default="NEKO Live"))
     async def get_dashboard_ui_context(self) -> dict[str, Any]:
         return await self._runtime().dashboard_state()

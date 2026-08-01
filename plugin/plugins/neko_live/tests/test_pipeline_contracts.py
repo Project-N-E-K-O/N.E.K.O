@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 
 import pytest
@@ -14,6 +15,7 @@ from plugin.plugins.neko_live.core.contracts import (
 from plugin.plugins.neko_live.core.permission_gate import PermissionGate
 from plugin.plugins.neko_live.core.pipeline import LivePipeline
 from plugin.plugins.neko_live.core.pipeline_session import PipelineSessionTracker
+from plugin.plugins.neko_live.core.safety_guard import SafetyGuard
 
 
 @pytest.mark.asyncio
@@ -74,6 +76,44 @@ def test_live_status_offline_gate_only_allows_verified_support_signals():
     assert blocked is not None
     assert blocked.reason == "live_status.live_room_offline"
     assert pipeline._live_status_gate_decision(gift) is None
+
+
+def test_live_status_cooldown_defers_support_timing_to_dedicated_safety_lane():
+    class Audit:
+        def record(self, *_args, **_kwargs):
+            return None
+
+    config = LiveConfig(rate_limit_seconds=30)
+    guard = SafetyGuard(config, Audit())
+    guard._last_output_at = time.monotonic()
+    ctx = SimpleNamespace(
+        live_connection_snapshot=lambda: {"connected": True},
+        live_status_summary=lambda _snapshot: {
+            "summary": "temporarily_not_speaking",
+            "reason": "cooldown",
+            "can_output": False,
+            "live_status": "live",
+        },
+    )
+    pipeline = LivePipeline(ctx)
+    normal = ViewerEvent(
+        uid="1",
+        nickname="u1",
+        danmaku_text="hello",
+        source="live_danmaku",
+        raw={"event_type": "danmaku"},
+    )
+    gift = ViewerEvent(
+        uid="2",
+        nickname="u2",
+        source="live_danmaku",
+        raw={"event_type": "gift", "gift_name": "Small Heart"},
+    )
+
+    assert pipeline._live_status_gate_decision(normal) is None
+    assert pipeline._live_status_gate_decision(gift) is None
+    assert guard.before_output(normal).allowed is False
+    assert guard.before_output(gift).allowed is True
 
 
 @pytest.mark.asyncio

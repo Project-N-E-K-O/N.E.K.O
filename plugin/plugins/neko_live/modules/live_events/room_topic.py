@@ -2,14 +2,26 @@
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
-from ...core.live_reply_tactics import tactic_for_theme
 from ...core.viewer_preferences import infer_viewer_preferences
-from .provider_event import event_nickname, event_prompt_text, event_uid, public_text
+from .provider_event import (
+    event_nickname,
+    event_prompt_text,
+    event_type,
+    event_uid,
+    public_text,
+)
+from .room_pulse import (
+    ROOM_PULSE_ACTIVITY_WINDOW_SECONDS,
+    build_room_pulse,
+    public_room_theme_key,
+)
+from .room_pulse_prompt import RoomPulsePrompt, render_room_pulse_prompt
 
 
 _LOW_QUALITY_DANMAKU = {
@@ -102,6 +114,7 @@ class _Theme:
     count: int = 0
     score: float = 0.0
     examples: list[dict[str, str]] = field(default_factory=list)
+    viewer_uids: set[str] = field(default_factory=set)
     reply_tip: str = ""
     technique: str = ""
 
@@ -124,11 +137,18 @@ class RoomTopicContext:
 
     def status(self) -> dict[str, Any]:
         self._prune()
-        return {
+        context = self._build_context(list(self._recent))
+        status = {
             "recent_danmaku_candidates": len(self._recent),
             "viewer_memory_count": len(self._viewer_memory),
-            "last_theme_keys": list(self._last_theme_keys),
+            "last_theme_keys": [
+                key
+                for key in (public_room_theme_key(item) for item in self._last_theme_keys)
+                if key
+            ],
         }
+        status.update(build_room_pulse(context).to_status())
+        return status
 
     def reset(self) -> None:
         """Discard short-lived room context at a live-session boundary."""
@@ -136,10 +156,41 @@ class RoomTopicContext:
         self._recent.clear()
         self._viewer_memory.clear()
         self._last_theme_keys = []
+        self._last_repeated_signal = ("", 0, "")
 
     def remember_live_event(self, event: Any, *, score: float) -> None:
         candidate = self._candidate_from_live_event(event, score=score)
         if candidate is None:
+            return
+        self._remember_candidate(candidate)
+
+    def remember_danmaku(
+        self,
+        *,
+        uid: str,
+        nickname: str,
+        text: str,
+        score: float,
+        ts: float,
+    ) -> None:
+        """Remember fields already sanitized by ``live_events.submit``."""
+
+        if not text:
+            return
+        observed_at = self._safe_timestamp(ts)
+        self._remember_candidate(
+            DanmakuCandidate(
+                uid=uid,
+                nickname=nickname,
+                text=text[:120],
+                score=score,
+                ts=observed_at,
+            )
+        )
+
+    def _remember_candidate(self, candidate: DanmakuCandidate) -> None:
+        if candidate.ts < self._safe_now() - self._window_seconds:
+            self._prune()
             return
         self._recent.append(candidate)
         if not self._is_low_quality(candidate.text):
@@ -147,12 +198,45 @@ class RoomTopicContext:
         self._prune()
 
     def prompt_block_for_event(self, event: Any) -> str:
+        return self.prompt_projection_for_event(event).text
+
+    def prompt_projection_for_event(self, event: Any) -> RoomPulsePrompt:
         self._prune()
-        selected = self._candidate_from_viewer_event(event)
+        selected = (
+            None
+            if event_type(event) in {"gift", "super_chat", "guard"}
+            else self._candidate_from_viewer_event(event)
+        )
         candidates = list(self._recent)
         if selected is not None and not self._contains(candidates, selected):
             candidates.append(selected)
-        return self._render_prompt_block(self._build_context(candidates, selected=selected))
+        context = self._build_context(candidates, selected=selected)
+        # Cache the repeated signal from the pass we just ran. RitualMemory
+        # needs it, and re-deriving it would mean a second O(80) classification
+        # sweep — the dominant local cost measured in live_room_context.md.
+        self._last_repeated_signal = (
+            str(context.get("repeated_signal_kind") or ""),
+            int(context.get("repeated_signal_support") or 0),
+            str(context.get("repeated_signal_key") or ""),
+        )
+        return render_room_pulse_prompt(context)
+
+    def dominant_theme_key(self) -> str:
+        """Highest-scoring theme key from the most recent classification pass.
+
+        Used as the room-context key for ritual recontextualization checks; it
+        is an allowlisted theme key, never viewer text.
+        """
+        keys = getattr(self, "_last_theme_keys", None)
+        return str(keys[0]) if keys else ""
+
+    def last_repeated_signal(self) -> tuple[str, int, str]:
+        """`(kind, distinct_viewer_support, normalized_key)` from the most recent
+        projection pass; empty when the last pass found no repeat.
+
+        Read-only accessor with no computation of its own.
+        """
+        return getattr(self, "_last_repeated_signal", ("", 0, ""))
 
     def is_low_reply_value(self, text: str) -> bool:
         return self._is_low_quality(text)
@@ -165,16 +249,30 @@ class RoomTopicContext:
     ) -> dict[str, Any]:
         candidates = [item for item in (self._coerce_candidate(event) for event in events) if item is not None]
         selected_candidate = self._coerce_candidate(selected) if selected is not None else None
+        now = self._safe_now()
         low_quality = 0
         low_quality_signals: Counter[str] = Counter()
+        low_quality_viewers: dict[str, set[str]] = {}
+        short_content_signals: Counter[str] = Counter()
+        short_content_viewers: dict[str, set[str]] = {}
+        short_content_examples: dict[str, str] = {}
         themes: dict[str, _Theme] = {}
-        viewer_hints: list[str] = []
+        unique_viewers: set[str] = set()
+        recent_activity_count = 0
 
         for candidate in candidates:
-            preference = self._infer_viewer_preferences(candidate.text)
+            support_uid = self._support_uid(candidate.uid)
+            if support_uid:
+                unique_viewers.add(support_uid)
+            age = now - candidate.ts
+            if math.isfinite(age) and 0.0 <= age <= ROOM_PULSE_ACTIVITY_WINDOW_SECONDS:
+                recent_activity_count += 1
             if self._is_low_quality(candidate.text):
                 low_quality += 1
-                low_quality_signals[self._dense_text(candidate.text)] += 1
+                signal = self._dense_text(candidate.text)
+                low_quality_signals[signal] += 1
+                if support_uid:
+                    low_quality_viewers.setdefault(signal, set()).add(support_uid)
                 continue
             key, title, reply_tip, technique = self._classify(candidate.text)
             theme = themes.get(key)
@@ -183,6 +281,16 @@ class RoomTopicContext:
                 themes[key] = theme
             theme.count += 1
             theme.score += self._candidate_score(candidate, key)
+            if support_uid:
+                theme.viewer_uids.add(support_uid)
+            short_signal = self._short_content_signal(candidate.text)
+            if short_signal:
+                short_content_signals[short_signal] += 1
+                short_content_examples.setdefault(
+                    short_signal, self._compact_text(candidate.text, 36)
+                )
+                if support_uid:
+                    short_content_viewers.setdefault(short_signal, set()).add(support_uid)
             if len(theme.examples) < 3:
                 theme.examples.append(
                     {
@@ -191,12 +299,28 @@ class RoomTopicContext:
                         "text": self._compact_text(candidate.text, 36),
                     }
                 )
-            hint = self._viewer_hint(candidate.uid, candidate.nickname, preference)
-            if hint and hint not in viewer_hints and len(viewer_hints) < 3:
-                viewer_hints.append(hint)
 
         ordered = sorted(themes.values(), key=lambda item: (-item.score, -item.count, item.title))[:3]
         self._last_theme_keys = [theme.key for theme in ordered]
+        question_theme = themes.get("question_help")
+        question_support_count = len(question_theme.viewer_uids) if question_theme else 0
+        reaction_support_count = len(
+            set().union(*low_quality_viewers.values()) if low_quality_viewers else set()
+        )
+        (
+            repeated_signal_kind,
+            repeated_signal_support,
+            repeated_signal_text,
+            repeated_signal_theme_key,
+            repeated_signal_key,
+        ) = self._best_repeated_signal(
+            low_quality_signals=low_quality_signals,
+            low_quality_viewers=low_quality_viewers,
+            short_content_signals=short_content_signals,
+            short_content_viewers=short_content_viewers,
+            short_content_examples=short_content_examples,
+        )
+        dominant_theme = ordered[0] if ordered else None
         selected_theme = ""
         if selected_candidate is not None:
             selected_key, _title, _reply_tip, _technique = self._classify(selected_candidate.text)
@@ -206,73 +330,41 @@ class RoomTopicContext:
         return {
             "version": 1,
             "total_candidates": len(candidates),
+            "unique_viewer_count": len(unique_viewers),
+            "recent_activity_count": recent_activity_count,
             "low_quality_count": low_quality,
             "low_quality_signals": low_quality_signals.most_common(3),
+            "question_support_count": question_support_count,
+            "reaction_support_count": reaction_support_count,
+            "dominant_theme_key": dominant_theme.key if dominant_theme else "",
+            "dominant_theme_support": (
+                len(dominant_theme.viewer_uids) if dominant_theme else 0
+            ),
+            "repeated_signal_kind": repeated_signal_kind,
+            "repeated_signal_support": repeated_signal_support,
+            "repeated_signal_text": repeated_signal_text,
+            "repeated_signal_theme_key": repeated_signal_theme_key,
+            # Normalized signal token (dense, case-folded). Unlike
+            # ``repeated_signal_text`` it is present for reaction signals too,
+            # so RitualMemory can key on it. Prompt/ritual use only — never
+            # status or audit.
+            "repeated_signal_key": repeated_signal_key,
             "selected_uid": selected_candidate.uid if selected_candidate is not None else "",
+            "selected_text": selected_candidate.text if selected_candidate is not None else "",
             "selected_theme": selected_theme,
             "themes": [
                 {
                     "key": theme.key,
                     "title": theme.title,
                     "count": theme.count,
+                    "support_count": len(theme.viewer_uids),
                     "reply_tip": theme.reply_tip,
                     "technique": theme.technique,
                     "examples": theme.examples,
                 }
                 for theme in ordered
             ],
-            "viewer_hints": viewer_hints,
         }
-
-    def _render_prompt_block(self, context: dict[str, Any] | None) -> str:
-        if not isinstance(context, dict):
-            return ""
-        total = int(context.get("total_candidates") or 0)
-        themes = context.get("themes")
-        low = int(context.get("low_quality_count") or 0)
-        if total <= 1 and not themes and not low:
-            return ""
-
-        lines = ["Live event room-topic context:"]
-        lines.append("- guidance: filter low-value messages, merge related danmaku, and reply to the room theme instead of one-by-one.")
-        lines.append("- output_policy: the selected danmaku is the trigger; when a theme is present, answer the room theme in one line.")
-        lines.append(f"- observed_candidates: {total}")
-        if low:
-            lines.append(f"- filtered_low_quality: {low}")
-        if low >= 10:
-            lines.append("- burst_mode: true")
-            lines.append("- burst_reply_rule: answer the selected representative message, not the low-value numeric burst.")
-        signals = context.get("low_quality_signals")
-        if isinstance(signals, list):
-            for value, count in signals[:3]:
-                if value and count:
-                    lines.append(f"- dominant_low_value_signal: {value} ({int(count)} messages)")
-        if isinstance(themes, list):
-            for theme in themes[:3]:
-                if not isinstance(theme, dict):
-                    continue
-                title = str(theme.get("title") or "").strip()
-                count = int(theme.get("count") or 0)
-                if title:
-                    lines.append(f"- theme: {title} ({count} messages)")
-                rendered = self._render_examples(theme.get("examples"))
-                if rendered:
-                    lines.append(f"  examples: {rendered}")
-                reply_tip = str(theme.get("reply_tip") or "").strip()
-                if reply_tip:
-                    lines.append(f"  reply_tip: {reply_tip}")
-                technique = str(theme.get("technique") or "").strip()
-                if technique:
-                    lines.append(f"  technique: {technique}")
-                tactic_key, tactic = tactic_for_theme(str(theme.get("key") or ""))
-                lines.append(f"  reply_tactic: {tactic_key} - {tactic}")
-        hints = [str(item).strip() for item in context.get("viewer_hints", []) if str(item).strip()] if isinstance(context.get("viewer_hints"), list) else []
-        memory = self._viewer_memory_lines(str(context.get("selected_uid") or ""))
-        combined_hints = (hints + memory)[:4]
-        if combined_hints:
-            lines.append("- viewer_hints: " + " ; ".join(combined_hints))
-            lines.append("- personalization_rule: use viewer hints as private guidance; do not announce stored data.")
-        return "\n".join(lines) + "\n\n"
 
     def _remember_viewer(self, candidate: DanmakuCandidate) -> None:
         memory = self._viewer_memory.get(candidate.uid)
@@ -293,23 +385,8 @@ class RoomTopicContext:
         if response:
             memory.response_preference = response
 
-    def _viewer_memory_lines(self, uid: str) -> list[str]:
-        memory = self._viewer_memory.get(str(uid or ""))
-        if memory is None:
-            return []
-        label = memory.nickname or memory.uid
-        parts = [f"@{label}: seen_messages={memory.message_count}"]
-        top_summaries = [summary for summary, _count in memory.summaries.most_common(2)]
-        if top_summaries:
-            parts.append("likes=" + ", ".join(top_summaries))
-        if memory.style:
-            parts.append("style=" + memory.style)
-        if memory.response_preference:
-            parts.append("reply_preference=" + memory.response_preference)
-        return ["; ".join(parts)]
-
     def _prune(self) -> None:
-        cutoff = self._now() - self._window_seconds
+        cutoff = self._safe_now() - self._window_seconds
         while self._recent and self._recent[0].ts < cutoff:
             self._recent.popleft()
 
@@ -326,7 +403,7 @@ class RoomTopicContext:
             nickname=event_nickname(event),
             text=text,
             score=score,
-            ts=float(getattr(event, "ts", 0.0) or self._now()),
+            ts=self._safe_timestamp(getattr(event, "ts", 0.0)),
         )
 
     def _candidate_from_viewer_event(self, event: Any) -> DanmakuCandidate | None:
@@ -342,7 +419,7 @@ class RoomTopicContext:
             nickname=event_nickname(event),
             text=text,
             score=1.0,
-            ts=self._now(),
+            ts=self._safe_now(),
         )
 
     def _coerce_candidate(self, event: Any) -> DanmakuCandidate | None:
@@ -359,9 +436,28 @@ class RoomTopicContext:
                 nickname=public_text(event.get("nickname") or "", max_length=64),
                 text=text,
                 score=float(event.get("score") or 1.0),
-                ts=float(event.get("ts") or self._now()),
+                ts=self._safe_timestamp(event.get("ts")),
             )
         return self._candidate_from_live_event(event, score=1.0)
+
+    def _safe_now(self) -> float:
+        try:
+            value = float(self._now())
+        except (TypeError, ValueError, OverflowError):
+            return 0.0
+        return value if math.isfinite(value) else 0.0
+
+    def _safe_timestamp(self, value: Any) -> float:
+        now = self._safe_now()
+        try:
+            timestamp = float(value)
+        except (TypeError, ValueError, OverflowError):
+            return now
+        if not math.isfinite(timestamp) or timestamp <= 0.0:
+            return now
+        if timestamp > now:
+            return now
+        return timestamp
 
     @staticmethod
     def _candidate_score(candidate: DanmakuCandidate, key: str) -> float:
@@ -373,6 +469,63 @@ class RoomTopicContext:
         if len(candidate.text) >= 18:
             score += 1.0
         return score
+
+    @staticmethod
+    def _support_uid(uid: str) -> str:
+        value = str(uid or "").strip()
+        return "" if value in {"", "0"} else value
+
+    @staticmethod
+    def _short_content_signal(text: str) -> str:
+        dense = RoomTopicContext._dense_text(text)
+        if 2 <= len(dense) <= 24:
+            return dense
+        return ""
+
+    @staticmethod
+    def _best_repeated_signal(
+        *,
+        low_quality_signals: Counter[str],
+        low_quality_viewers: dict[str, set[str]],
+        short_content_signals: Counter[str],
+        short_content_viewers: dict[str, set[str]],
+        short_content_examples: dict[str, str],
+    ) -> tuple[str, int, str, str, str]:
+        options: list[tuple[int, int, int, str, str, str, str]] = []
+        for kind, counts, viewers, content_priority in (
+            ("reaction", low_quality_signals, low_quality_viewers, 0),
+            ("content", short_content_signals, short_content_viewers, 1),
+        ):
+            for signal, message_count in counts.items():
+                support = len(viewers.get(signal, set()))
+                if signal and support >= 2:
+                    example = short_content_examples.get(signal, "") if kind == "content" else ""
+                    theme_key = (
+                        RoomTopicContext._classify(example)[0] if example else ""
+                    )
+                    options.append(
+                        (
+                            support,
+                            int(message_count),
+                            content_priority,
+                            kind,
+                            example,
+                            theme_key,
+                            signal,
+                        )
+                    )
+        if not options:
+            return "", 0, "", "", ""
+        (
+            support,
+            _message_count,
+            _content_priority,
+            kind,
+            example,
+            theme_key,
+            signal,
+        ) = max(options)
+        return kind, support, example, theme_key, signal
 
     @staticmethod
     def _is_low_quality(text: str) -> bool:
@@ -416,30 +569,6 @@ class RoomTopicContext:
         if len(cleaned) <= limit:
             return cleaned
         return cleaned[: max(0, limit - 1)] + "..."
-
-    @staticmethod
-    def _render_examples(examples: Any) -> str:
-        rendered: list[str] = []
-        if not isinstance(examples, list):
-            return ""
-        for item in examples[:3]:
-            if not isinstance(item, dict):
-                continue
-            name = str(item.get("nickname") or item.get("uid") or "viewer").strip()
-            text = str(item.get("text") or "").strip()
-            if text:
-                rendered.append(f"{name}: {text}")
-        return " | ".join(rendered)
-
-    @staticmethod
-    def _viewer_hint(uid: str, nickname: str, preference: dict[str, Any]) -> str:
-        summary = str(preference.get("summary") or "").strip()
-        response = str(preference.get("response_preference") or "").strip()
-        if not summary and not response:
-            return ""
-        label = nickname or uid or "viewer"
-        parts = [part for part in (summary, response) if part]
-        return f"@{label}: " + "; ".join(parts)
 
     @staticmethod
     def _infer_viewer_preferences(text: str) -> dict[str, Any]:
