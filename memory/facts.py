@@ -1094,7 +1094,12 @@ class FactStore:
                 candidate_subject = subject_from_entry(prior)
                 if candidate_subject is None:
                     continue
-                source_fact_id = _readable_fact_id(prior)
+                raw_source_fact_id = _readable_fact_id(prior)
+                source_fact_id = (
+                    str(raw_source_fact_id)
+                    if raw_source_fact_id is not None
+                    else None
+                )
                 normalized_observation = ' '.join(text.split()).casefold()
                 fallback_fact_id = hashlib.sha256(
                     ' '.join(str(prior.get('text') or '').split()).casefold().encode(

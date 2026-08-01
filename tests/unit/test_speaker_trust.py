@@ -11,6 +11,7 @@ import pytest
 from memory.scopes import MemorySubject
 from memory.speaker_trust import (
     deterministic_relation,
+    normalize_trust,
     observation_texts,
     preferred_by_trust,
     provenance_of_entries,
@@ -31,6 +32,24 @@ def test_message_volume_cannot_cross_arbitration_margin():
         normal.get_speaker_trust("2002"),
         normal.get_speaker_trust("1001"),
     ) == "old"
+
+
+def test_trust_normalization_rejects_non_finite_values():
+    from config import SPEAKER_TRUST_DEFAULT
+
+    assert normalize_trust(float("nan")) == pytest.approx(SPEAKER_TRUST_DEFAULT)
+    assert normalize_trust(float("inf")) == pytest.approx(SPEAKER_TRUST_DEFAULT)
+    manager = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={"1001": {"adjustment": float("nan")}},
+    )
+    assert manager.speaker_trust_profiles()["1001"]["adjustment"] == 0.0
+
+
+def test_arbitration_margin_is_stable_at_decimal_boundary():
+    assert preferred_by_trust(0.60, 0.45) == "old"
+    assert preferred_by_trust(0.80, 0.65) == "old"
+    assert preferred_by_trust(0.45, 0.60) == "new"
 
 
 def test_activity_spam_cannot_evict_owner_signal_id():
@@ -140,6 +159,27 @@ async def test_only_owner_request_provenance_can_emit_trust_events():
     assert owner_events[0]["kind"] == "correction"
     assert owner_events[0]["speaker_id"] == "qq:1001"
     assert owner_events[0]["source_speaker_id"] == "qq:9999"
+
+
+@pytest.mark.asyncio
+async def test_numeric_legacy_fact_id_builds_stable_trust_event_key():
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    store = object.__new__(FactStore)
+    events = await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "小明不喜欢猫"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[{
+            "id": 123, "text": "小明喜欢猫", "speaker_id": "qq:1001",
+            **target.as_entry_fields(),
+        }],
+    )
+    assert len(events) == 1
+    assert events[0]["source_fact_id"] == "123"
 
 
 @pytest.mark.asyncio
@@ -258,6 +298,12 @@ def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation(
         "Alice has the wrong address", "Alice has the address",
     ) is None
+    assert deterministic_relation(
+        "Alice lives at No 5 Main Street", "Alice lives at 5 Main Street",
+    ) is None
+    assert deterministic_relation(
+        "Alice has no cats", "Alice has cats",
+    ) == "correction"
     assert deterministic_relation("她来自锡山区", "她来自无锡山区") is None
     assert deterministic_relation("她认识不二同学", "她认识二同学") is None
 

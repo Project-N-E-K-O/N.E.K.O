@@ -8,7 +8,9 @@ computed from request provenance and code-side predicates only.
 from __future__ import annotations
 
 import hashlib
+import math
 import re
+from decimal import Decimal
 from typing import Any, Iterable
 
 from config import SPEAKER_TRUST_ARBITRATION_MARGIN, SPEAKER_TRUST_DEFAULT
@@ -44,8 +46,13 @@ _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 def normalize_trust(value, default: float = SPEAKER_TRUST_DEFAULT) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return max(0.0, min(1.0, float(value)))
-    return max(0.0, min(1.0, float(default)))
+        score = float(value)
+        if math.isfinite(score):
+            return max(0.0, min(1.0, score))
+    fallback = float(default)
+    if not math.isfinite(fallback):
+        fallback = float(SPEAKER_TRUST_DEFAULT)
+    return max(0.0, min(1.0, fallback))
 
 
 def trust_band(value) -> str:
@@ -63,9 +70,11 @@ def preferred_by_trust(old, new) -> str | None:
     """Return ``old``/``new`` only when the deterministic margin is met."""
     old_score = normalize_trust(old)
     new_score = normalize_trust(new)
-    if old_score - new_score >= SPEAKER_TRUST_ARBITRATION_MARGIN:
+    margin = Decimal(str(SPEAKER_TRUST_ARBITRATION_MARGIN))
+    difference = Decimal(str(old_score)) - Decimal(str(new_score))
+    if difference >= margin:
         return "old"
-    if new_score - old_score >= SPEAKER_TRUST_ARBITRATION_MARGIN:
+    if -difference >= margin:
         return "new"
     return None
 
@@ -85,24 +94,38 @@ def stable_speaker_id(value) -> str | None:
     return f"{platform.lower()}:{actor}"
 
 
-def _tokens(text: str) -> set[str]:
-    return {m.group(0).lower() for m in _WORD_RE.finditer(str(text or ""))}
+def _word_tokens(text: str) -> tuple[str, ...]:
+    return tuple(
+        match.group(0).lower()
+        for match in _WORD_RE.finditer(str(text or "").lower())
+    )
+
+
+def _is_word_negation(tokens: tuple[str, ...], index: int) -> bool:
+    marker = tokens[index]
+    if marker not in _WORD_NEGATION_MARKERS:
+        return False
+    if marker != "no":
+        return True
+    # ``No 5 Main Street`` is numbering metadata, not clause negation.
+    return index + 1 < len(tokens) and not tokens[index + 1].isdigit()
 
 
 def _polarity(text: str) -> bool:
     lowered = str(text or "").lower()
+    tokens = _word_tokens(lowered)
     return (
         any(negative in lowered for negative, _ in _CJK_NEGATED_PREDICATES)
-        or bool(_tokens(lowered) & _WORD_NEGATION_MARKERS)
+        or any(_is_word_negation(tokens, index) for index in range(len(tokens)))
     )
 
 
 def _proposition_tokens(text: str) -> tuple[str, ...]:
     """Return content tokens after removing explicit polarity markers."""
+    tokens = _word_tokens(text)
     return tuple(
-        match.group(0).lower()
-        for match in _WORD_RE.finditer(str(text or "").lower())
-        if match.group(0).lower() not in _WORD_NEGATION_MARKERS
+        token for index, token in enumerate(tokens)
+        if not _is_word_negation(tokens, index)
     )
 
 

@@ -4,6 +4,8 @@
 根据 QQ 号管理用户权限等级
 """
 
+import math
+
 from typing import Any, Dict, List, Optional
 
 
@@ -169,6 +171,8 @@ class PermissionManager:
         try:
             adjustment = float(raw.get("adjustment", 0.0) or 0.0)
         except (TypeError, ValueError):
+            adjustment = 0.0
+        if not math.isfinite(adjustment):
             adjustment = 0.0
         adjustment = max(
             -SPEAKER_TRUST_ADJUSTMENT_LIMIT,
