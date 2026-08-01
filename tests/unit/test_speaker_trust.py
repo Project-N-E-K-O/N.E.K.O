@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import time
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import patch
@@ -39,6 +40,8 @@ def test_trust_normalization_rejects_non_finite_values():
 
     assert normalize_trust(float("nan")) == pytest.approx(SPEAKER_TRUST_DEFAULT)
     assert normalize_trust(float("inf")) == pytest.approx(SPEAKER_TRUST_DEFAULT)
+    assert preferred_by_trust(float("nan"), 0.3) is None
+    assert preferred_by_trust(0.8, float("inf")) is None
     manager = PermissionManager(
         [{"qq": "1001", "level": "normal"}],
         speaker_trust_profiles={"1001": {"adjustment": float("nan")}},
@@ -87,6 +90,25 @@ def test_owner_signal_replay_ledger_survives_history_limit():
         speaker_trust_profiles={"1001": before},
     )
     assert reloaded.apply_speaker_trust_events([signals[0]]) == 0
+
+
+def test_durable_signal_ledger_normalizes_in_linear_time():
+    event_ids = [f"owner-signal-{index}" for index in range(30_000)]
+    event_ids += ["x" * 96 + "a", "x" * 96 + "b"]
+    started = time.perf_counter()
+    manager = PermissionManager(
+        [{"qq": "1001", "level": "normal"}],
+        speaker_trust_profiles={
+            "1001": {"processed_signal_events": event_ids},
+        },
+    )
+    elapsed = time.perf_counter() - started
+    ledger = manager.speaker_trust_profiles()["1001"][
+        "processed_signal_events"
+    ]
+    assert elapsed < 1.5
+    assert len(ledger) == 30_001
+    assert ledger[-1] == "x" * 96
 
 
 def test_global_qq_profile_is_shared_by_group_and_private_callers():
@@ -1464,6 +1486,25 @@ def test_relative_clause_negation_never_emits_correction():
     assert deterministic_relation(
         "Alice is smart", "Alice is not smart",
     ) == "correction"
+
+
+def test_conditional_clause_negations_never_emit_correction():
+    assert deterministic_relation(
+        "If Alice is smart, Bob smiles",
+        "If Alice is not smart, Bob smiles",
+    ) is None
+    assert deterministic_relation(
+        "Alice is smart if Bob smiles",
+        "Alice is not smart if Bob smiles",
+    ) is None
+    assert deterministic_relation(
+        "如果小明喜欢猫，他就开心",
+        "如果小明不喜欢猫，他就开心",
+    ) is None
+    assert deterministic_relation(
+        "小明喜欢猫，如果天气好",
+        "小明不喜欢猫，如果天气好",
+    ) is None
 
 
 @pytest.mark.asyncio

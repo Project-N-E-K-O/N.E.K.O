@@ -127,11 +127,18 @@ class QQSessionRuntimeService:
         )
         if int(user_data.get("last_group_digest_index", 0) or 0) > history_len:
             user_data["last_group_digest_index"] = history_len
-        if int(
+        participant_cursor = int(
             user_data.get("last_participant_digest_index", 0) or 0
-        ) > history_len:
+        )
+        if participant_cursor > history_len:
             # participant 游标同受重复守卫重置影响（对偶群游标钳制）。
             user_data["last_participant_digest_index"] = history_len
+            if user_data.get("private_memory_mode") == "participant":
+                previous_epoch = user_data.get("_speaker_trust_activity_epoch")
+                next_epoch = time.time_ns()
+                if str(next_epoch) == str(previous_epoch):
+                    next_epoch += 1
+                user_data["_speaker_trust_activity_epoch"] = next_epoch
         if int(user_data.get("nonconsent_history_end", 0) or 0) > history_len:
             # 历史被重置后旧的未授权边界同样越界：不钳的话 max() 地板会
             # 把重置后新授权轮当成已处理丢弃。

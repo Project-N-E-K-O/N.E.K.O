@@ -46,9 +46,11 @@ _NEGATION_AUXILIARIES = frozenset({
     "have", "is", "may", "might", "must", "shall", "should", "was",
     "were", "will", "would",
 })
+_CONDITIONAL_CLAUSE_MARKERS = frozenset({"if", "unless", "whether"})
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",
 })
+_CJK_CONDITIONAL_MARKERS = ("如果", "若", "假如", "假设", "倘若", "要是")
 _WORD_RE = re.compile(r"[a-z0-9]+|[\u3400-\u9fff]", re.IGNORECASE)
 
 
@@ -76,6 +78,13 @@ def trust_band(value) -> str:
 
 def preferred_by_trust(old, new) -> str | None:
     """Return ``old``/``new`` only when the deterministic margin is met."""
+    if any(
+        not isinstance(value, (int, float))
+        or isinstance(value, bool)
+        or not math.isfinite(float(value))
+        for value in (old, new)
+    ):
+        return None
     old_score = normalize_trust(old)
     new_score = normalize_trust(new)
     margin = Decimal(str(SPEAKER_TRUST_ARBITRATION_MARGIN))
@@ -160,13 +169,21 @@ def _proposition_tokens(text: str) -> tuple[str, ...]:
 def _has_embedded_clause_negation(text: str) -> bool:
     """Reject word negations after a relative or embedded-clause marker."""
     tokens = _word_tokens(text)
+    negation_indices = [
+        index for index in range(len(tokens))
+        if _is_word_negation(tokens, index)
+    ]
+    if (
+        negation_indices
+        and any(token in _CONDITIONAL_CLAUSE_MARKERS for token in tokens)
+    ):
+        return True
     marker_indices = [
         index for index, token in enumerate(tokens)
         if token in _EMBEDDED_CLAUSE_MARKERS
     ]
     return bool(marker_indices) and any(
-        index > marker_indices[0] and _is_word_negation(tokens, index)
-        for index in range(len(tokens))
+        index > marker_indices[0] for index in negation_indices
     )
 
 
@@ -204,6 +221,14 @@ def _cjk_positive_variants(text: str) -> set[str]:
     return variants
 
 
+def _has_cjk_conditional_negation(text: str) -> bool:
+    """Reject predicate negations inside a CJK conditional clause."""
+    return (
+        any(marker in text for marker in _CJK_CONDITIONAL_MARKERS)
+        and any(negative in text for negative, _ in _CJK_NEGATED_PREDICATES)
+    )
+
+
 def deterministic_relation(old_text: str, new_text: str) -> str | None:
     """Return confirmation/correction only for conservative code-side matches."""
     old_norm = " ".join(str(old_text or "").split()).casefold()
@@ -213,8 +238,12 @@ def deterministic_relation(old_text: str, new_text: str) -> str | None:
     if old_norm == new_norm:
         return "confirmation"
     if (
-        old_norm in _cjk_positive_variants(new_norm)
-        or new_norm in _cjk_positive_variants(old_norm)
+        (
+            old_norm in _cjk_positive_variants(new_norm)
+            or new_norm in _cjk_positive_variants(old_norm)
+        )
+        and not _has_cjk_conditional_negation(old_norm)
+        and not _has_cjk_conditional_negation(new_norm)
     ):
         return "correction"
     old_tokens = _proposition_tokens(old_norm)

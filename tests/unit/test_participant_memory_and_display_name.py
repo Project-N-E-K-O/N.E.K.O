@@ -1221,6 +1221,51 @@ def test_prime_gates_participant_and_demoted_legacy_sessions():
     assert ud["memory_enabled"] is True
 
 
+@pytest.mark.asyncio
+async def test_participant_history_reset_rotates_activity_epoch():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+    from plugin.plugins.qq_auto_reply.session_runtime_service import (
+        QQSessionRuntimeService,
+    )
+
+    history = [SimpleNamespace(type="system", content="system")]
+    plugin, user_data, _bridge = _participant_session_plugin(history)
+    user_data.update({
+        "last_participant_digest_index": 4,
+        "_speaker_trust_activity_epoch": "old-epoch",
+        "reply_chunks": [],
+    })
+    context = SimpleNamespace(
+        persist_memory=True, permission_level="trusted",
+        is_group=False, group_id=None, sender_id="1001",
+        user_title="小明", user_nickname="小明",
+        memory_context_used=False, ephemeral_session=False,
+        login_status="online", login_self_id="9", login_nickname="n",
+        private_memory_mode="participant",
+    )
+
+    QQSessionRuntimeService(plugin).prime_generation_session_state(
+        user_data, session_key="private:1001", context=context,
+    )
+    assert user_data["last_participant_digest_index"] == 1
+    assert user_data["_speaker_trust_activity_epoch"] != "old-epoch"
+
+    history.append(SimpleNamespace(type="human", content="same exchange"))
+    memory_service = QQSessionMemoryService(plugin)
+    memory_service._apply_speaker_trust_update = AsyncMock(return_value=None)
+    assert await memory_service._settle_participant_digest_batches(
+        user_data=user_data, sender_id="1001", her_name="Neko",
+        reason="test", conversation_history=history,
+        last_participant_digest_index=1,
+    )
+    identity = memory_service._apply_speaker_trust_update.await_args.kwargs[
+        "activity_identity"
+    ]
+    assert identity != "participant:Neko:old-epoch:1:2"
+
+
 # ---------------------------------------------------------------------------
 # settings transitions for the participant switch
 # ---------------------------------------------------------------------------

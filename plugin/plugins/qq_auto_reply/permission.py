@@ -187,10 +187,12 @@ class PermissionManager:
             if not isinstance(raw_events, list):
                 return []
             events: list[str] = []
+            seen: set[str] = set()
             for event_id in raw_events:
-                normalized = str(event_id or "").strip()
-                if normalized and normalized not in events:
-                    events.append(normalized[:96])
+                normalized = str(event_id or "").strip()[:96]
+                if normalized and normalized not in seen:
+                    seen.add(normalized)
+                    events.append(normalized)
             if durable:
                 return events
             return events[-SPEAKER_TRUST_EVENT_HISTORY_LIMIT:]

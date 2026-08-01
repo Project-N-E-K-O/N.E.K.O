@@ -2247,11 +2247,19 @@ class QQSessionMemoryService:
                     )
                     if last_participant_digest_index > len(conversation_history):
                         # 历史被重复守卫重置后旧游标越界：钳到当前长度并
-                        # 回写（对偶群分支），绝不回退。
+                        # 回写（对偶群分支），绝不回退。同步换 activity
+                        # epoch，防止重置后同一下标范围复用旧事件 ID。
                         last_participant_digest_index = len(conversation_history)
                         user_data["last_participant_digest_index"] = (
                             last_participant_digest_index
                         )
+                        previous_epoch = user_data.get(
+                            "_speaker_trust_activity_epoch"
+                        )
+                        next_epoch = time.time_ns()
+                        if str(next_epoch) == str(previous_epoch):
+                            next_epoch += 1
+                        user_data["_speaker_trust_activity_epoch"] = next_epoch
                     try:
                         participant_settled = (
                             await self._settle_participant_digest_batches(
