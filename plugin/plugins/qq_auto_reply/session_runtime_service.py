@@ -67,6 +67,17 @@ class QQSessionRuntimeService:
         user_data["session_key"] = session_key
         user_data["sender_id"] = context.sender_id
         user_data["permission_level"] = context.permission_level
+        if not context.is_group:
+            receipt_permission = getattr(
+                context, "private_permission_level_at_receipt", None,
+            )
+            if (
+                receipt_permission is not None
+                and user_data.get("private_permission_level_at_receipt") is None
+            ):
+                user_data["private_permission_level_at_receipt"] = (
+                    receipt_permission
+                )
         user_data["is_group"] = context.is_group
         user_data["group_id"] = context.group_id
         user_data["user_title"] = context.user_title

@@ -616,7 +616,9 @@ class CorrectionsMixin:
                     new_entry['id'] = (
                         f"corr_{datetime.now().strftime('%Y%m%d%H%M%S')}_{digest}"
                     )
-                if item.get('new_speaker_id'):
+                if item.get('new_speaker_provenance_mixed') is True:
+                    new_entry['speaker_provenance_mixed'] = True
+                elif item.get('new_speaker_id'):
                     new_entry['speaker_id'] = item['new_speaker_id']
                     trust = item.get('new_speaker_trust')
                     if (

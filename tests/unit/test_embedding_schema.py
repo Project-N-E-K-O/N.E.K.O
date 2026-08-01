@@ -445,6 +445,30 @@ async def test_invalid_or_same_canonical_persona_speaker_cannot_drive_trust(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("action", ["keep_new", "keep_both"])
+async def test_model_selected_mixed_new_provenance_stays_fail_closed(
+    tmp_path, action,
+):
+    """Legacy residual speaker fields cannot override a mixed marker."""
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(pm, "Neko", "旧观察")
+    correction = {
+        "old_text": "旧观察", "new_text": "新观察", "entity": "master",
+        "new_speaker_id": "qq:1001", "new_speaker_trust": 0.9,
+        "new_speaker_provenance_mixed": True,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0}, [{"index": 0, "action": action}],
+    ) == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    new_entry = next(entry for entry in facts if entry["text"] == "新观察")
+    assert new_entry["speaker_provenance_mixed"] is True
+    assert "speaker_id" not in new_entry
+    assert "speaker_trust" not in new_entry
+
+
+@pytest.mark.asyncio
 async def test_trust_rejected_history_is_idempotent_after_queue_write_failure(
     tmp_path,
 ):

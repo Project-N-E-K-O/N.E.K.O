@@ -476,6 +476,42 @@ async def test_trust_event_persistence_uses_full_scoped_fact_identity(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_trust_event_persists_when_source_moved_to_archive(tmp_path):
+    """A route-time active fact may be archived before signal persistence."""
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    fact = {
+        "id": "smart", "text": "Alice is smart", "speaker_id": "qq:1001",
+        **target.as_entry_fields(),
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": []}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    archive_path = tmp_path / "facts_archive.json"
+    store._facts_archive_path = lambda _name: str(archive_path)
+    store._config_manager = SimpleNamespace(
+        memory_dir=str(tmp_path), load_root_state=lambda: {"mode": "normal"},
+    )
+    store.aload_facts = AsyncMock(return_value=[])
+    store.save_facts = MagicMock()
+    event = (await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "Alice is not smart"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True, facts_snapshot=[fact],
+    ))[0]
+    archive_path.write_text(json.dumps([fact]), encoding="utf-8")
+
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == [event]
+    archived = json.loads(archive_path.read_text(encoding="utf-8"))
+    assert archived[0]["_speaker_trust_signal_events"] == [event]
+
+
+@pytest.mark.asyncio
 async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
     from memory.facts import FactStore
 

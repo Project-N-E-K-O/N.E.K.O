@@ -922,7 +922,9 @@ class QQSessionMemoryService:
             speaker_label, sender_id,
         )
         permission_level = self._speaker_permission_level_for(
-            sender_id, user_data.get("permission_level"),
+            sender_id,
+            user_data.get("private_permission_level_at_receipt")
+            or user_data.get("permission_level"),
         )
         speaker_is_owner = self._speaker_is_owner_for(
             sender_id, permission_level,

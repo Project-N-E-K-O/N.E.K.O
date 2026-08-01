@@ -1345,24 +1345,59 @@ class FactStore:
                                 durable_events.append(dict(event))
                     if changed:
                         self.save_facts(name, _fact_lock_held=True)
-                    for fact in self._load_archived_speaker_trust_signal_facts(name):
+                    archive_path = self._facts_archive_path(name)
+                    archived: list = []
+                    if os.path.exists(archive_path):
+                        try:
+                            with open(archive_path, encoding='utf-8') as fh:
+                                archived = json.load(fh)
+                        except (
+                            json.JSONDecodeError, UnicodeDecodeError, OSError,
+                        ) as exc:
+                            raise RuntimeError(
+                                "facts_archive unreadable during trust persist: "
+                                f"{exc}"
+                            ) from exc
+                        if not isinstance(archived, list):
+                            raise RuntimeError(
+                                "facts_archive is not a list during trust persist"
+                            )
+                    archive_changed = False
+                    for fact in archived:
+                        if not isinstance(fact, dict):
+                            continue
                         additions = valid_by_fact.get(
                             _speaker_trust_fact_identity(fact)
                         )
                         if not additions:
                             continue
+                        recorded = fact.get('_speaker_trust_signal_events')
+                        if not isinstance(recorded, list):
+                            recorded = []
+                            fact['_speaker_trust_signal_events'] = recorded
                         known = {
                             str(item.get('event_id') or '')
-                            for item in fact.get('_speaker_trust_signal_events') or []
+                            for item in recorded
                             if isinstance(item, dict)
                         }
                         for event in additions:
-                            if (
-                                event['event_id'] in known
-                                and event['event_id'] not in durable_event_ids
-                            ):
+                            if event['event_id'] not in known:
+                                recorded.append(event)
+                                known.add(event['event_id'])
+                                archive_changed = True
+                            if event['event_id'] not in durable_event_ids:
                                 durable_event_ids.add(event['event_id'])
                                 durable_events.append(dict(event))
+                    if archive_changed:
+                        assert_cloudsave_writable(
+                            self._config_manager,
+                            operation="save",
+                            target=f"memory/{name}/facts_archive.json",
+                        )
+                        atomic_write_json(
+                            archive_path, archived,
+                            indent=2, ensure_ascii=False,
+                        )
                 return durable_events
 
             persist_task = asyncio.create_task(asyncio.to_thread(_persist))
