@@ -539,6 +539,51 @@ def test_deferred_locale_admission_order_cannot_overwrite_newer_turn(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_stale_post_turn_runs_under_newer_durable_locale(
+    tmp_path,
+    monkeypatch,
+):
+    _install_fresh_memory_state(str(tmp_path))
+    from app import memory_server
+    from app.memory_server import locale_state
+    from utils.language_utils import get_global_language_full, language_context
+
+    older_order = locale_state.allocate_character_prompt_locale_order("小天")
+    newer_order = locale_state.reserve_character_prompt_locale_order("小天")
+    locale_state.record_character_prompt_locale(
+        "小天",
+        "zh-TW",
+        order=newer_order,
+    )
+
+    observed = []
+
+    class StopAfterLocale(RuntimeError):
+        pass
+
+    async def observe_locale():
+        observed.append(get_global_language_full())
+        raise StopAfterLocale
+
+    monkeypatch.setattr(
+        memory_server.gates,
+        "_ais_powerful_memory_enabled",
+        observe_locale,
+    )
+
+    with language_context("en"), pytest.raises(StopAfterLocale):
+        await memory_server._run_post_turn_signals(
+            [HumanMessage(content="請記住")],
+            "小天",
+            language="zh-CN",
+            locale_order=older_order,
+        )
+
+    assert observed == ["zh-TW"]
+    assert locale_state.get_character_prompt_locale("小天") == "zh-TW"
+
+
+@pytest.mark.asyncio
 async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
     """A durable deferred marker must reserve an order before signal writes."""
     from app import memory_server
@@ -685,7 +730,9 @@ async def test_concurrent_post_turn_tasks_keep_their_recorded_language():
         patch.object(
             memory_server.signal_extraction,
             "_signal_check_persist_locale",
-            MagicMock(),
+            MagicMock(
+                side_effect=lambda _name, *, language, locale_order: language,
+            ),
         ),
         patch.object(memory_server.runtime, "fact_store", fact_store),
         patch.object(memory_server.runtime, "reflection_engine", reflection_engine),

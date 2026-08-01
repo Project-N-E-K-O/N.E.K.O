@@ -116,15 +116,15 @@ def _signal_check_persist_locale(
     *,
     language: str | None = None,
     locale_order: int | None = None,
-) -> None:
+) -> str | None:
     from utils.language_utils import is_supported_language_code
 
     if not is_supported_language_code(language):
-        return
+        return None
 
     from .locale_state import record_character_prompt_locale
 
-    record_character_prompt_locale(
+    return record_character_prompt_locale(
         name,
         language,
         order=locale_order,

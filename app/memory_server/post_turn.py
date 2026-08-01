@@ -47,7 +47,16 @@ def _with_language_context(func):
         from utils.language_utils import is_supported_language_code, language_context
 
         if is_supported_language_code(language):
-            with language_context(language):
+            # Persist first, then render under the locale that actually won the
+            # causal-order check. A stale outbox item may carry a valid older
+            # language even though record_character_prompt_locale correctly
+            # refuses to replace a newer session locale.
+            effective_language = await _wait_for_signal_locale_persistence(
+                args[1],
+                language=language,
+                locale_order=kwargs.get("locale_order"),
+            )
+            with language_context(effective_language):
                 return await func(*args, language=language, **kwargs)
 
         # Missing language is valid for legacy outbox entries and callers that
@@ -221,20 +230,19 @@ async def _wait_for_signal_locale_persistence(
     *,
     language: str | None,
     locale_order: int | None,
-) -> None:
-    """Wait until the turn locale is durable before exposing its signal."""
+) -> str | None:
+    """Return the effective locale after this ordered write is durable."""
     from .locale_state import PromptLocaleInvalidatedError
     from utils.cloudsave_runtime import MaintenanceModeError
 
     while True:
         try:
-            await asyncio.to_thread(
+            return await asyncio.to_thread(
                 signal_extraction._signal_check_persist_locale,
                 lanlan_name,
                 language=language,
                 locale_order=locale_order,
             )
-            return
         except (MaintenanceModeError, PromptLocaleInvalidatedError):
             await asyncio.sleep(0.25)
 
@@ -291,13 +299,6 @@ async def _run_post_turn_signals(
     # 有 engagement 的窗口里跑。这是 product thesis 的"90% 没心没肺"——
     # AI 自言自语 + user 不搭理的内容是廉价层，不该自动当 fact 沉淀污染
     # memory；只有 user 印证过的才升级到神明降临层。
-    # Persist the locale before exposing the new turn to the periodic loop, while
-    # keeping the counter mutation itself on the event-loop thread.
-    await _wait_for_signal_locale_persistence(
-        lanlan_name,
-        language=language,
-        locale_order=locale_order,
-    )
     if locale_only:
         return
     if user_msgs:
