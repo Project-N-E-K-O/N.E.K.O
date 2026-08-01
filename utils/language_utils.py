@@ -1745,7 +1745,7 @@ def detect_prompt_language_with_ascii_fallback(
                 return ui_short
         if ui_short == 'pt':
             strong = re.search(
-                r'\b(?:gosto|quero|tenho|estou|obrigado|obrigada|meu|'
+                r'\b(?:ola|gosto|quero|tenho|estou|obrigado|obrigada|meu|'
                 r'minha|moro|nome)\b',
                 folded,
             )

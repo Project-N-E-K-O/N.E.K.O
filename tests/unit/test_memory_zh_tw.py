@@ -1313,6 +1313,7 @@ def test_memory_prompt_locale_detection_ignores_formatter_metadata():
         ("es", "Me gusta el cafe", "es"),
         ("es", "Hola, buenos dias, amigo", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
+        ("pt", "Ola, bom dia, amigo", "pt"),
         ("es", "I prefer quiet afternoons at home.", "en"),
         ("pt", "I prefer quiet afternoons at home.", "en"),
         ("zh-TW", "I like coffee", "en"),
