@@ -1121,8 +1121,9 @@ async def _init_character_resources(k: str, is_new_character: bool):
 
             # 将websocket锁存储到session manager中，供cleanup()使用
             new_mgr.websocket_lock = rs.websocket_lock
-            new_mgr.user_language = old_user_language
-            new_mgr._user_language_explicit = old_user_language_explicit
+            if old_user_language_explicit:
+                new_mgr.user_language = old_user_language
+                new_mgr._user_language_explicit = True
 
             # 恢复websocket引用（如果存在）
             if old_websocket:

@@ -50,7 +50,7 @@ from utils.cloudsave_runtime import (
     ROOT_MODE_BOOTSTRAP_IMPORTING,
     build_cloudsave_character_detail,
     build_cloudsave_summary,
-    cloud_apply_fence,
+    async_cloud_apply_fence,
     export_cloudsave_character_unit,
     finalize_cloudsave_character_import,
     import_cloudsave_character_unit,
@@ -679,14 +679,11 @@ async def post_cloudsave_character_download(name: str, request: Request):
             )
 
     try:
-        # The synchronous fence contains a thread-reentrant process guard and
-        # holds its cross-process lock across awaits.  Serialize these async
-        # callers task-wise first, otherwise a second request on the same event
-        # loop can re-enter the thread guard and block that loop on the OS lock.
+        # Serialize same-process apply work task-wise. Cross-process contention
+        # is polled without blocking the event loop; Windows mutex ownership
+        # still stays on this thread for both acquire and release.
         async with _character_download_apply_lock:
-            # Windows mutex ownership is thread-affine. Acquire and release must
-            # stay on the event-loop thread while the worker performs IO.
-            with cloud_apply_fence(
+            async with async_cloud_apply_fence(
                 config_manager,
                 mode=ROOT_MODE_BOOTSTRAP_IMPORTING,
                 reason=f"single_character_download:{name}",

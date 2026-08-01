@@ -108,7 +108,13 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
         memory_server._OUTBOX_HANDLERS,
         {OP_POST_TURN_SIGNALS: _fake_handler},
         clear=False,
-    ):
+    ), patch.object(
+        memory_server.locale_state,
+        "allocate_character_prompt_locale_order",
+    ) as allocate_locale, patch.object(
+        memory_server.locale_state,
+        "reserve_character_prompt_locale_order",
+    ) as reserve_locale:
         task = await memory_server._spawn_outbox_post_turn_signals(
             "小天", [HumanMessage(content="喵")], language=None,
         )
@@ -117,7 +123,11 @@ async def test_spawn_outbox_omits_language_when_request_declared_none(tmp_path):
     assert len(calls) == 1
     _name, payload = calls[0]
     assert "language" not in payload
-    assert isinstance(payload["locale_order"], int)
+    assert "locale_order" not in payload
+    assert "locale_order_deferred" not in payload
+    assert "locale_admission_order" not in payload
+    allocate_locale.assert_not_called()
+    reserve_locale.assert_not_called()
 
 
 @pytest.mark.asyncio

@@ -90,6 +90,7 @@ from .fence import (  # noqa: F401
     _recover_stale_write_blocking_mode,
     _should_preserve_write_blocking_mode,
     acquire_cloud_apply_lock,
+    async_cloud_apply_fence,
     assert_cloudsave_writable,
     cloud_apply_fence,
     cloudsave_writable_transaction,

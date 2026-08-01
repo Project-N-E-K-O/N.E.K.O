@@ -23,11 +23,12 @@ Split out of the former monolithic ``utils/cloudsave_runtime.py``.
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import os
 import sys
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from typing import Any
 
 # Late-bound package reference: tests monkeypatch
@@ -332,7 +333,46 @@ def _recover_stale_write_blocking_mode(config_manager, root_state: dict[str, Any
 
 
 @contextmanager
-def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READONLY, reason: str = ""):
+def _cloud_apply_fence_state(
+    config_manager,
+    *,
+    mode: str = ROOT_MODE_MAINTENANCE_READONLY,
+    reason: str = "",
+):
+    """Switch root state while the caller owns both cloud-apply locks."""
+    # Hold the process-wide root_state transaction for the *whole* fence
+    # lifetime, not only for its enter/exit writes. Storage-location writes
+    # now run in worker threads; without this lifecycle lock they can commit
+    # MAINTENANCE_READONLY while a cloud operation is active, only for the
+    # fence's stale exit snapshot to restore NORMAL over the pending migration.
+    #
+    # Lock order stays cloud_apply_lock -> root_state_transaction everywhere.
+    # The lifecycle scope also hands its logical ownership to to_thread
+    # workers, while unrelated storage writers remain excluded.
+    with root_state_lifecycle_transaction():
+        # Read the pre-image only after both locks are held. Reading it before
+        # acquire_cloud_apply_lock would still allow a storage writer to land
+        # between the read and the acquisition and make this snapshot stale.
+        previous_state = get_root_state(config_manager)
+        previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
+        _facade.set_root_mode(
+            config_manager,
+            mode,
+            last_migration_result=reason or previous_state.get("last_migration_result", ""),
+        )
+        try:
+            yield get_root_state(config_manager)
+        finally:
+            _facade.set_root_mode(config_manager, previous_mode)
+
+
+@contextmanager
+def cloud_apply_fence(
+    config_manager,
+    *,
+    mode: str = ROOT_MODE_MAINTENANCE_READONLY,
+    reason: str = "",
+):
     """Acquire the global cloud apply lock and switch root_state into maintenance."""
     _ensure_local_state_directory_or_raise(config_manager, "entering cloud_apply_fence")
 
@@ -344,29 +384,45 @@ def cloud_apply_fence(config_manager, *, mode: str = ROOT_MODE_MAINTENANCE_READO
                 target="cloud_apply_lock",
             )
         try:
-            # Hold the process-wide root_state transaction for the *whole* fence
-            # lifetime, not only for its enter/exit writes. Storage-location writes
-            # now run in worker threads; without this lifecycle lock they can commit
-            # MAINTENANCE_READONLY while a cloud operation is active, only for the
-            # fence's stale exit snapshot to restore NORMAL over the pending migration.
-            #
-            # Lock order stays cloud_apply_lock -> root_state_transaction everywhere.
-            # The lifecycle scope also hands its logical ownership to to_thread
-            # workers, while unrelated storage writers remain excluded.
-            with root_state_lifecycle_transaction():
-                # Read the pre-image only after both locks are held. Reading it before
-                # acquire_cloud_apply_lock would still allow a storage writer to land
-                # between the read and the acquisition and make this snapshot stale.
-                previous_state = get_root_state(config_manager)
-                previous_mode = str(previous_state.get("mode") or ROOT_MODE_NORMAL)
-                _facade.set_root_mode(
-                    config_manager,
-                    mode,
-                    last_migration_result=reason or previous_state.get("last_migration_result", ""),
-                )
-                try:
-                    yield get_root_state(config_manager)
-                finally:
-                    _facade.set_root_mode(config_manager, previous_mode)
+            with _cloud_apply_fence_state(
+                config_manager,
+                mode=mode,
+                reason=reason,
+            ) as state:
+                yield state
         finally:
             release_cloud_apply_lock(config_manager)
+
+
+@asynccontextmanager
+async def async_cloud_apply_fence(
+    config_manager,
+    *,
+    mode: str = ROOT_MODE_MAINTENANCE_READONLY,
+    reason: str = "",
+    poll_interval: float = 0.05,
+):
+    """Enter the cloud apply fence without blocking the event-loop thread.
+
+    Windows mutex ownership is thread-affine, so acquisition and release stay
+    on the event-loop thread. Contention is handled by short non-blocking polls
+    instead of an infinite OS wait that would stall every task on that loop.
+    """
+    _ensure_local_state_directory_or_raise(
+        config_manager,
+        "entering async_cloud_apply_fence",
+    )
+    while True:
+        with _cloud_apply_process_guard:
+            if acquire_cloud_apply_lock(config_manager, blocking=False):
+                try:
+                    with _cloud_apply_fence_state(
+                        config_manager,
+                        mode=mode,
+                        reason=reason,
+                    ) as state:
+                        yield state
+                finally:
+                    release_cloud_apply_lock(config_manager)
+                return
+        await asyncio.sleep(poll_interval)

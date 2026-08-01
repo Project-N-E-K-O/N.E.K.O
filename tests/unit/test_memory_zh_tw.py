@@ -596,6 +596,45 @@ async def test_character_reload_preserves_locale_provenance(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_character_reload_drops_non_explicit_fallback_locale(monkeypatch):
+    from app.main_server import character_runtime
+
+    name = "NekoFallbackReload"
+
+    class OldManager:
+        websocket = None
+        is_active = False
+        is_starting = False
+        user_language = "zh-CN"
+        _user_language_explicit = False
+
+        def shutdown(self):
+            return None
+
+    class NewManager:
+        def __init__(self, queue, lanlan_name, prompt):
+            self.user_language = None
+            self._user_language_explicit = False
+            self.websocket = None
+
+    role = SimpleNamespace(
+        websocket_lock=asyncio.Lock(),
+        session_manager=OldManager(),
+        sync_message_queue=object(),
+        sync_task=SimpleNamespace(done=lambda: False),
+    )
+    monkeypatch.setitem(character_runtime.role_state, name, role)
+    monkeypatch.setattr(character_runtime, "lanlan_prompt", {name: "{LANLAN_NAME}/{MASTER_NAME}"})
+    monkeypatch.setattr(character_runtime, "master_name", "Master")
+    monkeypatch.setattr(character_runtime.core, "LLMSessionManager", NewManager)
+
+    await character_runtime._init_character_resources(name, False)
+
+    assert role.session_manager.user_language is None
+    assert role.session_manager._user_language_explicit is False
+
+
+@pytest.mark.asyncio
 async def test_game_archive_writer_forwards_full_session_locale(monkeypatch):
     from main_routers.game_router import archive
     from utils import internal_http_client
@@ -1042,6 +1081,61 @@ async def test_new_dialog_without_language_restores_durable_locale(monkeypatch):
     monkeypatch.setattr(routes, "_activate_request_language", activate)
 
     with pytest.raises(StopAfterLocale):
+        await routes._new_dialog("Neko", None)
+
+    assert observed == ["zh-TW"]
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_reenters_restored_locale_for_nested_renderers(monkeypatch):
+    from app.memory_server import locale_state, routes, runtime
+    from utils.language_utils import get_global_language_full, language_context
+
+    class StopAtPersona(RuntimeError):
+        pass
+
+    class Lock:
+        async def __aenter__(self):
+            return None
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    class ConfigManager:
+        async def aload_characters(self):
+            return {"猫娘": {"Neko": {}}}
+
+        async def aget_character_data(self):
+            return ("Master", None, None, None, {}, None, None, None, None)
+
+    class ReflectionEngine:
+        async def aupdate_suppressions(self, _name):
+            return None
+
+        async def aget_pending_reflections(self, _name):
+            return []
+
+        async def aget_confirmed_reflections(self, _name):
+            return []
+
+    observed = []
+
+    class PersonaManager:
+        async def arender_persona_markdown(self, *_args):
+            observed.append(get_global_language_full())
+            raise StopAtPersona
+
+    monkeypatch.setattr(runtime, "_config_manager", ConfigManager())
+    monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: Lock())
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(runtime, "persona_manager", PersonaManager())
+    monkeypatch.setattr(
+        locale_state,
+        "get_character_prompt_locale",
+        lambda _name: "zh-TW",
+    )
+
+    with language_context("en"), pytest.raises(StopAtPersona):
         await routes._new_dialog("Neko", None)
 
     assert observed == ["zh-TW"]

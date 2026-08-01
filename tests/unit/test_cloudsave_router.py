@@ -5,7 +5,7 @@ import json
 import re
 import shutil
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -32,8 +32,8 @@ def _make_role_state_for_test(session_managers: dict) -> dict:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
-async def test_concurrent_downloads_serialize_before_sync_apply_fence():
-    """A second event-loop task must not enter the blocking sync fence."""
+async def test_concurrent_downloads_serialize_before_async_apply_fence():
+    """A second event-loop task must not enter the async cross-process fence."""
     with TemporaryDirectory() as td:
         cm = _setup_force_test_env(Path(td))
         first_started = threading.Event()
@@ -41,8 +41,8 @@ async def test_concurrent_downloads_serialize_before_sync_apply_fence():
         fence_entries = 0
         import_calls = 0
 
-        @contextmanager
-        def tracked_fence(*_args, **_kwargs):
+        @asynccontextmanager
+        async def tracked_fence(*_args, **_kwargs):
             nonlocal fence_entries
             fence_entries += 1
             yield
@@ -62,7 +62,7 @@ async def test_concurrent_downloads_serialize_before_sync_apply_fence():
             ), patch.object(
                 module, "_local_character_exists", return_value=False,
             ), patch.object(
-                module, "cloud_apply_fence", side_effect=tracked_fence,
+                module, "async_cloud_apply_fence", new=tracked_fence,
             ), patch.object(
                 module, "import_cloudsave_character_unit", side_effect=do_import,
             ), patch.object(

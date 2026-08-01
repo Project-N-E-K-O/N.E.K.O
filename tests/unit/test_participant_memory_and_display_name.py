@@ -230,7 +230,10 @@ async def test_scoped_facts_route_rejects_oversized_display_name():
 
     store = MagicMock()
     store.apersist_scoped_facts = AsyncMock(return_value=[])
-    with patch.object(memory_routes.runtime, "fact_store", store):
+    with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
+        memory_routes.locale_state,
+        "allocate_subject_prompt_locale_order",
+    ) as allocate_locale:
         with pytest.raises(HTTPException) as excinfo:
             await memory_routes.append_scoped_facts(
                 "Neko",
@@ -238,9 +241,43 @@ async def test_scoped_facts_route_rejects_oversized_display_name():
                     subject={"subject_kind": "group_chat", "subject_id": "qq:1"},
                     facts=[ScopedFactInput(text="t")],
                     display_name="水" * 65,
+                    language="zh-TW",
                 ),
             )
     assert excinfo.value.status_code == 422
+    allocate_locale.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_scoped_history_rejects_display_name_before_locale_recording():
+    from fastapi import HTTPException
+
+    from app.memory_server import routes as memory_routes
+    from app.memory_server.routes import ScopedHistoryRequest
+
+    history = json.dumps([
+        {"role": "user", "content": [{"type": "text", "text": "hi"}]},
+    ])
+    store = MagicMock()
+    store.extract_facts = AsyncMock(return_value=[])
+    with patch.object(memory_routes.runtime, "fact_store", store), patch.object(
+        memory_routes.locale_state,
+        "allocate_subject_prompt_locale_order",
+    ) as allocate_locale:
+        with pytest.raises(HTTPException) as excinfo:
+            await memory_routes.process_scoped_history(
+                "Neko",
+                ScopedHistoryRequest(
+                    input_history=history,
+                    subject={"subject_kind": "group_chat", "subject_id": "qq:1"},
+                    display_name="水" * 65,
+                    language="zh-TW",
+                ),
+            )
+
+    assert excinfo.value.status_code == 422
+    allocate_locale.assert_not_called()
+    store.extract_facts.assert_not_awaited()
 
 
 @pytest.mark.asyncio

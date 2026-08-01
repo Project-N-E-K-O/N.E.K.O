@@ -1050,6 +1050,51 @@ def test_cloud_apply_fence_requests_a_blocking_cross_process_lock(tmp_path, monk
 
 
 @pytest.mark.unit
+@pytest.mark.asyncio
+async def test_async_cloud_apply_fence_polls_without_blocking_event_loop(
+    tmp_path,
+    monkeypatch,
+):
+    cm = _make_config_manager(tmp_path)
+
+    from utils.cloudsave_runtime import fence as fence_module
+
+    blocking_modes: list[bool] = []
+    owner_threads: list[tuple[str, int]] = []
+    attempts = iter((False, False, True))
+
+    def acquire(_config_manager, *, blocking=False):
+        blocking_modes.append(blocking)
+        owner_threads.append(("acquire", threading.get_ident()))
+        return next(attempts)
+
+    def release(_config_manager):
+        owner_threads.append(("release", threading.get_ident()))
+
+    @contextlib.contextmanager
+    def state(_config_manager, **_kwargs):
+        yield {"mode": "maintenance_readonly"}
+
+    sleeps: list[float] = []
+
+    async def sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(fence_module, "acquire_cloud_apply_lock", acquire)
+    monkeypatch.setattr(fence_module, "release_cloud_apply_lock", release)
+    monkeypatch.setattr(fence_module, "_cloud_apply_fence_state", state)
+    monkeypatch.setattr(fence_module.asyncio, "sleep", sleep)
+
+    async with fence_module.async_cloud_apply_fence(cm, poll_interval=0.01):
+        pass
+
+    assert blocking_modes == [False, False, False]
+    assert sleeps == [0.01, 0.01]
+    assert owner_threads[-1][0] == "release"
+    assert {thread_id for _, thread_id in owner_threads} == {threading.get_ident()}
+
+
+@pytest.mark.unit
 def test_win32_mutex_apis_use_pointer_sized_handle_signatures():
     import ctypes
 

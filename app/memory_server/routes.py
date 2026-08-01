@@ -1016,6 +1016,9 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             "source": item.source,
         })
     subject = req.subject.to_domain()
+    display_name = _sanitized_display_name(
+        req.display_name, context="scoped_facts",
+    )
     locale_order = None
     if is_supported_language_code(req.language):
         locale_admission_order = (
@@ -1037,9 +1040,6 @@ async def append_scoped_facts(lanlan_name: str, req: ScopedFactsWriteRequest):
             req.language,
             order=locale_order,
         )
-    display_name = _sanitized_display_name(
-        req.display_name, context="scoped_facts",
-    )
     created = await runtime.fact_store.apersist_scoped_facts(
         lanlan_name,
         extracted,
@@ -1112,6 +1112,9 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
         if req.speaker_trust is not None:
             speaker_provenance["speaker_trust"] = req.speaker_trust
     subject = req.subject.to_domain()
+    display_name = _sanitized_display_name(
+        req.display_name, context="scoped_history",
+    )
     locale_order = None
     if is_supported_language_code(req.language):
         locale_admission_order = (
@@ -1133,9 +1136,6 @@ async def _process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             req.language,
             order=locale_order,
         )
-    display_name = _sanitized_display_name(
-        req.display_name, context="scoped_history",
-    )
     if speaker_label is None and subject.kind == "group_chat":
         # 群 digest 无单一发言人：不给 label 时 legacy prompt 会把提取
         # 框定为"只找关于私聊主人的事实"，成员自述被当空提取 checkpoint
@@ -2046,17 +2046,21 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         _lang = _normalize_memory_prompt_lang(_activate_request_language(language))
 
         # ── [静态前缀] Persona 长期记忆（变化极少 → 最大化 prefix cache） ──
-        # pending + confirmed 反思也注入上下文（分区标注）
-        try:
-            await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
-        except Exception as e:
-            logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
-        pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
-        confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
-        result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
-        persona_md = await runtime.persona_manager.arender_persona_markdown(
-            lanlan_name, pending_reflections, confirmed_reflections,
-        )
+        # 请求没显式带语言时，上层 context 仍是进程回退值。耐久 locale
+        # 读取发生在入口之后，因此必须在调用可能读取全局语言的嵌套 renderer
+        # 前重新进入 context；显式 _lang 继续用于本函数内的表驱动字符串。
+        with language_context(_activate_request_language(language)):
+            # pending + confirmed 反思也注入上下文（分区标注）
+            try:
+                await runtime.reflection_engine.aupdate_suppressions(lanlan_name)
+            except Exception as e:
+                logger.debug(f"[MemoryServer] reflection suppress 刷新失败: {e}")
+            pending_reflections = await runtime.reflection_engine.aget_pending_reflections(lanlan_name)
+            confirmed_reflections = await runtime.reflection_engine.aget_confirmed_reflections(lanlan_name)
+            result = _loc(PERSONA_HEADER, _lang).format(name=lanlan_name)
+            persona_md = await runtime.persona_manager.arender_persona_markdown(
+                lanlan_name, pending_reflections, confirmed_reflections,
+            )
         if persona_md:
             result += persona_md
         else:

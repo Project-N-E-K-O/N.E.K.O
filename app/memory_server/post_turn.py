@@ -86,43 +86,46 @@ async def _spawn_outbox_post_turn_signals(
         reserve_character_prompt_locale_order,
     )
     from utils.cloudsave_runtime import MaintenanceModeError
+    from utils.language_utils import is_supported_language_code
     from utils.llm_client import messages_to_dict
 
-    if not isinstance(locale_admission_order, int) or isinstance(
-        locale_admission_order,
-        bool,
-    ):
-        locale_admission_order = allocate_character_prompt_locale_order(
-            lanlan_name,
-        )
-    try:
-        locale_order = await asyncio.to_thread(
-            reserve_character_prompt_locale_order,
-            lanlan_name,
-            order=locale_admission_order,
-        )
-    except (MaintenanceModeError, PromptLocalePersistenceError) as exc:
-        # The conversation rows may already be durable when a cloud operation
-        # closes the write fence or its sidecar commit is invalidated. Locale
-        # ordering is auxiliary metadata, so a late failure must not report the
-        # whole turn as failed and make the main server resend it. The durable
-        # outbox marker retries the reservation before any locale-bearing
-        # maintenance signal is allowed to complete.
-        logger.info(
-            "[PromptLocale] %s: reservation deferred while cloudsave is fenced: %s",
-            lanlan_name,
-            exc,
-        )
-        locale_order = None
+    has_explicit_language = is_supported_language_code(language)
+    locale_order = None
+    if has_explicit_language:
+        if not isinstance(locale_admission_order, int) or isinstance(
+            locale_admission_order,
+            bool,
+        ):
+            locale_admission_order = allocate_character_prompt_locale_order(
+                lanlan_name,
+            )
+        try:
+            locale_order = await asyncio.to_thread(
+                reserve_character_prompt_locale_order,
+                lanlan_name,
+                order=locale_admission_order,
+            )
+        except (MaintenanceModeError, PromptLocalePersistenceError) as exc:
+            # The conversation rows may already be durable when a cloud operation
+            # closes the write fence or its sidecar commit is invalidated. Locale
+            # ordering is auxiliary metadata, so a late failure must not report the
+            # whole turn as failed and make the main server resend it. The durable
+            # outbox marker retries the reservation before any locale-bearing
+            # maintenance signal is allowed to complete.
+            logger.info(
+                "[PromptLocale] %s: reservation deferred while cloudsave is fenced: %s",
+                lanlan_name,
+                exc,
+            )
     payload = {
         'messages': messages_to_dict(messages),
     }
-    if locale_order is not None:
-        payload['locale_order'] = locale_order
-    else:
-        payload['locale_order_deferred'] = True
-        payload['locale_admission_order'] = locale_admission_order
-    if language:
+    if has_explicit_language:
+        if locale_order is not None:
+            payload['locale_order'] = locale_order
+        else:
+            payload['locale_order_deferred'] = True
+            payload['locale_admission_order'] = locale_admission_order
         # Persist the locale with the work item: after a memory_server restart,
         # replay must not re-resolve from a neutral process locale and switch
         # the same conversation window back to English.
@@ -142,7 +145,7 @@ async def _spawn_outbox_post_turn_signals(
             f"[Outbox] {lanlan_name}: append_pending 失败，降级为内存任务: "
             f"{type(e).__name__}: {e}"
         )
-        if locale_order is None:
+        if has_explicit_language and locale_order is None:
             operation = _run_post_turn_signals_after_locale_reservation(
                 messages,
                 lanlan_name,
