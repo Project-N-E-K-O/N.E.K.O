@@ -2619,6 +2619,28 @@ def test_persona_correction_locale_ignores_formatter_labels():
     [
         ("es", "Me gusta el cafe", "es"),
         ("pt", "Eu gosto de cafe", "pt"),
+        ("zh-TW", "I like coffee", "en"),
+    ],
+)
+def test_persona_correction_keeps_ascii_ui_language(
+    ui_language,
+    text,
+    expected,
+):
+    from memory.persona.corrections import _detect_correction_prompt_language
+
+    pairs = [(0, {"old_text": text, "new_text": text})]
+    assert _detect_correction_prompt_language(
+        pairs,
+        ui_language=ui_language,
+    ) == expected
+
+
+@pytest.mark.parametrize(
+    ("ui_language", "text", "expected"),
+    [
+        ("es", "Me gusta el cafe", "es"),
+        ("pt", "Eu gosto de cafe", "pt"),
         ("en", "I like coffee", "en"),
     ],
 )
