@@ -386,6 +386,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
 # proactive_chat 路径是否成为 memory_server 真正的负载来源；如不是，则不必再
 # 上 main_server 端缓存（C+ 方案）。
 _new_dialog_qps_counter: dict[str, int] = {}
+_new_dialog_locale_generations: dict[str, int] = {}
 NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
 
 
@@ -1775,6 +1776,43 @@ async def new_dialog(lanlan_name: str, language: str | None = None):
         return await _new_dialog(lanlan_name, language)
 
 
+async def _write_new_dialog_locale(
+    lanlan_name: str,
+    language: str,
+    generation: int,
+) -> None:
+    """Persist one still-current new-dialog locale selection."""
+    locale_order = await asyncio.to_thread(
+        locale_state.reserve_character_prompt_locale_order,
+        lanlan_name,
+    )
+    if _new_dialog_locale_generations.get(lanlan_name) != generation:
+        return
+    await asyncio.to_thread(
+        locale_state.record_character_prompt_locale,
+        lanlan_name,
+        language,
+        order=locale_order,
+    )
+
+
+async def _retry_new_dialog_locale(
+    lanlan_name: str,
+    language: str,
+    generation: int,
+) -> None:
+    """Retry a deferred locale write until it succeeds or becomes stale."""
+    while _new_dialog_locale_generations.get(lanlan_name) == generation:
+        try:
+            await _write_new_dialog_locale(lanlan_name, language, generation)
+            return
+        except (
+            MaintenanceModeError,
+            locale_state.PromptLocalePersistenceError,
+        ):
+            await asyncio.sleep(0.25)
+
+
 async def _new_dialog(lanlan_name: str, language: str | None = None):
     lanlan_name = validate_lanlan_name(lanlan_name)
     gates._touch_activity()
@@ -1791,16 +1829,13 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if is_supported_language_code(language):
+        generation = _new_dialog_locale_generations.get(lanlan_name, 0) + 1
+        _new_dialog_locale_generations[lanlan_name] = generation
         try:
-            locale_order = await asyncio.to_thread(
-                locale_state.reserve_character_prompt_locale_order,
-                lanlan_name,
-            )
-            await asyncio.to_thread(
-                locale_state.record_character_prompt_locale,
+            await _write_new_dialog_locale(
                 lanlan_name,
                 language,
-                order=locale_order,
+                generation,
             )
         except (
             MaintenanceModeError,
@@ -1813,6 +1848,9 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
                 "[PromptLocale] %s: new-dialog locale persistence deferred: %s",
                 lanlan_name,
                 exc,
+            )
+            runtime._spawn_background_task(
+                _retry_new_dialog_locale(lanlan_name, language, generation)
             )
 
     # 仅对合法角色计数：QPS 观测的目的是评估 C+ 缓存决策，无效请求不构成

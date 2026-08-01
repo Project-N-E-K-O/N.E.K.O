@@ -470,6 +470,8 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
     async def load_characters():
         return {"猫娘": {"Neko": {}}}
 
+    deferred = []
+
     def blocked_reservation(_name):
         raise MaintenanceModeError(
             "maintenance_readonly",
@@ -491,9 +493,78 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
         ),
     )
     monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: ContextReadLock())
+    monkeypatch.setattr(
+        runtime,
+        "_spawn_background_task",
+        lambda operation: deferred.append(operation),
+    )
 
     with pytest.raises(ReachedContextRead):
         await routes._new_dialog("Neko", "zh-TW")
+
+    assert len(deferred) == 1
+    deferred[0].close()
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_deferred_locale_retries_after_fence(monkeypatch):
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import locale_state, routes
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    attempts = 0
+    recorded = []
+
+    def reserve(_name):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise MaintenanceModeError(
+                "maintenance_readonly",
+                operation="save",
+                target="prompt_locale.json",
+            )
+        return 42
+
+    generation = routes._new_dialog_locale_generations.get("RetryNeko", 0) + 1
+    routes._new_dialog_locale_generations["RetryNeko"] = generation
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        reserve,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "record_character_prompt_locale",
+        lambda name, language, *, order: recorded.append(
+            (name, language, order)
+        ),
+    )
+    sleep = AsyncMock()
+    monkeypatch.setattr(routes.asyncio, "sleep", sleep)
+
+    await routes._retry_new_dialog_locale("RetryNeko", "zh-TW", generation)
+
+    assert attempts == 2
+    assert recorded == [("RetryNeko", "zh-TW", 42)]
+    sleep.assert_awaited_once_with(0.25)
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_stale_locale_retry_cannot_overwrite_newer_request(
+    monkeypatch,
+):
+    from app.memory_server import locale_state, routes
+
+    routes._new_dialog_locale_generations["RetryNeko"] = 2
+    monkeypatch.setattr(
+        locale_state,
+        "reserve_character_prompt_locale_order",
+        lambda _name: pytest.fail("stale retry must stop before reserving"),
+    )
+
+    await routes._retry_new_dialog_locale("RetryNeko", "zh-TW", 1)
 
 
 @pytest.mark.asyncio
