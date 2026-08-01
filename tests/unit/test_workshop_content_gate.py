@@ -4152,6 +4152,9 @@ _FOLDER_OPERATION_CLAIMS = {
     'makedirs': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
+    'mkstemp': {
+        'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
+    },
     'truncate': {
         'claim_content_folder', 'claim_partial_writer', 'claim_reference_pair',
     },
@@ -4176,6 +4179,7 @@ _FOLDER_OPERATION_ARGS = {
     'copyfile': 1,
     'copytree': 1,
     'move': 1,
+    'mkstemp': 2,
     **{name: arguments[0][0] for name, arguments in _OS_CONTENT_PATH_MUTATION_ARGS.items()},
 }
 
@@ -4195,6 +4199,7 @@ _PACKAGE_OPERATION_FOLDER_KEYWORDS = {
     'copyfile': 'dst',
     'copytree': 'dst',
     'move': 'dst',
+    'mkstemp': 'dir',
 }
 
 # 这些名字过于通用，不能全模块扫描；但在指定 worker 单元里，它们正是内容目录的
@@ -4316,11 +4321,12 @@ def _operation_aliases(
                         state[local] = canonical
             elif isinstance(node, ast.Import):
                 for alias in node.names:
-                    if alias.name != 'os':
-                        continue
                     local = alias.asname or alias.name
-                    for operation in _OS_CONTENT_PATH_MUTATION_ARGS:
-                        state[f'{local}.{operation}'] = frozenset({operation})
+                    if alias.name == 'os':
+                        for operation in _OS_CONTENT_PATH_MUTATION_ARGS:
+                            state[f'{local}.{operation}'] = frozenset({operation})
+                    elif alias.name == 'tempfile':
+                        state[f'{local}.mkstemp'] = frozenset({'mkstemp'})
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
                 reference = (
@@ -4688,7 +4694,11 @@ def _content_path_mutation_nodes(func) -> list[tuple[ast.AST, str]]:
 
 def _known_open_flag_names(func, before_line: int) -> dict[str, set[str]]:
     """Possible ``os.open`` flag constants stored in local variables."""
-    flag_names = {'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC'}
+    flag_names = {
+        'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC',
+        'O_RDONLY', 'O_BINARY', 'O_CLOEXEC', 'O_DIRECTORY', 'O_NOINHERIT',
+        'O_NOFOLLOW', 'O_NONBLOCK', 'O_PATH', 'O_TEXT',
+    }
 
     def merge(*states):
         return {
@@ -4769,6 +4779,10 @@ def _known_open_flag_names(func, before_line: int) -> dict[str, set[str]]:
 
 def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
     write_flags = {'O_WRONLY', 'O_RDWR', 'O_APPEND', 'O_CREAT', 'O_TRUNC'}
+    read_flags = {
+        'O_RDONLY', 'O_BINARY', 'O_CLOEXEC', 'O_DIRECTORY', 'O_NOINHERIT',
+        'O_NOFOLLOW', 'O_NONBLOCK', 'O_PATH', 'O_TEXT',
+    }
     handle_methods = {'write', 'writelines', 'truncate', 'flush', 'close'}
     parents = _parent_map(func)
     handle_paths = {}
@@ -4798,15 +4812,21 @@ def _open_write_nodes(func) -> list[tuple[ast.AST, str]]:
             flags = node.args[1] if len(node.args) > 1 else next((
                 item.value for item in node.keywords if item.arg == 'flags'
             ), None)
-            writes = flags is not None and any(
-                _reference_name(child) in write_flags
+            resolved_flags = {
+                name
                 for child in ast.walk(flags)
-            )
+                if (name := _reference_name(child)) in write_flags | read_flags
+            } if flags is not None else set()
             if isinstance(flags, ast.Name):
-                writes = writes or bool(
+                resolved_flags.update(
                     _known_open_flag_names(func, node.lineno).get(flags.id, set())
-                    & write_flags
                 )
+            proven_read_only = (
+                isinstance(flags, ast.Constant) and flags.value == 0
+            ) or bool(resolved_flags) and resolved_flags <= read_flags
+            writes = flags is not None and (
+                bool(resolved_flags & write_flags) or not proven_read_only
+            )
         else:
             mode_index = 0 if is_path_open else 1
             mode = (
@@ -5696,6 +5716,7 @@ def _unclaimed_folder_operations(
         ]
         branch_pairs = []
         branch_shapes = []
+        branch_shape_pairs = []
         for branch in expressions:
             aliases = _claim_aliases(func, branch.lineno)
             kind = _resolved_claim_factory(branch, aliases)
@@ -5704,6 +5725,9 @@ def _unclaimed_folder_operations(
             branch_pairs.append({(kind, key)} if kind and key is not None else set())
             shape = _static_path_shape(folder) if folder is not None else None
             branch_shapes.append({shape} if kind and shape is not None else set())
+            branch_shape_pairs.append(
+                {(kind, shape)} if kind and shape is not None else set()
+            )
         kinds = set.intersection(*branch_kinds) if branch_kinds else set()
         folder_targets = (
             set.intersection(*branch_targets) if branch_targets else set()
@@ -5717,10 +5741,14 @@ def _unclaimed_folder_operations(
         )
         pairs = set.intersection(*branch_pairs) if branch_pairs else set()
         shapes = set().union(*branch_shapes) if branch_shapes else set()
+        shape_pairs = (
+            set().union(*branch_shape_pairs) if branch_shape_pairs else set()
+        )
         if branch_kinds and all(branch_kinds):
             kinds.add('<all-branches-claimed>')
         return (
-            kinds, folder_targets, target_names, target_roots, pairs, shapes
+            kinds, folder_targets, target_names, target_roots, pairs, shapes,
+            shape_pairs,
         ) if kinds else None
 
     def merge_claim_states(left, right):
@@ -5851,6 +5879,7 @@ def _unclaimed_folder_operations(
         claim_target_roots = set()
         claim_pairs = set()
         claim_shapes = set()
+        claim_shape_pairs = set()
         claim_contexts = claim_states_by_with.get(id(block), {})
         for item in block.items:
             context = item.context_expr
@@ -5868,6 +5897,7 @@ def _unclaimed_folder_operations(
                     shape = _static_path_shape(folder)
                     if shape is not None:
                         claim_shapes.add(shape)
+                        claim_shape_pairs.add((claim_kind, shape))
                     claim_target_names.update(
                         _path_expression_names(folder)
                         | _expression_path_origins(folder, func, context.lineno)
@@ -5885,8 +5915,10 @@ def _unclaimed_folder_operations(
                     alias_target_roots,
                     alias_pairs,
                     alias_shapes,
+                    alias_shape_pairs,
                 ) = claim_contexts.get(
-                    context.id, (set(), set(), set(), set(), set(), set())
+                    context.id,
+                    (set(), set(), set(), set(), set(), set(), set()),
                 )
                 claim_kinds.update(alias_kinds)
                 claim_targets.update(alias_targets)
@@ -5894,6 +5926,7 @@ def _unclaimed_folder_operations(
                 claim_target_roots.update(alias_target_roots)
                 claim_pairs.update(alias_pairs)
                 claim_shapes.update(alias_shapes)
+                claim_shape_pairs.update(alias_shape_pairs)
         if not claim_kinds:
             continue
         claimed_scopes.append((
@@ -5903,6 +5936,7 @@ def _unclaimed_folder_operations(
             claim_target_roots,
             claim_pairs,
             claim_shapes,
+            claim_shape_pairs,
             [
                 (
                     inner,
@@ -6037,7 +6071,14 @@ def _unclaimed_folder_operations(
                         for origins in content_folder_argument_origin_sets
                     )
                     and bool(required_kinds & kinds)
-                    and _paths_fit_claim(operation_folders, claim_shapes)
+                    and _paths_fit_claim(
+                        operation_folders,
+                        {
+                            shape
+                            for kind, shape in claim_shape_pairs
+                            if kind in required_kinds
+                        },
+                    )
                     and (
                         'claim_content_folder' in kinds
                         or name not in {'rmtree', 'rmdir', 'rename', 'replace', 'move'}
@@ -6063,6 +6104,7 @@ def _unclaimed_folder_operations(
                 target_roots,
                 pairs,
                 claim_shapes,
+                claim_shape_pairs,
                 rebindings,
                 scope,
             ) in claimed_scopes
@@ -6102,7 +6144,7 @@ def _unclaimed_folder_operations(
             required_claim in kinds
             and unit_ids <= scope
             and (not unit_folder_names or bool(unit_folder_names & target_names))
-            for kinds, _, target_names, _, _, _, _, scope in claimed_scopes
+            for kinds, _, target_names, _, _, _, _, _, scope in claimed_scopes
         ):
             offenders.append((
                 short,
@@ -6492,12 +6534,18 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    flags = os.O_TRUNC | os.O_WRONLY\n'
         '    os.open(content_folder, flags)\n'
         '\n'
+        'def dynamic_os_open_flags(content_folder, flags):\n'
+        "    os.open(Path(content_folder) / 'preview.png', flags)\n"
+        '\n'
         'def aliased_os_open(content_folder):\n'
         '    import os as filesystem\n'
         '    filesystem.open(content_folder, filesystem.O_WRONLY)\n'
         '\n'
         'def atomic_byte_write(content_folder):\n'
         "    atomic_write_bytes(Path(content_folder, 'preview.png'), data)\n"
+        '\n'
+        'def tempfile_create(content_folder):\n'
+        '    tempfile.mkstemp(dir=content_folder)\n'
         '\n'
         'def explicit_content_local(path):\n'
         '    content_folder = path\n'
@@ -6684,11 +6732,17 @@ def test_the_claim_guard_discovers_content_path_mutations():
         functions['stored_os_open_flags'], 'new_router'
     ), '局部变量保存的 os.open write flags 也必须识别为 writer'
     assert _unclaimed_folder_operations(
+        functions['dynamic_os_open_flags'], 'new_router'
+    ), '显式但无法静态解析的 os.open flags 必须保守视为潜在 writer'
+    assert _unclaimed_folder_operations(
         functions['aliased_os_open'], 'new_router'
     ), 'import os as ... 的 alias 也必须识别 os.open writer'
     assert _unclaimed_folder_operations(
         functions['atomic_byte_write'], 'new_router'
     ), 'atomic_write_bytes 必须进入 package-wide mutation vocabulary'
+    assert _unclaimed_folder_operations(
+        functions['tempfile_create'], 'new_router'
+    ), 'tempfile.mkstemp 在 content folder 中创建文件时必须要求 claim'
     assert _unclaimed_folder_operations(
         functions['explicit_content_local'], 'new_router'
     ), '显式 content_folder local 即使源参数泛化也必须保留语义 origin'
@@ -7175,6 +7229,14 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
         '    with claim_content_folder(content_folder, purpose=p):\n'
         '        shutil.rmtree(content_folder)\n'
     ).body[0]
+    crossed_folder_shapes = ast.parse(
+        'def delete(content_folder):\n'
+        '    with (\n'
+        "        claim_partial_writer(Path(content_folder) / 'a'),\n"
+        "        claim_content_folder(Path(content_folder) / 'b', purpose=p),\n"
+        '    ):\n'
+        "        shutil.rmtree(Path(content_folder) / 'a' / 'child')\n"
+    ).body[0]
     mutually_exclusive_rebinding = ast.parse(
         'def delete(content_folder, other, flag):\n'
         '    with claim_content_folder(content_folder, purpose=p):\n'
@@ -7238,6 +7300,9 @@ def test_package_operations_require_the_matching_claim_kind_and_folder():
         generic_wrong_kind_and_folder, 'publish'
     ), 'generic folder operation 也必须同时匹配 claim kind 和 target'
     assert _unclaimed_folder_operations(generic_matching, 'publish') == []
+    assert _unclaimed_folder_operations(crossed_folder_shapes, 'publish'), (
+        'claim kind 必须与自己的 folder shape 成对，不能借 sibling claim 混合证明'
+    )
     assert _unclaimed_folder_operations(
         mutually_exclusive_rebinding, 'publish'
     ) == [], '互斥 if 分支里的重绑定不能污染受 claim 保护的 else operation'
