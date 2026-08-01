@@ -309,12 +309,20 @@ def _hook_lines(
         return ()
     reason_label, response_intent = presentation
     hook_seq = hook_row.get("seq")
+    visible_rows = [
+        row
+        for row in chat_rows
+        if _compact_chat_text(
+            row.get("text"),
+            max_length=AMBIENT_CHAT_TEXT_MAX_CHARS,
+        )
+    ][:AMBIENT_CHAT_LIMIT]
     position = next(
         (
             label
             for label, row in zip(
                 _CHAT_POSITION_LABELS,
-                chat_rows[:AMBIENT_CHAT_LIMIT],
+                visible_rows,
             )
             if hook_seq is not None and row.get("seq") == hook_seq
         ),

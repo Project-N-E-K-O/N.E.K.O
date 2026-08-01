@@ -152,7 +152,22 @@ async def start_live_listener(runtime: Any, room_ref: Any) -> bool:
     runtime.safety_guard.set_connected(started)
     runtime._accepting_live_events = bool(started)
     if started:
-        runtime.live_events.schedule_session_context_refresh()
+        refresh = getattr(
+            getattr(runtime, "live_events", None),
+            "schedule_session_context_refresh",
+            None,
+        )
+        if callable(refresh):
+            try:
+                refresh()
+            except Exception as exc:
+                record = getattr(getattr(runtime, "audit", None), "record", None)
+                if callable(record):
+                    record(
+                        "live_session_context_refresh_failed",
+                        f"session context refresh failed: {type(exc).__name__}",
+                        level="warning",
+                    )
     return started
 
 

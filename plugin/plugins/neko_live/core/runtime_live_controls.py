@@ -228,10 +228,10 @@ async def connect_live_room(
     started = await runtime._start_live_listener(target_room_ref)
     if not started:
         runtime.live_connection_auth_mode = "unknown"
-    # Reset counters at the connect boundary so a summary always describes one
-    # listening session rather than accumulating across reconnects.
-    _reset_runtime_log(runtime)
+    # Preserve the preceding window in the boundary summary, then start a fresh
+    # counter window for the newly connected listener.
     _flush_runtime_log(runtime, "connect" if started else "connect_failed")
+    _reset_runtime_log(runtime)
     await runtime.sync_live_instructions()
     runtime.audit.record(
         "live_connected" if started else "live_connect_failed",

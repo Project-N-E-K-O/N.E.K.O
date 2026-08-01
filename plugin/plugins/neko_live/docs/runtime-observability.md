@@ -68,7 +68,7 @@ Runtime Timeline is a projection of runtime facts. It must not become a second s
 
 Current implementation status: implemented as a lightweight in-memory projection in `core/runtime_timeline.py`. It records bounded stage summaries keyed by privacy-safe `trace_id`; it does not persist timeline entries or route events.
 
-Final spoken-text replay is not owned by host/core in this phase. The plugin passes `trace_id` and plugin-owned review metadata through output metadata; hosted UI and Monitor may use that opaque metadata plus backend text logs for troubleshooting, but they must not require host/core to shape, suppress, audit, or rewrite NEKO Live speech.
+Final spoken-text replay is not owned by host/core in this phase. The plugin passes `trace_id` and plugin-owned review metadata through output metadata; Hosted UI, Monitor, and Dashboard may use only that opaque metadata plus sanitized, allowlisted backend-log metadata for troubleshooting. They must never read or expose raw user input, message text, or unsanitized output, and must not require host/core to shape, suppress, audit, or rewrite NEKO Live speech.
 
 ### Runtime Timeline Projection
 
@@ -425,7 +425,7 @@ The co-stream passive-context validation path exposes only bounded lifecycle cou
 - `ambient_hook_last_reason`: one allowlisted selector outcome: `selected.chorus`, `selected.continuity`, `selected.question`, `selected.mood`, `selected.complete`, `no_candidates`, `already_replied`, `duplicate_or_flood`, `low_value`, `fragment`, or `no_suitable`.
 - `ambient_hook_last_score` / `ambient_hook_last_candidate_count`: non-negative integer winner score and eligible-candidate count. They expose neither rank input nor viewer content.
 
-These fields are diagnostics, not proof that the model consumed the context or that an active support acknowledgement was audible. No callback text, nickname, UID, assistant output, summary, viewer profile, or historical memory is copied into status or audit. Plugin `push_message` confirms only that the dispatch request was queued. Session-reset clearing uses the previous session's coalescing key and does not copy viewer text into audit.
+These fields are diagnostics, not proof that the model consumed the context or that an active support acknowledgement was audible. No callback text, nickname, UID, assistant output, summary, viewer profile, or historical memory is copied into status or audit. Dispatcher `pushed` records only the handoff of a request that passed `core/safety_guard.py` and `adapters/neko_dispatcher.py`; it is not playback confirmation and does not authorize direct `plugin.push_message` calls. Session-reset clearing uses the previous session's coalescing key and does not copy viewer text into audit.
 
 The compact prompt renderer reuses the same source window only for an already scheduled response. It creates no timer, queue, persistence, network request, model call, or output route. The block is capped at 240 characters and is never copied into status or audit. `live_events.status()` exposes only resettable operational counters and stable reason metadata:
 

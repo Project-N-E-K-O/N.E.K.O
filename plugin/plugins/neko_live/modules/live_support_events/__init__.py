@@ -162,10 +162,8 @@ class LiveSupportEventsModule(BaseModule):
             # acknowledgement. The existing scheduler dedupe/combo handling
             # and pipeline support cooldown still cap bursts; passive context
             # remains a delivery-neutral room fact for later continuity.
-            should_attempt_active = True
             active_requested = bool(
-                should_attempt_active
-                and self._scheduler is not None
+                self._scheduler is not None
                 and self._scheduler.submit(payload)
             )
             remembered = bool(
@@ -174,16 +172,18 @@ class LiveSupportEventsModule(BaseModule):
                     tier=tier,
                 )
             )
-            self.ctx.audit.record(
-                "support.co_stream_strategy",
-                "co-stream support routed through passive context and bounded active acknowledgement",
-                detail={
-                    "event_type": self._last_event_type,
-                    "tier": tier,
-                    "passive_context_remembered": remembered,
-                    "active_attempt_requested": active_requested,
-                },
-            )
+            record = getattr(getattr(self.ctx, "audit", None), "record", None)
+            if callable(record):
+                record(
+                    "support.co_stream_strategy",
+                    "co-stream support routed through passive context and bounded active acknowledgement",
+                    detail={
+                        "event_type": self._last_event_type,
+                        "tier": tier,
+                        "passive_context_remembered": remembered,
+                        "active_attempt_requested": active_requested,
+                    },
+                )
             return
         if self._scheduler is not None:
             self._scheduler.submit(payload)

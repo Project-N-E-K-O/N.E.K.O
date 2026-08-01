@@ -102,6 +102,12 @@ class SafetyGuard:
         *,
         consume_cooldown: bool = True,
     ) -> SafetyDecision:
+        """Check the final output gates.
+
+        ``consume_cooldown=False`` is reserved for probe/inspection paths: it
+        skips cooldown validation and does not advance ``_last_output_at``.
+        Real ``push_roast`` output must keep the default value.
+        """
         if _requires_live_connection(event) and not self.connected:
             return SafetyDecision(
                 False, "disconnected", "live output source is disconnected"

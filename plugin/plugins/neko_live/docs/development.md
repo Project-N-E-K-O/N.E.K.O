@@ -19,7 +19,7 @@
 - 本场直播统计、观众档案和运行态解释；
 - 开发者沙盒、监控和压力工具。
 
-更新日期：2026-07-03
+更新日期：2026-08-01
 
 核心闭环：**真实 B站直播间监听 → EventBus → live_events Selection → Roast Pipeline → Runtime → Dashboard**。`neko_live` v0.1 已进入主线，产品命名已统一为 **NEKO Live**；「弹幕锐评」是第一个落地的垂直切片。锐评采用**自适应焦点**（昵称与头像哪个更有料就主打哪个，看不到的头像绝不脑补）。
 
@@ -174,7 +174,8 @@ Runtime active engagement API split note: `runtime_active_engagement_api.py` now
 ```text
 弹幕 WS → danmaku_core → on_event(LiveDanmaku 富模型)
   -> bili_live_ingest 包成 LiveEvent → event_bus.publish(type)   事件中枢路由（按 type 分发，见「直播事件中枢（EventBus）」）
-  -> live_events 订阅 "danmaku" / "gift" / "super_chat" / "guard"（冷却期缓冲、get_score 择优 / 空闲态首条即时；room_topic 仅给 prompt builder 提供弹幕主题上下文）
+  -> live_events 只订阅 "danmaku"（冷却期缓冲、get_score 择优 / 空闲态首条即时；room_topic 仅给 prompt builder 提供弹幕主题上下文）
+  -> live_support_events 独立订阅 "gift" / "super_chat" / "guard"（可信证据、去重、连击与有界调度）
   -> handle_live_payload -> pipeline.handle_event:
        safety_guard.before_event()      连接/暂停/队列闸门
     -> live_provider.resolve_identity()  平台身份解析；B 站 UID→昵称/头像/META（登录态过 -352），抖音只消费已清洗字段
@@ -876,8 +877,10 @@ danmaku_core on_event(cmd, 富模型)
       # 命令名→type：DANMU_MSG→danmaku / SEND_GIFT→gift / SUPER_CHAT_MESSAGE→super_chat
       #             / GUARD_BUY→guard / INTERACT_WORD→entry / 其余→cmd 小写
   → EventBus 逐订阅者隔离派发
-       live_events 订阅 "danmaku" / "gift" / "super_chat" / "guard"：
+       live_events 订阅 "danmaku"：
            _on_bus_event 解包 raw → 既有 submit() 窗口择优 → pipeline
+       live_support_events 订阅 "gift" / "super_chat" / "guard"：
+           可信证据投影 → 去重 / 连击 / 有界优先调度 → pipeline
        （其它类型：无订阅者 → 静默丢弃，待后续 P3 handler 订阅）
 ```
 
@@ -1190,7 +1193,7 @@ uv run pytest plugin/plugins/neko_live/tests -q
 uv run python -m plugin.neko_plugin_cli.cli check plugin/plugins/neko_live
 ```
 
-截至 2026-07-27：`uv run pytest plugin/plugins/neko_live/tests -q` → **1668 passed, 1 skipped, 2 warnings**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
+历史基线（2026-07-27）：`uv run pytest plugin/plugins/neko_live/tests -q` → **1668 passed, 1 skipped, 2 warnings**。当前基线（2026-08-01）：**1708 passed, 1 skipped, 2 warnings**；CLI check **0 error**（6 条模板 warning 允许）。当前允许存在模板级 warning（插件目录不是独立 git 仓库、无独立 `.github` / `.vscode` 配置），**不能存在 error**。
 
 > 注：`plugin/tests/unit/server/test_plugin_ui_query_service.py` 是 host 侧测试，不在 neko_live 验证范围内；跨模块禁碰范围以 `AGENTS.md` 为准。
 

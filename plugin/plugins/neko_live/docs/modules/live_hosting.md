@@ -18,6 +18,16 @@ The runtime director creates a synthetic public `ViewerEvent` only after live-mo
 
 Hosting material is read from plugin-owned live content and recent plugin runtime state. This slice does not write viewer profiles, credentials, or long-term memory. Beat selection state is in-memory and is cleared with the live runtime.
 
+Runtime Timeline uses stable hosting gate/pressure reasons from `runtime-observability.md`, including `hosting.not_ready`, `hosting.queue_pressure`, and the selected hosting route. A skipped gate is an Event Outcome, not permission to bypass Safety Guard or Dispatcher.
+
+## Decision Points
+
+- **Cost:** bounded in-memory beat/history keys and existing prompt context only; no new timer, model turn, persistence, dependency, or network polling.
+- **Affected interfaces:** `LiveHostingDirector`, runtime assembly, warmup/active modules, content candidates, pipeline metadata, and dashboard readiness projection.
+- **Alternatives:** a background scheduler or model-authored planner would add idle CPU/token cost and another output owner; the current request-driven deterministic director is recommended.
+- **Rollout / rollback:** keep all output behind existing feature gates. Rollback must remove the director import and construction from runtime assembly, its delegates, module registrations, configuration/UI references, and then run the focused tests plus CLI check.
+- **Approval:** the implementation remains part of Draft PR #2647 pending maintainer review.
+
 ## Testing
 
 Run:
@@ -37,4 +47,4 @@ The focused tests cover standalone module imports, material safety filtering, an
 - If `live_content` cannot provide safe material, idle-hosting discovery degrades to an empty candidate list instead of blocking the live runtime.
 - Output length remains governed by the prompt/metadata contract described in `output_contract.md`.
 
-To roll back, remove the hosting director delegates and module registrations. The EventBus, pipeline, safety guard, and viewer stores remain unchanged.
+To roll back, follow the Decision Points checklist above. The EventBus, pipeline, safety guard, and viewer stores remain unchanged.

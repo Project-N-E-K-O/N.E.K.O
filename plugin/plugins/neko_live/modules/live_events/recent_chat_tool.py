@@ -94,7 +94,7 @@ def recent_chat_tool_result(
     platform = (
         platform_value
         if isinstance(platform_value, str)
-        and platform_value in {"bilibili", "douyin"}
+        and platform_value in {"bilibili", "douyin", "twitch"}
         else ""
     )
     room_ref_getter = getattr(provider, "configured_room_ref", None)

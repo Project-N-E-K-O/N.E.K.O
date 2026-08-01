@@ -168,6 +168,7 @@ async def test_recent_chat_tool_returns_only_current_live_session_snapshot():
     plugin = NekoLivePlugin(SimpleNamespace(logger=None))
     plugin.runtime = SimpleNamespace(
         _accepting_live_events=True,
+        config=SimpleNamespace(developer_tools_enabled=True),
         live_events=SimpleNamespace(
             recent_chat_snapshot=lambda *, limit: [
                 {
@@ -220,6 +221,7 @@ async def test_recent_chat_tool_returns_three_newest_without_numbered_positions(
 
     plugin.runtime = SimpleNamespace(
         _accepting_live_events=True,
+        config=SimpleNamespace(developer_tools_enabled=True),
         live_events=SimpleNamespace(recent_chat_snapshot=snapshot),
         live_provider=SimpleNamespace(
             platform="bilibili",
@@ -259,6 +261,7 @@ async def test_recent_chat_tool_uses_relevant_mode_without_leaking_provider_obje
 
     plugin.runtime = SimpleNamespace(
         _accepting_live_events=True,
+        config=SimpleNamespace(developer_tools_enabled=True),
         live_events=SimpleNamespace(relevant_chat_snapshot=relevant_chat_snapshot),
         live_provider=SimpleNamespace(
             platform={"unsafe": True},
@@ -276,6 +279,24 @@ async def test_recent_chat_tool_uses_relevant_mode_without_leaking_provider_obje
     assert result["status"] == "ok"
     assert result["platform"] == ""
     assert result["room_ref"] == ""
+
+
+@pytest.mark.asyncio
+async def test_recent_chat_tool_rechecks_developer_mode_after_registration():
+    plugin = NekoLivePlugin(SimpleNamespace(logger=None))
+    plugin.runtime = SimpleNamespace(
+        _accepting_live_events=True,
+        config=SimpleNamespace(developer_tools_enabled=False),
+        live_events=SimpleNamespace(
+            recent_chat_snapshot=lambda *, limit: [{"text": "must not leak"}]
+        ),
+    )
+
+    assert await plugin._get_recent_live_chat_tool() == {
+        "available": False,
+        "status": "developer_mode_disabled",
+        "entries": [],
+    }
 
 
 @pytest.mark.asyncio

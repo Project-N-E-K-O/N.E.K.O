@@ -74,6 +74,22 @@ async def test_start_live_listener_schedules_current_session_fact_guard(
 
 
 @pytest.mark.asyncio
+async def test_start_live_listener_survives_session_context_refresh_failure(
+    runtime: LiveRuntime,
+) -> None:
+    def fail_refresh() -> None:
+        raise RuntimeError("synthetic refresh failure")
+
+    runtime.live_events.schedule_session_context_refresh = fail_refresh  # type: ignore[method-assign]
+
+    assert await start_live_listener(runtime, 123) is True
+    assert runtime.live_connection_state == "connected"
+    record = runtime.audit.recent(1)[0]
+    assert record["op"] == "live_session_context_refresh_failed"
+    assert "RuntimeError" in record["message"]
+
+
+@pytest.mark.asyncio
 async def test_late_result_from_previous_session_is_discarded(runtime: LiveRuntime) -> None:
     assert await start_live_listener(runtime, 123) is True
     old_generation = runtime._live_session_generation

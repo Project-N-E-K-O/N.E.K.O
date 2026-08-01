@@ -129,7 +129,11 @@ async def update_config(runtime: Any, updates: dict[str, Any]) -> LiveConfig:
             and bool(live_target_keys & set(live_diff))
         )
         requested_scene_keys = _LIVE_SCENE_CONFIG_KEYS & set(clean)
-        if not defer_instruction_sync and requested_scene_keys:
+        if (
+            not defer_instruction_sync
+            and requested_scene_keys
+            and bool(candidate.live_enabled)
+        ):
             await runtime.sync_live_instructions(
                 force=bool(_FORCE_LIVE_SCENE_SYNC_KEYS & requested_scene_keys)
             )

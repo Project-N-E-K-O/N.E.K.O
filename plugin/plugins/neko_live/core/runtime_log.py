@@ -106,7 +106,11 @@ class RuntimeLog:
             self._compact(self._statuses),
             dict(top_reasons),
         )
+        self._records = 0
         self._since_flush = 0
+        self._stages = {}
+        self._statuses = {}
+        self._reasons = {}
 
     def status(self) -> dict[str, Any]:
         return {

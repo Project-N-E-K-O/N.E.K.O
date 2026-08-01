@@ -1257,6 +1257,14 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: LiveR
     runtime.config.live_enabled = True
     await runtime.bili_live_ingest.start_listening(100)
     runtime.live_audience_session.start_session()
+    instruction_syncs = 0
+
+    async def sync_live_instructions(*, force: bool = False) -> str:
+        nonlocal instruction_syncs
+        instruction_syncs += 1
+        return "unexpected"
+
+    runtime.sync_live_instructions = sync_live_instructions  # type: ignore[method-assign]
 
     await runtime.update_config({"live_enabled": False})
 
@@ -1266,6 +1274,7 @@ async def test_update_config_stops_listener_when_live_is_disabled(runtime: LiveR
     assert runtime.safety_guard.connected is False
     assert runtime.live_connection_snapshot()["connected"] is False
     assert runtime.live_audience_session.snapshot()["active"] is False
+    assert instruction_syncs == 0
 
 
 @pytest.mark.asyncio

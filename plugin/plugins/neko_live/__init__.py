@@ -117,6 +117,14 @@ class NekoLivePlugin(NekoPluginBase):
     ) -> dict[str, Any]:
         from .modules.live_events.recent_chat_tool import recent_chat_tool_result
 
+        runtime = self._runtime()
+        config = getattr(runtime, "config", None)
+        if not bool(getattr(config, "developer_tools_enabled", False)):
+            return {
+                "available": False,
+                "status": "developer_mode_disabled",
+                "entries": [],
+            }
         return recent_chat_tool_result(
             self,
             query=query,

@@ -35,5 +35,5 @@ Focused tests cover standalone import, non-empty active fallback material, missi
 ## Limitations And Degrade Behavior
 
 - These are fallback hooks, not claims about current viewers, trends, or room state.
-- Before the later host-content slice lands, `idle_hosting_beat_candidates()` safely returns an empty list while active fallback topics remain available.
+- `data/idle_hosting_beats.json` is the maintained fallback entry for idle-hosting beats. `idle_hosting_beat_candidates()` validates, selects, and rotates those candidates; an unavailable, empty, or fully filtered catalog safely degrades to an empty list while active fallback topics remain available.
 - If this slice is removed, the active-topic core falls back to its single conservative default candidate; the pipeline, safety guard, dispatcher, and stores remain unchanged.

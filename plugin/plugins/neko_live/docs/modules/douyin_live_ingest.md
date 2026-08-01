@@ -103,6 +103,18 @@ The maintained integration path covers manual Cookie import, room lookup, bundle
 
 This coverage does not settle binary distribution. The bundled executable remains the internal bridge backend, while signing, checksum policy, packaging size, platform coverage, and replacement-source review remain separate distribution decisions.
 
+## Decision Points: Bundled Bridge Distribution
+
+This Draft PR records the runtime boundary but does not approve a release binary policy. Maintainer approval is still required for these distribution decisions:
+
+| Decision | Budget / threshold | Alternatives and trade-off | Recommended Draft option | Rollback / evidence |
+|---|---|---|---|---|
+| Package size and platforms | One versioned bridge per explicitly supported OS/architecture; package growth must be reported before release | Download-on-first-use reduces package size but adds network and supply-chain failure; bundling is reproducible but increases artifact size | Bundle only the reviewed Windows amd64 bridge in the first release | Remove the backend entry and degrade Douyin ingest to unavailable; packaging checks report artifact contents and size |
+| Integrity and signing | License, upstream version, and cryptographic checksum are mandatory; signing policy remains a release-gate decision | Checksum-only is portable; platform signing improves provenance but adds release operations | Require checksum now and decide signing before promoting the Draft | Supervisor refuses a missing/mismatched executable; tests cover selection and startup failure |
+| Replacement source | Replacement must preserve localhost transport and sanitized adapter contracts | Replacing only backend/adapter is bounded; embedding provider protocol logic expands maintenance and risk | Keep bridge backend disposable and bridge-only | Fall back to disconnected/auth-required with sanitized connection status; bridge lifecycle and adapter fixtures provide observability |
+
+Affected interfaces are `bridge_backend.py`, the embedded supervisor, packaging metadata, and the provider-neutral localhost transport. No EventBus, pipeline, viewer-store, or output contract change is approved by this decision record.
+
 ## Replacement Boundary
 
 If the current bridge stops working, keep the runtime shape and replace only the disposable bridge layer:

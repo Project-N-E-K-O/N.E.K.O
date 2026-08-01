@@ -18,10 +18,10 @@
 当前 v0.1 闭环是：
 
 ```text
-Live Ingest → EventBus → Selection → Roast Pipeline → Runtime → Dashboard
+Live Ingest → EventBus → Selection → Roast Pipeline → SafetyGuard → NekoDispatcher → Runtime Timeline / Event Outcome → Dashboard
 ```
 
-详细分层、模块边界、数据边界、pipeline、EventBus 和输出约束不在 roadmap 中重复维护；以 `development.md` 为 Canonical Source。UI 贡献模型以 `ui-architecture.md` 为准。
+详细分层、模块边界、数据边界、pipeline、EventBus 和输出约束不在 roadmap 中重复维护；以 `development.md` 为 Canonical Source。运行态阶段、Event Outcome 和稳定 Skip Reason 以 `runtime-observability.md` 为准；UI 贡献模型以 `ui-architecture.md` 为准。
 
 ---
 
@@ -248,7 +248,7 @@ Gift / SC / Guard 已有短句致谢 handler，但贡献榜、权益、朗读流
    - **当前进度**：已完成基础 runtime action、独立加密落盘和 Hosted UI 入口（`douyin_cookie_import` / `douyin_cookie_status` / `douyin_cookie_validate` / `douyin_cookie_delete`）；公开状态只回显脱敏后的 uid / nickname / saved_at，uid 仅允许可选 `douyin:` 前缀的短安全标识形态，误把 cookie/token/signature/sign/webcast_sign 形态文本粘到公开字段时会清空；cookie 有效性校验只在用户手动触发时读取当前房间元数据，不做后台轮询、网页登录或浏览器自动化。
 
 5. **抖音只读 ingest**
-   - 实现直播间信息解析、初始 webcast fetch、WebSocket 连接、protobuf/gzip 解包、ack、heartbeat、断线重连和事件清洗。
+   - 当前 v1 只实现受监督的 bundled bridge、localhost transport 和 provider-neutral event adapter；直连 WebSocket、protobuf/gzip、ack 与 heartbeat 属于已放弃的历史方案。唯一规范见 `docs/modules/douyin_live_ingest.md`。
    - v1 事件范围：`chat` 进入普通弹幕 pipeline；`gift` 发布安全摘要并可进入共享支持事件路径；`member/follow/like/stats` 只做轻量状态或先丢弃。
    - 断线重连必须有上限、退避和可见状态，不允许无限递归重连。
    - 解析失败/风控/cookie 失效必须降级为 disconnected 或 auth-required，不得阻塞插件启动。

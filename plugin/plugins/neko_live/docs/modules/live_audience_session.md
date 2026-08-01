@@ -18,7 +18,7 @@ The module never chooses output, bypasses the pipeline, changes safety decisions
 
 ## Public Contract And Privacy
 
-The dashboard projection contains only aggregate counters and at most 30 recent viewer rows. A row may contain nickname, per-session counters, last event type, last interaction time, and a session-scoped opaque `viewer_key`.
+The dashboard projection contains only aggregate counters and at most 30 recent viewer rows. A row may contain a `nickname` display label sanitized by `public_text` and limited to 64 characters, per-session counters, last event type, last interaction time, and a session-scoped opaque `viewer_key`. The field is a bounded display label, never a raw provider value.
 
 Raw UID values, raw messages, gifts payloads, credentials, and event payloads are not exposed or persisted. Viewer keys use a per-session keyed digest and cannot be correlated across sessions. Exact unique-viewer tracking is capped at 5000; detailed in-memory viewer state is capped at 100 rows. Unknown event types degrade to a generic interaction label.
 

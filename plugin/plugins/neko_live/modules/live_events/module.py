@@ -1163,10 +1163,10 @@ class LiveEventsModule(BaseModule):
         # rather than left to grow with each new collaborator. Blocks are added
         # in descending time-sensitivity and a block that would not fit is
         # DROPPED, never truncated: half an instruction is worse than none.
-        rendered, kept_indexes = self._fit_context_blocks_with_indexes(
-            (verdict, scene.text, projection.text, ritual.text)
-        )
-        if ritual.text and 3 in kept_indexes:
+        blocks = (verdict, scene.text, projection.text, ritual.text)
+        ritual_index = len(blocks) - 1
+        rendered, kept_indexes = self._fit_context_blocks_with_indexes(blocks)
+        if ritual.text and ritual_index in kept_indexes:
             # An offer becomes a use only after its complete block survived the
             # shared prompt budget. A dropped block must not consume one of the
             # ritual's bounded payoffs or start its cooldown.

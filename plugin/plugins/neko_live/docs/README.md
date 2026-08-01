@@ -78,29 +78,6 @@
 - 发现宿主 / SDK 侧历史问题或跨层取舍：更新 `devlog.md`。
 - 改硬规则、禁止事项、Reviewer Checklist、必跑命令：更新 `../AGENTS.md`。
 
-## 模块参考
-
-- [live_events](modules/live_events.md)：事件窗口、候选选择和低价值过滤。
-- [live_support_events](modules/live_support_events.md)：可信礼物 / SC / Guard 的去重、连击和短句致谢。
-- [live_audience_session](modules/live_audience_session.md)：本场直播的有界、脱敏统计。
-- [live_hosting](modules/live_hosting.md)：暖场、冷场与主动营业。
-- [output_contract](modules/output_contract.md)：回复长度、质量与唯一输出边界。
-- [viewer_stores](modules/viewer_stores.md)：观众档案、审计与凭据边界。
-- [douyin_live_ingest](modules/douyin_live_ingest.md)：实验性抖音只读 bridge 接入。
-- [twitch_live_ingest](modules/twitch_live_ingest.md)：TwitchIO Helix/EventSub 只读接入、Device Code Flow、加密 token、账号与目标频道分离，以及首阶段明确不做的首页/写能力边界。
-
-模块文档只描述该模块拥有的契约、数据、安全边界、测试和降级策略。跨模块总规则仍以 `development.md` 为准。
-
-## 更新路由
-
-- 改按钮、页面或主播操作顺序：更新 `quickstart.md`。
-- 改架构、数据、安全、协作或测试门禁：更新 `development.md`。
-- 改 UI 分区、状态刷新或 `panel_compat.tsx`：更新 `ui-architecture.md`。
-- 改运行态字段、跳过原因或监控语义：更新 `runtime-observability.md`。
-- 改产品范围或验收口径：更新 `independent-mode-product-plan.md`。
-- 改当前优先级或延期决定：更新 `live-center-roadmap.md`。
-- 改某个模块的输入、输出、存储或降级：更新对应 `modules/*.md`。
-
 不要把日期化的工作日志、聊天记录、截图验收过程或单次测试数字写进长期规范。需要保留的证据应放在 PR、issue 或发布记录中；文档只保留仍然有效的结论。
 
 仓库级文档分层、状态、多语言和链接规则见 [`docs/contributing/documentation.md`](../../../../docs/contributing/documentation.md)；本目录只补充 NEKO Live 组件自有的事实来源。

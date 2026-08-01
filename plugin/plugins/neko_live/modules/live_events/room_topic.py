@@ -304,8 +304,9 @@ class RoomTopicContext:
         self._last_theme_keys = [theme.key for theme in ordered]
         question_theme = themes.get("question_help")
         question_support_count = len(question_theme.viewer_uids) if question_theme else 0
-        reaction_support_count = len(
-            set().union(*low_quality_viewers.values()) if low_quality_viewers else set()
+        reaction_support_count = max(
+            (len(viewers) for viewers in low_quality_viewers.values()),
+            default=0,
         )
         (
             repeated_signal_kind,

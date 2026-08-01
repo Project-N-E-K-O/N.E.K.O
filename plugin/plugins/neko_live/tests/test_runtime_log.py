@@ -267,3 +267,16 @@ def test_connect_then_traffic_then_disconnect_shows_the_funnel():
     assert "records=11" in summary
     assert "cooldown" in summary
     assert "dropped" in summary
+
+
+def test_flush_starts_a_new_incremental_summary_window():
+    logger = _Logger()
+    runtime = _runtime(logger)
+    _note(runtime, stage="event_bus", status="published", reason="event.published")
+
+    runtime.runtime_log.flush(runtime, "first")
+    runtime.runtime_log.flush(runtime, "second")
+
+    lines = [line for _level, line in logger.lines if "live summary" in line]
+    assert "records=1" in lines[-2]
+    assert "records=0" in lines[-1]

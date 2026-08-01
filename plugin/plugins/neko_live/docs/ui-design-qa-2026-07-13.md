@@ -3,6 +3,8 @@
 Date: 2026-07-13
 Scope: `plugin/plugins/neko_live` only
 
+This is a dated acceptance record. The current UI structure and contribution contract are canonical in [ui-architecture.md](ui-architecture.md).
+
 This record captures the acceptance criteria used for the streamer-first console refactor. Screenshot artifacts are intentionally not referenced by local absolute paths so the document remains portable across workstations.
 
 ## Viewports and states

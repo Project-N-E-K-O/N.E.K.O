@@ -4,14 +4,13 @@
 > 再按需深入下面「文档地图」里的参考文档。**不要从 `development.md` 开始**——那是开发规范和架构契约的
 > Canonical Source；本文只做上手导览，不复制完整规范。
 >
-> 更新日期：2026-07-17 · 当前测试基线 1368 passed / CLI 0 error；完整测试门禁与允许的模板 warning 以 `development.md` 为准
+> 更新日期：2026-08-01 · 当前测试基线与允许的模板 warning 以 `development.md` 的带日期记录为准
 
 ---
 
 ## 1. 这是什么
 
-`neko_live`（产品名 **NEKO Live**，历史代号「猫娘锐评」）真身是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：把主播直播的
-全生命周期接进猫娘——开播 → 直播间互动（弹幕 / 进场 / 礼物 / SC / 舰长）→ 私信 → 主播侧自动化。
+`neko_live`（产品名 **NEKO Live**，历史代号「猫娘锐评」）的产品愿景是 N.E.K.O 桌面猫娘的**直播中心 (Live Center)**：逐步覆盖开播、直播间互动、私信和主播侧自动化。当前已实现直播间互动（弹幕 / 礼物 / SC / 舰长）等基础能力；私信与主播侧自动化尚未实现。
 
 「首评新观众锐评」（观众首条弹幕 → 猫按人设锐评其昵称 + 头像）只是**第一个落地的垂直切片**。
 所有未来能力以 neko_live 的**内部模块**形式集成，不做跨插件宿主。
@@ -81,14 +80,14 @@ neko_live/
 写一个模块 + 订一个事件类型，**零改外壳、零碰接入层**：
 
 1. 在 `modules/<your_id>/__init__.py` 写 `BaseModule` 子类，声明 `id` / `title` / `domain`（如 `"interaction"`）。
-2. `setup(ctx)` 里订阅：`self._unsub = ctx.event_bus.subscribe("gift", self._on_gift, owner=self.id)`；
+2. `setup(ctx)` 里订阅你拥有的事件类型；普通弹幕参考 `live_events`，支持事件参考 `live_support_events`。例如：`self._unsub = ctx.event_bus.subscribe("entry", self._on_entry, owner=self.id)`；
    `teardown` 里 `self._unsub()`。
 3. handler `_on_gift(event: LiveEvent)`：从 `event.payload` / `event.raw` 取字段，**绝不**自己
    `push_message`——整理成 payload 交给 `ctx.handle_live_payload(...)`，走安全门 + 四条不变量。
 4. 功能参数用 `config_schema()` 声明（面板自动渲染功能卡）；新增文案同步 8 locale；补单测。
 5. 在 `core/runtime.py` 用 `registry.register(...)` 注册你的模块。
 
-**`live_events`（订阅 `"danmaku"` / `"gift"` / `"super_chat"` / `"guard"` 做窗口择优）是可照抄的参考订阅者。** 三条保证：每订阅者隔离、失败按 owner
+**`live_events` 只订阅 `"danmaku"` 做窗口择优；`live_support_events` 独立订阅 `"gift"` / `"super_chat"` / `"guard"` 并做有界调度。** 三条保证：每订阅者隔离、失败按 owner
 归属记 audit、无订阅者静默丢弃。完整契约 + `LiveEvent` 信封字段见 `development.md`「直播事件中枢（EventBus）」。
 
 ## 7. 模块贡献模型

@@ -11,7 +11,7 @@ This store slice keeps viewer profiles, audit events, and encrypted platform cre
 - `stores/credential_store.py` owns Fernet-encrypted credential files. The default `bili` namespace preserves legacy filenames while other providers use strictly validated, isolated filenames and field allowlists. Audit identity uses `DedeUserID` for Bili fields and `uid` for provider field sets that expose it; missing identities are recorded explicitly as `unidentified`, never as an empty account id.
 - `core/viewer_preferences.py` owns preference inference and the public profile projection returned by `recent_profiles()`.
 
-Store callers receive plain public dictionaries or contract objects. Viewer mutations require a sanitized uid. Credential callers only receive the configured encrypted payload fields.
+Store callers receive plain public dictionaries or contract objects. Viewer mutations require a sanitized provider identity. This identity is part of the existing product contract: `viewer_profiles.json` uses the sanitized value both as the JSON key and as the profile `uid` field; it is not an opaque or cross-provider anonymous identifier. Bili credential audit identity uses `DedeUserID`, while other provider credential fields use an allowlisted `uid` when available. Removing or hashing this persistent profile identity requires a separate schema migration; disabling personalized memory does not rewrite existing identity keys. Credential callers only receive the configured encrypted payload fields.
 
 ## Pipeline, Safety, And Data
 

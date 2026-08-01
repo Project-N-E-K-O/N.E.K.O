@@ -62,6 +62,18 @@ def test_room_pulse_uses_unique_viewers_for_pressure_and_repetition():
     assert status["room_pulse_repeated_signal_support"] == 0
 
 
+def test_room_pulse_does_not_union_viewers_across_different_reactions():
+    topic = RoomTopicContext(now=lambda: 100.0)
+
+    _remember(topic, uid="a", text="666")
+    _remember(topic, uid="b", text="666")
+    _remember(topic, uid="c", text="233")
+    _remember(topic, uid="d", text="233")
+
+    status = topic.status()
+    assert status["room_pulse_reaction_support"] == 2
+
+
 def test_room_pulse_distinguishes_repeated_content_from_reactions():
     topic = RoomTopicContext(now=lambda: 100.0)
 
