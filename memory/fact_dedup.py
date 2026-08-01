@@ -1152,8 +1152,10 @@ class FactDedupResolver:
                     cur = int(cand.get('importance', 5) or 5)
                     old = int(existing.get('importance', 5) or 5)
                     cand['importance'] = max(cur, old)
-                if preference != 'new':
-                    _fold_survivor_provenance(cand, existing)
+                # ``replace`` selects the candidate assertion rather than
+                # corroborating it with the rejected row. Keep the selected
+                # author's provenance; the loser remains traceable through
+                # merged_from_ids and the archive record below.
                 mutated_survivor_ids.add(cand_id)
                 ids_to_remove.add(exist_id)
                 archive_specs[exist_id] = {

@@ -619,7 +619,14 @@ class QQSessionMemoryService:
         # context.permission_level is the group's admission tier here, not
         # this member's user permission.  Resolve the member profile directly
         # so a trusted group cannot promote every speaker's trust baseline.
-        permission_level = self._speaker_permission_level_for(sender_id)
+        permission_level = self._speaker_permission_level_for(
+            sender_id,
+            getattr(
+                context,
+                "group_speaker_permission_level_at_receipt",
+                None,
+            ),
+        )
         sequence = user_data.get("group_member_message_sequence")
         if not isinstance(sequence, int) or isinstance(sequence, bool):
             # Hot-reload compatibility: stamp already buffered rows before

@@ -1686,6 +1686,14 @@ def test_conditional_clause_negations_never_emit_correction():
     ) is None
 
 
+@pytest.mark.parametrize("marker", ["Provided", "Assuming", "Supposing"])
+def test_bare_conditional_introducers_never_emit_correction(marker):
+    assert deterministic_relation(
+        f"{marker} Alice is smart, Bob smiles",
+        f"{marker} Alice is not smart, Bob smiles",
+    ) is None
+
+
 @pytest.mark.parametrize("marker", ["只要", "一旦"])
 def test_sufficient_condition_negations_never_emit_correction(marker):
     assert deterministic_relation(

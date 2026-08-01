@@ -46,7 +46,9 @@ _NEGATION_AUXILIARIES = frozenset({
     "have", "is", "may", "might", "must", "shall", "should", "was",
     "were", "will", "would",
 })
-_CONDITIONAL_CLAUSE_MARKERS = frozenset({"if", "unless", "whether"})
+_CONDITIONAL_CLAUSE_MARKERS = frozenset({
+    "assuming", "if", "provided", "supposing", "unless", "whether",
+})
 _EPISTEMIC_MODALS = frozenset({"could", "may", "might"})
 _EMBEDDED_CLAUSE_MARKERS = frozenset({
     "that", "when", "where", "which", "who", "whom", "whose",

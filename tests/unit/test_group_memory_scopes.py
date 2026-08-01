@@ -9919,9 +9919,11 @@ async def test_context_build_executes_end_to_end(monkeypatch):
         group_id="7788",
         source_kind="rapid_fire_flush",
         inherited_consent_snapshot={"group_member_memory_enabled": True},
+        group_speaker_permission_level_at_receipt="normal",
     )
     assert context.is_group is True
     assert context.consent_snapshot == {"group_member_memory_enabled": True}
+    assert context.group_speaker_permission_level_at_receipt == "normal"
     # Synthetic turns drop the nominal sender for memory purposes.
     assert context.turn_uid
 
@@ -11475,6 +11477,40 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
     assert segments[0]["messages"][0]["content"][0]["text"] == "普通时说的"
     assert segments[1]["messages"][0]["content"][0]["text"] == "成为主人后说的"
     assert segments[2]["messages"][0]["content"][0]["text"] == "恢复普通后说的"
+
+
+def test_member_turn_uses_permission_snapshot_not_live_manager():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    plugin = SimpleNamespace(
+        logger=MagicMock(),
+        permission_mgr=SimpleNamespace(
+            get_nickname=lambda _sender: None,
+            get_permission_level=lambda _sender: "admin",
+        ),
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    )
+    service = QQSessionMemoryService(plugin)
+    user_data = {}
+    service.record_group_member_turn(user_data, SimpleNamespace(
+        member_memory_enabled=True,
+        is_group=True,
+        group_facing=False,
+        group_scene_mode="",
+        source_kind="incoming",
+        sender_id="1001",
+        user_nickname="",
+        message="升权前说的",
+        permission_level="trusted",
+        group_speaker_permission_level_at_receipt="normal",
+    ))
+    stored = user_data["group_member_memory_messages"]["1001"][0]
+    assert stored["_speaker_permission_level"] == "normal"
 
 
 @pytest.mark.asyncio
@@ -14000,6 +14036,9 @@ async def test_receipt_snapshot_requires_both_memory_switches():
         handler_runtime_service=SimpleNamespace(
             track_handler_task=lambda task: None,
         ),
+        permission_mgr=SimpleNamespace(
+            get_permission_level=lambda _sender: "normal",
+        ),
     )
     dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
     dispatcher.plugin = plugin
@@ -14008,12 +14047,112 @@ async def test_receipt_snapshot_requires_both_memory_switches():
     assert stamped, "the handler was never scheduled"
     assert stamped[0]["_member_memory_at_receipt"] is False
     assert stamped[0]["_group_memory_at_receipt"] is False
+    assert stamped[0][
+        "_group_speaker_permission_level_at_receipt"
+    ] == "normal"
     # ...and with the parent open, the child stamp follows the child switch.
     plugin._qq_settings["group_memory_enabled"] = True
+    plugin.permission_mgr.get_permission_level = lambda _sender: "admin"
     plugin._running = True
     inbox.append({"message_type": "group", "group_id": "7788", "user_id": "2046"})
     await asyncio.wait_for(dispatcher.process_messages(), timeout=5.0)
     assert stamped[1]["_member_memory_at_receipt"] is True
+    assert stamped[1][
+        "_group_speaker_permission_level_at_receipt"
+    ] == "admin"
+
+
+@pytest.mark.asyncio
+async def test_group_handler_forwards_permission_receipt_snapshot():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = SimpleNamespace(
+        _qq_settings={"backlog_labels": []},
+        qq_client=None,
+        attention_service=None,
+        fatigue_service=None,
+        _user_sessions={},
+        _record_backlog_message=AsyncMock(),
+        _emit_log=lambda *_args, **_kwargs: None,
+        _sanitize_message_text=lambda text, **_kwargs: text,
+        _build_session_key=lambda **_kwargs: "group:7788",
+        _maybe_notify_backlog_summary=AsyncMock(),
+    )
+    dispatcher._maybe_reserve_open_platform_admin = AsyncMock()
+    dispatcher.handle_group_message = AsyncMock()
+    await dispatcher.handle_message({
+        "message_type": "group",
+        "group_id": "7788",
+        "user_id": "2046",
+        "content": "hi",
+        "_group_speaker_permission_level_at_receipt": "normal",
+    })
+    assert dispatcher.handle_group_message.await_args.kwargs[
+        "group_speaker_permission_level_at_receipt"
+    ] == "normal"
+
+
+@pytest.mark.asyncio
+async def test_group_request_carries_permission_receipt_snapshot():
+    from plugin.plugins.qq_auto_reply.message_dispatcher import (
+        QQMessageDispatcher,
+    )
+
+    run = AsyncMock(return_value=SimpleNamespace(
+        action="skip", reply_text="", traces=[],
+    ))
+    recorded = MagicMock()
+    dispatcher = QQMessageDispatcher.__new__(QQMessageDispatcher)
+    dispatcher.plugin = SimpleNamespace(
+        _strategy_mode="neko_dynamic",
+        _qq_settings={},
+        qq_client=None,
+        reply_pipeline=SimpleNamespace(run=run),
+        runtime_service=SimpleNamespace(record_pipeline_outcome=recorded),
+        _emit_log=lambda *_args, **_kwargs: None,
+    )
+    await dispatcher.handle_group_message(
+        "7788",
+        "2046",
+        "hi",
+        False,
+        group_memory_at_receipt=True,
+        member_memory_at_receipt=True,
+        group_speaker_permission_level_at_receipt="normal",
+    )
+    request = run.await_args.args[0]
+    assert request.group_speaker_permission_level_at_receipt == "normal"
+
+
+@pytest.mark.asyncio
+async def test_reply_context_receives_group_permission_receipt_snapshot():
+    from plugin.plugins.qq_auto_reply.pipeline_models import (
+        QQReplyDecision,
+        QQReplyRequest,
+    )
+    from plugin.plugins.qq_auto_reply.reply_pipeline import QQReplyPipelineRunner
+
+    build = AsyncMock(return_value=object())
+    runner = QQReplyPipelineRunner(SimpleNamespace(
+        reply_context_node=SimpleNamespace(build=build),
+    ))
+    request = QQReplyRequest(
+        message_text="hi",
+        sender_id="2046",
+        is_group=True,
+        group_id="7788",
+        group_speaker_permission_level_at_receipt="normal",
+    )
+    await runner._run_context(
+        request,
+        QQReplyDecision(action="reply", permission_level="admin"),
+    )
+    assert build.await_args.kwargs[
+        "group_speaker_permission_level_at_receipt"
+    ] == "normal"
 
 
 def test_synthetic_marking_survives_a_session_swapped_mid_turn():

@@ -1239,7 +1239,11 @@ async def test_trust_does_not_override_complementary_replace(tmp_path):
     model = _make_llm_mock([{"index": 0, "action": "replace"}])
     with patch("utils.llm_client.create_chat_llm", return_value=model):
         assert await resolver.aresolve("Neko") == 1
-    assert [fact["id"] for fact in await fs.aload_facts("Neko")] == ["c1"]
+    active = await fs.aload_facts("Neko")
+    assert [fact["id"] for fact in active] == ["c1"]
+    assert active[0]["speaker_id"] == "qq:1001"
+    assert active[0]["speaker_trust"] == pytest.approx(0.3)
+    assert active[0].get("speaker_provenance_mixed") is not True
 
 
 @pytest.mark.asyncio
