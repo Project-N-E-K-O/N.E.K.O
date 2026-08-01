@@ -512,6 +512,8 @@ class CorrectionsMixin:
                 stable_old_speaker_id is not None
                 and stable_new_speaker_id is not None
                 and stable_old_speaker_id != stable_new_speaker_id
+                and item.get('old_speaker_provenance_mixed') is not True
+                and item.get('new_speaker_provenance_mixed') is not True
                 and isinstance(old_trust, (int, float))
                 and not isinstance(old_trust, bool)
                 and isinstance(new_trust, (int, float))

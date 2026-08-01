@@ -353,6 +353,32 @@ async def test_correction_trust_overrides_model_and_archives_rejected_text(tmp_p
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("mixed_side", ["old", "new"])
+async def test_mixed_correction_provenance_cannot_override_model(
+    tmp_path, mixed_side,
+):
+    pm = _install_pm(str(tmp_path))
+    await _seed_master_fact(
+        pm, "Neko", "小明喜欢猫",
+        speaker_id="qq:1001", speaker_trust=0.3,
+    )
+    correction = {
+        "old_text": "小明喜欢猫", "new_text": "小明不喜欢猫",
+        "entity": "master",
+        "old_speaker_id": "qq:1001", "old_speaker_trust": 0.3,
+        "new_speaker_id": "qq:2002", "new_speaker_trust": 0.8,
+        f"{mixed_side}_speaker_provenance_mixed": True,
+    }
+
+    assert await pm._apply_correction_results(
+        "Neko", [correction], {0},
+        [{"index": 0, "action": "keep_old"}],
+    ) == 1
+    facts = pm._get_section_facts(await pm.aensure_persona("Neko"), "master")
+    assert [entry["text"] for entry in facts] == ["小明喜欢猫"]
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("new_speaker_id", ["QQ:1001", "legacy-user"])
 async def test_invalid_or_same_canonical_persona_speaker_cannot_drive_trust(
     tmp_path, new_speaker_id,

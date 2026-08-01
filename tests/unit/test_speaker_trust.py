@@ -367,7 +367,9 @@ async def test_mixed_fact_with_residual_speaker_id_emits_no_owner_signal():
 
 
 @pytest.mark.asyncio
-async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry():
+async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry(
+    tmp_path,
+):
     from memory.facts import FactStore
 
     owner = MemorySubject.group_participant("qq", "7788", "9999")
@@ -381,6 +383,8 @@ async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry():
     store._locks = {}
     store._locks_guard = threading.Lock()
     store._persist_alocks = {}
+    archive_path = tmp_path / "facts_archive.json"
+    store._facts_archive_path = lambda _name: str(archive_path)
     store.aload_facts = AsyncMock(return_value=[fact])
     store.save_facts = MagicMock()
     messages = [{"role": "user", "content": "Alice is not smart"}]
@@ -410,8 +414,59 @@ async def test_issued_trust_event_replays_after_response_loss_and_mixed_retry():
     )
     assert unrelated == []
 
+    archive_path.write_text(
+        json.dumps([fact], ensure_ascii=False), encoding="utf-8",
+    )
     store._facts["Neko"] = []
     store.aload_facts = AsyncMock(return_value=[])
+    archived = await store.aload_archived_speaker_trust_signal_facts("Neko")
+    replayed_from_archive = await store.aevaluate_speaker_trust_events(
+        "Neko", messages, subject=owner,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=[], replay_facts_snapshot=archived,
+    )
+    assert replayed_from_archive == [event]
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == [event]
+
+
+@pytest.mark.asyncio
+async def test_trust_event_persistence_uses_full_scoped_fact_identity(tmp_path):
+    from memory.facts import FactStore
+
+    owner = MemorySubject.group_participant("qq", "7788", "9999")
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    foreign = MemorySubject.group_participant("qq", "8899", "1001")
+    local_fact = {
+        "id": "legacy-shared-id", "text": "Alice likes cats",
+        "speaker_id": "qq:1001", **target.as_entry_fields(),
+    }
+    foreign_fact = {
+        **local_fact, **foreign.as_entry_fields(),
+    }
+    store = object.__new__(FactStore)
+    store._facts = {"Neko": [local_fact, foreign_fact]}
+    store._locks = {}
+    store._locks_guard = threading.Lock()
+    store._persist_alocks = {}
+    store._facts_archive_path = lambda _name: str(
+        tmp_path / "facts_archive.json"
+    )
+    store.aload_facts = AsyncMock(return_value=store._facts["Neko"])
+    store.save_facts = MagicMock()
+    event = (await store.aevaluate_speaker_trust_events(
+        "Neko", [{"role": "user", "content": "Alice likes cats"}],
+        subject=owner,
+        speaker_provenance={"speaker_id": "qq:9999", "speaker_trust": 1.0},
+        speaker_is_owner=True,
+        facts_snapshot=[local_fact],
+    ))[0]
+
+    assert await store.apersist_speaker_trust_events("Neko", [event]) == [event]
+    assert local_fact["_speaker_trust_signal_events"] == [event]
+    assert "_speaker_trust_signal_events" not in foreign_fact
+
+    store._facts["Neko"] = [foreign_fact]
+    store.aload_facts = AsyncMock(return_value=[foreign_fact])
     assert await store.apersist_speaker_trust_events("Neko", [event]) == []
 
 
@@ -756,6 +811,10 @@ async def test_scoped_route_returns_only_durably_attached_trust_events(segmented
         "source_fact_id": "forgotten-fact",
         "observation_id": "observation-1",
     }
+    archived_signal_fact = {
+        "id": "archived-source",
+        "_speaker_trust_signal_events": [event],
+    }
     segment = {
         "input_history": json.dumps([{
             "role": "user", "content": "Alice likes cats",
@@ -772,6 +831,9 @@ async def test_scoped_route_returns_only_durably_attached_trust_events(segmented
     store = SimpleNamespace(
         aload_facts=AsyncMock(return_value=[]),
         aevaluate_speaker_trust_events=AsyncMock(return_value=[event]),
+        aload_archived_speaker_trust_signal_facts=AsyncMock(
+            return_value=[archived_signal_fact]
+        ),
         apersist_speaker_trust_events=AsyncMock(return_value=[]),
     )
     if segmented:
@@ -790,6 +852,12 @@ async def test_scoped_route_returns_only_durably_attached_trust_events(segmented
         assert result["segments"][0]["trust_events"] == []
     else:
         assert result["trust_events"] == []
+    replay_facts = (
+        store.aevaluate_speaker_trust_events.await_args.kwargs[
+            "replay_facts_snapshot"
+        ]
+    )
+    assert archived_signal_fact in replay_facts
 
 
 @pytest.mark.asyncio

@@ -167,6 +167,17 @@ def _readable_fact_id(entry: dict):
     return fact_id
 
 
+def _speaker_trust_fact_identity(entry: dict) -> tuple[str, str, str, str] | None:
+    """Return the full scoped identity used to attach a trust signal."""
+    if not isinstance(entry, dict):
+        return None
+    fact_id = _readable_fact_id(entry)
+    subject = subject_from_entry(entry)
+    if fact_id is None or subject is None:
+        return None
+    return str(fact_id), subject.kind, subject.subject_id, subject.scope
+
+
 def _merge_archive_entries(existing: list, incoming: list) -> list[dict]:
     """Merge archive rows keyed by id: later occurrence wins, first slot kept.
 
@@ -852,6 +863,37 @@ class FactStore:
         from memory import ensure_character_dir
         return os.path.join(ensure_character_dir(self._config_manager.memory_dir, name), 'facts_archive.json')
 
+    def _load_archived_speaker_trust_signal_facts(self, name: str) -> list[dict]:
+        """Strictly load non-subject-archived rows carrying issued signals."""
+        archive_path = self._facts_archive_path(name)
+        if not os.path.exists(archive_path):
+            return []
+        try:
+            with open(archive_path, encoding='utf-8') as fh:
+                archived = json.load(fh)
+        except (json.JSONDecodeError, UnicodeDecodeError, OSError) as exc:
+            raise RuntimeError(
+                f"facts_archive unreadable during trust replay: {exc}"
+            ) from exc
+        if not isinstance(archived, list):
+            raise RuntimeError("facts_archive is not a list during trust replay")
+        return [
+            dict(row)
+            for row in archived
+            if (
+                isinstance(row, dict)
+                and not row.get('subject_archived_at')
+                and isinstance(row.get('_speaker_trust_signal_events'), list)
+            )
+        ]
+
+    async def aload_archived_speaker_trust_signal_facts(
+        self, name: str,
+    ) -> list[dict]:
+        return await asyncio.to_thread(
+            self._load_archived_speaker_trust_signal_facts, name,
+        )
+
     def _subject_forget_tombstones_path(self, name: str) -> str:
         return os.path.join(
             os.path.dirname(self._facts_path(name)),
@@ -1075,6 +1117,7 @@ class FactStore:
         speaker_provenance: dict | None,
         speaker_is_owner: bool,
         facts_snapshot: list[dict] | None = None,
+        replay_facts_snapshot: list[dict] | None = None,
     ) -> list[dict]:
         """Derive owner confirmation/correction signals from raw request text."""
         if not speaker_is_owner or not isinstance(speaker_provenance, dict):
@@ -1096,6 +1139,11 @@ class FactStore:
             facts_snapshot
             if facts_snapshot is not None
             else await self.aload_facts(name)
+        )
+        replay_facts = (
+            replay_facts_snapshot
+            if replay_facts_snapshot is not None
+            else facts
         )
 
         def _in_signal_scope(entry: dict) -> bool:
@@ -1133,7 +1181,7 @@ class FactStore:
         seen_event_ids: set[str] = set()
         for text in texts:
             observation_id = trust_observation_id(text)
-            for prior in facts:
+            for prior in replay_facts:
                 if not isinstance(prior, dict) or not _in_signal_scope(prior):
                     continue
                 # A server-issued signal is persisted before the response is
@@ -1143,10 +1191,19 @@ class FactStore:
                     if not isinstance(recorded, dict):
                         continue
                     event_id = str(recorded.get('event_id') or '').strip()[:96]
+                    prior_identity = _speaker_trust_fact_identity(prior)
+                    recorded_identity = (
+                        str(recorded.get('source_fact_id') or ''),
+                        recorded.get('source_subject_kind'),
+                        recorded.get('source_subject_id'),
+                        recorded.get('source_scope'),
+                    )
                     if (
                         event_id
                         and event_id not in seen_event_ids
                         and recorded.get('observation_id') == observation_id
+                        and prior_identity is not None
+                        and recorded_identity == prior_identity
                         and stable_speaker_id(
                             recorded.get('source_speaker_id')
                         ) == source_id
@@ -1157,6 +1214,9 @@ class FactStore:
                     ):
                         seen_event_ids.add(event_id)
                         events.append(dict(recorded))
+            for prior in facts:
+                if not isinstance(prior, dict) or not _in_signal_scope(prior):
+                    continue
                 if prior.get('speaker_provenance_mixed') is True:
                     continue
                 target_id = stable_speaker_id(prior.get('speaker_id'))
@@ -1200,6 +1260,9 @@ class FactStore:
                     'event_id': event_id,
                     'source_speaker_id': source_id,
                     'source_fact_id': source_fact_id,
+                    'source_subject_kind': candidate_subject.kind,
+                    'source_subject_id': candidate_subject.subject_id,
+                    'source_scope': candidate_subject.scope,
                     'observation_id': observation_id,
                 })
         return events
@@ -1210,7 +1273,7 @@ class FactStore:
         """Attach issued owner signals and return only durably backed events."""
         from memory.speaker_trust import stable_speaker_id
 
-        valid_by_fact: dict[str, list[dict]] = {}
+        valid_by_fact: dict[tuple[str, str, str, str], list[dict]] = {}
         for raw in events or []:
             if not isinstance(raw, dict):
                 continue
@@ -1219,20 +1282,30 @@ class FactStore:
             speaker_id = stable_speaker_id(raw.get('speaker_id'))
             source_speaker_id = stable_speaker_id(raw.get('source_speaker_id'))
             observation_id = str(raw.get('observation_id') or '').strip()[:96]
+            fact_identity = (
+                fact_id,
+                str(raw.get('source_subject_kind') or ''),
+                str(raw.get('source_subject_id') or ''),
+                str(raw.get('source_scope') or ''),
+            )
             kind = raw.get('kind')
             if (
                 not fact_id or not event_id or speaker_id is None
                 or source_speaker_id is None
                 or not observation_id
+                or not all(fact_identity[1:])
                 or kind not in {'confirmation', 'correction'}
             ):
                 continue
-            valid_by_fact.setdefault(fact_id, []).append({
+            valid_by_fact.setdefault(fact_identity, []).append({
                 'kind': kind,
                 'speaker_id': speaker_id,
                 'event_id': event_id,
                 'source_speaker_id': source_speaker_id,
                 'source_fact_id': fact_id,
+                'source_subject_kind': fact_identity[1],
+                'source_subject_id': fact_identity[2],
+                'source_scope': fact_identity[3],
                 'observation_id': observation_id,
             })
         if not valid_by_fact:
@@ -1244,12 +1317,15 @@ class FactStore:
             def _persist() -> list[dict]:
                 changed = 0
                 durable_events: list[dict] = []
+                durable_event_ids: set[str] = set()
                 with self._get_lock(name):
                     facts = self._facts.get(name) or []
                     for fact in facts:
                         if not isinstance(fact, dict):
                             continue
-                        additions = valid_by_fact.get(str(fact.get('id') or ''))
+                        additions = valid_by_fact.get(
+                            _speaker_trust_fact_identity(fact)
+                        )
                         if not additions:
                             continue
                         recorded = fact.get('_speaker_trust_signal_events')
@@ -1265,9 +1341,29 @@ class FactStore:
                                 recorded.append(event)
                                 known.add(event['event_id'])
                                 changed += 1
-                            durable_events.append(dict(event))
+                            if event['event_id'] not in durable_event_ids:
+                                durable_event_ids.add(event['event_id'])
+                                durable_events.append(dict(event))
                     if changed:
                         self.save_facts(name, _fact_lock_held=True)
+                    for fact in self._load_archived_speaker_trust_signal_facts(name):
+                        additions = valid_by_fact.get(
+                            _speaker_trust_fact_identity(fact)
+                        )
+                        if not additions:
+                            continue
+                        known = {
+                            str(item.get('event_id') or '')
+                            for item in fact.get('_speaker_trust_signal_events') or []
+                            if isinstance(item, dict)
+                        }
+                        for event in additions:
+                            if (
+                                event['event_id'] in known
+                                and event['event_id'] not in durable_event_ids
+                            ):
+                                durable_event_ids.add(event['event_id'])
+                                durable_events.append(dict(event))
                 return durable_events
 
             persist_task = asyncio.create_task(asyncio.to_thread(_persist))

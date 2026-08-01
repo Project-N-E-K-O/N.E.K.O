@@ -1102,6 +1102,16 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
                 )
                 else current_fact
             )
+        replay_signal_facts = list(active_signal_facts)
+        load_archived_signals = getattr(
+            runtime.fact_store,
+            'aload_archived_speaker_trust_signal_facts',
+            None,
+        )
+        if load_archived_signals is not None:
+            replay_signal_facts.extend(
+                await load_archived_signals(lanlan_name)
+            )
         trust_events = await runtime.fact_store.aevaluate_speaker_trust_events(
             lanlan_name,
             input_history,
@@ -1109,6 +1119,7 @@ async def process_scoped_history(lanlan_name: str, req: ScopedHistoryRequest):
             speaker_provenance=speaker_provenance,
             speaker_is_owner=True,
             facts_snapshot=active_signal_facts,
+            replay_facts_snapshot=replay_signal_facts,
         )
         if trust_events:
             persist_events = getattr(
@@ -1359,6 +1370,14 @@ async def _process_scoped_history_segments(
             for fact in await runtime.fact_store.aload_facts(lanlan_name)
             if isinstance(fact, dict) and fact.get("id") is not None
         }
+        archived_signal_facts = []
+        load_archived_signals = getattr(
+            runtime.fact_store,
+            'aload_archived_speaker_trust_signal_facts',
+            None,
+        )
+        if load_archived_signals is not None:
+            archived_signal_facts = await load_archived_signals(lanlan_name)
         for job in owner_signal_jobs:
             segment = job["segment"]
             active_signal_facts = []
@@ -1388,6 +1407,9 @@ async def _process_scoped_history_segments(
                     },
                     speaker_is_owner=True,
                     facts_snapshot=active_signal_facts,
+                    replay_facts_snapshot=(
+                        active_signal_facts + archived_signal_facts
+                    ),
                 )
             )
             if segment["trust_events"]:
