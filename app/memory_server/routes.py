@@ -134,9 +134,8 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
     locale_admission_order = None
     if is_supported_language_code(request.language):
         explicit_language = normalize_language_code(request.language, format='full')
-        locale_admission_order = await asyncio.to_thread(
-            locale_state.allocate_character_prompt_locale_order,
-            name,
+        locale_admission_order = (
+            locale_state.allocate_character_prompt_locale_order(name)
         )
 
     imported_at = datetime.now().astimezone().isoformat()
@@ -575,9 +574,8 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
     LLM waste is fully gone.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    locale_admission_order = await asyncio.to_thread(
-        locale_state.allocate_character_prompt_locale_order,
-        lanlan_name,
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -610,9 +608,8 @@ async def cache_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/process/{lanlan_name}")
 async def process_conversation(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    locale_admission_order = await asyncio.to_thread(
-        locale_state.allocate_character_prompt_locale_order,
-        lanlan_name,
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -667,9 +664,8 @@ async def process_conversation(request: HistoryRequest, lanlan_name: str):
 @app.post("/renew/{lanlan_name}")
 async def process_conversation_for_renew(request: HistoryRequest, lanlan_name: str):
     lanlan_name = validate_lanlan_name(lanlan_name)
-    locale_admission_order = await asyncio.to_thread(
-        locale_state.allocate_character_prompt_locale_order,
-        lanlan_name,
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -728,9 +724,8 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
     completes those operations.
     """
     lanlan_name = validate_lanlan_name(lanlan_name)
-    locale_admission_order = await asyncio.to_thread(
-        locale_state.allocate_character_prompt_locale_order,
-        lanlan_name,
+    locale_admission_order = (
+        locale_state.allocate_character_prompt_locale_order(lanlan_name)
     )
     memory_language = _activate_request_language(request.language)
     with language_context(memory_language):
@@ -1937,9 +1932,8 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
 
     locale_admission_order = None
     if is_supported_language_code(language):
-        locale_admission_order = await asyncio.to_thread(
-            locale_state.allocate_character_prompt_locale_order,
-            lanlan_name,
+        locale_admission_order = (
+            locale_state.allocate_character_prompt_locale_order(lanlan_name)
         )
         generation = _new_dialog_locale_generations.get(lanlan_name, 0) + 1
         _new_dialog_locale_generations[lanlan_name] = generation

@@ -38,6 +38,32 @@ def _build_history_request_payload(messages: list[dict]) -> str:
 
 @pytest.mark.unit
 @pytest.mark.asyncio
+async def test_cache_assigns_locale_order_before_thread_offload():
+    """The event-loop admission order must not depend on worker scheduling."""
+    from app import memory_server
+    from app.memory_server import routes as memory_routes
+
+    allocated = MagicMock(return_value=314)
+    real_to_thread = memory_routes.asyncio.to_thread
+
+    async def reject_threaded_allocation(func, *args, **kwargs):
+        assert func is not allocated
+        return await real_to_thread(func, *args, **kwargs)
+
+    request = memory_server.HistoryRequest(input_history="[]", language="zh-TW")
+    with patch.object(
+        memory_server.locale_state,
+        "allocate_character_prompt_locale_order",
+        allocated,
+    ), patch.object(memory_routes.asyncio, "to_thread", reject_threaded_allocation):
+        result = await memory_server.cache_conversation(request, "测试角色")
+
+    assert result == {"status": "cached", "count": 0}
+    allocated.assert_called_once_with("测试角色")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
 async def test_cache_endpoint_writes_time_indexed_db():
     """/cache 端点必须把消息落到 ``time_indexed.db``（通过 astore_conversation）。
 

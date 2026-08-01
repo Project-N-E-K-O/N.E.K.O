@@ -290,7 +290,7 @@ async def test_scoped_facts_route_stamps_sanitized_display_name():
 
 
 @pytest.mark.asyncio
-async def test_scoped_facts_route_records_locale_after_persist():
+async def test_scoped_facts_route_records_locale_before_persist():
     from app.memory_server import routes as memory_routes
     from app.memory_server.routes import (
         ScopedFactInput,
@@ -335,7 +335,7 @@ async def test_scoped_facts_route_records_locale_after_persist():
 
     subject = reserve_locale.call_args.args[1]
     assert result["status"] == "stored"
-    assert events == ["reserve", "persist", "record"]
+    assert events == ["reserve", "record", "persist"]
     reserve_locale.assert_called_once_with("Neko", subject)
     record_locale.assert_called_once_with(
         "Neko",

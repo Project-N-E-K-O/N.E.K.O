@@ -92,8 +92,7 @@ async def _spawn_outbox_post_turn_signals(
         locale_admission_order,
         bool,
     ):
-        locale_admission_order = await asyncio.to_thread(
-            allocate_character_prompt_locale_order,
+        locale_admission_order = allocate_character_prompt_locale_order(
             lanlan_name,
         )
     try:
