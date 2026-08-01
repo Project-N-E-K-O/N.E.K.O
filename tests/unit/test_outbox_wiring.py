@@ -235,6 +235,69 @@ async def test_deferred_locale_reservation_retries_after_fence(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_post_turn_locale_record_retries_fence_before_counter(monkeypatch):
+    from app import memory_server
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    attempts = 0
+
+    def persist(_name, *, language, locale_order):
+        nonlocal attempts
+        attempts += 1
+        assert language == "zh-TW"
+        assert locale_order == 42
+        if attempts == 1:
+            raise MaintenanceModeError(
+                "maintenance_readonly",
+                operation="save",
+                target="prompt_locale.json",
+            )
+
+    record_turn = MagicMock()
+    sleep = AsyncMock()
+    fact_store = MagicMock()
+    fact_store.extract_facts = AsyncMock(return_value=None)
+    reflection_engine = MagicMock()
+    reflection_engine.aload_surfaced = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(
+        memory_server.post_turn,
+        "_extract_user_messages",
+        lambda _messages: ["請記住我喜歡草莓"],
+    )
+    monkeypatch.setattr(memory_server.post_turn, "_extract_ai_response", lambda _messages: "")
+    monkeypatch.setattr(
+        memory_server.gates,
+        "_ais_powerful_memory_enabled",
+        AsyncMock(return_value=False),
+    )
+    monkeypatch.setattr(
+        memory_server.signal_extraction,
+        "_signal_check_persist_locale",
+        persist,
+    )
+    monkeypatch.setattr(
+        memory_server.signal_extraction,
+        "_signal_check_record_turn",
+        record_turn,
+    )
+    monkeypatch.setattr(memory_server.post_turn.asyncio, "sleep", sleep)
+    monkeypatch.setattr(memory_server.runtime, "fact_store", fact_store)
+    monkeypatch.setattr(memory_server.runtime, "reflection_engine", reflection_engine)
+
+    await memory_server._run_post_turn_signals(
+        [HumanMessage(content="請記住我喜歡草莓")],
+        "小天",
+        language="zh-TW",
+        locale_order=42,
+    )
+
+    assert attempts == 2
+    sleep.assert_awaited_once_with(0.25)
+    record_turn.assert_called_once_with("小天")
+
+
+@pytest.mark.asyncio
 async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
     """A durable deferred marker must reserve an order before signal writes."""
     from app import memory_server

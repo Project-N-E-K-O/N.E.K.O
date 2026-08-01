@@ -182,6 +182,29 @@ async def _run_post_turn_signals_after_locale_reservation(
     )
 
 
+async def _wait_for_signal_locale_persistence(
+    lanlan_name: str,
+    *,
+    language: str | None,
+    locale_order: int | None,
+) -> None:
+    """Wait until the turn locale is durable before exposing its signal."""
+    from .locale_state import PromptLocalePersistenceError
+    from utils.cloudsave_runtime import MaintenanceModeError
+
+    while True:
+        try:
+            await asyncio.to_thread(
+                signal_extraction._signal_check_persist_locale,
+                lanlan_name,
+                language=language,
+                locale_order=locale_order,
+            )
+            return
+        except (MaintenanceModeError, PromptLocalePersistenceError):
+            await asyncio.sleep(0.25)
+
+
 async def _resolve_corrections_with_subject_locale(lanlan_name: str) -> int:
     return await runtime.persona_manager.resolve_corrections(
         lanlan_name,
@@ -237,8 +260,7 @@ async def _run_post_turn_signals(
     # keeping the counter mutation itself on the event-loop thread.
     try:
         if user_msgs:
-            await asyncio.to_thread(
-                signal_extraction._signal_check_persist_locale,
+            await _wait_for_signal_locale_persistence(
                 lanlan_name,
                 language=language,
                 locale_order=locale_order,
