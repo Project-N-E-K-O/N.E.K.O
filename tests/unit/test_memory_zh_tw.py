@@ -2666,6 +2666,84 @@ def test_persona_correction_locale_ignores_formatter_labels():
         assert _detect_correction_prompt_language(pairs) == "en"
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("ui_language", "message_text"),
+    [
+        ("es", "No me gusta esto"),
+        ("pt", "Eu gosto de cafe"),
+    ],
+)
+async def test_reflection_feedback_keeps_ascii_ui_language(
+    monkeypatch,
+    ui_language,
+    message_text,
+):
+    from config.prompts import prompts_memory
+    from memory.reflection import surfacing
+    from utils import llm_client
+    from utils.language_utils import language_context
+
+    selected = []
+
+    def feedback_prompt(language):
+        selected.append(language)
+        return "{reflections} {messages}"
+
+    class Response:
+        content = "[]"
+
+    class LLM:
+        async def ainvoke(self, _prompt):
+            return Response()
+
+        async def aclose(self):
+            return None
+
+    async def create_llm(*_args, **_kwargs):
+        return LLM()
+
+    class ConfigManager:
+        async def aget_model_api_config(self, _tier):
+            return {
+                "model": "test",
+                "base_url": "http://test",
+                "api_key": "test",
+            }
+
+    class Harness(surfacing.SurfacingMixin):
+        def __init__(self):
+            self._config_manager = ConfigManager()
+
+        async def aload_surfaced(self, _name):
+            return [{
+                "reflection_id": "reflection.1",
+                "text": "likes coffee",
+                "feedback": None,
+            }]
+
+        async def asave_surfaced(self, _name, _surfaced):
+            return None
+
+    monkeypatch.setattr(
+        prompts_memory,
+        "get_reflection_feedback_prompt",
+        feedback_prompt,
+    )
+    monkeypatch.setattr(llm_client, "create_chat_llm_async", create_llm)
+
+    harness = Harness()
+    with language_context(ui_language):
+        await harness._check_feedback_locked("Neko", [message_text])
+        await harness.check_feedback_for_confirmed(
+            "Neko",
+            [{"id": "reflection.1", "text": "likes coffee"}],
+            [message_text],
+        )
+
+    assert selected == [ui_language, ui_language]
+
+
 @pytest.mark.parametrize(
     ("ui_language", "text", "expected"),
     [

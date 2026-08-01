@@ -1031,6 +1031,31 @@ def test_cloud_apply_fence_requests_a_blocking_cross_process_lock(tmp_path, monk
 
 
 @pytest.mark.unit
+def test_win32_mutex_apis_use_pointer_sized_handle_signatures():
+    import ctypes
+
+    from utils.cloudsave_runtime import fence as fence_module
+
+    class Function:
+        argtypes = None
+        restype = None
+
+    class Kernel32:
+        CreateMutexW = Function()
+        WaitForSingleObject = Function()
+        ReleaseMutex = Function()
+        CloseHandle = Function()
+
+    kernel32 = Kernel32()
+    fence_module._configure_win32_mutex_apis(kernel32)
+
+    assert kernel32.CreateMutexW.restype is ctypes.c_void_p
+    assert kernel32.WaitForSingleObject.argtypes[0] is ctypes.c_void_p
+    assert kernel32.ReleaseMutex.argtypes == [ctypes.c_void_p]
+    assert kernel32.CloseHandle.argtypes == [ctypes.c_void_p]
+
+
+@pytest.mark.unit
 def test_local_cloudsave_round_trip_restores_runtime_truth(tmp_path):
     cm = _make_config_manager(tmp_path)
 

@@ -149,6 +149,24 @@ def _cloud_apply_mutex_name(config_manager) -> str:
     return rf"Global\NEKO_CLOUD_APPLY_LOCK_{digest}"
 
 
+def _configure_win32_mutex_apis(kernel32) -> None:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32.CreateMutexW.argtypes = [
+        ctypes.c_void_p,
+        wintypes.BOOL,
+        wintypes.LPCWSTR,
+    ]
+    kernel32.CreateMutexW.restype = wintypes.HANDLE
+    kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+    kernel32.WaitForSingleObject.restype = wintypes.DWORD
+    kernel32.ReleaseMutex.argtypes = [wintypes.HANDLE]
+    kernel32.ReleaseMutex.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+
+
 def acquire_cloud_apply_lock(config_manager, *, blocking: bool = False) -> bool:
     """Acquire the cross-process cloud apply lock used by maintenance mode."""
     global _cloud_apply_lock_handle, _cloud_apply_lock_file
@@ -159,7 +177,7 @@ def acquire_cloud_apply_lock(config_manager, *, blocking: bool = False) -> bool:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
-            kernel32.CreateMutexW.restype = ctypes.c_void_p
+            _configure_win32_mutex_apis(kernel32)
             handle = kernel32.CreateMutexW(
                 None,
                 False,
@@ -216,6 +234,7 @@ def release_cloud_apply_lock(config_manager) -> None:
             import ctypes
 
             kernel32 = ctypes.windll.kernel32
+            _configure_win32_mutex_apis(kernel32)
             kernel32.ReleaseMutex(_cloud_apply_lock_handle)
             kernel32.CloseHandle(_cloud_apply_lock_handle)
         except Exception:
