@@ -460,6 +460,45 @@ async def test_scoped_forget_purges_pending_text_and_rejects_stale_enqueue(
 
 
 @pytest.mark.asyncio
+async def test_participant_arbitration_uses_real_subject_forget_gate(tmp_path):
+    from memory.scopes import MemorySubject
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    target = MemorySubject.group_participant("qq", "7788", "1001")
+    other = MemorySubject.group_participant("qq", "7788", "2002")
+    rows = [
+        {
+            **_fact("t1", "成员甲喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **target.as_entry_fields(),
+        },
+        {
+            **_fact("o1", "成员甲不喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **other.as_entry_fields(),
+        },
+    ]
+    await _seed_facts(fs, "小天", rows)
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids={"t1"})
+    assert pairs[0]["subject_key"].startswith(
+        "@group_participant_arbitration:",
+    )
+
+    await fs.abegin_subject_forget("小天", target)
+    assert await resolver.aenqueue_candidates("小天", pairs) == 0
+    await fs.aend_subject_forget("小天", target)
+
+    assert await resolver.aenqueue_candidates("小天", pairs) == 1
+    await fs.abegin_subject_forget("小天", target)
+    llm_factory = MagicMock()
+    with patch("utils.llm_client.create_chat_llm", llm_factory):
+        assert await resolver.aresolve("小天") == 0
+    llm_factory.assert_not_called()
+    assert await resolver.aload_pending("小天") == []
+    await fs.aend_subject_forget("小天", target)
+
+
+@pytest.mark.asyncio
 async def test_scoped_forget_purges_legacy_archive_only_dedup_rows(tmp_path):
     from pathlib import Path
 

@@ -11707,6 +11707,10 @@ async def test_member_flush_retries_later_non_owner_after_failed_predecessor():
     retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
     assert [segment["messages"] for segment in retried] == [[first], [second]]
     assert user_data["group_member_memory_messages"] == {}
+    assert [
+        call.kwargs["sender_id"]
+        for call in settings.apply_speaker_trust_update.await_args_list
+    ] == ["1001", "1002"]
 
 
 @pytest.mark.asyncio

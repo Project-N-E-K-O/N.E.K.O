@@ -1179,19 +1179,27 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
             group_prompts = dict(settings.get("group_prompts") or {})
             if custom_text:
                 group_prompts[gid] = custom_text
-                self._emit_log(
-                    "INFO",
-                    f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)",
-                )
             else:
                 group_prompts.pop(gid, None)
-                self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
             settings["group_prompts"] = group_prompts
             return True
 
         success = await QQAutoReplyPlugin._mutate_business_config(
             self, _save_group_prompt,
         )
+        if success:
+            if custom_text:
+                self._emit_log(
+                    "INFO",
+                    f"已保存群 {gid} 的自定义提示词 ({len(custom_text)} 字符)",
+                )
+            else:
+                self._emit_log("INFO", f"已清除群 {gid} 的自定义提示词")
+        else:
+            self._emit_log(
+                "WARNING",
+                f"群 {gid} 自定义提示词写盘失败，运行时变更未持久化",
+            )
         # 清除该群的当前会话，下次回复时重新注入新提示词
         if self.session_runtime_service:
             discarded = await self._run_with_session_lock(
@@ -1231,7 +1239,13 @@ class QQAutoReplyPlugin(QQAutoReplySessionMixin, QQAutoReplyPromptingMixin, QQAu
                 )
                 if discarded is False:
                     self._emit_log("WARNING", f"群 {gid} 会话因记忆结算失败暂未重置，新提示词将在下次会话重建时生效")
-            self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            if success:
+                self._emit_log("INFO", f"已删除群 {gid} 的自定义提示词")
+            else:
+                self._emit_log(
+                    "WARNING",
+                    f"群 {gid} 自定义提示词删除写盘失败，运行时变更未持久化",
+                )
             return Ok({"persisted": success, "group_id": gid, "deleted": True})
         return Ok({"persisted": True, "group_id": gid, "deleted": False, "reason": "not_found"})
 

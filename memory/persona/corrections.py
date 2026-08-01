@@ -107,7 +107,7 @@ class CorrectionsMixin:
                         existing[mixed_key] = True
                         changed = True
                         continue
-                    if current_id is None and trust is not None:
+                    if current_trust is None and trust is not None:
                         existing[f'{prefix}_speaker_trust'] = trust
                         changed = True
                     elif trust is not None and current_trust is not None:

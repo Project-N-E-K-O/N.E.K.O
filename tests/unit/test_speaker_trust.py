@@ -425,6 +425,25 @@ def test_duplicate_correction_provenance_folds_conservatively():
     assert queued[0]["new_speaker_provenance_mixed"] is True
 
 
+def test_duplicate_correction_backfills_missing_trust_for_same_speaker():
+    from memory.persona.corrections import CorrectionsMixin
+
+    queued: list[dict] = []
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={"speaker_id": "qq:1001"},
+    )
+    CorrectionsMixin._build_correction_list(
+        queued, "old", "new", "master",
+        old_speaker_provenance={
+            "speaker_id": "qq:1001", "speaker_trust": 0.7,
+        },
+    )
+
+    assert queued[0]["old_speaker_id"] == "qq:1001"
+    assert queued[0]["old_speaker_trust"] == pytest.approx(0.7)
+
+
 def test_derived_provenance_rejects_partially_attributed_sources():
     assert provenance_of_entries([
         {"speaker_id": "qq:1001", "speaker_trust": 0.8},
@@ -1297,6 +1316,14 @@ async def test_direct_action_mutation_waits_for_trust_writer(
     )
     service = QQSettingsService(plugin)
     plugin.settings_service = service
+    action_started = asyncio.Event()
+    mutate_business_config = service.mutate_business_config
+
+    async def _observe_action_start(mutation):
+        action_started.set()
+        return await mutate_business_config(mutation)
+
+    service.mutate_business_config = _observe_action_start
     trust_writer = asyncio.create_task(service.apply_speaker_trust_update(
         sender_id="1001", message_count=1,
         activity_event_id="trust-before-prompt", trust_events=[],
@@ -1305,13 +1332,44 @@ async def test_direct_action_mutation_waits_for_trust_writer(
 
     action = getattr(QQAutoReplyPlugin, action_name)
     action_writer = asyncio.create_task(action(plugin, *action_args))
-    await asyncio.sleep(0)
+    await asyncio.wait_for(action_started.wait(), timeout=5.0)
+    assert not action_writer.done()
     assert plugin._qq_settings[setting_key] == initial_value
 
     save_release.set()
     assert await trust_writer
-    await action_writer
+    action_result = await action_writer
+    assert action_result.value["persisted"] is True
     assert payloads[-1][setting_key] == expected_value
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(("action_name", "action_args"), [
+    ("save_group_prompt", ("7788", "new group prompt")),
+    ("delete_group_prompt", ("7788",)),
+])
+async def test_group_prompt_persist_failure_never_logs_success(
+    action_name, action_args,
+):
+    from plugin.plugins.qq_auto_reply import QQAutoReplyPlugin
+
+    logs: list[tuple[str, str]] = []
+    plugin = SimpleNamespace(
+        _qq_settings={"group_prompts": {"7788": "old group prompt"}},
+        settings_service=None,
+        session_runtime_service=None,
+        _persist_business_config=AsyncMock(return_value=False),
+        _emit_log=lambda level, message: logs.append((level, message)),
+    )
+
+    result = await getattr(QQAutoReplyPlugin, action_name)(plugin, *action_args)
+
+    assert result.value["persisted"] is False
+    assert not any(level == "INFO" for level, _message in logs)
+    assert any(
+        level == "WARNING" and "写盘失败" in message
+        for level, message in logs
+    )
 
 
 @pytest.mark.asyncio

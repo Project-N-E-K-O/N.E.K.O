@@ -239,6 +239,8 @@ class FactDedupResolver:
         """
         if not pairs:
             return 0
+        from memory.scopes import subject_from_entry
+
         async with self._get_alock(name):
             # Candidate detection runs outside this lock. A scoped forget may
             # therefore delete its source facts after detection but before
@@ -248,11 +250,11 @@ class FactDedupResolver:
                 p.get('subject_key') is not None or p.get('scope') is not None
                 for p in pairs
             )
-            live_ids: set = set()
+            live_facts_by_id: dict = {}
             if has_scoped_pairs:
                 live_facts = await self._fact_store.aload_facts(name)
-                live_ids = {
-                    row.get('id')
+                live_facts_by_id = {
+                    row.get('id'): row
                     for row in live_facts
                     if isinstance(row, dict) and row.get('id')
                 }
@@ -274,20 +276,32 @@ class FactDedupResolver:
             appended = 0
             for p in pairs:
                 key = (p.get('candidate_id'), p.get('existing_id'))
+                real_subject_forget_active = any(
+                    (
+                        subject := subject_from_entry(
+                            live_facts_by_id.get(fact_id, {}),
+                        )
+                    ) is not None
+                    and self._fact_store._subject_forget_is_active(
+                        name, subject,
+                    )
+                    for fact_id in key
+                )
                 if (
                     key in existing_keys
                     or None in key
                     or self._fact_store._subject_forget_fields_are_active(
                         name, p.get('subject_key'), p.get('scope'),
                     )
+                    or real_subject_forget_active
                     or (
                         (
                             p.get('subject_key') is not None
                             or p.get('scope') is not None
                         )
                         and (
-                            key[0] not in live_ids
-                            or key[1] not in live_ids
+                            key[0] not in live_facts_by_id
+                            or key[1] not in live_facts_by_id
                         )
                     )
                 ):
@@ -701,6 +715,13 @@ class FactDedupResolver:
             cand_row = facts_by_id.get(it.get('candidate_id'))
             exist_row = facts_by_id.get(it.get('existing_id'))
             if cand_row is None or exist_row is None:
+                stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
+                continue
+            if any(
+                (subject := subject_from_entry(row)) is not None
+                and self._fact_store._subject_forget_is_active(name, subject)
+                for row in (cand_row, exist_row)
+            ):
                 stale_keys.add((it.get('candidate_id'), it.get('existing_id')))
                 continue
             domain = _classify_domain(it)
