@@ -72,6 +72,18 @@ from config import (
     SCOPED_REFINE_TOPK_PER_ENTRY,
 )
 
+
+def _detect_scoped_refine_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
 try:
     from memory.embeddings import (
         decode_embedding,
@@ -476,15 +488,10 @@ class ScopedLiteRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_scoped_memory_refine_prompt
-        from utils.language_utils import (
-            detect_prompt_language,
-            get_global_language_full,
-        )
         from utils.llm_client import create_chat_llm_async
 
-        prompt_locale = detect_prompt_language(
-            "\n".join(str(entry.get("text") or "") for entry in cluster),
-            ui_language=get_global_language_full(),
+        prompt_locale = _detect_scoped_refine_prompt_language(
+            "\n".join(str(entry.get("text") or "") for entry in cluster)
         )
         prompt = (
             get_scoped_memory_refine_prompt(prompt_locale)

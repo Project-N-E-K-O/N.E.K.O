@@ -58,24 +58,18 @@ def _detect_correction_prompt_language(
 ) -> str:
     """Detect the prompt locale from correction values, excluding UI labels."""
     from utils.language_utils import (
-        detect_prompt_language,
+        detect_prompt_language_with_ascii_fallback,
         get_global_language_full,
-        normalize_language_code,
     )
 
     raw_text = "\n".join(
         f"{item['old_text']}\n{item['new_text']}"
         for _, item in pairs
     )
-    selected_ui_language = ui_language or get_global_language_full()
-    detected = detect_prompt_language(
+    return detect_prompt_language_with_ascii_fallback(
         raw_text,
-        ui_language=selected_ui_language,
+        ui_language=ui_language or get_global_language_full(),
     )
-    ui_short = normalize_language_code(selected_ui_language, format="short")
-    if detected == "en" and ui_short in {"es", "pt"}:
-        return ui_short
-    return detected
 
 
 class CorrectionsMixin:

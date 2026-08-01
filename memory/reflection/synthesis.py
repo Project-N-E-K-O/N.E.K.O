@@ -35,9 +35,8 @@ from utils.file_utils import (
 
 from utils.token_tracker import set_call_type
 from utils.language_utils import (
-    detect_prompt_language,
+    detect_prompt_language_with_ascii_fallback,
     get_global_language_full,
-    normalize_language_code,
 )
 
 
@@ -61,12 +60,10 @@ from ._shared import (
 
 
 def _detect_synthesis_prompt_language(text: str) -> str:
-    ui_language = get_global_language_full()
-    detected = detect_prompt_language(text, ui_language=ui_language)
-    ui_short = normalize_language_code(ui_language, format="short")
-    if detected == "en" and ui_short in {"es", "pt"}:
-        return ui_short
-    return detected
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
 
 
 class SynthesisMixin:

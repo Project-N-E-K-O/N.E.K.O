@@ -61,8 +61,8 @@ from memory.scopes import MemorySubject, coerce_subject, entry_matches_subject
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import (
     detect_prompt_language,
+    detect_prompt_language_with_ascii_fallback,
     get_global_language_full,
-    normalize_language_code,
 )
 from utils.config_manager import get_config_manager
 from utils.file_utils import (
@@ -84,12 +84,10 @@ def _detect_fact_extraction_prompt_language(
     ui_language: str | None = None,
 ) -> str:
     """Resolve Stage-1 prompt language without losing ASCII es/pt input."""
-    active_ui_language = ui_language or get_global_language_full()
-    detected = detect_prompt_language(text, ui_language=active_ui_language)
-    ui_short = normalize_language_code(active_ui_language, format="short")
-    if detected == "en" and ui_short in {"es", "pt"}:
-        return ui_short
-    return detected
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=ui_language or get_global_language_full(),
+    )
 
 
 _ARCHIVE_AGE_DAYS = 7          # absorbed 且创建超过此天数的 facts 被归档

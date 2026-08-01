@@ -1709,6 +1709,24 @@ def detect_prompt_language(
         return detected
 
 
+def detect_prompt_language_with_ascii_fallback(
+    text: str,
+    default: str = 'zh',
+    ui_language: Optional[str] = None,
+) -> str:
+    """Keep Spanish or Portuguese when ASCII-only text looks English."""
+    active_ui_language = ui_language or get_global_language_full()
+    detected = detect_prompt_language(
+        text,
+        default=default,
+        ui_language=active_ui_language,
+    )
+    ui_short = normalize_language_code(active_ui_language, format='short')
+    if detected == 'en' and ui_short in {'es', 'pt'}:
+        return ui_short
+    return detected
+
+
 async def translate_text(text: str, target_lang: str, source_lang: Optional[str] = None, skip_google: bool = False) -> Tuple[str, bool]:
     """
     Translate text into the target language

@@ -88,6 +88,18 @@ REFINE_ENTITY_KEY = '_refine_entity'  # 'master' | 'neko' | 'relationship'
 VALID_REFINE_ACTIONS = frozenset({'split', 'merge', 'modify', 'discard'})
 
 
+def _detect_refine_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
+
 # ── Annotation helpers (manager-side use) ─────────────────────────────
 
 
@@ -440,14 +452,10 @@ class MemoryRefineEngine:
             return False
 
         from config.prompts.prompts_memory import get_memory_refine_prompt
-        from utils.language_utils import detect_prompt_language, get_global_language_full
         from utils.llm_client import create_chat_llm_async
 
         template = get_memory_refine_prompt(
-            detect_prompt_language(
-                self._cluster_locale_text(cluster),
-                ui_language=get_global_language_full(),
-            )
+            _detect_refine_prompt_language(self._cluster_locale_text(cluster))
         )
         prompt = (
             template

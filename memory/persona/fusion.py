@@ -84,9 +84,8 @@ from config.prompts.prompts_memory import (
 from memory.evidence import initial_reinforcement_from_importance
 from utils.file_utils import robust_json_loads
 from utils.language_utils import (
-    detect_prompt_language,
+    detect_prompt_language_with_ascii_fallback,
     get_global_language_full,
-    normalize_language_code,
 )
 from utils.token_tracker import set_call_type
 from utils.tokenize import count_tokens, truncate_to_tokens
@@ -104,12 +103,10 @@ _JSON_FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$", re.IGNORECASE)
 
 
 def _detect_fusion_prompt_language(text: str) -> str:
-    ui_language = get_global_language_full()
-    detected = detect_prompt_language(text, ui_language=ui_language)
-    ui_short = normalize_language_code(ui_language, format="short")
-    if detected == "en" and ui_short in {"es", "pt"}:
-        return ui_short
-    return detected
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
 
 
 class ExternalMemoryFusionError(RuntimeError):

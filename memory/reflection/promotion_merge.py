@@ -57,6 +57,18 @@ from ._shared import (
     logger,
 )
 
+
+def _detect_promotion_prompt_language(text: str) -> str:
+    from utils.language_utils import (
+        detect_prompt_language_with_ascii_fallback,
+        get_global_language_full,
+    )
+
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
+
 class PromotionMergeMixin:
     @staticmethod
     def _promotion_locale_text(
@@ -357,7 +369,6 @@ class PromotionMergeMixin:
         skip_retry_pending per §3.9.4.
         """
         from config.prompts.prompts_memory import get_promotion_merge_prompt
-        from utils.language_utils import detect_prompt_language, get_global_language_full
         from utils.llm_client import create_chat_llm_async
 
         now = datetime.now()
@@ -391,9 +402,8 @@ class PromotionMergeMixin:
         pool_text = truncate_to_tokens(pool_text, PERSONA_MERGE_POOL_MAX_TOKENS)
 
         prompt = get_promotion_merge_prompt(
-            detect_prompt_language(
-                self._promotion_locale_text(R, pool_rows, pool_text),
-                ui_language=get_global_language_full(),
+            _detect_promotion_prompt_language(
+                self._promotion_locale_text(R, pool_rows, pool_text)
             )
         ).format(
             AI_NAME=lanlan_name,

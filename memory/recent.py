@@ -28,7 +28,7 @@ from config.prompts.prompts_memory import (
 )
 from utils.cloudsave_runtime import MaintenanceModeError, assert_cloudsave_writable
 from utils.language_utils import (
-    detect_prompt_language,
+    detect_prompt_language_with_ascii_fallback,
     get_global_language_full,
 )
 from utils.tokenize import acount_tokens
@@ -44,6 +44,13 @@ from config import (
     RECENT_HARD_CAP_TOKENS,
 )
 from datetime import datetime
+
+
+def _detect_recent_prompt_language(text: str) -> str:
+    return detect_prompt_language_with_ascii_fallback(
+        text,
+        ui_language=get_global_language_full(),
+    )
 
 # Backward-compat alias (Stage-1 → Stage-2 trigger threshold).
 # Two-stage flow: Stage 1 (`compress_history`) summarises raw messages with no
@@ -597,9 +604,8 @@ class CompressedRecentHistoryManager:
         做：它是 user-controlled，含 ``%`` 会让先前的 ``%`` formatting 崩溃；含
         ``%s`` 会被先前的 ``.replace("%s", ...)`` 二次替换（codex P2）。
         """
-        lang = detect_prompt_language(
+        lang = _detect_recent_prompt_language(
             locale_text if locale_text is not None else messages_text,
-            ui_language=get_global_language_full(),
         )
         master_name = self.name_mapping['human']
         if not detailed:
@@ -760,10 +766,7 @@ class CompressedRecentHistoryManager:
             messages_text = reduced
             locale_text = reduced
 
-        lang = detect_prompt_language(
-            locale_text,
-            ui_language=get_global_language_full(),
-        )
+        lang = _detect_recent_prompt_language(locale_text)
         prompt = self._build_summary_prompt(
             messages_text,
             detailed,
@@ -985,10 +988,7 @@ class CompressedRecentHistoryManager:
                         # codex P2：先 % 再 .replace，否则 master_name 含 % 会崩
                         (
                             get_further_summarize_prompt(
-                                detect_prompt_language(
-                                    initial_summary,
-                                    ui_language=get_global_language_full(),
-                                )
+                                _detect_recent_prompt_language(initial_summary)
                             )
                             % initial_summary
                         )
@@ -1160,9 +1160,8 @@ class CompressedRecentHistoryManager:
                     # 会让 5-arg `% (...)` 把它当格式符崩溃
                     (
                         get_history_review_prompt(
-                            detect_prompt_language(
-                                _review_prompt_locale_text(snapshot),
-                                ui_language=get_global_language_full(),
+                            _detect_recent_prompt_language(
+                                _review_prompt_locale_text(snapshot)
                             )
                         )
                         % (self.name_mapping['human'], name_mapping['ai'], history_text, self.name_mapping['human'], name_mapping['ai'])

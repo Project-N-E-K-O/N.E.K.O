@@ -2260,7 +2260,11 @@ async def test_persona_fusion_detects_locale_from_candidate_body(monkeypatch):
         def __init__(self):
             self._config_manager = ConfigManager()
 
-    monkeypatch.setattr(fusion, "detect_prompt_language", detect)
+    monkeypatch.setattr(
+        fusion,
+        "detect_prompt_language_with_ascii_fallback",
+        detect,
+    )
 
     with language_context("zh-TW"):
         result = await Harness()._allm_call_fusion(
@@ -2654,3 +2658,36 @@ def test_persona_fusion_keeps_ascii_ui_language(
 
     with language_context(ui_language):
         assert _detect_fusion_prompt_language(text) == expected
+
+
+@pytest.mark.parametrize(
+    ("ui_language", "text", "expected"),
+    [
+        ("es", "Me gusta el cafe", "es"),
+        ("pt", "Eu gosto de cafe", "pt"),
+        ("zh-TW", "I like coffee", "en"),
+    ],
+)
+def test_remaining_memory_mutations_keep_ascii_ui_language(
+    ui_language,
+    text,
+    expected,
+):
+    from memory.recent import _detect_recent_prompt_language
+    from memory.refine import _detect_refine_prompt_language
+    from memory.reflection.promotion_merge import (
+        _detect_promotion_prompt_language,
+    )
+    from memory.scoped_refine import _detect_scoped_refine_prompt_language
+    from utils.language_utils import language_context
+
+    resolvers = (
+        _detect_recent_prompt_language,
+        _detect_refine_prompt_language,
+        _detect_scoped_refine_prompt_language,
+        _detect_promotion_prompt_language,
+    )
+    with language_context(ui_language):
+        assert [resolver(text) for resolver in resolvers] == [expected] * len(
+            resolvers
+        )
