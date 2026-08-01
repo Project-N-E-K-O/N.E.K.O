@@ -709,6 +709,9 @@ async def apply_scoped_persona_merge(
                 continue
             sources = [by_id[sid] for sid in valid_ids]
             text, provenance_sources = _trust_weighted_merge_text(sources, text)
+            semantic_sources = (
+                provenance_sources if len(provenance_sources) == 1 else sources
+            )
             merged = persona_manager._normalize_entry(text)
             merged['id'] = persona_manager._refine_persona_id(text)
             history = []
@@ -744,6 +747,7 @@ async def apply_scoped_persona_merge(
                 ):
                     if upstream and upstream not in merged_source_ids:
                         merged_source_ids.append(upstream)
+            for src in semantic_sources:
                 max_rein = max(max_rein, float(src.get('reinforcement', 0) or 0))
                 max_disp = max(max_disp, float(src.get('disputation', 0) or 0))
                 max_user_count = max(

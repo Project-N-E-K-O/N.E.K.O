@@ -545,6 +545,28 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
         speaker_provenance={"speaker_id": "qq:2002", "speaker_trust": 0.8},
     )
     low["id"], high["id"] = "low", "high"
+    low.update({
+        "reinforcement": 0.9,
+        "disputation": 0.8,
+        "user_fact_reinforce_count": 7,
+        "sub_zero_days": 5,
+        "rein_last_signal_at": "2026-08-01T00:00:00",
+        "disp_last_signal_at": "2026-08-01T00:00:00",
+        "sub_zero_last_increment_date": "2026-08-01",
+        "source": "low_source",
+        "source_id": "fact_low",
+    })
+    high.update({
+        "reinforcement": 0.2,
+        "disputation": 0.1,
+        "user_fact_reinforce_count": 2,
+        "sub_zero_days": 1,
+        "rein_last_signal_at": "2026-07-01T00:00:00",
+        "disp_last_signal_at": "2026-07-01T00:00:00",
+        "sub_zero_last_increment_date": "2026-07-01",
+        "source": "high_source",
+        "source_id": "fact_high",
+    })
     section.extend([low, high])
     await pm.asave_persona("Neko", persona)
 
@@ -567,6 +589,16 @@ async def test_apply_persona_merge_uses_code_side_trust_and_keeps_rollback(tmp_p
     assert merged["text"] == "小明喜欢猫"
     assert merged["speaker_id"] == "qq:2002"
     assert merged["speaker_trust"] == pytest.approx(0.8)
+    assert merged["reinforcement"] == pytest.approx(0.2)
+    assert merged["disputation"] == pytest.approx(0.1)
+    assert merged["user_fact_reinforce_count"] == 2
+    assert merged["sub_zero_days"] == 1
+    assert merged["rein_last_signal_at"] == "2026-07-01T00:00:00"
+    assert merged["disp_last_signal_at"] == "2026-07-01T00:00:00"
+    assert merged["sub_zero_last_increment_date"] == "2026-07-01"
+    assert merged["source"] == "high_source"
+    assert merged["source_id"] == "fact_high"
+    assert merged["merged_source_ids"] == ["fact_low", "fact_high"]
     history = {item["text"]: item for item in merged["version_history"]}
     assert history["小明不喜欢猫"]["speaker_id"] == "qq:1001"
     assert history["小明喜欢猫"]["speaker_id"] == "qq:2002"
