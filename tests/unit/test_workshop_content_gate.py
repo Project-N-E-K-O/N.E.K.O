@@ -919,7 +919,12 @@ def _claim_aliases(func, before_line: int | None = None) -> dict[str, str]:
                 bind(named.target, named.value)
             if isinstance(node, ast.ImportFrom):
                 for imported in node.names:
-                    canonical = state.get(imported.name)
+                    canonical = (
+                        state.get(imported.name)
+                        if node.module
+                        and node.module.rsplit('.', 1)[-1] == 'content_gate'
+                        else None
+                    )
                     local_name = imported.asname or imported.name
                     if canonical:
                         state[local_name] = canonical
@@ -1080,6 +1085,10 @@ def _walk_own_scope(func):
         if isinstance(node, ast.Lambda) and getattr(
             func, '_prune_lambda_bodies', False
         ):
+            stack.extend(node.args.defaults)
+            stack.extend(
+                default for default in node.args.kw_defaults if default
+            )
             continue
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
             # The body runs later, but decorators/defaults/annotations run now.
@@ -1300,10 +1309,13 @@ def _known_to_thread_names(
         for node in statements:
             if node.lineno >= before_line:
                 continue
-            if isinstance(node, ast.ImportFrom) and node.module == 'asyncio':
+            if isinstance(node, ast.ImportFrom):
                 for alias in node.names:
-                    if alias.name == 'to_thread':
-                        names.add(alias.asname or alias.name)
+                    local_name = alias.asname or alias.name
+                    if node.module == 'asyncio' and alias.name == 'to_thread':
+                        names.add(local_name)
+                    else:
+                        names.discard(local_name)
             elif isinstance(node, (ast.Assign, ast.AnnAssign)):
                 value = node.value
                 is_alias = isinstance(value, ast.Name) and value.id in names
@@ -2884,6 +2896,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
         'async def local_imported_to_thread():\n'
         '    from asyncio import to_thread as local_offload\n'
         '    await local_offload(_claiming_wrapper)\n'
+        'async def unrelated_local_import():\n'
+        '    from helpers import offload\n'
+        '    await offload(_claiming_wrapper)\n'
         '\n'
         'dispatch = offload\n'
         'dispatch = dispatcher\n'
@@ -3268,6 +3283,9 @@ def test_the_event_loop_guard_checks_module_level_claim_owners():
     assert module_offenders('offloaded') == []
     assert module_offenders('imported_to_thread') == []
     assert module_offenders('local_imported_to_thread') == []
+    assert module_offenders('unrelated_local_import'), (
+        'unrelated local import 绑定同名时必须清除 module to_thread alias'
+    )
     assert module_offenders('rebound_imported_to_thread'), (
         'module-level to_thread alias 被普通 dispatcher 重绑定后必须失效'
     )
@@ -3918,6 +3936,16 @@ def test_module_claim_factories_must_keep_their_verified_binding():
         'module import 覆盖 bare claim factory 后不能再把同名调用当作真实 claim'
     )
 
+    local_shadow = ast.parse(
+        'def unsafe(content_folder):\n'
+        '    from helpers import claim_content_folder\n'
+        '    with claim_content_folder(content_folder):\n'
+        '        shutil.rmtree(content_folder)\n'
+    ).body[0]
+    assert _unclaimed_folder_operations(local_shadow, 'shadowed_claim'), (
+        'function-local import 只有来自真实 content_gate 时才能保留 claim identity'
+    )
+
 
 def test_iterator_protocol_claims_are_counted_as_event_loop_work():
     tree = ast.parse(
@@ -3982,6 +4010,14 @@ def test_workshop_router_discovery_is_recursive(tmp_path):
     assert _unclaimed_folder_operations(
         _module_executable_function(executable_tree), 'workers.cleanup'
     ), 'module import-time executable operations 也必须进入 folder-operation guard'
+
+    lambda_default_tree = ast.parse(
+        "content_folder = os.environ['WORKSHOP_FOLDER']\n"
+        'purge = lambda ignored=shutil.rmtree(content_folder): None\n'
+    )
+    assert _unclaimed_folder_operations(
+        _module_executable_function(lambda_default_tree), 'workers.cleanup'
+    ), 'module-level lambda defaults 在 import time 执行，不能随 body 一起 prune'
 
 
 def test_no_claim_is_ever_taken_on_the_event_loop():
@@ -4517,7 +4553,19 @@ def _path_origins(func, before_line: int) -> dict[str, set[str]]:
             elif isinstance(statement, ast.With):
                 state = after(statement.body, state)
             elif isinstance(statement, (ast.For, ast.AsyncFor)):
-                state = merge(state, after(statement.body, state))
+                body_state = {
+                    name: set(origins) for name, origins in state.items()
+                }
+                origins = expression_origins(statement.iter, state)
+                for name in _assigned_names(statement):
+                    target_origins = set(origins)
+                    if _looks_like_content_folder(name):
+                        target_origins.add(name)
+                    if target_origins:
+                        body_state[name] = target_origins
+                    else:
+                        body_state.pop(name, None)
+                state = merge(state, after(statement.body, body_state))
                 state = after(statement.orelse, state)
             elif isinstance(statement, ast.Try):
                 prefix_states = [state]
@@ -6455,6 +6503,11 @@ def test_the_claim_guard_discovers_content_path_mutations():
         '    content_folder = path\n'
         '    shutil.rmtree(content_folder)\n'
         '\n'
+        'def loop_target_origin(content_folder):\n'
+        '    folders = [content_folder]\n'
+        '    for path in folders:\n'
+        '        shutil.rmtree(path)\n'
+        '\n'
         'def erase(path):\n'
         '    shutil.rmtree(path)\n'
         'def erase_via_helper(content_folder):\n'
@@ -6639,6 +6692,9 @@ def test_the_claim_guard_discovers_content_path_mutations():
     assert _unclaimed_folder_operations(
         functions['explicit_content_local'], 'new_router'
     ), '显式 content_folder local 即使源参数泛化也必须保留语义 origin'
+    assert _unclaimed_folder_operations(
+        functions['loop_target_origin'], 'new_router'
+    ), 'for target 必须继承 iterable 的 content-folder origin'
     assert _unclaimed_folder_operations(
         functions['erase'], 'new_router'
     ), 'caller 的 content-folder origin 必须传播到 local helper 参数'
