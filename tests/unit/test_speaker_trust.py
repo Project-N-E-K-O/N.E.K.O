@@ -293,6 +293,9 @@ def test_correction_relation_requires_the_same_proposition():
     assert deterministic_relation(
         "喜欢猫的人认识小明", "不喜欢猫的人认识小明",
     ) is None
+    assert deterministic_relation(
+        "喜欢猫的人来自北京", "不喜欢猫的人来自北京",
+    ) is None
     assert deterministic_relation("Alice is able", "Alice is notable") is None
     assert deterministic_relation(
         "Alice likes false eyelashes", "Alice likes eyelashes",

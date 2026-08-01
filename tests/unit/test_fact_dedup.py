@@ -145,6 +145,57 @@ def test_detect_candidates_below_threshold_no_pair():
     assert FactDedupResolver.detect_candidates(facts) == []
 
 
+@pytest.mark.asyncio
+async def test_group_participants_share_only_their_groups_arbitration_domain(
+    tmp_path,
+):
+    """Different speakers in one group can conflict, but groups stay isolated."""
+    from memory.scopes import MemorySubject
+
+    same_group_a = MemorySubject.group_participant("qq", "7788", "1001")
+    same_group_b = MemorySubject.group_participant("qq", "7788", "2002")
+    other_group = MemorySubject.group_participant("qq", "8899", "3003")
+    rows = [
+        {
+            **_fact("a", "小明喜欢猫", entity="group_participant",
+                    embedding=[1.0, 0.0]),
+            **same_group_a.as_entry_fields(),
+        },
+        {
+            **_fact("b", "小明不喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **same_group_b.as_entry_fields(),
+        },
+        {
+            **_fact("c", "小明不喜欢猫", entity="group_participant",
+                    embedding=[0.99, 0.05]),
+            **other_group.as_entry_fields(),
+        },
+    ]
+    rows[0].update(speaker_id="qq:1001", speaker_trust=0.2)
+    rows[1].update(speaker_id="qq:2002", speaker_trust=0.8)
+    rows[2].update(speaker_id="qq:3003", speaker_trust=0.8)
+
+    pairs = FactDedupResolver.detect_candidates(rows, only_for_ids={"a"})
+    assert [(pair["candidate_id"], pair["existing_id"]) for pair in pairs] == [
+        ("a", "b"),
+    ]
+    assert pairs[0]["subject_key"] == "@group_participant_arbitration:qq:7788"
+    assert pairs[0]["scope"] == pairs[0]["subject_key"]
+
+    fs, resolver = _install_resolver(str(tmp_path))
+    await _seed_facts(fs, "Neko", rows)
+    assert await resolver.aenqueue_candidates("Neko", pairs) == 1
+    model = _make_llm_mock([{"index": 0, "action": "replace"}])
+    with patch("utils.llm_client.create_chat_llm", return_value=model):
+        assert await resolver.aresolve("Neko") == 1
+    active = await fs.aload_facts("Neko")
+    assert {row["id"] for row in active} == {"b", "c"}
+    survivor = next(row for row in active if row["id"] == "b")
+    assert survivor["speaker_id"] == "qq:2002"
+    assert survivor["speaker_trust"] == pytest.approx(0.8)
+
+
 def test_detect_candidates_respects_entity_scope():
     """master + relationship entries don't collide even with identical
     embeddings — cross-entity dedup is too risky to defer to vectors."""
@@ -1003,6 +1054,9 @@ async def test_low_trust_candidate_cannot_replace_high_trust_fact(tmp_path):
         assert await resolver.aresolve("Neko") == 1
     active = await fs.aload_facts("Neko")
     assert [fact["id"] for fact in active] == ["e1"]
+    assert active[0]["speaker_id"] == "qq:2002"
+    assert active[0]["speaker_trust"] == pytest.approx(0.8)
+    assert active[0].get("speaker_provenance_mixed") is not True
     archive_path = tmp_path / "Neko" / "facts_archive.json"
     archived = json.loads(archive_path.read_text(encoding="utf-8"))
     loser = next(fact for fact in archived if fact["id"] == "c1")
@@ -1076,6 +1130,9 @@ async def test_high_trust_candidate_overrides_model_merge_and_archives_old(tmp_p
         assert await resolver.aresolve("Neko") == 1
     active = await fs.aload_facts("Neko")
     assert [fact["id"] for fact in active] == ["c1"]
+    assert active[0]["speaker_id"] == "qq:2002"
+    assert active[0]["speaker_trust"] == pytest.approx(0.8)
+    assert active[0].get("speaker_provenance_mixed") is not True
     archived = json.loads(
         (tmp_path / "Neko" / "facts_archive.json").read_text(encoding="utf-8")
     )

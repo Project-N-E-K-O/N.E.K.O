@@ -11364,14 +11364,15 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
     bridge.group_participant_subject.side_effect = (
         lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
     )
-    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
-        "status": "processed",
-        "segments": [
-            {"status": "ok", "created": 0, "fact_ids": []},
-            {"status": "ok", "created": 0, "fact_ids": []},
-            {"status": "ok", "created": 0, "fact_ids": []},
-        ],
-    })
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=(
+        lambda _name, segments, **_kwargs: {
+            "status": "processed",
+            "segments": [
+                {"status": "ok", "created": 0, "fact_ids": []}
+                for _ in segments
+            ],
+        }
+    ))
     current_level = {"value": "normal"}
     plugin = SimpleNamespace(
         memory_bridge=bridge,
@@ -11417,7 +11418,13 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
     assert await service._flush_member_buckets(
         user_data, group_id="7788", her_name="Neko", reason="test",
     ) == []
-    segments = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert bridge.post_scoped_memory_history_batch.await_count == 2
+    requests = [
+        call.args[1]
+        for call in bridge.post_scoped_memory_history_batch.await_args_list
+    ]
+    assert [len(segments) for segments in requests] == [2, 1]
+    segments = [segment for request in requests for segment in request]
     assert len(segments) == 3
     assert segments[0].get("speaker_is_owner") is None
     assert segments[0]["speaker_trust"] == pytest.approx(
@@ -11434,6 +11441,85 @@ async def test_member_flush_preserves_permission_snapshot_per_authored_message()
     assert segments[0]["messages"][0]["content"][0]["text"] == "普通时说的"
     assert segments[1]["messages"][0]["content"][0]["text"] == "成为主人后说的"
     assert segments[2]["messages"][0]["content"][0]["text"] == "恢复普通后说的"
+
+
+@pytest.mark.asyncio
+async def test_member_flush_refreshes_trust_after_owner_request_boundary():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    trust = {"1001": 0.8, "9000": 0.95}
+    requests = []
+
+    async def _post(_name, segments, **_kwargs):
+        requests.append(segments)
+        return {
+            "status": "processed",
+            "segments": [
+                {
+                    "status": "ok",
+                    "trust_events": ([{
+                        "kind": "correction",
+                        "speaker_id": "qq:1001",
+                        "event_id": "owner-corrects-member",
+                    }] if segment.get("speaker_is_owner") else []),
+                }
+                for segment in segments
+            ],
+        }
+
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(side_effect=_post)
+    permission_mgr = SimpleNamespace(
+        get_nickname=lambda _sender: None,
+        get_permission_level=lambda sender: (
+            "admin" if sender == "9000" else "normal"
+        ),
+        get_speaker_trust=lambda sender, _level=None: trust[sender],
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge,
+        logger=MagicMock(),
+        permission_mgr=permission_mgr,
+        _qq_settings={
+            "group_memory_enabled": True,
+            "group_member_memory_enabled": True,
+        },
+    ))
+
+    async def _apply(_sender, _messages, events, **_kwargs):
+        if events:
+            trust["1001"] = 0.2
+
+    service._apply_speaker_trust_update = AsyncMock(side_effect=_apply)
+    user_data = {}
+    for sender, message, level in (
+        ("1001", "更正前", "normal"),
+        ("9000", "主人纠正", "admin"),
+        ("1001", "更正后", "normal"),
+    ):
+        service.record_group_member_turn(user_data, SimpleNamespace(
+            member_memory_enabled=True,
+            is_group=True,
+            group_facing=False,
+            group_scene_mode="",
+            source_kind="incoming",
+            sender_id=sender,
+            user_nickname="",
+            message=message,
+            permission_level=level,
+        ))
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    ) == []
+    assert [len(request) for request in requests] == [2, 1]
+    assert requests[0][0]["speaker_trust"] == pytest.approx(0.8)
+    assert requests[1][0]["speaker_trust"] == pytest.approx(0.2)
 
 
 @pytest.mark.asyncio

@@ -1724,11 +1724,15 @@ class QQSessionMemoryService:
             batches.append(current)
         return batches
 
-    @staticmethod
     def _pack_member_segment_groups(
-        groups: list[list[dict]], *, isolate_segments: bool = False,
+        self, groups: list[list[dict]], *, isolate_segments: bool = False,
     ) -> list[list[dict]]:
-        """Pack ordered permission runs within the server's batch limits."""
+        """Pack ordered permission runs within the server's batch limits.
+
+        Owner segments close their request.  Their response may carry durable
+        trust events, so every later segment must be materialized only after
+        those events have been applied by the serial flush chain.
+        """
         from config import (
             SCOPED_HISTORY_BATCH_MAX_MESSAGES,
             SCOPED_HISTORY_BATCH_MAX_SEGMENTS,
@@ -1789,6 +1793,16 @@ class QQSessionMemoryService:
                 current_messages = 0
             current.extend(group)
             current_messages += group_messages
+            if any(
+                self._speaker_is_owner_for(
+                    str(spec.get("sender_id") or ""),
+                    spec.get("permission_level"),
+                )
+                for spec in group
+            ):
+                batches.append(current)
+                current = []
+                current_messages = 0
         if current:
             batches.append(current)
         return batches

@@ -473,6 +473,21 @@ class FactDedupResolver:
             subject = subject_from_entry(f)
             entity = f.get('entity') or 'master'
             if subject is not None:
+                if (
+                    subject.kind == 'group_participant'
+                    and subject.scope == f"{subject.kind}:{subject.subject_id}"
+                    and ':' in subject.subject_id
+                ):
+                    # Participant rows remain stored under their exact
+                    # per-speaker subjects, but contradictions need one
+                    # arbitration domain per group or different speakers can
+                    # never meet.  The group prefix retains scoped isolation:
+                    # qq:A:* and qq:B:* can never share an LLM prompt.
+                    group_prefix = subject.subject_id.rsplit(':', 1)[0]
+                    arbitration_key = (
+                        f"@group_participant_arbitration:{group_prefix}"
+                    )
+                    return (entity, arbitration_key, arbitration_key)
                 return (entity, subject.key, subject.scope)
             if is_legacy_private_entry(f):
                 return (entity, None, None)
@@ -1059,7 +1074,12 @@ class FactDedupResolver:
                 existing['merged_from_ids'] = merged
                 cur_imp = int(existing.get('importance', 5) or 5)
                 existing['importance'] = min(10, cur_imp + 1)
-                _fold_survivor_provenance(existing, cand)
+                # A trust-arbitrated correction is replacement semantics even
+                # when the surviving side is represented by ``merge``.  The
+                # rejected contradiction is not corroborating provenance;
+                # keep the selected winner attributable for later disputes.
+                if preference != 'old':
+                    _fold_survivor_provenance(existing, cand)
                 ids_to_remove.add(cand_id)
                 archive_specs[cand_id] = {
                     'reason': 'fact_dedup_merge',
@@ -1083,7 +1103,8 @@ class FactDedupResolver:
                 cur = int(cand.get('importance', 5) or 5)
                 old = int(existing.get('importance', 5) or 5)
                 cand['importance'] = max(cur, old)
-                _fold_survivor_provenance(cand, existing)
+                if preference != 'new':
+                    _fold_survivor_provenance(cand, existing)
                 ids_to_remove.add(exist_id)
                 archive_specs[exist_id] = {
                     'reason': 'fact_dedup_replace',
