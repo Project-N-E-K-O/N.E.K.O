@@ -2713,6 +2713,11 @@
             "stealthDisabledNotice": "隐身模式已关闭，Yui 将保持贴边探身。",
             "toggleFailed": "贴边探身切换失败，请稍后重试。"
         },
+        "mcpChatInjection": {
+            "enabledNotice": "已开启在聊天中注入 MCP，MCP 工具已注入到聊天会话。",
+            "disabledNotice": "已关闭在聊天中注入 MCP。",
+            "toggleFailed": "在聊天中注入 MCP 开关切换失败，请稍后重试。"
+        },
         "toggles": {
             "allowInterrupt": "允许打断",
             "mergeMessages": "合并消息",
@@ -2744,6 +2749,7 @@
             "proactiveMiniGameInviteChatTooltip": "符合条件时邀请你一起玩小游戏",
             "agentMaster": "猫爪总开关",
             "showTaskHud": "显示悬浮窗",
+            "injectMcpInChat": "在聊天中注入MCP",
             "keyboardControl": "键鼠控制",
             "userPlugin": "用户插件",
             "pluginConfigPage": "配置页",

@@ -36,7 +36,7 @@ def test_floating_window_slider_sits_below_agent_master_before_separator():
     keyboard_position = popup_block.index("id: 'agent-keyboard'")
 
     assert master_position < floating_window_position < keyboard_position
-    assert popup_block.count("controlStyle: 'slider'") == 7
+    assert popup_block.count("controlStyle: 'slider'") == 8
     assert "separatorAfter: true" in popup_block
     assert "const toggleItem = this._createToggleItem(toggle, popup);" in popup_block
     assert "separator.className = `${avatarPrefix}-settings-separator`;" in popup_block

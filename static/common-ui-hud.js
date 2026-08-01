@@ -344,6 +344,14 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
             separatorAfter: true
         },
         {
+            id: 'agent-mcp-inject',
+            label: window.t ? window.t('settings.toggles.injectMcpInChat') : '在聊天中注入MCP',
+            labelKey: 'settings.toggles.injectMcpInChat',
+            initialDisabled: false,
+            controlStyle: 'slider',
+            separatorAfter: true
+        },
+        {
             id: 'agent-keyboard',
             label: window.t ? window.t('settings.toggles.keyboardControl') : '键鼠控制',
             labelKey: 'settings.toggles.keyboardControl',
@@ -403,6 +411,28 @@ window.AgentHUD._createAgentPopupContent = function (popup) {
                     } else if (!taskHudCheckbox.checked && typeof this.hideAgentTaskHUD === 'function') {
                         this.hideAgentTaskHUD();
                     }
+                });
+            }
+        }
+
+        if (toggle.id === 'agent-mcp-inject') {
+            const injectCheckbox = toggleItem.querySelector(`#${avatarPrefix}-agent-mcp-inject`);
+            if (injectCheckbox && typeof window.nekoMcpChatInjection !== 'undefined' &&
+                    window.nekoMcpChatInjection) {
+                const applyInjectState = () => {
+                    const state = window.nekoMcpChatInjection.getState();
+                    injectCheckbox.checked = state.enabled === true;
+                    if (typeof injectCheckbox._updateStyle === 'function') {
+                        injectCheckbox._updateStyle();
+                    }
+                };
+                window.nekoMcpChatInjection.refreshState().then(applyInjectState);
+                injectCheckbox.addEventListener('change', () => {
+                    window.nekoMcpChatInjection.setEnabled(injectCheckbox.checked).then((ok) => {
+                        if (!ok) {
+                            applyInjectState();
+                        }
+                    });
                 });
             }
         }

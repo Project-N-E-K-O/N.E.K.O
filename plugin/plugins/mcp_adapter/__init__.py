@@ -1130,6 +1130,8 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._max_reconnect_attempts = 3
         self._tool_timeout = 60.0
         self._servers_config: Dict[str, Dict[str, object]] = {}
+        # 聊天 LLM 注入开关（开启后 MCP 工具注册为 chat LLM 可调用工具）
+        self._inject_mcp = False
         
         # Gateway Core 组件
         self._route_engine: Optional[MCPRouteEngine] = None
@@ -1203,6 +1205,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
         self._reconnect_interval = self._coerce_int(adapter_config.get("reconnect_interval", 5), 5, minimum=0)
         self._max_reconnect_attempts = self._coerce_int(adapter_config.get("max_reconnect_attempts", 3), 3, minimum=0)
         self._tool_timeout = self._coerce_timeout(adapter_config.get("tool_timeout", 60), 60.0)
+        self._inject_mcp = self._coerce_bool(adapter_config.get("inject_mcp", False), False)
         self._servers_config = servers_config
         
         # 先初始化 Gateway Core 组件（需要在连接服务器之前，因为 _register_mcp_tools 依赖它）
@@ -1287,7 +1290,7 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             )
 
         # 注册为动态 entry
-        return self.register_dynamic_entry(
+        registered = self.register_dynamic_entry(
             entry_id=tool_id,
             handler=tool_handler,
             name=display_name,
@@ -1297,10 +1300,137 @@ class MCPAdapterPlugin(NekoAdapterPlugin):
             timeout=self._tool_timeout + 5.0,
             llm_result_fields=["summary"],
         )
+        # 聊天 LLM 注入：开启「在聊天中注入MCP」时同步注册为 chat LLM tool
+        if self._inject_mcp:
+            self._register_chat_llm_tool(
+                tool_id=tool_id,
+                display_name=display_name,
+                description=description,
+                schema=schema,
+                server_name=parsed_server_name,
+                tool_name=parsed_tool_name,
+            )
+        return registered
     
     async def _on_tool_unregister(self, tool_id: str) -> bool:
         """Gateway Core 工具注销回调 - 注销动态 entry。"""
+        self._unregister_chat_llm_tool(tool_id)
         return self.unregister_dynamic_entry(tool_id)
+    
+    def _llm_tool_name_for(self, tool_id: str) -> str:
+        """将 MCP tool_id 规范化为 chat LLM tool 名（[A-Za-z0-9_.-]{1,64}）。"""
+        return re.sub(r"[^A-Za-z0-9_.\-]", "_", tool_id)[:64]
+
+    def _build_mcp_tool_handler(
+        self,
+        server_name: str | None,
+        tool_name: str | None,
+        tool_id: str,
+    ) -> Callable[..., Any]:
+        """构造 chat LLM tool 处理器（返回 llm_tool 回调契约 {"output", "is_error"}）。"""
+        async def tool_handler(**kwargs: object) -> dict[str, object]:
+            if not server_name or not tool_name:
+                return {
+                    "output": {"error": f"Invalid tool_id: {tool_id}"},
+                    "is_error": True,
+                    "error": "INVALID_TOOL_ID",
+                }
+            # 移除 NEKO 注入的参数
+            arguments = {k: v for k, v in kwargs.items() if not k.startswith("_")}
+            target_client = self._clients.get(server_name)
+            if not target_client:
+                return {
+                    "output": {"error": f"Server '{server_name}' not connected"},
+                    "is_error": True,
+                    "error": "SERVER_NOT_CONNECTED",
+                }
+            result = await target_client.call_tool(tool_name, arguments, timeout=self._tool_timeout)
+            if "error" in result:
+                return {
+                    "output": {"error": str(result["error"])},
+                    "is_error": True,
+                    "error": "MCP_TOOL_ERROR",
+                }
+            payload = self._build_mcp_tool_payload(
+                result=result.get("result", {}),
+                server_name=server_name,
+                tool_name=tool_name,
+            )
+            return {"output": payload, "is_error": False}
+        return tool_handler
+
+    def _register_chat_llm_tool(
+        self,
+        *,
+        tool_id: str,
+        display_name: str,
+        description: str,
+        schema: Optional[Dict[str, object]],
+        server_name: str | None,
+        tool_name: str | None,
+    ) -> bool:
+        """将单个 MCP tool 注册为 chat LLM 可调用工具（幂等）。"""
+        if not self._inject_mcp:
+            return False
+        name = self._llm_tool_name_for(tool_id)
+        if any(meta["name"] == name for meta in self.list_llm_tools()):
+            return True
+        try:
+            return self.register_llm_tool(
+                name=name,
+                description=description or display_name or f"MCP tool {name}",
+                parameters=schema if isinstance(schema, dict) else None,
+                handler=self._build_mcp_tool_handler(server_name, tool_name, tool_id),
+                timeout=min(self._tool_timeout + 5.0, 300.0),
+            )
+        except Exception as exc:
+            self.ctx.logger.warning(f"Failed to register chat LLM tool '{name}': {exc}")
+            return False
+
+    def _unregister_chat_llm_tool(self, tool_id: str) -> None:
+        """注销单个 MCP 工具对应的 chat LLM tool（不存在时静默）。"""
+        try:
+            self.unregister_llm_tool(self._llm_tool_name_for(tool_id))
+        except Exception as exc:
+            self.ctx.logger.warning(f"Failed to unregister chat LLM tool: {exc}")
+
+    def _unregister_all_chat_llm_tools(self) -> None:
+        """注销本插件注册的全部 chat LLM MCP 工具。"""
+        for meta in self.list_llm_tools():
+            if meta["name"].startswith("mcp_"):
+                self.unregister_llm_tool(meta["name"])
+
+    async def _set_inject_mcp(self, enabled: bool) -> None:
+        """应用「在聊天中注入MCP」开关：对已连接 server 的全部工具注册/注销 chat LLM tool。"""
+        enabled = bool(enabled)
+        if enabled == self._inject_mcp:
+            return
+        self._inject_mcp = enabled
+        if enabled:
+            for server_name, client in self._clients.items():
+                for tool in client.tools:
+                    self._register_chat_llm_tool(
+                        tool_id=f"mcp_{server_name}_{tool.name}",
+                        display_name=f"[{server_name}] {tool.name}",
+                        description=tool.description or f"MCP tool from {server_name}",
+                        schema=tool.input_schema,
+                        server_name=server_name,
+                        tool_name=tool.name,
+                    )
+        else:
+            self._unregister_all_chat_llm_tools()
+
+    @lifecycle(id="config_change")
+    async def on_config_change(self, **_):
+        """热更新配置：应用「在聊天中注入MCP」开关变更。"""
+        try:
+            config = await self.config.dump()
+            adapter_config = config.get("mcp_adapter", {}) if isinstance(config, dict) else {}
+            inject = self._coerce_bool(adapter_config.get("inject_mcp", False), False)
+        except Exception:
+            inject = self._inject_mcp
+        await self._set_inject_mcp(inject)
+        return Ok({"status": "reloaded", "inject_mcp": inject})
     
     def _init_gateway_core(self) -> None:
         """初始化 Gateway Core 组件。"""

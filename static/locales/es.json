@@ -2713,6 +2713,11 @@
             "stealthDisabledNotice": "El modo oculto está desactivado. Yui seguirá asomándose por el borde.",
             "toggleFailed": "No se pudo cambiar Asomarse por el borde. Inténtalo de nuevo más tarde."
         },
+        "mcpChatInjection": {
+            "enabledNotice": "Inyección de MCP en el chat activada. Las herramientas MCP ahora están disponibles en el chat.",
+            "disabledNotice": "Inyección de MCP en el chat desactivada.",
+            "toggleFailed": "No se pudo cambiar la inyección de MCP en el chat. Inténtalo de nuevo más tarde."
+        },
         "toggles": {
             "allowInterrupt": "Permitir interrupción",
             "mergeMessages": "Fusionar mensajes",
@@ -2744,6 +2749,7 @@
             "proactiveMiniGameInviteChatTooltip": "Invitarte a un minijuego cuando se cumplan las condiciones",
             "agentMaster": "Interruptor maestro NekoClaw",
             "showTaskHud": "Mostrar ventana flotante",
+            "injectMcpInChat": "Inyectar MCP en el chat",
             "keyboardControl": "Control de teclado/ratón",
             "userPlugin": "Complemento de usuario",
             "pluginConfigPage": "configuración",

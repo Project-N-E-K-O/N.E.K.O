@@ -2713,6 +2713,11 @@
             "stealthDisabledNotice": "Stealth Mode is off. Yui will remain peeking from the edge.",
             "toggleFailed": "Failed to switch Edge Peek. Please try again later."
         },
+        "mcpChatInjection": {
+            "enabledNotice": "MCP chat injection enabled. MCP tools are now available in chat.",
+            "disabledNotice": "MCP chat injection disabled.",
+            "toggleFailed": "Failed to switch MCP chat injection. Please try again later."
+        },
         "toggles": {
             "allowInterrupt": "Allow Interrupt",
             "mergeMessages": "Merge Messages",
@@ -2744,6 +2749,7 @@
             "proactiveMiniGameInviteChatTooltip": "Invite you to play a mini-game when conditions are right",
             "agentMaster": "NekoClaw Master Switch",
             "showTaskHud": "Show floating window",
+            "injectMcpInChat": "Inject MCP in chat",
             "keyboardControl": "Keyboard/Mouse Control",
             "userPlugin": "User Plugin",
             "pluginConfigPage": "Config",

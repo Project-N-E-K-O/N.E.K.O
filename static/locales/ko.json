@@ -2713,6 +2713,11 @@
             "stealthDisabledNotice": "은신 모드가 꺼졌습니다. Yui가 가장자리에서 계속 모습을 내밉니다.",
             "toggleFailed": "가장자리 엿보기를 전환하지 못했습니다. 잠시 후 다시 시도하세요."
         },
+        "mcpChatInjection": {
+            "enabledNotice": "채팅에 MCP 주입이 활성화되었습니다. MCP 도구가 채팅 세션에 주입되었습니다.",
+            "disabledNotice": "채팅에 MCP 주입이 비활성화되었습니다.",
+            "toggleFailed": "채팅에 MCP 주입 전환에 실패했습니다. 잠시 후 다시 시도해 주세요."
+        },
         "toggles": {
             "allowInterrupt": "인터럽트 허용",
             "mergeMessages": "메시지 병합",
@@ -2744,6 +2749,7 @@
             "proactiveMiniGameInviteChatTooltip": "조건이 맞을 때 미니게임에 초대하여 말걸기",
             "agentMaster": "네코클로 마스터 스위치",
             "showTaskHud": "플로팅 창 표시",
+            "injectMcpInChat": "채팅에 MCP 주입",
             "keyboardControl": "키보드/마우스 제어",
             "userPlugin": "사용자 플러그인",
             "pluginConfigPage": "설정 페이지",

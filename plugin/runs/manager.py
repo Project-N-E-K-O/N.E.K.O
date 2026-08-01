@@ -800,6 +800,65 @@ def _resolve_run_execution_timeout(args: Dict[str, Any]) -> float | None:
     return default_timeout
 
 
+def record_external_call(
+    *,
+    plugin_id: str,
+    entry_id: str,
+    status: Literal["succeeded", "failed"],
+    error: Optional[RunError] = None,
+    output: Any = None,
+) -> str:
+    """Record an already-executed plugin entry call as a completed run.
+
+    Unlike ``create_run`` this does NOT trigger the entry again — the
+    invocation already happened elsewhere (e.g. an LLM tool dispatch
+    through the callback route). Used so chat-injected MCP tool calls
+    appear in the plugin management panel's run records.
+    """
+    run_id = str(uuid.uuid4())
+    now = float(time.time())
+    rec = RunRecord(
+        run_id=run_id,
+        plugin_id=plugin_id,
+        entry_id=entry_id,
+        status="running",
+        created_at=now,
+        updated_at=now,
+        started_at=now,
+    )
+    _run_store.create(rec)
+    _emit_runs("add", rec)
+
+    export_item_id: Optional[str] = None
+    if output is not None:
+        export_item_id = str(uuid.uuid4())
+        if not isinstance(output, dict):
+            output = {"value": output}
+        item = ExportItem.model_validate({
+            "export_item_id": export_item_id,
+            "run_id": run_id,
+            "type": "json",
+            "category": "system",
+            "created_at": now,
+            "label": "trigger_response",
+            "description": "Response from the external tool call",
+            "json": output,
+            "metadata": {"kind": "external_call"},
+        })
+        _export_store.append(item)
+        _emit_export("add", item)
+
+    term = _run_store.commit_terminal(
+        run_id,
+        status=status,
+        error=error,
+        result_refs=[export_item_id] if export_item_id else [],
+    )
+    if term is not None:
+        _emit_runs("change", term)
+    return run_id
+
+
 async def create_run(req: RunCreateRequest, *, client_host: Optional[str]) -> RunCreateResponse:
     run_id = str(uuid.uuid4())
     now = float(time.time())

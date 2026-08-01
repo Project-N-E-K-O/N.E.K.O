@@ -2713,6 +2713,11 @@
             "stealthDisabledNotice": "ステルスモードを無効にしました。Yui はエッジから覗いた状態を保ちます。",
             "toggleFailed": "エッジ覗きを切り替えられませんでした。しばらくしてから再試行してください。"
         },
+        "mcpChatInjection": {
+            "enabledNotice": "チャットへのMCP注入を有効にしました。MCPツールがチャットセッションに注入されました。",
+            "disabledNotice": "チャットへのMCP注入を無効にしました。",
+            "toggleFailed": "チャットへのMCP注入の切り替えに失敗しました。後でもう一度お試しください。"
+        },
         "toggles": {
             "allowInterrupt": "割り込み許可",
             "mergeMessages": "メッセージ結合",
@@ -2744,6 +2749,7 @@
             "proactiveMiniGameInviteChatTooltip": "条件が整ったときミニゲームに誘って話しかける",
             "agentMaster": "ネコクローマスタースイッチ",
             "showTaskHud": "フローティングウィンドウを表示",
+            "injectMcpInChat": "チャットにMCPを注入",
             "keyboardControl": "キーボード/マウス操作",
             "userPlugin": "ユーザープラグイン",
             "pluginConfigPage": "設定ページ",

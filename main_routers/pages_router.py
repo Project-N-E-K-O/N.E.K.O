@@ -94,6 +94,7 @@ _YUI_GUIDE_ASSET_VERSION_PATHS = (
     _PROJECT_ROOT / "static/i18n-i18next.js",
     _PROJECT_ROOT / "static/app/app-auto-goodbye.js",
     _PROJECT_ROOT / "static/app/app-widget-mode.js",
+    _PROJECT_ROOT / "static/app/app-mcp-chat-injection.js",
     _PROJECT_ROOT / "static/app/app-widget-interaction.js",
     _PROJECT_ROOT / "static/app/app-cat-mind.js",
     _PROJECT_ROOT / "static/app/app-cat-mind-debug.js",
