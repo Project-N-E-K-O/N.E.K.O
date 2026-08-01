@@ -129,6 +129,47 @@ async def test_distinct_owner_observations_emit_distinct_trust_events():
 
     assert len(events) == 2
     assert len({event["event_id"] for event in events}) == 2
+    assert {event["source_fact_id"] for event in events} == {"cats", "dogs"}
+
+
+@pytest.mark.asyncio
+async def test_same_owner_observation_has_distinct_events_for_scoped_facts():
+    from memory.facts import FactStore
+
+    owner_a = MemorySubject.group_participant("qq", "7788", "9999")
+    owner_b = MemorySubject.group_participant("qq", "8899", "9999")
+    target_a = MemorySubject.group_participant("qq", "7788", "1001")
+    target_b = MemorySubject.group_participant("qq", "8899", "1001")
+    facts = [{
+        "id": "same-id", "text": "小明喜欢猫", "speaker_id": "qq:1001",
+        **target_a.as_entry_fields(),
+    }, {
+        "id": "same-id", "text": "小明喜欢猫", "speaker_id": "qq:1001",
+        **target_b.as_entry_fields(),
+    }]
+    store = object.__new__(FactStore)
+    messages = [{"role": "user", "content": "小明喜欢猫"}]
+    provenance = {"speaker_id": "qq:9999", "speaker_trust": 1.0}
+
+    event_a = (await store.aevaluate_speaker_trust_events(
+        "Neko", messages, subject=owner_a,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=facts,
+    ))[0]
+    event_b = (await store.aevaluate_speaker_trust_events(
+        "Neko", messages, subject=owner_b,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=facts,
+    ))[0]
+    repeated_a = (await store.aevaluate_speaker_trust_events(
+        "Neko", messages, subject=owner_a,
+        speaker_provenance=provenance, speaker_is_owner=True,
+        facts_snapshot=facts,
+    ))[0]
+
+    assert event_a["source_fact_id"] == event_b["source_fact_id"] == "same-id"
+    assert event_a["event_id"] != event_b["event_id"]
+    assert repeated_a["event_id"] == event_a["event_id"]
 
 
 def test_fresh_persona_entry_preserves_missing_speaker_trust():

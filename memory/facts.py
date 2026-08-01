@@ -1072,8 +1072,25 @@ class FactStore:
                 relation = deterministic_relation(prior.get('text', ''), text)
                 if relation is None:
                     continue
+                candidate_subject = subject_from_entry(prior)
+                if candidate_subject is None:
+                    continue
+                source_fact_id = _readable_fact_id(prior)
+                normalized_observation = ' '.join(text.split()).casefold()
+                fallback_fact_id = hashlib.sha256(
+                    ' '.join(str(prior.get('text') or '').split()).casefold().encode(
+                        'utf-8'
+                    )
+                ).hexdigest()[:24]
+                matched_fact_identity = '|'.join((
+                    candidate_subject.kind,
+                    candidate_subject.subject_id,
+                    candidate_subject.scope,
+                    source_fact_id or fallback_fact_id,
+                ))
                 observation_key = hashlib.sha256(
-                    f"{source_id}|{' '.join(text.split()).casefold()}".encode(
+                    f"{source_id}|{matched_fact_identity}|"
+                    f"{normalized_observation}".encode(
                         'utf-8'
                     )
                 ).hexdigest()[:24]
@@ -1088,6 +1105,7 @@ class FactStore:
                     'speaker_id': target_id,
                     'event_id': event_id,
                     'source_speaker_id': source_id,
+                    'source_fact_id': source_fact_id,
                 })
         return events
 

@@ -11477,6 +11477,97 @@ async def test_member_flush_retries_owner_after_failed_chronological_predecessor
 
 
 @pytest.mark.asyncio
+async def test_member_flush_retry_owner_excludes_successful_later_fact():
+    from plugin.plugins.qq_auto_reply.session_memory_service import (
+        QQSessionMemoryService,
+    )
+
+    earlier = {
+        "role": "user", "content": "earlier member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 1,
+    }
+    owner = {
+        "role": "user", "content": "owner statement",
+        "_speaker_permission_level": "admin", "_speaker_sequence": 2,
+    }
+    later = {
+        "role": "user", "content": "later member fact",
+        "_speaker_permission_level": "normal", "_speaker_sequence": 3,
+    }
+    user_data = {
+        "group_member_memory_messages": {
+            "1001": [earlier, later], "9999": [owner],
+        },
+        "group_member_memory_labels": {
+            "1001": "Alice(1001)", "9999": "Owner(9999)",
+        },
+    }
+    bridge = MagicMock()
+    bridge.group_participant_subject.side_effect = (
+        lambda gid, uid: {"subject_id": f"qq:{gid}:{uid}"}
+    )
+    bridge.post_scoped_memory_history_batch = AsyncMock(return_value={
+        "status": "processed",
+        "segments": [
+            {"status": "failed"},
+            {"status": "ok", "trust_events": []},
+            {"status": "ok", "fact_ids": ["later-fact"]},
+        ],
+    })
+    settings = SimpleNamespace(
+        apply_speaker_trust_update=AsyncMock(return_value=True),
+    )
+    service = QQSessionMemoryService(SimpleNamespace(
+        memory_bridge=bridge, logger=MagicMock(), permission_mgr=None,
+        settings_service=settings,
+    ))
+
+    failed = await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="test",
+    )
+
+    assert set(failed) == {"1001", "9999"}
+    assert user_data["group_member_memory_messages"]["1001"] == [earlier]
+    assert user_data["group_member_memory_messages"]["9999"] == [owner]
+    assert owner["_trust_signal_excluded_fact_ids"] == ["later-fact"]
+
+    settings.apply_speaker_trust_update.reset_mock()
+    bridge.post_scoped_memory_history_batch.return_value = {
+        "status": "processed",
+        "segments": [
+            {"status": "ok", "fact_ids": ["earlier-fact"]},
+            {"status": "ok", "trust_events": [{
+                "kind": "confirmation", "speaker_id": "qq:1001",
+                "event_id": "earlier-event", "source_fact_id": "earlier-fact",
+            }, {
+                "kind": "confirmation", "speaker_id": "qq:1001",
+                "event_id": "later-event", "source_fact_id": "later-fact",
+            }]},
+        ],
+    }
+
+    assert await service._flush_member_buckets(
+        user_data, group_id="7788", her_name="Neko", reason="retry",
+    ) == []
+    retried = bridge.post_scoped_memory_history_batch.await_args.args[1]
+    assert [segment["messages"] for segment in retried] == [
+        [earlier], [{
+            key: value for key, value in owner.items()
+            if key != "_trust_signal_excluded_fact_ids"
+        }],
+    ]
+    owner_update = next(
+        call for call in settings.apply_speaker_trust_update.await_args_list
+        if call.kwargs["sender_id"] == "9999"
+    )
+    assert owner_update.kwargs["trust_events"] == [{
+        "kind": "confirmation", "speaker_id": "qq:1001",
+        "event_id": "earlier-event", "source_fact_id": "earlier-fact",
+    }]
+    assert user_data["group_member_memory_messages"] == {}
+
+
+@pytest.mark.asyncio
 async def test_member_flush_splits_oversized_permission_runs_in_order():
     from plugin.plugins.qq_auto_reply.session_memory_service import (
         QQSessionMemoryService,

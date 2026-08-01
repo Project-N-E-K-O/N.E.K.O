@@ -1354,8 +1354,17 @@ class QQSessionMemoryService:
                 def _member_segment(spec: dict) -> dict[str, Any]:
                     sender_id = spec["sender_id"]
                     permission_level = spec["permission_level"]
+                    messages = []
+                    for message in spec["messages"]:
+                        if (
+                            isinstance(message, dict)
+                            and "_trust_signal_excluded_fact_ids" in message
+                        ):
+                            message = dict(message)
+                            message.pop("_trust_signal_excluded_fact_ids", None)
+                        messages.append(message)
                     segment: dict[str, Any] = {
-                        "messages": spec["messages"],
+                        "messages": messages,
                         "subject": (
                             self.plugin.memory_bridge.group_participant_subject(
                                 group_id, sender_id,
@@ -1429,9 +1438,9 @@ class QQSessionMemoryService:
                 failed: set[str] = set()
                 successful_message_ids: dict[str, set[int]] = {}
                 chronological_predecessor_failed = False
-                for spec, segment_result in zip(
+                for segment_index, (spec, segment_result) in enumerate(zip(
                     batch_specs, segment_results,
-                ):
+                )):
                     sender_id = spec["sender_id"]
                     if (
                         isinstance(segment_result, dict)
@@ -1452,6 +1461,36 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} 主人 {sender_id} "
                                 "的前序段失败，保留本段重试信任信号"
                             )
+                            later_fact_ids = {
+                                str(fact_id)
+                                for later_result in segment_results[
+                                    segment_index + 1:
+                                ]
+                                if isinstance(later_result, dict)
+                                and later_result.get("status") == "ok"
+                                for fact_id in (
+                                    later_result.get("fact_ids") or []
+                                )
+                                if fact_id
+                            }
+                            if later_fact_ids:
+                                for message in spec["messages"]:
+                                    if not isinstance(message, dict):
+                                        continue
+                                    existing = message.get(
+                                        "_trust_signal_excluded_fact_ids"
+                                    )
+                                    excluded = {
+                                        str(fact_id) for fact_id in (
+                                            existing
+                                            if isinstance(existing, list)
+                                            else []
+                                        ) if fact_id
+                                    }
+                                    excluded.update(later_fact_ids)
+                                    message[
+                                        "_trust_signal_excluded_fact_ids"
+                                    ] = sorted(excluded)
                             failed.add(sender_id)
                             continue
                         try:
@@ -1466,10 +1505,38 @@ class QQSessionMemoryService:
                                 f"[{reason}] 群 {group_id} 成员 {sender_id} "
                                 f"本次抽取丢弃了 {dropped} 条无内容条目"
                             )
+                        trust_events = list(
+                            segment_result.get("trust_events") or []
+                        )
+                        excluded_fact_ids = {
+                            str(fact_id)
+                            for message in spec["messages"]
+                            if isinstance(message, dict)
+                            for fact_id in (
+                                message.get(
+                                    "_trust_signal_excluded_fact_ids"
+                                ) or []
+                            )
+                            if fact_id
+                        }
+                        if excluded_fact_ids:
+                            unfiltered_count = len(trust_events)
+                            trust_events = [
+                                event for event in trust_events
+                                if isinstance(event, dict)
+                                and str(event.get("source_fact_id") or "")
+                                not in excluded_fact_ids
+                            ]
+                            suppressed = unfiltered_count - len(trust_events)
+                            if suppressed:
+                                self.plugin.logger.warning(
+                                    f"[{reason}] 群 {group_id} 主人 {sender_id} "
+                                    f"重试信任信号忽略 {suppressed} 条后序事实"
+                                )
                         await self._apply_speaker_trust_update(
                             sender_id,
                             list(spec["messages"]),
-                            segment_result.get("trust_events") or [],
+                            trust_events,
                             activity_identity=self._group_activity_identity(
                                 group_id, spec,
                             ),
