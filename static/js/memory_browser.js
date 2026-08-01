@@ -8,6 +8,7 @@
     let chatData = [];
     let currentCatName = '';
     let memoryFileRequestId = 0;
+    let memorySaveRequestId = 0;
     let memoryRowExitInProgress = false;
     let memoryRowExitTimer = 0;
     let memoryRowExitOperationId = 0;
@@ -2413,10 +2414,17 @@
     }
 
     function getCurrentUiLanguage() {
-        const language = (window.i18n && window.i18n.language)
-            || (window.i18next && window.i18next.language)
-            || document.documentElement.lang;
-        return typeof language === 'string' && language.trim() ? language.trim() : null;
+        const candidates = [
+            window.i18n && window.i18n.language,
+            window.i18next && window.i18next.language,
+            document.documentElement && document.documentElement.lang
+        ];
+        for (const candidate of candidates) {
+            if (typeof candidate === 'string' && candidate.trim()) {
+                return candidate.trim();
+            }
+        }
+        return null;
     }
 
     async function buildExternalImportPayload(targetCharacter) {
@@ -3383,11 +3391,13 @@
         }
         const saveFile = currentMemoryFile;
         const saveSelectionId = memoryFileRequestId;
+        const saveRequestId = ++memorySaveRequestId;
         const saveFingerprint = currentMemoryFingerprint;
         const saveIdentityToken = currentMemoryIdentityToken;
         const stillTargetsSavedSelection = () => (
             currentMemoryFile === saveFile
             && memoryFileRequestId === saveSelectionId
+            && memorySaveRequestId === saveRequestId
         );
         // 处理备忘录为空的情况
         const memoPrefix = window.t ? window.t('memory.previousMemo') : '先前对话的备忘录: ';
@@ -3428,7 +3438,7 @@
                 }
 
                 // 通知父窗口刷新对话上下文
-                if (data.need_refresh) {
+                if (data.need_refresh && stillTargetsSavedSelection()) {
                     let broadcastSent = false;
                     
                     // 优先使用 BroadcastChannel（跨页面通信）

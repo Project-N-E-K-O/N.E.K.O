@@ -2432,6 +2432,7 @@ def test_external_import_refreshes_open_memory_after_persisting(
     mock_page.goto(f"{running_server}/memory_browser")
     mock_page.wait_for_function("window.i18next && window.i18next.isInitialized")
     mock_page.evaluate("() => window.i18next.changeLanguage('zh-TW')")
+    mock_page.evaluate("() => { window.i18n = { language: '   ' }; }")
     memo = mock_page.locator("#memory-chat-edit .memo-textarea").first
     expect(memo).to_have_value("这是测试备忘录内容。", timeout=10000)
     if edit_during_import or refresh_failure:
@@ -3578,6 +3579,95 @@ def test_memory_browser_stale_save_response_does_not_overwrite_new_selection(
     assert bodies[1]["filename"] == "recent_备用猫娘.json"
     assert bodies[1]["fingerprint"] == "fp:recent_备用猫娘.json"
     assert bodies[1]["identity_token"] == "token:recent_备用猫娘.json"
+
+
+@pytest.mark.frontend
+def test_memory_browser_stale_same_file_save_does_not_overwrite_latest_response(
+    mock_page: Page,
+    running_server: str,
+    seed_memory_file,
+):
+    _install_ready_memory_browser_routes(mock_page, seed_memory_file)
+    mock_page.goto(f"{running_server}/memory_browser")
+    expect(mock_page.locator("#memory-file-list .cat-btn").first).to_have_attribute(
+        "aria-current",
+        "true",
+        timeout=10000,
+    )
+
+    mock_page.evaluate(
+        """
+        () => {
+            const originalFetch = window.fetch.bind(window);
+            window.__memorySaveBodies = [];
+            window.__memoryRefreshBroadcasts = [];
+            window.__resolveFirstMemorySave = null;
+            window.BroadcastChannel = class {
+                postMessage(message) {
+                    window.__memoryRefreshBroadcasts.push(message);
+                }
+                close() {}
+            };
+            window.fetch = (input, init) => {
+                const url = String(input && input.url ? input.url : input);
+                if (!url.includes('/api/memory/recent_file/save')) {
+                    return originalFetch(input, init);
+                }
+                window.__memorySaveBodies.push(JSON.parse(init.body));
+                const requestNumber = window.__memorySaveBodies.length;
+                if (requestNumber === 1) {
+                    return new Promise(resolve => {
+                        window.__resolveFirstMemorySave = () => resolve(new Response(
+                            JSON.stringify({
+                                success: true,
+                                need_refresh: true,
+                                fingerprint: 'fp:stale-response',
+                                identity_token: 'token:stale-response',
+                            }),
+                            { status: 200, headers: { 'Content-Type': 'application/json' } }
+                        ));
+                    });
+                }
+                const suffix = requestNumber === 2 ? 'latest-response' : 'third-response';
+                return Promise.resolve(new Response(
+                    JSON.stringify({
+                        success: true,
+                        need_refresh: false,
+                        fingerprint: `fp:${suffix}`,
+                        identity_token: `token:${suffix}`,
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'application/json' } }
+                ));
+            };
+        }
+        """
+    )
+
+    save_button = mock_page.locator("#save-memory-btn")
+    save_button.click()
+    mock_page.wait_for_function("window.__memorySaveBodies.length === 1")
+    save_button.click()
+    mock_page.wait_for_function("window.__memorySaveBodies.length === 2")
+    expect(mock_page.locator("#save-status")).to_contain_text("保存成功")
+
+    mock_page.evaluate(
+        """
+        async () => {
+            const resolveSave = window.__resolveFirstMemorySave;
+            window.__resolveFirstMemorySave = null;
+            resolveSave();
+            await new Promise(resolve => requestAnimationFrame(resolve));
+            await new Promise(resolve => requestAnimationFrame(resolve));
+        }
+        """
+    )
+    save_button.click()
+    mock_page.wait_for_function("window.__memorySaveBodies.length === 3")
+
+    bodies = mock_page.evaluate("window.__memorySaveBodies")
+    assert bodies[2]["fingerprint"] == "fp:latest-response"
+    assert bodies[2]["identity_token"] == "token:latest-response"
+    assert mock_page.evaluate("window.__memoryRefreshBroadcasts") == []
 
 
 @pytest.mark.frontend
