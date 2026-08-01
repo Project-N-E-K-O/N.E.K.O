@@ -52,9 +52,9 @@ def test_review_locale_evidence_prefers_user_turns():
 
 
 def test_greeting_preserves_full_locale_for_holiday_selection():
-    from main_logic.core.greeting import _greeting_locale_keys
+    from main_logic.core.greeting import GreetingMixin
 
-    assert _greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
+    assert GreetingMixin._greeting_locale_keys("zh-TW") == ("zh", "zh-TW")
 
 
 def test_traditional_holiday_prompt_falls_back_to_simplified_chinese():
