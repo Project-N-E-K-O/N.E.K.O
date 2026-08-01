@@ -2958,3 +2958,89 @@ async def test_a_never_announcing_provider_still_finalizes_its_turn_on_the_host(
     assert "on_sid_rotate" in fired, (
         "no rotation here means TTS goes silent from the next turn on"
     )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_reply_that_finishes_inside_the_item_window_is_still_adoptable():
+    # The item-ack barrier holds the owner slot empty for up to
+    # item_ack_timeout, and lanlan.tech answers the item directly — measured
+    # response.created p50 1.11s, done-from-created p50 2.96s. A short reply
+    # therefore lands its terminal inside that window, with _response_owner
+    # still None, so the owner branch that remembers the outcome never runs.
+    # The id then ends up neither live nor known-finished, adoption refuses
+    # it, and the started timeout tears the socket down — on a turn that
+    # completed perfectly.
+    def finish_inside_the_window(arbiter):
+        arbiter.notify_response_terminal(
+            {
+                "type": "response.done",
+                "response": {"id": "resp-auto", "status": "completed"},
+            }
+        )
+
+    arbiter, ticket, sent, aborted = await _adoption_harness(
+        during_item_window=finish_inside_the_window
+    )
+    result = await asyncio.wait_for(ticket.done, 1.0)
+    assert result is not None
+    assert aborted == [], "a completed reply must not cost the transport"
+    assert "response.cancel" not in [event["type"] for event in sent]
+    await arbiter.shutdown()
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_an_auxiliary_item_ahead_of_the_instruction_blocks_adoption():
+    # A proactive vision turn queues an auxiliary conversation.item.create
+    # before the instruction item. `conversation.item.created` then proves the
+    # provider acknowledged AN item this request sent, not WHICH one, and an
+    # announcement answering only the auxiliary item would complete the ticket
+    # — reporting the delivery successful and consuming its scheduler state —
+    # for a response that never carried the text.
+    sent = []
+    aborted = []
+    arbiter = None
+
+    async def send(event):
+        sent.append(dict(event))
+        if event["type"] == "conversation.item.create" and event["item"]["id"] == "aux":
+            arbiter.notify_response_created(
+                {"type": "response.created", "response": {"id": "resp-aux"}}
+            )
+            arbiter.notify_item_created(
+                {"item": {"id": "provider-assigned-id", "role": "user"}}
+            )
+
+    async def abort(reason):
+        aborted.append(reason)
+
+    arbiter = RealtimeResponseArbiter(send, abort_transport=abort)
+    ticket = await arbiter.enqueue(
+        source="proactive_vision",
+        events_before_response=(
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "aux", "role": "user"},
+            },
+            {
+                "type": "conversation.item.create",
+                "item": {"id": "instruction", "role": "user"},
+            },
+        ),
+        response_event={"type": "response.create"},
+        ack_expected=True,
+        expected_item_id="instruction",
+        expected_item_role="user",
+        item_ack_timeout=0.05,
+        response_started_timeout=0.15,
+        cancel_timeout=0.05,
+    )
+    await asyncio.wait_for(ticket.sent, 0.5)
+    with pytest.raises(Exception):
+        await asyncio.wait_for(ticket.done, 1.0)
+    assert aborted, (
+        "an announcement that may answer only the auxiliary item is not this "
+        "request's to adopt"
+    )
+    await arbiter.shutdown()

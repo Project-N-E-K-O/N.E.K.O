@@ -247,12 +247,17 @@ class _Probe:
             self._pump.cancel()
             try:
                 await self._pump
-            except BaseException:
+            except (asyncio.CancelledError, Exception):
+                # Teardown of a probe run: the receive loop was just cancelled,
+                # and a transport that is already gone raising on the way out
+                # says nothing the report has not already recorded.
                 pass
         if self._client is not None:
             try:
                 await self._client.close()
-            except BaseException:
+            except (asyncio.CancelledError, Exception):
+                # Same: closing a socket the provider already dropped is the
+                # normal end of a run that observed a teardown.
                 pass
 
     # -- observation ------------------------------------------------------
@@ -349,6 +354,23 @@ class _Probe:
 
     # -- scenarios --------------------------------------------------------
 
+    @staticmethod
+    async def _wait_for_first_of(
+        first: asyncio.Event, second: asyncio.Event, timeout: float
+    ) -> None:
+        """Return as soon as either event is set, or the bound expires."""
+
+        waiters = [asyncio.create_task(first.wait()), asyncio.create_task(second.wait())]
+        try:
+            await asyncio.wait(
+                waiters, timeout=timeout, return_when=asyncio.FIRST_COMPLETED
+            )
+        finally:
+            for waiter in waiters:
+                if not waiter.done():
+                    waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
     async def run_turn(self, label: str, *, barge_in: bool = False) -> _Turn:
         """Drive one create -> created -> done cycle, optionally cancelling it."""
 
@@ -376,18 +398,36 @@ class _Probe:
         # Deliberately generous: the probe measures how long things take, so
         # its own waits must never be what expires. The comparison against the
         # arbiter's bound happens in the report, not here.
-        try:
-            await asyncio.wait_for(
-                self._announced.wait(), max(_ARBITER_BOUNDS["response_started"] * 4, 20.0)
-            )
-        except asyncio.TimeoutError:
-            self._log("!! no response.created")
+        #
+        # Whichever comes first, and NOT the announcement alone: one of the two
+        # routes this probe exists for never sends response.created at all, so
+        # waiting for it burned the whole budget while the reply came and went.
+        # The barge-in then landed on an idle connection and measured nothing —
+        # a cancel latency for a turn that had already finished. Derived from
+        # what the provider does rather than from a per-route flag, for the same
+        # reason the arbiter is: these proxies have changed which events they
+        # emit.
+        await self._wait_for_first_of(
+            self._announced,
+            self._first_delta,
+            max(_ARBITER_BOUNDS["response_started"] * 4, 20.0),
+        )
+        if not self._announced.is_set():
+            self._log("(no response.created — this route does not announce)")
 
         if barge_in:
-            try:
-                await asyncio.wait_for(self._first_delta.wait(), 15.0)
-            except asyncio.TimeoutError:
-                self._log("!! nothing streaming to barge in on")
+            if not self._first_delta.is_set():
+                try:
+                    await asyncio.wait_for(self._first_delta.wait(), 15.0)
+                except asyncio.TimeoutError:
+                    self._log("!! nothing streaming to barge in on")
+            if turn.done_at is not None:
+                # It already finished. Cancelling now would time an idle
+                # connection and report it as barge-in latency.
+                self._log("!! reply finished before the barge-in — not measured")
+                self._open = None
+                self._obs.turns.append(turn)
+                return turn
             turn.cancel_sent_at = self._stamp()
             # Exactly what the production barge-in does: cancel_response(wait=True)
             # is cancel_current(), the 3s bound whose expiry tears the socket down.

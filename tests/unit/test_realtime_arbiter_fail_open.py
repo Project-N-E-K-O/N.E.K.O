@@ -2704,3 +2704,57 @@ async def test_an_id_less_tool_call_after_a_release_is_quarantined():
         "response.created closes the window; the successor's own tools must run"
     )
     assert client._idless_quarantine is False
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_release_with_nothing_tracked_still_raises_the_quarantine():
+    # The id guard returns early when the release names a response the host is
+    # not tracking, and both quarantine assignments sit below it. With nothing
+    # tracked at all there is no live turn an id-less event could belong to —
+    # the released response is the only candidate — so the tool gate must
+    # still close.
+    #
+    # Its dual is deliberate and not tested by asserting the flag: when
+    # tracked_id names a DIFFERENT, live response, the quarantine must stay
+    # down, because that response has already announced and the window's
+    # "closes at the next response.created" bound would fall after its own
+    # id-less tool calls and mute them.
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+    client._current_response_id = None
+    client._is_responding = True
+
+    await client._on_arbiter_stuck_release("stalled", "resp-abandoned")
+
+    assert client._idless_quarantine is True, (
+        "nothing tracked means nothing id-less can belong to a live turn"
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_a_release_over_another_live_response_leaves_the_quarantine_down():
+    from main_logic.omni_realtime_client import OmniRealtimeClient
+
+    client = OmniRealtimeClient(
+        "wss://example.invalid/realtime",
+        "test-key",
+        model="free-model",
+        api_type="free",
+    )
+    client._current_response_id = "resp-live"
+    client._is_responding = True
+
+    await client._on_arbiter_stuck_release("stalled", "resp-abandoned")
+
+    assert client._idless_quarantine is False, (
+        "resp-live has already announced; quarantining here would mute its "
+        "own id-less tool calls until some later response.created"
+    )

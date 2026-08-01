@@ -219,6 +219,7 @@ class RealtimeResponseArbiter:
         # to their creation loop time; see _SERVER_RESPONSE_ID_LIMIT and
         # _server_response_max_age. Created adds, terminal removes.
         self._server_response_ids: dict[str, float] = {}
+        self._idless_server_response_at: float | None = None
         # Staleness bound for the map above. Mirrors the response_done_timeout
         # semantics applied to owned responses: starts at the enqueue default
         # and only ever ratchets up, so a server response is never presumed
@@ -483,6 +484,19 @@ class RealtimeResponseArbiter:
             del self._server_response_ids[next(iter(self._server_response_ids))]
         self._arm_stale_release_timer()
 
+    def _remember_idless_server_response(self) -> None:
+        self._idless_server_response_at = asyncio.get_running_loop().time()
+
+    def _idless_server_response_live(self) -> bool:
+        announced_at = self._idless_server_response_at
+        if announced_at is None:
+            return False
+        if (asyncio.get_running_loop().time() - announced_at
+                >= self._server_response_max_age):
+            self._idless_server_response_at = None
+            return False
+        return True
+
     def _remember_seen_response_id(self, response_id: str | None) -> None:
         """Record that this id has been attributed to someone, ever.
 
@@ -562,6 +576,16 @@ class RealtimeResponseArbiter:
         if not queued.response_send_started or queued.response_id is not None:
             return None
         if not queued.ack_expected or not queued.item_created_seen:
+            return None
+        if len(queued.events_before_response) != 1:
+            # ``conversation.item.created`` proves the provider acknowledged
+            # AN item this request sent, not WHICH one. With a single
+            # pre-response event those are the same statement; with an
+            # auxiliary item ahead of the instruction — a proactive vision
+            # turn — they are not, and the announcement may be answering only
+            # the auxiliary one. Adopting it would complete the ticket, report
+            # the delivery successful and consume its scheduler state for a
+            # response that never carried the text.
             return None
         if (
             self._server_vad_response_pending
@@ -739,6 +763,8 @@ class RealtimeResponseArbiter:
             self._remember_seen_response_id(response_id)
             if response_id is not None:
                 self._remember_server_response_id(response_id)
+            else:
+                self._remember_idless_server_response()
             # Deliberately NOT offered for adoption. This branch is the one
             # announcement the arbiter positively knows is the provider's own
             # automatic response, so it is the last thing a queued request
@@ -763,6 +789,8 @@ class RealtimeResponseArbiter:
         self._remember_seen_response_id(response_id)
         if response_id is not None:
             self._remember_server_response_id(response_id)
+        else:
+            self._remember_idless_server_response()
         # Offer it for adoption. On a provider that starts answering as soon
         # as it receives the conversation item — rather than waiting for
         # response.create — this IS the request's own announcement, arriving
@@ -838,6 +866,8 @@ class RealtimeResponseArbiter:
     def notify_response_terminal(self, event: dict[str, Any] | None = None) -> None:
         owner = self._response_owner
         response_id = self._event_response_id(event)
+        if response_id is None:
+            self._idless_server_response_at = None
         response = (event or {}).get("response")
         response_status = (
             str(response.get("status") or "").strip().lower()
@@ -937,6 +967,17 @@ class RealtimeResponseArbiter:
         elif response_id is not None:
             # No owner: a server-initiated response reached its terminal
             # state, so its id no longer holds the lane.
+            if response_id == self._adoptable_announcement:
+                # Same evidence as the owner branch above, one instant
+                # earlier. A provider that answers the conversation item
+                # directly can finish a short reply before the item-ack
+                # barrier releases and the owner slot is filled, and the
+                # terminal's arrival time carries no information the
+                # announcement's did not — the serial check already proved the
+                # announcement belongs to this request's window. Without this,
+                # the id ends up neither live nor known-finished, adoption
+                # refuses it, and the started timeout tears the socket down.
+                self._adoptable_terminal_status = response_status or "completed"
             self._server_response_ids.pop(response_id, None)
         if owner is not None:
             if not owner.ticket.started.done():
@@ -1078,6 +1119,7 @@ class RealtimeResponseArbiter:
         self._server_response_active = False
         self._server_vad_response_pending = False
         self._server_response_ids.clear()
+        self._idless_server_response_at = None
         self._cancel_server_vad_pending_timer()
         self._cancel_stale_release_timer()
         exc = ConnectionError(reason)
@@ -1104,6 +1146,7 @@ class RealtimeResponseArbiter:
         self._connection_available = True
         self._dispatch_allowed.set()
         self._server_response_ids.clear()
+        self._idless_server_response_at = None
         # Response ids are scoped to a connection: a provider that restarts
         # its numbering would otherwise have the new session's first terminal
         # recognised as one this arbiter has "already seen" and withheld from
@@ -1295,7 +1338,7 @@ class RealtimeResponseArbiter:
             # Same shape without an owner: announced by speech_stopped, no id
             # until its response.created arrives.
             return "an announced server-VAD response has no id yet"
-        if (
+        if self._idless_server_response_live() or (
             self._server_response_active
             and self._response_owner is None
             and not self._server_response_ids

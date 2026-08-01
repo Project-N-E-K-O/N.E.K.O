@@ -116,6 +116,13 @@ class _TransportMixin:
         # Same lifetime as the id bookkeeping above, and for the same
         # reason: a reconnect may reach a different upstream.
         self._announces_responses = False
+        # Same lifetime, same reason: the quarantine is lowered only by a
+        # response.created on THIS socket, so a replacement connection to a
+        # never-announcing upstream would never clear it. Unreachable today
+        # (connect() swaps self.ws before any of this can matter, so the old
+        # response's events cannot arrive on the new socket) — reset anyway,
+        # because 'connection-scoped' should be true by construction.
+        self._idless_quarantine = False
 
         # ``close()`` releases RNNoise/soxr state. The client object is reused
         # across sessions, so recreate that session-owned processor on demand.
@@ -1321,6 +1328,19 @@ class _TransportMixin:
         if response_id is not None and (
             tracked_id is None or str(tracked_id) != str(response_id)
         ):
+            if tracked_id is None:
+                # Nothing is tracked, so nothing id-less arriving before the
+                # next response.created can belong to a live turn — the
+                # released response is the only candidate, and its tool calls
+                # are what the quarantine exists to stop.
+                #
+                # Deliberately NOT raised when tracked_id names a different,
+                # LIVE response: that one has already announced, so the
+                # window's "closes at the next response.created" bound would
+                # fall after its own id-less tool calls and suppress them
+                # instead. Containing an abandoned turn must not mute a live
+                # one.
+                self._idless_quarantine = True
             logger.info(
                 "Arbiter released %s but this turn is tracking %s; leaving it "
                 "alone",
