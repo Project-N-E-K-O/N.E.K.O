@@ -76,7 +76,10 @@ def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
             if manager is not None:
                 normalized_full = normalize_language_code(str(raw), format='full')
                 current = getattr(manager, "user_language", None)
-                if normalized_full and current != normalized_full:
+                if normalized_full and (
+                    current != normalized_full
+                    or not getattr(manager, "_user_language_explicit", False)
+                ):
                     setter = getattr(manager, "set_user_language", None)
                     if callable(setter):
                         setter(str(raw))

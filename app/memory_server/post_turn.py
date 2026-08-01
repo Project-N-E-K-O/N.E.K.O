@@ -148,6 +148,7 @@ async def _spawn_outbox_post_turn_signals(
                 lanlan_name,
                 language=language,
                 admission_order=locale_admission_order,
+                locale_only=not messages,
             )
         else:
             operation = _run_post_turn_signals(
@@ -155,6 +156,7 @@ async def _spawn_outbox_post_turn_signals(
                 lanlan_name,
                 language=language,
                 locale_order=locale_order,
+                locale_only=not messages,
             )
         return runtime._spawn_background_task(operation)
     op = {'op_id': op_id, 'type': OP_POST_TURN_SIGNALS, 'payload': payload}
@@ -196,6 +198,7 @@ async def _run_post_turn_signals_after_locale_reservation(
     *,
     language: str | None = None,
     admission_order: int | None,
+    locale_only: bool = False,
 ):
     locale_order = await _wait_for_character_prompt_locale_order(
         lanlan_name,
@@ -206,6 +209,7 @@ async def _run_post_turn_signals_after_locale_reservation(
         lanlan_name,
         language=language,
         locale_order=locale_order,
+        locale_only=locale_only,
     )
 
 
@@ -248,6 +252,7 @@ async def _run_post_turn_signals(
     *,
     language: str | None = None,
     locale_order: int | None = None,
+    locale_only: bool = False,
 ):
     """Background async: per-turn signals at every turn end. Failures are skipped silently.
 
@@ -285,12 +290,14 @@ async def _run_post_turn_signals(
     # memory；只有 user 印证过的才升级到神明降临层。
     # Persist the locale before exposing the new turn to the periodic loop, while
     # keeping the counter mutation itself on the event-loop thread.
+    await _wait_for_signal_locale_persistence(
+        lanlan_name,
+        language=language,
+        locale_order=locale_order,
+    )
+    if locale_only:
+        return
     if user_msgs:
-        await _wait_for_signal_locale_persistence(
-            lanlan_name,
-            language=language,
-            locale_order=locale_order,
-        )
         try:
             signal_extraction._signal_check_record_turn(lanlan_name)
         except Exception as e:
@@ -448,27 +455,33 @@ async def _outbox_post_turn_signals_handler(lanlan_name: str, payload: dict) -> 
     """
     from utils.llm_client import messages_from_dict
 
+    from utils.language_utils import is_supported_language_code
+
     raw = payload.get('messages') or []
-    if not raw:
-        return
-    messages = messages_from_dict(raw)
-    if not messages:
-        return
+    messages = messages_from_dict(raw) if raw else []
     language = payload.get('language')
+    if not messages and not is_supported_language_code(language):
+        return
     if payload.get('locale_order_deferred'):
+        kwargs = {
+            'language': language,
+            'admission_order': payload.get('locale_admission_order'),
+        }
+        if not messages:
+            kwargs['locale_only'] = True
         await _run_post_turn_signals_after_locale_reservation(
             messages,
             lanlan_name,
-            language=language,
-            admission_order=payload.get('locale_admission_order'),
+            **kwargs,
         )
         return
-    await _run_post_turn_signals(
-        messages,
-        lanlan_name,
-        language=language,
-        locale_order=payload.get('locale_order'),
-    )
+    kwargs = {
+        'language': language,
+        'locale_order': payload.get('locale_order'),
+    }
+    if not messages:
+        kwargs['locale_only'] = True
+    await _run_post_turn_signals(messages, lanlan_name, **kwargs)
 
 
 outbox_infra.register_outbox_handler(OP_POST_TURN_SIGNALS, _outbox_post_turn_signals_handler)

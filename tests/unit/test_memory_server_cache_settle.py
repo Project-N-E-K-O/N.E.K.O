@@ -414,3 +414,44 @@ async def test_settle_endpoint_msgs_zero_still_runs_review():
     fake_time_manager.astore_conversation.assert_not_awaited()
     fake_spawn_outbox.assert_not_awaited()
     fake_maybe_spawn_review.assert_awaited_once_with("测试角色")
+
+
+@pytest.mark.unit
+@pytest.mark.asyncio
+async def test_settle_empty_payload_persists_explicit_locale():
+    from app import memory_server
+
+    fake_recent_history_manager = MagicMock()
+    fake_recent_history_manager.update_history = AsyncMock(return_value=None)
+    fake_spawn_outbox = AsyncMock(return_value=None)
+    request = memory_server.HistoryRequest(
+        input_history=json.dumps([]),
+        language="zh-TW",
+    )
+
+    with patch.object(
+        memory_server.runtime,
+        "recent_history_manager",
+        fake_recent_history_manager,
+    ), patch.object(
+        memory_server.post_turn,
+        "_spawn_outbox_post_turn_signals",
+        fake_spawn_outbox,
+    ), patch.object(
+        memory_server.review,
+        "maybe_spawn_review",
+        AsyncMock(return_value=None),
+    ), patch.object(
+        memory_server.locale_state,
+        "allocate_character_prompt_locale_order",
+        MagicMock(return_value=314),
+    ):
+        result = await memory_server.settle_conversation(request, "测试角色")
+
+    assert result == {"status": "settled"}
+    fake_spawn_outbox.assert_awaited_once_with(
+        "测试角色",
+        [],
+        language="zh-TW",
+        locale_admission_order=314,
+    )

@@ -25,6 +25,7 @@ def _isolate_prompt_locale_sidecar(monkeypatch, tmp_path):
     monkeypatch.setattr(locale_state, "_locale_path", lambda _name: str(locale_path))
     locale_state._locale_cache.clear()
     locale_state._character_locale_admission_orders.clear()
+    locale_state._character_locale_capture_offsets.clear()
 
 
 def _install_fresh_memory_state(tmpdir: str):
@@ -395,6 +396,53 @@ async def test_post_turn_locale_record_retries_fence_before_counter(monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_assistant_only_post_turn_persists_locale_without_signal_counter(
+    monkeypatch,
+):
+    from app import memory_server
+
+    persist = AsyncMock()
+    record_turn = MagicMock()
+    persona_manager = MagicMock()
+    persona_manager.arecord_mentions = AsyncMock(return_value=None)
+    reflection_engine = MagicMock()
+    reflection_engine.arecord_mentions = AsyncMock(return_value=None)
+    reflection_engine.aload_surfaced = AsyncMock(return_value=[])
+
+    monkeypatch.setattr(
+        memory_server.post_turn,
+        "_wait_for_signal_locale_persistence",
+        persist,
+    )
+    monkeypatch.setattr(
+        memory_server.signal_extraction,
+        "_signal_check_record_turn",
+        record_turn,
+    )
+    monkeypatch.setattr(
+        memory_server.gates,
+        "_ais_powerful_memory_enabled",
+        AsyncMock(return_value=True),
+    )
+    monkeypatch.setattr(memory_server.runtime, "persona_manager", persona_manager)
+    monkeypatch.setattr(memory_server.runtime, "reflection_engine", reflection_engine)
+
+    await memory_server._run_post_turn_signals(
+        [AIMessage(content="先来打个招呼")],
+        "小天",
+        language="zh-TW",
+        locale_order=42,
+    )
+
+    persist.assert_awaited_once_with(
+        "小天",
+        language="zh-TW",
+        locale_order=42,
+    )
+    record_turn.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_post_turn_locale_record_retries_invalidated_write(monkeypatch):
     from app import memory_server
     from app.memory_server.locale_state import PromptLocaleInvalidatedError
@@ -504,6 +552,29 @@ async def test_post_turn_outbox_replay_resolves_deferred_locale_order():
     assert runner.await_args.args[1] == "小天"
     assert runner.await_args.kwargs["language"] == "zh-TW"
     assert runner.await_args.kwargs["admission_order"] == 41
+
+
+@pytest.mark.asyncio
+async def test_empty_post_turn_outbox_replay_persists_explicit_locale():
+    from app import memory_server
+
+    runner = AsyncMock(return_value=None)
+    payload = {
+        "messages": [],
+        "language": "zh-TW",
+        "locale_order": 42,
+    }
+
+    with patch("app.memory_server.post_turn._run_post_turn_signals", runner):
+        await memory_server._outbox_post_turn_signals_handler("小天", payload)
+
+    runner.assert_awaited_once_with(
+        [],
+        "小天",
+        language="zh-TW",
+        locale_order=42,
+        locale_only=True,
+    )
 
 
 @pytest.mark.asyncio

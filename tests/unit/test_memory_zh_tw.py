@@ -720,6 +720,7 @@ async def test_new_dialog_unknown_character_only_captures_locale_token(monkeypat
     assert "NotACharacter" not in locale_state._locale_locks
     assert "NotACharacter" not in locale_state._locale_cache
     assert "NotACharacter" not in locale_state._character_locale_admission_orders
+    assert "NotACharacter" not in locale_state._character_locale_capture_offsets
 
 
 @pytest.mark.asyncio
@@ -733,6 +734,7 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
 
     async def load_characters():
         assert events == ["capture"]
+        events.append("validate")
         return {"猫娘": {"Neko": {}}}
 
     def record(name, language, *, order):
@@ -751,10 +753,17 @@ async def test_new_dialog_persists_explicit_session_locale(monkeypatch):
         "reserve_character_prompt_locale_order",
         lambda _name, *, order: order,
     )
+    monkeypatch.setattr(
+        locale_state,
+        "rebase_character_prompt_locale_order",
+        lambda _name, order: events.append("rebase") or order,
+    )
     monkeypatch.setattr(locale_state, "record_character_prompt_locale", record)
 
     with pytest.raises(Recorded):
         await routes._new_dialog("Neko", "zh-TW")
+
+    assert events == ["capture", "validate", "rebase"]
 
 
 @pytest.mark.asyncio
@@ -795,6 +804,11 @@ async def test_new_dialog_defers_locale_write_while_cloudsave_is_fenced(monkeypa
         locale_state,
         "capture_character_prompt_locale_order",
         lambda _name: 42,
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "rebase_character_prompt_locale_order",
+        lambda _name, order: order,
     )
     monkeypatch.setattr(
         locale_state,
@@ -864,6 +878,11 @@ async def test_new_dialog_rejects_if_locale_and_outbox_are_both_unwritable(
         lambda _name: 42,
     )
     monkeypatch.setattr(
+        locale_state,
+        "rebase_character_prompt_locale_order",
+        lambda _name, order: order,
+    )
+    monkeypatch.setattr(
         routes,
         "_write_new_dialog_locale",
         AsyncMock(
@@ -877,7 +896,6 @@ async def test_new_dialog_rejects_if_locale_and_outbox_are_both_unwritable(
     )
     monkeypatch.setattr(runtime, "_spawn_background_task", spawn)
     routes._new_dialog_locale_generations[name] = 7
-    routes._new_dialog_locale_generation_counters[name] = 7
 
     with pytest.raises(HTTPException) as exc_info:
         await routes._new_dialog(name, "zh-TW")
@@ -886,7 +904,6 @@ async def test_new_dialog_rejects_if_locale_and_outbox_are_both_unwritable(
     assert exc_info.value.detail == "Prompt locale persistence is unavailable"
     append_pending.assert_awaited_once()
     assert routes._new_dialog_locale_generations[name] == 7
-    assert routes._new_dialog_locale_generation_counters[name] == 8
 
 
 @pytest.mark.asyncio
@@ -917,20 +934,14 @@ async def test_new_dialog_locale_outbox_replays_after_restart(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_new_dialog_durable_retry_closes_outbox_marker(monkeypatch):
-    from types import SimpleNamespace
+async def test_new_dialog_durable_retry_uses_generic_outbox_runner(monkeypatch):
     from unittest.mock import AsyncMock
 
-    from app.memory_server import routes, runtime
+    from app.memory_server import outbox_infra, routes
+    from memory.outbox import OP_PERSIST_PROMPT_LOCALE
 
-    retry = AsyncMock()
-    append_done = AsyncMock()
-    monkeypatch.setattr(routes, "_retry_new_dialog_locale", retry)
-    monkeypatch.setattr(
-        runtime,
-        "outbox",
-        SimpleNamespace(aappend_done=append_done),
-    )
+    runner = AsyncMock()
+    monkeypatch.setattr(outbox_infra, "_run_outbox_op", runner)
 
     await routes._run_durable_new_dialog_locale_retry(
         "Neko",
@@ -940,13 +951,125 @@ async def test_new_dialog_durable_retry_closes_outbox_marker(monkeypatch):
         op_id="locale-op",
     )
 
-    retry.assert_awaited_once_with(
+    runner.assert_awaited_once_with(
         "Neko",
-        "zh-TW",
-        8,
-        locale_admission_order=42,
+        {
+            "op_id": "locale-op",
+            "type": OP_PERSIST_PROMPT_LOCALE,
+            "payload": {
+                "language": "zh-TW",
+                "locale_admission_order": 42,
+                "generation": 8,
+            },
+        },
     )
-    append_done.assert_awaited_once_with("Neko", "locale-op")
+
+
+def test_captured_locale_orders_rebase_future_durable_state_without_reordering(
+    monkeypatch,
+):
+    from app.memory_server import locale_state
+
+    name = "FutureClockNeko"
+    locale_state._character_locale_admission_orders.pop(name, None)
+    locale_state._character_locale_capture_offsets.pop(name, None)
+    monkeypatch.setattr(
+        locale_state,
+        "_load_locale_state_unlocked",
+        lambda _name: ("en", 5000, 5000),
+    )
+
+    newer = locale_state.rebase_character_prompt_locale_order(name, 102)
+    older = locale_state.rebase_character_prompt_locale_order(name, 100)
+
+    assert newer == 5001
+    assert older == 4999
+    assert older < newer
+
+
+@pytest.mark.asyncio
+async def test_new_dialog_generation_follows_admission_not_validation_order(
+    monkeypatch,
+):
+    from types import SimpleNamespace
+    from unittest.mock import AsyncMock
+
+    from app.memory_server import locale_state, routes, runtime
+
+    name = "AdmissionOrderNeko"
+    first_waiting = asyncio.Event()
+    release_first = asyncio.Event()
+    load_calls = 0
+
+    async def load_characters():
+        nonlocal load_calls
+        load_calls += 1
+        if load_calls == 1:
+            first_waiting.set()
+            await release_first.wait()
+        return {"猫娘": {name: {}}}
+
+    captures = iter((41, 42))
+    spawned = []
+    append_pending = AsyncMock(side_effect=("older-op", "newer-op"))
+
+    class StopAfterLocale(Exception):
+        pass
+
+    class StopLock:
+        async def __aenter__(self):
+            raise StopAfterLocale
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+    monkeypatch.setattr(runtime._config_manager, "aload_characters", load_characters)
+    monkeypatch.setattr(
+        locale_state,
+        "capture_character_prompt_locale_order",
+        lambda _name: next(captures),
+    )
+    monkeypatch.setattr(
+        locale_state,
+        "rebase_character_prompt_locale_order",
+        lambda _name, order: order,
+    )
+    monkeypatch.setattr(
+        routes,
+        "_write_new_dialog_locale",
+        AsyncMock(side_effect=locale_state.PromptLocalePersistenceError("defer")),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "outbox",
+        SimpleNamespace(aappend_pending=append_pending),
+    )
+    monkeypatch.setattr(
+        routes,
+        "_run_durable_new_dialog_locale_retry",
+        lambda _name, _language, generation, **kwargs: (
+            generation,
+            kwargs["locale_admission_order"],
+        ),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_spawn_background_task",
+        lambda operation: spawned.append(operation),
+    )
+    monkeypatch.setattr(runtime, "_get_settle_lock", lambda _name: StopLock())
+    routes._new_dialog_locale_generations.pop(name, None)
+
+    older = asyncio.create_task(routes._new_dialog(name, "en"))
+    await first_waiting.wait()
+    newer = asyncio.create_task(routes._new_dialog(name, "zh-TW"))
+    await asyncio.sleep(0)
+    release_first.set()
+    results = await asyncio.gather(older, newer, return_exceptions=True)
+
+    assert all(isinstance(result, StopAfterLocale) for result in results)
+    assert routes._new_dialog_locale_generations[name] == 42
+    assert sorted(spawned) == [(41, 41), (42, 42)]
 
 
 @pytest.mark.asyncio
@@ -2963,6 +3086,39 @@ async def test_reflection_refine_shares_budget_and_rotates_subjects(monkeypatch)
         ("BudgetNeko", None, MEMORY_REFINE_CLUSTERS_PER_PASS),
         ("BudgetNeko", first, MEMORY_REFINE_CLUSTERS_PER_PASS),
     ]
+
+
+@pytest.mark.asyncio
+async def test_legacy_refine_skips_current_scoped_entities(monkeypatch):
+    from app.memory_server import refine_loops, runtime
+    from memory.scopes import MemorySubject
+
+    subject = MemorySubject.group_chat("qq", "7788")
+    reflections = [
+        {"id": "legacy", "entity": "master"},
+        {"id": "current", "entity": "group_chat", **subject.as_entry_fields()},
+    ]
+    calls = []
+
+    class ReflectionEngine:
+        async def aload_reflections(self, _name, *, include_archived):
+            assert include_archived is False
+            return reflections
+
+    async def run_batch(name, *, subject=None, max_clusters=None):
+        calls.append((name, subject, max_clusters))
+        return 0
+
+    monkeypatch.setattr(runtime, "reflection_engine", ReflectionEngine())
+    monkeypatch.setattr(
+        refine_loops,
+        "_run_reflection_refine_for_character",
+        run_batch,
+    )
+
+    await refine_loops._run_reflection_refine_with_subject_locales("Neko")
+
+    assert calls == [("Neko", None, refine_loops.MEMORY_REFINE_CLUSTERS_PER_PASS)]
 
 
 @pytest.mark.asyncio

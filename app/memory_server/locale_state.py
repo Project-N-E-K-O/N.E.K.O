@@ -51,6 +51,7 @@ _character_locale_admission_orders: dict[str, int] = {}
 _subject_locale_admission_orders: dict[tuple[str, str], int] = {}
 _locale_admission_orders_guard = threading.Lock()
 _character_locale_capture_order = 0
+_character_locale_capture_offsets: dict[str, int] = {}
 
 
 class PromptLocalePersistenceError(RuntimeError):
@@ -69,6 +70,11 @@ def invalidate_prompt_locale_caches() -> None:
             _locale_cache_generation += 1
             _locale_cache.clear()
             _subject_locale_cache.clear()
+        with _locale_admission_orders_guard:
+            # A cloud restore can replace the durable high-water mark.  The
+            # next validated request must establish a fresh process-token
+            # offset against that state instead of reusing the old epoch.
+            _character_locale_capture_offsets.clear()
 
 
 def _locale_path(name: str) -> str:
@@ -432,6 +438,37 @@ def capture_character_prompt_locale_order(_name: str) -> int:
         )
         _character_locale_capture_order = selected_order
         return selected_order
+
+
+def rebase_character_prompt_locale_order(name: str, captured_order: int) -> int:
+    """Map a side-effect-free admission token onto durable character order.
+
+    The per-character offset is fixed for one cache epoch, so requests retain
+    their original admission ordering even when character validation completes
+    out of order.  Cache invalidation clears the offset because a cloud restore
+    may install a different durable high-water mark.
+    """
+    if not isinstance(captured_order, int) or isinstance(captured_order, bool):
+        raise ValueError("invalid captured prompt locale order")
+
+    with _locale_reload_guard, _get_locale_lock(name):
+        _language, order, reserved_order = _load_locale_state_unlocked(name)
+        with _locale_admission_orders_guard:
+            offset = _character_locale_capture_offsets.get(name)
+            if offset is None:
+                high_water = max(
+                    order or 0,
+                    reserved_order or 0,
+                    _character_locale_admission_orders.get(name, 0),
+                )
+                offset = max(0, high_water + 1 - captured_order)
+                _character_locale_capture_offsets[name] = offset
+            selected_order = captured_order + offset
+            _character_locale_admission_orders[name] = max(
+                _character_locale_admission_orders.get(name, 0),
+                selected_order,
+            )
+            return selected_order
 
 
 def reserve_character_prompt_locale_order(

@@ -2,7 +2,7 @@ import asyncio
 import json
 import sqlite3
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import HTTPException
@@ -121,6 +121,23 @@ def test_game_prompt_locale_preserves_session_zh_tw(monkeypatch):
 
     assert gr_char_info._resolve_game_prompt_locale("Lan") == "zh-TW"
     assert gr_char_info._resolve_game_prompt_language("Lan") == "zh"
+
+
+@pytest.mark.unit
+def test_game_request_marks_matching_seeded_locale_explicit(monkeypatch):
+    manager = SimpleNamespace(
+        user_language="en",
+        _user_language_explicit=False,
+        set_user_language=MagicMock(),
+    )
+    monkeypatch.setattr(
+        gr_char_info,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    assert gr_char_info._absorb_request_language({"language": "en"}, "Lan") == "en"
+    manager.set_user_language.assert_called_once_with("en")
 
 
 @pytest.mark.unit

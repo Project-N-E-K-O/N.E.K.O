@@ -92,7 +92,10 @@ def _absorb_request_language(data: Any, lanlan_name: str | None) -> str | None:
     try:
         manager = get_session_manager().get(str(lanlan_name or "").strip())
         if manager is not None:
-            if normalized_full and getattr(manager, "user_language", None) != normalized_full:
+            if normalized_full and (
+                getattr(manager, "user_language", None) != normalized_full
+                or not getattr(manager, "_user_language_explicit", False)
+            ):
                 setter = getattr(manager, "set_user_language", None)
                 if callable(setter):
                     setter(str(raw))

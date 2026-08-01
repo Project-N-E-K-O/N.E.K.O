@@ -122,6 +122,24 @@ def _prompt_field(prompt: str, label: str) -> str:
     raise AssertionError(f"missing prompt field: {label}")
 
 
+def test_icebreaker_request_marks_matching_seeded_locale_explicit(monkeypatch):
+    manager = _FakeAppendContextManager()
+    manager.user_language = "en"
+    manager._user_language_explicit = False
+    monkeypatch.setattr(
+        icebreaker_router,
+        "get_session_manager",
+        lambda: {"Lan": manager},
+    )
+
+    assert icebreaker_router._absorb_request_language(
+        {"language": "en"},
+        "Lan",
+    ) == "en"
+    assert manager.language_updates == ["en"]
+    assert manager._user_language_explicit is True
+
+
 async def _fake_cache_memory(**kwargs):
     return True, ""
 

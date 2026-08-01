@@ -395,17 +395,7 @@ async def import_external_markdown(request: ExternalMemoryImportRequest):
 # 上 main_server 端缓存（C+ 方案）。
 _new_dialog_qps_counter: dict[str, int] = {}
 _new_dialog_locale_generations: dict[str, int] = {}
-_new_dialog_locale_generation_counters: dict[str, int] = {}
 NEW_DIALOG_QPS_FLUSH_INTERVAL = 60
-
-
-def _next_new_dialog_locale_generation(lanlan_name: str) -> int:
-    generation = max(
-        _new_dialog_locale_generation_counters.get(lanlan_name, 0),
-        _new_dialog_locale_generations.get(lanlan_name, 0),
-    ) + 1
-    _new_dialog_locale_generation_counters[lanlan_name] = generation
-    return generation
 
 
 def _promote_new_dialog_locale_generation(
@@ -767,7 +757,7 @@ async def settle_conversation(request: HistoryRequest, lanlan_name: str):
                     on_compress_done=review._on_compress_done,
                 )
 
-            if input_history:
+            if input_history or is_supported_language_code(request.language):
                 await post_turn._spawn_outbox_post_turn_signals(
                     lanlan_name, input_history, language=request.language,
                     locale_admission_order=locale_admission_order,
@@ -1920,23 +1910,20 @@ async def _run_durable_new_dialog_locale_retry(
     locale_admission_order: int,
     op_id: str,
 ) -> None:
-    """Retry now and close the durable outbox marker on success/staleness."""
-    await _retry_new_dialog_locale(
+    """Run a newly queued locale intent through generic outbox liveness."""
+    payload = {
+        'language': language,
+        'locale_admission_order': locale_admission_order,
+        'generation': generation,
+    }
+    await outbox_infra._run_outbox_op(
         lanlan_name,
-        language,
-        generation,
-        locale_admission_order=locale_admission_order,
+        {
+            'op_id': op_id,
+            'type': OP_PERSIST_PROMPT_LOCALE,
+            'payload': payload,
+        },
     )
-    try:
-        await runtime.outbox.aappend_done(lanlan_name, op_id)
-    except Exception as exc:
-        # The pending marker intentionally remains replayable after restart.
-        logger.warning(
-            "[PromptLocale] %s: locale retry succeeded but outbox completion "
-            "was not persisted: %s",
-            lanlan_name,
-            exc,
-        )
 
 
 outbox_infra.register_outbox_handler(
@@ -1966,7 +1953,15 @@ async def _new_dialog(lanlan_name: str, language: str | None = None):
         return PlainTextResponse("")
 
     if is_supported_language_code(language):
-        generation = _next_new_dialog_locale_generation(lanlan_name)
+        locale_admission_order = await asyncio.to_thread(
+            locale_state.rebase_character_prompt_locale_order,
+            lanlan_name,
+            locale_admission_order,
+        )
+        # The durable retry generation is the admission order itself.  This
+        # prevents a slower, older validation from superseding a newer request
+        # merely because it reached persistence later.
+        generation = locale_admission_order
         try:
             await _write_new_dialog_locale(
                 lanlan_name,

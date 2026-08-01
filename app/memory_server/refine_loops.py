@@ -280,6 +280,12 @@ async def _run_reflection_refine_with_subject_locales(character: str) -> None:
     for reflection in reflections:
         if not isinstance(reflection, dict):
             continue
+        # Current scoped rows use their subject kind as ``entity`` and are
+        # handled by the dedicated scoped-refine loop.  Feeding those subjects
+        # into the legacy master/neko/relationship pass guarantees a full-file
+        # no-op scan for every subject.
+        if reflection.get('entity') not in {'master', 'neko', 'relationship'}:
+            continue
         subject = subject_from_entry(reflection)
         if subject is not None:
             domain = (subject.key, subject.scope)
