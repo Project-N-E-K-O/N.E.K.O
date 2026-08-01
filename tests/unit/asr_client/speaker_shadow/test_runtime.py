@@ -19,6 +19,8 @@ from main_logic.asr_client.speaker_shadow.contracts import (
 )
 from main_logic.asr_client.speaker_shadow.runtime import (
     SpeakerShadowRuntime,
+    _CandidateFinished,
+    _CandidateToken,
     _backend_host_main,
 )
 
@@ -508,6 +510,26 @@ async def test_evicted_tombstone_keeps_late_finish_idempotent() -> None:
     ]
     assert after_duplicate["finalized_tombstone_count"] == 1
     await runtime.close()
+
+
+def test_queued_finish_ignores_evicted_candidate_watermark() -> None:
+    runtime = SpeakerShadowRuntime(
+        backend_factory=_BackendFactory(),
+        config=_config(queue_capacity=1, finalized_candidate_capacity=1),
+    )
+    candidate = _candidate(20)
+    marker = _CandidateFinished(
+        runtime._generation,
+        candidate,
+        _CandidateToken(candidate, 0),
+    )
+    runtime._record_evicted_candidate(candidate)
+    before_marker = runtime.snapshot()
+
+    runtime._process_finish(marker)
+
+    assert runtime.snapshot() == before_marker
+    asyncio.run(runtime.close())
 
 
 def test_threshold_metric_keys_preserve_distinct_float_values() -> None:

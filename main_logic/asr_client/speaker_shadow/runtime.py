@@ -1167,6 +1167,8 @@ class SpeakerShadowRuntime:
     def _process_finish(self, marker: _CandidateFinished) -> None:
         if marker.generation != self._generation:
             return
+        if self._candidate_was_evicted(marker.candidate):
+            return
         if marker.token.terminal_reason is not None:
             self._record_token_finish(marker.token)
             return
